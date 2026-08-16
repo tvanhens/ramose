@@ -83,6 +83,11 @@ export class RippleClient {
   }
 }
 
+/** The read fence, as the header the peer reads it from. */
+function minTHeader(opts: { minT?: number }): Record<string, string> | undefined {
+  return opts.minT !== undefined ? { "x-ripple-min-t": String(opts.minT) } : undefined;
+}
+
 function num(s: string | null): number | null {
   return s === null ? null : Number(s);
 }
@@ -119,16 +124,18 @@ export class RippleDb {
   }
 
   query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryResponse<T>> {
-    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), opts.minT !== undefined ? { "x-ripple-min-t": String(opts.minT) } : undefined);
+    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }
 
-  async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[]): Promise<T> {
-    const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), compact({ eid, pattern, asOf: this.asOfT, history: this.hist || undefined }));
+  /** `minT`: read fence, same as `q` / `query`. */
+  async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[], opts: { minT?: number } = {}): Promise<T> {
+    const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), compact({ eid, pattern, asOf: this.asOfT, history: this.hist || undefined }), minTHeader(opts));
     return r.result;
   }
 
-  async entity(eid: number): Promise<Record<string, unknown> | undefined> {
-    const r = await this.client.request<{ entity: Record<string, unknown> | null }>("GET", this.path(`/entity/${eid}${this.asOfT !== undefined ? `?asOf=${this.asOfT}` : ""}`));
+  /** `minT`: read fence, same as `q` / `query`. */
+  async entity(eid: number, opts: { minT?: number } = {}): Promise<Record<string, unknown> | undefined> {
+    const r = await this.client.request<{ entity: Record<string, unknown> | null }>("GET", this.path(`/entity/${eid}${this.asOfT !== undefined ? `?asOf=${this.asOfT}` : ""}`), undefined, minTHeader(opts));
     return r.entity ?? undefined;
   }
 
