@@ -1,14 +1,3 @@
-/**
- * The session socket as a transport: the frames a client's requests become, the
- * replies they turn back into, and what happens when the socket goes away.
- *
- * The fake here is the socket-shaped twin of the `recorder` fetch in
- * `client.test.ts` — it records the frames it was sent and answers each one
- * with a canned reply frame. Nothing else about the clients changes, which is
- * the point: the same `Client.make` / `SchemaFx` surface is exercised, only the
- * `fetch` seam is different.
- */
-
 import { describe, expect, test } from "bun:test";
 import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";

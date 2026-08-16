@@ -123,13 +123,7 @@ const recordHttp = (request: Request, info: RequestInfo, status: number, ms: num
     peerMetrics.aeWrites++;
   }).pipe(Effect.ignoreCause);
 
-/**
- * A session frame, as a request against this Worker's own routes.
- *
- * It carries the upgrade request's `cf` (so `regionOf`/`coloOf` are the client's,
- * not "global") and its resolved replica hint, so a socket read lands on exactly
- * the replica DO the same client's HTTP read would have used.
- */
+/** Session frame as a sub-request: inherit cf + replica hint from the upgrade. */
 function subRequest(request: Request, env: RippleEnv, db: string, rest: string, init: { method: string; headers: Record<string, string>; body?: string }): Request {
   const headers = new Headers();
   const hint = hintOf(request, env);
@@ -142,8 +136,7 @@ function subRequest(request: Request, env: RippleEnv, db: string, rest: string, 
   return new Request(`https://session/db/${encodeURIComponent(db)}${rest}`, { method: init.method, headers, body: init.body, cf: (request as { cf?: unknown }).cf } as RequestInit);
 }
 
-/** The session's `GET /basis` poll: the same request, with the isolate basis cache bypassed
- *  (`x-ripple-cache-basis: 0`) — a poll that could be served from the cache would never see it move. */
+/** GET /basis poll with the isolate cache off, so movement is visible. */
 function pollRequest(request: Request, env: RippleEnv, db: string): Request {
   return subRequest(request, env, db, "/basis", { method: "GET", headers: { "x-ripple-cache-basis": "0" } });
 }
@@ -233,17 +226,17 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
       worker: { aeWrites: peerMetrics.aeWrites, analytics: bindingOf(env) !== undefined },
     });
   }
-  // ---- the session socket: one client WebSocket over these same routes (session.ts)
+  // session socket
   if (rest === "/session" && request.method === "GET") {
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") throw new BadRequest({ message: "expected websocket" });
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    server.accept(); // the Worker holds this socket itself: no DO, no hibernation, no session id
+    server.accept();
     const session = openSession(server as unknown as SocketLike, {
       dispatch: async (r, init) => {
         const sub = subRequest(request, env, db, r, init);
         try {
-          // `rest` is the path only (route matches on it); the query string stays on the URL (`?asOf=`)
+          // route matches on path; query string stays on the URL
           return await route(sub, env, new URL(sub.url), db, r.split("?")[0], Date.now());
         } catch (err) {
           return respond(fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }));
@@ -252,7 +245,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
       watchKey: `${db}|${hintOf(request, env) ?? ""}`,
       pollBasis: async () => (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis.t,
     });
-    // the connection lives with the request; keep it open until the client goes away (isolate death drops it)
+    // hold the request open until the socket closes
     ctx?.waitUntil(session.closed);
     plog.debug("session.open", { db, colo: (request as { cf?: { colo?: string } }).cf?.colo });
     return new Response(null, { status: 101, webSocket: client });

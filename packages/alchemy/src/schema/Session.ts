@@ -1,27 +1,4 @@
-/**
- * The typed entry point to the session socket.
- *
- * `connect` is `SchemaFx`'s `create` with a different transport underneath: one
- * WebSocket to `GET /db/:name/session` instead of a request per call. The typed
- * surface is not rebuilt for it — the socket is a {@link FetchLike}, so the
- * ordinary untyped system client is built over it and wrapped by
- * {@link fromReadWrite} exactly as the HTTP one is. Every typed path
- * (`db.q(q => q.where(…).find(…))`, `Eid.pull(…)`, `db.transact(…)`, the
- * catalog ensure itself) therefore rides the socket unchanged, and the peer
- * sees frames rather than a byte pipe.
- *
- * @example
- * ```typescript
- * const { session, db } = yield* SchemaFx.Session.connect({
- *   url: "https://ripple.example.workers.dev",
- *   name: "movies",
- *   catalog: Movies,
- *   token,
- * });
- * session.onT((t) => console.log("basis moved", t));
- * yield* db.transact(function* (tx) { … });
- * ```
- */
+/** SchemaFx.connect over the session socket. Same typed surface, different transport. */
 
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";

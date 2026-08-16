@@ -1,38 +1,4 @@
-/**
- * The session socket: one WebSocket to `GET /db/:name/session`, worn as a
- * {@link FetchLike}.
- *
- * The clients in `Client.ts` never touch the network themselves — every route
- * they speak goes through the one `fetch` seam on their source. So the socket
- * is not a second client stack: it is a different function passed into the same
- * one. `openSession(...).fetch` takes the request the HTTP client would have
- * made, turns it into a frame (`{ id, op, … }`), and turns the peer's reply
- * frame back into a `Response`. Everything downstream — the `@ripple/core` JSON
- * transport, the `x-ripple-*` meta, the tagged error classification in
- * `DatabaseTypes.ts` — is unchanged, because it only ever sees a `Response`.
- *
- * ```
- *   POST /db/movies/transact  { tx }                → { id, op: "transact", tx }
- *   POST /db/movies/query     { query, inputs, … }  → { id, op: "q",        query, inputs, … }
- *   POST /db/movies/pull      { eid, pattern, … }   → { id, op: "pull",     eid, pattern, … }
- *   GET  /db/movies/entity/17?asOf=42               → { id, op: "entity",   eid: 17, asOf: 42 }
- *   GET  /db/movies/info                            → { id, op: "info" }
- *   reply                                           ← { id, status, body, headers? }
- *   basis moved                                     ← { op: "t", t }
- * ```
- *
- * The `x-ripple-min-t` read fence is a *header* on the HTTP path; a frame has
- * no headers, so it is lifted into the frame's `minT` field. Anything that is
- * not a `/db/:name/…` route for *this* session's database (`/health`, the
- * `/admin/…` routes, another database) falls through to the ordinary `fetch`,
- * which is what keeps the peer-level routes working over one socket.
- *
- * Workers cannot hibernate a socket: this connection lives with the request
- * that opened it, and isolate death drops it. A dropped socket fails every
- * in-flight and subsequent request with `NetworkError` (the promise rejects,
- * which is exactly what `send` in `Client.ts` classifies) — it does not
- * silently fall back to HTTP.
- */
+/** One WebSocket to GET /db/:name/session, worn as a FetchLike. */
 
 import * as Redacted from "effect/Redacted";
 import { globalFetch, type FetchLike } from "./Client.ts";

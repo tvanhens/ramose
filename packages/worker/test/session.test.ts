@@ -1,18 +1,3 @@
-/**
- * The session socket protocol (packages/worker/src/session.ts).
- *
- * index.ts cannot be imported here (it re-exports the DO classes, which import
- * `cloudflare:workers`) and bun has no `WebSocketPair`, so the socket, the
- * dispatcher and the timer are the module's injected seams: a FakeSocket that
- * records frames and can emit events, a dispatch that records sub-requests and
- * answers with canned `Response`s, and a manual scheduler whose tick is fired
- * by hand.
- *
- * Covered: frame → route dispatch, `minT` → `x-ripple-min-t`, reply shape
- * (status/body/`x-ripple-*` echo, upstream errors keep the socket open),
- * `ack.t` after a write on this socket, `t` after `/basis` moves, and the
- * refcounted per-`db|hint` watcher shared by sessions on the same key.
- */
 import { afterEach, describe, expect, test } from "bun:test";
 import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../src/session.ts";
 

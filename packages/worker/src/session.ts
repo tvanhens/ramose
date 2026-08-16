@@ -1,34 +1,4 @@
-/**
- * The session socket: one client WebSocket, multiplexed over the Worker's own
- * HTTP routes.
- *
- * `GET /db/:name/session` (Upgrade) is accepted by the Worker itself — no new
- * Durable Object, no session id, no hibernation. The socket lives with the
- * request; when the isolate dies the client reconnects. The Worker sees every
- * frame: each one is planned here (`planOf`) and dispatched back into the same
- * `/transact` | `/query` | `/pull` | `/entity` | `/info` handlers curl hits, so
- * there is exactly one implementation of a read and one of a write.
- *
- *   client → { id, op: "transact" | "q" | "pull" | "entity" | "info", … }
- *   server → { id, status, body, headers? }        one reply per frame
- *   server → { op: "t", t }                        unsolicited: basis moved
- *
- * `t` frames come from two places, both cheap and both isolate-local:
- *   - ack.t: a write on this socket answered with `{ t }` (sent after its reply)
- *   - polling: this isolate's `GET /basis` watcher for `db|hint`, shared by
- *     every session on the same key and refcounted down to zero
- * A session only ever sees `t` go forwards (`lastT`), so a client can use the
- * last one it saw as `x-ripple-min-t` on the next read.
- *
- * This module deliberately imports nothing from `cloudflare:workers`: the
- * socket, the dispatcher and the timer are injected (`SocketLike`,
- * `SessionDispatch`, `Scheduler`), so the whole protocol is testable under
- * `bun test` while index.ts supplies the real `WebSocketPair` and `route()`.
- *
- * Payloads are opaque: frames carry the same JSON the HTTP routes already
- * accept (`toJson`-encoded values), and this module never decodes them.
- */
-
+/** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
 // ---- wire ------------------------------------------------------------------
 
 /** A frame from the client. `id` correlates the reply; ops mirror the HTTP routes. */
