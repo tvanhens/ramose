@@ -29,3 +29,4 @@ export {
 export * from "./Query.ts";
 export * from "./Tx.ts";
 export * from "./valueTypes.ts";
+export * as Session from "./Session.ts";

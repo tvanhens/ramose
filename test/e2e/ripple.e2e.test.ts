@@ -8,7 +8,11 @@
  * Skipped when RIPPLE_URL is not set.
  */
 import { describe, expect, test } from "bun:test";
+import { RuntimeContext } from "alchemy/RuntimeContext";
+import * as Effect from "effect/Effect";
 import { RippleClient, attribute } from "../../packages/client/src/index.ts";
+import * as AlchemyClient from "../../packages/alchemy/src/Client.ts";
+import { openSession } from "../../packages/alchemy/src/Session.ts";
 
 const URL_ = process.env.RIPPLE_URL;
 const token = process.env.RIPPLE_TOKEN;
@@ -152,4 +156,70 @@ d("ripple e2e", () => {
     console.log(`e2e write smoke: ${N} tx in ${ms.toFixed(0)} ms → ${((N / ms) * 1000).toFixed(0)} tx/s; max batch ${info.transactor.stats.maxBatch}`);
     expect(info.transactor.stats.maxBatch).toBeGreaterThan(1); // group commit actually batched
   });
+});
+
+/**
+ * The session socket (`GET /db/:name/session`), over a real WebSocket: the
+ * Effect client's `fetch` seam is the socket, so `transact` / `q` / `pull` /
+ * `info` are frames on one connection — and a write on another socket shows up
+ * on this one as an unsolicited `t` frame.
+ */
+d("ripple session socket e2e", () => {
+  const url = URL_ ?? "http://invalid";
+  const sessionDb = `${dbName}-session`;
+  const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
+    Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+
+  test(
+    "one socket transacts, queries and pulls; a write on another socket arrives as a t frame",
+    async () => {
+      const a = openSession({ url, name: sessionDb, token });
+      const b = openSession({ url, name: sessionDb, token });
+      try {
+        const dbA = AlchemyClient.make({ url, name: sessionDb, token, fetch: a.fetch });
+        const dbB = AlchemyClient.make({ url, name: sessionDb, token, fetch: b.fetch });
+
+        await run(
+          dbA.transact([
+            attribute(":s/name", "string", { unique: "identity" }),
+            attribute(":s/n", "long"),
+          ]),
+        );
+        const ack = await run(
+          dbA.transact([{ ":db/id": "ada", ":s/name": "Ada", ":s/n": 1 }]),
+        );
+        // the write's own ack moved this socket's basis
+        expect(a.t).toBeGreaterThanOrEqual(ack.t);
+
+        const names = await run(
+          dbA.q<string[]>(`[:find [?n ...] :where [?e :s/name ?n]]`, [], { minT: ack.t }),
+        );
+        expect(names).toEqual(["Ada"]);
+        const pulled = await run(
+          dbA.pull<Record<string, unknown>>(ack.tempids.ada, `[:s/name :s/n]`),
+        );
+        expect(pulled).toEqual({
+          ":s/name": "Ada",
+          ":s/n": 1,
+        });
+        expect((await run(dbA.info())).db).toBe(sessionDb);
+        // peer-level routes are not session-shaped: they fall through to fetch
+        expect((await run(dbA.health())).ok).toBe(true);
+
+        // …and B's write reaches A without A reading anything
+        const ticks: number[] = [];
+        const off = a.onT((t) => ticks.push(t));
+        const write = await run(dbB.transact([{ ":s/name": "Bob", ":s/n": 2 }]));
+        expect(write.t).toBeGreaterThan(ack.t);
+        for (let i = 0; i < 60 && a.t < write.t; i++) await Bun.sleep(250);
+        off();
+        expect(ticks.length).toBeGreaterThan(0);
+        expect(a.t).toBeGreaterThanOrEqual(write.t);
+      } finally {
+        a.close();
+        b.close();
+      }
+    },
+    60_000,
+  );
 });
