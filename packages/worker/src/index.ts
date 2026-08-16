@@ -15,6 +15,7 @@
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
  *   GET  /db/:name/info                                            → transactor + replica + basis info
+ *   GET  /db/:name/session    (Upgrade: websocket)                 → the session socket (session.ts)
  *   POST /db/:name/admin/index | /admin/gc                         → indexer controls
  *
  * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
@@ -35,6 +36,7 @@ import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
+import { type SocketLike, openSession } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -61,7 +63,7 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-min-t",
+  "access-control-allow-headers": "content-type,authorization,upgrade,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-min-t",
   "access-control-expose-headers": "x-ripple-ms,x-ripple-r2-gets,x-ripple-cache-hits,x-ripple-basis-t,x-ripple-basis-hit,x-ripple-basis-reason,x-ripple-basis-calls,x-ripple-basis-behind,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-colo",
 };
 
@@ -121,8 +123,33 @@ const recordHttp = (request: Request, info: RequestInfo, status: number, ms: num
     peerMetrics.aeWrites++;
   }).pipe(Effect.ignoreCause);
 
+/**
+ * A session frame, as a request against this Worker's own routes.
+ *
+ * It carries the upgrade request's `cf` (so `regionOf`/`coloOf` are the client's,
+ * not "global") and its resolved replica hint, so a socket read lands on exactly
+ * the replica DO the same client's HTTP read would have used.
+ */
+function subRequest(request: Request, env: RippleEnv, db: string, rest: string, init: { method: string; headers: Record<string, string>; body?: string }): Request {
+  const headers = new Headers();
+  const hint = hintOf(request, env);
+  if (hint) headers.set("x-ripple-replica-hint", hint);
+  for (const k of ["x-ripple-cache-basis", "x-ripple-cache-mode"]) {
+    const v = request.headers.get(k);
+    if (v !== null) headers.set(k, v);
+  }
+  for (const [k, v] of Object.entries(init.headers)) headers.set(k, v); // the frame's own headers win (min-t, content-type)
+  return new Request(`https://session/db/${encodeURIComponent(db)}${rest}`, { method: init.method, headers, body: init.body, cf: (request as { cf?: unknown }).cf } as RequestInit);
+}
+
+/** The session's `GET /basis` poll: the same request, with the isolate basis cache bypassed
+ *  (`x-ripple-cache-basis: 0`) — a poll that could be served from the cache would never see it move. */
+function pollRequest(request: Request, env: RippleEnv, db: string): Request {
+  return subRequest(request, env, db, "/basis", { method: "GET", headers: { "x-ripple-cache-basis": "0" } });
+}
+
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
-async function route(request: Request, env: RippleEnv, url: URL, db: string, rest: string, t0: number): Promise<Response> {
+async function route(request: Request, env: RippleEnv, url: URL, db: string, rest: string, t0: number, ctx?: ExecutionContext): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
 
@@ -206,11 +233,35 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
       worker: { aeWrites: peerMetrics.aeWrites, analytics: bindingOf(env) !== undefined },
     });
   }
+  // ---- the session socket: one client WebSocket over these same routes (session.ts)
+  if (rest === "/session" && request.method === "GET") {
+    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") throw new BadRequest({ message: "expected websocket" });
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    server.accept(); // the Worker holds this socket itself: no DO, no hibernation, no session id
+    const session = openSession(server as unknown as SocketLike, {
+      dispatch: async (r, init) => {
+        const sub = subRequest(request, env, db, r, init);
+        try {
+          // `rest` is the path only (route matches on it); the query string stays on the URL (`?asOf=`)
+          return await route(sub, env, new URL(sub.url), db, r.split("?")[0], Date.now());
+        } catch (err) {
+          return respond(fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }));
+        }
+      },
+      watchKey: `${db}|${hintOf(request, env) ?? ""}`,
+      pollBasis: async () => (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis.t,
+    });
+    // the connection lives with the request; keep it open until the client goes away (isolate death drops it)
+    ctx?.waitUntil(session.closed);
+    plog.debug("session.open", { db, colo: (request as { cf?: { colo?: string } }).cf?.colo });
+    return new Response(null, { status: 101, webSocket: client });
+  }
   throw new NotFound({});
 }
 
 /** The request, as one Effect: `Response` on success, a tagged failure otherwise. */
-const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo): Effect.Effect<Response, RippleError> =>
+const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo, ctx?: ExecutionContext): Effect.Effect<Response, RippleError> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
@@ -239,17 +290,17 @@ const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo)
     if (!authorized(env, request)) return yield* Effect.fail(new Unauthorized({}));
 
     return yield* Effect.tryPromise({
-      try: () => route(request, env, url, db, rest, t0),
+      try: () => route(request, env, url, db, rest, t0, ctx),
       catch: (err) => fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }),
     });
   });
 
 export default {
-  async fetch(request: Request, env: RippleEnv): Promise<Response> {
+  async fetch(request: Request, env: RippleEnv, ctx?: ExecutionContext): Promise<Response> {
     const t0 = Date.now();
     const info: RequestInfo = { db: "-", path: "-", route: "other" };
     return Effect.runPromise(
-      handle(request, env, t0, info).pipe(
+      handle(request, env, t0, info, ctx).pipe(
         Effect.catchTags(recover(info, t0)),
         Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),
         Effect.provideService(Analytics, fromBinding(bindingOf(env))),

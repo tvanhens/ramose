@@ -15,7 +15,7 @@
  * ---- http point schema (one per request; see `httpPoint`) ----
  *   index1 = db ("-" when the request never resolved a database)
  *   blob1  = "http" (point kind), blob2 = db, blob3 = colo (request.cf.colo),
- *   blob4  = route (transact|query|pull|entity|info|admin|health|other),
+ *   blob4  = route (transact|query|pull|entity|info|session|admin|health|other),
  *   blob5  = status
  *   double1 = duration_ms, double2 = count (1), double3 = ok (1|0), double4 = err (1|0)
  */
@@ -64,7 +64,7 @@ export const bindingOf = (env: unknown): AnalyticsEngineDatasetLike | undefined 
   return typeof b?.writeDataPoint === "function" ? b : undefined;
 };
 
-export type Route = "transact" | "query" | "pull" | "entity" | "info" | "admin" | "health" | "other";
+export type Route = "transact" | "query" | "pull" | "entity" | "info" | "session" | "admin" | "health" | "other";
 
 /** Route label for a `/db/:name/<rest>` suffix (or a non-db path). */
 export function routeOf(rest: string, method: string): Route {
@@ -72,6 +72,7 @@ export function routeOf(rest: string, method: string): Route {
   if (rest === "/query") return "query";
   if (rest === "/pull") return "pull";
   if (rest === "/info") return "info";
+  if (rest === "/session") return "session";
   if (rest.startsWith("/admin/")) return "admin";
   if (/^\/entity\/\d+$/.test(rest) && method === "GET") return "entity";
   return "other";
