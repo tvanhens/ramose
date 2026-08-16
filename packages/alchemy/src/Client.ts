@@ -103,6 +103,7 @@ export interface QueryResponse<T = unknown> {
   readonly meta: QueryMeta;
 }
 
+/** Per-read options. `pull` / `entity` read only the fence; `explain` is query-only. */
 export interface QueryOptions {
   /** Ask the planner for its clause-by-clause plan. */
   readonly explain?: boolean;
@@ -138,10 +139,12 @@ export interface ReadDatabaseClient {
   pull<T = Record<string, unknown> | null>(
     eid: number | string | [string, unknown],
     pattern: string | unknown[],
+    options?: QueryOptions,
   ): Effect.Effect<T, DatabaseError, RuntimeContext>;
   /** The whole entity map, or `undefined` when it has no datoms. */
   entity(
     eid: number,
+    options?: QueryOptions,
   ): Effect.Effect<
     Record<string, unknown> | undefined,
     DatabaseError,
@@ -318,6 +321,14 @@ const dbPath =
   (endpoint: DatabaseEndpoint): string =>
     `/db/${encodeURIComponent(endpoint.name)}${suffix}`;
 
+/** The read fence, as the header the peer reads it from. `explain` is body-side. */
+const fenceHeaders = (
+  options: QueryOptions | undefined,
+): Record<string, string> | undefined =>
+  options?.minT === undefined
+    ? undefined
+    : { "x-ripple-min-t": String(options.minT) };
+
 const record = (value: unknown): Record<string, unknown> =>
   (typeof value === "object" && value !== null
     ? value
@@ -340,9 +351,7 @@ const makeRead = (source: DatabaseSource, view: View): ReadDatabaseClient => {
         history: view.history === true ? true : undefined,
         explain: options.explain,
       }),
-      options.minT === undefined
-        ? undefined
-        : { "x-ripple-min-t": String(options.minT) },
+      fenceHeaders(options),
     ).pipe(
       Effect.map(({ body, headers }) => {
         const r = record(body);
@@ -366,6 +375,7 @@ const makeRead = (source: DatabaseSource, view: View): ReadDatabaseClient => {
     pull: <T = Record<string, unknown> | null>(
       eid: number | string | [string, unknown],
       pattern: string | unknown[],
+      options: QueryOptions = {},
     ) =>
       send(
         source,
@@ -377,14 +387,17 @@ const makeRead = (source: DatabaseSource, view: View): ReadDatabaseClient => {
           asOf: view.asOf,
           history: view.history === true ? true : undefined,
         }),
+        fenceHeaders(options),
       ).pipe(Effect.map(({ body }) => record(body).result as T)),
-    entity: (eid: number) =>
+    entity: (eid: number, options: QueryOptions = {}) =>
       send(
         source,
         "GET",
         dbPath(
           `/entity/${eid}${view.asOf === undefined ? "" : `?asOf=${view.asOf}`}`,
         ),
+        undefined,
+        fenceHeaders(options),
       ).pipe(
         Effect.map(({ body }) => {
           const entity = record(body).entity;
