@@ -168,6 +168,21 @@ describe("reads", () => {
     expect(calls[1].headers["x-ripple-min-t"]).toBeUndefined();
   });
 
+  test("pull and entity take the same read fence", async () => {
+    const { calls, fetch } = recorder(() => ({ body: { t: 1, result: null, entity: null } }));
+    const db = Client.make({ url: "https://peer.example.com", name: "movies", fetch });
+    await run(db.pull(17, "[*]", { minT: 42 }));
+    await run(db.pull(17, "[*]"));
+    await run(db.entity(17, { minT: 42 }));
+    await run(db.entity(17));
+    expect(calls[0].headers["x-ripple-min-t"]).toBe("42");
+    expect(calls[1].headers["x-ripple-min-t"]).toBeUndefined();
+    expect(calls[2].headers["x-ripple-min-t"]).toBe("42");
+    expect(calls[3].headers["x-ripple-min-t"]).toBeUndefined();
+    // the fence is a header, never a body field
+    expect(calls[0].body).toEqual({ eid: 17, pattern: "[*]" });
+  });
+
   test("pull unwraps `result`", async () => {
     const { calls, fetch } = recorder(() => ({ body: { t: 1, result: { ":user/name": "Ada" } } }));
     const db = Client.make({ url: "https://peer.example.com", name: "movies", fetch });

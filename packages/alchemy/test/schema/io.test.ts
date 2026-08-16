@@ -177,6 +177,23 @@ const inProcessPeer = () => {
   return { fetch, conns };
 };
 
+/**
+ * The same peer, with reads served from a basis pinned at `staleT` unless the
+ * request's `x-ripple-min-t` asks for a newer one — which is what the real peer
+ * does with the fence (`fetchBasisWithStats` in packages/worker/src/peer.ts).
+ */
+const fencedPeer = (staleT: number) => {
+  const { fetch: inner, conns } = inProcessPeer();
+  const fetch: FetchLike = (url, init) => {
+    const fence = Number(init.headers["x-ripple-min-t"] ?? 0);
+    const read = /\/(query|pull)$/.test(new URL(url).pathname);
+    if (!read || init.body === undefined || fence > staleT) return inner(url, init);
+    const body = { ...(JSON.parse(init.body) as object), asOf: staleT };
+    return inner(url, { ...init, body: JSON.stringify(body) });
+  };
+  return { fetch, conns };
+};
+
 describe("request shapes (fake fetch)", () => {
   test("create validates the name before any request", async () => {
     const { calls, fetch } = recorder(() => ({ body: {} }));
@@ -269,6 +286,25 @@ describe("request shapes (fake fetch)", () => {
     expect(await run(db.info())).toEqual({ db: "movies" });
     expect((await run(db.health())).ok).toBe(true);
     expect((await run(system.health())).ok).toBe(true);
+  });
+
+  test("eid.pull carries the read fence to the pull request's headers", async () => {
+    const { calls, fetch } = recorder((call) =>
+      call.url.endsWith("/query")
+        ? { body: { t: 2, root: 2, result: [[1001]] } }
+        : { body: { t: 2, txEid: 1, tempids: {}, datoms: 4, result: { name: "Ada" } } },
+    );
+    const system = makeSystem({ url: "https://peer.example.com", fetch });
+    const db = await run(system.create("movies", Movies));
+    const rows = await run(db.q((q) => q.where("?e", User.name, "?n").find("?e")));
+    calls.length = 0;
+
+    await run(rows[0][0].pull({ name: User.name }, { minT: 42 }));
+    await run(rows[0][0].pull({ name: User.name }));
+
+    expect(calls[0].url).toBe("https://peer.example.com/db/movies/pull");
+    expect(calls[0].headers["x-ripple-min-t"]).toBe("42");
+    expect(calls[1].headers["x-ripple-min-t"]).toBeUndefined();
   });
 
   test("ensure failure is SchemaEnsureError, not the raw DatabaseError", async () => {
@@ -478,6 +514,39 @@ describe("in-process peer", () => {
     const health = await run(system.health());
     expect(health.ok).toBe(true);
     expect((await run(db.info())).db).toBe("movies");
+  });
+
+  test("minT fences pull: a stale basis misses the write, the fence sees it", async () => {
+    const { fetch, conns } = inProcessPeer();
+    const system = makeSystem({ url: "https://peer.local", fetch });
+    const db = await run(system.create("movies", Movies));
+    const ack = await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+      }),
+    );
+
+    // rebuild the client on a peer whose reads are pinned behind that write
+    const stale = fencedPeer(ack.t - 1);
+    stale.conns.set("movies", conns.get("movies")!);
+    const fenced = await run(
+      makeSystem({ url: "https://peer.local", fetch: stale.fetch }).connect(
+        "movies",
+        Movies,
+      ),
+    );
+    const rows = await run(
+      fenced.q((q) =>
+        q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e"),
+      ),
+    );
+    const ada = rows[0][0];
+
+    expect(await run(ada.pull({ name: User.name }))).toBeNull();
+    expect(await run(ada.pull({ name: User.name }, { minT: ack.t }))).toEqual({
+      name: "Ada",
+    });
   });
 
   test("connect re-ensures (ident upsert) and can read what create wrote", async () => {

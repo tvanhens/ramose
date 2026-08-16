@@ -110,7 +110,8 @@ export default Alchemy.Stack("app", {
   (write / read-write **ensure**; read skips ensure). Typed database client: `transact`
   (gen), `q` (builder), `query` (with `x-ripple-*` meta), `info`, `health`, and the
   `asOf(t)` / `history()` views. Pull is `eid.pull` on a `find` Eid — there is no
-  `entity` on the typed surface. `minT` is the read fence. Privilege follows the
+  `entity` on the typed surface. `minT` is the read fence, on `q` / `query` and on
+  `eid.pull(pattern, { minT })` alike. Privilege follows the
   system — `fromWrite(WriteSystem).create` hands back a write-only database client.
 - **Layers** — `*SystemBinding` (Worker service binding to the peer, same-colo, no public hop),
   `*SystemHttp` (plain HTTPS, works anywhere), `*SystemLocal` (`Alchemy.Action`, `alchemy dev`).
