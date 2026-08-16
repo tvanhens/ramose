@@ -246,7 +246,9 @@ const makeRead = <C extends AnyCatalog>(
   raw?: ReadDatabaseClient,
 ): TypedReadDatabaseClient<C> => {
   const io = raw
-    ? queryIo(catalog, raw, (id, pattern) => raw.pull(id, pattern))
+    ? queryIo(catalog, raw, (id, pattern, options) =>
+        raw.pull(id, pattern, options),
+      )
     : undefined;
   return {
     catalog,
