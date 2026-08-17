@@ -34,5 +34,5 @@
     "examples/**/*.ts",
     "examples/**/*.tsx"
   ],
-  "exclude": ["node_modules", ".alchemy", "dist"]
+  "exclude": ["node_modules", ".alchemy", "dist", "**/*.fail.ts"]
 }
