@@ -1,207 +1,206 @@
 ---
 title: Query and pull
-description: The typed navigational query — build a value from catalog attributes, run it once, live, or in the past.
+description: Build a query from your catalog attributes, then run it once, run it live, or run it against yesterday — the same value, three ways.
 ---
 
-Ripple's primary read surface is a **typed navigational query value**. You
-build it from catalog attributes, run it with `db.q` or `db.live`, and the
-client lowers it to the datalog + pull IR the engine evaluates at the edge.
+A query is a value you build from your catalog. Because it is a value and not
+a method call, you write it once at the top of a module and then run it three
+ways: once, standing (so it re-runs itself), or against a past version of the
+database. The result type is inferred from the shape you ask for, so a
+component's props and the database agree by construction.
 
-```ts
+Every example on this page uses the todos catalog from [Define your
+data](/guides/catalog/#growing-the-catalog):
+
+```ts title="schema.ts"
 import * as Ripple from "@ripple/alchemy/db";
+import * as Schema from "effect/Schema";
 
-const openTodos = Ripple.query(Todo)
+export const User = Ripple.Namespace("user", {
+  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
+  name: Ripple.Attr(Schema.String),
+  email: Ripple.Attr(Schema.String, { unique: "identity" }),
+});
+
+export const Todo = Ripple.Namespace("todo", {
+  title: Ripple.Attr(Schema.String),
+  done: Ripple.Attr(Schema.Boolean),
+  createdAt: Ripple.Attr(Ripple.Instant),
+  due: Ripple.Attr(Ripple.Instant),
+  owner: Ripple.Attr(Ripple.Ref(() => User)),
+});
+
+export const Todos = Ripple.Catalog({ user: User, todo: Todo });
+```
+
+## One query, three runners
+
+```ts title="src/queries.ts"
+import * as Effect from "effect/Effect";
+import * as Ripple from "@ripple/alchemy/db";
+import type { Db } from "@ripple/alchemy/db";
+import { Todo, Todos, User } from "../schema.ts";
+
+export const openTodos = Ripple.query(Todo)
   .where(Todo.done.eq(false), Todo.owner.name.startsWith("A"))
-  .orderBy(Todo.due, "asc", { empty: "last" })
-  .limit(20)
   .select({
+    id: Todo.id,
     title: Todo.title,
+    due: Todo.due.optional,
     owner: Todo.owner.select({ name: User.name }),
   });
 
-yield* db.q(openTodos);
-// Effect<readonly { title: string; owner: { name: string } }[], DbError>
-
-db.live(openTodos);
-// Stream — the same value, standing
-
-yield* db.asOf(t).q(openTodos);
-// the same value, pinned basis
-```
-
-A query is a **value**, not a method on `db`: one question runs once, live, or
-in the past, and can live at module scope — a stable dependency for a React
-hook.
-
-## Building a query
-
-```ts
-Ripple.query(Todo)           // scope: entities carrying at least one :todo/* datom
-  .where(...predicates)      // conjunctive filters
-  .orderBy(attr, dir?, opts?)
-  .limit(n)
-  .offset(n)
-  .select(shape)             // result shape; omit for a list of Eid
-```
-
-`Todo.id` is the `:db/id` pseudo-attribute — selectable, orderable, and
-comparable (`Todo.id.eq(eid)`).
-
-### Predicates
-
-Catalog attributes carry the predicate vocabulary, and paths join through
-refs:
-
-| on | verbs |
-| --- | --- |
-| scalar / string / instant attrs | `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing` |
-| string | `startsWith` `includes` (case-sensitive) |
-
-```ts
-Todo.done.eq(false)              // asserted false — a missing :todo/done does not match
-Todo.done.missing()              // no :todo/done datom at all
-Todo.owner.name.startsWith("A")  // join through owner, then filter
-```
-
-`eq` / `ne` / comparisons require the attribute to be present; use `exists` /
-`missing` when absence is the question.
-
-### Shape — `select`
-
-`select` is the result shape. Keys you ask for appear in the type; keys you
-omit are absent, not `undefined`.
-
-```ts
-.select({
-  id: Todo.id,                                     // the entity id
-  title: Todo.title,                               // required — entities missing it are dropped (on the peer)
-  due: Todo.due.optional,                          // Date | undefined; keeps the parent
-  owner: Todo.owner.select({ name: User.name }),   // nested object through a ref
-})
-```
-
-Nested shapes on card-one refs lower to a server-side pull inside the query —
-one round trip, not client-side N+1.
-
-### Order, limit, offset
-
-```ts
-.orderBy(Todo.due, "asc", { empty: "last" })
-.limit(20)
-.offset(0)
-```
-
-All three run on the peer: rows are sorted, then paged, *then* pulled — so
-`.limit(20)` pulls twenty entities and the client never sees the rows a page
-dropped. Required fields in the shape are also enforced on the peer, before the
-limit, so the page you get is the page you keep.
-
-- `orderBy` takes any card-one path (`Todo.due`, `Todo.owner.name`, `Todo.id`);
-  several calls compose, ties falling through to the next key.
-- `empty: "first" | "last"` (default `"last"`) says where rows **without** a
-  value at that path go — an EAV absence is not SQL `NULL` — and holds in both
-  directions: `desc` does not float missing values to the top.
-- A path across a **cardinality-many** attribute (`User.friends.name`) is
-  rejected when the query is built: the sort key would be a set, not a value.
-
-## Running
-
-```ts
-db.q(openTodos)            // Effect, once
-db.live(openTodos)         // Stream; re-runs as the session basis advances
-db.asOf(t).q(openTodos)    // pinned basis
-db.asOf(t).live(openTodos) // emits once and completes
-```
-
-Scalars decode through Effect Schema (`Instant` → `Date`, and so on). A query
-with no `.select` yields `readonly Eid<C>[]`. `db.live` re-emits only when the
-rows changed — a tick the query's rows did not notice is not a re-render.
-
-## Naming a row type
-
-The query already carries its row type; `Ripple.Row` names it so a React prop
-or a helper never restates the shape by hand:
-
-```ts
-export const boardQuery = Ripple.query(Issue)
-  .orderBy(Issue.rank, "asc")
-  .select({
-    id: Issue.id,
-    title: Issue.title,
-    creator: Issue.creator.select({ name: User.name }),
-    assignee: Issue.assignee.select({ name: User.name }).optional,
+export const report = (db: Db<typeof Todos>) =>
+  Effect.gen(function* () {
+    const now = yield* db.q(openTodos);
+    const earlier = yield* db.asOf(100).q(openTodos);
+    return { now, earlier };
   });
 
-export type BoardRow = Ripple.Row<typeof boardQuery>;
-// { readonly id: number; readonly title: string;
-//   readonly creator: { readonly name: string };
-//   readonly assignee: { readonly name: string } | undefined }
-
-export type BoardRows = Ripple.Rows<typeof boardQuery>;
-// readonly BoardRow[] — what db.q resolves to and db.live emits
+// and standing, in a component module:
+export const liveOpenTodos = (db: Db<typeof Todos>) => db.live(openTodos);
 ```
 
-Both take the builder or its `.build()` value — the same inputs `db.q` takes.
-A nested `.select` is part of the row (`BoardRow["creator"]` names it),
-`.optional` surfaces as `| undefined`, and with no `.select` the row is the
-entity id (unbranded `Eid` — `db.q` on a catalog-typed db additionally brands
-the ids `Eid<C>`). Change the query and every consumer's type moves with it —
-no cast at the use site.
+`Ripple.query(Todo)` means "entities that carry at least one `todo` attribute".
+Everything after it narrows or shapes that set.
 
-The two result-naming helpers pair up: `Row<Q>` names what a **query** yields,
-`Pull<C, P>` names what a **shape** pulls — reach for `Row` when you hold the
-query, `Pull` when you only hold the shape.
+## Filtering
 
-## `pull` — one entity, one shape
+Attributes carry their own predicates, and a reference lets you keep walking:
 
-`db.pull(eid, shape)` is the entity-by-id door, using the same shape grammar
-as `select`:
-
-```ts
-const shape = {
-  title: Movie.title,
-  year: Movie.year,
-  addedBy: Movie.addedBy.select({ name: User.name }),
-  releasedAt: Movie.releasedAt.optional,
-};
-
-const movie = yield* db.pull(eid, shape);
-// Ripple.Pull<typeof Movies, typeof shape> | null
+```ts title="src/queries.ts"
+// … same imports as above
+Todo.done.eq(false); // asserted false — a todo with no `done` fact does not match
+Todo.done.missing(); // no `done` fact at all
+Todo.due.lt(new Date()); // overdue
+Todo.title.includes("milk"); // case-sensitive
+Todo.owner.name.startsWith("A"); // hop through the owner, then filter
 ```
 
-- The subject is an `Eid<C>` or a `LookupRef<C>`
+| on | predicates |
+| --- | --- |
+| any attribute | `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing` |
+| strings | `startsWith` `includes` |
+
+Several predicates in one `where` are all required to hold. Absence is not a
+value: `eq` and the comparisons need the fact to be there, so ask with
+`exists` or `missing` when absence is the question.
+
+## Shaping the result
+
+`select` decides both the rows you get and their TypeScript type. Ask for a
+key and it is in the type; omit it and it is not there at all.
+
+```ts title="src/queries.ts"
+// … same imports as above
+Ripple.query(Todo).select({
+  id: Todo.id, // the entity id, as a number
+  title: Todo.title, // required: a todo with no title is dropped from the results
+  due: Todo.due.optional, // Date | undefined — keeps the row
+  owner: Todo.owner.select({ name: User.name }), // nested, through the reference
+});
+```
+
+Nested shapes are resolved by the server inside the same query, so a list of
+todos with their owners is one round trip, not one plus one per row.
+
+## Ordering, limiting, paging
+
+`orderBy`, `limit`, and `offset` run on the server: rows are sorted, then
+paged, *then* shaped — so `limit(20)` reads twenty entities and the client never
+sees the rows a page dropped. Required fields in the shape are enforced before
+the limit too, so the page you get is the page you keep.
+
+```ts title="src/queries.ts"
+// … same imports as above
+Ripple.query(Todo)
+  .orderBy(Todo.due, "asc", { empty: "last" })
+  .limit(20)
+  .offset(0)
+  .select({ title: Todo.title, due: Todo.due.optional });
+```
+
+`empty: "first" | "last"` places rows that have no value for the sort
+attribute; a missing fact is not the same thing as a null.
+
+## Running a query
+
+```ts title="src/queries.ts"
+declare const db: Db<typeof Todos>;
+declare const t: number;
+
+db.q(openTodos); // Effect — run it once
+db.live(openTodos); // Stream — re-runs as the database advances
+db.asOf(t).q(openTodos); // once, against version t
+db.asOf(t).live(openTodos); // emits once, then completes: the past has no news
+```
+
+Values decode on the way out, so a `Ripple.Instant` attribute arrives as a
+`Date`.
+
+`db.live` re-runs the query as the database advances and after a local
+`transact`, and only emits when the rows actually changed — a write the query
+does not see is not a re-render.
+
+## `pull` — one entity by id
+
+When you already know which entity you want, skip the query:
+
+```ts title="src/queries.ts"
+import * as Effect from "effect/Effect";
+import type { Db } from "@ripple/alchemy/db";
+import { Todo, Todos, User } from "../schema.ts";
+
+export const todoDetail = {
+  title: Todo.title,
+  done: Todo.done,
+  due: Todo.due.optional,
+  owner: Todo.owner.select({ name: User.name }),
+} as const;
+
+export const detail = (db: Db<typeof Todos>, id: number) =>
+  Effect.gen(function* () {
+    const todo = yield* db.pull({ id }, todoDetail);
+    // Ripple.Pull<typeof Todos, typeof todoDetail> | null
+    return todo;
+  });
+```
+
+- The subject is an id (`{ id }`) or a unique-value lookup
   (`[User.email, "grace@acme.dev"]`).
-- `Pull<C, P>` is a plain type: a React prop can be
-  `Ripple.Pull<typeof Movies, typeof shape>`.
-- `db.livePull(eid, shape)` is the live terminal for the same pull —
-  `db.live`'s exact contract (re-run on every basis tick and after a local
-  `transact`, dedupe by digest, `asOf`/`history` emit once and complete),
-  emitting the projection or `null`. A retracted entity emits `null` and the
-  stream keeps standing.
-
-Prefer a navigational query when you need filters on the same artifact.
+- `pull` resolves to `null` when a **required** field of the pattern is
+  missing. Mark a field `.optional` when its absence should keep the row —
+  this also matters under a policy, where a field you may not read is simply
+  absent.
 
 ## Reading the past
 
-Queries compose unchanged over the time-travel views:
+Every query composes over the time-travel views unchanged:
 
-```ts
-yield* db.asOf(t).q(openTodos);
-yield* db.history.q(openTodos);
+```ts title="src/queries.ts"
+export const past = (db: Db<typeof Todos>, t: number) =>
+  Effect.gen(function* () {
+    const then = yield* db.asOf(t).q(openTodos);
+    const everything = yield* db.history.q(openTodos);
+    return { then, everything };
+  });
 ```
 
-See [Time travel](/concepts/time-travel/).
+`asOf` takes a version number — the `t` from a write report — not a date. See
+[Time travel](/concepts/time-travel/), including how far back it reaches.
 
 ## Budgets
 
-Every query runs under a memory guardrail (`RIPPLE_QUERY_MAX_CELLS`, default
-~48 MB of cells). An over-budget query fails with `QueryBudgetExceeded`
-(HTTP 413) naming the clause and the cell count — restructure the query or
-raise the budget deliberately.
+Each query runs under a memory guardrail (`RIPPLE_QUERY_MAX_CELLS`, about
+48 MB of intermediate results by default). Exceeding it fails the query with
+`QueryBudgetExceeded` (HTTP 413) naming the clause that blew up. Narrow the
+query rather than raising the ceiling by reflex — and note that a standing
+`live` query does not retry this one, because re-running would fail the same
+way.
 
-## Where reads run
+## Where a query runs
 
-Queries execute in the peer Worker at the edge, reading immutable segments
-from R2 through a cache and novelty from the replica's basis — never from the
-writer. Response headers carry the cost: `x-ripple-ms`, `r2-gets`,
-`cache-hits`.
+Queries execute at the edge, in the Worker nearest the caller. It reads
+immutable data from object storage through a cache and merges in the newest
+writes from a replica, so a read never queues behind the writer. Response
+headers report what it cost: `x-ripple-ms`, `r2-gets`, `cache-hits`.

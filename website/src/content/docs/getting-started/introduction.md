@@ -1,59 +1,59 @@
 ---
 title: Introduction
-description: What Ripple is, why it exists, and the ideas it will not compromise on.
+description: Ripple in one page — the mental model, what it is good for, what it is not, and how to run it today.
 ---
 
-Ripple is a modern, Effect-native graph database on Cloudflare.
+Ripple is a database for apps you deploy on Cloudflare. You describe your data
+in TypeScript, write it through a typed API, and read it with queries that
+update themselves when the data changes. Who may read or write each field is
+part of the database, not middleware you remember to add.
 
-One Durable Object writes. Immutable segment trees live in R2. Datalog runs at
-the edge, next to your app. A database is a name — `ripple.db("acme", Catalog)`
-and you're in. No provision step.
+## The mental model
 
-## Why it exists
+A Ripple database is a set of **facts**. One fact says one thing: this
+**entity** has this **attribute** with this value — todo 17 has the title
+`"buy milk"`. You add facts, and nothing is overwritten: renaming that todo
+adds a new fact and retires the old one, so last week's answer is still there
+when you need it.
 
-- **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes,
-  uniqueness, cardinality — TypeScript, checked at compile time.
-- **Effect-native writes and reads.** Generator `transact`. Navigational
-  `Ripple.query` → `db.q` / `db.live`. `db.pull`.
-- **Live queries.** `db.live` is a `Stream` on the session socket. Write a
-  row, it re-runs. No refetch. No invalidation call at the write site.
-- **Db-per-tenant is a function call.** One Alchemy resource, one
-  `RIPPLE_TOKEN` (unset = open), or a `RIPPLE_POLICY` that turns JWT claims
-  into a per-request filtered `Db`. Every name shares the peer.
-- **The invariants are the product.** Single writer. Dense `t`.
-  Persist-before-ack. QueryReplicas are first-class — workers never read
-  novelty from the transactor.
+Queries ask about facts, live queries keep asking for you, and permissions
+decide which facts a person can see. You declare the attributes in a
+**catalog** — plain TypeScript, checked by the compiler:
 
-## The shape of the system
+```ts title="schema.ts"
+import * as Ripple from "@ripple/alchemy/db";
+import * as Schema from "effect/Schema";
 
-A Ripple deployment is one peer Worker, one Transactor Durable Object per
-logical database, N QueryReplica Durable Objects per database, and one R2
-bucket. There is no external database to run.
+export const Todo = Ripple.Namespace("todo", {
+  title: Ripple.Attr(Schema.String),
+  done: Ripple.Attr(Schema.Boolean),
+  createdAt: Ripple.Attr(Ripple.Instant),
+});
 
-| part | role |
-| --- | --- |
-| Peer Worker | HTTP + WebSocket surface; runs datalog at the edge |
-| Transactor DO | the single writer for a database; serializes transactions and assigns `t` |
-| QueryReplica DO | holds novelty; the basis for every read |
-| R2 bucket | immutable segment trees, the transaction log, and roots |
+export const Todos = Ripple.Catalog({ todo: Todo });
+```
 
-The engine lives in `packages/core`, the Cloudflare peer in
-`packages/worker`, and the client in `packages/alchemy`.
+One file, shared by your deploy script, your Worker, and your browser. Write
+the wrong type and the build fails.
 
-## Datomic, revisited for the edge
+## Good fit, bad fit
 
-If you know Datomic, the bones are familiar: an immutable EAVT fact store, a
-single transactor, time travel as a view (`asOf`, `history`), datalog queries,
-and pull patterns. Ripple re-homes those ideas on Cloudflare primitives —
-Durable Objects for the writer and replicas, R2 for immutable storage — and
-replaces the client with an Effect-native, catalog-typed surface. There is no
-JVM, no peer cache to size, and no provisioning: the first transaction against
-a name materializes the database.
+**Reach for Ripple** on Cloudflare when you want a realtime UI, per-user rules
+the database enforces, a free audit trail, and one database per customer
+without one deployment per customer.
 
-## Where to go next
+**Look elsewhere** for analytics over enormous tables, for SQL, for more than a
+few thousand writes per second in one database, or for a hosted console: Ripple
+has no dashboard and no managed service.
 
-- [Quickstart](/getting-started/quickstart/) — run the todos example locally
-  and deploy it.
-- [Architecture](/concepts/architecture/) — how a write becomes a fact and a
-  fact becomes a query result.
-- [Client API](/reference/client-api/) — every name the client exports.
+## Status: pre-release
+
+Nothing is published to npm yet: the packages are private and point at
+TypeScript source, so today you clone the repository and work inside it. The
+Quickstart does that in ten minutes.
+
+## Start here
+
+- [Quickstart](/getting-started/quickstart/) — a running app and a live query.
+- [Permissions in 10 minutes](/guides/permissions/) — watch a write get denied.
+- [Define your data](/guides/catalog/) — the catalog in full.

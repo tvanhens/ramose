@@ -1,14 +1,19 @@
 ---
 title: Live queries
-description: db.live is a Stream on the session socket — write a row, it re-runs. No refetch, no invalidation.
+description: db.live keeps a query answered. Write a row and every standing query re-runs — no refetch call, no cache invalidation.
 ---
 
-`db.live` takes the same query value as `q` and stands it up: the result is
-an Effect `Stream` that emits the current rows, then re-emits whenever a write
-lands.
+A live query answers itself. You hand `db.live` the same query value you would
+give `db.q`, and instead of one result you get a stream of results: the rows
+now, and the rows again every time the database moves. Nothing at your write
+site has to announce the change, and there is no cache to invalidate.
 
-```ts
-const todoQuery = Ripple.query(Todo)
+```ts title="src/todos.ts"
+import * as Ripple from "@ripple/alchemy/db";
+import { db } from "./db.ts";
+import { Todo } from "../schema.ts";
+
+export const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select({
     id: Todo.id,
@@ -17,59 +22,111 @@ const todoQuery = Ripple.query(Todo)
     createdAt: Todo.createdAt,
   });
 
-const todos = db.live(todoQuery);
-// Stream<readonly { id, title, done, createdAt }[], DbError>
+// built once, at module scope — see the caution below
+export const todos = db.live(todoQuery);
+// Stream<readonly { id: number; title: string; done: boolean; createdAt: Date }[], DbError>
 ```
 
-There is no invalidation call at the write site and no refetch in the UI. The
-session socket ticks `t` when the database advances; the client re-runs the
-query against the new basis. Because a query is a value, `todoQuery` can live
-at module scope — one artifact for the once, live, and `asOf` forms, and a
-stable dependency for a React hook.
+## In React
 
-## Consuming the stream
+Ripple ships no React package. A stream becomes state in about a dozen lines,
+and the todos example keeps them in one file you can copy:
 
-Hoist the stream (build it once, not per render), then drain it on its own
-fiber. The `useLive` hook from the todos example is twelve lines:
+```ts title="src/useLive.ts"
+import type * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
+import { useEffect, useState } from "react";
 
-```tsx
 export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
   const [s, set] = useState<{ rows?: A; error?: Cause.Cause<E> }>({});
   useEffect(() => {
     const fiber = Effect.runFork(
       Stream.runForEach(stream, (rows) => Effect.sync(() => set({ rows }))).pipe(
-        Effect.catchCause((error) => Effect.sync(() => set((p) => ({ ...p, error })))),
+        Effect.catchCause((error) =>
+          Effect.sync(() => set((p) => ({ ...p, error }))),
+        ),
       ),
     );
     return () => void Effect.runFork(Fiber.interrupt(fiber));
-  }, [stream]); // `stream` must be hoisted, not built in render
+  }, [stream]);
   return s;
 };
 ```
 
-## Semantics
+```tsx title="src/App.tsx"
+import { todos } from "./todos.ts";
+import { useLive } from "./useLive.ts";
 
-- **`live` requires nothing.** The `Stream`'s requirements channel is
-  `never` — no `Scope` in the type. Teardown is fiber interruption.
-- **A write advances the whole connection.** `transact` bumps the session
-  basis to `report.t`, so every standing `live` on that connection re-runs —
-  including your own write, immediately.
+export const TodoList = () => {
+  const { rows, error } = useLive(todos);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => (
+        <li key={row.id}>{row.title}</li>
+      ))}
+    </ul>
+  );
+};
+```
+
+:::caution[Build the stream outside render]
+`db.live(query)` creates a new stream every time it is called, and the hook
+resubscribes whenever its dependency changes. Call it once at module scope (or
+in a `useMemo` with stable inputs) — never in the body of a component.
+:::
+
+## Where live queries work
+
+A live query needs a WebSocket, because that connection is how the database
+tells the client it moved.
+
+| environment | live queries |
+| --- | --- |
+| a browser, through `Ripple.layer` | yes — this is the intended home |
+| a Worker binding another Worker (`Ripple.ServerBinding`) | **no.** There is no socket on that hop; calling `db.live` fails the fiber outright rather than returning an error you can catch |
+| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ripple.layer` |
+
+:::note[Two tabs on your laptop]
+Under the local emulator, a write in one browser tab often does not wake
+another tab: writes do not propagate between isolates on a single machine.
+Your own tab always updates, because its own write moves its own connection
+forward. Against a deployed peer, every connected client updates.
+:::
+
+## What re-runs, and when
+
+- **A write moves the whole connection.** Your `transact` sets the connection's
+  version to the report's `t`, so every standing query on that connection
+  re-runs — including in the tab that wrote.
+- **A re-run is a whole re-run.** There is no diffing: the query is evaluated
+  again. Policies and budgets apply exactly as they do to `db.q`.
 - **Only news is emitted.** A re-run whose rows are identical to the last
   emission is not emitted again, so a write the query does not see is not a
   re-render.
-- **`live` survives the network.** Dropped sockets, 5xx responses, and
-  `NetworkError` are retried with backoff; the socket reconnects in place.
-  The stream fails only on terminal errors: `InvalidRequest`, `Unauthorized`,
-  or `DatabaseNotFound`.
-- **Pinned views complete.** `live` over `asOf(t)` or `history` emits once
-  and completes — a pinned view has no news.
-- **The tick carries `t` only.** The socket is a per-database write-activity
-  channel, never per-row data. Re-runs read through the normal query path,
-  so policies and budgets apply unchanged.
+- **The socket carries a version number, never rows.** It is a signal that the
+  database advanced, not a data channel.
+- **Dropped connections recover on their own.** Network failures and 5xx
+  responses retry with a backoff from 250 ms up to 5 s, and the socket
+  reconnects in place, re-reading your token. Standing streams are not torn
+  down.
+- **Four failures are terminal**, because retrying them changes nothing:
+  `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, and
+  `QueryBudgetExceeded`.
+- **A pinned view emits once and completes.** `db.asOf(t).live(query)` has no
+  news to deliver.
+- **Teardown is interruption.** Interrupt the fiber draining the stream and
+  everything unwinds; there is no unsubscribe call.
 
-## Cost model
+## What it costs
 
-A live query is a client-side re-run of the same one-round-trip query — the
-peer holds no server-side subscription state per query. Frequent small writes coalesce
-naturally: re-runs happen at basis ticks, and the read path serves them from
-the replica basis plus cached segments.
+There is no per-query subscription state on the server. A live query is a
+re-run of the same read path, triggered by a version tick, served from the
+replica's view plus cached immutable data. Bursts of small writes coalesce
+naturally, because re-runs happen per tick rather than per write.
+
+Next: [put permissions on it](/guides/permissions/) so a standing query only
+ever returns rows that caller is allowed to see.

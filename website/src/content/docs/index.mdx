@@ -1,199 +1,334 @@
 ---
-title: The graph that reacts
-description: Ripple — an immutable, reactive graph database for Cloudflare. Changes ripple. Agents respond. State stays coherent.
+title: Ripple — the typed, realtime database for Cloudflare
+description: Ripple is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, with no server to run.
 template: splash
+hero:
+  title: The typed, realtime database for apps you ship on Cloudflare
+  tagline: Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and there is no server to run.
+  actions:
+    - text: Get started
+      link: /getting-started/quickstart/
+      variant: primary
+    - text: GitHub
+      link: https://github.com/tvanhens/ripple
+      variant: secondary
+      icon: github
+  image:
+    html: |
+      <div class="rg-sync" aria-hidden="true" data-pagefind-ignore>
+        <div class="rg-sync-pane">
+          <span class="rg-sync-label">one tab</span>
+          <ul>
+            <li class="rg-is-done"><i></i><span>write the schema</span></li>
+            <li class="rg-flip"><i></i><span>ship the landing page</span></li>
+            <li><i></i><span>open a second tab</span></li>
+          </ul>
+        </div>
+        <div class="rg-sync-wire"><span></span></div>
+        <div class="rg-sync-pane">
+          <span class="rg-sync-label">another tab</span>
+          <ul>
+            <li class="rg-is-done"><i></i><span>write the schema</span></li>
+            <li class="rg-flip"><i></i><span>ship the landing page</span></li>
+            <li><i></i><span>open a second tab</span></li>
+          </ul>
+        </div>
+      </div>
 ---
 
-<div class="rg-hero">
-  <svg class="rg-contours" viewBox="0 0 1200 480" fill="none" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-    <path d="M-60 430 C 260 350, 560 500, 900 420 S 1260 370, 1360 405" stroke="#F3F1EA" stroke-opacity="0.06" stroke-width="1.5"/>
-    <path d="M-60 470 C 280 400, 580 545, 920 465 S 1270 420, 1370 450" stroke="#F3F1EA" stroke-opacity="0.04" stroke-width="1.5"/>
-    <path d="M250 449 C 320 432, 390 442, 445 434" stroke="#879B45" stroke-opacity="0.5" stroke-width="2" stroke-linecap="round"/>
-  </svg>
+<div class="rg-band rg-run">
 
-  <svg class="rg-hero-mark" viewBox="0 0 216 94" fill="none" aria-hidden="true">
-    <path d="M90.8 61.2 C74.2 82.5 60 88 41.8 85.7 C16.5 82.5 3.9 63.6 5.5 42.2 C7.1 19.3 23.6 5.1 45.7 6.7 C67.9 7.5 80.5 25.7 95.5 41.4 C111.3 57.2 128.7 71.4 148.4 80.1 C170.5 89.6 188.7 84.1 199.7 69.1 C212.4 51.7 207.6 28 191.8 17 C174.5 4.3 150 5.1 131 17.8 C126.3 20.9 122.3 24.1 119.2 27.2" stroke="currentColor" stroke-width="7.9" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M135 37.5 C148.4 28 169.7 26.4 182.4 39.9" stroke="currentColor" stroke-width="7.9" stroke-linecap="round"/>
-  </svg>
+<p class="rg-eyebrow">Try it in two minutes</p>
 
-  <h1>The graph that reacts.</h1>
+<p class="rg-run-note"><strong>Ripple is pre-release and not on npm yet</strong> — you run it from the repository. Bun, one clone, no account, no external database.</p>
 
-  <p class="rg-tagline">
-    Ripple is an immutable, reactive graph database for Cloudflare.
-    One Durable Object writes. Segment trees live in R2. Datalog runs at the
-    edge, next to your app. Built on Effect, typed end to end.
-  </p>
+```sh title="From the repository root" frame="terminal"
+git clone https://github.com/tvanhens/ripple && cd ripple
+bun install
 
-  <div class="rg-actions">
-    <a class="rg-button primary" href="/getting-started/quickstart/">Get started</a>
-    <a class="rg-button secondary" href="https://github.com/tvanhens/ripple">GitHub</a>
-  </div>
+CI=1 ALCHEMY_STATE=local \
+  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
+  CLOUDFLARE_API_TOKEN=x \
+  bun alchemy dev examples/todos/alchemy.run.ts       # the database, on :1337
 
-  <div class="rg-install"><span class="rg-prompt">›</span> ripple.db("acme", Catalog) <span class="rg-prompt">// a database is a name — no provision step</span></div>
+VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # the app, on :5173
+```
+
+<p class="rg-run-after">Open <code>http://localhost:5173</code> and add a todo. The list re-renders from the database, and the app code never refetches. <span class="rg-caveat">Two tabs stay in sync on a deployed database; on the local emulator a change in one tab reaches the other on reload.</span></p>
+
 </div>
 
-<div class="rg-section">
-  <h2>State the change.</h2>
-  <p class="rg-lede">
-    A change enters the system, travels through the field, and produces a
-    coherent response. Write a row and every standing live query re-runs — no
-    refetch, no invalidation call at the write site.
-  </p>
+<div class="rg-moment">
+  <div class="rg-moment-copy">
+    <h2>The schema is TypeScript</h2>
+    <p>
+      A catalog is a plain value: the attributes an entity can carry, their
+      types, whether one is unique, whether it holds one value or many. The
+      same file is read by your app, your Worker, and your deploy. No codegen,
+      no migration step, and changing it never rewrites data you already wrote.
+    </p>
+  </div>
+  <div class="rg-moment-code">
 
-  <div class="rg-split">
-    <div>
-      <h3>The catalog is the schema</h3>
-      <p>
-        Attributes, uniqueness, cardinality — plain TypeScript, checked at
-        compile time. One catalog is shared by the deploy stack, the Worker,
-        and the browser. No codegen.
-      </p>
-    </div>
-    <div>
-
-```ts
+```ts title="schema.ts"
 import * as Ripple from "@ripple/alchemy/db";
 import * as Schema from "effect/Schema";
+
+export const User = Ripple.Namespace("user", {
+  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
+});
 
 export const Todo = Ripple.Namespace("todo", {
   title: Ripple.Attr(Schema.String),
   done: Ripple.Attr(Schema.Boolean),
   createdAt: Ripple.Attr(Ripple.Instant),
+  owner: Ripple.Attr(Ripple.Ref(() => User)),
 });
 
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ripple.Catalog({ user: User, todo: Todo });
 ```
 
-    </div>
-  </div>
-</div>
-
-<div class="rg-section">
-  <div class="rg-split">
-    <div>
-      <h3>Observe. Propagate. Resolve.</h3>
-      <p>
-        <code>transact</code> is a generator. <code>live</code> is a
-        <code>Stream</code> on the session socket. A write advances the whole
-        connection, so every standing query re-runs against the new basis.
-      </p>
-    </div>
-    <div>
-
-```ts
-const todoQuery = Ripple.query(Todo)
-  .orderBy(Todo.createdAt, "asc")
-  .select({ id: Todo.id, title: Todo.title, done: Todo.done });
-
-const todos = db.live(todoQuery);
-
+```ts title="todos.ts"
 await run(
   db.transact(function* (tx) {
-    const t = yield* tx.entity();
-    yield* t.add(Todo.title, "ship it");
-    yield* t.add(Todo.done, false);
+    const todo = yield* tx.entity();
+    yield* todo.add(Todo.title, "ship the landing page");
+    yield* todo.add(Todo.done, false);
+    yield* todo.add(Todo.createdAt, new Date());
+
+    // Does not compile — `todo/done` is a boolean, so
+    // this write never gets past your editor:
+    // yield* todo.add(Todo.done, "false");
   }),
 );
 ```
 
-    </div>
   </div>
 </div>
 
-<div class="rg-section">
-  <div class="rg-split">
-    <div>
-      <h3>Deploy is one resource</h3>
-      <p>
-        A peer Worker, a <code>Ripple.Server</code>, a
-        <code>Ripple.Database</code>. Alchemy provisions the Worker, the
-        Durable Objects, and the R2 bucket; the catalog is installed before
-        the UI connects.
-      </p>
-    </div>
-    <div>
+<div class="rg-moment rg-moment--flip">
+  <div class="rg-moment-copy">
+    <h2>One query, always current</h2>
+    <p>
+      <code>db.live</code> hands you a stream of rows. Anything that changes the
+      answer — this tab, another tab, another user, a Worker — pushes the rows
+      again. There is no cache to invalidate and no refetch call at the write
+      site.
+    </p>
+    <p class="rg-aside">
+      Ripple ships no React package. <code>useLive</code> below is twelve lines
+      in the example app that turn a stream into state, and you can read all of
+      them.
+    </p>
+  </div>
+  <div class="rg-moment-code">
 
-```ts
-import * as Ripple from "@ripple/alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+```ts title="todos.ts"
+export const todoShape = {
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+} as const;
 
-const Worker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
-});
+// A value, not a callback: `db.q` runs it once,
+// `db.live` keeps it standing.
+export const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
+```
 
-export const Server = Ripple.Server("Ripple", { worker: Worker });
-export const TodosDb = Ripple.Database("todos", {
-  server: Server,
-  catalog: Todos,
+```tsx title="App.tsx"
+// built once, outside render — a standing query, not a fetch
+const todos = db.live(todoQuery);
+
+const TodoList = () => {
+  const { rows, error } = useLive(todos);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>{rows.map((r) => <Row key={r.id} row={r} />)}</ul>
+  );
+};
+```
+
+  </div>
+</div>
+
+<div class="rg-moment">
+  <div class="rg-moment-copy">
+    <h2>Permissions are part of the database</h2>
+    <p>
+      One policy says who may read and write each attribute. Reads are filtered
+      before they leave the edge, so a query simply returns fewer rows. Writes
+      are checked twice — once on the way in, then again by the writer against
+      the exact data the transaction would apply to. An attribute with no rule
+      is denied.
+    </p>
+    <p class="rg-aside">
+      Ripple verifies tokens, it never issues them: bring Clerk, Auth0, WorkOS,
+      or any issuer with a JWKS endpoint.
+    </p>
+  </div>
+  <div class="rg-moment-code">
+
+```ts title="policy.ts"
+const P = Ripple.Policy;
+
+// The token's `sub` claim resolves to a user entity.
+export const policy = P.policy(Todos, {
+  principal: User.sub,
+  classes: ["member"],
+  ns: {
+    user: { read: P.allow(P.eq(User.sub, P.claims.sub)) },
+    todo: {
+      read:    P.allow(P.eq(Todo.owner, P.principal)),
+      create:  P.allow(P.class("member")),
+      add:     P.allow(P.eq(Todo.owner, P.principal)),
+      retract: P.allow(P.eq(Todo.owner, P.principal)),
+      retractEntity: P.allow(P.eq(Todo.owner, P.principal)),
+      // every new todo is stamped with its owner
+      preset: [P.preset(Todo.owner, P.principal)],
+    },
+  },
 });
 ```
 
-    </div>
+```ts title="app.ts"
+// Ada is signed in. Todo 1042 belongs to someone else.
+await run(db.transact(function* (tx) {
+  yield* tx.add(1042, Todo.title, "mine now");
+}));
+
+// Unauthorized — 403, code "policy", attr ":todo/title"
+//   refused at the edge, before the write travels on
+// TxRejected — 409, no transaction number is spent
+//   refused by the writer, against the real data
+```
+
+```ts title="alchemy.run.ts"
+// `pulls` are the shapes your app reads. If the policy
+// narrows an attribute one of them requires, the deploy
+// fails here — before the rule can quietly drop rows
+// from somebody's screen.
+Ripple.Policy.compile(policy, { pulls: [todoShape] });
+```
+
   </div>
 </div>
 
-<div class="rg-section">
-  <h2>Why Ripple.</h2>
-  <p class="rg-lede">Reactive graph infrastructure for agentic systems — one exact sentence per claim.</p>
+<div class="rg-band rg-benefits-band">
 
-  <div class="rg-grid">
-    <div class="rg-cell">
-      <h3>Typed catalog</h3>
-      <p>The schema is TypeScript. Attributes, uniqueness, and cardinality are checked at compile time, and <code>Pull</code> results type themselves from the pattern.</p>
-    </div>
-    <div class="rg-cell">
-      <h3>Effect-native</h3>
-      <p>Generator <code>transact</code>, navigational <code>Ripple.query</code>, <code>db.pull</code>. Every signature's requirements channel is <code>never</code> — one runtime runs everything.</p>
-    </div>
-    <div class="rg-cell">
-      <h3>Live queries</h3>
-      <p><code>db.live</code> is a <code>Stream</code> on the session socket. It survives dropped sockets and retries with backoff; teardown is fiber interruption.</p>
-    </div>
-    <div class="rg-cell">
-      <h3>Db-per-tenant</h3>
-      <p><code>ripple.db(name, catalog)</code> is pure — zero network per request. A database is a name; the first transaction materializes it.</p>
-    </div>
-    <div class="rg-cell">
-      <h3>Time travel</h3>
-      <p><code>db.asOf(t)</code> and <code>db.history</code> are views, not dumps. Queries compose over them unchanged, and you cannot transact into the past.</p>
-    </div>
-    <div class="rg-cell">
-      <h3>Invariants as product</h3>
-      <p>Single writer per database. Dense <code>t</code>. Persist-before-ack. Replicas are first-class — workers never read novelty from the transactor.</p>
-    </div>
+<h2 class="rg-h2">What you get</h2>
+
+<div class="rg-benefits">
+  <div class="rg-benefit rg-benefit--lead">
+    <h3>A mistyped write does not compile</h3>
+    <p>
+      Attribute names, value types, cardinality and uniqueness all come from
+      the catalog, so <code>tsc</code> checks every write and every query shape
+      against it. The bad write is a red squiggle in your editor, not a row in
+      production.
+    </p>
+  </div>
+  <div class="rg-benefit rg-benefit--lead">
+    <h3>Queries update themselves</h3>
+    <p>
+      A standing query rides one WebSocket per page. Every write moves the
+      whole connection forward, and each standing query re-runs against the new
+      state — no polling, no invalidation, nothing to remember at the write
+      site.
+    </p>
+  </div>
+  <div class="rg-benefit">
+    <h3>Every user sees only their rows</h3>
+    <p>
+      One policy, enforced in two places: reads are filtered before they leave
+      the edge, writes are re-checked inside the writer. Deny by default, per
+      attribute, so a field you add tomorrow is not world-readable today.
+    </p>
+  </div>
+  <div class="rg-benefit">
+    <h3>Nothing is overwritten</h3>
+    <p>
+      Writes append facts, so <code>db.asOf(t)</code> reads the database as it
+      was at an earlier transaction and <code>db.history</code> shows what
+      changed. Reach is bounded by retained checkpoints — 20 by default — so
+      pick that number deliberately; it is not "forever".
+    </p>
   </div>
 </div>
 
-<div class="rg-section">
-  <h2>The shape of a deployment.</h2>
-  <p class="rg-lede">
-    One peer Worker, one Transactor Durable Object per logical database, N
-    QueryReplica Durable Objects, one R2 bucket. Nothing else to run.
-  </p>
+</div>
 
-  <div class="rg-invariants">
-    <div>
-      <h3>Single writer</h3>
-      <p>Each database has exactly one Transactor. It serializes transactions and assigns <code>t</code> — total order, no coordination.</p>
-    </div>
-    <div>
-      <h3>Dense t</h3>
-      <p><code>t</code> is only ever read. No API mints, skips, or supplies one; the log is gap-free by construction.</p>
-    </div>
-    <div>
-      <h3>Persist-before-ack</h3>
-      <p><code>transact</code> resolves only with a <code>TxReport</code>, and its <code>dbAfter</code> is the read-your-writes fence.</p>
-    </div>
-    <div>
-      <h3>Replicas first-class</h3>
-      <p>Reads take their basis from the replica path. Immutable segments in R2 make every replica equally right.</p>
-    </div>
+<div class="rg-section rg-narrow">
+
+<h2 class="rg-h2">Instead of what?</h2>
+
+<p class="rg-lede">
+  Ripple is small and pre-release on purpose. Here is the honest trade against
+  what you are probably using today.
+</p>
+
+<div class="rg-vs">
+  <div class="rg-vs-row">
+    <h3>Postgres + an ORM</h3>
+    <p>You keep the types and lose SQL. No migration ever rewrites old data and live queries come standard — but there is no SQL, no planner to tune, no <code>psql</code>, and no joins across two databases.</p>
   </div>
+  <div class="rg-vs-row">
+    <h3>Convex</h3>
+    <p>A similar "the query re-runs itself" model, deployed into your own Cloudflare account instead of a hosted platform. There is also no dashboard, no scheduled functions, and no file storage.</p>
+  </div>
+  <div class="rg-vs-row">
+    <h3>Supabase</h3>
+    <p>Row rules are here, per attribute and deny-by-default, and they run at the edge. Ripple only verifies JWTs, though: bring your own identity provider, and bring your own file storage.</p>
+  </div>
+  <div class="rg-vs-row">
+    <h3>Instant</h3>
+    <p>The same instant-graph-in-the-browser feel with per-user permissions, except you own the deployment end to end. Nothing is hosted for you and there is no admin console.</p>
+  </div>
+</div>
+
+<p class="rg-limits">
+  <strong>What Ripple does not have:</strong> SQL · an npm package (clone the
+  repo) · a hosted dashboard · joins across databases · more than low thousands
+  of writes per second per database · an identity provider of its own.
+</p>
+
+</div>
+
+<div class="rg-band rg-how-band">
+
+<h2 class="rg-h2">How it works</h2>
+<p class="rg-lede">Three moving parts, all of them provisioned by one deploy.</p>
+
+<div class="rg-how">
+  <div class="rg-how-box">
+    <span class="rg-step">01</span>
+    <h3>One writer</h3>
+    <p>Each database has exactly one thing that commits writes, in order. No write conflicts to resolve, no leader election, no "eventually".</p>
+  </div>
+  <div class="rg-how-box">
+    <span class="rg-step">02</span>
+    <h3>Durable storage</h3>
+    <p>A write is in object storage before your call returns. Old files are never rewritten, which is exactly why you can still read yesterday.</p>
+  </div>
+  <div class="rg-how-box">
+    <span class="rg-step">03</span>
+    <h3>Readers at the edge</h3>
+    <p>Queries run next to your app, against copies of that storage, so reads never wait behind writes and a slow query cannot stall a commit.</p>
+  </div>
+</div>
+
+<p class="rg-how-link"><a href="/concepts/architecture/">See the full architecture →</a></p>
+
 </div>
 
 <div class="rg-closing">
-  <p class="rg-big">Changes ripple. Agents respond. State stays coherent.</p>
+  <p class="rg-eyebrow">Changes ripple.</p>
+  <p class="rg-big">Clone it, run the todo app, change one row.</p>
   <div class="rg-actions">
-    <a class="rg-button primary" href="/getting-started/introduction/">Read the introduction</a>
+    <a class="rg-button primary" href="/getting-started/quickstart/">Get started</a>
+    <a class="rg-button secondary" href="https://github.com/tvanhens/ripple">Read the source</a>
   </div>
 </div>

@@ -92,16 +92,23 @@ miniflare.
 
 ## Auth at deploy
 
-The peer is open until you say otherwise. Set `RIPPLE_TOKEN` for one shared
-bearer token, or compile a policy into the Worker's env for JWT-verified,
-per-request filtered access:
+:::caution[A new peer is open to everyone]
+Until you configure one, there is no authentication: every caller has full
+rights on every database. Set a policy before you point real users at a
+deployed peer, and walk the [Before production
+checklist](/guides/before-production/) first.
+:::
 
-```ts
+Set `RIPPLE_TOKEN` for one shared bearer token, or compile a policy into the
+Worker's environment for JWT-verified, per-request filtered access:
+
+```ts title="alchemy.run.ts"
 const auth: Ripple.PeerAuth = {
-  policy: process.env.RIPPLE_POLICY,
+  policy: process.env.RIPPLE_POLICY, // Ripple.Policy.compile(policy, { pulls })
   jwksUrl: process.env.RIPPLE_JWKS_URL,
   issuers: process.env.RIPPLE_JWT_ISS,
   aud: process.env.RIPPLE_JWT_AUD,
+  allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
 };
 
 const Worker = Cloudflare.Worker("Peer", {
@@ -112,5 +119,18 @@ const Worker = Cloudflare.Worker("Peer", {
 export const Server = Ripple.Server("Ripple", { worker: Worker, auth });
 ```
 
-See [Auth and policy](/guides/auth/) for what the policy enforces, and the
-[configuration reference](/reference/configuration/) for every knob.
+Passing `auth` to `Ripple.Server` buys a deploy-time check: a policy with no
+`jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every
+request at runtime.
+
+## Tearing down
+
+`bun alchemy destroy` removes the Worker and the resource records. It does
+**not** delete your data: `Ripple.Database` and `Ripple.Server` deliberately
+delete nothing, so a forgotten resource never erases a database. The bucket and
+the Durable Object namespaces stay behind — and stay billable — until you
+remove them yourself.
+
+See [Permissions in 10 minutes](/guides/permissions/) to write your first
+policy, [Auth and policy](/guides/auth/) for what it enforces, and the
+[configuration reference](/reference/configuration/) for every variable.

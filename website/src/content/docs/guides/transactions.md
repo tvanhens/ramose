@@ -1,92 +1,143 @@
 ---
-title: Transact
-description: The generator transaction — entities, assertions, retractions, upserts, and the TxReport that fences your reads.
+title: Write data
+description: One function writes — db.transact. It is all-or-nothing, it is typed against your catalog, and it tells you exactly where the database landed.
 ---
 
-`db.transact` is the only write. Its body is a generator over the transaction
-builder, so a transaction reads like the change it states:
+Every write goes through one function, and it either lands completely or not at
+all. Nothing partial ever reaches the database, and the reply tells you the
+exact version of the database your write produced, so the next read can see it.
 
-```ts
-const report = yield* db.transact(function* (tx) {
-  const movie = yield* tx.entity();
-  yield* movie.add(Movie.title, "Arrival");
-  yield* movie.add(Movie.year, 2016);
-});
+```ts title="src/todos.ts"
+import * as Ripple from "@ripple/alchemy/db";
+import type { Db } from "@ripple/alchemy/db";
+import { Todo, type Todos } from "../schema.ts";
+
+export const addTodo = (db: Db<typeof Todos>, title: string) =>
+  db.transact(function* (tx) {
+    const todo = yield* tx.entity();
+    yield* todo.add(Todo.title, title);
+    yield* todo.add(Todo.done, false);
+    yield* todo.add(Todo.createdAt, new Date());
+  });
 ```
 
-From the browser, run it with `Effect.runPromise`
-(`await Effect.runPromise(db.transact(…))` — no environment is needed). From
-a Worker it is an ordinary Effect.
+From the browser, run it with `Effect.runPromise` — no environment is needed:
+`await Effect.runPromise(addTodo(db, "buy milk"))`. In a Worker it is an
+ordinary Effect you `yield*`.
 
-## The builder
+## The four verbs
 
-| operation | meaning |
+That is the entire write vocabulary — there is no update, no upsert call, no
+merge:
+
+| call | does |
 | --- | --- |
-| `tx.entity()` | mint a new entity; returns an `Entity<C>` handle `{ eid, add, retract }` |
-| `tx.add(e, attr, v)` | assert a fact about an existing entity |
-| `tx.retract(e, attr, v?)` | retract one value (or all values of `attr` when omitted) |
-| `tx.retractEntity(e)` | retract an entity and its component closure |
+| `tx.entity()` | hands back a handle for a brand-new entity |
+| `tx.add(e, attr, value)` | states a fact about an entity |
+| `tx.retract(e, attr, value?)` | takes one value back, or every value of that attribute |
+| `tx.retractEntity(e)` | takes back everything about an entity, and its components |
 
-`e` is an `Eid<C>`, a `LookupRef<C>`, or an `Entity<C>` handle from the same
-transaction. Values are checked against the attribute's schema at compile
-time — `movie.add(Movie.year, "2016")` does not compile.
+The handle from `tx.entity()` carries the same three verbs without the first
+argument: `todo.add(…)`, `todo.retract(…)`, `todo.retractEntity()`.
 
-## Upserts and lookup refs
+`e` is an entity id as a plain number, a handle from this transaction, or a
+lookup by unique value (`[User.email, "grace@acme.dev"]`). Query results hand
+you ids as `{ id }`, so pass `row.id` here. Values are checked against the
+catalog as you type them — `todo.add(Todo.done, "yes")` does not compile, and neither does
+`todo.add(Todo.title, 3)`.
 
-A unique-identity attribute is a key. Asserting it again upserts:
+```ts title="src/todos.ts"
+export const setDone = (db: Db<typeof Todos>, id: number, done: boolean) =>
+  db.transact(function* (tx) {
+    yield* tx.add(id, Todo.done, done);
+  });
 
-```ts
-yield* db.transact(function* (tx) {
-  const user = yield* tx.entity();
-  yield* user.add(User.email, "grace@acme.dev"); // upserts onto the existing entity
-  yield* user.add(User.name, "Grace");
-});
+export const deleteTodo = (db: Db<typeof Todos>, id: number) =>
+  db.transact(function* (tx) {
+    yield* tx.retractEntity(id);
+  });
 ```
 
-And a `LookupRef` addresses an entity without knowing its eid:
+Card-one attributes replace themselves: setting `Todo.done` again retracts the
+old value in the same transaction, so you never write the retraction yourself.
 
-```ts
-yield* db.transact(function* (tx) {
-  yield* tx.add([User.email, "grace@acme.dev"], User.name, "Grace H.");
-});
+## Keys and lookups
+
+An attribute declared `{ unique: "identity" }` is a key. Writing a value that
+already exists attaches your facts to the entity that has it, instead of
+creating a duplicate:
+
+```ts title="src/users.ts"
+import type { Db } from "@ripple/alchemy/db";
+import { User, type Todos } from "../schema.ts";
+
+export const upsertUser = (db: Db<typeof Todos>, email: string, name: string) =>
+  db.transact(function* (tx) {
+    const user = yield* tx.entity();
+    yield* user.add(User.email, email); // existing email → that user
+    yield* user.add(User.name, name);
+  });
 ```
 
-## Atomicity and ordering
+The same key addresses an entity from anywhere, with no id in hand:
 
-A transaction is all-or-nothing: any rejected operation (schema violation,
-unique conflict, policy denial) rejects the whole transaction as
-`TxRejected`, and no `t` is consumed. The Transactor applies transactions
-serially — there are no write conflicts to retry, only rejections to handle.
-
-Card-one attributes replace implicitly: asserting a new value emits a retract
-of the old one in the same transaction.
-
-## The TxReport
-
-`transact` resolves with a `TxReport<C>`:
-
-```ts
-const { t, txEid, datomCount, dbAfter } = yield* db.transact(function* (tx) {
-  // …
-});
+```ts title="src/users.ts"
+yield* tx.add([User.email, "grace@acme.dev"], User.name, "Grace H.");
 ```
 
-- **`t`** — the transaction's position in the total order.
-- **`txEid`** — the transaction entity, so you can attach audit facts to writes.
-- **`dbAfter`** — the same `Db` carrying a min-`t` floor of `report.t`:
-  read-your-writes with no second round trip and no `sync` call. The floor is
-  best-effort ("at least this fresh"); `db.asOf(t)` pins an exact view.
+## What you get back
 
-A write also advances the whole connection: `transact` bumps the session basis
-to `report.t`, so every standing `live` re-runs against it. Writes go over
-HTTPS `/transact`; reads and `t` ticks ride the socket.
+`transact` resolves with a report:
 
-## Semantics worth knowing
+```ts title="src/todos.ts"
+const { t, txEid, datomCount, dbAfter } = yield* addTodo(db, "buy milk");
+```
 
-- `transact` returns only after the write is durable (persist-before-ack).
-- Against an uninstalled database, `transact` fails with `TxRejected` —
-  install the catalog first.
-- `db.install()` is itself an ordinary idempotent transaction; a redeploy
-  costs one no-op tx.
-- You cannot transact into the past: `asOf` and `history` views are
-  read-only by type.
+- **`t`** is the database's version number after your write.
+- **`txEid`** is the transaction itself, as an entity — attach audit facts to
+  it if you want to record who or why.
+- **`datomCount`** is how many facts landed.
+- **`dbAfter`** is the same database handle, floored at `t`. Read through it
+  and you see your own write without a second round trip and without a sleep.
+
+```ts title="src/todos.ts"
+const { dbAfter } = yield* addTodo(db, "buy milk");
+const rows = yield* dbAfter.q(
+  Ripple.query(Todo).select({ id: Todo.id, title: Todo.title }),
+);
+```
+
+:::note[No ids come back]
+A new entity's id is not in the report. If you need it, query for it — usually
+through a unique attribute you just wrote. The wire protocol carries the
+mapping today, but the client does not expose it, so do not write code that
+expects `report.tempids`.
+:::
+
+A write also moves the whole connection forward: every standing
+[live query](/guides/live-queries/) on that connection re-runs against `t`, so
+nothing in your UI has to announce the change.
+
+## When a write is refused
+
+- **A rejected transaction is `TxRejected`**, and no version number is spent —
+  a schema violation, a unique conflict, or a policy denial inside the commit
+  loop all land here.
+- **A policy denial caught at the edge is `Unauthorized`** (HTTP 403) carrying
+  a code and the attribute that failed. See
+  [Permissions](/guides/permissions/#what-a-denial-looks-like) for both.
+- **A transactor restart is `Unavailable`** with a retry delay; retrying the
+  same transaction is safe because nothing was written.
+- Writing to a database whose catalog was never installed fails `TxRejected`.
+  Install it first — at deploy or with `db.install()`.
+
+## Worth knowing
+
+- Transactions are applied one at a time per database, so there are no write
+  conflicts to retry — only refusals to handle.
+- `transact` returns only after the write is on disk. An acknowledgement means
+  durable.
+- `db.install()` is itself an ordinary transaction, and an unchanged catalog
+  costs one no-op write.
+- You cannot write into the past: `db.asOf(t)` and `db.history` hand back
+  read-only handles.

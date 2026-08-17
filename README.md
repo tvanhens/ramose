@@ -31,8 +31,8 @@ The shortest path is the todos app — React, `Ripple.layer`, `db.live`:
 
 ```sh
 bun install
-bun alchemy dev examples/todos/alchemy.run.ts
-VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
+bun alchemy dev examples/todos/alchemy.run.ts            # peer on :1337
+VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 ```
 
 That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO), a
@@ -101,9 +101,14 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 
 // one client, closed with the page (Effect users: Ripple.layer is the same
 // client as a scoped Layer<Databases>)
+const token = import.meta.env.VITE_RIPPLE_TOKEN;
 const ripple = Ripple.connect({
-  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-  token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
+  // an open peer has no token: wrapping `undefined` fails on the first request
+  token:
+    token === undefined || token === ""
+      ? undefined
+      : Effect.succeed(Redacted.make(token)),
 });
 const db = ripple.db("todos", Todos);
 
@@ -129,8 +134,8 @@ await Effect.runPromise(
 );
 ```
 
-Every signature's `R` is `never`, so `runtime.runPromise` is the whole
-runtime; see `examples/todos/src/db.ts` and its twelve-line `useLive`.
+Every signature's `R` is `never`, so `Effect.runPromise` runs anything a
+`Db` returns; see `examples/todos/src/db.ts` and its twelve-line `useLive`.
 `@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
 the deploy engine, so the Vite app needs no alias.
 

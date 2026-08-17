@@ -53,8 +53,18 @@ has no news.
 
 ## What makes it cheap
 
-The indexer periodically folds novelty into fresh immutable segment trees in
-R2 and flips `root/current`. Old roots are retained (`RIPPLE_RETAIN_ROOTS`,
-default 20 index runs), so an `asOf` inside the retention window is just a
-read against an older root — same engine, same cache. Retired databases stay
-readable and `asOf`-able for as long as their roots are retained.
+The indexer periodically folds recent writes into fresh immutable segment
+trees in R2 and flips `root/current`. Old roots are retained
+(`RIPPLE_RETAIN_ROOTS`, default 20), so an `asOf` inside the retention window
+is just a read against an older root — same engine, same cache.
+
+:::caution[History is bounded, and not by time]
+Retention keeps the newest 20 roots and garbage-collects everything unreachable
+from them, so `asOf` at an older `t` no longer resolves — that history is
+deleted, not archived. A root is published per index run, so the window is
+roughly "the last 20 index runs", which depends on how much you write
+(`RIPPLE_INDEX_TX_THRESHOLD`, 500 transactions) and how often the indexer runs
+(`RIPPLE_INDEX_INTERVAL_MS`, 5 s). It is not a number of days. Raise it
+deliberately if you are relying on an audit trail — see [Before
+production](/guides/before-production/#decide-what-you-keep).
+:::

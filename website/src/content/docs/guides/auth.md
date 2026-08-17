@@ -1,36 +1,39 @@
 ---
 title: Auth and policy
-description: Three modes — open, one bearer token, or a catalog-native policy that turns JWT claims into a filtered Db. Deny by default, everywhere.
+description: The full policy reference — modes, claims, combinators, how rules combine, and exactly where each check runs.
 ---
 
-A Ripple peer has three auth modes, selected by environment:
+This page is the deep reference for Ripple's authorization layer. If you have
+not written a policy yet, start with [Permissions in 10
+minutes](/guides/permissions/) and come back for the details.
 
-| mode | env | who gets in |
+Ripple verifies tokens; it never issues them. Signing, login, refresh, and
+identity-provider integration belong to your auth provider.
+
+## Modes
+
+| mode | environment | who gets in |
 | --- | --- | --- |
-| Open | neither set | everyone — local dev |
-| Shared token | `RIPPLE_TOKEN` | one bearer token, full access to every name — a service tier that is itself the authority |
-| Policy | `RIPPLE_POLICY` (+ JWKS config) | JWT-verified principals, each bound to one database, reads filtered and writes checked per datom |
+| Open | neither variable set | everyone, as a full-rights service caller |
+| Shared token | `RIPPLE_TOKEN` | one bearer token, full rights on every database |
+| Policy | `RIPPLE_POLICY` plus a verifier | JWT-verified callers, each bound to one database |
 
-This page is about the third mode. The full design lives in
-[`docs/AUTH_LAYER.md`](https://github.com/tvanhens/ripple/blob/master/docs/AUTH_LAYER.md).
+Under a policy, `RIPPLE_TOKEN`'s holder is given the class `$token`, which no
+policy can declare, so every rule denies it; it reaches `/health` and the
+no-op schema case only. A configured policy also disables the demo console the
+peer serves at `/`.
 
-## The idea
+Three class names carry special meaning:
 
-A policy ships with the catalog: a serializable AST of rules over catalog
-*attributes* and JWT claims, compiled at deploy into the peer Worker's env.
-The peer verifies a JWT into a `Principal`. Reads become a **filtered `Db`** —
-a datom `[e a v t]` is visible iff the read rule for `a` holds for `e`. Writes
-are checked twice: a fast-fail at Worker ingress, then authoritatively inside
-the Transactor's commit loop against the exact database value the transaction
-will apply to. Deny by default, everywhere.
-
-Membership, ownership, and sharing are **datoms** (`[?org :org/members
-?user]`), never token tuples: revocation lands on the next basis tick. The
-token carries only the policy selector.
+| class | meaning |
+| --- | --- |
+| `admin` | **skips every check** — the filtered read path and both write checks are bypassed. Also the only class allowed to call `explain` and the `/admin/*` routes |
+| `anonymous` | a caller with no token gets this class, and only if the policy declares it. Otherwise tokenless requests are `Unauthorized` |
+| `$token` | assigned to the `RIPPLE_TOKEN` holder under a policy; undeclarable, so it can do nothing |
 
 ## The token
 
-```json
+```json title="a decoded Ripple JWT"
 {
   "iss": "https://auth.acme.example",
   "sub": "user_01HQ8ZK",
@@ -40,69 +43,96 @@ token carries only the policy selector.
 }
 ```
 
-- `iss` must be in the peer's issuer set; `aud` must equal
-  `RIPPLE_JWT_AUD`; `exp - iat` is capped by `RIPPLE_JWT_MAX_TTL`.
-- `ripple.db` **must equal the `/db/:name` in the route** — a token is bound
-  to one tenant, never a query parameter.
-- `ripple.class` selects a policy class; an undeclared class grants nothing.
-- With no token: if the policy declares an `anonymous` class, that applies
-  (the public-read shape); otherwise `Unauthorized`.
+- `iss` must be in `RIPPLE_JWT_ISS`; `aud` must equal `RIPPLE_JWT_AUD`;
+  `exp - iat` is capped by `RIPPLE_JWT_MAX_TTL` (900 seconds by default).
+- Signature algorithms are pinned to RS256, ES256, and EdDSA — never taken
+  from the token's own header.
+- `ripple.db` must equal the database in the request path. A token is bound to
+  one database; it cannot be pointed at another with a query parameter.
+- `ripple.class` must be a class the policy declares, or the request is
+  `Unauthorized`.
+- `ripple.attrs` carries your app's own claims, shaped by the policy's
+  `claims` struct and readable in rules as `P.claims.attrs.<key>`.
 
-## Minting
+Verified principals are memoized per isolate for 60 seconds.
 
-Ripple verifies tokens; it never issues them. But the shape it verifies is a
-contract with two consumers — the peer's env and your mint route — so declare
-it once as an `AuthConfig` and let `Ripple.claims` build the payload:
+## Combinators
 
-```ts
-const AUTH: Ripple.AuthConfig = {
-  issuer: "https://auth.acme.example", // RIPPLE_JWT_ISS
-  audience: "ripple:peer:prod",        // RIPPLE_JWT_AUD
-  ttl: 900,                            // seconds — RIPPLE_JWT_MAX_TTL, and exp - iat
-};
-```
+`Ripple.Policy` is deploy-time only: import it from `@ripple/alchemy`, not
+from `@ripple/alchemy/db`.
 
-The mint route's contract is `POST → { token }`, and the JWT itself carries
-`exp`. `claims` is pure — no signing, no I/O — so sign the payload with
-whatever you have (Better Auth's `signJWT`, `jose`, …):
+| combinator | means |
+| --- | --- |
+| `P.policy(catalog, spec)` | build and validate a policy against its catalog |
+| `P.allow(expr)` / `P.deny(expr)` | one arm of one operation |
+| `P.eq(attr, value)` | a fact `[e attr value]` exists; on a many-valued attribute, membership |
+| `P.ref(refAttr, target)` | follow the reference and evaluate `target` there; nesting depth ≤ 3 |
+| `P.class(c)` | the caller's class is `c` |
+| `P.and` / `P.or` / `P.not` | boolean composition inside one arm |
+| `P.constant(true \| false)` | a fixed verdict |
+| `P.principal` | the caller's resolved entity |
+| `P.lit(value)` | an explicit literal (bare values are wrapped for you) |
+| `P.claims` | `.sub` `.iss` `.aud` `.exp` `.attrs.<key>` |
+| `P.claimsOf(struct)` | the same accessor, typed by your claims struct |
+| `P.preset(attr, operand)` | the peer sets `attr` itself on create; a client-supplied value is refused |
+| `P.attr(a, rules)` | an attribute rule, which only ever narrows its namespace rule |
+| `P.compile(policy, { pulls })` | lower to the JSON the Worker reads, checking pull patterns |
+| `P.checkPulls(policy, pulls)` | the same pull check on its own |
+| `P.Claims` | the JWT struct Ripple verifies |
 
-```ts
-const payload = Ripple.claims(
-  AUTH,
-  { sub: user.id, db: workspace, class: role, attrs: { org } },
-  compiledPolicy, // optional: the Ripple.Policy.compile(policy) JSON
-);
-// Spread: Better Auth's `signJWT` wants jose's index-signed `JWTPayload`,
-// which a named interface is not assignable to.
-const { token } = await auth.api.signJWT({ body: { payload: { ...payload } } });
-```
+The five operations are `read`, `add`, `retract`, `retractEntity`, and
+`create` — `create` being the first `add` for an entity that has no facts yet.
+`asOf` and `history` are `read`; there is no separate history operation.
 
-It validates at mint what the peer would reject anyway: `db` must be a valid
-database name, and — when the compiled policy is passed — `class` must be one
-the policy declares, because an undeclared class grants nothing, never an
-outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
-`RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
+`P.policy` validates at deploy time and throws on: an ident that is not in the
+catalog, a class that is not declared, a namespace key the catalog does not
+have, an attribute or preset outside its namespace's prefix, empty or
+duplicated classes, and reference nesting deeper than three.
 
-On the client, wrap the mint call in `Ripple.token.jwt(mint)` — the shipped
-`TokenSource` for `layer({ token })` that caches the token and re-mints
-inside a margin of its `exp`; see [From the browser](#from-the-browser).
+## A larger policy
 
-## Writing a policy
+This is the repository's own worked example (`docs/AUTH_LAYER.md`) — documents
+owned by users, shared through projects and organizations:
 
-```ts
-import * as Ripple from "@ripple/alchemy"; // Policy is deploy-time, not on /db
+```ts title="policy.ts"
+import * as Ripple from "@ripple/alchemy";
+import * as Schema from "effect/Schema";
+
+const User = Ripple.Namespace("user", {
+  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
+});
+const Org = Ripple.Namespace("org", {
+  members: Ripple.Attr(Ripple.Ref(() => User), { cardinality: "many" }),
+});
+const Project = Ripple.Namespace("project", {
+  org: Ripple.Attr(Ripple.Ref(() => Org)),
+});
+const Doc = Ripple.Namespace("doc", {
+  title: Ripple.Attr(Schema.String),
+  owner: Ripple.Attr(Ripple.Ref(() => User)),
+  project: Ripple.Attr(Ripple.Ref(() => Project)),
+  audit: Ripple.Attr(Schema.String),
+});
+
+export const App = Ripple.Catalog({
+  user: User,
+  org: Org,
+  project: Project,
+  doc: Doc,
+});
 
 const P = Ripple.Policy;
+// doc → project → org → members contains the caller
 const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
 
 export const policy = P.policy(App, {
-  principal: User.sub, // JWT `sub` → entity, one AVET lookup per session
+  principal: User.sub,
   classes: ["anonymous", "member", "admin"],
   claims: Schema.Struct({ org: Schema.String }), // shape of `ripple.attrs`
   ns: {
     doc: {
       read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
-      create: P.allow(inOrg),
+      create: P.allow(inOrg), // the parent reference is asserted in the same write
       add: P.allow(P.eq(Doc.owner, P.principal)),
       retract: P.allow(P.eq(Doc.owner, P.principal)),
       retractEntity: P.allow(P.eq(Doc.owner, P.principal)),
@@ -116,113 +146,126 @@ export const policy = P.policy(App, {
 });
 ```
 
-### Combinators
+Membership, ownership, and sharing are facts in the database, not claims in
+the token. Revoking access is a write, and it takes effect on the next version
+of the database — you never wait for a token to expire.
 
-| combinator | means |
+## How rules combine
+
+Rules attach to attributes. A namespace rule is shorthand for "every attribute
+the catalog declares under this prefix", so an attribute you add later inherits
+it instead of becoming world-readable.
+
+| situation | verdict |
 | --- | --- |
-| `eq(attr, claim \| literal)` | a datom `[e attr v]` exists; on a card-many attribute this is membership |
-| `ref(refAttr, target)` | follow the ref, evaluate `target` there; depth ≤ 3 |
-| `class(c)` | `c === ripple.class`; folds to a constant per session |
-| `and` / `or` / `not` | boolean composition inside one arm |
-| `allow(expr)` / `deny(expr)` | arms of one op |
-| `preset(attr, claim)` | the peer sets `attr` on `create`; a client-supplied value is `Unauthorized` |
-| `attr(a, { op: rule })` | attribute rule; only ever *narrows* the namespace rule |
+| the namespace has no rule for this operation | **denied** |
+| one `allow` arm holds | allowed |
+| several `allow` arms, any one holds | allowed |
+| a `deny` arm holds | **denied**, whatever the allow arms say |
+| an attribute rule and its namespace rule | both must allow — the attribute rule only narrows |
 
-### How rules combine
+Four one-liners, with the verdict:
 
-Rules attach to **attributes**. A namespace rule is shorthand for "every
-attribute under this prefix" — a newly added `:doc/ssn` inherits `doc.read`
-rather than becoming world-readable. Ops are `read | add | retract |
-retractEntity`, plus `create` (the first `add` for an entity with no datoms).
-Combination is deny-by-default: `allow` arms OR, any `deny` wins, an attribute
-rule ANDs with its namespace rule, and a namespace with no rule denies.
+```ts title="policy.ts"
+// 1. no rule at all for :doc/* → nothing about a document is readable
+ns: { }
 
-## What enforcement looks like
+// 2. one arm: the owner may read their own documents
+ns: { doc: { read: P.allow(P.eq(Doc.owner, P.principal)) } }
 
-- **Reads are a filtered `Db`.** The engine, `pull`, and `live` reach storage
-  only through the filtered raw-access methods, so coverage is structural.
-  Rules themselves read the *unfiltered* database — a rule may follow
-  `:doc/owner` even when the principal cannot read it.
-- **Writes are checked twice.** Ingress pre-check (fast fail, best-effort at
-  the replica basis), then the authoritative pass inside the commit loop —
-  after upsert resolution, `retractEntity` expansion, and card-one implicit
-  retracts, each resulting `(op, e, a)` must be allowed. Any denial rejects
-  the whole transaction as `TxRejected`; no `t` is consumed.
-- **`asOf` and `history` are `read`** under the same filter, with rules always
-  evaluated at the *current* basis — history cannot re-grant.
-- **Fail closed.** `RIPPLE_POLICY` present makes JWT verification mandatory;
-  inconsistent verifier config denies every `/db/*` and logs once at init.
-  Under a policy, `RIPPLE_TOKEN` reaches `/health` and an already-deployed
-  schema `ensure` only, and CORS narrows to `RIPPLE_ALLOWED_ORIGINS`.
-- **Errors don't leak values.** Filtered lists are just shorter, possibly
-  empty. A denied `pull` is `NotFound`, indistinguishable from absent. A
-  denied write is `Unauthorized` with a code and the attribute ident — never
-  values.
+// 3. two arms: the owner *or* anyone in the document's org may read it
+ns: { doc: { read: [P.allow(P.eq(Doc.owner, P.principal)), P.allow(inOrg)] } }
 
-:::caution
-A read-masked attribute must be declared `.optional` in pull patterns — a
-masked *required* attribute would drop the entity from the result instead of
-redacting the field. The policy compiler makes this a deploy-time error.
-:::
-
-## From the browser
-
-Your auth Worker mints workspace-scoped JWTs; the client's job is only to
-hand the current one to `Ripple.layer`. `Ripple.token.jwt(mint)` is the
-shipped source for that: it calls `mint` lazily on the first read, caches the
-token, shares one in-flight mint between concurrent readers, and re-mints once
-the cached token is within two minutes of its `exp` (configurable via
-`refreshMargin`). The layer re-reads its token on every (re)connect and every
-`/transact`, so short-lived tokens refresh themselves with no other plumbing.
-
-```ts
-import * as Ripple from "@ripple/alchemy/db";
-import * as ManagedRuntime from "effect/ManagedRuntime";
-
-const source = Ripple.token.jwt(() =>
-  fetch("/api/ripple-token", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspace: "acme" }),
-  }).then((r) => r.json()),
-);
-
-const runtime = ManagedRuntime.make(
-  Ripple.layer({ url: RIPPLE_URL, token: source }),
-);
+// 4. narrowed: everything above, except :doc/audit, which is admins only
+ns: {
+  doc: {
+    read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
+    attrs: [P.attr(Doc.audit, { read: P.allow(P.class("admin")) })],
+  },
+}
 ```
 
-- `mint` resolves to the JWT string, or to any object carrying it under
-  `token` — a mint route's JSON body (`{ token, class, exp }`) passes through
-  unwrapped.
-- `exp` comes from the JWT payload itself, never a side channel. A payload
-  with no `exp` is minted once and refreshed only by `source.invalidate()`
-  (sign-out, tenant switch).
-- `source.claims()` is the decoded payload — **not verified**, UI hints only:
-  show `ripple.class` for role-aware chrome, never trust it for access. It is
-  a peek at the cache, not a refresh.
-- A `mint` that throws surfaces as `NetworkError`: `transact` fails typed and
-  a standing `live` retries with its usual backoff. Throw an
-  `Unauthorized` from `mint` to make `live` fail terminally instead.
+## Where the checks run
+
+**Reads become a filtered database.** The peer builds the view at the
+requested version and wraps it: a fact `[e a v t]` is visible only if the read
+rule for `a` holds for `e`. The query engine, `pull`, and `live` all reach
+storage through that wrapper, so coverage is structural rather than
+remembered. Rules themselves evaluate against the *unfiltered* data — a rule
+may follow `:doc/owner` even when the caller cannot read it — and always at the
+current version, so a retracted grant cannot be resurrected by reading the
+past.
+
+**Writes are checked twice.**
+
+| stage | where | on refusal |
+| --- | --- | --- |
+| pre-check | Worker ingress, against a possibly stale view | `Unauthorized`, HTTP 403, with `code` and the attribute |
+| authority | inside the writer's commit loop, after upserts, `retractEntity` expansion, and implicit retractions are resolved | `TxRejected`, HTTP 409, and no version number is consumed |
+
+The pre-check is best-effort: it exists to fail fast and can occasionally
+refuse a write the commit loop would have allowed. The commit loop is the
+authority, and it sees the exact data the write applies to.
+
+**Refusals do not leak values.** A filtered list is simply shorter, possibly
+empty, and never an error. A masked fact is absent from a `pull` result; if it
+was requested as a required field, the client drops the row and `db.pull`
+resolves to `null` — indistinguishable from an entity that does not exist. A
+refused write names the attribute and a code, never a value.
+
+**Ripple fails closed.** A malformed policy, or a policy with an incomplete
+verifier, denies every database request and logs once at startup; the writer
+substitutes a deny-everything policy rather than falling open.
+
+:::caution[Required pulls of masked attributes]
+Because a masked required field removes the whole row, hand your pull patterns
+to the compiler: `Ripple.Policy.compile(policy, { pulls: [shapeA, shapeB] })`
+fails the deploy with the offending key. Called without `pulls`, `compile`
+skips the check entirely.
+:::
 
 ## Wiring it up
 
-```ts
+```ts title="alchemy.run.ts"
+import * as Ripple from "@ripple/alchemy";
+import { policy } from "./policy.ts";
+import { docShape } from "./src/queries.ts";
+
 const auth: Ripple.PeerAuth = {
-  policy: process.env.RIPPLE_POLICY,      // Ripple.Policy.compile(policy)
-  jwksUrl: process.env.RIPPLE_JWKS_URL,   // issuer public keys
-  auth: AUTH,                             // issuers + aud + maxTtl, in one value
+  policy: Ripple.Policy.compile(policy, { pulls: [docShape] }),
+  jwksUrl: process.env.RIPPLE_JWKS_URL,
+  issuers: process.env.RIPPLE_JWT_ISS, // one, or comma-separated
+  aud: process.env.RIPPLE_JWT_AUD,
+  maxTtl: Number(process.env.RIPPLE_JWT_MAX_TTL ?? 900),
   allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
-  internalSecret: Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
+  // only a configured policy arms the Worker→writer gate; pin the secret so it
+  // does not change on every deploy
+  internalSecret:
+    process.env.RIPPLE_POLICY === undefined
+      ? undefined
+      : Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
 };
 ```
 
-The three loose keys still work — `issuers`, `aud` and `maxTtl` may be set
-directly (say, from env), and an explicitly set loose key wins over the
-`AuthConfig`. Pass `...Ripple.authEnv(auth)` into the peer Worker's `env` and
-`auth` into `Ripple.Server`. Every knob is listed in the
-[configuration reference](/reference/configuration/).
+Spread `...Ripple.authEnv(auth)` into the peer Worker's `env`, and pass the
+same `auth` object to `Ripple.Server`. The Server does not push the
+environment onto the Worker for you; it uses `auth` for a deploy-time check
+that fails the deploy when a policy is set without `jwksUrl`, `issuers`, or
+`aud`.
 
-Ripple verifies tokens; it never issues them. JWT minting, IdP integration,
-login, and refresh UX live in your auth provider — `Ripple.claims` only
-builds the payload they sign.
+Leaving `internalSecret` unpinned mints a fresh random secret on every deploy.
+That is harmless in the single-script layout the examples use, but pin it once
+you split the Worker out.
+
+Every variable is listed in the [configuration
+reference](/reference/configuration/).
+
+## Limits worth knowing
+
+- **One policy per deployed Worker**, over one catalog. Per-database policy
+  variants are not supported today.
+- **No cross-database rules.** A rule can only follow references inside the
+  database it is evaluating.
+- **`estimate` is not policy-filtered**, and both 413 bodies and timing
+  headers remain a known, unclosed side channel about data you cannot read.
+- **Reference nesting is capped at depth 3**, which bounds the cost of a rule.
