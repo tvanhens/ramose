@@ -45,11 +45,11 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/tvanhens/ripple",
+          href: "https://github.com/tvanhens/ramose",
         },
       ],
       editLink: {
-        baseUrl: "https://github.com/tvanhens/ripple/edit/master/website/",
+        baseUrl: "https://github.com/tvanhens/ramose/edit/master/website/",
       },
       customCss: [
         "@fontsource-variable/manrope",
@@ -137,17 +137,17 @@ export default defineConfig({
           items: [
             {
               label: "Reef — multi-tenant issue tracker",
-              link: "https://github.com/tvanhens/ripple/tree/master/examples/reef",
+              link: "https://github.com/tvanhens/ramose/tree/master/examples/reef",
               attrs: { target: "_blank" },
             },
             {
               label: "Todos — React + live queries",
-              link: "https://github.com/tvanhens/ripple/tree/master/examples/todos",
+              link: "https://github.com/tvanhens/ramose/tree/master/examples/todos",
               attrs: { target: "_blank" },
             },
             {
               label: "Multi-tenant Worker",
-              link: "https://github.com/tvanhens/ripple/tree/master/examples/kv-style",
+              link: "https://github.com/tvanhens/ramose/tree/master/examples/kv-style",
               attrs: { target: "_blank" },
             },
           ],

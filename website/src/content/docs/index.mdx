@@ -17,7 +17,7 @@ hero:
       link: /getting-started/quickstart/
       variant: primary
     - text: GitHub
-      link: https://github.com/tvanhens/ripple
+      link: https://github.com/tvanhens/ramose
       variant: secondary
       icon: github
   image:
@@ -55,7 +55,7 @@ npm install @ramose/alchemy @ramose/worker @ramose/react
 
 <p class="rg-run-after">Import <code>@ramose/alchemy/db</code> from the browser, point a <code>Cloudflare.Worker</code> at <code>@ramose/worker</code>, and <code>db.live</code> keeps the list current. There is no refetch call anywhere in the app. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
 
-<p class="rg-run-more">Want a complete app to read? <a href="https://github.com/tvanhens/ripple/tree/master/examples/reef">Reef</a> is a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
+<p class="rg-run-more">Want a complete app to read? <a href="https://github.com/tvanhens/ramose/tree/master/examples/reef">Reef</a> is a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
 
 <figure class="rg-shot">
   <img
@@ -377,6 +377,6 @@ Ramose.Policy.compile(policy, { pulls: [todoShape] });
   <p class="rg-closing-note"><code>npm install @ramose/alchemy</code> — then the Quickstart stands up a local peer in your own app.</p>
   <div class="rg-actions">
     <a class="rg-button primary" href="/getting-started/quickstart/">Open the quickstart</a>
-    <a class="rg-button secondary" href="https://github.com/tvanhens/ripple/tree/master/examples/reef">See Reef</a>
+    <a class="rg-button secondary" href="https://github.com/tvanhens/ramose/tree/master/examples/reef">See Reef</a>
   </div>
 </div>

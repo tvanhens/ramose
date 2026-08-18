@@ -79,6 +79,6 @@ page](/).
   local peer, and get a live query.
 - [Permissions in 10 minutes](/guides/permissions/) — watch a write get denied.
 - [Define your data](/guides/catalog/) — the catalog in full.
-- [Reef](https://github.com/tvanhens/ripple/tree/master/examples/reef) — a
+- [Reef](https://github.com/tvanhens/ramose/tree/master/examples/reef) — a
   complete example: multi-tenant workspaces, JWT auth and a compiled policy in
   one app.

@@ -139,6 +139,6 @@ thousands of writes per second, and there are no joins across databases. See
 [the runbook](/reference/runbook/#the-write-ceiling).
 
 A complete Worker that does all of the above is
-[`examples/kv-style`](https://github.com/tvanhens/ripple/tree/master/examples/kv-style)
+[`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style)
 — copy the four files into your project, or read them as a reference. The
 peer Worker they bind is `@ramose/worker`.

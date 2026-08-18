@@ -214,7 +214,7 @@ it is on the registry — so the first publish of each package uses the token.
 
 After the first release, enable trusted publishing for each package at
 `https://www.npmjs.com/package/@ramose/<name>/access` (publisher: GitHub
-Actions, repo `tvanhens/ripple`, workflow `release.yml`). Once all eight are
+Actions, repo `tvanhens/ramose`, workflow `release.yml`). Once all eight are
 configured, `NPM_TOKEN` can be deleted.
 
 #### npm version

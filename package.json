@@ -8,7 +8,7 @@
   "homepage": "https://ramose.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tvanhens/ripple.git"
+    "url": "git+https://github.com/tvanhens/ramose.git"
   },
   "type": "module",
   "workspaces": [
