@@ -767,6 +767,176 @@ describe("predicates and combinators end to end: the peer counts the rows", () =
   });
 });
 
+/** The scope clause every `:user/*` query carries. */
+const userScope = [
+  "or",
+  ["?e", ":user/name", "_"],
+  ["?e", ":user/friends", "_"],
+];
+
+describe("lowering: some / every / none quantify over a many hop", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(User).where(...preds).build()).query.where;
+
+  test("`some` is the existential join the hop already was", () => {
+    expect(whereOf(User.friends.some(User.name.eq("Ada")))).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      ["?x0", ":user/name", "Ada"],
+    ]);
+  });
+
+  test("`none` is the same join, negated on the root", () => {
+    expect(whereOf(User.friends.none(User.name.eq("Ada")))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/friends", "?x0"],
+        ["?x0", ":user/name", "Ada"],
+      ],
+    ]);
+  });
+
+  test("`every` is `no element fails`: a not-join inside a not-join", () => {
+    expect(whereOf(User.friends.every(User.name.startsWith("A")))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/friends", "?x0"],
+        [
+          "not-join",
+          ["?x0"],
+          ["?x0", ":user/name", "?v1"],
+          [["starts-with?", "?v1", "A"]],
+        ],
+      ],
+    ]);
+    // an inner node that constrains nothing holds of every element
+    expect(whereOf(User.friends.every(User.id.exists()))).toEqual([userScope]);
+  });
+
+  test("the inner node may be a combinator, or another quantifier", () => {
+    expect(
+      whereOf(User.friends.some(or(User.name.eq("Ada"), User.name.missing()))),
+    ).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      [
+        "or-join",
+        ["?x0"],
+        ["and", ["?x0", ":user/name", "Ada"]],
+        ["and", ["not", ["?x0", ":user/name", "_"]]],
+      ],
+    ]);
+    // friends-of-friends: the inner quantifier is rooted at the element
+    expect(
+      whereOf(User.friends.some(User.friends.none(User.name.eq("Bob")))),
+    ).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      [
+        "not-join",
+        ["?x0"],
+        ["?x0", ":user/friends", "?x1"],
+        ["?x1", ":user/name", "Bob"],
+      ],
+    ]);
+  });
+
+  test("quantifiers need a cardinality-many ref to quantify over", () => {
+    // the type says `never` for both; these are the runtime guards behind it
+    const quantify = (attr: unknown) =>
+      (attr as typeof User.friends).some(User.name.eq("Ada"));
+    expect(() => quantify(Todo.owner)).toThrow(
+      /only a cardinality-many attribute has elements/,
+    );
+    const Post = Namespace("post", {
+      tags: Attr(Schema.String, { cardinality: "many" }),
+    });
+    expect(() => quantify(Post.tags)).toThrow(/must be a ref/);
+  });
+});
+
+describe("quantifiers end to end", () => {
+  /**
+   * Ada — friends [Bob],       todos "a1" done, "a2" done
+   * Bob — friends [Ada, Cyd],  todos "b1" open
+   * Cyd — friends [],          no todos      (the vacuous-truth case)
+   */
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const cyd = yield* tx.entity();
+          yield* cyd.add(User.name, "Cyd");
+          yield* ada.add(User.friends, bob.eid as never);
+          yield* bob.add(User.friends, ada.eid as never);
+          yield* bob.add(User.friends, cyd.eid as never);
+          const mk = function* (title: string, done: boolean, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, done);
+            yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("a1", true, ada.eid);
+          yield* mk("a2", true, ada.eid);
+          yield* mk("b1", false, bob.eid);
+        });
+        return db;
+      }),
+    );
+  };
+
+  const names = async (
+    peer: Awaited<ReturnType<typeof inProcessPeer>>,
+    db: Awaited<ReturnType<typeof seed>>,
+    ...preds: WhereNode[]
+  ) => {
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(User)
+          .where(...preds)
+          .orderBy(User.name, "asc")
+          .select({ name: User.name }),
+      ),
+    );
+    expect(peer.seen[0]?.rows).toBe(rows.length);
+    return rows.map((r) => r.name);
+  };
+
+  test("some / every / none over a card-many ref, on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    expect(await names(peer, db, User.friends.some(User.name.eq("Ada")))).toEqual(
+      ["Bob"],
+    );
+    expect(await names(peer, db, User.friends.none(User.name.eq("Cyd")))).toEqual(
+      ["Ada", "Cyd"],
+    );
+    // Cyd has no friends at all, and `every` is true of nothing
+    expect(
+      await names(peer, db, User.friends.every(User.name.startsWith("B"))),
+    ).toEqual(["Ada", "Cyd"]);
+    // friends-of-friends: the inner quantifier is rooted at the element
+    expect(
+      await names(peer, db, User.friends.some(User.friends.some(User.name.eq("Cyd")))),
+    ).toEqual(["Ada"]);
+
+    await peer.dispose();
+  });
+
+});
+
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
     const db = peer.ripple.db("todos", Todos);

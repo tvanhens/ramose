@@ -53,6 +53,27 @@ export interface Predicate {
   readonly value?: unknown;
 }
 
+/** How a quantified predicate reads the elements of a cardinality-many hop. */
+export type Quantifier = "some" | "every" | "none";
+
+/**
+ * `attr.some(pred)` / `.every(pred)` / `.none(pred)` on a cardinality-many
+ * ref: `pred` is rooted at the hop's *target*, and the quantifier says how
+ * many elements must satisfy it.
+ *
+ * `every` and `none` are vacuously true when the hop has no elements at all —
+ * "no element fails" and "no element matches" are both true of nothing.
+ */
+export interface Quantified {
+  readonly _tag: "Quantified";
+  readonly quant: Quantifier;
+  /** Idents from the root entity down to (and including) the many hop. */
+  readonly path: readonly string[];
+  readonly cards: readonly Cardinality[];
+  /** Rooted at the element the path ends on, not at the query root. */
+  readonly pred: WhereNode;
+}
+
 /**
  * Disjunction of where-nodes. Nestable: a branch is itself a predicate, an
  * `Or` or a `Not`, and every branch is scoped to the query root entity, so
@@ -70,7 +91,7 @@ export interface Not {
 }
 
 /** What `.where(...)` takes: a predicate or a combinator over predicates. */
-export type WhereNode = Predicate | Or | Not;
+export type WhereNode = Predicate | Or | Not | Quantified;
 
 /**
  * `Ripple.or(a, b, …)` — a row matches when **any** branch does. Lowers to
@@ -96,6 +117,11 @@ export const isNot = (x: unknown): x is Not =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "Not";
+
+export const isQuantified = (x: unknown): x is Quantified =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Quantified";
 
 export type ShapeField =
   | AnyAttribute
@@ -194,6 +220,22 @@ export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
   ? EidLike
   : AttrValue<A>;
 
+/**
+ * `some` / `every` / `none` quantify over the entities a hop reaches, so they
+ * are defined exactly on cardinality-many refs — including the many hop a
+ * `.reverse` backlink always is.
+ *
+ * A cardinality-many *scalar* has no target to root an inner predicate at,
+ * and does not need one: a bare predicate on it (`Todo.tags.eq("x")`) already
+ * means "some value matches".
+ */
+type IsManyRef<A> = A extends {
+  readonly cardinality: "many";
+  readonly valueType: ":db.type/ref";
+}
+  ? true
+  : false;
+
 /** Predicate / shape methods attached to every stamped attr. */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly eq: (value: AttrValue<A>) => Predicate;
@@ -212,6 +254,18 @@ export type AttrNav<A extends PathCarrier> = A & {
   /** Ref-only: the entity this ref points at. */
   readonly is: A extends { readonly valueType: ":db.type/ref" }
     ? (ref: EidLike) => Predicate
+    : never;
+  /** Card-many ref only: at least one element satisfies `pred`. */
+  readonly some: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
+    : never;
+  /** Card-many ref only: no element fails `pred` (vacuously true when empty). */
+  readonly every: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
+    : never;
+  /** Card-many ref only: no element satisfies `pred` (true when empty). */
+  readonly none: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
     : never;
   readonly optional: ReturnType<typeof optional<A>>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
@@ -250,6 +304,37 @@ const eidValue = (ref: unknown): number => {
   );
 };
 
+/**
+ * Build a quantified node, rejecting the two shapes that cannot mean anything:
+ * a card-one hop (there is nothing to quantify over) and a scalar hop (there
+ * is no entity for `pred` to be rooted at).
+ */
+const quantified = (
+  quant: Quantifier,
+  attr: PathCarrier,
+  pred: WhereNode,
+): Quantified => {
+  const path = pathOf(attr);
+  const cards = cardsOf(attr);
+  if (cards[cards.length - 1] !== "many") {
+    throw new Error(
+      `ripple/query: ${quant}(...) on ${path.join(" → ")} — only a cardinality-many attribute has elements to quantify over`,
+    );
+  }
+  if ((attr as { valueType?: unknown }).valueType !== ":db.type/ref") {
+    throw new Error(
+      `ripple/query: ${quant}(...) on ${path.join(" → ")} — the inner predicate is rooted at the hop's target, so the hop must be a ref. A predicate on a cardinality-many scalar already means "some value matches".`,
+    );
+  }
+  return {
+    _tag: "Quantified",
+    quant,
+    path,
+    cards,
+    pred,
+  };
+};
+
 /** Refs compare by id, so an `Eid` in an `in(...)` list is its number. */
 const inValue = (v: unknown): unknown =>
   typeof v === "object" &&
@@ -284,6 +369,9 @@ const NAV_METHODS = new Set([
   "exists",
   "missing",
   "is",
+  "some",
+  "every",
+  "none",
   "optional",
   "select",
 ]);
@@ -330,6 +418,15 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     },
     is(this: PathCarrier, ref: unknown) {
       return pred("is", this, eidValue(ref));
+    },
+    some(this: PathCarrier, inner: WhereNode) {
+      return quantified("some", this, inner);
+    },
+    every(this: PathCarrier, inner: WhereNode) {
+      return quantified("every", this, inner);
+    },
+    none(this: PathCarrier, inner: WhereNode) {
+      return quantified("none", this, inner);
     },
     exists(this: PathCarrier) {
       return pred("exists", this);
@@ -740,7 +837,35 @@ const lowerWhere = (root: string, node: WhereNode): unknown[] => {
     if (inner.length === 0) return [neverClause()];
     return [["not-join", [root], ...inner]];
   }
+  if (isQuantified(node)) return lowerQuantified(root, node);
   return lowerPredicate(root, node);
+};
+
+/**
+ * Quantify over the elements a many hop reaches. The hop chain binds one
+ * element variable `?x`; the inner node is lowered against it, so its own join
+ * variables are local to the quantifier.
+ *
+ * - `some`  → the chain plus the inner clauses: a plain existential join.
+ * - `none`  → `(not-join [?e] <chain> <inner>)` — no element matches.
+ * - `every` → `(not-join [?e] <chain> (not-join [?x] <inner>))` — no element
+ *   *fails*. Both negatives are vacuously true when the hop has no elements:
+ *   the chain binds nothing, so the outer `not-join` removes no rows.
+ */
+const lowerQuantified = (root: string, node: Quantified): unknown[] => {
+  const x = gensym("x");
+  const chain = hopClauses(root, node.path, x);
+  const inner = lowerWhere(x, node.pred);
+  switch (node.quant) {
+    case "some":
+      return [...chain, ...inner];
+    case "none":
+      return [["not-join", [root], ...chain, ...inner]];
+    case "every":
+      // an inner node that constrains nothing is satisfied by every element
+      if (inner.length === 0) return [];
+      return [["not-join", [root], ...chain, ["not-join", [x], ...inner]]];
+  }
 };
 
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
@@ -756,11 +881,12 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
     e = next;
   }
   const attr = path[path.length - 1]!;
+  const at = (v: unknown): unknown[] => [e, attr, v];
 
   switch (op) {
     case "eq":
     case "is":
-      clauses.push([e, attr, value]);
+      clauses.push(at(value));
       break;
     case "in": {
       const values = value as readonly unknown[];
@@ -768,12 +894,12 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
       const v = gensym("v");
       // `?v` is bound by the pattern, so the collection binding filters it
       // rather than generating: the peer keeps one row per match, not per value
-      clauses.push([e, attr, v], [["ground", [...values]], [v, "..."]]);
+      clauses.push(at(v), [["ground", [...values]], [v, "..."]]);
       break;
     }
     case "ne": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["not=", v, value]]);
+      clauses.push(at(v), [["not=", v, value]]);
       break;
     }
     case "lt":
@@ -789,35 +915,35 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
             : op === "gt"
               ? ">"
               : ">=";
-      clauses.push([e, attr, v], [[fn, v, value]]);
+      clauses.push(at(v), [[fn, v, value]]);
       break;
     }
     case "startsWith": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["starts-with?", v, value]]);
+      clauses.push(at(v), [["starts-with?", v, value]]);
       break;
     }
     case "endsWith": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["ends-with?", v, value]]);
+      clauses.push(at(v), [["ends-with?", v, value]]);
       break;
     }
     case "includes": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["includes?", v, value]]);
+      clauses.push(at(v), [["includes?", v, value]]);
       break;
     }
     case "matches": {
       const v = gensym("v");
       // `re-find?` takes the pattern first, then the string
-      clauses.push([e, attr, v], [["re-find?", value, v]]);
+      clauses.push(at(v), [["re-find?", value, v]]);
       break;
     }
     case "exists":
-      clauses.push([e, attr, "_"]);
+      clauses.push(at("_"));
       break;
     case "missing":
-      clauses.push(["not", [e, attr, "_"]]);
+      clauses.push(["not", at("_")]);
       break;
   }
   return clauses;

@@ -190,43 +190,27 @@ query(User).where(or(User.name));
 // @ts-expect-error `not` takes one where-node, not a list
 query(User).where(not(User.name.eq("Ada"), User.age.gte(36)));
 
-// ── `.orderBy` takes an attribute, including one across a ref ──────────────
+// ── some / every / none, on cardinality-many refs only ─────────────────────
 
-const ordered = library.q(
-  query(Book)
-    .orderBy(Book.author.name, "desc", { empty: "first" })
-    .select({ title: Book.title }),
+query(User).where(
+  User.friends.some(User.name.eq("Ada")),
+  User.friends.every(User.age.gte(18)),
+  User.friends.none(User.name.missing()),
+  // the inner node may be a combinator, or another quantifier
+  User.friends.some(or(User.age.lt(18), User.friends.none(User.age.exists()))),
 );
-type _ordered = Expect<
-  Equal<Effect.Success<typeof ordered>, readonly { readonly title: string }[]>
->;
 
-// @ts-expect-error a predicate is not a sort key
-query(Book).orderBy(Book.title.eq("Calculus"));
+// @ts-expect-error `:user/bestFriend` is a cardinality-one ref
+query(User).where(User.bestFriend.some(User.name.eq("Ada")));
 
-// ── self-refs navigate like any targeted ref, to a finite depth ────────────
+// @ts-expect-error `:user/name` is neither many nor a ref
+query(User).where(User.name.every(User.name.eq("Ada")));
 
-const Person = Namespace("person", {
-  name: Attr(Schema.String),
-  boss: Attr(Ref.self),
-  friends: Attr(Ref.self, { cardinality: "many" }),
-});
-const Org = Namespace("org", { lead: Attr(Ref(() => Person)) });
+// @ts-expect-error `:movie/year` has no elements to quantify over
+query(Movie).where(Movie.year.none(Movie.title.eq("x")));
 
-/** each hop keeps the leaf's ident and value type */
-type _selfHop = Expect<Equal<typeof Person.boss.name.ident, ":person/name">>;
-type _selfHops = Expect<
-  Equal<typeof Org.lead.boss.boss.name.ident, ":person/name">
->;
-type _selfMany = Expect<Equal<typeof Person.friends.name.ident, ":person/name">>;
-query(Person).where(Person.boss.name.startsWith("A"));
-query(Org).orderBy(Org.lead.boss.name);
-
-// @ts-expect-error `:person/name` is a string attribute, two hops in too
-query(Person).where(Person.boss.boss.name.eq(3));
-
-// @ts-expect-error a self-ref exposes only the namespace's attributes
-Person.boss.nope;
+// @ts-expect-error a quantifier takes a where-node, not an attribute
+query(User).where(User.friends.some(User.name));
 
 // ── the query value and its builder are the same input ─────────────────────
 

@@ -152,6 +152,9 @@ const OWN_ATTR_KEYS = new Set([
   "exists",
   "missing",
   "is",
+  "some",
+  "every",
+  "none",
   "__path",
   "__cards",
 ]);
