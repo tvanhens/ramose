@@ -72,11 +72,23 @@ for (const pkg of ORDER) {
   if (otp) flags.push("--otp", otp);
 
   console.log(`publish ${spec}${dryRun ? " (dry run)" : ""}`);
-  try {
-    await $`npm publish ${flags}`.cwd(`packages/${pkg}`);
-  } catch {
-    // npm has already explained itself on stderr. Printing the ShellError on
-    // top of that just buries the message.
+
+  // Spawn npm directly with inherited stdio rather than going through Bun's
+  // `$`. npm's 2FA flow checks whether it is attached to an interactive
+  // terminal: if it is, it opens a browser for the WebAuthn ceremony and waits;
+  // if it is not, it prints the auth URL and fails with EOTP. Through `$` — and
+  // especially nested a few processes deep, as it is when release.ts drives
+  // this — npm took the non-interactive branch, so publishing worked by hand
+  // but not from the scripts.
+  const proc = Bun.spawn({
+    cmd: ["npm", "publish", ...flags],
+    cwd: `packages/${pkg}`,
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    // npm has already explained itself on stderr; repeating it just buries it.
     console.error(`\nfailed to publish ${spec} — see the npm error above`);
     if (published.length > 0) {
       console.error(`already published this run: ${published.join(", ")}`);
