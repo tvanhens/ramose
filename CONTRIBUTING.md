@@ -231,14 +231,18 @@ needs. [Classic tokens were removed in November 2025][access-tokens]; create a
 **granular access token** at
 [npmjs.com/settings/~/tokens](https://www.npmjs.com/settings/~/tokens):
 
-- Packages and scopes: **Read and write**, limited to the `@ramose` scope
-- **Bypass 2FA**: enabled — without this it still prompts for an OTP
+- **Bypass two-factor authentication**: checked — without this it still prompts
+- Packages and scopes: **Read and write**. Select the `@ramose` *scope*, not
+  individual packages — a token limited to named packages cannot create ones
+  that do not exist yet, which is exactly what a first publish does.
 - Expiration: as short as is practical
 
-Use it locally for one run without writing it to `~/.npmrc`:
+Use it for one run without writing it to `~/.npmrc`. The `env` prefix is
+required: the config key contains `/` and `:`, which are not legal in a shell
+variable name, so the usual `VAR=value cmd` form fails before npm ever runs.
 
 ```sh
-NPM_CONFIG_//registry.npmjs.org/:_authToken=<token> bun run release
+env 'npm_config_//registry.npmjs.org/:_authToken=<token>' bun run release
 ```
 
 Add the same token as the `NPM_TOKEN` repository secret so the workflow can
