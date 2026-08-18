@@ -53,15 +53,36 @@ export type PredTag =
   | "exists"
   | "missing";
 
+/**
+ * The scope one `attr.each` predicate needs to be inside of: the element of
+ * the attribute named by `I`. It rides along as a phantom on {@link Predicate}
+ * so a `.each` predicate is a type error anywhere but inside that attribute's
+ * `every` / `none` / `some` / `where` / `orderBy` — the only places where
+ * "the value itself" denotes anything.
+ */
+export type EachOf<I extends string> = { readonly __each: I };
+
 /** A closed predicate over a path of attribute idents from the query root. */
-export interface Predicate {
+export interface Predicate<E = never> {
   readonly _tag: "Predicate";
   readonly op: PredTag;
-  /** Idents from the root entity, e.g. `[":todo/owner", ":user/name"]`. */
+  /**
+   * Idents from the root entity, e.g. `[":todo/owner", ":user/name"]`. Empty
+   * for an `attr.each` predicate: the element *is* the value, so there is no
+   * hop to walk (see {@link each}).
+   */
   readonly path: readonly string[];
   /** Which hops are walked backwards (`.reverse`) — parallel to `path`. */
   readonly revs?: readonly boolean[];
   readonly value?: unknown;
+  /**
+   * Set by `attr.each`: the ident of the attribute whose element the empty
+   * path denotes. Checked when the predicate is placed, so an element cursor
+   * cannot escape into a scope where it means nothing.
+   */
+  readonly each?: string;
+  /** Phantom — see {@link EachOf}. Never present at runtime. */
+  readonly _elem?: E;
 }
 
 /** How a quantified predicate reads the elements of a cardinality-many hop. */
@@ -69,11 +90,15 @@ export type Quantifier = "some" | "every" | "none";
 
 /**
  * `attr.some(pred)` / `.every(pred)` / `.none(pred)` on a cardinality-many
- * ref: `pred` is rooted at the hop's *target*, and the quantifier says how
- * many elements must satisfy it.
+ * attribute: `pred` is rooted at the hop's *element* — the ref's target, or
+ * the value itself (`attr.each`) for a cardinality-many scalar — and the
+ * quantifier says how many elements must satisfy it.
  *
  * `every` and `none` are vacuously true when the hop has no elements at all —
  * "no element fails" and "no element matches" are both true of nothing.
+ *
+ * The element scope is discharged here, so a `Quantified` is unbranded: it may
+ * stand anywhere a where-node may.
  */
 export interface Quantified {
   readonly _tag: "Quantified";
@@ -83,7 +108,7 @@ export interface Quantified {
   readonly cards: readonly Cardinality[];
   readonly revs: readonly boolean[];
   /** Rooted at the element the path ends on, not at the query root. */
-  readonly pred: WhereNode;
+  readonly pred: AnyWhereNode;
 }
 
 /**
@@ -91,26 +116,33 @@ export interface Quantified {
  * `Or` or a `Not`, and every branch is scoped to the query root entity, so
  * the join variables a branch invents stay inside it.
  */
-export interface Or {
+export interface Or<E = never> {
   readonly _tag: "Or";
-  readonly preds: readonly WhereNode[];
+  readonly preds: readonly WhereNode<E>[];
 }
 
 /** Negation of a where-node, scoped to the query root entity. */
-export interface Not {
+export interface Not<E = never> {
   readonly _tag: "Not";
-  readonly pred: WhereNode;
+  readonly pred: WhereNode<E>;
 }
 
-/** What `.where(...)` takes: a predicate or a combinator over predicates. */
-export type WhereNode = Predicate | Or | Not | Quantified;
+/**
+ * What `.where(...)` takes: a predicate or a combinator over predicates. `E`
+ * is the element scope its `attr.each` predicates need (see {@link EachOf});
+ * a node that names no element is scopeless, and fits anywhere.
+ */
+export type WhereNode<E = never> = Predicate<E> | Or<E> | Not<E> | Quantified;
+
+/** A where-node in any element scope — what the lowerer walks. */
+export type AnyWhereNode = WhereNode<unknown>;
 
 /**
  * `Ripple.or(a, b, …)` — a row matches when **any** branch does. Lowers to
  * `or-join` on the root entity variable, so branches need not bind the same
  * variables. `or()` with no branches matches nothing.
  */
-export const or = (...preds: readonly WhereNode[]): Or => ({
+export const or = <E = never>(...preds: readonly WhereNode<E>[]): Or<E> => ({
   _tag: "Or",
   preds: [...preds],
 });
@@ -120,12 +152,15 @@ export const or = (...preds: readonly WhereNode[]): Or => ({
  * `not-join` on the root entity variable, so `not(or(…))` and
  * `not(Todo.due.missing())` nest the way they read.
  */
-export const not = (pred: WhereNode): Not => ({ _tag: "Not", pred });
+export const not = <E = never>(pred: WhereNode<E>): Not<E> => ({
+  _tag: "Not",
+  pred,
+});
 
-export const isOr = (x: unknown): x is Or =>
+export const isOr = (x: unknown): x is Or<unknown> =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Or";
 
-export const isNot = (x: unknown): x is Not =>
+export const isNot = (x: unknown): x is Not<unknown> =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "Not";
@@ -135,9 +170,21 @@ export const isQuantified = (x: unknown): x is Quantified =>
   x !== null &&
   (x as { _tag?: unknown })._tag === "Quantified";
 
+/**
+ * A constrained cardinality-many **scalar** as a select field. It carries no
+ * `.select` — there is no shape to ask a string for — so the collection nav
+ * *is* the field, and `select: never` is what tells it apart from a ref
+ * collection, which still needs its `.select({ … })`.
+ */
+export interface ScalarCollectionField {
+  readonly _tag: "collection";
+  readonly select: never;
+}
+
 export type ShapeField =
   | AnyAttribute
   | PathCarrier
+  | ScalarCollectionField
   | { readonly _tag: "optional"; readonly field: unknown }
   | { readonly _tag: "nested"; readonly attr: unknown; readonly pattern: unknown }
   | { readonly _tag: "select"; readonly attr: unknown; readonly shape: Shape };
@@ -171,15 +218,36 @@ type IsHopped<F> = F extends {
 type MultiHopField<K extends string> =
   `select field "${K}" is a multi-hop path: a select field must be a direct attribute of the queried namespace — use a nested select, e.g. { owner: Todo.owner.select({ name: User.name }) }`;
 
+/** Is this field an element cursor (`attr.each`), through `.optional` too? */
+type IsElement<F> = F extends {
+  readonly _tag: "optional";
+  readonly field: infer Inner;
+}
+  ? IsElement<Inner>
+  : F extends { readonly __each: string }
+    ? true
+    : false;
+
 /**
- * `S`, with every multi-hop field replaced by {@link MultiHopField}. Used as
- * `shape: S & ValidShape<S>`: the intersection still infers `S` from the
- * argument, and a hopped field has nowhere to go.
+ * The error an element cursor used as a select field resolves to. `.each` is
+ * one value of a collection, in scope only inside that collection's own
+ * quantifiers and constraints — the *field* is the collection.
+ */
+type ElementField<K extends string> =
+  `select field "${K}" is an element cursor: \`.each\` names one value of a card-many attribute, and is only meaningful inside its own every / none / some / where / orderBy — select the attribute itself, e.g. { tags: User.tags }`;
+
+/**
+ * `S`, with every multi-hop field replaced by {@link MultiHopField} and every
+ * element cursor by {@link ElementField}. Used as `shape: S & ValidShape<S>`:
+ * the intersection still infers `S` from the argument, and a rejected field
+ * has nowhere to go.
  */
 export type ValidShape<S> = {
   readonly [K in keyof S]: IsHopped<S[K]> extends true
     ? MultiHopField<K & string>
-    : S[K];
+    : IsElement<S[K]> extends true
+      ? ElementField<K & string>
+      : S[K];
 };
 
 export type OrderEmpty = "first" | "last";
@@ -250,6 +318,12 @@ export type PathCarrier = {
   readonly __revs?: readonly boolean[];
   /** @internal Set on the node `attr.reverse` returns. */
   readonly __reverse?: boolean;
+  /**
+   * @internal Set on the node `attr.each` returns: the ident of the attribute
+   * whose element this is. The node's `__path` is empty — the element is the
+   * value itself, not something reached from it.
+   */
+  readonly __each?: string;
 };
 
 /**
@@ -300,6 +374,7 @@ const pred = (
   op,
   path: pathOf(attr),
   revs: revsOf(attr),
+  ...(attr.__each !== undefined ? { each: attr.__each } : {}),
   value,
 });
 
@@ -322,75 +397,106 @@ export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
   : AttrValue<A>;
 
 /**
- * `some` / `every` / `none` quantify over the entities a hop reaches, so they
- * are defined exactly on cardinality-many refs — including the many hop a
- * `.reverse` backlink always is.
+ * `some` / `every` / `none` quantify over the elements a hop reaches, so they
+ * are defined exactly on cardinality-many attributes — including the many hop
+ * a `.reverse` backlink always is.
  *
- * A cardinality-many *scalar* has no target to root an inner predicate at,
- * and does not need one: a bare predicate on it (`Todo.tags.eq("x")`) already
- * means "some value matches".
+ * A cardinality-many *scalar* has elements too: its values. They are named by
+ * {@link AttrNav.each}, so `User.tags.every(User.tags.each.startsWith("a"))`
+ * says what a bare predicate on a many scalar (already "some value matches")
+ * cannot.
  */
-type IsManyRef<A> = A extends {
-  readonly cardinality: "many";
-  readonly valueType: ":db.type/ref";
-}
-  ? true
-  : false;
+type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
 
-/** Predicate / shape methods attached to every stamped attr. */
-export type AttrNav<A extends PathCarrier> = A & {
-  readonly eq: (value: AttrValue<A>) => Predicate;
-  readonly ne: (value: AttrValue<A>) => Predicate;
-  readonly lt: (value: AttrValue<A>) => Predicate;
-  readonly lte: (value: AttrValue<A>) => Predicate;
-  readonly gt: (value: AttrValue<A>) => Predicate;
-  readonly gte: (value: AttrValue<A>) => Predicate;
-  readonly in: (values: readonly InValue<A>[]) => Predicate;
-  readonly startsWith: (prefix: string) => Predicate;
-  readonly endsWith: (suffix: string) => Predicate;
-  readonly includes: (needle: string) => Predicate;
-  readonly matches: (re: RegExp | string) => Predicate;
-  readonly exists: () => Predicate;
-  readonly missing: () => Predicate;
+/** The attribute a nav ends on, as its ident — the identity of its element. */
+type AttrIdent<A> = A extends { readonly ident: infer I extends string }
+  ? I
+  : string;
+
+/** What an `attr.each` predicate is written against, inside `attr`'s scope. */
+type ElemScopeOf<A> = EachOf<AttrIdent<A>>;
+
+/**
+ * `attr.each` — one element of a cardinality-many attribute, as a nav of its
+ * own. It keeps the attribute's value schema, so the predicates stay typed
+ * (`User.tags.each.startsWith("a")`, `User.scores.each.gt(3)`), and its path
+ * is empty: the element *is* the value, not something reached from it.
+ *
+ * Its predicates carry {@link EachOf}, so they only fit where that element is
+ * in scope — `attr.every` / `.none` / `.some` / `.where` / `.orderBy`.
+ */
+export type ElementNav<A extends PathCarrier> = AttrNav<
+  Omit<A, "cardinality"> & {
+    readonly cardinality: "one";
+    readonly __each: AttrIdent<A>;
+  },
+  ElemScopeOf<A>
+>;
+
+/**
+ * Predicate / shape methods attached to every stamped attr. `E` is the
+ * element scope its predicates belong to: `never` for an ordinary attribute
+ * (they fit anywhere), the collection's element for an `attr.each` nav.
+ */
+export type AttrNav<A extends PathCarrier, E = never> = A & {
+  readonly eq: (value: AttrValue<A>) => Predicate<E>;
+  readonly ne: (value: AttrValue<A>) => Predicate<E>;
+  readonly lt: (value: AttrValue<A>) => Predicate<E>;
+  readonly lte: (value: AttrValue<A>) => Predicate<E>;
+  readonly gt: (value: AttrValue<A>) => Predicate<E>;
+  readonly gte: (value: AttrValue<A>) => Predicate<E>;
+  readonly in: (values: readonly InValue<A>[]) => Predicate<E>;
+  readonly startsWith: (prefix: string) => Predicate<E>;
+  readonly endsWith: (suffix: string) => Predicate<E>;
+  readonly includes: (needle: string) => Predicate<E>;
+  readonly matches: (re: RegExp | string) => Predicate<E>;
+  readonly exists: () => Predicate<E>;
+  readonly missing: () => Predicate<E>;
   /** Ref-only: the entity this ref points at. */
   readonly is: A extends { readonly valueType: ":db.type/ref" }
-    ? (ref: EidLike) => Predicate
-    : never;
-  /** Card-many ref only: at least one element satisfies `pred`. */
-  readonly some: IsManyRef<A> extends true
-    ? (pred: WhereNode) => Quantified
-    : never;
-  /** Card-many ref only: no element fails `pred` (vacuously true when empty). */
-  readonly every: IsManyRef<A> extends true
-    ? (pred: WhereNode) => Quantified
-    : never;
-  /** Card-many ref only: no element satisfies `pred` (true when empty). */
-  readonly none: IsManyRef<A> extends true
-    ? (pred: WhereNode) => Quantified
+    ? (ref: EidLike) => Predicate<E>
     : never;
   /**
-   * Card-many ref / backlink only: filter this collection, per element, on
-   * the peer. The predicates are rooted at the **element** and lower to the
-   * nested pull's `:where` — never to the query's own, so the outer `.limit`
-   * still counts rows and a collection that filters to nothing is `[]`.
+   * Card-many only: one element of this collection — the ref's target is an
+   * entity you navigate from, a scalar's element is the value itself, which
+   * is what this names. Card-one attributes have no elements, so it is
+   * `never` there.
    */
-  readonly where: IsManyRef<A> extends true
-    ? (...preds: readonly WhereNode[]) => CollectionNav<A>
+  readonly each: IsMany<A> extends true ? ElementNav<A> : never;
+  /** Card-many only: at least one element satisfies `pred`. */
+  readonly some: IsMany<A> extends true
+    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
     : never;
-  /** Card-many ref / backlink only: sort this collection by a card-one key. */
-  readonly orderBy: IsManyRef<A> extends true
-    ? (
-        key: NestedOrderKey,
+  /** Card-many only: no element fails `pred` (vacuously true when empty). */
+  readonly every: IsMany<A> extends true
+    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
+    : never;
+  /** Card-many only: no element satisfies `pred` (true when empty). */
+  readonly none: IsMany<A> extends true
+    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
+    : never;
+  /**
+   * Card-many only: filter this collection, per element, on the peer. The
+   * predicates are rooted at the **element** (`attr.each` for a scalar) and
+   * lower to the nested pull's `:where` — never to the query's own, so the
+   * outer `.limit` still counts rows and a collection that filters to nothing
+   * is `[]`.
+   */
+  readonly where: IsMany<A> extends true
+    ? (...preds: readonly WhereNode<ElemScopeOf<A>>[]) => CollectionNav<A>
+    : never;
+  /** Card-many only: sort this collection by a card-one key, or by `.each`. */
+  readonly orderBy: IsMany<A> extends true
+    ? <K extends NestedOrderKey>(
+        key: K & ValidOrderKey<K, AttrIdent<A>>,
         dir?: OrderDir,
         opts?: { readonly empty?: OrderEmpty },
       ) => CollectionNav<A>
     : never;
-  /** Card-many ref / backlink only: keep at most `n` elements. */
-  readonly limit: IsManyRef<A> extends true
-    ? (n: number) => CollectionNav<A>
-    : never;
-  /** Card-many ref / backlink only: drop `n` elements from the front. */
-  readonly offset: IsManyRef<A> extends true
+  /** Card-many only: keep at most `n` elements. */
+  readonly limit: IsMany<A> extends true ? (n: number) => CollectionNav<A> : never;
+  /** Card-many only: drop `n` elements from the front. */
+  readonly offset: IsMany<A> extends true
     ? (n: number) => CollectionNav<A>
     : never;
   readonly optional: ReturnType<typeof optional<A>>;
@@ -430,15 +536,90 @@ const eidValue = (ref: unknown): number => {
   );
 };
 
+/** Does this nav end on a ref (a backlink is one, read the other way)? */
+const isRefNav = (attr: PathCarrier): boolean =>
+  (attr as { valueType?: unknown }).valueType === ":db.type/ref";
+
+/** `:user/tags` → `User.tags` — the attribute as the caller writes it. */
+const spellIdent = (ident: string): string => {
+  const m = /^:([^/]+)\/(.+)$/.exec(ident);
+  if (m === null) return ident;
+  return `${m[1]!.charAt(0).toUpperCase()}${m[1]!.slice(1)}.${m[2]}`;
+};
+
+/** Where an element cursor is in scope, for the message that says it is not. */
+const eachScopeHint = (ident: string): string =>
+  `${spellIdent(ident)}.each is only meaningful inside ${spellIdent(ident)}.every / .none / .some / .where / .orderBy — it names one element of that collection, and nothing else has one`;
+
 /**
- * Build a quantified node, rejecting the two shapes that cannot mean anything:
- * a card-one hop (there is nothing to quantify over) and a scalar hop (there
- * is no entity for `pred` to be rooted at).
+ * `attr.each` — the element of a cardinality-many attribute, as a nav whose
+ * path is empty: the element *is* the value. It keeps the attribute's schema
+ * (so the predicates stay typed) and remembers which attribute it belongs to,
+ * which is what {@link checkElemScope} checks when the predicate is placed.
+ */
+const eachNode = (attr: PathCarrier): PathCarrier => {
+  const path = pathOf(attr);
+  const cards = cardsOf(attr);
+  if (cards[cards.length - 1] !== "many") {
+    throw new Error(
+      `ripple/query: ${path.join(" → ")}.each — only a cardinality-many attribute has elements; a cardinality-one attribute is its value already`,
+    );
+  }
+  return attachAttrNav({
+    ...(attr as object),
+    ident: attr.ident,
+    cardinality: "one" as const,
+    __path: [],
+    __cards: [],
+    __revs: [],
+    __each: path[path.length - 1]!,
+  } satisfies PathCarrier as PathCarrier);
+};
+
+/**
+ * Walk a where-node that is about to be placed in `ident`'s element scope.
+ *
+ * An `attr.each` predicate for another attribute means nothing here, and a
+ * scalar collection's element is a value, so *only* `.each` predicates can
+ * constrain it — a path would have to be walked from a string. A nested
+ * quantifier is left alone: it checked its own scope when it was built.
+ */
+const checkElemScope = (
+  node: AnyWhereNode,
+  ident: string,
+  scalar: boolean,
+  where: string,
+): void => {
+  if (isOr(node)) {
+    for (const p of node.preds) checkElemScope(p, ident, scalar, where);
+    return;
+  }
+  if (isNot(node)) {
+    checkElemScope(node.pred, ident, scalar, where);
+    return;
+  }
+  if (isQuantified(node)) {
+    if (scalar) throw new Error(elemOnlyError(ident, where));
+    return;
+  }
+  if (node.each !== undefined && node.each !== ident) {
+    throw new Error(`ripple/query: in ${where}: ${eachScopeHint(node.each)}`);
+  }
+  if (scalar && node.each === undefined) throw new Error(elemOnlyError(ident, where));
+};
+
+const elemOnlyError = (ident: string, where: string): string =>
+  `ripple/query: in ${where}: the elements of a cardinality-many scalar are values, not entities — write the inner predicate against the element, e.g. ${spellIdent(ident)}.each.eq(…)`;
+
+/**
+ * Build a quantified node, rejecting the shape that cannot mean anything: a
+ * card-one hop, which has no elements to quantify over. A cardinality-many
+ * scalar quantifies over its values, named by `attr.each`.
  */
 const quantified = (
   quant: Quantifier,
   attr: PathCarrier,
-  pred: WhereNode,
+  pred: AnyWhereNode,
 ): Quantified => {
   const path = pathOf(attr);
   const cards = cardsOf(attr);
@@ -447,11 +628,13 @@ const quantified = (
       `ripple/query: ${quant}(...) on ${path.join(" → ")} — only a cardinality-many attribute has elements to quantify over`,
     );
   }
-  if ((attr as { valueType?: unknown }).valueType !== ":db.type/ref") {
-    throw new Error(
-      `ripple/query: ${quant}(...) on ${path.join(" → ")} — the inner predicate is rooted at the hop's target, so the hop must be a ref. A predicate on a cardinality-many scalar already means "some value matches".`,
-    );
-  }
+  const ident = path[path.length - 1]!;
+  checkElemScope(
+    pred,
+    ident,
+    !isRefNav(attr),
+    `${quant}(...) on ${path.join(" → ")}`,
+  );
   return {
     _tag: "Quantified",
     quant,
@@ -462,14 +645,38 @@ const quantified = (
   };
 };
 
+/**
+ * An element cursor that never reached a scope: `User.tags.each` in the
+ * query's own `.where`, where there is no collection and so no element. The
+ * type says so too (see {@link EachOf}); this is the runtime half.
+ *
+ * A quantifier is not walked into — it discharged its element scope when it
+ * was built.
+ */
+const assertNoLooseElem = (node: AnyWhereNode): void => {
+  if (isQuantified(node)) return;
+  if (isOr(node)) {
+    for (const p of node.preds) assertNoLooseElem(p);
+    return;
+  }
+  if (isNot(node)) {
+    assertNoLooseElem(node.pred);
+    return;
+  }
+  if (node.each !== undefined) {
+    throw new Error(`ripple/query: ${eachScopeHint(node.each)}`);
+  }
+};
+
 // ── nested collections: pull-phase where / order / offset / limit ──────────
 
 /**
- * A card-many ref or backlink nav with pull-phase constraints attached:
+ * A cardinality-many nav with pull-phase constraints attached:
  *
  * ```ts
  * Todo.owner.reverse.where(Todo.done.eq(false)).orderBy(Todo.due).limit(5)
  *   .select({ title: Todo.title })
+ * User.tags.where(User.tags.each.startsWith("a")).orderBy(User.tags.each).limit(3)
  * ```
  *
  * The constraints lower to the `PullAttrSpec` fields of *this* collection
@@ -477,32 +684,53 @@ const quantified = (
  * pull, after the outer `:order` / `:offset` / `:limit` slice — they filter the
  * collection, never the rows. An element-less collection is `[]`, not a
  * dropped parent, so the outer `:limit` still counts rows the client keeps.
+ *
+ * A ref collection still needs its `.select({ … })`; a **scalar** one is the
+ * field itself — a string has no shape — so `select` is `never` there and the
+ * nav goes straight into `.select({ tags: … })`.
  */
 export interface CollectionNav<A extends PathCarrier = PathCarrier> {
   readonly _tag: "collection";
   readonly attr: A;
   /** Already lowered — each call lowers its argument eagerly. */
   readonly constraints: PullNestedConstraints;
-  where(...preds: readonly WhereNode[]): CollectionNav<A>;
-  orderBy(
-    key: NestedOrderKey,
+  where(
+    ...preds: readonly WhereNode<ElemScopeOf<A>>[]
+  ): CollectionNav<A>;
+  orderBy<K extends NestedOrderKey>(
+    key: K & ValidOrderKey<K, AttrIdent<A>>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): CollectionNav<A>;
   limit(n: number): CollectionNav<A>;
   offset(n: number): CollectionNav<A>;
-  select<const S extends Shape>(shape: S & ValidShape<S>): SelectNested<A, S>;
+  readonly select: A extends { readonly valueType: ":db.type/ref" }
+    ? <const S extends Shape>(shape: S & ValidShape<S>) => SelectNested<A, S>
+    : never;
 }
 
 /**
- * A sort key for a nested collection: a path rooted at the element, and
- * card-one — a many attribute's sort key would be a set, not a value, and is
- * rejected here at the type level (the outer `orderBy` rejects it when the
- * query is built).
+ * A sort key for a nested collection: a card-one path rooted at the element —
+ * a many attribute's sort key would be a set, not a value, and is rejected
+ * here at the type level (the outer `orderBy` rejects it when the query is
+ * built) — or the element itself, `attr.each`.
  */
 export type NestedOrderKey = PathCarrier & {
   readonly cardinality?: "one";
 };
+
+/**
+ * `K`, unless it is an element cursor for some *other* collection: `.each`
+ * sorts the collection it belongs to, and nothing else. A plain path carries
+ * no `__each` at all, so it passes straight through.
+ */
+export type ValidOrderKey<K, I extends string> = K extends {
+  readonly __each: infer J;
+}
+  ? [J] extends [I]
+    ? K
+    : `orderBy key is ${J & string}.each — an element cursor sorts its own collection, and this is not it`
+  : K;
 
 /** `PredTag` → the engine's builtin predicate name inside a pull `:where`. */
 const PULL_OPS: Record<PredTag, PullElemOp> = {
@@ -526,12 +754,34 @@ const nsOfIdent = (ident: string): string | undefined =>
   /^:([^/]+)\//.exec(ident)?.[1];
 
 /**
- * The namespace of the element a nested `where` / `orderBy` is rooted at: the
- * *referring* entity of a backlink (so, the ref's own namespace), or the
- * target of a forward ref. `undefined` for an untargeted ref — then paths go
- * unchecked rather than wrongly rejected.
+ * What a nested `where` / `orderBy` is written against: one element of the
+ * collection being constrained.
  */
+interface ElemScope {
+  /**
+   * The element's namespace: the *referring* entity of a backlink (so, the
+   * ref's own namespace), or the target of a forward ref. `undefined` for an
+   * untargeted ref — then paths go unchecked rather than wrongly rejected —
+   * and for a scalar, which is no entity at all.
+   */
+  readonly ns: string | undefined;
+  /** The element is the value itself: only `attr.each` can constrain it. */
+  readonly scalar: boolean;
+  /** The attribute whose element this is — what `.each` must name. */
+  readonly ident: string;
+  /** The collection's path, for the message when something does not fit. */
+  readonly collection: readonly string[];
+}
+
+const elemScope = (attr: PathCarrier): ElemScope => {
+  const path = pathOf(attr);
+  const ident = path[path.length - 1] ?? "";
+  const scalar = !isRefNav(attr);
+  return { ns: elementNs(attr), scalar, ident, collection: path };
+};
+
 const elementNs = (attr: PathCarrier): string | undefined => {
+  if (!isRefNav(attr)) return undefined;
   const path = pathOf(attr);
   const last = path[path.length - 1];
   if (last === undefined) return undefined;
@@ -544,104 +794,143 @@ const elementNs = (attr: PathCarrier): string | undefined => {
 };
 
 /**
- * A nested path starts at the element, so its first forward hop must be an
- * attribute of the element's namespace. (A first hop that is itself a backlink
- * is rooted at the referring namespace, and says nothing about the element.)
+ * A nested path starts at the element, so it has to be one the element can
+ * carry: a scalar element has no attributes at all (only `.each` names it),
+ * and an entity element's first forward hop must be one of its namespace's.
+ * (A first hop that is itself a backlink is rooted at the referring
+ * namespace, and says nothing about the element.)
  */
 const checkElementRoot = (
-  elemNs: string | undefined,
+  scope: ElemScope | undefined,
   path: readonly string[],
   revs: readonly boolean[],
+  each: string | undefined,
   what: string,
-  collection: readonly string[],
 ): void => {
+  if (scope === undefined) return;
+  const collection = scope.collection.join(" → ");
+  if (each !== undefined) {
+    if (each !== scope.ident) {
+      throw new Error(
+        `ripple/query: in nested ${what} on ${collection}: ${eachScopeHint(each)}`,
+      );
+    }
+    return;
+  }
+  if (scope.scalar) {
+    throw new Error(
+      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a value, not an entity — name it with ${spellIdent(scope.ident)}.each`,
+    );
+  }
   const first = path[0];
-  if (elemNs === undefined || first === undefined) return;
+  if (scope.ns === undefined || first === undefined) return;
   if (first === ID || revs[0] === true) return;
   const ns = nsOfIdent(first);
-  if (ns !== undefined && ns !== elemNs) {
+  if (ns !== undefined && ns !== scope.ns) {
     throw new Error(
-      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection.join(" → ")} is rooted at the collection's element, which is a :${elemNs}/… entity — ${first} is not one of its attributes`,
+      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a :${scope.ns}/… entity — ${first} is not one of its attributes`,
     );
   }
 };
 
 /**
- * Lower a where-node into a per-element pull predicate.
- *
- * `prefix` is the hop chain of the `some(...)`s we are inside. Fan-out along a
- * path is existential, so a prefix distributes over a comparison and over `or`
- * (`∃x (P ∨ Q)` is `(∃x P) ∨ (∃x Q)`) — but not over a negation, which is why
- * `not` / `none` under a `some` are rejected instead of quietly meaning
- * something else. `every` has no pull-phase spelling at all.
+ * The hop chain of the `some(...)`s a node is inside, as a pull-phase
+ * quantifier. Fan-out along a path is existential, so a prefix distributes
+ * over a comparison and over `or` (`∃x (P ∨ Q)` is `(∃x P) ∨ (∃x Q)`) and
+ * folds into their path — but it does *not* distribute over a negation or an
+ * `every`, so those wrap the prefix in an explicit `{some: …}` instead: the
+ * engine walks it element by element, which is exactly what `∃x ¬P` needs.
  */
-const lowerElemNode = (
-  node: WhereNode,
+const withPrefix = (
   prefix: readonly string[],
   prefixRevs: readonly boolean[],
-  elemNs: string | undefined,
+  pred: PullElemPred,
+): PullElemPred =>
+  prefix.length === 0
+    ? pred
+    : {
+        some: {
+          path: [...prefix],
+          ...(prefixRevs.some(Boolean) ? { reverse: [...prefixRevs] } : {}),
+          pred,
+        },
+      };
+
+/**
+ * Lower a where-node into a per-element pull predicate. `scope` is the
+ * element the node is written against, and is `undefined` once we are inside
+ * a folded `some(...)` — the hop's own build already checked what it reaches.
+ */
+const lowerElemNode = (
+  node: AnyWhereNode,
+  prefix: readonly string[],
+  prefixRevs: readonly boolean[],
+  scope: ElemScope | undefined,
   collection: readonly string[],
 ): PullElemPred => {
   if (isOr(node)) {
     return {
       or: node.preds.map((p) =>
-        lowerElemNode(p, prefix, prefixRevs, elemNs, collection),
+        lowerElemNode(p, prefix, prefixRevs, scope, collection),
       ),
     };
   }
   if (isNot(node)) {
-    if (prefix.length > 0) {
-      throw new Error(
-        `ripple/query: not(...) inside some(...) is not expressible in a nested where on ${collection.join(" → ")} — "some element whose hop does not …" needs an element cursor the pull phase does not have`,
-      );
-    }
-    return { not: lowerElemNode(node.pred, [], [], elemNs, collection) };
+    return withPrefix(prefix, prefixRevs, {
+      not: lowerElemNode(node.pred, [], [], scope, collection),
+    });
   }
   if (isQuantified(node)) {
-    checkElementRoot(elemNs, node.path, node.revs, "where", collection);
-    if (node.quant === "some") {
-      // an existential hop is exactly a longer path: fan-out is existential
-      return lowerElemNode(
-        node.pred,
-        [...prefix, ...node.path],
-        [...prefixRevs, ...node.revs],
-        undefined,
-        collection,
-      );
-    }
-    if (node.quant === "none") {
-      if (prefix.length > 0) {
-        throw new Error(
-          `ripple/query: none(...) inside some(...) is not expressible in a nested where on ${collection.join(" → ")}`,
-        );
-      }
-      // no element matches = not(some element matches)
-      return {
-        not: lowerElemNode(
+    checkElementRoot(scope, node.path, node.revs, undefined, "where");
+    const hop = {
+      path: [...node.path],
+      ...(node.revs.some(Boolean) ? { reverse: [...node.revs] } : {}),
+    };
+    switch (node.quant) {
+      case "some":
+        // an existential hop is exactly a longer path: fan-out is existential
+        return lowerElemNode(
           node.pred,
-          [...node.path],
-          [...node.revs],
+          [...prefix, ...node.path],
+          [...prefixRevs, ...node.revs],
           undefined,
           collection,
-        ),
-      };
+        );
+      case "none":
+        // no element matches = not(some element matches), and a `some` is a
+        // longer path again, so the negation is all that is left to say
+        return withPrefix(prefix, prefixRevs, {
+          not: lowerElemNode(
+            node.pred,
+            [...node.path],
+            [...node.revs],
+            undefined,
+            collection,
+          ),
+        });
+      case "every":
+        // no *reached* element fails, evaluated per element by the engine —
+        // vacuously true of a hop that reaches nothing, like the query's own
+        return withPrefix(prefix, prefixRevs, {
+          every: {
+            ...hop,
+            pred: lowerElemNode(node.pred, [], [], undefined, collection),
+          },
+        });
     }
-    throw new Error(
-      `ripple/query: every(...) is not expressible in a nested where on ${collection.join(" → ")} — it is not the negation of an existential (an element with no value at all fails it), and the pull phase has no element cursor. Use some(...) / none(...) here, or put the every(...) in the query's own .where`,
-    );
   }
-  return lowerElemCmp(node, prefix, prefixRevs, elemNs, collection);
+  return lowerElemCmp(node, prefix, prefixRevs, scope, collection);
 };
 
 const lowerElemCmp = (
-  p: Predicate,
+  p: Predicate<unknown>,
   prefix: readonly string[],
   prefixRevs: readonly boolean[],
-  elemNs: string | undefined,
+  scope: ElemScope | undefined,
   collection: readonly string[],
 ): PullElemCmp => {
   const revs = p.revs ?? p.path.map(() => false);
-  checkElementRoot(elemNs, p.path, revs, "where", collection);
+  checkElementRoot(scope, p.path, revs, p.each, "where");
   const op = PULL_OPS[p.op];
   if (op === undefined) {
     throw new Error(
@@ -661,8 +950,7 @@ const lowerElemOrder = (
   key: PathCarrier,
   dir: OrderDir,
   empty: OrderEmpty | undefined,
-  elemNs: string | undefined,
-  collection: readonly string[],
+  scope: ElemScope | undefined,
 ): PullElemOrder => {
   const path = pathOf(key);
   if (cardsOf(key).includes("many")) {
@@ -671,7 +959,7 @@ const lowerElemOrder = (
     );
   }
   const revs = revsOf(key);
-  checkElementRoot(elemNs, path, revs, "orderBy", collection);
+  checkElementRoot(scope, path, revs, key.__each, "orderBy");
   return {
     path: [...path],
     ...(revs.some(Boolean) ? { reverse: [...revs] } : {}),
@@ -684,8 +972,8 @@ const collectionNav = <A extends PathCarrier>(
   attr: A,
   constraints: PullNestedConstraints,
 ): CollectionNav<A> => {
-  const elemNs = elementNs(attr);
-  const collection = pathOf(attr);
+  const scope = elemScope(attr);
+  const collection = scope.collection;
   const self: CollectionNav<A> = {
     _tag: "collection",
     attr,
@@ -695,7 +983,7 @@ const collectionNav = <A extends PathCarrier>(
         ...constraints,
         where: [
           ...(constraints.where ?? []),
-          ...preds.map((p) => lowerElemNode(p, [], [], elemNs, collection)),
+          ...preds.map((p) => lowerElemNode(p, [], [], scope, collection)),
         ],
       }),
     orderBy: (key, dir = "asc", opts) =>
@@ -703,32 +991,34 @@ const collectionNav = <A extends PathCarrier>(
         ...constraints,
         order: [
           ...(constraints.order ?? []),
-          lowerElemOrder(key, dir, opts?.empty, elemNs, collection),
+          lowerElemOrder(key as PathCarrier, dir, opts?.empty, scope),
         ],
       }),
     limit: (n) => collectionNav(attr, { ...constraints, limit: n }),
     offset: (n) => collectionNav(attr, { ...constraints, offset: n }),
-    select: (shape) =>
-      makeSelectNested(attr, shape, constraints) as SelectNested<
-        A,
-        typeof shape
-      >,
+    select: ((shape: Shape) => {
+      if (!isRefNav(attr)) {
+        throw new Error(
+          `ripple/query: ${collection.join(" → ")} is a cardinality-many scalar — its elements are values, which have no shape. The constrained collection is the field itself: \`.select({ ${spellIdent(scope.ident).split(".")[1] ?? "values"}: ${spellIdent(scope.ident)}.where(…) })\``,
+        );
+      }
+      return makeSelectNested(attr, shape, constraints);
+    }) as CollectionNav<A>["select"],
   };
   return self;
 };
 
 /**
- * Start constraining a collection. Only a cardinality-many **ref** has
- * elements to filter and order: a card-one ref reaches one entity (constrain
- * it in the query's own `.where`), and a card-many *scalar* has no element to
- * root a predicate at.
+ * Start constraining a collection. A cardinality-many attribute is what has
+ * elements to filter, order and page: the entities a many ref or a backlink
+ * reaches, or the values of a many scalar (named by `attr.each`). A card-one
+ * ref reaches one entity — constrain it in the query's own `.where`.
  */
 const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
   const cards = cardsOf(attr);
-  const isRef = (attr as { valueType?: unknown }).valueType === ":db.type/ref";
-  if (cards[cards.length - 1] !== "many" || !isRef) {
+  if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many ref collection or a backlink, which is what has elements to filter`,
+      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many collection (a many ref, a backlink, or a many scalar), which is what has elements to filter`,
     );
   }
   return collectionNav(attr, {});
@@ -787,6 +1077,7 @@ const NAV_METHODS = new Set([
   "exists",
   "missing",
   "is",
+  "each",
   "some",
   "every",
   "none",
@@ -884,6 +1175,9 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
       // `Todo.owner.name.optional` must still remember `:todo/owner`, or the
       // multi-hop it is goes unnoticed (issue #69).
       if (prop === "optional") return optional(receiver);
+      // `.each` is the receiver's element, so it keeps the path that reached
+      // the collection and empties it: the element is the value itself
+      if (prop === "each") return eachNode(receiver as PathCarrier);
       if (typeof prop === "string" && prop in api) {
         const v = (api as Record<string, unknown>)[prop];
         return typeof v === "function" ? (v as Function).bind(receiver) : v;
@@ -968,7 +1262,10 @@ type SelectFieldResult<F> = F extends {
   readonly field: infer Inner;
 }
   ? SelectFieldResult<Inner> | undefined
-  : F extends {
+  : F extends { readonly _tag: "collection"; readonly attr: infer A }
+    ? // a constrained card-many scalar: the same array, with fewer values in it
+      readonly SchemaType<A>[]
+    : F extends {
         readonly _tag: "select";
         readonly attr: infer A;
         readonly shape: infer S;
@@ -1014,8 +1311,13 @@ export interface NavQueryBuilder<
   select<const S extends Shape>(
     shape: S & ValidShape<S>,
   ): NavQueryBuilder<N, readonly SelectResult<S>[]>;
-  orderBy(
-    attr: PathCarrier,
+  /**
+   * A sort key is a card-one path from the row. An element cursor is not one:
+   * `.each` names a value inside a collection, and the collection is the thing
+   * a row has — see {@link ValidOrderKey}.
+   */
+  orderBy<K extends PathCarrier>(
+    attr: K & ValidOrderKey<K, never>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): NavQueryBuilder<N, R>;
@@ -1069,8 +1371,10 @@ const builder = <N extends AnyNamespace, R>(
   const self: NavQueryBuilder<N, R> = {
     ns,
     spec,
-    where: (...preds) =>
-      builder(ns, { ...spec, where: [...spec.where, ...preds] }),
+    where: (...preds) => {
+      for (const p of preds) assertNoLooseElem(p);
+      return builder(ns, { ...spec, where: [...spec.where, ...preds] });
+    },
     select: (shape) =>
       builder(ns, { ...spec, shape }) as unknown as NavQueryBuilder<
         N,
@@ -1078,6 +1382,9 @@ const builder = <N extends AnyNamespace, R>(
       >,
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
+      if (attr.__each !== undefined) {
+        throw new Error(`ripple/query: ${eachScopeHint(attr.__each)}`);
+      }
       if (cardsOf(attr).includes("many")) {
         throw new Error(
           `ripple/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
@@ -1306,7 +1613,7 @@ const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
  * `or` branch and a `not` body may invent join variables freely, because
  * `or-join` / `not-join` export only `?e`.
  */
-const lowerWhere = (root: string, node: WhereNode): unknown[] => {
+const lowerWhere = (root: string, node: AnyWhereNode): unknown[] => {
   if (isOr(node)) {
     if (node.preds.length === 0) return [neverClause()];
     return [
@@ -1354,9 +1661,9 @@ const lowerQuantified = (root: string, node: Quantified): unknown[] => {
   }
 };
 
-const lowerPredicate = (root: string, p: Predicate): unknown[] => {
+const lowerPredicate = (root: string, p: Predicate<unknown>): unknown[] => {
   const { path, op, value } = p;
-  if (path.length === 0) return [];
+  if (path.length === 0) return lowerElemPredicate(root, p);
   const revs = p.revs ?? path.map(() => false);
   if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, revs, p);
 
@@ -1439,6 +1746,53 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 };
 
 /**
+ * An `attr.each` predicate: the path is empty, so there is nothing to walk —
+ * `root` is already the bound element variable a quantifier's hop chain
+ * introduced, and the comparison is a ground clause on it.
+ *
+ * `exists` is free (the chain bound it, so it exists), and `missing` is the
+ * clause that matches nothing: a bound element is not an absent one. Inside
+ * `every`, that reads correctly as "the collection is empty".
+ */
+const lowerElemPredicate = (root: string, p: Predicate<unknown>): unknown[] => {
+  const { op, value } = p;
+  switch (op) {
+    case "eq":
+    case "is":
+      return [[["=", root, value]]];
+    case "ne":
+      return [[["not=", root, value]]];
+    case "lt":
+      return [[["<", root, value]]];
+    case "lte":
+      return [[["<=", root, value]]];
+    case "gt":
+      return [[[">", root, value]]];
+    case "gte":
+      return [[[">=", root, value]]];
+    case "startsWith":
+      return [[["starts-with?", root, value]]];
+    case "endsWith":
+      return [[["ends-with?", root, value]]];
+    case "includes":
+      return [[["includes?", root, value]]];
+    case "matches":
+      // `re-find?` takes the pattern first, then the string
+      return [[["re-find?", value, root]]];
+    case "in": {
+      const values = value as readonly unknown[];
+      if (values.length === 0) return [neverClause()];
+      // `root` is bound, so the collection binding filters it
+      return [[["ground", [...values]], [root, "..."]]];
+    }
+    case "exists":
+      return [];
+    case "missing":
+      return [neverClause()];
+  }
+};
+
+/**
  * `:db/id` is the entity variable, not a datom: `eq` unifies it with the
  * constant so the planner starts there, and the ordering predicates compare
  * it as the number it is. Every entity has one, so `exists` costs no clause.
@@ -1447,7 +1801,7 @@ const lowerIdPredicate = (
   root: string,
   path: readonly string[],
   revs: readonly boolean[],
-  p: Predicate,
+  p: Predicate<unknown>,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;

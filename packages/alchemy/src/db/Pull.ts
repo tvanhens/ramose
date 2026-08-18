@@ -388,13 +388,30 @@ export const assertDirectField = (
 };
 
 /**
- * A constrained collection nav (`Todo.owner.reverse.where(…)`) with no shape.
- * Structural, like {@link isReverseCarrier} — pull stays free of NavQuery.
+ * A constrained collection nav (`Todo.owner.reverse.where(…)`, or
+ * `User.tags.where(…)`). Structural, like {@link isReverseCarrier} — pull
+ * stays free of NavQuery.
  */
-const isCollectionCarrier = (value: unknown): boolean =>
+const isCollectionCarrier = (
+  value: unknown,
+): value is {
+  readonly _tag: "collection";
+  readonly attr: unknown;
+  readonly constraints?: PullNestedConstraints;
+} =>
   typeof value === "object" &&
   value !== null &&
   (value as { _tag?: unknown })._tag === "collection";
+
+/**
+ * An element cursor (`User.tags.each`). It names one value of a collection
+ * inside that collection's own constraints; as a *field* it would pull the
+ * whole attribute under a name that promises one value.
+ */
+const isElementCarrier = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { __each?: unknown }).__each === "string";
 
 /** Inspect a literate pull field: optional / many / nested pattern. */
 export const inspectPullField = (
@@ -413,10 +430,27 @@ export const inspectPullField = (
     optional = true;
     current = current.field;
   }
-  if (isCollectionCarrier(current)) {
+  if (isElementCarrier(current)) {
     throw new Error(
-      "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+      `ripple/query: ${identOf(current)}.each is an element cursor, not a select field — it names one value of the collection inside its own every / none / some / where / orderBy. Select the attribute itself.`,
     );
+  }
+  if (isCollectionCarrier(current)) {
+    // a scalar collection *is* the field: its elements are values, and a
+    // value has no shape to ask for. A ref one still needs its `.select`.
+    if ((current.attr as { valueType?: unknown })?.valueType === ":db.type/ref") {
+      throw new Error(
+        "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+      );
+    }
+    return {
+      optional,
+      many: true,
+      reverse: false,
+      nestedPattern: undefined,
+      constraints: current.constraints,
+      attr: current.attr,
+    };
   }
   if (isPullNested(current)) {
     return {
@@ -481,11 +515,13 @@ const lowerField = (as: string, field: unknown): unknown => {
       `ripple/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
   }
+  // a card-many scalar carries its own `where` / `order` / `offset` / `limit`
   return {
     kind: "attr",
     attr: identOf(info.attr),
     reverse: false,
     as,
+    ...constraintFields(info.constraints),
   };
 };
 

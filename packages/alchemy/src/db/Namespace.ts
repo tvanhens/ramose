@@ -192,6 +192,7 @@ const OWN_ATTR_KEYS = new Set([
   "exists",
   "missing",
   "is",
+  "each",
   "some",
   "every",
   "none",
@@ -203,6 +204,7 @@ const OWN_ATTR_KEYS = new Set([
   "__cards",
   "__revs",
   "__reverse",
+  "__each",
 ]);
 
 /**
