@@ -59,6 +59,31 @@ if (!allowDirty) {
   });
 }
 
+// npm 11.5.1 is the floor for trusted publishing (OIDC). It also matters for
+// interactive publishes: an account whose 2FA is a passkey or security key
+// needs the browser-based WebAuthn ceremony, and older npm has no way to run
+// it — it falls back to demanding a TOTP code the account cannot produce and
+// fails with EOTP. Checked up front because the failure otherwise lands after
+// the build and tests have already run.
+steps.push({
+  name: "check npm version",
+  run: async () => {
+    const version = (await $`npm --version`.quiet()).stdout.toString().trim();
+    const [major = 0, minor = 0, patch = 0] = version.split(".").map(Number);
+    const ok = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+    if (!ok) {
+      throw new Error(
+        `npm ${version} is too old to publish reliably (need >= 11.5.1).\n\n` +
+          "  - trusted publishing (OIDC) requires 11.5.1+\n" +
+          "  - passkey / security-key 2FA needs the browser WebAuthn ceremony,\n" +
+          "    which older npm cannot run — it fails with EOTP instead\n\n" +
+          "Upgrade with: npm install -g npm@latest",
+      );
+    }
+    console.log(`npm ${version}`);
+  },
+});
+
 if (!skipTests) {
   steps.push({ name: "typecheck", run: () => $`bun run typecheck` });
   steps.push({ name: "test", run: () => $`bun run test` });
@@ -103,11 +128,14 @@ try {
     await $`bun run scripts/prepare-publish.ts --restore`.quiet();
   }
 } catch (error) {
-  // The failing command has already written its own diagnostics to stderr.
-  // Rethrowing would make Bun print the whole nested ShellError on top of
-  // that, which buries the actual message, so report and exit instead.
-  const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
-  console.error(`\n\x1b[31m✗ release failed: ${message}\x1b[0m`);
+  // A failed command has already written its own diagnostics to stderr, so only
+  // its first line is worth repeating — rethrowing would print the whole nested
+  // ShellError on top and bury the real message. Errors raised by the steps in
+  // this file carry their explanation in the message itself, so print those in
+  // full.
+  const shellFailure = error instanceof Error && error.name === "ShellError";
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`\n\x1b[31m✗ release failed: ${shellFailure ? message.split("\n")[0] : message}\x1b[0m`);
   console.error("\x1b[2mworkspace ranges were restored; nothing is left pinned\x1b[0m");
   process.exit(1);
 }

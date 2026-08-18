@@ -217,18 +217,33 @@ After the first release, enable trusted publishing for each package at
 Actions, repo `tvanhens/ripple`, workflow `release.yml`). Once all eight are
 configured, `NPM_TOKEN` can be deleted.
 
-#### 2FA and the release token
+#### npm version
 
-If the npm account has 2FA set to "auth and writes", `npm publish` demands a
-one-time password and fails with `EOTP` without one. `bun run release --otp
-<code>` passes one through, but a TOTP code lasts ~30 seconds and eight
-publishes can outrun it. The publish is idempotent, so a code that expires
-partway is recoverable — re-run with a fresh one and the packages that made it
-are skipped — but it is a poor loop to be in.
+Publishing needs npm **11.5.1 or newer**; `scripts/release.ts` checks this
+before it does any work. Trusted publishing requires it, and so does 2FA on a
+modern account: npm has [stopped accepting new TOTP enrollments][2fa], so fresh
+2FA setups are passkeys or security keys, and completing one from the CLI means
+a browser-based WebAuthn ceremony that older npm cannot run. Old npm falls back
+to demanding a TOTP code the account cannot produce and fails with `EOTP`.
 
-The better answer is a token that bypasses 2FA, which is the same token CI
-needs. [Classic tokens were removed in November 2025][access-tokens]; create a
-**granular access token** at
+```sh
+npm install -g npm@latest
+```
+
+#### 2FA on publish
+
+With a passkey or security key, `npm publish` hands off to the browser, you
+approve with Touch ID or the key, and the publish continues. There is no code
+to type — `--otp` only applies to a TOTP account, where it passes a code
+through. A TOTP code lasts ~30 seconds and eight publishes can outrun it; the
+publish is idempotent, so an expired code is recoverable (re-run and the
+packages that made it are skipped).
+
+#### The release token
+
+CI needs a credential for packages that do not exist yet, since OIDC cannot
+bootstrap one. [Classic tokens were removed in November 2025][access-tokens];
+create a **granular access token** at
 [npmjs.com/settings/~/tokens](https://www.npmjs.com/settings/~/tokens):
 
 - **Bypass two-factor authentication**: checked — without this it still prompts
@@ -237,18 +252,24 @@ needs. [Classic tokens were removed in November 2025][access-tokens]; create a
   that do not exist yet, which is exactly what a first publish does.
 - Expiration: as short as is practical
 
-Use it for one run without writing it to `~/.npmrc`. The `env` prefix is
-required: the config key contains `/` and `:`, which are not legal in a shell
-variable name, so the usual `VAR=value cmd` form fails before npm ever runs.
+Add it as the `NPM_TOKEN` repository secret. To use one locally for a single
+run without writing it to `~/.npmrc`, note that the `env` prefix is required:
+the config key contains `/` and `:`, which are not legal in a shell variable
+name, so the usual `VAR=value cmd` form fails before npm ever runs.
 
 ```sh
 env 'npm_config_//registry.npmjs.org/:_authToken=<token>' bun run release
 ```
 
-Add the same token as the `NPM_TOKEN` repository secret so the workflow can
-bootstrap packages that do not exist yet. Delete it once all eight packages
-have trusted publishing configured — at that point nothing needs a
-long-lived credential.
+**This is a stopgap by design.** Bypass-2FA tokens were blocked from managing
+accounts, orgs and packages in [July 2026][gat-restriction], and are
+[expected to lose direct publish rights around January 2027][gat-deprecation] —
+reduced to staging a publish that a maintainer then approves with 2FA. Move to
+trusted publishing as soon as the packages exist and delete the token.
+
+[2fa]: https://docs.npmjs.com/about-two-factor-authentication
+[gat-restriction]: https://github.blog/changelog/2026-07-31-restricting-npm-bypass-2fa-granular-access-tokens/
+[gat-deprecation]: https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/
 
 [trusted-publishing]: https://docs.npmjs.com/trusted-publishers
 [access-tokens]: https://docs.npmjs.com/about-access-tokens
