@@ -26,11 +26,13 @@ import {
   Ref,
   cardsOf,
   finalizeNavResult,
+  pathOf,
   layer,
   lowerNavQuery,
   not,
   or,
   query,
+  revsOf,
   type WhereNode,
 } from "../../src/db/internal.ts";
 
@@ -859,7 +861,113 @@ describe("lowering: some / every / none quantify over a many hop", () => {
   });
 });
 
-describe("quantifiers end to end", () => {
+describe("lowering: reverse refs walk a ref hop backwards", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(User).where(...preds).build()).query.where;
+
+  test("the path keeps the ref's ident; the hop is reversed and many", () => {
+    const back = Todo.owner.reverse;
+    expect(pathOf(back)).toEqual([":todo/owner"]);
+    expect(cardsOf(back)).toEqual(["many"]);
+    expect(revsOf(back)).toEqual([true]);
+    // walking on from the backlink continues forwards, in the owning namespace
+    expect(pathOf(back.title)).toEqual([":todo/owner", ":todo/title"]);
+    expect(cardsOf(back.title)).toEqual(["many", "one"]);
+    expect(revsOf(back.title)).toEqual([true, false]);
+  });
+
+  test("a reversed hop flips the datom, and nothing else", () => {
+    expect(whereOf(Todo.owner.reverse.title.eq("ship"))).toEqual([
+      userScope,
+      ["?j0", ":todo/owner", "?e"],
+      ["?j0", ":todo/title", "ship"],
+    ]);
+    expect(whereOf(Todo.owner.reverse.exists())).toEqual([
+      userScope,
+      ["_", ":todo/owner", "?e"],
+    ]);
+    expect(whereOf(Todo.owner.reverse.missing())).toEqual([
+      userScope,
+      ["not", ["_", ":todo/owner", "?e"]],
+    ]);
+  });
+
+  test("a backlink is a many hop, so it quantifies", () => {
+    expect(whereOf(Todo.owner.reverse.some(Todo.done.eq(true)))).toEqual([
+      userScope,
+      ["?x0", ":todo/owner", "?e"],
+      ["?x0", ":todo/done", true],
+    ]);
+    expect(whereOf(Todo.owner.reverse.none(Todo.done.eq(false)))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?x0", ":todo/owner", "?e"],
+        ["?x0", ":todo/done", false],
+      ],
+    ]);
+    expect(whereOf(Todo.owner.reverse.every(Todo.done.eq(true)))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?x0", ":todo/owner", "?e"],
+        ["not-join", ["?x0"], ["?x0", ":todo/done", true]],
+      ],
+    ]);
+  });
+
+  test("`.reverse.select` is a reverse pull spec, and drops no rows", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .select({
+          name: User.name,
+          todos: Todo.owner.reverse.select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
+          {
+            kind: "attr",
+            attr: ":todo/owner",
+            reverse: true,
+            as: "todos",
+            sub: [
+              { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+            ],
+          },
+        ],
+      ],
+    ]);
+    // a backlink is a possibly-empty array: it never becomes a required clause
+    expect(q.where).toEqual([userScope, ["?e", ":user/name", "_"]]);
+  });
+
+  test("a bare backlink in a shape is rejected: ask for a shape", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(User).select({ todos: Todo.owner.reverse }).build(),
+      ),
+    ).toThrow(/backlinks need a shape/);
+  });
+
+  test("orderBy across a backlink is rejected like any many hop", () => {
+    expect(() => query(User).orderBy(Todo.owner.reverse)).toThrow(
+      /cardinality-many/,
+    );
+    expect(() => query(User).orderBy(Todo.owner.reverse.title)).toThrow(
+      /orderBy\(:todo\/owner → :todo\/title\) crosses a cardinality-many attribute/,
+    );
+  });
+});
+
+describe("quantifiers and backlinks end to end", () => {
   /**
    * Ada — friends [Bob],       todos "a1" done, "a2" done
    * Bob — friends [Ada, Cyd],  todos "b1" open
@@ -935,6 +1043,83 @@ describe("quantifiers end to end", () => {
     await peer.dispose();
   });
 
+  test("a backlink filters, and `every` over it is vacuously true", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    expect(await names(peer, db, Todo.owner.reverse.exists())).toEqual([
+      "Ada",
+      "Bob",
+    ]);
+    expect(await names(peer, db, Todo.owner.reverse.missing())).toEqual(["Cyd"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.title.eq("b1")),
+    ).toEqual(["Bob"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.some(Todo.done.eq(false))),
+    ).toEqual(["Bob"]);
+    // Ada's todos are all done; Cyd has none, so nothing of hers fails
+    expect(
+      await names(peer, db, Todo.owner.reverse.every(Todo.done.eq(true))),
+    ).toEqual(["Ada", "Cyd"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.none(Todo.done.eq(false))),
+    ).toEqual(["Ada", "Cyd"]);
+
+    await peer.dispose();
+  });
+
+  test("a backlink in a shape is an array, empty rather than a dropped row", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse.select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(
+      rows.map((r) => ({
+        name: r.name,
+        todos: r.todos.map((t) => t.title).sort(),
+      })),
+    ).toEqual([
+      { name: "Ada", todos: ["a1", "a2"] },
+      { name: "Bob", todos: ["b1"] },
+      // no backlinks is an empty array, not a missing row
+      { name: "Cyd", todos: [] },
+    ]);
+    expect(peer.seen[0]?.rows).toBe(3);
+
+    await peer.dispose();
+  });
+
+  test("a backlink paged by the peer still counts whole rows", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(User)
+          .where(Todo.owner.reverse.exists())
+          .orderBy(User.name, "desc")
+          .limit(1)
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse.select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["Bob"]);
+    expect(peer.seen[0]?.rows).toBe(1);
+    await peer.dispose();
+  });
 });
 
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {

@@ -259,6 +259,15 @@ const cardinalityOf = (field: unknown): "one" | "many" => {
   return card === "many" ? "many" : "one";
 };
 
+/**
+ * A backlink node (`Todo.owner.reverse`). The marker is a plain property so
+ * this module stays free of a NavQuery import — pull is the lower layer.
+ */
+const isReverseCarrier = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { __reverse?: unknown }).__reverse === true;
+
 const isSelectNestedField = (
   value: unknown,
 ): value is { readonly _tag: "select"; readonly attr: unknown; readonly shape: unknown } =>
@@ -274,6 +283,7 @@ export const inspectPullField = (
 ): {
   readonly optional: boolean;
   readonly many: boolean;
+  readonly reverse: boolean;
   readonly nestedPattern: unknown | undefined;
   readonly attr: unknown;
 } => {
@@ -287,6 +297,7 @@ export const inspectPullField = (
     return {
       optional,
       many: cardinalityOf(current.attr) === "many",
+      reverse: isReverseCarrier(current.attr),
       nestedPattern: current.pattern,
       attr: current.attr,
     };
@@ -295,6 +306,7 @@ export const inspectPullField = (
     return {
       optional,
       many: cardinalityOf(current.attr) === "many",
+      reverse: isReverseCarrier(current.attr),
       nestedPattern: current.shape,
       attr: current.attr,
     };
@@ -302,6 +314,7 @@ export const inspectPullField = (
   return {
     optional,
     many: cardinalityOf(current) === "many",
+    reverse: isReverseCarrier(current),
     nestedPattern: undefined,
     attr: current,
   };
@@ -313,10 +326,17 @@ const lowerField = (as: string, field: unknown): unknown => {
     return {
       kind: "attr",
       attr: identOf(info.attr),
-      reverse: false,
+      reverse: info.reverse,
       as,
       sub: lowerLiterateMap(info.nestedPattern),
     };
+  }
+  if (info.reverse) {
+    // the peer answers a bare backlink with `{":db/id": n}` objects, which is
+    // neither a scalar nor the selected shape — ask for the shape you want
+    throw new Error(
+      `ripple/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
+    );
   }
   return {
     kind: "attr",

@@ -212,6 +212,92 @@ query(Movie).where(Movie.year.none(Movie.title.eq("x")));
 // @ts-expect-error a quantifier takes a where-node, not an attribute
 query(User).where(User.friends.some(User.name));
 
+// ── reverse refs: the backlink is rooted at the ref's owning namespace ─────
+
+/** `:book/author` read backwards, from an `Author` root. */
+type _reverseIdent = Expect<
+  Equal<typeof Book.author.reverse.title.ident, ":book/title">
+>;
+library.q(
+  query(Author).where(
+    Book.author.reverse.title.eq("Calculus"),
+    Book.author.reverse.exists(),
+    // a backlink is a many hop, so it quantifies
+    Book.author.reverse.some(Book.published.lt(new Date())),
+    Book.author.reverse.every(Book.title.startsWith("A")),
+  ),
+);
+
+const backlinks = library.q(
+  query(Author).select({
+    name: Author.name,
+    books: Book.author.reverse.select({ title: Book.title }),
+  }),
+);
+/** a backlink shape is an array — a possibly-empty one, never a dropped row */
+type _backlinks = Expect<
+  Equal<
+    Effect.Success<typeof backlinks>,
+    readonly {
+      readonly name: string;
+      readonly books: readonly { readonly title: string }[];
+    }[]
+  >
+>;
+
+/** an untargeted ref has a backlink too — only the owning namespace matters */
+query(User).where(User.bestFriend.reverse.name.eq("Ada"));
+
+// @ts-expect-error `:author/name` is not a ref, so it has no backlink
+query(Author).where(Book.title.reverse.eq("x"));
+
+// @ts-expect-error a backlink exposes the *owning* namespace's attributes
+query(Author).where(Book.author.reverse.name.eq("Ada"));
+
+// ── `.orderBy` takes an attribute, including one across a ref ──────────────
+
+const ordered = library.q(
+  query(Book)
+    .orderBy(Book.author.name, "desc", { empty: "first" })
+    .select({ title: Book.title }),
+);
+type _ordered = Expect<
+  Equal<Effect.Success<typeof ordered>, readonly { readonly title: string }[]>
+>;
+
+// @ts-expect-error a predicate is not a sort key
+query(Book).orderBy(Book.title.eq("Calculus"));
+
+// ── self-refs navigate like any targeted ref, to a finite depth ────────────
+
+const Person = Namespace("person", {
+  name: Attr(Schema.String),
+  boss: Attr(Ref.self),
+  friends: Attr(Ref.self, { cardinality: "many" }),
+});
+const Org = Namespace("org", { lead: Attr(Ref(() => Person)) });
+
+/** each hop keeps the leaf's ident and value type */
+type _selfHop = Expect<Equal<typeof Person.boss.name.ident, ":person/name">>;
+type _selfHops = Expect<
+  Equal<typeof Org.lead.boss.boss.name.ident, ":person/name">
+>;
+type _selfMany = Expect<Equal<typeof Person.friends.name.ident, ":person/name">>;
+query(Person).where(Person.boss.name.startsWith("A"));
+query(Org).orderBy(Org.lead.boss.name);
+
+/** a self-ref's backlink is the same namespace, walked the other way */
+query(Person).where(
+  Person.boss.reverse.name.startsWith("A"),
+  Person.friends.some(Person.boss.reverse.name.eq("Ada")),
+);
+
+// @ts-expect-error `:person/name` is a string attribute, two hops in too
+query(Person).where(Person.boss.boss.name.eq(3));
+
+// @ts-expect-error a self-ref exposes only the namespace's attributes
+Person.boss.nope;
+
 // ── the query value and its builder are the same input ─────────────────────
 
 const built = db.q(query(User).select({ name: User.name }).build());

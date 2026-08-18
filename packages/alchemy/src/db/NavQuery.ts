@@ -50,6 +50,8 @@ export interface Predicate {
   readonly op: PredTag;
   /** Idents from the root entity, e.g. `[":todo/owner", ":user/name"]`. */
   readonly path: readonly string[];
+  /** Which hops are walked backwards (`.reverse`) — parallel to `path`. */
+  readonly revs?: readonly boolean[];
   readonly value?: unknown;
 }
 
@@ -70,6 +72,7 @@ export interface Quantified {
   /** Idents from the root entity down to (and including) the many hop. */
   readonly path: readonly string[];
   readonly cards: readonly Cardinality[];
+  readonly revs: readonly boolean[];
   /** Rooted at the element the path ends on, not at the query root. */
   readonly pred: WhereNode;
 }
@@ -145,6 +148,8 @@ export type OrderDir = "asc" | "desc";
  */
 export interface OrderBy {
   readonly path: readonly string[];
+  /** Parallel to `path`; a reversed hop is many, so this is always all-false. */
+  readonly revs?: readonly boolean[];
   readonly dir: OrderDir;
   readonly empty: OrderEmpty;
 }
@@ -183,6 +188,14 @@ export type PathCarrier = {
   readonly __path?: readonly string[];
   /** Cardinality of each hop in `__path` — parallel to it. */
   readonly __cards?: readonly Cardinality[];
+  /**
+   * Which hops in `__path` are walked backwards — parallel to it. A reversed
+   * hop is `[?next :a ?e]` instead of `[?e :a ?next]`, and is always
+   * cardinality-many: any number of entities may point at one.
+   */
+  readonly __revs?: readonly boolean[];
+  /** @internal Set on the node `attr.reverse` returns. */
+  readonly __reverse?: boolean;
 };
 
 export const pathOf = (attr: PathCarrier): readonly string[] =>
@@ -190,6 +203,10 @@ export const pathOf = (attr: PathCarrier): readonly string[] =>
 
 export const cardsOf = (attr: PathCarrier): readonly Cardinality[] =>
   attr.__cards ?? [attr.cardinality ?? "one"];
+
+/** Reversal flag per hop. A path with no reversed hop reports all `false`. */
+export const revsOf = (attr: PathCarrier): readonly boolean[] =>
+  attr.__revs ?? pathOf(attr).map(() => false);
 
 const pred = (
   op: PredTag,
@@ -199,6 +216,7 @@ const pred = (
   _tag: "Predicate",
   op,
   path: pathOf(attr),
+  revs: revsOf(attr),
   value,
 });
 
@@ -331,6 +349,7 @@ const quantified = (
     quant,
     path,
     cards,
+    revs: revsOf(attr),
     pred,
   };
 };
@@ -465,12 +484,16 @@ export const withPath = <A extends PathCarrier>(
   attr: A,
   path: readonly string[],
   cards: readonly Cardinality[],
+  revs: readonly boolean[] = path.map(() => false),
 ): A => {
   if (attr.__path === path) return attr;
   return new Proxy(attr, {
     get(target, prop, receiver) {
       if (prop === "__path") return path;
       if (prop === "__cards") return cards;
+      if (prop === "__revs") return revs;
+      // a path that continues past a reversed hop is no longer that node
+      if (prop === "__reverse") return false;
       const v = Reflect.get(target, prop, receiver);
       if (
         typeof prop === "string" &&
@@ -614,7 +637,7 @@ const builder = <N extends AnyNamespace, R>(
         ...spec,
         orderBy: [
           ...spec.orderBy,
-          { path, dir, empty: opts?.empty ?? "last" },
+          { path, revs: revsOf(attr), dir, empty: opts?.empty ?? "last" },
         ],
       });
     },
@@ -709,7 +732,7 @@ export const lowerNavQuery = (
 
   const order: OrderClause[] = [];
   for (const o of q.spec.orderBy) {
-    const bound = lowerOrderPath(root, o.path);
+    const bound = lowerOrderPath(root, o.path, o.revs ?? o.path.map(() => false));
     where.push(...bound.clauses);
     order.push({ var: bound.var, dir: o.dir, empty: o.empty });
   }
@@ -731,20 +754,28 @@ export const lowerNavQuery = (
   };
 };
 
-/** `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks. */
+/**
+ * `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks.
+ * A reversed hop is the same datom read the other way: `[?j :a ?e]`.
+ */
 const hopClauses = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
   value: unknown,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
-  return [...clauses, [e, path[path.length - 1], value]];
+  const last = path.length - 1;
+  return [
+    ...clauses,
+    revs[last] ? [value, path[last], e] : [e, path[last], value],
+  ];
 };
 
 /**
@@ -756,6 +787,7 @@ const hopClauses = (
 const lowerOrderPath = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
 ): { readonly var: string; readonly clauses: unknown[] } => {
   if (path.length === 1 && path[0] === ID) return { var: root, clauses: [] };
   const bound = gensym("o");
@@ -765,10 +797,10 @@ const lowerOrderPath = (
       [
         "or-join",
         [root, bound],
-        ["and", ...hopClauses(root, path, bound)],
+        ["and", ...hopClauses(root, path, revs, bound)],
         [
           "and",
-          ["not", ...hopClauses(root, path, "_")],
+          ["not", ...hopClauses(root, path, revs, "_")],
           [["ground", [null]], [bound, "..."]],
         ],
       ],
@@ -854,7 +886,7 @@ const lowerWhere = (root: string, node: WhereNode): unknown[] => {
  */
 const lowerQuantified = (root: string, node: Quantified): unknown[] => {
   const x = gensym("x");
-  const chain = hopClauses(root, node.path, x);
+  const chain = hopClauses(root, node.path, node.revs, x);
   const inner = lowerWhere(x, node.pred);
   switch (node.quant) {
     case "some":
@@ -871,17 +903,20 @@ const lowerQuantified = (root: string, node: Quantified): unknown[] => {
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
   const { path, op, value } = p;
   if (path.length === 0) return [];
-  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, p);
+  const revs = p.revs ?? path.map(() => false);
+  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, revs, p);
 
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
   const attr = path[path.length - 1]!;
-  const at = (v: unknown): unknown[] => [e, attr, v];
+  /** The last hop, oriented: a reversed hop reads the datom the other way. */
+  const at = (v: unknown): unknown[] =>
+    revs[path.length - 1] ? [v, attr, e] : [e, attr, v];
 
   switch (op) {
     case "eq":
@@ -957,13 +992,14 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 const lowerIdPredicate = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
   p: Predicate,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
   switch (p.op) {

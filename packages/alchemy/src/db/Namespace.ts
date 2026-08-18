@@ -4,6 +4,7 @@ import type { AnyAttribute } from "./Attribute.ts";
 import {
   attachAttrNav,
   cardsOf,
+  revsOf,
   withPath,
   type AttrNav,
   type PathCarrier,
@@ -42,6 +43,34 @@ export type StampedAttribute<
 >;
 
 /**
+ * The backlink `attr.reverse` denotes: from the ref's **target**, the entities
+ * of the ref's *owning* namespace that point at you.
+ *
+ * It is a path node, not a datom: no `schema` (a backlink has no scalar value
+ * — select a shape through it), always cardinality-many (any number of
+ * entities may point at one), and it exposes the owning namespace's attrs so
+ * the path can keep walking. The depth budget makes `X.reverse.y.reverse…`
+ * well-founded, exactly as it does for self-refs.
+ */
+export type ReverseNav<
+  Ns extends string,
+  Attrs extends AttributeMap,
+  A extends AnyAttribute,
+  Name extends string,
+  D extends number,
+> = AttrNav<
+  Omit<A, "cardinality" | "valueType" | "schema"> & {
+    readonly attrName: Name;
+    readonly ident: `:${Ns}/${Name}`;
+    readonly cardinality: "many";
+    readonly valueType: ":db.type/ref";
+  } & PathCarrier
+> &
+  ([Dec<D>] extends [never]
+    ? unknown
+    : StampedMap<Ns, Attrs, Dec<D> & number>);
+
+/**
  * One navigation hop: a targeted ref exposes its target's stamped attrs.
  * Self-refs use a depth budget so the mapped type stays well-founded.
  */
@@ -52,16 +81,26 @@ export type NavStamp<
   Name extends string,
   D extends number = 6,
 > = A["valueType"] extends ":db.type/ref"
-  ? ResolveRefTarget<A> extends infer T
-    ? [T] extends [never]
-      ? StampedAttribute<Ns, Name, A>
-      : [T] extends ["self"]
-        ? [Dec<D>] extends [never]
-          ? StampedAttribute<Ns, Name, A>
-          : StampedAttribute<Ns, Name, A> &
-              StampedMap<Ns, Attrs, Dec<D> & number>
-        : StampedAttribute<Ns, Name, A> & T
-    : StampedAttribute<Ns, Name, A>
+  ? ForwardStamp<Ns, Attrs, A, Name, D> & {
+      readonly reverse: ReverseNav<Ns, Attrs, A, Name, D>;
+    }
+  : StampedAttribute<Ns, Name, A>;
+
+type ForwardStamp<
+  Ns extends string,
+  Attrs extends AttributeMap,
+  A extends AnyAttribute,
+  Name extends string,
+  D extends number,
+> = ResolveRefTarget<A> extends infer T
+  ? [T] extends [never]
+    ? StampedAttribute<Ns, Name, A>
+    : [T] extends ["self"]
+      ? [Dec<D>] extends [never]
+        ? StampedAttribute<Ns, Name, A>
+        : StampedAttribute<Ns, Name, A> &
+            StampedMap<Ns, Attrs, Dec<D> & number>
+      : StampedAttribute<Ns, Name, A> & T
   : StampedAttribute<Ns, Name, A>;
 
 /**
@@ -157,13 +196,64 @@ const OWN_ATTR_KEYS = new Set([
   "none",
   "__path",
   "__cards",
+  "__revs",
+  "__reverse",
 ]);
+
+/**
+ * `attr.reverse` — the same ref hop, walked backwards. The path keeps its
+ * prefix (so a reverse part-way along a path works), the last hop flips to
+ * reversed and to cardinality-many, and navigation continues into the ref's
+ * *owning* namespace rather than its target.
+ */
+const reverseNode = (
+  from: PathCarrier,
+  ownMap: Record<string, unknown>,
+): unknown => {
+  if ((from as { isComponent?: boolean }).isComponent === true) {
+    throw new Error(
+      `ripple/query: ${from.ident} is a component ref, whose backlink is single-valued — \`.reverse\` only models the many-valued case`,
+    );
+  }
+  const path = pathOfSafe(from);
+  const cards = [...cardsOf(from)];
+  const revs = [...revsOf(from)];
+  cards[cards.length - 1] = "many";
+  revs[revs.length - 1] = true;
+
+  const node = attachAttrNav({
+    ...(from as object),
+    ident: from.ident,
+    cardinality: "many" as const,
+    __path: path,
+    __cards: cards,
+    __revs: revs,
+    __reverse: true,
+  } satisfies PathCarrier as PathCarrier);
+
+  return new Proxy(node, {
+    get(target, prop, receiver) {
+      if (typeof prop === "symbol" || OWN_ATTR_KEYS.has(prop)) {
+        return Reflect.get(target, prop, receiver);
+      }
+      const child = ownMap[prop] as PathCarrier | undefined;
+      if (child === undefined) return undefined;
+      return withPath(
+        child,
+        [...path, child.ident],
+        [...cards, child.cardinality ?? "one"],
+        [...revs, false],
+      );
+    },
+  });
+};
 
 const stampOne = (
   ns: string,
   key: string,
   a: AnyAttribute,
   resolveTarget: (prop: string) => unknown,
+  ownMap: () => Record<string, unknown>,
 ): StampedAttribute<string, string, AnyAttribute> => {
   const base = {
     ...a,
@@ -189,6 +279,11 @@ const stampOne = (
     get(target, prop, receiver) {
       if (typeof prop === "symbol") {
         return Reflect.get(target, prop, receiver);
+      }
+      // the backlink is rooted at this ref's *owning* namespace, so it is
+      // resolved before the target-attribute lookup below
+      if (prop === "reverse") {
+        return reverseNode(receiver as PathCarrier, ownMap());
       }
       if (OWN_ATTR_KEYS.has(prop)) {
         return Reflect.get(target, prop, receiver);
@@ -230,7 +325,13 @@ const stamp = <Name extends string, Attrs extends AttributeMap>(
 
   for (const key of Object.keys(attributes)) {
     const a = attributes[key]!;
-    out[key] = stampOne(name, key, a, (prop) => resolveTarget(key, prop));
+    out[key] = stampOne(
+      name,
+      key,
+      a,
+      (prop) => resolveTarget(key, prop),
+      () => out,
+    );
   }
   return out as unknown as StampedMap<Name, Attrs>;
 };
