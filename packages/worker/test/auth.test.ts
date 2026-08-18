@@ -342,7 +342,13 @@ describe("ensure and privileged surfaces", () => {
 
     const info = await peer.json("/db/acme/info", { token: member });
     expect(Object.keys(info.body).sort()).toEqual(["db", "t"]);
-    expect((await peer.json("/db/acme/info", { token: admin })).body.transactor).toBeDefined();
+    expect(typeof info.body.t).toBe("number");
+    // one shape: the admin answer carries the same top-level `t`, plus the internals
+    const adminInfo = await peer.json("/db/acme/info", { token: admin });
+    expect(typeof adminInfo.body.t).toBe("number");
+    expect(adminInfo.body.t).toBe(info.body.t);
+    expect(adminInfo.body.transactor).toBeDefined();
+    expect(typeof adminInfo.body.transactor.t).toBe("number");
     peer.close();
   });
 

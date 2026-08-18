@@ -28,6 +28,17 @@ const rows = yield* db.asOf(report.t - 1).q(titles);
 Where `dbAfter`'s floor is best-effort ("at least this fresh"), `asOf(t)` pins
 an exact past view.
 
+## Where is the basis? — `db.basis()`
+
+`db.basis()` answers `{ t }`: for a live db, the peer's current basis (one
+`GET /db/:name/info`); for `asOf(t)`, just `t`, with no request. That makes a
+time-travel slider two lines — the max is the basis, the value is `asOf`:
+
+```ts
+const { t: max } = yield* db.basis();  // the slider's upper bound
+const rows = yield* db.asOf(slider).q(titles); // slider ∈ [1, max]
+```
+
 ## `history` — every fact, ever
 
 `db.history` includes retracted datoms. Use it for audit trails, "who changed

@@ -6,6 +6,7 @@
  * `Stream` whose requirements channel is `never` (no `Scope` in the type).
  */
 
+import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import type {
   Db,
@@ -57,6 +58,24 @@ type Names = readonly { readonly name: string }[];
 type _past = Expect<Equal<typeof past, Stream.Stream<Names, DbError>>>;
 const hist = db.history.live(query(User).select({ name: User.name }));
 type _hist = Expect<Equal<typeof hist, Stream.Stream<Names, DbError>>>;
+
+// ── basis() requires nothing: `R = never`, on every view ──────────────────
+
+const basis = db.basis();
+type _basis = Expect<
+  Equal<typeof basis, Effect.Effect<{ readonly t: number }, DbError>>
+>;
+type _basisR = Expect<Equal<Effect.Services<typeof basis>, never>>;
+type _basisErr = Expect<Equal<Effect.Error<typeof basis>, DbError>>;
+
+const pinnedBasis = db.asOf(3).basis();
+type _pinnedBasis = Expect<
+  Equal<typeof pinnedBasis, Effect.Effect<{ readonly t: number }, DbError>>
+>;
+const historyBasis = db.history.basis();
+type _historyBasis = Expect<
+  Equal<typeof historyBasis, Effect.Effect<{ readonly t: number }, DbError>>
+>;
 
 // ── the query is still attribute-checked ───────────────────────────────────
 

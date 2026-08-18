@@ -36,12 +36,13 @@ refresh needs no client surface — return the current token from the Effect.
 | name | signature |
 | --- | --- |
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
-| `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
+| `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
 | `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
+| `db.basis` | `() => Effect<{ t: number }, DbError>` — the basis this view reads at: one `GET /db/:name/info` for a live db (`history` included); `asOf(t)` answers `{ t }` with no request. Observing a newer `t` re-runs standing `live` queries, like `transact` |
 | `db.asOf` | `(t: number) => ReadDb<C>` — pure view; you cannot transact into the past |
 | `db.history` | `ReadDb<C>` — includes retracted datoms |
 

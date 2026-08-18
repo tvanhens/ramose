@@ -22,7 +22,7 @@ key must be a fully-qualified ident (e.g. `:todo/title`) — a bare key like
 | `/db/:name/transact` | POST | the only write; body is the wire transaction, response is the `TxReport` |
 | `/db/:name/query` | POST | run a datalog query at the current basis |
 | `/db/:name/pull` | POST | pull a pattern for one entity or lookup ref |
-| `/db/:name/info` | GET | database status: `t`, `transactor.metrics`, `replica.*`, `indexer.*`, `peerMetrics` |
+| `/db/:name/info` | GET | database status: top-level `t` (the current basis, for every principal); admins also get `transactor.metrics`, `replica.*`, `indexer.*`, `peerMetrics` |
 | `/db/:name/session` | GET | WebSocket upgrade — the session socket behind `Ripple.layer` and `db.live` |
 
 Auth is `Authorization: Bearer <token>`, or `?token=` on the socket upgrade

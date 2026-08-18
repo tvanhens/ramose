@@ -49,6 +49,7 @@ export const readOnly = <C extends AnyCatalog>(db: Db<C>): ReadDb<C> => ({
   q: db.q,
   live: db.live,
   pull: db.pull,
+  basis: db.basis,
   asOf: db.asOf,
   history: db.history,
 });

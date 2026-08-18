@@ -91,9 +91,18 @@ const DEFAULT_ACK = { t: 2, txEid: 13194139533319, tempids: {}, datoms: 1 };
 
 export type Http = NonNullable<PeerOptions["http"]>;
 
+/** The worker's `GET /db/:name/info` shape, at the transact ack's basis. */
+const defaultHttp: Http = (call) => {
+  const info = /^\/db\/([^/]+)\/info$/.exec(new URL(call.url).pathname);
+  if (info !== null && call.method === "GET") {
+    return { body: { db: decodeURIComponent(info[1]!), t: DEFAULT_ACK.t } };
+  }
+  return { body: DEFAULT_ACK };
+};
+
 export const fakePeer = (options: PeerOptions = {}): FakePeer => {
   const answer: Answer = options.answer ?? (() => ({ body: {} }));
-  const http: Http = options.http ?? (() => ({ body: DEFAULT_ACK }));
+  const http: Http = options.http ?? defaultHttp;
   const sockets: FakeSocket[] = [];
   const frames: Frame[] = [];
   const calls: Call[] = [];

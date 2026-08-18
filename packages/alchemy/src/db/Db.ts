@@ -74,6 +74,8 @@ export interface Wire {
     name: string,
     tx: readonly unknown[],
   ): Effect.Effect<unknown, DbError>;
+  /** `GET /db/:name/info` — where the basis is. Always HTTPS: cheap, authoritative. */
+  info(name: string): Effect.Effect<unknown, DbError>;
   /** This database's session, opened lazily; `undefined` with no `WebSocket`. */
   session(name: string): Session | undefined;
 }
@@ -115,6 +117,14 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
     subject: Eid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
   ): Effect.Effect<Pull<C, P> | null, DbError>;
+
+  /**
+   * The basis this view reads at: for a live db, the peer's current `t`
+   * (one `GET /db/:name/info`); for `asOf(t)`, `t` with no I/O. Observing a
+   * newer basis bumps the session, so a standing `live` that missed a tick
+   * re-runs — the same rule as `transact`.
+   */
+  basis(): Effect.Effect<{ readonly t: number }, DbError>;
 
   /** Read-only view as of transaction `t`. Pure. */
   asOf(t: number): ReadDb<C>;
@@ -339,6 +349,27 @@ const makeRead = <C extends AnyCatalog>(
       fenced(
         Effect.suspend(() => pullOne(subject, pattern, undefined)),
       )) as ReadDb<C>["pull"],
+
+    // a pinned view answers from its own coordinate; a live view (history
+    // included) asks the peer, not `session.t` — that is 0 before the first
+    // frame and lags a fresh peer, while `/info` is authoritative and cheap
+    basis: () =>
+      fenced(
+        view.asOf !== undefined
+          ? Effect.succeed({ t: view.asOf })
+          : Effect.suspend(() =>
+              wire.info(name).pipe(
+                Effect.map((body) => {
+                  const raw = record(body).t;
+                  const t = typeof raw === "number" ? raw : 0;
+                  // an observed basis advances the whole connection: a
+                  // standing `live` that missed a tick re-runs (as `transact`)
+                  wire.session(name)?.bump(t);
+                  return { t };
+                }),
+              ),
+            ),
+      ),
 
     asOf: (t: number) =>
       makeRead(wire, name, catalog, { ...view, asOf: t }, bad),

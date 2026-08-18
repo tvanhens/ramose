@@ -47,12 +47,13 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 | name | signature |
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
-| `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
+| `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
 | `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ripple.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
+| `db.basis` | `() => Effect<{ t: number }, DbError>` — the basis this view reads at: one `GET /db/:name/info` for a live db; `asOf(t)` answers `{ t }` with no request |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
 | `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |

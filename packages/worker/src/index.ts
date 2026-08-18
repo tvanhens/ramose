@@ -14,7 +14,7 @@
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
- *   GET  /db/:name/info                                            → transactor + replica + basis info
+ *   GET  /db/:name/info                                            → { db, t, … } — top-level `t` for everyone; transactor/replica internals for admin
  *   GET  /db/:name/session    (Upgrade: websocket)                 → the session socket (session.ts)
  *   POST /db/:name/admin/index | /admin/gc                         → indexer controls
  *
@@ -285,9 +285,11 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   if (rest === "/info" && request.method === "GET") {
-    // every principal may ask where the basis is; only admin sees the peer's internals
+    // every principal may ask where the basis is; only admin sees the peer's internals.
+    // top-level `t` is the one shape both answers share — it is what `db.basis()` reads.
+    const basisT = (await fetchBasisWithStats(env, db, request)).basis.t;
     if (policy !== undefined && !isAdmin(principal)) {
-      return json({ db, t: (await fetchBasisWithStats(env, db, request)).basis.t }, 200, { "x-ripple-ms": String(Date.now() - t0) });
+      return json({ db, t: basisT }, 200, { "x-ripple-ms": String(Date.now() - t0) });
     }
     const [tx, rep] = await Promise.all([
       transactor().fetch(txUrl("/info"), { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then((r) => r.json()),
@@ -295,6 +297,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     ]);
     return json({
       db,
+      t: basisT,
       region: regionOf(request),
       transactor: tx,
       replica: rep,

@@ -226,6 +226,18 @@ export const makeDatabases = (
         });
         return result.body;
       }),
+    info: (name) =>
+      Effect.gen(function* () {
+        const result = yield* send({
+          fetch: config.fetch,
+          url: yield* config.url,
+          method: "GET",
+          path: dbPath(name, "/info"),
+          token: yield* bearer(config.token),
+          headers: config.headers,
+        });
+        return result.body;
+      }),
   };
 
   return {

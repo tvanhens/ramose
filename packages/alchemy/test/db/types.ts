@@ -249,7 +249,7 @@ type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
 
 /** `Db<C>` is `ReadDb<C>` plus `transact` and `install`, and nothing else. */
 type _readDbKeys = Expect<
-  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "live" | "asOf" | "history">
+  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "live" | "basis" | "asOf" | "history">
 >;
 type _dbKeys = Expect<
   Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "transact" | "install">

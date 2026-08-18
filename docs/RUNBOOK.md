@@ -12,6 +12,7 @@ console. Set `RIPPLE_LOG_LEVEL=debug` to also see per-batch / per-query events.
 
 | question | where |
 |---|---|
+| where is the basis right now? | `GET /db/:name/info` → top-level `t` — every principal gets it (non-admin sees only `{ db, t }`); the client's `db.basis()` reads the same field |
 | tx/s, batch size, commit latency for a db | `GET /db/:name/info` → `transactor.metrics` (`txPerSec`, `batchSize.p50/p95`, `commitMs`); events `transactor/tx.commit` |
 | is the transactor rejecting or dead? | events `transactor/tx.rejected` (schema/unique errors, per tx) and `transactor/tx.aborted` (storage write failed → the DO resets and reboots from durable state; clients get 503 + `retry-after`) |
 | index lag / run cost | `/info` → `transactor.txsSinceIndex`, `indexer.lastRun`; events `indexer/index.run` (`txs`, `datoms`, `ms`, `r2Puts`, `remainingTxs`) |
