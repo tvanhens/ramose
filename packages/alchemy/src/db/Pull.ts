@@ -305,6 +305,89 @@ const isSelectNestedField = (
   "shape" in value;
 
 /**
+ * The hop chain a nav carries: `Todo.owner.name` is `[":todo/owner",
+ * ":user/name"]`, a bare `User.name` is one ident (or none, for an ident
+ * string). Structural, like {@link isReverseCarrier} — pull stays free of
+ * NavQuery.
+ */
+const hopsOf = (
+  attr: unknown,
+): { readonly path: readonly string[]; readonly revs: readonly boolean[] } => {
+  const carrier = attr as
+    | { __path?: unknown; __revs?: unknown }
+    | null
+    | undefined;
+  const path = Array.isArray(carrier?.__path)
+    ? (carrier.__path as readonly string[])
+    : [];
+  const revs = Array.isArray(carrier?.__revs)
+    ? (carrier.__revs as readonly boolean[])
+    : path.map(() => false);
+  return { path, revs };
+};
+
+/** `:todo/owner` → `Todo.owner` — the attr spelled the way the caller wrote it. */
+const spellAttr = (ident: string): string => {
+  const m = /^:([^/]+)\/(.+)$/.exec(ident);
+  if (m === null) return ident;
+  const ns = m[1]!;
+  return `${ns.charAt(0).toUpperCase()}${ns.slice(1)}.${m[2]}`;
+};
+
+const attrNameOf = (ident: string): string =>
+  /^:[^/]+\/(.+)$/.exec(ident)?.[1] ?? ident;
+
+/** The whole path as one expression: `Todo.owner.reverse.title`. */
+const spellPath = (path: readonly string[], revs: readonly boolean[]): string =>
+  path
+    .map(
+      (ident, i) =>
+        `${i === 0 ? spellAttr(ident) : attrNameOf(ident)}${revs[i] ? ".reverse" : ""}`,
+    )
+    .join(".");
+
+/** The same path as the nested select that does mean it. */
+const spellNested = (
+  path: readonly string[],
+  revs: readonly boolean[],
+  leafSelects: boolean,
+): string => {
+  const last = path.length - 1;
+  const leaf = path[last]!;
+  let out = `${attrNameOf(leaf)}: ${spellAttr(leaf)}${
+    revs[last] ? ".reverse" : ""
+  }${revs[last] || leafSelects ? ".select({ … })" : ""}`;
+  for (let i = last - 1; i >= 0; i--) {
+    const hop = path[i]!;
+    out = `${attrNameOf(hop)}: ${spellAttr(hop)}${
+      revs[i] ? ".reverse" : ""
+    }.select({ ${out} })`;
+  }
+  return `{ ${out} }`;
+};
+
+/**
+ * A select field names one attribute of the entity being pulled, so a nav
+ * that walked a ref first (`Todo.owner.name`) cannot be one: the pull would
+ * ask the *todo* for `:user/name` and the row would carry a value it never
+ * had — or be dropped for a datom it was never meant to have. The nested
+ * select is the shape that means what the path reads like, so say so instead
+ * of quietly attaching the leaf ident to the parent.
+ */
+export const assertDirectField = (
+  as: string,
+  attr: unknown,
+  /** The field carries a shape of its own, so the suggestion keeps one. */
+  leafSelects = false,
+): void => {
+  const { path, revs } = hopsOf(attr);
+  if (path.length < 2) return;
+  throw new Error(
+    `ripple/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct attribute of the queried namespace. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
+  );
+};
+
+/**
  * A constrained collection nav (`Todo.owner.reverse.where(…)`) with no shape.
  * Structural, like {@link isReverseCarrier} — pull stays free of NavQuery.
  */
@@ -380,6 +463,7 @@ const constraintFields = (
 
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
+  assertDirectField(as, info.attr, info.nestedPattern !== undefined);
   if (info.nestedPattern !== undefined) {
     return {
       kind: "attr",

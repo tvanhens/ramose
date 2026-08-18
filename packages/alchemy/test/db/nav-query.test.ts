@@ -258,6 +258,121 @@ describe("nav query", () => {
   });
 });
 
+describe("a select field is a direct attribute, never a flattened path", () => {
+  /**
+   * `select({ ownerName: Todo.owner.name })` reads like a join, but a pull
+   * field names one attribute of the entity it pulls: lowering it would ask
+   * the *todo* for `:user/name`. It is rejected at the type level (see
+   * nav-query-types.ts) and here, where the cast defeats the type.
+   */
+  const hopped = <T>(field: T) => field as never;
+
+  test("a flattened multi-hop field is rejected, with the nested select to write", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ ownerName: hopped(Todo.owner.name) })
+          .build(),
+      ),
+    ).toThrow(
+      `ripple/query: select field "ownerName": Todo.owner.name is a multi-hop path (:todo/owner → :user/name) — a select field must be a direct attribute of the queried namespace. Use a nested select: { owner: Todo.owner.select({ name: User.name }) }`,
+    );
+  });
+
+  test("`.optional` does not make a hop a direct attribute", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ ownerName: hopped(Todo.owner.name.optional) })
+          .build(),
+      ),
+    ).toThrow(/multi-hop|nested select/);
+  });
+
+  test("a nested select rooted two hops in is rejected too", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({
+            friends: hopped(Todo.owner.friends.select({ name: User.name })),
+          })
+          .build(),
+      ),
+    ).toThrow(/multi-hop|nested select/);
+    // …and so is a backlink walked one hop further
+    expect(() =>
+      lowerNavQuery(
+        query(User)
+          .select({ title: hopped(Todo.owner.reverse.title) })
+          .build(),
+      ),
+    ).toThrow(/multi-hop|nested select/);
+  });
+
+  test("the nested select the message points at still lowers", () => {
+    const { query: q, pullMap } = lowerNavQuery(
+      query(Todo)
+        .select({
+          title: Todo.title,
+          owner: Todo.owner.select({ name: User.name }),
+        })
+        .build(),
+    );
+    expect(pullMap).toBeDefined();
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+          {
+            kind: "attr",
+            attr: ":todo/owner",
+            reverse: false,
+            as: "owner",
+            sub: [
+              { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
+            ],
+          },
+        ],
+      ],
+    ]);
+    // the required halves are the *todo's* attrs, and the ref's target's
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "_"],
+      ["?e", ":todo/owner", "?r0"],
+      ["?r0", ":user/name", "_"],
+    ]);
+  });
+
+  /** One hop is still a direct attribute — a backlink shape is not a path. */
+  test("a one-hop backlink select is unaffected", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .select({ todos: Todo.owner.reverse.select({ title: Todo.title }) })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          {
+            kind: "attr",
+            attr: ":todo/owner",
+            reverse: true,
+            as: "todos",
+            sub: [
+              { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+            ],
+          },
+        ],
+      ],
+    ]);
+  });
+});
+
 /** The scope clause every `:todo/*` query carries. */
 const todoScope = [
   "or",

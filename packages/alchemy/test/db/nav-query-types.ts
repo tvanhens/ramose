@@ -375,6 +375,35 @@ query(Person).where(Person.boss.boss.name.eq(3));
 // @ts-expect-error a self-ref exposes only the namespace's attributes
 Person.boss.nope;
 
+// ── a select field is a direct attribute, not a flattened path ─────────────
+
+/**
+ * A path is what a predicate and a sort key take; a *select field* names one
+ * attribute of the entity being pulled, so the shape of a hop is the nested
+ * select — `{ author: Book.author.select({ name: Author.name }) }`, never
+ * `{ authorName: Book.author.name }`, which would ask the book for
+ * `:author/name`.
+ */
+library.q(
+  query(Book).select({
+    title: Book.title,
+    author: Book.author.select({ name: Author.name }),
+  }),
+);
+query(Person).select({ boss: Person.boss.select({ name: Person.name }) });
+
+// @ts-expect-error `:author/name` is a hop away — use a nested select
+query(Book).select({ authorName: Book.author.name });
+
+// @ts-expect-error `.optional` does not make a hop a direct attribute
+query(Book).select({ authorName: Book.author.name.optional });
+
+// @ts-expect-error a nested select rooted two hops in is a path too
+query(Org).select({ friends: Org.lead.friends.select({ name: Person.name }) });
+
+// @ts-expect-error a backlink walked one hop further is a path as well
+query(Author).select({ authorName: Book.author.reverse.author.name });
+
 // ── `Row` / `Rows` name the inferred row type ───────────────────────────────
 
 const boardQuery = query(User).select({

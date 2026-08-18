@@ -23,6 +23,7 @@ import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import {
+  assertDirectField,
   inspectPullField,
   isPullNested,
   isPullOptional,
@@ -143,6 +144,44 @@ export type ShapeField =
 
 export type Shape = { readonly [key: string]: ShapeField };
 
+/**
+ * Is this field a path that walked a ref before naming its attribute? True
+ * through `.optional` and through a nested `.select`, which carry the field
+ * they wrap.
+ */
+type IsHopped<F> = F extends {
+  readonly _tag: "optional";
+  readonly field: infer Inner;
+}
+  ? IsHopped<Inner>
+  : F extends { readonly _tag: "select" | "nested"; readonly attr: infer A }
+    ? [A] extends [Hop]
+      ? true
+      : false
+    : [F] extends [Hop]
+      ? true
+      : false;
+
+/**
+ * The error a multi-hop select field resolves to. It is a string, so the
+ * attribute the caller passed is not assignable to it and the call is a type
+ * error that names the offending key — the runtime message
+ * (`assertDirectField`) spells the nested select to write instead.
+ */
+type MultiHopField<K extends string> =
+  `select field "${K}" is a multi-hop path: a select field must be a direct attribute of the queried namespace — use a nested select, e.g. { owner: Todo.owner.select({ name: User.name }) }`;
+
+/**
+ * `S`, with every multi-hop field replaced by {@link MultiHopField}. Used as
+ * `shape: S & ValidShape<S>`: the intersection still infers `S` from the
+ * argument, and a hopped field has nowhere to go.
+ */
+export type ValidShape<S> = {
+  readonly [K in keyof S]: IsHopped<S[K]> extends true
+    ? MultiHopField<K & string>
+    : S[K];
+};
+
 export type OrderEmpty = "first" | "last";
 export type OrderDir = "asc" | "desc";
 
@@ -206,6 +245,35 @@ export type PathCarrier = {
   /** @internal Set on the node `attr.reverse` returns. */
   readonly __reverse?: boolean;
 };
+
+/**
+ * The type-level twin of a non-empty `__path`: every attribute reached
+ * *through* a ref hop (`Todo.owner.name`, `Book.author.reverse.title`) is
+ * stamped with it, so `.select` can reject a flattened multi-hop field — the
+ * pull would ask the queried entity for the leaf ident, which is not one of
+ * its attributes. Nothing reads it at runtime; {@link pathOf} does that.
+ */
+export type Hop = { readonly __hop: true };
+
+/** Stamp a hop's target map: reaching any of its attrs costs a hop. */
+export type Hopped<M> = { readonly [K in keyof M]: HopAttr<M[K]> };
+
+/**
+ * One attribute of a hop's target. The mark has to survive the field wrappers
+ * a select shape takes, so `.optional` and `.select` are re-stamped here —
+ * they are declared in terms of `AttrNav`'s own (unmarked) parameter, and an
+ * intersection cannot reach inside it. `.reverse` off a hop is left to the
+ * runtime check.
+ */
+type HopAttr<F> = {
+  readonly select: F extends { readonly valueType: ":db.type/ref" }
+    ? <const S extends Shape>(
+        shape: S & ValidShape<S>,
+      ) => SelectNested<F & Hop, S>
+    : never;
+  readonly optional: { readonly _tag: "optional"; readonly field: F & Hop };
+} & F &
+  Hop;
 
 export const pathOf = (attr: PathCarrier): readonly string[] =>
   attr.__path ?? [attr.ident];
@@ -321,7 +389,7 @@ export type AttrNav<A extends PathCarrier> = A & {
     : never;
   readonly optional: ReturnType<typeof optional<A>>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
-    ? <const S extends Shape>(shape: S) => SelectNested<A, S>
+    ? <const S extends Shape>(shape: S & ValidShape<S>) => SelectNested<A, S>
     : never;
 };
 
@@ -417,7 +485,7 @@ export interface CollectionNav<A extends PathCarrier = PathCarrier> {
   ): CollectionNav<A>;
   limit(n: number): CollectionNav<A>;
   offset(n: number): CollectionNav<A>;
-  select<const S extends Shape>(shape: S): SelectNested<A, S>;
+  select<const S extends Shape>(shape: S & ValidShape<S>): SelectNested<A, S>;
 }
 
 /**
@@ -799,9 +867,6 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     offset(this: PathCarrier, n: number) {
       return collectionOf(this, "offset").offset(n);
     },
-    get optional() {
-      return optional(attr);
-    },
     select(this: PathCarrier, shape: Shape) {
       return makeSelectNested(this, shape);
     },
@@ -809,6 +874,10 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
 
   return new Proxy(attr, {
     get(target, prop, receiver) {
+      // `.optional` wraps the *receiver*, so a path keeps walking through it:
+      // `Todo.owner.name.optional` must still remember `:todo/owner`, or the
+      // multi-hop it is goes unnoticed (issue #69).
+      if (prop === "optional") return optional(receiver);
       if (typeof prop === "string" && prop in api) {
         const v = (api as Record<string, unknown>)[prop];
         return typeof v === "function" ? (v as Function).bind(receiver) : v;
@@ -931,8 +1000,13 @@ export interface NavQueryBuilder<
   readonly spec: NavQuerySpec;
 
   where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
+  /**
+   * Each field is a **direct** attribute of the queried namespace (or a
+   * nested `.select` through one of its refs). A flattened path —
+   * `{ ownerName: Todo.owner.name }` — is rejected: see {@link ValidShape}.
+   */
   select<const S extends Shape>(
-    shape: S,
+    shape: S & ValidShape<S>,
   ): NavQueryBuilder<N, readonly SelectResult<S>[]>;
   orderBy(
     attr: PathCarrier,
@@ -1189,8 +1263,12 @@ const lowerOrderPath = (
 const requiredClauses = (e: string, pattern: unknown): unknown[] => {
   if (Array.isArray(pattern)) return [];
   const out: unknown[] = [];
-  for (const field of Object.values(fieldsOf(pattern))) {
+  for (const [key, field] of Object.entries(fieldsOf(pattern))) {
     const info = inspectPullField(field);
+    // a multi-hop field would ask `?e` for the *leaf* ident and drop rows for
+    // a datom they were never meant to have — reject it here too, not just in
+    // the pull pattern, because this half runs first
+    assertDirectField(key, info.attr, info.nestedPattern !== undefined);
     if (info.optional || info.many) continue;
     const ident = lowerAttr(info.attr);
     if (ident === ID) continue;

@@ -7,6 +7,7 @@ import {
   revsOf,
   withPath,
   type AttrNav,
+  type Hopped,
   type PathCarrier,
 } from "./NavQuery.ts";
 import { optional, type AttrPull } from "./Pull.ts";
@@ -68,7 +69,7 @@ export type ReverseNav<
 > &
   ([Dec<D>] extends [never]
     ? unknown
-    : StampedMap<Ns, Attrs, Dec<D> & number>);
+    : Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>);
 
 /**
  * One navigation hop: a targeted ref exposes its target's stamped attrs.
@@ -99,8 +100,8 @@ type ForwardStamp<
       ? [Dec<D>] extends [never]
         ? StampedAttribute<Ns, Name, A>
         : StampedAttribute<Ns, Name, A> &
-            StampedMap<Ns, Attrs, Dec<D> & number>
-      : StampedAttribute<Ns, Name, A> & T
+            Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>
+      : StampedAttribute<Ns, Name, A> & Hopped<T>
   : StampedAttribute<Ns, Name, A>;
 
 /**
