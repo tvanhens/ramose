@@ -21,6 +21,7 @@ import {
   type PullElemOp,
   type PullElemOrder,
   type PullElemPred,
+  type PullElemQuant,
   type PullPattern,
   type Query,
   type Term,
@@ -378,11 +379,20 @@ function elemPreds(x: unknown, form: unknown): PullElemPred[] {
   return (x as unknown[]).map((p) => elemPred(p, form));
 }
 
+/** `{:every {:path […] :pred {…}}}` — a quantifier over what `path` reaches. */
+function elemQuant(x: unknown, what: string, form: unknown): PullElemQuant {
+  const m = keyedMap(x, `pull :where ${what}`, form);
+  if (m.pred === undefined) fail(`pull :where ${what} needs a :pred`, form);
+  return { ...elemPath(m.path ?? [], m.reverse, form), pred: elemPred(m.pred, form) };
+}
+
 function elemPred(x: unknown, form: unknown): PullElemPred {
   const m = keyedMap(x, "pull :where predicate", form);
   if (m.and !== undefined) return { and: elemPreds(m.and, form) };
   if (m.or !== undefined) return { or: elemPreds(m.or, form) };
   if (m.not !== undefined) return { not: elemPred(m.not, form) };
+  if (m.every !== undefined) return { every: elemQuant(m.every, "every", form) };
+  if (m.some !== undefined) return { some: elemQuant(m.some, "some", form) };
   const op = bare(m.op);
   if (typeof op !== "string" || !(PULL_ELEM_OPS as readonly string[]).includes(op)) {
     fail(`unknown pull :where op ${String(m.op)} (expected one of ${PULL_ELEM_OPS.join(" ")})`, form);

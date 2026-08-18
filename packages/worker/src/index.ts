@@ -91,7 +91,13 @@ function unknownElemPredAttrs(db: CoreDb, pred: PullElemPred, seen: string[]): v
   if ("and" in pred) for (const p of pred.and) unknownElemPredAttrs(db, p, seen);
   else if ("or" in pred) for (const p of pred.or) unknownElemPredAttrs(db, p, seen);
   else if ("not" in pred) unknownElemPredAttrs(db, pred.not, seen);
-  else unknownPathAttrs(db, pred.path, seen);
+  else if ("every" in pred) {
+    unknownPathAttrs(db, pred.every.path, seen);
+    unknownElemPredAttrs(db, pred.every.pred, seen);
+  } else if ("some" in pred) {
+    unknownPathAttrs(db, pred.some.path, seen);
+    unknownElemPredAttrs(db, pred.some.pred, seen);
+  } else unknownPathAttrs(db, pred.path, seen);
 }
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>

@@ -159,12 +159,38 @@ export interface PullElemCmp {
   /** the comparison operand; an array for `in`, unused by `exists`/`missing` */
   value?: unknown;
 }
-/** Predicates over one element of a nested collection. Combinators nest. */
+/**
+ * A quantifier over the elements one path reaches from the current element.
+ *
+ * `pred` is evaluated with each reached value as the element in its turn — a
+ * ref hop reaches entities (so `pred` may walk on from them), a scalar hop
+ * reaches values (so `pred` compares them with `path: []`). It is how a nested
+ * `:where` says something other than the existential a bare {@link PullElemCmp}
+ * already is.
+ */
+export interface PullElemQuant {
+  path: string[];
+  /** parallel to `path`; a hop walked backwards. Absent ⇒ all forward. */
+  reverse?: boolean[];
+  pred: PullElemPred;
+}
+
+/**
+ * Predicates over one element of a nested collection. Combinators nest.
+ *
+ * `{every: …}` holds when **no** reached element fails `pred` — vacuously true
+ * when the path reaches nothing at all, the same rule the query's own `every`
+ * quantifier follows. `{some: …}` holds when at least one does; it is the
+ * explicit form of the existential a plain comparison already is, and exists
+ * so that a negation *underneath* one (`∃x ¬P`) can be said at all.
+ */
 export type PullElemPred =
   | PullElemCmp
   | { and: PullElemPred[] }
   | { or: PullElemPred[] }
-  | { not: PullElemPred };
+  | { not: PullElemPred }
+  | { every: PullElemQuant }
+  | { some: PullElemQuant };
 
 /**
  * One sort key for a nested collection. `path`/`reverse` walk from the element

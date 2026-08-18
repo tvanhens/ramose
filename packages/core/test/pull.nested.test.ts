@@ -195,6 +195,112 @@ describe("nested pull: where", () => {
   });
 });
 
+describe("nested pull: every / some quantifiers", () => {
+  test("every: no reached element fails, and nothing fails when nothing is reached", async () => {
+    // Ada's todos, kept when every value of the element's `:todo/title` starts
+    // with its own first letter — trivially all of them
+    const all = await pull(db, ids.ada, [
+      spec({
+        attr: ":todo/owner",
+        reverse: true,
+        sub: [":todo/title"],
+        where: [{ every: { path: [":todo/rank"], pred: { path: [], op: ">=", value: 3 } } }],
+      }),
+    ]);
+    // ranks: a-open 5, b-done 1, c-open 3, d-open none, e-open 2
+    // d-open reaches no rank at all → vacuously true, so it is kept
+    expect(titles(all, ":todo/_owner").sort()).toEqual(["a-open", "c-open", "d-open"]);
+  });
+
+  test("every over a scalar collection is the value itself", async () => {
+    // Ada's tags are zeta / alpha / mid / beta: the owner's tags, walked from
+    // the element. Not all of them start with "a", so `every` keeps nothing…
+    const none = await pull(db, ids.ada, [
+      ":user/name",
+      spec({
+        attr: ":todo/owner",
+        reverse: true,
+        sub: [":todo/title"],
+        where: [{ every: { path: [":todo/owner", ":user/tags"], pred: { path: [], op: "starts-with?", value: "a" } } }],
+      }),
+    ]);
+    expect(none).toEqual({ ":user/name": "Ada" });
+    const some = await pull(db, ids.ada, [
+      spec({
+        attr: ":todo/owner",
+        reverse: true,
+        sub: [":todo/title"],
+        where: [{ some: { path: [":todo/owner", ":user/tags"], pred: { path: [], op: "starts-with?", value: "a" } } }],
+      }),
+    ]);
+    // …while `some` keeps every todo of Ada's, because "alpha" does
+    expect(titles(some, ":todo/_owner").length).toBe(5);
+  });
+
+  test("a negation underneath a `some` — `∃x ¬P`, which no plain path can say", async () => {
+    // Ada's todos that share a project with a todo that is *not* done.
+    // Work: a-open, d-open, e-open (all open) + f-done. Home: b-done, c-open, g-open.
+    const r = await pull(db, ids.ada, [
+      spec({
+        attr: ":todo/owner",
+        reverse: true,
+        sub: [":todo/title"],
+        where: [
+          {
+            some: {
+              path: [":todo/project", ":todo/project"],
+              reverse: [false, true],
+              pred: { not: { path: [":todo/done"], op: "=", value: true } },
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(titles(r, ":todo/_owner").sort()).toEqual(["a-open", "b-done", "c-open", "d-open", "e-open"]);
+
+    // `none` is the negation of that same `some`: no sibling is open
+    const noneOpen = await pull(db, ids.ada, [
+      ":user/name",
+      spec({
+        attr: ":todo/owner",
+        reverse: true,
+        sub: [":todo/title"],
+        where: [
+          {
+            not: {
+              some: {
+                path: [":todo/project", ":todo/project"],
+                reverse: [false, true],
+                pred: { not: { path: [":todo/done"], op: "=", value: true } },
+              },
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(noneOpen).toEqual({ ":user/name": "Ada" });
+  });
+
+  test("every nests, and the quantifiers parse from the wire", () => {
+    const parsed = parsePullPattern([
+      spec({
+        attr: ":user/tags",
+        where: [{ every: { path: [":todo/_owner"], pred: { some: { path: [":todo/project"], pred: { path: [":project/name"], op: "=", value: "Work" } } } } }],
+      }),
+    ]) as PullAttrSpec[];
+    expect(parsed[0].where).toEqual([
+      {
+        every: {
+          path: [":todo/owner"],
+          reverse: [true],
+          pred: { some: { path: [":todo/project"], pred: { path: [":project/name"], op: "=", value: "Work" } } },
+        },
+      },
+    ]);
+    expect(() => parsePullPattern([spec({ attr: ":user/tags", where: [{ every: { path: [] } } as never] })])).toThrow(/every needs a :pred/);
+  });
+});
+
 describe("nested pull: order / offset / limit", () => {
   test("asc and desc, with empty placement", async () => {
     const asc = await pull(db, ids.ada, [

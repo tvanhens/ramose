@@ -136,7 +136,7 @@ async function pullOne(
     let vals: unknown[] = [];
     for (const el of elems) {
       if (!spec.reverse) {
-        vals.push(await refOrValue(db, el.datom, subPattern, cache, nextPath, nextDepth, spec.recursion !== undefined));
+        vals.push(await refOrValue(db, el.datom!, subPattern, cache, nextPath, nextDepth, spec.recursion !== undefined));
         continue;
       }
       const other = el.eid!;
@@ -174,7 +174,8 @@ async function pullOne(
  * zero-length path compares — the scalar itself, or the entity id for a ref.
  */
 interface Elem {
-  datom: Datom;
+  /** absent on a sub-element a quantifier's path reached, which is no datom */
+  datom?: Datom;
   eid?: number;
   value: unknown;
 }
@@ -227,6 +228,19 @@ async function elemValues(db: Db, el: Elem, path: readonly string[], reverse: re
   return current;
 }
 
+/**
+ * The elements one quantified hop reaches, each as an element in its own
+ * right: an entity when the hop lands on refs (so the sub-predicate can walk
+ * on), the value itself when it lands on scalars (so `path: []` compares it).
+ */
+async function elemsAt(db: Db, el: Elem, path: readonly string[], reverse: readonly boolean[] | undefined): Promise<Elem[]> {
+  const vals = await elemValues(db, el, path, reverse);
+  const last = path.length - 1;
+  const entity =
+    path.length === 0 ? el.eid !== undefined : path[last] === ":db/id" || reverse?.[last] === true || db.attr(path[last])?.valueType === ValueTag.Ref;
+  return vals.map((v) => (entity && typeof v === "number" ? { eid: v, value: v } : { value: v }));
+}
+
 async function testElem(db: Db, el: Elem, p: PullElemPred): Promise<boolean> {
   if ("and" in p) {
     for (const q of p.and) if (!(await testElem(db, el, q))) return false;
@@ -237,6 +251,19 @@ async function testElem(db: Db, el: Elem, p: PullElemPred): Promise<boolean> {
     return false;
   }
   if ("not" in p) return !(await testElem(db, el, p.not));
+  if ("every" in p) {
+    // no reached element fails — and nothing fails when nothing is reached
+    for (const sub of await elemsAt(db, el, p.every.path, p.every.reverse)) {
+      if (!(await testElem(db, sub, p.every.pred))) return false;
+    }
+    return true;
+  }
+  if ("some" in p) {
+    for (const sub of await elemsAt(db, el, p.some.path, p.some.reverse)) {
+      if (await testElem(db, sub, p.some.pred)) return true;
+    }
+    return false;
+  }
   const vals = await elemValues(db, el, p.path, p.reverse);
   if (p.op === "exists") return vals.length > 0;
   if (p.op === "missing") return vals.length === 0;
