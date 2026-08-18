@@ -23,6 +23,7 @@
     "bench:read-do": "bun run bench/read-do.bench.ts",
     "bench:indexer": "bun run bench/indexer.bench.ts",
     "dev": "bun alchemy dev",
+    "dev:todos": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/todos/alchemy.run.ts",
     "dev:reef": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/reef/alchemy.run.ts",
     "deploy": "bun alchemy deploy",
     "deploy:prod": "bun alchemy deploy --stage prod",

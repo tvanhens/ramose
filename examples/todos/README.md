@@ -1,7 +1,20 @@
 # Todos
 
 The consumer proof for navigational query (`docs/QUERY.md`) on
-`Ripple.connect` + `db.live`. From the repo root:
+`Ripple.connect` + `db.live`.
+
+## Run it
+
+From the repo root, one command:
+
+```sh
+bun run dev:todos
+```
+
+That brings up the peer (`:1337`) and the Vite dev server (`:5173`) — the SPA
+is a `Command.Dev` resource in the same stack, so it starts once the peer is
+serving, is handed `VITE_RIPPLE_URL`, and is torn down with it. Then open
+http://localhost:5173. It is shorthand for
 
 ```sh
 CI=1 ALCHEMY_STATE=local \
@@ -11,7 +24,9 @@ CI=1 ALCHEMY_STATE=local \
 VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 ```
 
-`bunx vite build examples/todos` builds the same bundle for production.
+with each variable only defaulted when you have not set it yourself (see
+`.cursor/CLOUD.md` for why miniflare wants them). `bunx vite build
+examples/todos` builds the same bundle for production.
 
 ## The shape
 
