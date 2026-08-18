@@ -165,6 +165,30 @@ bun run release       # the real thing
 Both run `scripts/release.ts`, which is also what the workflow calls — there is
 one definition of the release sequence, so local and CI cannot drift.
 
+Publishing locally still wants a tag, both to mark the released commit and to
+get a GitHub Release. Tag *after* the publish and push it:
+
+```sh
+bun run release:version 0.2.0
+git commit -am "release: v0.2.0"
+bun run release                       # publish from here
+git tag v0.2.0 && git push origin HEAD --tags
+```
+
+The tag still triggers the workflow, and that is fine: every version is already
+on the registry, so all eight are skipped and the run only creates the GitHub
+Release. The skip path reads the registry, which needs no credentials, so this
+works even with no `NPM_TOKEN` and no trusted publishing configured — useful
+while OIDC is still being set up.
+
+What a local publish gives up is [provenance][provenance]: attestation needs an
+OIDC issuer that only CI has, which is why `bun run release` passes
+`--no-provenance`. Packages published this way are not linked to the commit and
+workflow that built them. Nothing breaks; the npm page just lacks the "Built
+and signed on GitHub Actions" badge.
+
+[provenance]: https://docs.npmjs.com/generating-provenance-statements
+
 It refuses to run against a dirty working tree (`--allow-dirty` overrides), so
 what gets published always corresponds to a commit. The publish is wrapped in a
 `finally` that restores the `workspace:*` ranges: pinning them mutates eight
