@@ -20,13 +20,12 @@ import {
   type FindElem,
   type NotClause,
   type OrClause,
-  type OrderSpec,
   type PatternClause,
   type PullPattern,
   type Query,
   type Term,
 } from "./ast.ts";
-import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, compareJs, sortKeys, sortRows, vkey } from "./builtins.ts";
+import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
 

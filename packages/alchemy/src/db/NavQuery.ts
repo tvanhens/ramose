@@ -195,7 +195,13 @@ export type OrderDir = "asc" | "desc";
  */
 export interface OrderBy {
   readonly path: readonly string[];
-  /** Parallel to `path`; a reversed hop is many, so this is always all-false. */
+  /**
+   * Parallel to `path`, and in practice always all-false: `.orderBy` rejects a
+   * key that crosses a cardinality-many hop (the sort key would be a set), and
+   * `.reverse` is always many — any number of entities may point at one. It
+   * still travels with the path, so lowering reads the two together and a
+   * future single-valued backlink needs no new plumbing.
+   */
   readonly revs?: readonly boolean[];
   readonly dir: OrderDir;
   readonly empty: OrderEmpty;
