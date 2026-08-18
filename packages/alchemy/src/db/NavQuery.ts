@@ -12,6 +12,12 @@
  * clause, so `:limit 20` really is twenty rows the client keeps.
  */
 
+import type {
+  PullElemCmp,
+  PullElemOp,
+  PullElemOrder,
+  PullElemPred,
+} from "@ripple/core/query/ast.ts";
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
@@ -24,7 +30,9 @@ import {
   nested,
   optional,
   reshapePullResult,
+  type PullNestedConstraints,
 } from "./Pull.ts";
+import { isSelfRefSchema, refTargetOf } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
 
@@ -286,6 +294,31 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly none: IsManyRef<A> extends true
     ? (pred: WhereNode) => Quantified
     : never;
+  /**
+   * Card-many ref / backlink only: filter this collection, per element, on
+   * the peer. The predicates are rooted at the **element** and lower to the
+   * nested pull's `:where` — never to the query's own, so the outer `.limit`
+   * still counts rows and a collection that filters to nothing is `[]`.
+   */
+  readonly where: IsManyRef<A> extends true
+    ? (...preds: readonly WhereNode[]) => CollectionNav<A>
+    : never;
+  /** Card-many ref / backlink only: sort this collection by a card-one key. */
+  readonly orderBy: IsManyRef<A> extends true
+    ? (
+        key: NestedOrderKey,
+        dir?: OrderDir,
+        opts?: { readonly empty?: OrderEmpty },
+      ) => CollectionNav<A>
+    : never;
+  /** Card-many ref / backlink only: keep at most `n` elements. */
+  readonly limit: IsManyRef<A> extends true
+    ? (n: number) => CollectionNav<A>
+    : never;
+  /** Card-many ref / backlink only: drop `n` elements from the front. */
+  readonly offset: IsManyRef<A> extends true
+    ? (n: number) => CollectionNav<A>
+    : never;
   readonly optional: ReturnType<typeof optional<A>>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? <const S extends Shape>(shape: S) => SelectNested<A, S>
@@ -355,6 +388,278 @@ const quantified = (
   };
 };
 
+// ── nested collections: pull-phase where / order / offset / limit ──────────
+
+/**
+ * A card-many ref or backlink nav with pull-phase constraints attached:
+ *
+ * ```ts
+ * Todo.owner.reverse.where(Todo.done.eq(false)).orderBy(Todo.due).limit(5)
+ *   .select({ title: Todo.title })
+ * ```
+ *
+ * The constraints lower to the `PullAttrSpec` fields of *this* collection
+ * (`:where` / `:order` / `:offset` / `:limit`) and are evaluated inside the
+ * pull, after the outer `:order` / `:offset` / `:limit` slice — they filter the
+ * collection, never the rows. An element-less collection is `[]`, not a
+ * dropped parent, so the outer `:limit` still counts rows the client keeps.
+ */
+export interface CollectionNav<A extends PathCarrier = PathCarrier> {
+  readonly _tag: "collection";
+  readonly attr: A;
+  /** Already lowered — each call lowers its argument eagerly. */
+  readonly constraints: PullNestedConstraints;
+  where(...preds: readonly WhereNode[]): CollectionNav<A>;
+  orderBy(
+    key: NestedOrderKey,
+    dir?: OrderDir,
+    opts?: { readonly empty?: OrderEmpty },
+  ): CollectionNav<A>;
+  limit(n: number): CollectionNav<A>;
+  offset(n: number): CollectionNav<A>;
+  select<const S extends Shape>(shape: S): SelectNested<A, S>;
+}
+
+/**
+ * A sort key for a nested collection: a path rooted at the element, and
+ * card-one — a many attribute's sort key would be a set, not a value, and is
+ * rejected here at the type level (the outer `orderBy` rejects it when the
+ * query is built).
+ */
+export type NestedOrderKey = PathCarrier & {
+  readonly cardinality?: "one";
+};
+
+/** `PredTag` → the engine's builtin predicate name inside a pull `:where`. */
+const PULL_OPS: Record<PredTag, PullElemOp> = {
+  eq: "=",
+  is: "=",
+  ne: "!=",
+  lt: "<",
+  lte: "<=",
+  gt: ">",
+  gte: ">=",
+  in: "in",
+  startsWith: "starts-with?",
+  endsWith: "ends-with?",
+  includes: "includes?",
+  matches: "re-find?",
+  exists: "exists",
+  missing: "missing",
+};
+
+const nsOfIdent = (ident: string): string | undefined =>
+  /^:([^/]+)\//.exec(ident)?.[1];
+
+/**
+ * The namespace of the element a nested `where` / `orderBy` is rooted at: the
+ * *referring* entity of a backlink (so, the ref's own namespace), or the
+ * target of a forward ref. `undefined` for an untargeted ref — then paths go
+ * unchecked rather than wrongly rejected.
+ */
+const elementNs = (attr: PathCarrier): string | undefined => {
+  const path = pathOf(attr);
+  const last = path[path.length - 1];
+  if (last === undefined) return undefined;
+  const revs = revsOf(attr);
+  if (revs[revs.length - 1] === true) return nsOfIdent(last);
+  const schema = (attr as { schema?: unknown }).schema;
+  if (isSelfRefSchema(schema)) return nsOfIdent(last);
+  const ns = (refTargetOf(schema)?.() as { ns?: unknown } | undefined)?.ns;
+  return typeof ns === "string" ? ns : undefined;
+};
+
+/**
+ * A nested path starts at the element, so its first forward hop must be an
+ * attribute of the element's namespace. (A first hop that is itself a backlink
+ * is rooted at the referring namespace, and says nothing about the element.)
+ */
+const checkElementRoot = (
+  elemNs: string | undefined,
+  path: readonly string[],
+  revs: readonly boolean[],
+  what: string,
+  collection: readonly string[],
+): void => {
+  const first = path[0];
+  if (elemNs === undefined || first === undefined) return;
+  if (first === ID || revs[0] === true) return;
+  const ns = nsOfIdent(first);
+  if (ns !== undefined && ns !== elemNs) {
+    throw new Error(
+      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection.join(" → ")} is rooted at the collection's element, which is a :${elemNs}/… entity — ${first} is not one of its attributes`,
+    );
+  }
+};
+
+/**
+ * Lower a where-node into a per-element pull predicate.
+ *
+ * `prefix` is the hop chain of the `some(...)`s we are inside. Fan-out along a
+ * path is existential, so a prefix distributes over a comparison and over `or`
+ * (`∃x (P ∨ Q)` is `(∃x P) ∨ (∃x Q)`) — but not over a negation, which is why
+ * `not` / `none` under a `some` are rejected instead of quietly meaning
+ * something else. `every` has no pull-phase spelling at all.
+ */
+const lowerElemNode = (
+  node: WhereNode,
+  prefix: readonly string[],
+  prefixRevs: readonly boolean[],
+  elemNs: string | undefined,
+  collection: readonly string[],
+): PullElemPred => {
+  if (isOr(node)) {
+    return {
+      or: node.preds.map((p) =>
+        lowerElemNode(p, prefix, prefixRevs, elemNs, collection),
+      ),
+    };
+  }
+  if (isNot(node)) {
+    if (prefix.length > 0) {
+      throw new Error(
+        `ripple/query: not(...) inside some(...) is not expressible in a nested where on ${collection.join(" → ")} — "some element whose hop does not …" needs an element cursor the pull phase does not have`,
+      );
+    }
+    return { not: lowerElemNode(node.pred, [], [], elemNs, collection) };
+  }
+  if (isQuantified(node)) {
+    checkElementRoot(elemNs, node.path, node.revs, "where", collection);
+    if (node.quant === "some") {
+      // an existential hop is exactly a longer path: fan-out is existential
+      return lowerElemNode(
+        node.pred,
+        [...prefix, ...node.path],
+        [...prefixRevs, ...node.revs],
+        undefined,
+        collection,
+      );
+    }
+    if (node.quant === "none") {
+      if (prefix.length > 0) {
+        throw new Error(
+          `ripple/query: none(...) inside some(...) is not expressible in a nested where on ${collection.join(" → ")}`,
+        );
+      }
+      // no element matches = not(some element matches)
+      return {
+        not: lowerElemNode(
+          node.pred,
+          [...node.path],
+          [...node.revs],
+          undefined,
+          collection,
+        ),
+      };
+    }
+    throw new Error(
+      `ripple/query: every(...) is not expressible in a nested where on ${collection.join(" → ")} — it is not the negation of an existential (an element with no value at all fails it), and the pull phase has no element cursor. Use some(...) / none(...) here, or put the every(...) in the query's own .where`,
+    );
+  }
+  return lowerElemCmp(node, prefix, prefixRevs, elemNs, collection);
+};
+
+const lowerElemCmp = (
+  p: Predicate,
+  prefix: readonly string[],
+  prefixRevs: readonly boolean[],
+  elemNs: string | undefined,
+  collection: readonly string[],
+): PullElemCmp => {
+  const revs = p.revs ?? p.path.map(() => false);
+  checkElementRoot(elemNs, p.path, revs, "where", collection);
+  const op = PULL_OPS[p.op];
+  if (op === undefined) {
+    throw new Error(
+      `ripple/query: ${p.op} has no nested-where spelling on ${collection.join(" → ")}`,
+    );
+  }
+  const reverse = [...prefixRevs, ...revs];
+  return {
+    path: [...prefix, ...p.path],
+    ...(reverse.some(Boolean) ? { reverse } : {}),
+    op,
+    ...(p.op === "exists" || p.op === "missing" ? {} : { value: p.value }),
+  };
+};
+
+const lowerElemOrder = (
+  key: PathCarrier,
+  dir: OrderDir,
+  empty: OrderEmpty | undefined,
+  elemNs: string | undefined,
+  collection: readonly string[],
+): PullElemOrder => {
+  const path = pathOf(key);
+  if (cardsOf(key).includes("many")) {
+    throw new Error(
+      `ripple/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+    );
+  }
+  const revs = revsOf(key);
+  checkElementRoot(elemNs, path, revs, "orderBy", collection);
+  return {
+    path: [...path],
+    ...(revs.some(Boolean) ? { reverse: [...revs] } : {}),
+    dir,
+    ...(empty !== undefined ? { empty } : {}),
+  };
+};
+
+const collectionNav = <A extends PathCarrier>(
+  attr: A,
+  constraints: PullNestedConstraints,
+): CollectionNav<A> => {
+  const elemNs = elementNs(attr);
+  const collection = pathOf(attr);
+  const self: CollectionNav<A> = {
+    _tag: "collection",
+    attr,
+    constraints,
+    where: (...preds) =>
+      collectionNav(attr, {
+        ...constraints,
+        where: [
+          ...(constraints.where ?? []),
+          ...preds.map((p) => lowerElemNode(p, [], [], elemNs, collection)),
+        ],
+      }),
+    orderBy: (key, dir = "asc", opts) =>
+      collectionNav(attr, {
+        ...constraints,
+        order: [
+          ...(constraints.order ?? []),
+          lowerElemOrder(key, dir, opts?.empty, elemNs, collection),
+        ],
+      }),
+    limit: (n) => collectionNav(attr, { ...constraints, limit: n }),
+    offset: (n) => collectionNav(attr, { ...constraints, offset: n }),
+    select: (shape) =>
+      makeSelectNested(attr, shape, constraints) as SelectNested<
+        A,
+        typeof shape
+      >,
+  };
+  return self;
+};
+
+/**
+ * Start constraining a collection. Only a cardinality-many **ref** has
+ * elements to filter and order: a card-one ref reaches one entity (constrain
+ * it in the query's own `.where`), and a card-many *scalar* has no element to
+ * root a predicate at.
+ */
+const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
+  const cards = cardsOf(attr);
+  const isRef = (attr as { valueType?: unknown }).valueType === ":db.type/ref";
+  if (cards[cards.length - 1] !== "many" || !isRef) {
+    throw new Error(
+      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many ref collection or a backlink, which is what has elements to filter`,
+    );
+  }
+  return collectionNav(attr, {});
+};
+
 /** Refs compare by id, so an `Eid` in an `in(...)` list is its number. */
 const inValue = (v: unknown): unknown =>
   typeof v === "object" &&
@@ -368,11 +673,30 @@ export interface SelectNested<A = unknown, S = unknown> {
   readonly _tag: "select";
   readonly attr: A;
   readonly shape: S;
+  /** Pull-phase constraints from a {@link CollectionNav}, already lowered. */
+  readonly constraints?: PullNestedConstraints;
   readonly optional: {
     readonly _tag: "optional";
     readonly field: SelectNested<A, S>;
   };
 }
+
+const makeSelectNested = (
+  attr: PathCarrier,
+  shape: Shape,
+  constraints?: PullNestedConstraints,
+): SelectNested<PathCarrier, Shape> => {
+  const nestedSelect: SelectNested<PathCarrier, Shape> = {
+    _tag: "select",
+    attr,
+    shape,
+    ...(constraints !== undefined ? { constraints } : {}),
+    get optional() {
+      return { _tag: "optional" as const, field: nestedSelect };
+    },
+  };
+  return nestedSelect;
+};
 
 const NAV_METHODS = new Set([
   "eq",
@@ -392,6 +716,10 @@ const NAV_METHODS = new Set([
   "some",
   "every",
   "none",
+  "where",
+  "orderBy",
+  "limit",
+  "offset",
   "optional",
   "select",
 ]);
@@ -454,19 +782,28 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     missing(this: PathCarrier) {
       return pred("missing", this);
     },
+    where(this: PathCarrier, ...preds: WhereNode[]) {
+      return collectionOf(this, "where").where(...preds);
+    },
+    orderBy(
+      this: PathCarrier,
+      key: NestedOrderKey,
+      dir: OrderDir = "asc",
+      opts?: { readonly empty?: OrderEmpty },
+    ) {
+      return collectionOf(this, "orderBy").orderBy(key, dir, opts);
+    },
+    limit(this: PathCarrier, n: number) {
+      return collectionOf(this, "limit").limit(n);
+    },
+    offset(this: PathCarrier, n: number) {
+      return collectionOf(this, "offset").offset(n);
+    },
     get optional() {
       return optional(attr);
     },
     select(this: PathCarrier, shape: Shape) {
-      const nestedSelect: SelectNested<PathCarrier, Shape> = {
-        _tag: "select",
-        attr: this,
-        shape,
-        get optional() {
-          return { _tag: "optional" as const, field: nestedSelect };
-        },
-      };
-      return nestedSelect;
+      return makeSelectNested(this, shape);
     },
   };
 
@@ -530,6 +867,7 @@ const shapeFieldToPull = (field: unknown): unknown => {
     return nested(
       field.attr as { readonly valueType: ":db.type/ref" },
       shapeToPullMap(field.shape as Shape),
+      field.constraints,
     );
   }
   if (isPullNested(field)) {

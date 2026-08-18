@@ -250,6 +250,81 @@ type _backlinks = Expect<
 /** an untargeted ref has a backlink too — only the owning namespace matters */
 query(User).where(User.bestFriend.reverse.name.eq("Ada"));
 
+// ── nested where / orderBy / limit on a collection ─────────────────────────
+
+/**
+ * The inner predicates are typed against the collection's **element** — the
+ * ref's owning namespace for a backlink — and the row type is unchanged: a
+ * filtered collection is the same array, with fewer elements in it.
+ */
+const filteredBacklink = library.q(
+  query(Author).select({
+    name: Author.name,
+    books: Book.author.reverse
+      .where(Book.title.startsWith("A"), Book.published.lt(new Date()))
+      .orderBy(Book.published, "desc", { empty: "first" })
+      .offset(1)
+      .limit(5)
+      .select({ title: Book.title }),
+  }),
+);
+type _filteredBacklink = Expect<
+  Equal<
+    Effect.Success<typeof filteredBacklink>,
+    readonly {
+      readonly name: string;
+      readonly books: readonly { readonly title: string }[];
+    }[]
+  >
+>;
+
+/** a forward card-many ref is a collection too, and `.optional` still applies */
+const filteredMany = db.q(
+  query(User).select({
+    friends: User.friends.where(User.name.startsWith("A")).limit(3).select({
+      name: User.name,
+    }),
+    maybeFriends: User.friends.limit(1).select({ age: User.age }).optional,
+  }),
+);
+type _filteredMany = Expect<
+  Equal<
+    Effect.Success<typeof filteredMany>,
+    readonly {
+      readonly friends: readonly { readonly name: string }[];
+      readonly maybeFriends: readonly { readonly age: number }[] | undefined;
+    }[]
+  >
+>;
+
+// @ts-expect-error `:book/title` is a string attribute, in a nested where too
+Book.author.reverse.where(Book.title.eq(42));
+
+query(User).select({
+  // @ts-expect-error a nested orderBy key is card-one: a many attr is a set
+  friends: User.friends.orderBy(User.friends).select({ name: User.name }),
+});
+
+query(User).select({
+  // @ts-expect-error a card-one ref reaches one entity — nothing to filter
+  best: User.bestFriend.where(User.name.eq("Ada")).select({ name: User.name }),
+});
+
+// @ts-expect-error …and nothing to page, either
+query(User).select({ best: User.bestFriend.limit(1).select({ name: User.name }) });
+
+// @ts-expect-error a scalar attribute is not a collection
+query(User).select({ name: User.name.where(User.name.eq("Ada")) });
+
+/** a card-many *scalar* has no element entity to root a predicate at */
+const Post = Namespace("post", {
+  tags: Attr(Schema.String, { cardinality: "many" }),
+});
+query(Post).select({
+  // @ts-expect-error … so it is not a collection either, for now
+  tags: Post.tags.where(Post.tags.eq("x")),
+});
+
 // @ts-expect-error `:author/name` is not a ref, so it has no backlink
 query(Author).where(Book.title.reverse.eq("x"));
 

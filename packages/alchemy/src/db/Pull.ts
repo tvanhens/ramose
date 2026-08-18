@@ -1,5 +1,6 @@
 /** Literate pull map: keys are result names, values are attr refs / `.optional` / `.select`. */
 
+import type { PullElemOrder, PullElemPred } from "@ripple/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
@@ -8,6 +9,23 @@ import type { CatalogIdent, ReadAtIdent } from "./idents.ts";
 import type { AttributeMap } from "./Namespace.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
+
+/**
+ * Pull-phase constraints on one nested collection, already lowered to the
+ * engine's IR (`PullAttrSpec`'s `:where` / `:order` / `:offset` / `:limit`).
+ *
+ * The client builds them with `.where` / `.orderBy` / `.limit` / `.offset` on
+ * a card-many ref or backlink nav (see `CollectionNav` in NavQuery.ts) and
+ * lowers them there, eagerly — this module only carries them onto the spec.
+ * They are evaluated *inside* the pull, after the outer `:order` / `:offset` /
+ * `:limit` slice, so they never change the row set.
+ */
+export interface PullNestedConstraints {
+  readonly where?: readonly PullElemPred[];
+  readonly order?: readonly PullElemOrder[];
+  readonly limit?: number;
+  readonly offset?: number;
+}
 
 export interface PullOptional<F = unknown> {
   readonly _tag: "optional";
@@ -27,6 +45,8 @@ export interface PullNested<A = unknown, P = unknown> {
   readonly _tag: "nested";
   readonly attr: A;
   readonly pattern: P;
+  /** Pull-phase `where` / `order` / `offset` / `limit` on a collection. */
+  readonly constraints?: PullNestedConstraints;
   /** The whole nested value is maybe (`T | undefined`). */
   readonly optional: PullOptional<PullNested<A, P>>;
 }
@@ -58,11 +78,13 @@ export const nested = <
 >(
   attr: A,
   pattern: P,
+  constraints?: PullNestedConstraints,
 ): PullNested<A, P> => {
   const result: PullNested<A, P> = {
     _tag: "nested",
     attr,
     pattern,
+    ...(constraints !== undefined ? { constraints } : {}),
     get optional() {
       return optional(result);
     },
@@ -270,12 +292,26 @@ const isReverseCarrier = (value: unknown): boolean =>
 
 const isSelectNestedField = (
   value: unknown,
-): value is { readonly _tag: "select"; readonly attr: unknown; readonly shape: unknown } =>
+): value is {
+  readonly _tag: "select";
+  readonly attr: unknown;
+  readonly shape: unknown;
+  readonly constraints?: PullNestedConstraints;
+} =>
   typeof value === "object" &&
   value !== null &&
   (value as { _tag?: unknown })._tag === "select" &&
   "attr" in value &&
   "shape" in value;
+
+/**
+ * A constrained collection nav (`Todo.owner.reverse.where(…)`) with no shape.
+ * Structural, like {@link isReverseCarrier} — pull stays free of NavQuery.
+ */
+const isCollectionCarrier = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "collection";
 
 /** Inspect a literate pull field: optional / many / nested pattern. */
 export const inspectPullField = (
@@ -285,6 +321,7 @@ export const inspectPullField = (
   readonly many: boolean;
   readonly reverse: boolean;
   readonly nestedPattern: unknown | undefined;
+  readonly constraints: PullNestedConstraints | undefined;
   readonly attr: unknown;
 } => {
   let optional = false;
@@ -293,12 +330,18 @@ export const inspectPullField = (
     optional = true;
     current = current.field;
   }
+  if (isCollectionCarrier(current)) {
+    throw new Error(
+      "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+    );
+  }
   if (isPullNested(current)) {
     return {
       optional,
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.pattern,
+      constraints: current.constraints,
       attr: current.attr,
     };
   }
@@ -308,6 +351,7 @@ export const inspectPullField = (
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.shape,
+      constraints: current.constraints,
       attr: current.attr,
     };
   }
@@ -316,9 +360,23 @@ export const inspectPullField = (
     many: cardinalityOf(current) === "many",
     reverse: isReverseCarrier(current),
     nestedPattern: undefined,
+    constraints: undefined,
     attr: current,
   };
 };
+
+/** The `PullAttrSpec` fields a nested collection's constraints occupy. */
+const constraintFields = (
+  c: PullNestedConstraints | undefined,
+): Record<string, unknown> =>
+  c === undefined
+    ? {}
+    : {
+        ...(c.where !== undefined && c.where.length > 0 ? { where: [...c.where] } : {}),
+        ...(c.order !== undefined && c.order.length > 0 ? { order: [...c.order] } : {}),
+        ...(c.offset !== undefined ? { offset: c.offset } : {}),
+        ...(c.limit !== undefined ? { limit: c.limit } : {}),
+      };
 
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
@@ -328,6 +386,7 @@ const lowerField = (as: string, field: unknown): unknown => {
       attr: identOf(info.attr),
       reverse: info.reverse,
       as,
+      ...constraintFields(info.constraints),
       sub: lowerLiterateMap(info.nestedPattern),
     };
   }

@@ -30,7 +30,7 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
 import type { Db as CoreDb } from "@ripple/core";
 import { type RippleEnv, envInt, internalHeaders } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
@@ -70,11 +70,28 @@ let levelApplied = false;
 function unknownPullAttrs(db: CoreDb, pattern: PullPattern, seen: string[] = []): string[] {
   for (const spec of pattern) {
     if (spec.kind !== "attr") continue;
-    if (spec.attr === ":db/id") continue;
-    if (db.attr(spec.attr) === undefined && !seen.includes(spec.attr)) seen.push(spec.attr);
+    if (spec.attr !== ":db/id") noteUnknown(db, spec.attr, seen);
+    // a nested collection's :where / :order walk paths of their own
+    for (const p of spec.where ?? []) unknownElemPredAttrs(db, p, seen);
+    for (const o of spec.order ?? []) unknownPathAttrs(db, o.path, seen);
     if (spec.sub !== undefined) unknownPullAttrs(db, spec.sub, seen);
   }
   return seen;
+}
+
+function noteUnknown(db: CoreDb, ident: string, seen: string[]): void {
+  if (db.attr(ident) === undefined && !seen.includes(ident)) seen.push(ident);
+}
+
+function unknownPathAttrs(db: CoreDb, path: readonly string[], seen: string[]): void {
+  for (const ident of path) if (ident !== ":db/id") noteUnknown(db, ident, seen);
+}
+
+function unknownElemPredAttrs(db: CoreDb, pred: PullElemPred, seen: string[]): void {
+  if ("and" in pred) for (const p of pred.and) unknownElemPredAttrs(db, p, seen);
+  else if ("or" in pred) for (const p of pred.or) unknownElemPredAttrs(db, p, seen);
+  else if ("not" in pred) unknownElemPredAttrs(db, pred.not, seen);
+  else unknownPathAttrs(db, pred.path, seen);
 }
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>

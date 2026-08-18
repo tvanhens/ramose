@@ -67,6 +67,66 @@ describe("pull against an uninstalled attribute", () => {
     expect(bad.body.error).toContain(":user/ghost");
   });
 
+  test("…and the paths a nested collection's :where / :order walk", async () => {
+    const where = await peer.json(
+      "/db/acme/pull",
+      post({
+        eid: 1,
+        pattern: [
+          {
+            kind: "attr",
+            attr: ":doc/author",
+            reverse: false,
+            as: "author",
+            where: [{ or: [{ path: [":doc/title"], op: "exists" }, { not: { path: [":user/ghost"], op: "exists" } }] }],
+            sub: [":doc/title"],
+          },
+        ],
+      }),
+    );
+    expect(where.status).toBe(400);
+    expect(where.body.error).toContain(":user/ghost");
+
+    const order = await peer.json(
+      "/db/acme/pull",
+      post({
+        eid: 1,
+        pattern: [
+          {
+            kind: "attr",
+            attr: ":doc/author",
+            reverse: false,
+            as: "author",
+            order: [{ path: [":db/id"], dir: "asc" }, { path: [":user/phantom"], dir: "desc" }],
+            sub: [":doc/title"],
+          },
+        ],
+      }),
+    );
+    expect(order.status).toBe(400);
+    expect(order.body.error).toContain(":user/phantom");
+
+    // a nested where over installed attributes is not a bad request
+    const ok = await peer.json(
+      "/db/acme/pull",
+      post({
+        eid: 1,
+        pattern: [
+          {
+            kind: "attr",
+            attr: ":doc/author",
+            reverse: false,
+            as: "author",
+            where: [{ path: [":doc/title"], op: "exists" }],
+            order: [{ path: [":doc/title"], dir: "asc" }],
+            sub: [":doc/title"],
+          },
+        ],
+      }),
+    );
+    expect(ok.status).toBe(200);
+  });
+
   test("`*` and `:db/id` are not attributes, so they pass", async () => {
     const seeded = await peer.seed([{ ":db/id": "doc", ":doc/title": "Ship it" }]);
     const wild = await peer.json(

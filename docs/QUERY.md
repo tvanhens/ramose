@@ -185,6 +185,9 @@ Ripple.query(User)
   path. It does not model a `:db/isComponent` ref, whose backlink is
   single-valued; `.reverse` on one throws rather than typing an array the peer
   will not send.
+- A path that walks on **through** a backlink keeps that hop backwards:
+  `Todo.owner.reverse.owner.name` is "the todos that point at me, then their
+  owner, then that owner's name" — one reversed hop, then two forward ones.
 
 ### Shape (`select`)
 
@@ -204,14 +207,74 @@ are absent, not `undefined`.
   rows you keep.
 - **`.optional`**: types `T | undefined` and keeps the parent when the attr is
   absent.
-- **Card-one ref `.select({…})`**: nested object; unfiltered nested shapes lower
-  to `(pull ?e …)` inside `:find` (server-side, not client N+1). A required
+- **Card-one ref `.select({…})`**: nested object; nested shapes lower to
+  `(pull ?e …)` inside `:find` (server-side, not client N+1). A required
   nested select is required through the ref: the parent is dropped when the
   ref is missing or the nested object fails *its* required fields.
 - **Card-many `.select({…})`**: an array; a missing many is `[]`, never a drop.
 - **Backlink `.reverse.select({…})`**: an array too, resolved on the peer
   through VAET inside `:find`. Zero backlinks is `[]`, never a dropped row; a
-  bare `.reverse` without a shape is rejected.
+  bare `.reverse` without a shape is rejected. A `.reverse` hop is the ref read
+  backwards, so the element is the *referring* entity (a `Todo`, for
+  `Todo.owner.reverse` from a `User`) — that is what the shape and the nested
+  constraints below are written against.
+
+#### Filtering a nested collection
+
+A card-many ref or a backlink is a **collection**, and `.where` / `.orderBy` /
+`.limit` / `.offset` chain onto the nav before `.select` to constrain it:
+
+```ts
+Ripple.query(User)
+  .orderBy(User.name).limit(20)
+  .select({
+    name: User.name,
+    todos: Todo.owner.reverse
+      .where(Todo.done.eq(false))
+      .orderBy(Todo.due, "asc", { empty: "last" })
+      .limit(5)
+      .select({ title: Todo.title }),
+    friends: User.friends.where(User.email.exists()).limit(3).select({ name: User.name }),
+  });
+```
+
+These are **pull-phase** constraints: they lower to the nested pull spec's
+`:where` / `:order` / `:offset` / `:limit` and the peer evaluates them inside
+the pull, *after* the outer `:order` / `:offset` / `:limit` slice. So:
+
+- The nested filter **never drops the parent row**. A collection that filters
+  to nothing is `[]`, and the outer `.limit 20` still means twenty rows the
+  client keeps. (It is not a client-side post-filter either — that would make
+  the outer `:limit` lie in the other direction.)
+- The nested `limit` / `offset` count the elements `where` and `orderBy`
+  **kept**, in that order: collect → where → order → offset → limit → nested
+  shape. Paging past the end is `[]`.
+- The row **type is unchanged** — a filtered collection is the same array.
+- Inner predicates are rooted at the **element**, so they are written with the
+  element's namespace (`Todo.*` inside `Todo.owner.reverse`, the ref's target
+  for a forward ref) and may walk on from it: `Todo.owner.name.eq("Ada")`
+  inside the backlink means "the element's owner is Ada". A path rooted at
+  another namespace is rejected when the query is built.
+- `Ripple.or` / `Ripple.not` nest as usual, and `some(…)` on a many hop inside
+  the predicate is just a longer path (fan-out is existential); `none(…)` is
+  its negation.
+- `orderBy` takes a card-one key from the element (`Todo.due`,
+  `Todo.owner.name`), several keys tie-break in order, and `empty` defaults to
+  `"last"` in both directions — the same rule as the outer `orderBy`.
+
+Not expressible today, and rejected with an error rather than lowered to
+something else:
+
+- `every(…)` inside a nested `where` (an element with no value at all fails it,
+  which the existential pull-phase predicates cannot say), and `not(…)` /
+  `none(…)` *underneath* a `some(…)` (`∃x ¬P` is not `¬∃x P`). Put the
+  quantifier in the query's own `.where` when it is the rows you mean to filter.
+- Constraints on a **card-one** ref select (there is one entity, not a
+  collection — filter it in the query's `.where`), and on a card-many
+  **scalar** (`:user/tags`): the engine can filter one by its own values, the
+  client has no spelling for "the element" yet. Both are type errors.
+- A constrained collection without a `.select({ … })` shape, exactly like a
+  bare `.reverse`.
 
 ### Order, limit, offset
 
@@ -287,9 +350,17 @@ A navigational query compiles to a find-pull query:
    which the engine places per `empty`. The `:order` vector names those
    variables; `:limit` / `:offset` pass through.
 5. **Select** → pull pattern embedded in `:find` as `(pull ?e pattern)`.
+6. **Nested collection constraints** → the `:where` / `:order` / `:offset` /
+   `:limit` fields of *that* pull spec, never the query's own. Each predicate
+   becomes a `{path, reverse?, op, value?}` walked from the element (`or` /
+   `not` nest; a `some(…)` hop is folded into the path, because fan-out along
+   a path is existential), and each sort key a `{path, dir, empty?}`.
 
 The engine sorts the joined relation, pages it, and only then resolves the
-pulls. The client's `finalizeNavResult` reshapes rows (pull maps into the
+pulls — which is exactly why a nested collection's constraints belong to the
+pull phase: they change what is *inside* a row, never which rows there are, so
+they run once per kept row, after the slice, and cost nothing on the rows the
+page dropped. The client's `finalizeNavResult` reshapes rows (pull maps into the
 selected shape, bare ids into `Eid`s) and changes neither their number nor
 their order.
 
@@ -320,7 +391,7 @@ Status of the navigational surface relative to the intended design.
 | Build | `Ripple.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ripple.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
 | Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `in` `startsWith` `endsWith` `includes` `matches` `exists` `missing`, ref `is`, card-many-ref `some` / `every` / `none` | card-many *scalar* `every` / `none` (a bare predicate on one already means `some`) |
 | Combinators | `Ripple.or` `Ripple.not`, nestable | `Ripple.when` (waits on `Ripple.params`) |
-| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`) | nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)`, `.reverse` on `:db/isComponent` refs |
+| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on card-many-ref and backlink collections | nested constraints on card-many *scalars*, `every` inside a nested `where`, `.expand`, `.orDefault`, `Ripple.all(N)`, `.reverse` on `:db/isComponent` refs |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ripple.explain` / `withBasis` |
@@ -336,16 +407,17 @@ cut.
 
 ### Next (engine / client gaps that unblock everyday queries)
 
-- **Filtered nested shapes** — nested `where` / `orderBy` / `limit` inside a
-  collection or backlink `select`. This one needs an engine primitive, not a
-  client lowering: the existing `q` correlated-subquery clause is a `:where`
-  clause, so it would run once per *candidate* row, before `:order` and
-  `:limit`, and with a fresh budget each time. What it wants is a **find-phase
-  correlated binding** — evaluated after the offset/limit slice, alongside
-  `pullMany`, with the outer query's budget threaded in. Until then the answer
-  is "not yet" rather than a client-side filter that makes `:limit` lie.
-- Card-many **scalar** `every` / `none`: the many-ref quantifiers are rooted at
-  the hop's target, and a scalar has none. Needs an element cursor of some kind.
+- Card-many **scalar** `every` / `none`: the engine side is fine — the
+  `not-join` lowering the many-ref quantifiers use evaluates correctly over a
+  scalar hop too (verified). What is missing is the *client spelling* for the
+  element inside the inner predicate: `User.tags.every(???)` has no term for
+  "the value". No element cursor in the engine is needed, only a way to write
+  one; the same gap is why a card-many scalar takes no nested `where` (see
+  Shape). A bare predicate on a many scalar already means `some`.
+- `every(…)` inside a **nested** collection `where` (see Shape): the pull-phase
+  predicates are existential over the values a path reaches, so `∃x ¬P` — the
+  shape `every` needs, since an element with no value at all must fail it —
+  cannot be said. Same missing element cursor.
 
 ### Later
 

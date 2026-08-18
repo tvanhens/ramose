@@ -1169,6 +1169,346 @@ describe("quantifiers and backlinks end to end", () => {
   });
 });
 
+describe("lowering: nested where / orderBy / limit on a collection", () => {
+  const pullOf = (q: Parameters<typeof lowerNavQuery>[0]) =>
+    (lowerNavQuery(q).query.find[0] as unknown[])[2] as any[];
+
+  test("a filtered backlink lowers into the nested pull spec, not the query", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .where(User.name.startsWith("A"))
+        .limit(3)
+        .select({
+          name: User.name,
+          todos: Todo.owner.reverse
+            .where(Todo.done.eq(false))
+            .orderBy(Todo.due, "desc")
+            .limit(5)
+            .select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect((q.find[0] as unknown[])[2]).toEqual([
+      { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
+      {
+        kind: "attr",
+        attr: ":todo/owner",
+        reverse: true,
+        as: "todos",
+        where: [{ path: [":todo/done"], op: "=", value: false }],
+        order: [{ path: [":todo/due"], dir: "desc" }],
+        limit: 5,
+        sub: [{ kind: "attr", attr: ":todo/title", reverse: false, as: "title" }],
+      },
+    ]);
+    // the outer query is untouched: the collection filter is not a row filter,
+    // and the collection is still not a required clause
+    expect(q.where).toEqual([
+      userScope,
+      ["?e", ":user/name", "?v0"],
+      [["starts-with?", "?v0", "A"]],
+      ["?e", ":user/name", "_"],
+    ]);
+    expect(q.limit).toBe(3);
+    expect(q.order).toBeUndefined();
+  });
+
+  test("a forward card-many ref carries where / offset / limit too", () => {
+    const spec = pullOf(
+      query(User)
+        .select({
+          friends: User.friends
+            .where(User.name.startsWith("A"))
+            .orderBy(User.name, "asc", { empty: "first" })
+            .offset(1)
+            .limit(2)
+            .select({ name: User.name }),
+        })
+        .build(),
+    )[0];
+    expect(spec).toEqual({
+      kind: "attr",
+      attr: ":user/friends",
+      reverse: false,
+      as: "friends",
+      where: [{ path: [":user/name"], op: "starts-with?", value: "A" }],
+      order: [{ path: [":user/name"], dir: "asc", empty: "first" }],
+      offset: 1,
+      limit: 2,
+      sub: [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
+    });
+  });
+
+  test("a nested collection never becomes a required clause", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .select({
+          todos: Todo.owner.reverse
+            .where(Todo.done.eq(false))
+            .select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([userScope]);
+  });
+
+  test("combinators, multi-hop paths and reversed hops inside a nested where", () => {
+    const [spec] = pullOf(
+      query(User)
+        .select({
+          todos: Todo.owner.reverse
+            .where(
+              or(Todo.done.eq(true), Todo.due.missing()),
+              Todo.owner.name.eq("Ada"),
+              not(Todo.title.startsWith("draft")),
+              Todo.id.in([1, 2]),
+            )
+            .select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect(spec.where).toEqual([
+      {
+        or: [
+          { path: [":todo/done"], op: "=", value: true },
+          { path: [":todo/due"], op: "missing" },
+        ],
+      },
+      // a multi-hop path walks from the element: todo → owner → name
+      { path: [":todo/owner", ":user/name"], op: "=", value: "Ada" },
+      { not: { path: [":todo/title"], op: "starts-with?", value: "draft" } },
+      { path: [":db/id"], op: "in", value: [1, 2] },
+    ]);
+  });
+
+  test("`some` is a longer path; `none` is its negation; a reversed hop flags", () => {
+    const [spec] = pullOf(
+      query(Todo)
+        .select({
+          // from a Todo element: the todos of my owner (a backlink hop)
+          siblings: Todo.owner.reverse
+            .where(
+              Todo.owner.reverse.some(Todo.done.eq(true)),
+              Todo.owner.reverse.none(Todo.title.eq("z")),
+            )
+            .select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect(spec.where).toEqual([
+      {
+        path: [":todo/owner", ":todo/done"],
+        reverse: [true, false],
+        op: "=",
+        value: true,
+      },
+      {
+        not: {
+          path: [":todo/owner", ":todo/title"],
+          reverse: [true, false],
+          op: "=",
+          value: "z",
+        },
+      },
+    ]);
+  });
+
+  test("what a nested constraint refuses to say", () => {
+    const todos = Todo.owner.reverse;
+    // only a card-many ref / backlink has elements
+    const constrain = (attr: unknown) =>
+      (attr as typeof todos).where(Todo.done.eq(false));
+    expect(() => constrain(Todo.owner)).toThrow(
+      /where\(\.\.\.\) on :todo\/owner — nested where/,
+    );
+    expect(() => constrain(User.name)).toThrow(/nested where/);
+
+    // the predicate must be rooted at the element
+    expect(() => todos.where(User.name.eq("Ada"))).toThrow(
+      /rooted at the collection's element, which is a :todo\/… entity — :user\/name/,
+    );
+
+    // `every` has no pull-phase spelling, and neither has `not` under `some`
+    expect(() => todos.where(Todo.owner.reverse.every(Todo.done.eq(true)))).toThrow(
+      /every\(\.\.\.\) is not expressible in a nested where/,
+    );
+    expect(() =>
+      todos.where(Todo.owner.reverse.some(not(Todo.done.eq(true)))),
+    ).toThrow(/not\(\.\.\.\) inside some\(\.\.\.\) is not expressible/);
+    expect(() =>
+      todos.where(Todo.owner.reverse.some(Todo.owner.reverse.none(Todo.done.eq(true)))),
+    ).toThrow(/none\(\.\.\.\) inside some\(\.\.\.\) is not expressible/);
+
+    // a sort key is still a value, not a set
+    expect(() => todos.orderBy(Todo.owner.reverse.title as never)).toThrow(
+      /crosses a cardinality-many attribute/,
+    );
+
+    // and a constrained collection is still a shape, not a bare field
+    expect(() =>
+      lowerNavQuery(
+        query(User).select({ todos: todos.limit(2) as never }).build(),
+      ),
+    ).toThrow(/filtered collection needs a shape/);
+  });
+});
+
+describe("nested collections end to end: filtered on the peer, `[]` never a drop", () => {
+  /**
+   * Ada — a-old (open, Jan 1), a-open (open, Jan 3), a-done (done, Jan 2)
+   * Bob — b-done, b-done2 (both done)  → filters to nothing
+   * Cyd — c-open (open, Jan 5); friends [Ada]
+   * Ada friends [Bob, Cyd]
+   */
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const cyd = yield* tx.entity();
+          yield* cyd.add(User.name, "Cyd");
+          yield* ada.add(User.friends, bob.eid as never);
+          yield* ada.add(User.friends, cyd.eid as never);
+          yield* cyd.add(User.friends, ada.eid as never);
+          const mk = function* (
+            title: string,
+            done: boolean,
+            due: string,
+            owner: unknown,
+          ) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, done);
+            yield* t.add(Todo.due, new Date(due));
+            yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("a-old", false, "2026-01-01", ada.eid);
+          yield* mk("a-open", false, "2026-01-03", ada.eid);
+          yield* mk("a-done", true, "2026-01-02", ada.eid);
+          yield* mk("b-done", true, "2026-01-01", bob.eid);
+          yield* mk("b-done2", true, "2026-01-04", bob.eid);
+          yield* mk("c-open", false, "2026-01-05", cyd.eid);
+        });
+        return db;
+      }),
+    );
+  };
+
+  test("a filtered backlink pages inside the outer page, and never drops a row", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .limit(2)
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse
+              .where(Todo.done.eq(false))
+              .orderBy(Todo.due, "asc")
+              .limit(1)
+              .select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { name: "Ada", todos: [{ title: "a-old" }] },
+      // every todo of Bob's filters out — an empty array, not a missing row
+      { name: "Bob", todos: [] },
+    ]);
+    // the outer :limit counted rows the client keeps; the peer sent two
+    expect(peer.seen[0]?.rows).toBe(2);
+    await peer.dispose();
+  });
+
+  test("nested offset + limit page the filtered, ordered collection", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const page = (offset: number) =>
+      run(
+        db.q(
+          query(User)
+            .where(User.name.eq("Ada"))
+            .select({
+              name: User.name,
+              todos: Todo.owner.reverse
+                .where(Todo.done.eq(false))
+                .orderBy(Todo.due, "desc")
+                .offset(offset)
+                .limit(1)
+                .select({ title: Todo.title }),
+            }),
+        ),
+      );
+    expect((await page(0))[0]?.todos).toEqual([{ title: "a-open" }]);
+    expect((await page(1))[0]?.todos).toEqual([{ title: "a-old" }]);
+    // past the end of the collection is `[]`, and still a row
+    expect((await page(9))[0]?.todos).toEqual([]);
+    await peer.dispose();
+  });
+
+  test("a forward card-many ref filters the same way", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            friends: User.friends
+              .where(User.name.startsWith("C"))
+              .select({ name: User.name }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { name: "Ada", friends: [{ name: "Cyd" }] },
+      { name: "Bob", friends: [] },
+      { name: "Cyd", friends: [] },
+    ]);
+    expect(peer.seen[0]?.rows).toBe(3);
+    await peer.dispose();
+  });
+
+  test("a multi-hop nested predicate walks from the element", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            // my friends' todos are not mine: the element is the friend's todo
+            todos: Todo.owner.reverse
+              .where(Todo.owner.name.eq("Ada"), Todo.done.eq(false))
+              .orderBy(Todo.title, "asc")
+              .select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { name: "Ada", todos: [{ title: "a-old" }, { title: "a-open" }] },
+      { name: "Bob", todos: [] },
+      { name: "Cyd", todos: [] },
+    ]);
+    await peer.dispose();
+  });
+});
+
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
     const db = peer.ripple.db("todos", Todos);
