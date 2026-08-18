@@ -127,11 +127,15 @@ a range).
 ### Cutting a release
 
 ```sh
-bun run release:version 0.2.0   # root + all 8 manifests
-git commit -am "release: v0.2.0"
+bun run release:version 0.2.0   # bumps root + all 8 manifests, commits them
 git tag v0.2.0
 git push origin HEAD --tags
 ```
+
+`release:version` commits as `release: v<version>` so the message is the same
+every time. It stages the nine manifests by path, never `-a`, so anything else
+in your working tree stays out of the release commit. Pass `--no-commit` to
+edit the manifests and stop.
 
 Pushing the tag triggers `.github/workflows/release.yml`, which typechecks,
 tests, builds, verifies, and publishes. The tag is the source of truth: if it
@@ -169,8 +173,7 @@ Publishing locally still wants a tag, both to mark the released commit and to
 get a GitHub Release. Tag *after* the publish and push it:
 
 ```sh
-bun run release:version 0.2.0
-git commit -am "release: v0.2.0"
+bun run release:version 0.2.0         # bumps and commits
 bun run release                       # publish from here
 git tag v0.2.0 && git push origin HEAD --tags
 ```
@@ -222,7 +225,7 @@ Day to day you only need the four `bun run` aliases:
 | command | what it does |
 | --- | --- |
 | `bun run build` | compile all 8 packages to `dist` |
-| `bun run release:version <v>` | set the version across root + all 8 manifests |
+| `bun run release:version <v>` | set the version across root + all 8 manifests, and commit it |
 | `bun run release:dry` | full release sequence, publish is a dry run |
 | `bun run release` | full release sequence, for real |
 
@@ -232,7 +235,7 @@ debugging:
 | script | what it does |
 | --- | --- |
 | `scripts/release.ts` | the whole sequence, with guaranteed cleanup |
-| `scripts/set-version.ts` | set the version across root + all 8 manifests |
+| `scripts/set-version.ts` | set the version across root + all 8 manifests, then commit (`--no-commit` to skip) |
 | `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE/README |
 | `scripts/check-release.ts` | verify versions agree, tag matches, exports resolve |
 | `scripts/prepare-publish.ts` | rewrite `workspace:*` → the release version |
