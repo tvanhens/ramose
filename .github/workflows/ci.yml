@@ -15,3 +15,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test
+      # Build the publishable output on every PR. Without this a change that
+      # breaks the build (or an exports path) is only discovered at release
+      # time, when a bad version number has already been burned.
+      - run: bun run build
+      - run: bun run scripts/check-release.ts --built

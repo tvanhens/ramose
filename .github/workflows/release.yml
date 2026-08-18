@@ -1,0 +1,106 @@
+# Publish the eight @ramose/* packages to npm.
+#
+# Trigger: push a tag matching v* (e.g. v0.1.0). The tag is the source of truth —
+# scripts/check-release.ts fails the run if it disagrees with the version in the
+# manifests, so a mistyped tag cannot publish the wrong version.
+#
+# Use `bun run scripts/set-version.ts <version>` to move all nine manifests
+# (root + 8 packages) together, then commit and tag.
+#
+# Auth: trusted publishing (OIDC) is used for any package configured for it on
+# npmjs.com, which is why `id-token: write` is set. NPM_TOKEN is the fallback and
+# is what the very first publish of a package has to use — OIDC cannot bootstrap
+# a package that does not exist yet, since the setting only appears on a
+# package's settings page once it is on the registry. Once all eight exist and
+# are configured, the secret can be deleted and this keeps working.
+#
+# workflow_dispatch runs everything except the publish itself (dry run), which is
+# the safe way to exercise this pipeline without spending a version number —
+# npm never lets a version be reused, even after unpublishing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build, verify and pack without publishing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # trusted publishing + provenance attestation
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: Development
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      # npm, not bun, does the publishing: trusted publishing and provenance
+      # both require the npm CLI, and 11.5.1+ specifically for OIDC.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Verify release
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bun run scripts/check-release.ts --built
+
+      # `workspace:*` is not rewritten by npm the way it is by bun, so this has
+      # to happen before packing or the tarballs are uninstallable.
+      - name: Pin internal dependency ranges
+        run: bun run scripts/prepare-publish.ts
+
+      - name: Re-verify after pinning
+        run: bun run scripts/check-release.ts --built
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" != "false" ]; then
+            bun run scripts/publish-packages.ts --dry-run --provenance
+          else
+            bun run scripts/publish-packages.ts --provenance
+          fi
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --verify-tag

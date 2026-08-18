@@ -1,19 +1,76 @@
 {
   "name": "@ramose/alchemy",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Alchemy 2 + Effect interface for Ramose: the portable `@ramose/alchemy/db` entry, the Ramose.Server and Ramose.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git",
+    "directory": "packages/alchemy"
+  },
+  "bugs": {
+    "url": "https://github.com/tvanhens/ripple/issues"
+  },
+  "keywords": [
+    "ramose",
+    "database",
+    "alchemy",
+    "cloudflare",
+    "effect",
+    "infrastructure-as-code"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./db": "./src/db/index.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./db": {
+      "bun": "./src/db/index.ts",
+      "types": "./dist/db/index.d.ts",
+      "default": "./dist/db/index.js"
+    },
+    "./*.js": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*.ts": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
   },
   "dependencies": {
-    "@ramose/core": "workspace:*",
-    "alchemy": "latest",
-    "effect": ">=4.0.0-beta.105"
+    "@ramose/core": "workspace:*"
   },
-  "sideEffects": false
+  "peerDependencies": {
+    "alchemy": ">=2.0.0-beta.72",
+    "effect": ">=4.0.0-beta.105"
+  }
 }

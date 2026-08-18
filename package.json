@@ -3,12 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git"
+  },
   "type": "module",
   "workspaces": [
     "packages/*",
     "website"
   ],
   "scripts": {
+    "build": "bun run scripts/build-packages.ts --clean",
+    "release:check": "bun run scripts/check-release.ts",
     "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy packages/react packages/better-auth examples/todos examples/reef test/support",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",

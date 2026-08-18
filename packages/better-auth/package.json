@@ -1,14 +1,69 @@
 {
   "name": "@ramose/better-auth",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Better Auth plugins for Ramose: `ramoseToken` adds the mint route that signs the workspace-scoped JWT a Ramose peer verifies (same JWKS as the jwt plugin), and `ramoseTokenClient` pairs it with `Ramose.token.jwt` in the browser.",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git",
+    "directory": "packages/better-auth"
+  },
+  "bugs": {
+    "url": "https://github.com/tvanhens/ripple/issues"
+  },
+  "keywords": [
+    "ramose",
+    "database",
+    "better-auth",
+    "auth",
+    "jwt"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./client": "./src/client.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "bun": "./src/client.ts",
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./*.js": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*.ts": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
   },
   "dependencies": {
     "@ramose/alchemy": "workspace:*",
@@ -22,6 +77,5 @@
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-beta.105",
     "jose": "^6.1.3"
-  },
-  "sideEffects": false
+  }
 }

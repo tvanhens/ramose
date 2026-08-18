@@ -116,3 +116,81 @@ hostname — on any stage, which is how the domain-attach path can be tested
 against a scratch stage without touching prod. Re-runs update the same Worker
 (`.alchemy/` is cached; the pinned name plus `--adopt` recovers from a
 cache miss). Manual republish: **Actions → Docs publish → Run workflow**.
+
+## Releasing to npm
+
+Eight packages publish to npm under the `@ramose` scope, all at the same
+version. They are only tested as a matched set, so they move in lockstep and
+their internal dependencies are pinned exactly (`"@ramose/core": "0.1.0"`, not
+a range).
+
+### Cutting a release
+
+```sh
+bun run scripts/set-version.ts 0.2.0   # root + all 8 manifests
+git commit -am "release: v0.2.0"
+git tag v0.2.0
+git push origin HEAD --tags
+```
+
+Pushing the tag triggers `.github/workflows/release.yml`, which typechecks,
+tests, builds, verifies, and publishes. The tag is the source of truth: if it
+disagrees with the manifests the run fails before publishing anything.
+
+To exercise the pipeline without spending a version number, use **Actions →
+Release → Run workflow**, which defaults to a dry run. This matters because npm
+never allows a version to be reused, even after unpublishing.
+
+### The build
+
+`bun run build` compiles each package to `packages/<name>/dist` with `tsc`.
+There is no bundler.
+
+The source imports relative modules with explicit `.ts` extensions
+(`./datom.ts`), which Bun resolves natively but Node, esbuild, and a consumer's
+`tsc` do not. `rewriteRelativeImportExtensions` in `tsconfig.build.base.json`
+rewrites those to `.js` on the way out. Emit is unbundled so the file layout —
+and therefore the subpath exports — survives the build.
+
+Each package's `exports` map serves both audiences: the `bun` condition points
+at TypeScript source (which also ships), everything else resolves to `dist`.
+That is what keeps `bun test` instant in this repo while consumers get compiled
+output. Deep subpaths accept all three spellings — `@ramose/core/datom`,
+`datom.ts`, and `datom.js` all land on the same module.
+
+### Scripts
+
+| script | what it does |
+| --- | --- |
+| `scripts/set-version.ts` | set the version across root + all 8 manifests |
+| `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE/README |
+| `scripts/check-release.ts` | verify versions agree, tag matches, exports resolve |
+| `scripts/prepare-publish.ts` | rewrite `workspace:*` → the release version |
+| `scripts/publish-packages.ts` | publish in dependency order, skipping what exists |
+
+`prepare-publish.ts` is not optional. `npm publish` does not rewrite the
+`workspace:` protocol the way `bun publish` does — it would ship
+`"@ramose/core": "workspace:*"` in the tarball, which npm cannot resolve. Run
+`--restore` to put the workspace ranges back after a local dry run.
+
+### npm authentication
+
+The release workflow prefers [trusted publishing][trusted-publishing] (OIDC)
+and falls back to the `NPM_TOKEN` secret. OIDC cannot bootstrap a package that
+does not exist yet — the setting only appears on a package's settings page once
+it is on the registry — so the first publish of each package uses the token.
+
+After the first release, enable trusted publishing for each package at
+`https://www.npmjs.com/package/@ramose/<name>/access` (publisher: GitHub
+Actions, repo `tvanhens/ripple`, workflow `release.yml`). Once all eight are
+configured, `NPM_TOKEN` can be deleted.
+
+[trusted-publishing]: https://docs.npmjs.com/trusted-publishers
+
+## Contributor License Agreement
+
+Outside contributions require signing [CLA.md](CLA.md), enforced by
+`.github/workflows/cla.yml`. It grants the right to license contributions under
+terms of the maintainer's choosing, which is what keeps relicensing possible
+later without tracking down every past contributor. See the workflow header for
+the one-time setup (a signatures repo and the `CLA_SIGNATURES_TOKEN` secret).

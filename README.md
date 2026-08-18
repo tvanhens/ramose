@@ -183,3 +183,10 @@ Ops: [Runbook](https://ramose.ai/reference/runbook/).
 Recorded benches: [`bench/RESULTS.md`](bench/RESULTS.md).
 Brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon):
 [`website/public/brand/`](website/public/brand/).
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Contributions require signing the [CLA](CLA.md); see
+[CONTRIBUTING.md](CONTRIBUTING.md).

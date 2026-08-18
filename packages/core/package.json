@@ -1,16 +1,64 @@
 {
   "name": "@ramose/core",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Ramose core engine: datoms, segments, segment trees, novelty, datalog. Pure TypeScript, no Cloudflare dependencies.",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/tvanhens/ripple/issues"
+  },
+  "keywords": [
+    "ramose",
+    "database",
+    "datalog",
+    "datomic",
+    "immutable",
+    "graph-database"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./*": "./src/*"
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*.js": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*.ts": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "bun test"
   }
 }

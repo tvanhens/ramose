@@ -37,8 +37,10 @@ Ramose is pre-release. The packages are on npm; the API may still move.
    | `@ramose/worker` | the peer Worker — you name it as `main`, you do not copy it |
    | `@ramose/react` | `useLive` and `useTransact` |
 
-   The packages ship TypeScript source. Vite and Alchemy resolve them; if
-   `tsc` complains, set `"moduleResolution": "bundler"`.
+   The packages ship compiled ESM with type declarations and source maps, so
+   no bundler or `tsconfig` setting is required. TypeScript source ships
+   alongside it and is what Bun resolves, which is why stack traces point at
+   real source rather than compiled output.
 
 2. **Write the catalog.** One file, shared by the stack, the browser, and any
    Worker that talks to this database:

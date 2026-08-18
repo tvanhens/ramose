@@ -6,3 +6,12 @@ dist/
 .env
 .env.*
 FABLE_TASK.md
+
+# Generated per-package publish artifacts (see scripts/build-packages.ts).
+# LICENSE/NOTICE are always copied from the repo root. A README is generated
+# only where the package does not already have a written one — those are
+# committed and negated below.
+packages/*/LICENSE
+packages/*/NOTICE
+packages/*/README.md
+!packages/react/README.md

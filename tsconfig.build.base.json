@@ -1,0 +1,39 @@
+{
+  "//": [
+    "Shared compiler options for producing publishable output in packages/*/dist.",
+    "",
+    "The source uses explicit `.ts` extensions in relative imports (`./datom.ts`),",
+    "which Bun resolves natively but Node, esbuild and `tsc` in a consumer's",
+    "project do not. `rewriteRelativeImportExtensions` (TS 5.7+) rewrites those to",
+    "`.js` in both the emitted JS and the emitted `.d.ts`, which is what makes",
+    "`allowImportingTsExtensions` legal here without `noEmit`.",
+    "",
+    "Emit is unbundled: the module graph and file layout are preserved so the",
+    "subpath exports (`@ramose/core/datom.ts`, `@ramose/alchemy/db`, ...) keep",
+    "resolving after the build. Each package extends this and sets rootDir/outDir."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "types": ["@cloudflare/workers-types"],
+    "noEmit": false
+  }
+}
