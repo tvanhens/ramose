@@ -56,6 +56,46 @@ Three class names carry special meaning:
 
 Verified principals are memoized per isolate for 60 seconds.
 
+## Minting
+
+Ripple verifies tokens; it never issues them. But the shape it verifies is a
+contract with two consumers — the peer's env and your mint route — so declare
+it once as an `AuthConfig` and let `Ripple.claims` build the payload:
+
+```ts title="auth.ts"
+import * as Ripple from "@ripple/alchemy";
+
+export const AUTH: Ripple.AuthConfig = {
+  issuer: "https://auth.acme.example", // RIPPLE_JWT_ISS
+  audience: "ripple:peer:prod", // RIPPLE_JWT_AUD
+  ttl: 900, // seconds — RIPPLE_JWT_MAX_TTL, and exp - iat
+};
+```
+
+The mint route's contract is `POST → { token }`, and the JWT itself carries
+`exp`. `claims` is pure — no signing, no I/O — so sign the payload with
+whatever you have (Better Auth's `signJWT`, `jose`, …):
+
+```ts title="mint-route.ts"
+const payload = Ripple.claims(
+  AUTH,
+  { sub: user.id, db: workspace, class: role, attrs: { org } },
+  compiledPolicy, // optional: the Ripple.Policy.compile(policy) JSON
+);
+// Spread: Better Auth's `signJWT` wants jose's index-signed `JWTPayload`,
+// which a named interface is not assignable to.
+const { token } = await auth.api.signJWT({ body: { payload: { ...payload } } });
+```
+
+It validates at mint what the peer would reject anyway: `db` must be a valid
+database name, and — when the compiled policy is passed — `class` must be one
+the policy declares, because an undeclared class grants nothing, never an
+outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
+`RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
+
+On the client, wrap the mint call in `Ripple.token.jwt(mint)` — see
+[From the browser](#from-the-browser).
+
 ## Combinators
 
 `Ripple.Policy` is deploy-time only: import it from `@ripple/alchemy`, not
@@ -228,6 +268,7 @@ skips the check entirely.
 
 ```ts title="alchemy.run.ts"
 import * as Ripple from "@ripple/alchemy";
+import { AUTH } from "./auth.ts";
 import { Doc, policy } from "./policy.ts";
 
 // the pull patterns this app actually sends, so `compile` can check them
@@ -236,9 +277,7 @@ const docShape = { title: Doc.title } as const;
 const auth: Ripple.PeerAuth = {
   policy: Ripple.Policy.compile(policy, { pulls: [docShape] }),
   jwksUrl: process.env.RIPPLE_JWKS_URL,
-  issuers: process.env.RIPPLE_JWT_ISS, // one, or comma-separated
-  aud: process.env.RIPPLE_JWT_AUD,
-  maxTtl: Number(process.env.RIPPLE_JWT_MAX_TTL ?? 900),
+  auth: AUTH, // issuer, audience and ttl — the same value your mint route uses
   allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
   // only a configured policy arms the Worker→writer gate; pin the secret so it
   // does not change on every deploy
@@ -249,8 +288,10 @@ const auth: Ripple.PeerAuth = {
 };
 ```
 
-Spread `...Ripple.authEnv(auth)` into the peer Worker's `env`, and pass the
-same `auth` object to `Ripple.Server`. The Server does not push the
+The three loose keys still work — `issuers`, `aud` and `maxTtl` may be set
+directly (say, from env), and an explicitly set loose key wins over the
+`AuthConfig`. Spread `...Ripple.authEnv(auth)` into the peer Worker's `env`, and
+pass the same `auth` object to `Ripple.Server`. The Server does not push the
 environment onto the Worker for you; it uses `auth` for a deploy-time check
 that fails the deploy when a policy is set without `jwksUrl`, `issuers`, or
 `aud`.
@@ -261,6 +302,44 @@ you split the Worker out.
 
 Every variable is listed in the [configuration
 reference](/reference/configuration/).
+
+## From the browser
+
+Your auth Worker mints database-scoped JWTs; the client's job is only to hand
+the current one to `Ripple.connect`. `Ripple.token.jwt(mint)` is the shipped
+source for that: it calls `mint` lazily on the first read, caches the token,
+shares one in-flight mint between concurrent readers, and re-mints once the
+cached token is within two minutes of its `exp` (configurable via
+`refreshMargin`). The client re-reads its token on every (re)connect and every
+`/transact`, so short-lived tokens refresh themselves with no other plumbing.
+
+```ts title="src/db.ts"
+import * as Ripple from "@ripple/alchemy/db";
+
+const source = Ripple.token.jwt(() =>
+  fetch("/api/ripple-token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspace: "acme" }),
+  }).then((r) => r.json()),
+);
+
+const ripple = Ripple.connect({ url: RIPPLE_URL, token: source });
+// Effect users: Ripple.layer({ url: RIPPLE_URL, token: source }) — same client
+```
+
+- `mint` resolves to the JWT string, or to any object carrying it under
+  `token` — a mint route's JSON body (`{ token, class, exp }`) passes through
+  unwrapped.
+- `exp` comes from the JWT payload itself, never a side channel. A payload
+  with no `exp` is minted once and refreshed only by `source.invalidate()`
+  (sign-out, tenant switch).
+- `source.claims()` is the decoded payload — **not verified**, UI hints only:
+  show `ripple.class` for role-aware chrome, never trust it for access. It is
+  a peek at the cache, not a refresh.
+- A `mint` that throws surfaces as `NetworkError`: `transact` fails typed and
+  a standing `live` retries with its usual backoff. Throw an `Unauthorized`
+  from `mint` to make `live` fail terminally instead.
 
 ## Limits worth knowing
 

@@ -2,8 +2,10 @@
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
 
+const site = "https://ripple-docs.tvanhens.workers.dev";
+
 export default defineConfig({
-  site: "https://ripple-docs.tvanhens.workers.dev",
+  site,
   integrations: [
     starlight({
       title: "Ripple",
@@ -15,7 +17,7 @@ export default defineConfig({
           tag: "meta",
           attrs: {
             property: "og:image",
-            content: "https://ripplegraph.ai/og.png",
+            content: `${site}/og.png`,
           },
         },
         { tag: "meta", attrs: { property: "og:image:width", content: "1200" } },
@@ -32,7 +34,7 @@ export default defineConfig({
           tag: "meta",
           attrs: {
             name: "twitter:image",
-            content: "https://ripplegraph.ai/og.png",
+            content: `${site}/og.png`,
           },
         },
       ],

@@ -212,6 +212,9 @@ export const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
 
+/** One row from that query — inferred from it, never restated by hand. */
+export type TodoRow = Ripple.Row<typeof todoQuery>;
+
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {
     const t = yield* tx.entity();
@@ -222,7 +225,7 @@ export const addTodo = (db: TodosDb, title: string) =>
 ```
 
 The shipped file also exports `pullTodo`, `setDone`, and `deleteTodo`, cut here
-for length; everything above is verbatim.
+for length; the code above is as shipped, comments aside.
 
 `db.live(todoQuery)` in `src/App.tsx` is what redrew the list, and the
 `useLive` hook in `src/useLive.ts` — about a dozen lines — is all it takes to

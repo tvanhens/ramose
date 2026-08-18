@@ -180,6 +180,29 @@ Values decode on the way out, so a `Ripple.Instant` attribute arrives as a
 `transact`, and only emits when the rows actually changed — a write the query
 does not see is not a re-render.
 
+## Naming a row type
+
+The query already carries its row type; `Ripple.Row` names it so a React prop
+or a helper never restates the shape by hand, and `Ripple.Rows` is the array
+`db.q` resolves to and `db.live` emits:
+
+```ts title="src/queries.ts"
+// … same imports as above
+export type OpenTodo = Ripple.Row<typeof openTodos>;
+// { readonly id: number; readonly title: string;
+//   readonly due: Date | undefined;
+//   readonly owner: { readonly name: string } }
+
+export type OpenTodos = Ripple.Rows<typeof openTodos>;
+// readonly OpenTodo[]
+```
+
+Both take the builder or its `.build()` value. A nested `.select` is part of
+the row, `.optional` surfaces as `| undefined`, and with no `.select` the row is
+an entity id. Change the query and every consumer's type moves with it — no
+cast at the use site. `Row<Q>` names what a **query** yields; `Pull<C, P>`
+(below) names what a **shape** pulls.
+
 ## `pull` — one entity by id
 
 When you already know which entity you want, skip the query:
@@ -210,6 +233,11 @@ export const detail = (db: Db<typeof Todos>, id: number) =>
   missing. Mark a field `.optional` when its absence should keep the row —
   this also matters under a policy, where a field you may not read is simply
   absent.
+- `db.livePull(eid, shape)` is the live form of the same pull: it follows
+  `db.live`'s contract exactly (re-runs as the database advances and after a
+  local `transact`, emits only when the result changed, `asOf`/`history` emit
+  once and complete) and yields the projection or `null`. A retracted entity
+  emits `null` and the stream keeps standing.
 
 ## Reading the past
 

@@ -103,7 +103,9 @@ import (`todoDetail`, `openTodos`) are the ones you added to `src/todos.ts` in
 Ripple ships no token minter and no CLI, so a local loop is: generate a key
 pair, hand the public half to the peer, and sign your own tokens with it. That
 is about fifteen lines of [`jose`](https://github.com/panva/jose), and it is
-exactly what Ripple's own tests do.
+exactly what Ripple's own tests do. (In production, `Ripple.claims` builds the
+payload from the same `AuthConfig` the peer verifies against — see
+[Minting](/guides/auth/#minting); here a hand-written payload is enough.)
 
 ```ts title="scripts/local-jwt.ts"
 import { SignJWT, exportJWK, generateKeyPair } from "jose";

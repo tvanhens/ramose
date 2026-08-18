@@ -1921,3 +1921,20 @@ Site pages that carried the stale claims were swept in cycle 2 (`guides/queries.
 - **#53 `db.basis(): Effect<{ t }, DbError>`** — one `GET /db/:name/info` for a live db;
   `asOf(t)` answers `{ t }` with no request (`reference/client-api.md`, `concepts/time-travel.md`
   on master already document it).
+
+### Also after #50–#57, #62 (third rebase)
+
+- **#51 `Ripple.Row<Q>` / `Ripple.Rows<Q>`** — row type named from a query value or builder
+  (`NavQuery.ts:624-637`, exported from `@ripple/alchemy/db`). `examples/todos/src/todos.ts`
+  now defines `TodoRow = Ripple.Row<typeof todoQuery>`.
+- **#52 `db.livePull(eid, shape)`** — the live terminal for `pull`, same contract as `db.live`;
+  emits the projection or `null` (`Db.ts:128`).
+- **#56 `Ripple.token.jwt(mint, { refreshMargin })`** — a `TokenSource` (`{ token, claims(),
+  invalidate() }`) accepted by `ClientOptions.token`, so `Ripple.connect({ url, token: source })`
+  and `Ripple.layer(...)` both take it (`Databases.ts:70-74`, `token.ts`).
+- **#57 `Ripple.AuthConfig` + `Ripple.claims(auth, input, compiledPolicy?)`** — from
+  `@ripple/alchemy` (`Auth.ts`); `PeerAuth.auth?: AuthConfig` replaces the loose `issuers` /
+  `aud` / `maxTtl` (which still work and win when set) (`Server.ts:119`).
+- **#50** exports the database-name rule from `@ripple/alchemy/db`; **#55** per-session basis
+  watchers on the worker (no doc surface); **#62** deploys `website/` to Cloudflare on merge —
+  `astro.config.mjs` `site` is now `https://ripple-docs.tvanhens.workers.dev`.
