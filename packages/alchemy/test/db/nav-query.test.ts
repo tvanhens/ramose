@@ -28,8 +28,10 @@ import {
   finalizeNavResult,
   layer,
   lowerNavQuery,
+  not,
+  or,
   query,
-  type Predicate,
+  type WhereNode,
 } from "../../src/db/internal.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
@@ -440,7 +442,7 @@ describe("lowering: everything that changes the row set is the peer's", () => {
 });
 
 describe("lowering: in / endsWith / matches / is", () => {
-  const whereOf = (...preds: Predicate[]) =>
+  const whereOf = (...preds: WhereNode[]) =>
     lowerNavQuery(query(Todo).where(...preds).build()).query.where;
 
   test("`in` binds the value, then filters it with a collection binding", () => {
@@ -518,7 +520,102 @@ describe("lowering: in / endsWith / matches / is", () => {
   });
 });
 
-describe("predicates end to end: the peer counts the rows", () => {
+describe("lowering: or / not scope to the root entity variable", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+
+  test("`or` is an or-join on `?e`, so branches need not bind alike", () => {
+    expect(
+      whereOf(or(Todo.done.eq(true), Todo.owner.name.eq("Alice"))),
+    ).toEqual([
+      todoScope,
+      [
+        "or-join",
+        ["?e"],
+        ["and", ["?e", ":todo/done", true]],
+        ["and", ["?e", ":todo/owner", "?j0"], ["?j0", ":user/name", "Alice"]],
+      ],
+    ]);
+  });
+
+  test("`or()` with no branches matches nothing", () => {
+    expect(whereOf(or())).toEqual([todoScope, [["ground", []], ["?n0", "..."]]]);
+  });
+
+  test("`not` is a not-join on `?e`, and nests", () => {
+    expect(whereOf(not(Todo.done.eq(true)))).toEqual([
+      todoScope,
+      ["not-join", ["?e"], ["?e", ":todo/done", true]],
+    ]);
+    // not(missing) — the double negative the engine reads as "present"
+    expect(whereOf(not(Todo.due.missing()))).toEqual([
+      todoScope,
+      ["not-join", ["?e"], ["not", ["?e", ":todo/due", "_"]]],
+    ]);
+    expect(whereOf(not(or(Todo.done.eq(true), Todo.due.missing())))).toEqual([
+      todoScope,
+      [
+        "not-join",
+        ["?e"],
+        [
+          "or-join",
+          ["?e"],
+          ["and", ["?e", ":todo/done", true]],
+          ["and", ["not", ["?e", ":todo/due", "_"]]],
+        ],
+      ],
+    ]);
+  });
+
+  test("or of not, and nested or, keep their branch-local join variables", () => {
+    expect(
+      whereOf(
+        or(
+          not(Todo.owner.name.eq("Alice")),
+          or(Todo.owner.name.eq("Bob"), Todo.title.endsWith("!")),
+        ),
+      ),
+    ).toEqual([
+      todoScope,
+      [
+        "or-join",
+        ["?e"],
+        [
+          "and",
+          [
+            "not-join",
+            ["?e"],
+            ["?e", ":todo/owner", "?j0"],
+            ["?j0", ":user/name", "Alice"],
+          ],
+        ],
+        [
+          "and",
+          [
+            "or-join",
+            ["?e"],
+            [
+              "and",
+              ["?e", ":todo/owner", "?j1"],
+              ["?j1", ":user/name", "Bob"],
+            ],
+            ["and", ["?e", ":todo/title", "?v2"], [["ends-with?", "?v2", "!"]]],
+          ],
+        ],
+      ],
+    ]);
+  });
+
+  test("`not` of a predicate that constrains nothing matches nothing", () => {
+    // `:db/id` always exists, so its negation is empty — and the peer says so
+    expect(whereOf(not(Todo.id.exists()))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+  });
+});
+
+describe("predicates and combinators end to end: the peer counts the rows", () => {
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
     const db = peer.ripple.db("todos", Todos);
     return run(
@@ -552,7 +649,7 @@ describe("predicates end to end: the peer counts the rows", () => {
   const titles = async (
     peer: Awaited<ReturnType<typeof inProcessPeer>>,
     db: Awaited<ReturnType<typeof seed>>["db"],
-    ...preds: Predicate[]
+    ...preds: WhereNode[]
   ) => {
     peer.seen.length = 0;
     const rows = await run(
@@ -616,6 +713,58 @@ describe("predicates end to end: the peer counts the rows", () => {
     await peer.dispose();
   });
 
+  test("or / not run on the peer, and nest", async () => {
+    const peer = await inProcessPeer();
+    const { db, bob } = await seed(peer);
+
+    expect(
+      await titles(peer, db, or(Todo.done.eq(true), Todo.owner.missing())),
+    ).toEqual(["done already", "orphan"]);
+    expect(await titles(peer, db, not(Todo.done.eq(true)))).toEqual([
+      "orphan",
+      "ship it",
+      "write docs",
+    ]);
+    // not(missing) is "present"
+    expect(await titles(peer, db, not(Todo.owner.missing()))).toEqual([
+      "done already",
+      "ship it",
+      "write docs",
+    ]);
+    expect(await titles(peer, db, or())).toEqual([]);
+    expect(
+      await titles(
+        peer,
+        db,
+        not(or(Todo.owner.is(bob), Todo.owner.missing())),
+      ),
+    ).toEqual(["ship it"]);
+    // combinators are conjunctive with the rest of `.where`
+    expect(
+      await titles(
+        peer,
+        db,
+        Todo.done.eq(false),
+        or(Todo.owner.name.eq("Bob"), Todo.title.matches("^or")),
+      ),
+    ).toEqual(["orphan", "write docs"]);
+
+    await peer.dispose();
+  });
+
+  test("`or` branches that bind different variables do not duplicate rows", async () => {
+    const peer = await inProcessPeer();
+    const { db } = await seed(peer);
+    // "write docs" satisfies both branches; it must come back once
+    expect(
+      await titles(
+        peer,
+        db,
+        or(Todo.owner.name.eq("Bob"), Todo.title.startsWith("write")),
+      ),
+    ).toEqual(["done already", "write docs"]);
+    await peer.dispose();
+  });
 });
 
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {

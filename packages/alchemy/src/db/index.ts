@@ -32,12 +32,16 @@ export { Attr, type Attribute } from "./Attribute.ts";
 export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
-export { query } from "./NavQuery.ts";
+export { not, or, query } from "./NavQuery.ts";
 export type {
+  EidLike,
   NavQuery,
   NavQueryBuilder,
+  Not,
+  Or,
   Predicate,
   Shape,
+  WhereNode,
 } from "./NavQuery.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────

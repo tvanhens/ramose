@@ -53,6 +53,50 @@ export interface Predicate {
   readonly value?: unknown;
 }
 
+/**
+ * Disjunction of where-nodes. Nestable: a branch is itself a predicate, an
+ * `Or` or a `Not`, and every branch is scoped to the query root entity, so
+ * the join variables a branch invents stay inside it.
+ */
+export interface Or {
+  readonly _tag: "Or";
+  readonly preds: readonly WhereNode[];
+}
+
+/** Negation of a where-node, scoped to the query root entity. */
+export interface Not {
+  readonly _tag: "Not";
+  readonly pred: WhereNode;
+}
+
+/** What `.where(...)` takes: a predicate or a combinator over predicates. */
+export type WhereNode = Predicate | Or | Not;
+
+/**
+ * `Ripple.or(a, b, …)` — a row matches when **any** branch does. Lowers to
+ * `or-join` on the root entity variable, so branches need not bind the same
+ * variables. `or()` with no branches matches nothing.
+ */
+export const or = (...preds: readonly WhereNode[]): Or => ({
+  _tag: "Or",
+  preds: [...preds],
+});
+
+/**
+ * `Ripple.not(pred)` — a row matches when `pred` does **not**. Lowers to
+ * `not-join` on the root entity variable, so `not(or(…))` and
+ * `not(Todo.due.missing())` nest the way they read.
+ */
+export const not = (pred: WhereNode): Not => ({ _tag: "Not", pred });
+
+export const isOr = (x: unknown): x is Or =>
+  typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Or";
+
+export const isNot = (x: unknown): x is Not =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Not";
+
 export type ShapeField =
   | AnyAttribute
   | PathCarrier
@@ -83,7 +127,7 @@ export interface NavQuerySpec {
   readonly ns: string;
   /** Attribute idents that define membership in `ns` (for bare scope). */
   readonly nsIdents: readonly string[];
-  readonly where: readonly Predicate[];
+  readonly where: readonly WhereNode[];
   readonly shape: Shape | undefined;
   readonly orderBy: readonly OrderBy[];
   readonly limit: number | undefined;
@@ -427,7 +471,7 @@ export interface NavQueryBuilder<
   readonly ns: N;
   readonly spec: NavQuerySpec;
 
-  where(...preds: Predicate[]): NavQueryBuilder<N, R>;
+  where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
   select<const S extends Shape>(
     shape: S,
   ): NavQueryBuilder<N, readonly SelectResult<S>[]>;
@@ -559,7 +603,7 @@ export const lowerNavQuery = (
   }
 
   for (const p of q.spec.where) {
-    where.push(...lowerPredicate(root, p));
+    where.push(...lowerWhere(root, p));
   }
 
   const pullMap =
@@ -673,6 +717,31 @@ const fieldsOf = (pattern: unknown): Record<string, unknown> =>
  * and they mean it on the peer, so a `:limit` still counts kept rows.
  */
 const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
+
+/**
+ * A where-node's clauses. Combinators scope to the root entity variable: an
+ * `or` branch and a `not` body may invent join variables freely, because
+ * `or-join` / `not-join` export only `?e`.
+ */
+const lowerWhere = (root: string, node: WhereNode): unknown[] => {
+  if (isOr(node)) {
+    if (node.preds.length === 0) return [neverClause()];
+    return [
+      [
+        "or-join",
+        [root],
+        ...node.preds.map((p) => ["and", ...lowerWhere(root, p)]),
+      ],
+    ];
+  }
+  if (isNot(node)) {
+    const inner = lowerWhere(root, node.pred);
+    // nothing to negate is a predicate that always holds — its negation never does
+    if (inner.length === 0) return [neverClause()];
+    return [["not-join", [root], ...inner]];
+  }
+  return lowerPredicate(root, node);
+};
 
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
   const { path, op, value } = p;

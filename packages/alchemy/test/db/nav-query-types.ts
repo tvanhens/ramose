@@ -17,6 +17,8 @@ import {
   type Expect,
   Instant,
   Namespace,
+  not,
+  or,
   query,
   type ReadDb,
   Ref,
@@ -164,6 +166,29 @@ query(Movie).where(Movie.year.is(1001));
 
 // @ts-expect-error an entity is an eid or an `Eid`, not a name
 query(User).where(User.bestFriend.is("Ada"));
+
+// ── combinators nest, and are what `where` takes ───────────────────────────
+
+query(User).where(
+  or(User.name.eq("Ada"), User.age.gte(36)),
+  not(User.name.missing()),
+  or(not(User.age.lt(18)), or(User.name.startsWith("A"))),
+  or(),
+);
+const combined = db.q(
+  query(User)
+    .where(or(User.name.eq("Ada"), not(User.age.exists())))
+    .select({ name: User.name }),
+);
+type _combined = Expect<
+  Equal<Effect.Success<typeof combined>, readonly { readonly name: string }[]>
+>;
+
+// @ts-expect-error `or` combines predicates, not attributes
+query(User).where(or(User.name));
+
+// @ts-expect-error `not` takes one where-node, not a list
+query(User).where(not(User.name.eq("Ada"), User.age.gte(36)));
 
 // ── `.orderBy` takes an attribute, including one across a ref ──────────────
 

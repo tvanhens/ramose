@@ -147,6 +147,8 @@ describe("the `/db` barrel's public names", () => {
         "Bytes",
         // navigational query (issue #18)
         "query",
+        "or",
+        "not",
         // connecting
         "layer",
         "Databases",
