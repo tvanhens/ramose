@@ -24,10 +24,17 @@
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ramose from "@ramose/alchemy";
  *
- * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("@ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
  * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
  * ```
+ *
+ * `main` is a **path**, not a module specifier — Alchemy `realpath`s it before
+ * bundling — which is why the package name goes through `import.meta.resolve`.
+ * `Ramose.workerEntry()` from `@ramose/alchemy/workerEntry` is the same
+ * resolution under a name. A bare `"@ramose/worker"` resolves against the
+ * working directory, finds nothing, and leaves a Worker that binds its port
+ * and never answers; the probe below is what turns that into an error.
  *
  * @section Using it from a Worker
  * @example Open a database, then transact and query
@@ -81,13 +88,33 @@ export type ServerWorker =
     }
   | string;
 
-/** @internal Deploy-time liveness probe of the server (live provider only). */
+/**
+ * @internal Deploy-time liveness probe of the server.
+ *
+ * Both providers run it. A server that never answers is not a hypothetical:
+ * under `alchemy dev` the local Worker's proxy binds its port and reports
+ * "ready" *before* the bundle is served, so a Worker that never finishes
+ * bundling leaves a socket that accepts connections and answers nothing. Every
+ * attempt is therefore bounded by {@link timeoutMs} and the whole ladder by
+ * {@link deadlineMs} — without those, "unreachable" and "silent" are the same
+ * thing to `fetch`, and the deploy hangs forever with no error to print.
+ */
 export interface ServerProbe {
-  /** Total attempts before failing the deploy. @default 30 */
+  /** Total attempts before failing the deploy. @default 30 live, 60 local */
   readonly attempts?: number;
-  /** Delay between attempts (ms). @default 2000 */
+  /** Delay between attempts (ms). @default 2000 live, 250 local */
   readonly delayMs?: number;
+  /** Cap on one attempt (ms) — a socket that accepts and never answers. @default 10000 live, 2000 local */
+  readonly timeoutMs?: number;
+  /** Cap on the whole ladder (ms), retries and sleeps included. @default 120000 live, 30000 local */
+  readonly deadlineMs?: number;
 }
+
+/** @internal The probe's defaults, per mode. Exported for the tests. */
+export const PROBE_DEFAULTS = {
+  live: { attempts: 30, delayMs: 2_000, timeoutMs: 10_000, deadlineMs: 120_000 },
+  local: { attempts: 60, delayMs: 250, timeoutMs: 2_000, deadlineMs: 30_000 },
+} as const satisfies Record<"live" | "local", Required<ServerProbe>>;
 
 /**
  * What the server Worker needs to verify JWTs and enforce a policy.
@@ -140,7 +167,10 @@ export type ServerProps = {
   token?: Redacted.Redacted<string> | string;
   /** The server's auth configuration, for a deploy-time consistency check only. */
   auth?: PeerAuth;
-  /** Liveness probe on deploy; `false` skips it. */
+  /**
+   * Liveness probe before anything binds to the URL, in both modes (`alchemy
+   * dev` runs it on a tighter ladder); `false` skips it.
+   */
   probe?: ServerProbe | false;
 };
 
@@ -212,7 +242,7 @@ export const internalSecret = (
  * @example
  * ```typescript
  * export const RamoseWorker = Cloudflare.Worker("RamoseWorker", {
- *   main: "@ramose/worker",
+ *   main: import.meta.resolve("@ramose/worker"),
  *   env: { STORE: Store, ...Ramose.authEnv({ policy, jwksUrl, auth: AUTH }) },
  * });
  * ```
@@ -340,10 +370,19 @@ const redact = (
       ? Redacted.make(token)
       : token;
 
-/** One `GET {url}/health`; a non-2xx is a failure so the retry policy sees it. */
-const healthOnce = (url: string) =>
+/**
+ * @internal One `GET {url}/health`; a non-2xx is a failure so the retry policy
+ * sees it, and so is silence past `timeoutMs`.
+ *
+ * The timeout is the load-bearing part. `fetch` has no deadline of its own, so
+ * a socket that completes its TCP handshake and then answers nothing — a local
+ * Worker whose bundle never landed, a hung isolate — parks the whole deploy on
+ * one unresolved promise. Bounding the attempt turns that into an ordinary
+ * failure the ladder can retry and, eventually, report.
+ */
+export const healthOnce = (url: string, timeoutMs: number) =>
   Effect.tryPromise({
-    try: () => fetch(`${trimSlashes(url)}/health`, { method: "GET" }),
+    try: (signal) => fetch(`${trimSlashes(url)}/health`, { method: "GET", signal }),
     catch: (cause) =>
       new NetworkError({
         message: `ramose: server at ${url} is unreachable: ${
@@ -361,25 +400,57 @@ const healthOnce = (url: string) =>
             }),
           ),
     ),
+    Effect.timeoutOrElse({
+      duration: `${Math.max(1, timeoutMs)} millis`,
+      orElse: () =>
+        Effect.fail(
+          new NetworkError({
+            message: `ramose: server at ${url} accepted the connection but did not answer GET /health within ${timeoutMs}ms`,
+          }),
+        ),
+    }),
   );
 
 /**
- * Probe the server, with retries: a `Server` is usually reconciled seconds
- * after the Worker that serves it was uploaded, and workers.dev routes take a
- * moment to propagate.
+ * @internal Probe the server, with retries: a `Server` is usually reconciled
+ * seconds after the Worker that serves it was uploaded, and workers.dev routes
+ * take a moment to propagate.
+ *
+ * The ladder itself is bounded by `deadlineMs`. `attempts × (timeoutMs +
+ * delayMs)` is the worst case otherwise, which for the live defaults is minutes
+ * — long enough that a deploy against a silent server looks like a hang rather
+ * than a failure.
  */
-const probeHealth = (url: string, probe: ServerProbe | false | undefined) => {
+export const probeHealth = (
+  url: string,
+  probe: ServerProbe | false | undefined,
+  defaults: Required<ServerProbe>,
+) => {
   if (probe === false) return Effect.void;
   // workers.dev routes often need tens of seconds after a first upload before
   // they answer; 5×500 ms was empirically too short on real Cloudflare.
-  const attempts = Math.max(1, probe?.attempts ?? 30);
-  const delayMs = probe?.delayMs ?? 2_000;
-  return healthOnce(url).pipe(
+  const attempts = Math.max(1, probe?.attempts ?? defaults.attempts);
+  const delayMs = probe?.delayMs ?? defaults.delayMs;
+  const timeoutMs = probe?.timeoutMs ?? defaults.timeoutMs;
+  const deadlineMs = probe?.deadlineMs ?? defaults.deadlineMs;
+  return healthOnce(url, timeoutMs).pipe(
     Effect.retry({ times: attempts - 1, schedule: Schedule.spaced(delayMs) }),
+    Effect.timeoutOrElse({
+      duration: `${Math.max(1, deadlineMs)} millis`,
+      orElse: () =>
+        Effect.fail(
+          new NetworkError({
+            message: `ramose: server at ${url} did not answer GET /health within ${deadlineMs}ms — is the Worker that serves it running? Under \`alchemy dev\` a Worker whose bundle failed still binds its port and answers nothing.`,
+          }),
+        ),
+    }),
   );
 };
 
-const attributes = Effect.fn(function* (props: ServerProps, probe: boolean) {
+const attributes = Effect.fn(function* (
+  props: ServerProps,
+  defaults: Required<ServerProbe>,
+) {
   const badAuth = checkAuth(props.auth);
   if (badAuth !== undefined) return yield* Effect.fail(new InvalidRequest({ message: badAuth }));
   const worker = resolveWorker(props.worker);
@@ -393,7 +464,7 @@ const attributes = Effect.fn(function* (props: ServerProps, probe: boolean) {
     );
   }
   const url = trimSlashes(chosen);
-  if (probe) yield* probeHealth(url, props.probe);
+  yield* probeHealth(url, props.probe, defaults);
   return {
     url,
     workerName: worker.workerName,
@@ -411,7 +482,7 @@ const attributes = Effect.fn(function* (props: ServerProps, probe: boolean) {
 const ProviderLive = () =>
   Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {
-      return yield* attributes(news, true);
+      return yield* attributes(news, PROBE_DEFAULTS.live);
     }),
     read: Effect.fn(function* ({ output }) {
       // Virtual: the persisted state row is the source of truth.
@@ -425,11 +496,24 @@ const ProviderLive = () =>
     }),
   });
 
-/** @internal Local provider (`alchemy dev`): same attributes, no liveness probe. */
+/**
+ * @internal Local provider (`alchemy dev`): the same attributes, and the same
+ * probe on a tighter ladder.
+ *
+ * It used to skip the probe on the reasoning that a local Worker the engine
+ * already ordered us after must be up. It need not be. `alchemy dev` binds the
+ * Worker's proxy port and logs "ready" before the first bundle is served, so a
+ * peer whose bundle never lands — a `main` the bundler cannot resolve, a syntax
+ * error in user code — leaves a socket that accepts connections and answers
+ * nothing. Skipping the probe here handed that server to `Ramose.Database`,
+ * whose install then blocked on an unresolvable `fetch` until the run was torn
+ * down and printed a bare `fail` with no reason. Probing puts the failure on
+ * the resource that owns the URL, with the URL in the message.
+ */
 const ProviderLocal = () =>
   Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {
-      return yield* attributes(news, false);
+      return yield* attributes(news, PROBE_DEFAULTS.local);
     }),
     read: Effect.fn(function* ({ output }) {
       return output ?? undefined;

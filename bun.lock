@@ -31,18 +31,22 @@
     },
     "packages/alchemy": {
       "name": "@ramose/alchemy",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/core": "workspace:*",
       },
       "peerDependencies": {
+        "@ramose/worker": "workspace:*",
         "alchemy": ">=2.0.0-beta.72",
         "effect": ">=4.0.0-beta.105",
       },
+      "optionalPeers": [
+        "@ramose/worker",
+      ],
     },
     "packages/better-auth": {
       "name": "@ramose/better-auth",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/alchemy": "workspace:*",
         "zod": "^4.3.6",
@@ -59,11 +63,11 @@
     },
     "packages/core": {
       "name": "@ramose/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
     },
     "packages/react": {
       "name": "@ramose/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/alchemy": "workspace:*",
       },
@@ -81,7 +85,7 @@
     },
     "packages/replica": {
       "name": "@ramose/replica",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/core": "workspace:*",
         "@ramose/storage": "workspace:*",
@@ -93,14 +97,14 @@
     },
     "packages/storage": {
       "name": "@ramose/storage",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/core": "workspace:*",
       },
     },
     "packages/transactor": {
       "name": "@ramose/transactor",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/core": "workspace:*",
         "@ramose/storage": "workspace:*",
@@ -111,7 +115,7 @@
     },
     "packages/worker": {
       "name": "@ramose/worker",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@ramose/core": "workspace:*",
         "@ramose/replica": "workspace:*",

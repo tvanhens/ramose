@@ -19,7 +19,7 @@
  * @section Installing a catalog
  * @example The one place a catalog lands
  * ```typescript
- * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("@ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
  * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
  * ```
@@ -35,7 +35,7 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import type { Catalog } from "./db/index.ts";
-import { InvalidRequest } from "./db/Errors.ts";
+import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import { globalFetch, makeDatabases } from "./db/internal.ts";
 import type { Providers } from "./Providers.ts";
 import type { Server } from "./Server.ts";
@@ -52,7 +52,16 @@ export type DatabaseProps = {
   catalog: Catalog.Any;
   /** The database name. @default the resource's logical id */
   name?: string;
+  /**
+   * Cap on the install transaction, in ms. A catalog is a handful of datoms,
+   * so this is not a budget — it is the line between "slow" and "never", which
+   * `fetch` cannot draw on its own. @default 60000
+   */
+  timeoutMs?: number;
 };
+
+/** @internal The install's cap when {@link DatabaseProps.timeoutMs} is unset. */
+export const DEFAULT_INSTALL_TIMEOUT_MS = 60_000;
 
 export type Database = Resource<
   "Ramose.Database",
@@ -129,6 +138,12 @@ const resolveServer = (
  * An illegal name never reaches the server — `ramose.db(name, catalog)` fails
  * the operation with `InvalidRequest` — and a server with no URL is the same
  * kind of mistake, so it fails the deploy rather than the first request.
+ *
+ * A server that has a URL and never answers on it is the third: `fetch` has no
+ * deadline, so an unresolvable request parks the deploy indefinitely and the
+ * run ends with a bare `fail` and nothing to read. `Ramose.Server` probes
+ * `/health` for exactly this reason, but the probe cannot speak for `/db/:name`
+ * — a bounded install is what makes the failure printable either way.
  */
 const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   const name = props.name ?? id;
@@ -140,6 +155,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
       }),
     );
   }
+  const timeoutMs = Math.max(1, props.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
   const { databases, close } = makeDatabases({
     url: Effect.succeed(url.replace(/\/+$/, "")),
     token: token === undefined ? undefined : Effect.succeed(token),
@@ -148,6 +164,16 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   const report = yield* Effect.ensuring(
     databases.db(name, props.catalog).install(),
     Effect.sync(close),
+  ).pipe(
+    Effect.timeoutOrElse({
+      duration: `${timeoutMs} millis`,
+      orElse: () =>
+        Effect.fail(
+          new NetworkError({
+            message: `ramose: installing the catalog on ${JSON.stringify(name)} at ${url} did not finish within ${timeoutMs}ms — the server accepted the connection but never answered. Check that the Worker serving it is actually running (under \`alchemy dev\`, a Worker whose bundle failed still binds its port and answers nothing).`,
+          }),
+        ),
+    }),
   );
   return { name, server: url, t: report.t };
 });

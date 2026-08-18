@@ -26,7 +26,8 @@ npm install @ramose/alchemy
 
 A React app also takes `@ramose/react`. The peer — the Worker that serves
 your databases — is `@ramose/worker`: you name it as `main` on a
-`Cloudflare.Worker`, you do not copy it into your repo.
+`Cloudflare.Worker` (via `import.meta.resolve`, since `main` is a path), you
+do not copy it into your repo.
 
 ```sh
 npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
@@ -121,7 +122,7 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
 });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: "@ramose/worker",
+  main: import.meta.resolve("@ramose/worker"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });

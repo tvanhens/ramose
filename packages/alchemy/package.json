@@ -70,7 +70,13 @@
     "@ramose/core": "workspace:*"
   },
   "peerDependencies": {
+    "@ramose/worker": "workspace:*",
     "alchemy": ">=2.0.0-beta.72",
     "effect": ">=4.0.0-beta.105"
+  },
+  "peerDependenciesMeta": {
+    "@ramose/worker": {
+      "optional": true
+    }
   }
 }

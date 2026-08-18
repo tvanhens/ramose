@@ -106,10 +106,17 @@ import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Todos } from "./schema.ts";
 
-const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("@ramose/worker") });
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
 ```
+
+`main` is a **path**, not a module specifier — Alchemy `realpath`s it before
+bundling — so the package name goes through `import.meta.resolve`. A bare
+`"@ramose/worker"` resolves against the working directory, finds nothing, and
+leaves a peer that binds its port and never answers.
+`Ramose.workerEntry()` from `@ramose/alchemy/workerEntry` is the same
+resolution with an error worth reading when the package is not installed.
 
 **An app Worker** — db-per-tenant is a function call.
 

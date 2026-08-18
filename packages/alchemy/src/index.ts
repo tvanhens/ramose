@@ -17,7 +17,7 @@
  * });
  * export const Movies = Ramose.Catalog({ user: User });
  *
- * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("@ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
  * export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
  *
