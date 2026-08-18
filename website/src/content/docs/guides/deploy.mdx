@@ -39,8 +39,7 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
-`main` is a path inside the clone. Once `@ramose/worker` is published, `main: "@ramose/worker"` is the intended form.
+In your own app, `main` is the package: `main: "@ramose/worker"`. The excerpt above is from `examples/todos`, which lives inside this repository and so points at the source directly.
 
 ```ts title="examples/todos/alchemy.run.ts:20-77"
 import * as Ramose from "@ramose/alchemy";

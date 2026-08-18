@@ -33,12 +33,15 @@ With `ALCHEMY_STATE=local`, the emulator keeps your data in `.alchemy/` next to 
 
 ## Is it on npm?
 
-{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
-:::caution[Not on npm yet]
-`@ramose/*` is not published yet. Until it is, use the *Inside the clone* path — it is the same code.
-:::
+Yes:
 
-Clone the repo, `bun install`, and build under it: [Quickstart, Path 2](/getting-started/quickstart/#path-2-start-your-own-app).
+```sh frame="terminal"
+npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
+```
+
+`bun add` and `pnpm add` work the same. Ramose is pre-release, so expect the API to move between versions — pin what you install.
+
+Working inside a clone of this repository instead is the same code, resolved from source: [Quickstart, Path 2](/getting-started/quickstart/#path-2-start-your-own-app).
 
 ## What is Effect and how much do I need?
 
@@ -48,7 +51,9 @@ Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.t
 
 ## TypeScript cannot resolve the packages
 
-Set `"moduleResolution": "bundler"` in your `tsconfig.json`. Today the packages resolve only inside the clone (the root `tsconfig.json` maps `@ramose/*` to `packages/*/src`), so keep your app inside the repo and run `bun install` at the root.
+The packages ship compiled ESM with type declarations, so an ordinary install needs no `tsconfig.json` setting. If your editor cannot find them, check the install landed (`npm ls @ramose/alchemy`) before reaching for `moduleResolution`.
+
+Inside a clone of this repository they resolve from source instead, through the `@ramose/*` paths in the root `tsconfig.json` — run `bun install` at the root.
 
 ## The token is not valid for this database
 

@@ -11,7 +11,7 @@ Get a Ramose app running on your laptop in under ten minutes. Path 1 runs Reef, 
 
 <Learn learn={["Run a realtime, multi-tenant app locally", "See a live query, a refused write and time travel", "Start your own app from a template"]} minutes={10} />
 
-You need git and [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). No Cloudflare account, no Docker. Ramose is pre-release: `@ramose/*` is not on npm yet, so both paths start from a clone.
+You need git and [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). No Cloudflare account, no Docker. Path 1 starts from a clone, because Reef lives in this repository. Path 2 installs `@ramose/*` from npm. Ramose is pre-release, so expect the API to move between versions.
 
 ## Path 1: run Reef
 
@@ -19,10 +19,8 @@ You need git and [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install |
 
 1. ### Get the code
 
-   The repository is called *ripple*; the product is Ramose.
-
    ```sh frame="terminal"
-   git clone https://github.com/tvanhens/ramose && cd ripple && bun install
+   git clone https://github.com/tvanhens/ramose && cd ramose && bun install
    ```
 
 2. ### Start it
@@ -120,32 +118,27 @@ You need git and [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install |
 The smallest Ramose app is a todo list: a schema, a deploy file, one query, one component. Get it running here; [Build your first app](/getting-started/first-app/) walks through every line.
 
 <Tabs syncKey="install">
-<TabItem label="Inside the clone (works today)">
-
-Skip the first line if you already ran Path 1.
-
-```sh frame="terminal"
-git clone https://github.com/tvanhens/ramose && cd ripple && bun install
-bun run dev:todos
-```
-
-</TabItem>
-<TabItem label="npm (not published yet)">
-
-{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
-:::caution[Not on npm yet]
-`@ramose/*` is not published yet. Until it is, use the *Inside the clone* path — it is the same code.
-:::
+<TabItem label="npm">
 
 ```sh frame="terminal"
 npm create vite@latest my-app -- --template react-ts && cd my-app
 npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
 ```
 
-Copy the files from [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos) and change the Vite template's `src/main.tsx` to `import { App } from "./App.tsx";`. Then start everything — Alchemy runs the whole stack on your laptop (see *If Alchemy asks you to log in* above):
+`bun add` and `pnpm add` work the same. Copy the files from [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos) and change the Vite template's `src/main.tsx` to `import { App } from "./App.tsx";`. Then start everything — Alchemy runs the whole stack on your laptop (see *If Alchemy asks you to log in* above):
 
 ```sh frame="terminal"
 bun alchemy dev alchemy.run.ts
+```
+
+</TabItem>
+<TabItem label="Inside the clone">
+
+The same code, resolved from source rather than npm — which is what you want if you are also changing Ramose itself. Skip the first line if you already ran Path 1.
+
+```sh frame="terminal"
+git clone https://github.com/tvanhens/ramose && cd ramose && bun install
+bun run dev:todos
 ```
 
 </TabItem>
@@ -175,7 +168,6 @@ The deploy file names the three things the Ramose server needs on Cloudflare —
 <details>
 <summary>The deploy file — copy it, don't study it yet</summary>
 
-{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
 ```ts title="resources.ts"
 import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -185,8 +177,8 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  // once @ramose/worker is published; inside the clone this is a path,
-  // "./packages/worker/src/index.ts".
+  // The published package. Inside a clone of this repository it is a path
+  // instead: "./packages/worker/src/index.ts".
   main: "@ramose/worker",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
@@ -195,7 +187,6 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
 ```ts title="alchemy.run.ts"
 import * as Ramose from "@ramose/alchemy";
 import * as Alchemy from "alchemy";
