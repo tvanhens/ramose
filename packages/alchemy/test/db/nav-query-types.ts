@@ -124,6 +124,47 @@ query(Book).where(Book.published.gt("2026-01-01"));
 // @ts-expect-error a predicate is the only thing `where` takes
 query(User).where(User.name);
 
+// ── in / endsWith / matches ────────────────────────────────────────────────
+
+query(User).where(User.name.in(["Ada", "Grace"]), User.age.in([36, 37]));
+query(User).where(User.name.in([]));
+library.q(query(Book).where(Book.author.name.in(["Ada"])));
+query(Movie).where(
+  Movie.title.endsWith("Calculus"),
+  Movie.title.matches(/^The /),
+  Movie.title.matches("^The "),
+);
+
+// @ts-expect-error `:user/name` is a string attribute, so is every element
+query(User).where(User.name.in([1, 2]));
+
+// @ts-expect-error `:movie/year` is a number attribute
+query(Movie).where(Movie.year.in(["2016"]));
+
+// @ts-expect-error `in` takes an array, not a value
+query(User).where(User.name.in("Ada"));
+
+// @ts-expect-error `matches` takes a pattern, not a number
+query(Movie).where(Movie.title.matches(42));
+
+// ── ref `is` takes an entity, and only a ref has it ────────────────────────
+
+declare const someEid: Eid<typeof Movies>;
+query(User).where(User.bestFriend.is(someEid), User.friends.is(1001));
+query(User).where(User.id.is(someEid), User.id.is(1001));
+library.q(query(Book).where(Book.author.is(1001)));
+/** a ref's `in` takes entities too */
+query(User).where(User.bestFriend.in([someEid, 1001]));
+
+// @ts-expect-error `:user/name` is not a ref
+query(User).where(User.name.is(1001));
+
+// @ts-expect-error `:movie/year` is not a ref
+query(Movie).where(Movie.year.is(1001));
+
+// @ts-expect-error an entity is an eid or an `Eid`, not a name
+query(User).where(User.bestFriend.is("Ada"));
+
 // ── `.orderBy` takes an attribute, including one across a ref ──────────────
 
 const ordered = library.q(

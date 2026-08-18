@@ -29,6 +29,7 @@ import {
   layer,
   lowerNavQuery,
   query,
+  type Predicate,
 } from "../../src/db/internal.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
@@ -436,6 +437,185 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       { id: 20 },
     ]);
   });
+});
+
+describe("lowering: in / endsWith / matches / is", () => {
+  const whereOf = (...preds: Predicate[]) =>
+    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+
+  test("`in` binds the value, then filters it with a collection binding", () => {
+    expect(whereOf(Todo.title.in(["ship", "also open"]))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["ground", ["ship", "also open"]], ["?v0", "..."]],
+    ]);
+    // through a ref hop the join chain comes first, as ever
+    expect(whereOf(Todo.owner.name.in(["Alice"]))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", "?j0"],
+      ["?j0", ":user/name", "?v1"],
+      [["ground", ["Alice"]], ["?v1", "..."]],
+    ]);
+  });
+
+  test("`in([])` is a clause that matches nothing, on the peer", () => {
+    expect(whereOf(Todo.title.in([]))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+    expect(whereOf(Todo.id.in([]))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+  });
+
+  test("`in` on `:db/id` filters the entity variable itself", () => {
+    expect(whereOf(Todo.id.in([1, 2, { id: 3 }]))).toEqual([
+      todoScope,
+      [["ground", [1, 2, 3]], ["?e", "..."]],
+    ]);
+  });
+
+  test("`endsWith` and `matches` lower to the engine's string builtins", () => {
+    expect(whereOf(Todo.title.endsWith("ing"))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["ends-with?", "?v0", "ing"]],
+    ]);
+    // `re-find?` takes the pattern first, then the string
+    expect(whereOf(Todo.title.matches(/^sh/))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["re-find?", "^sh", "?v0"]],
+    ]);
+    expect(whereOf(Todo.title.matches("^sh"))).toEqual(
+      whereOf(Todo.title.matches(/^sh/)),
+    );
+  });
+
+  test("a flagged RegExp is rejected rather than silently unflagged", () => {
+    expect(() => Todo.title.matches(/^sh/i)).toThrow(
+      /cannot be lowered|no flags/,
+    );
+    expect(() => Todo.title.matches(/^sh/g)).toThrow();
+  });
+
+  test("`is` names the ref's target, as an eid or an Eid", () => {
+    expect(whereOf(Todo.owner.is(42))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", 42],
+    ]);
+    expect(whereOf(Todo.owner.is({ id: 42 }))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", 42],
+    ]);
+    // on `:db/id` it unifies the entity variable, like `eq`
+    expect(whereOf(Todo.id.is({ id: 7 }))).toEqual([
+      todoScope,
+      [["ground", 7], "?e"],
+    ]);
+    expect(() => Todo.owner.is("nope" as never)).toThrow(/entity id or an Eid/);
+  });
+});
+
+describe("predicates end to end: the peer counts the rows", () => {
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const alice = yield* tx.entity();
+          yield* alice.add(User.name, "Alice");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const mk = function* (title: string, done: boolean, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, done);
+            if (owner !== undefined) yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("ship it", false, alice.eid);
+          yield* mk("write docs", false, bob.eid);
+          yield* mk("done already", true, bob.eid);
+          yield* mk("orphan", false, undefined);
+        });
+        // the eids come back through the query surface itself
+        const users = yield* db.q(
+          query(User).orderBy(User.name, "asc").select({ id: User.id }),
+        );
+        return { db, alice: users[0]!.id, bob: users[1]!.id };
+      }),
+    );
+  };
+
+  const titles = async (
+    peer: Awaited<ReturnType<typeof inProcessPeer>>,
+    db: Awaited<ReturnType<typeof seed>>["db"],
+    ...preds: Predicate[]
+  ) => {
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .where(...preds)
+          .orderBy(Todo.title, "asc")
+          .select({ title: Todo.title }),
+      ),
+    );
+    // the row count is the peer's, not something the client filtered down to
+    expect(peer.seen[0]?.rows).toBe(rows.length);
+    return rows.map((r) => r.title);
+  };
+
+  test("in / endsWith / matches / is run on the peer", async () => {
+    const peer = await inProcessPeer();
+    const { db, alice } = await seed(peer);
+
+    expect(await titles(peer, db, Todo.title.in(["ship it", "orphan"]))).toEqual(
+      ["orphan", "ship it"],
+    );
+    expect(await titles(peer, db, Todo.title.in([]))).toEqual([]);
+    expect(
+      await titles(peer, db, Todo.owner.name.in(["Alice", "Nobody"])),
+    ).toEqual(["ship it"]);
+    expect(await titles(peer, db, Todo.title.endsWith("docs"))).toEqual([
+      "write docs",
+    ]);
+    expect(await titles(peer, db, Todo.title.matches(/^(ship|write)/))).toEqual([
+      "ship it",
+      "write docs",
+    ]);
+    expect(await titles(peer, db, Todo.owner.is(alice))).toEqual(["ship it"]);
+    expect(await titles(peer, db, Todo.owner.is({ id: alice }))).toEqual([
+      "ship it",
+    ]);
+    // a repeated value in the list is still one row, not two
+    expect(
+      await titles(peer, db, Todo.title.in(["ship it", "ship it"])),
+    ).toEqual(["ship it"]);
+
+    await peer.dispose();
+  });
+
+  test("`in` composes with a limit the peer applies after the filter", async () => {
+    const peer = await inProcessPeer();
+    const { db } = await seed(peer);
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.in(["ship it", "write docs", "orphan"]))
+          .orderBy(Todo.title, "asc")
+          .limit(2)
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(rows.map((r) => r.title)).toEqual(["orphan", "ship it"]);
+    expect(peer.seen[0]?.rows).toBe(2);
+    await peer.dispose();
+  });
+
 });
 
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {

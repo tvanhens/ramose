@@ -36,7 +36,11 @@ export type PredTag =
   | "gt"
   | "gte"
   | "startsWith"
+  | "endsWith"
   | "includes"
+  | "matches"
+  | "in"
+  | "is"
   | "exists"
   | "missing";
 
@@ -135,6 +139,17 @@ export type AttrValue<A> = A extends {
   ? T
   : unknown;
 
+/** What names an entity in a predicate: a raw eid, or an {@link Eid} row cell. */
+export type EidLike = number | { readonly id: number };
+
+/**
+ * The element type of `in(...)`. A ref (including the `:db/id`
+ * pseudo-attribute) takes entities; anything else takes its Schema's type.
+ */
+export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
+  ? EidLike
+  : AttrValue<A>;
+
 /** Predicate / shape methods attached to every stamped attr. */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly eq: (value: AttrValue<A>) => Predicate;
@@ -143,15 +158,62 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly lte: (value: AttrValue<A>) => Predicate;
   readonly gt: (value: AttrValue<A>) => Predicate;
   readonly gte: (value: AttrValue<A>) => Predicate;
+  readonly in: (values: readonly InValue<A>[]) => Predicate;
   readonly startsWith: (prefix: string) => Predicate;
+  readonly endsWith: (suffix: string) => Predicate;
   readonly includes: (needle: string) => Predicate;
+  readonly matches: (re: RegExp | string) => Predicate;
   readonly exists: () => Predicate;
   readonly missing: () => Predicate;
+  /** Ref-only: the entity this ref points at. */
+  readonly is: A extends { readonly valueType: ":db.type/ref" }
+    ? (ref: EidLike) => Predicate
+    : never;
   readonly optional: ReturnType<typeof optional<A>>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? <const S extends Shape>(shape: S) => SelectNested<A, S>
     : never;
 };
+
+/**
+ * The peer compiles a `matches` pattern with `new RegExp(source)` — no flags,
+ * because the pattern travels as a string and the engine's `re-find?` takes
+ * one argument. A flagged `RegExp` is rejected here rather than lowered to
+ * something that quietly means something else.
+ */
+const regexSource = (re: RegExp | string): string => {
+  if (typeof re === "string") return re;
+  if (re.flags !== "") {
+    throw new Error(
+      `ripple/query: matches(/${re.source}/${re.flags}) — the peer compiles the pattern with no flags, so \`${re.flags}\` cannot be lowered. Express it in the pattern instead (e.g. \`[aA]da\` for case-insensitivity).`,
+    );
+  }
+  return re.source;
+};
+
+/** `Eid` row cells and raw ids are the same entity to a predicate. */
+const eidValue = (ref: unknown): number => {
+  if (typeof ref === "number") return ref;
+  if (
+    typeof ref === "object" &&
+    ref !== null &&
+    typeof (ref as { id?: unknown }).id === "number"
+  ) {
+    return (ref as { id: number }).id;
+  }
+  throw new Error(
+    `ripple/query: is(...) takes an entity id or an Eid, got ${String(ref)}`,
+  );
+};
+
+/** Refs compare by id, so an `Eid` in an `in(...)` list is its number. */
+const inValue = (v: unknown): unknown =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as { id?: unknown }).id === "number" &&
+  Object.keys(v).length === 1
+    ? (v as { id: number }).id
+    : v;
 
 export interface SelectNested<A = unknown, S = unknown> {
   readonly _tag: "select";
@@ -170,10 +232,14 @@ const NAV_METHODS = new Set([
   "lte",
   "gt",
   "gte",
+  "in",
   "startsWith",
+  "endsWith",
   "includes",
+  "matches",
   "exists",
   "missing",
+  "is",
   "optional",
   "select",
 ]);
@@ -198,11 +264,28 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     gte(this: PathCarrier, value: unknown) {
       return pred("gte", this, value);
     },
+    in(this: PathCarrier, values: readonly unknown[]) {
+      if (!Array.isArray(values)) {
+        throw new Error(
+          `ripple/query: in(...) takes an array of values, got ${String(values)}`,
+        );
+      }
+      return pred("in", this, values.map(inValue));
+    },
     startsWith(this: PathCarrier, prefix: string) {
       return pred("startsWith", this, prefix);
     },
+    endsWith(this: PathCarrier, suffix: string) {
+      return pred("endsWith", this, suffix);
+    },
     includes(this: PathCarrier, needle: string) {
       return pred("includes", this, needle);
+    },
+    matches(this: PathCarrier, re: RegExp | string) {
+      return pred("matches", this, regexSource(re));
+    },
+    is(this: PathCarrier, ref: unknown) {
+      return pred("is", this, eidValue(ref));
     },
     exists(this: PathCarrier) {
       return pred("exists", this);
@@ -584,6 +667,13 @@ const fieldsOf = (pattern: unknown): Record<string, unknown> =>
     ? (pattern as Record<string, unknown>)
     : {};
 
+/**
+ * A clause that binds nothing and matches nothing: an empty collection binding
+ * yields no rows. `in([])`, `or()` and `not(<always true>)` all mean "no rows",
+ * and they mean it on the peer, so a `:limit` still counts kept rows.
+ */
+const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
+
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
   const { path, op, value } = p;
   if (path.length === 0) return [];
@@ -600,8 +690,18 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 
   switch (op) {
     case "eq":
+    case "is":
       clauses.push([e, attr, value]);
       break;
+    case "in": {
+      const values = value as readonly unknown[];
+      if (values.length === 0) return [neverClause()];
+      const v = gensym("v");
+      // `?v` is bound by the pattern, so the collection binding filters it
+      // rather than generating: the peer keeps one row per match, not per value
+      clauses.push([e, attr, v], [["ground", [...values]], [v, "..."]]);
+      break;
+    }
     case "ne": {
       const v = gensym("v");
       clauses.push([e, attr, v], [["not=", v, value]]);
@@ -628,9 +728,20 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
       clauses.push([e, attr, v], [["starts-with?", v, value]]);
       break;
     }
+    case "endsWith": {
+      const v = gensym("v");
+      clauses.push([e, attr, v], [["ends-with?", v, value]]);
+      break;
+    }
     case "includes": {
       const v = gensym("v");
       clauses.push([e, attr, v], [["includes?", v, value]]);
+      break;
+    }
+    case "matches": {
+      const v = gensym("v");
+      // `re-find?` takes the pattern first, then the string
+      clauses.push([e, attr, v], [["re-find?", value, v]]);
       break;
     }
     case "exists":
@@ -662,8 +773,15 @@ const lowerIdPredicate = (
   }
   switch (p.op) {
     case "eq":
-      clauses.push([["ground", p.value], e]);
+    case "is":
+      clauses.push([["ground", eidValue(p.value)], e]);
       break;
+    case "in": {
+      const values = (p.value as readonly unknown[]).map(eidValue);
+      if (values.length === 0) return [neverClause()];
+      clauses.push([["ground", values], [e, "..."]]);
+      break;
+    }
     case "ne":
       clauses.push([["not=", e, p.value]]);
       break;
