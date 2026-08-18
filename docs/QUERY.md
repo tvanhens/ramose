@@ -91,17 +91,100 @@ Catalog attributes carry the predicate vocabulary. Paths join through refs:
 
 | On | Verbs |
 |---|---|
-| scalar / string / instant attrs | `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing` |
-| string | `startsWith` `includes` (case-sensitive) |
+| scalar / string / instant attrs | `eq` `ne` `lt` `lte` `gt` `gte` `in` `exists` `missing` |
+| string | `startsWith` `endsWith` `includes` (case-sensitive) `matches` |
+| ref | `is` |
+| cardinality-many ref | `some` `every` `none` |
 
 ```ts
 Todo.done.eq(false)                 // asserted false — missing :todo/done does not match
 Todo.done.missing()                 // no :todo/done datom
 Todo.owner.name.startsWith("A")     // join through owner, then filter
+Todo.title.in(["ship", "review"])   // one of
+Todo.title.matches(/^ship/)         // regular expression
+Todo.owner.is(userId)               // this ref points at that entity
 ```
 
 `eq` / `ne` / comparisons require the attribute to be present. Use `exists` /
 `missing` when absence is the question.
+
+- **`in(values)`** binds the value and filters it with a collection binding, so
+  a repeated value is still one row. `in([])` is a clause that matches
+  **nothing**, decided on the peer like every other filter — never a client-side
+  short-circuit that would make `:limit` lie.
+- **`matches`** takes a `RegExp` or a pattern string and lowers to the engine's
+  `re-find?`, which compiles the pattern with **no flags**. A flagged `RegExp`
+  is *rejected* rather than quietly unflagged — write the behaviour into the
+  pattern (`[aA]da`) instead.
+- **`is`** is the ref spelling of `eq`: it takes an entity id or an `Eid`
+  (`{ id }`), so a row cell can be handed straight back to the next query. It
+  is offered on refs only, including the `:db/id` pseudo-attribute.
+
+#### Quantifiers on a cardinality-many ref
+
+A many hop in a path has always been existential — the join matches if *any*
+element does. `some` names that; `every` and `none` are the other two. The
+inner predicate is rooted at the hop's **target**, not at the query root:
+
+```ts
+User.friends.some(User.name.eq("Ada"))          // at least one friend is Ada
+User.friends.every(User.email.exists())         // no friend is missing an email
+User.friends.none(User.name.missing())          // no friend is anonymous
+User.friends.some(User.friends.some(...))       // quantifiers nest
+```
+
+`every` and `none` are **vacuously true** of an entity with no elements at all:
+"no element fails" and "no element matches" are both true of nothing. A
+cardinality-many *scalar* has no target to root an inner predicate at, and does
+not need one: a bare predicate on a many scalar already means "some value
+matches".
+
+### Combinators
+
+`.where(...)` is conjunctive; `Ripple.or` and `Ripple.not` are how a query says
+anything else. Both nest, and both take predicates, quantifiers, or each other:
+
+```ts
+Ripple.query(Todo).where(
+  Todo.done.eq(false),
+  Ripple.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
+  Ripple.not(Todo.title.startsWith("draft")),
+);
+```
+
+Each is scoped to the query's root entity, so branches need not bind the same
+variables and a row matched by two branches still comes back once. `Ripple.or()`
+with no branches matches nothing — again, a clause the peer evaluates, not a
+client-side short-circuit.
+
+### Reverse refs
+
+`attr.reverse` is the backlink: the same ref hop, read the other way. From a
+`User` root, `Todo.owner.reverse` denotes the todos that point at you, and it
+works in `where` and in `select`:
+
+```ts
+Ripple.query(User)
+  .where(Todo.owner.reverse.some(Todo.done.eq(false)))
+  .select({
+    name: User.name,
+    todos: Todo.owner.reverse.select({ title: Todo.title }),
+  });
+```
+
+- A backlink is always **cardinality-many** — any number of entities may point
+  at one — so quantifiers apply to it, and `orderBy` across one is rejected when
+  the query is built, like any many hop.
+- In a shape it is a **possibly-empty array**: an entity with zero backlinks
+  comes back with `[]`, never dropped. It is never turned into a required
+  `where` clause.
+- A **bare** backlink in a shape is rejected: the peer answers one with
+  `{":db/id": n}` objects, which is neither a scalar nor a shape. Ask for the
+  shape you want with `.reverse.select({ … })`.
+- `.reverse` works on targeted, untargeted and self-refs, and part-way along a
+  path. It does not model a `:db/isComponent` ref, whose backlink is
+  single-valued; `.reverse` on one throws rather than typing an array the peer
+  will not send.
 
 ### Shape (`select`)
 
@@ -126,6 +209,9 @@ are absent, not `undefined`.
   nested select is required through the ref: the parent is dropped when the
   ref is missing or the nested object fails *its* required fields.
 - **Card-many `.select({…})`**: an array; a missing many is `[]`, never a drop.
+- **Backlink `.reverse.select({…})`**: an array too, resolved on the peer
+  through VAET inside `:find`. Zero backlinks is `[]`, never a dropped row; a
+  bare `.reverse` without a shape is rejected.
 
 ### Order, limit, offset
 
@@ -149,6 +235,7 @@ twenty entities and the client never sees the rows a page dropped.
   booleans, instants, the rest).
 - A path that crosses a **cardinality-many** attribute (`User.friends.name`) is
   rejected when you build the query: the sort key would be a set, not a value.
+  A backlink (`Todo.owner.reverse`) is a many hop, so it is rejected too.
 
 ---
 
@@ -184,9 +271,14 @@ Ripple.query(Todo).where(/* … */).select(shape)
 A navigational query compiles to a find-pull query:
 
 1. **Namespace scope** → `or` over `:n/*` attributes binding the root var `?e`.
-2. **Where** → datalog clauses (path joins become fresh vars; predicates become
-   ground clauses or function calls; `:db/id` predicates unify or compare `?e`
-   itself).
+2. **Where** → datalog clauses (path joins become fresh vars, a reversed hop
+   flipping the datom to `[?j :attr ?e]`; predicates become ground clauses or
+   function calls; `:db/id` predicates unify or compare `?e` itself).
+   Combinators and quantifiers scope to `?e` so their inner join variables stay
+   local: `or` → `(or-join [?e] (and …) …)`, `not` → `(not-join [?e] …)`,
+   `none` → `(not-join [?e] <chain> <inner>)`, and `every` → the same with the
+   inner half negated again, `(not-join [?x] <inner>)`, which is what makes it
+   vacuously true when the hop binds nothing.
 3. **Required fields** → one `[?e :attr _]` clause per required card-one field
    of the shape (recursively through required nested selects), so the peer's
    row set is already the one the client keeps.
@@ -226,13 +318,13 @@ Status of the navigational surface relative to the intended design.
 |---|---|---|
 | Schema | `Ref(() => N)`, `Ref.self`, navigable attrs | namespace-branded `Eid<N>` cleanup |
 | Build | `Ripple.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ripple.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
-| Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `startsWith` `includes` `exists` `missing` | `in`, card-many `some` / `every` / `none`, ref `is`, `endsWith` / `matches` |
-| Combinators | — | `Ripple.or` `Ripple.not` `Ripple.when` |
-| Shape | nested `ref.select`, `.optional` (same grammar for `db.pull`) | `.reverse`, nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)` |
+| Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `in` `startsWith` `endsWith` `includes` `matches` `exists` `missing`, ref `is`, card-many-ref `some` / `every` / `none` | card-many *scalar* `every` / `none` (a bare predicate on one already means `some`) |
+| Combinators | `Ripple.or` `Ripple.not`, nestable | `Ripple.when` (waits on `Ripple.params`) |
+| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`) | nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)`, `.reverse` on `:db/isComponent` refs |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ripple.explain` / `withBasis` |
-| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many `orderBy` rejected | — |
+| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many and backlink `orderBy` rejected | — |
 | IR hatch | — (the string-var callback builder is retired) | `@ripple/alchemy/db/datalog` typed IR, rules |
 
 ---
@@ -244,16 +336,22 @@ cut.
 
 ### Next (engine / client gaps that unblock everyday queries)
 
-- **`some` / `every` / `none`**, `Ripple.or` / `Ripple.not`, and card-many path
-  sugar.
-- **Reverse refs** (`Todo.owner.reverse`) and **filtered nested shapes**
-  (correlated nested relation / `pull*`-style operator).
-- **`in`**, ref `is`, `endsWith` / `matches`.
+- **Filtered nested shapes** — nested `where` / `orderBy` / `limit` inside a
+  collection or backlink `select`. This one needs an engine primitive, not a
+  client lowering: the existing `q` correlated-subquery clause is a `:where`
+  clause, so it would run once per *candidate* row, before `:order` and
+  `:limit`, and with a fresh budget each time. What it wants is a **find-phase
+  correlated binding** — evaluated after the offset/limit slice, alongside
+  `pullMany`, with the outer query's budget threaded in. Until then the answer
+  is "not yet" rather than a client-side filter that makes `:limit` lie.
+- Card-many **scalar** `every` / `none`: the many-ref quantifiers are rooted at
+  the hop's target, and a scalar has none. Needs an element cursor of some kind.
 
 ### Later
 
 - **`Ripple.params` + `Ripple.when`** for stable, serializable parameterized
-  queries.
+  queries. `when` is deliberately not a build-time boolean today: the doc files
+  it under parameterization, and that design comes first.
 - **Aggregates / `groupBy`**, `.one()` / `.oneOrFail()`, cursors (`.after`).
 - **`.expand`** for bounded recursive trees in shapes; then **`.traverse` /
   `.paths` / `reaches`** for graph walks.
