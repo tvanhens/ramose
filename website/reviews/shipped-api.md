@@ -694,6 +694,8 @@ Subjects: an `Eid<C>` (`{ id: number }`) or a `LookupRef<C>` — `[User.name, "A
 
 ### 5.5 Client-side vs server-side — the honest split
 
+> **SUPERSEDED by #30 — see the Post-rebase addendum at the end.** Order, limit, offset and required-field filtering now run on the peer.
+
 | stage | where it runs | source |
 |---|---|---|
 | `where` predicates, namespace scope | **server** (datalog) | `NavQuery.ts:410-502` |
@@ -733,6 +735,8 @@ Also: sorting is skipped entirely when there is no `select` (`NavQuery.ts:528`),
 `limit` does **not** reduce server work or the query budget.
 
 ### 5.6 Legacy callback builder — status: still shipped
+
+> **SUPERSEDED by #30 — see the Post-rebase addendum.** The callback builder is removed; `Query.ts` no longer exists.
 
 ```typescript
 export interface QueryBuilder<
@@ -1519,11 +1523,11 @@ Put these in the docs; they are all load-bearing.
    `QueryBudgetExceeded` and are **terminal for `live`** — the stream will not retry them
    (`Db.ts:160-164`).
 
-4. **`orderBy` / `limit` / `offset` are client-side**, and `orderBy` silently no-ops unless the
-   attribute is in the `select` shape at depth 1. See §5.5.
+4. ~~**`orderBy` / `limit` / `offset` are client-side**, and `orderBy` silently no-ops unless the
+   attribute is in the `select` shape at depth 1. See §5.5.~~ SUPERSEDED by #30 (server-side; see addendum).
 
-5. **`limit` does not bound server work.** The whole result set is materialised and shipped,
-   then sliced. Budget applies to the unlimited query.
+5. ~~**`limit` does not bound server work.** The whole result set is materialised and shipped,
+   then sliced. Budget applies to the unlimited query.~~ SUPERSEDED by #30 (see addendum).
 
 6. **`db.live` requires a WebSocket.** Not available over `ServerBinding` (Worker→Worker).
    Under local miniflare, cross-connection live wake does not propagate:
@@ -1861,3 +1865,42 @@ Ranked by how much pain the omission causes.
 21. **The `x-ripple-min-t` / `x-ripple-cache-*` request headers** are documented as *response*
     headers only (`reference/http-api.md:48-52`). They are inbound knobs
     (`packages/worker/src/index.ts:4-9`), which matters for anyone tuning read freshness.
+
+---
+
+## Post-rebase addendum (after #30 — `f0f436f`, "Query P0: server-side order/limit and retire callback builder")
+
+Written after rebasing `feat/docs-site` onto master. Everything above was verified at `a15b538`;
+the items below changed since and override §5.5, §5.6, §11 items 4–5, and §12/§13 notes that
+say ordering or paging is client-side or that the callback builder still ships.
+
+1. **`orderBy` / `limit` / `offset` run on the peer.** The navigational query lowers to
+   `{ find: [["pull", "?e", pattern]], where, order, limit, offset }`; the engine sorts the joined
+   relation, pages it, and only then resolves pulls, so the client never sees the rows a page
+   dropped (`packages/alchemy/src/db/NavQuery.ts:1-14`, `:100-105`; `docs/QUERY.md` "Order,
+   limit, offset" and "How it lowers").
+2. **Required-field filtering runs on the peer, before `limit`.** Every required (non-`.optional`)
+   card-one field of the shape becomes a `[?e :attr _]` clause — recursively through required
+   nested selects — so `:limit 20` is twenty rows the client keeps. A required nested select is
+   required through the ref; a card-many `.select` is an array and never drops the parent.
+3. **`orderBy` takes any card-one path**, including multi-hop (`Todo.owner.name`) and
+   `Todo.id`. Several `orderBy` calls compose; ties fall through. `empty: "first" | "last"`
+   (default `"last"`) holds in both directions — `desc` does not float missing values to the
+   top; a row with no owner and an owner with no name are both "empty". Mixed value types sort
+   by a deterministic total order (numbers, strings, booleans, instants, the rest). A path that
+   crosses a **cardinality-many** attribute is rejected when the query is built.
+4. **The callback (string-var) builder is retired.** `QueryInput<R> = NavQuery<R> |
+   NavQueryBuilder<…, R>` (`Db.ts:48`); `Query.ts` is gone; `db.q((q) => q.where(...))` no longer
+   type-checks. `explain(...)` and `find().pull(pattern)` went with it. There is no IR hatch on
+   `db` today (`docs/QUERY.md` status table: "IR hatch — (the string-var callback builder is
+   retired)").
+5. **`db.live` suppresses identical consecutive emissions.** A re-run whose rows equal the last
+   emission is not emitted (`Db.ts:105-111` doc comment; `docs/QUERY.md` "Running"). Its error
+   channel is `DbError`, not a separate `LiveError`.
+6. **`Todo.id`** is the `:db/id` pseudo-attribute: selectable, orderable, comparable
+   (`Todo.id.eq(eid)`, `Todo.id.gt(n)`).
+
+Site pages that carried the stale claims were swept in cycle 2 (`guides/queries.md`,
+`guides/live-queries.md`, `guides/before-production.md`, `concepts/for-datomic-users.md`);
+`docs/QUERY.md` on master already matches.
+
