@@ -949,6 +949,30 @@ describe("lowering: reverse refs walk a ref hop backwards", () => {
     expect(q.where).toEqual([userScope, ["?e", ":user/name", "_"]]);
   });
 
+  test("a forward hop after a backlink keeps the backlink reversed", () => {
+    // `Todo.owner.reverse.owner.name` — from a User: the todos that point at
+    // me, then *their* owner, then that owner's name. The first hop stays
+    // backwards; the two that follow are ordinary forward hops.
+    const path = Todo.owner.reverse.owner.name;
+    expect(pathOf(path)).toEqual([
+      ":todo/owner",
+      ":todo/owner",
+      ":user/name",
+    ]);
+    expect(cardsOf(path)).toEqual(["many", "one", "one"]);
+    expect(revsOf(path)).toEqual([true, false, false]);
+    // the intermediate ref hop carries the flags too
+    expect(revsOf(Todo.owner.reverse.owner)).toEqual([true, false]);
+
+    expect(whereOf(path.eq("Ada"))).toEqual([
+      userScope,
+      // reversed first, then forward — not a three-hop forward chain
+      ["?j0", ":todo/owner", "?e"],
+      ["?j0", ":todo/owner", "?j1"],
+      ["?j1", ":user/name", "Ada"],
+    ]);
+  });
+
   test("a bare backlink in a shape is rejected: ask for a shape", () => {
     expect(() =>
       lowerNavQuery(
@@ -1065,6 +1089,29 @@ describe("quantifiers and backlinks end to end", () => {
     expect(
       await names(peer, db, Todo.owner.reverse.none(Todo.done.eq(false))),
     ).toEqual(["Ada", "Cyd"]);
+
+    await peer.dispose();
+  });
+
+  test("a forward hop after a backlink runs backwards-then-forwards", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    // `Todo.owner.reverse.owner.name` from a User: the todos that point at me,
+    // then their owner, then that owner's name. `:todo/owner` is card-one, so
+    // that owner *is* me — the path means "I own a todo, and I am named X".
+    // Lowered as three forward hops (the bug) no user matches at all, because
+    // a user has no `:todo/owner` datom of its own.
+    expect(
+      await names(peer, db, Todo.owner.reverse.owner.name.eq("Ada")),
+    ).toEqual(["Ada"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.owner.name.eq("Bob")),
+    ).toEqual(["Bob"]);
+    // Cyd owns no todo, so there is no backlink to walk forwards from
+    expect(
+      await names(peer, db, Todo.owner.reverse.owner.name.eq("Cyd")),
+    ).toEqual([]);
 
     await peer.dispose();
   });
