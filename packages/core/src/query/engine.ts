@@ -26,7 +26,7 @@ import {
   type Query,
   type Term,
 } from "./ast.ts";
-import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, compareJs, vkey } from "./builtins.ts";
+import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, compareJs, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
 
@@ -1132,37 +1132,6 @@ function isQueryAst(q: unknown): boolean {
   return typeof q === "object" && q !== null && "find" in (q as any) && typeof (q as any).find === "object" && "kind" in (q as any).find;
 }
 
-/** A resolved {@link OrderSpec}: which column, which direction, where empties go. */
-interface SortKey {
-  col: number;
-  dir: 1 | -1;
-  emptyLast: boolean;
-}
-
-function sortKeys(order: OrderSpec[], col: (v: string) => number): SortKey[] {
-  return order.map((o) => ({ col: col(o.var), dir: o.dir === "desc" ? -1 : 1, emptyLast: o.empty !== "first" }));
-}
-
-/**
- * Stable in-place sort. Mixed types get a deterministic total order (numbers
- * before strings before booleans before instants before the rest — see
- * {@link compareJs}); null/undefined are placed by `empty` in *both*
- * directions, so `:desc` does not float missing values to the top. Ties fall
- * through to the remaining keys and then to the incoming row order.
- */
-function sortRows(rows: unknown[][], keys: SortKey[]): void {
-  rows.sort((a, b) => {
-    for (const k of keys) {
-      const x = a[k.col], y = b[k.col];
-      const ex = x === null || x === undefined;
-      const ey = y === null || y === undefined;
-      const c = ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
-      if (c !== 0) return c;
-    }
-    return 0;
-  });
-}
-
 /**
  * Project / aggregate the result relation, then order → offset → limit, then
  * resolve pulls — so a `:limit` only pulls the rows that survive it.
@@ -1193,9 +1162,9 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
       // tuple lands at its best-ranked binding.
       sortRows(
         rel.rows,
-        sortKeys(ast.order, (v) => {
-          const i = ix.get(v);
-          if (i === undefined) throw new QueryError(`order variable ${v} is not bound in :where`);
+        sortKeys(ast.order, (o) => {
+          const i = ix.get(o.var);
+          if (i === undefined) throw new QueryError(`order variable ${o.var} is not bound in :where`);
           return i;
         }),
       );
@@ -1238,9 +1207,9 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
       const cols = new Map(elems.map((e, i) => [varOf(e), i]));
       sortRows(
         tuples,
-        sortKeys(ast.order, (v) => {
-          const i = cols.get(v);
-          if (i === undefined) throw new QueryError(`order variable ${v} must be in :find when the query aggregates`);
+        sortKeys(ast.order, (o) => {
+          const i = cols.get(o.var);
+          if (i === undefined) throw new QueryError(`order variable ${o.var} must be in :find when the query aggregates`);
           return i;
         }),
       );

@@ -107,12 +107,96 @@ export interface Query {
 
 // --- pull -------------------------------------------------------------------
 
+/**
+ * Comparison operators a nested pull `:where` understands. The names are the
+ * engine's builtin predicate names (`PREDICATES` in builtins.ts) so the same
+ * client lowering serves both places:
+ *
+ *   `=` `!=` `<` `<=` `>` `>=`  — compare the element's value(s) to `value`
+ *   `in`                        — `value` is an array; membership by identity
+ *   `starts-with?` `ends-with?` `includes?`  — string tests, `value` is the needle
+ *   `re-find?` `re-matches?`    — `value` is a regex *source string* (no flags)
+ *   `exists` `missing`          — the path has (no) value at all; `value` unused
+ *
+ * Every operator except `exists`/`missing` is existential over the values the
+ * path reaches: it holds when *some* value satisfies it, and never holds when
+ * the path reaches nothing (so `!=` means "has a value, and it differs").
+ */
+export const PULL_ELEM_OPS = [
+  "=",
+  "!=",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "in",
+  "starts-with?",
+  "ends-with?",
+  "includes?",
+  "re-find?",
+  "re-matches?",
+  "exists",
+  "missing",
+] as const;
+export type PullElemOp = (typeof PULL_ELEM_OPS)[number];
+
+/**
+ * One comparison inside a nested collection's `:where`.
+ *
+ * `path` is a chain of attribute idents walked from the *element* — the target
+ * entity of a forward ref, the referring entity of a reverse (backlink) hop,
+ * or the value itself for a cardinality-many scalar, where `path: []` compares
+ * that value. `reverse[i]` walks hop `i` backwards (`[?next :a ?e]`), and the
+ * reverse ident spelling (`:user/_friends`) is accepted too. `:db/id` at the
+ * end of a path is the entity id itself. A hop that reaches several values
+ * fans out: the predicate holds if *some* reachable value satisfies it.
+ */
+export interface PullElemCmp {
+  path: string[];
+  /** parallel to `path`; a hop walked backwards. Absent ⇒ all forward. */
+  reverse?: boolean[];
+  op: PullElemOp;
+  /** the comparison operand; an array for `in`, unused by `exists`/`missing` */
+  value?: unknown;
+}
+/** Predicates over one element of a nested collection. Combinators nest. */
+export type PullElemPred =
+  | PullElemCmp
+  | { and: PullElemPred[] }
+  | { or: PullElemPred[] }
+  | { not: PullElemPred };
+
+/**
+ * One sort key for a nested collection. `path`/`reverse` walk from the element
+ * exactly as {@link PullElemCmp} does (`path: []` sorts a scalar collection by
+ * its own values); a path that reaches several values sorts by the first in
+ * index order, and one that reaches none is placed by `empty` (default
+ * "last", in both directions) — the same rule the outer `:order` uses.
+ */
+export interface PullElemOrder {
+  path: string[];
+  reverse?: boolean[];
+  dir: "asc" | "desc";
+  empty?: "first" | "last";
+}
+
 export interface PullAttrSpec {
   kind: "attr";
   attr: string; // ident, e.g. ":user/name" (reverse: ":user/_friends")
   reverse: boolean;
   as?: string;
+  /**
+   * Max elements of a cardinality-many collection, applied *after* `where`,
+   * `order` and `offset`. `null` is unlimited; absent means the pull default.
+   */
   limit?: number | null;
+  /** elements to drop from the front of the filtered, ordered collection */
+  offset?: number;
+  /** per-element predicates, ANDed; a collection that filters to nothing is
+   * omitted (or `default`), it never drops the parent row */
+  where?: PullElemPred[];
+  /** sort keys for the collection, applied after `where` */
+  order?: PullElemOrder[];
   default?: unknown;
   sub?: PullPattern;
   /** recursion depth for {:attr ...} with '...' or a number */

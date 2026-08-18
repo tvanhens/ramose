@@ -15,7 +15,12 @@ import {
   type FindSpec,
   type InputSpec,
   type OrderSpec,
+  PULL_ELEM_OPS,
   type PullAttrSpec,
+  type PullElemCmp,
+  type PullElemOp,
+  type PullElemOrder,
+  type PullElemPred,
   type PullPattern,
   type Query,
   type Term,
@@ -333,6 +338,76 @@ function attrName(x: unknown, form: unknown): { attr: string; reverse: boolean }
   return { attr: s, reverse: false };
 }
 
+// --- nested collection :where / :order --------------------------------------
+
+/** Map-ish form with the leading ':' stripped from every key. */
+function keyedMap(x: unknown, what: string, form: unknown): Record<string, unknown> {
+  if (typeof x !== "object" || x === null || Array.isArray(x) || x instanceof EdnList) fail(`${what} must be a map`, form);
+  const m: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(x as Record<string, unknown>)) m[String(bare(k))] = v;
+  return m;
+}
+
+/**
+ * A path of attribute idents walked from a collection element, plus which hops
+ * run backwards. Reverse spelling (`:user/_friends`) and an explicit `reverse`
+ * flag mean the same thing, so a client may use either.
+ */
+function elemPath(pathForm: unknown, revForm: unknown, form: unknown): { path: string[]; reverse?: boolean[] } {
+  if (!Array.isArray(pathForm)) fail("pull path must be a vector of attribute idents", form);
+  if (revForm !== undefined && !Array.isArray(revForm)) fail("pull path :reverse must be a vector of booleans", form);
+  const revIn = (revForm as unknown[] | undefined) ?? [];
+  const path: string[] = [];
+  const reverse: boolean[] = [];
+  (pathForm as unknown[]).forEach((p, i) => {
+    if (!isKeyword(p)) fail("pull path must be a vector of attribute idents", form);
+    const { attr, reverse: rev } = p === ":db/id" ? { attr: ":db/id", reverse: false } : attrName(p, form);
+    path.push(attr);
+    reverse.push(rev || revIn[i] === true);
+  });
+  return reverse.some(Boolean) ? { path, reverse } : { path };
+}
+
+/** A comparison operand: plain data, with `{const: …}` wrappers unwrapped. */
+function elemValue(x: unknown): unknown {
+  return isEdnConstWrapper(x) ? unwrapEdnConst(x) : x;
+}
+
+function elemPreds(x: unknown, form: unknown): PullElemPred[] {
+  if (!Array.isArray(x)) fail("pull :where must be a vector of predicates", form);
+  return (x as unknown[]).map((p) => elemPred(p, form));
+}
+
+function elemPred(x: unknown, form: unknown): PullElemPred {
+  const m = keyedMap(x, "pull :where predicate", form);
+  if (m.and !== undefined) return { and: elemPreds(m.and, form) };
+  if (m.or !== undefined) return { or: elemPreds(m.or, form) };
+  if (m.not !== undefined) return { not: elemPred(m.not, form) };
+  const op = bare(m.op);
+  if (typeof op !== "string" || !(PULL_ELEM_OPS as readonly string[]).includes(op)) {
+    fail(`unknown pull :where op ${String(m.op)} (expected one of ${PULL_ELEM_OPS.join(" ")})`, form);
+  }
+  const out: PullElemCmp = { ...elemPath(m.path ?? [], m.reverse, form), op: op as PullElemOp };
+  if (op === "in") {
+    if (!Array.isArray(m.value)) fail("pull :where in takes a vector of values", form);
+    out.value = (m.value as unknown[]).map(elemValue);
+  } else if (op !== "exists" && op !== "missing") {
+    out.value = elemValue(m.value);
+  }
+  return out;
+}
+
+function elemOrders(x: unknown, form: unknown): PullElemOrder[] {
+  if (!Array.isArray(x)) fail("pull :order must be a vector of sort keys", form);
+  return (x as unknown[]).map((o) => {
+    const m = keyedMap(o, "pull :order key", form);
+    const empty = orderEmpty(m.empty, form);
+    const key: PullElemOrder = { ...elemPath(m.path ?? [], m.reverse, form), dir: orderDir(m.dir, form) };
+    if (empty !== undefined) key.empty = empty;
+    return key;
+  });
+}
+
 function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
   if (x === "*" || x === ":*") return { kind: "wildcard" };
   // Already-lowered AST specs (alchemy `lowerPullPattern`) pass through.
@@ -344,7 +419,12 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
     typeof (x as { attr?: unknown }).attr === "string"
   ) {
     const spec = x as PullAttrSpec;
-    return spec.sub ? { ...spec, sub: parsePullPattern(spec.sub) } : { ...spec };
+    const out: PullAttrSpec = { ...spec };
+    if (spec.sub !== undefined) out.sub = parsePullPattern(spec.sub);
+    if (spec.where !== undefined) out.where = elemPreds(spec.where, x);
+    if (spec.order !== undefined) out.order = elemOrders(spec.order, x);
+    if (spec.offset !== undefined) out.offset = toCount(spec.offset, "offset");
+    return out;
   }
   if (isKeyword(x)) return { kind: "attr", ...attrName(x, x) };
   const expr = asExpr(x);
@@ -358,6 +438,9 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
       const k = expr[i], v = expr[i + 1];
       if (k === ":as") spec.as = String(v);
       else if (k === ":limit") spec.limit = v as number | null;
+      else if (k === ":offset") spec.offset = toCount(v, "offset");
+      else if (k === ":where") spec.where = elemPreds(v, x);
+      else if (k === ":order") spec.order = elemOrders(v, x);
       else if (k === ":default") spec.default = v;
       else fail(`unknown pull option ${String(k)}`, x);
     }

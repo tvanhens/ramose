@@ -80,6 +80,41 @@ function rank(v: unknown): number {
   }
 }
 
+/** A resolved sort key: which column, which direction, where empties go. */
+export interface SortKey {
+  col: number;
+  dir: 1 | -1;
+  emptyLast: boolean;
+}
+
+/** Resolve order specs into {@link SortKey}s; `col` names each spec's column. */
+export function sortKeys<T extends { dir: "asc" | "desc"; empty?: "first" | "last" }>(
+  order: readonly T[],
+  col: (o: T) => number,
+): SortKey[] {
+  return order.map((o) => ({ col: col(o), dir: o.dir === "desc" ? -1 : 1, emptyLast: o.empty !== "first" }));
+}
+
+/**
+ * Stable in-place sort. Mixed types get a deterministic total order (numbers
+ * before strings before booleans before instants before the rest — see
+ * {@link compareJs}); null/undefined are placed by `empty` in *both*
+ * directions, so `:desc` does not float missing values to the top. Ties fall
+ * through to the remaining keys and then to the incoming row order.
+ */
+export function sortRows(rows: unknown[][], keys: readonly SortKey[]): void {
+  rows.sort((a, b) => {
+    for (const k of keys) {
+      const x = a[k.col], y = b[k.col];
+      const ex = x === null || x === undefined;
+      const ey = y === null || y === undefined;
+      const c = ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
+      if (c !== 0) return c;
+    }
+    return 0;
+  });
+}
+
 function num(x: unknown): number {
   if (typeof x === "number") return x;
   if (typeof x === "bigint") return Number(x);
