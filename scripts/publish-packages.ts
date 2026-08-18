@@ -88,6 +88,18 @@ for (const pkg of ORDER) {
   const exitCode = await proc.exited;
 
   if (exitCode !== 0) {
+    // A publish can fail purely because the version is already on the registry:
+    // it was published by hand, or the pre-check above raced registry
+    // propagation, whose read path trails a write by a few seconds. npm reports
+    // that as E403 "cannot publish over the previously published versions".
+    // Re-check before treating the failure as fatal — the goal is that
+    // re-running a release is always safe.
+    if (!dryRun && (await alreadyPublished(manifest.name, manifest.version))) {
+      console.log(`skip    ${spec} (already on the registry — the publish above was redundant)`);
+      skipped.push(spec);
+      continue;
+    }
+
     // npm has already explained itself on stderr; repeating it just buries it.
     console.error(`\nfailed to publish ${spec} — see the npm error above`);
     if (published.length > 0) {
@@ -104,11 +116,21 @@ console.log(
 );
 
 /**
- * True when this exact version is already on the registry. Any error — the
- * package has never been published, the registry is unreachable — is treated as
- * "not published" so the publish itself decides, rather than this check.
+ * True when this exact version is already on the registry.
+ *
+ * Queries the packument rather than the `name@version` spec: immediately after
+ * a publish the spec form can still 404 while the package document already
+ * lists the version, because the registry's read path trails its write path.
+ * Any error — never published, registry unreachable — is treated as "not
+ * published" so the publish itself decides, rather than this check.
  */
 async function alreadyPublished(name: string, version: string): Promise<boolean> {
-  const result = await $`npm view ${`${name}@${version}`} version`.quiet().nothrow();
-  return result.exitCode === 0 && result.stdout.toString().trim() === version;
+  const result = await $`npm view ${name} versions --json`.quiet().nothrow();
+  if (result.exitCode !== 0) return false;
+  try {
+    const versions = JSON.parse(result.stdout.toString()) as string[] | string;
+    return Array.isArray(versions) ? versions.includes(version) : versions === version;
+  } catch {
+    return false;
+  }
 }
