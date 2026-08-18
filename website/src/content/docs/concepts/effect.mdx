@@ -1,0 +1,114 @@
+---
+title: Effect in five minutes
+description: The 5% of Effect a Ramose user sees — a call is a description, hooks run it, Effect.runPromise elsewhere, yield* inside a write, errors by name.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose is built on [Effect](https://effect.website), a TypeScript library for describing work as values. You can use Ramose without learning it. Here is the 5% you will see, for someone who has built the first app.
+
+<Learn learn={["Why a Ramose call does nothing until something runs it", "The three places you run one: hooks, Effect.runPromise, yield*", "How to handle an error by name"]} before={[{ href: "/getting-started/first-app/", label: "Build your first app" }]} minutes={5} />
+
+## A Ramose call is a description, not a result
+
+`db.q(query)` does not fetch rows. It returns an *Effect value*: a description of a read, with the result type and the possible errors in its type. Nothing happens until something runs it. The same is true of `db.transact(…)`, `db.pull(…)` and `db.install()`.
+
+A **write** is one all-or-nothing group of changes; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). That is why a write can be built in one place and run in another, and why a failed step stops the whole thing before anything is sent.
+
+## In React, the hooks run it for you
+
+`useLive`, `useQuery` and `usePull` run reads and re-run them; `useTransact().run` runs a write from an event handler. You never see Effect:
+
+```tsx title="examples/todos/src/App.tsx:14-25"
+const TodoList = () => {
+  const { rows, error } = useLive(db, todoQuery);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => (
+        <TodoRowView key={row.id} row={row} />
+      ))}
+    </ul>
+  );
+};
+```
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+```
+
+`run(effect)` returns a Promise; a policy denial arrives in `onError` as a readable message.
+
+## Outside React: Effect.runPromise
+
+Anywhere else — a script, a Worker, a test — `Effect.runPromise(effect)` runs one Effect and gives you a Promise. Reef opens a workspace this way:
+
+```ts title="examples/reef/src/app/ramose.ts:43"
+    if (provision) await Effect.runPromise(provisionWorkspace(db, user));
+```
+
+Every `db` method can be run this way directly; nothing else needs to be set up.
+
+## Inside a write: yield*
+
+A write's body is a generator. Read `yield*` as `await`: it runs the step and gives you its result. Reef's drag-and-drop is two steps:
+
+```ts title="examples/reef/src/app/mutations.ts:113-122"
+export const moveIssue = (
+  db: ReefDb,
+  issueId: number,
+  status: Status,
+  rank: number,
+) =>
+  db.transact(function* (tx) {
+    yield* tx.add(issueId, Issue.status, status);
+    yield* tx.add(issueId, Issue.rank, rank);
+  });
+```
+
+`function*` and `yield*` are plain JavaScript; Effect uses them so a write reads top to bottom. If any step fails, the write is not sent.
+
+## Handling errors by name
+
+Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`. `Effect.catchTags` handles the ones you care about by name:
+
+```ts title="examples/kv-style/app.ts:128-143"
+        Effect.catchTags({
+          TxRejected: (e) =>
+            HttpServerResponse.json({ error: e.message, code: e.code }, { status: 409 }),
+          Unavailable: (e) =>
+            HttpServerResponse.json(
+              { error: e.message },
+              { status: 503, headers: { "retry-after": String(Math.ceil(e.retryAfterMs / 1000)) } },
+            ),
+          QueryBudgetExceeded: (e) =>
+            HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
+          // …
+          Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
+          // …
+        }),
+```
+
+To handle any error the same way, `Effect.catch`. In React, `errorMessage(e)` from `@ramose/react` turns any of them into a string. The full list, with status codes and what the user sees, is on [Errors](/reference/errors/).
+
+## Words you can ignore for now
+
+You may meet these in the reference pages; none is needed to build an app.
+
+- **Layer** — wiring: how a program is given the things it needs.
+- **Stream** — a stream of results over time; `db.live` returns one, `useLive` consumes it for you.
+- **Fiber** — a running subscription; a live query is one.
+- **Scope** — what closes a subscription when its owner goes away.
+
+## When you want more
+
+`Ramose.layer({ url, token })` is the Effect-native twin of `Ramose.connect`; it provides a `Ramose.Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
+
+<Next links={[
+  { href: "/guides/transactions/", label: "Write data", why: "the four verbs, inside one write" },
+  { href: "/guides/workers/", label: "Use it from a Worker", why: "Ramose from your own backend, no React" },
+  { href: "/reference/client-api/", label: "Client API", why: "every call, with its errors" },
+]} />

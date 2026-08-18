@@ -1,0 +1,103 @@
+---
+// Makes a GFM task list on a docs page an actual checklist: the boxes are
+// clickable, the page says how far you are, and what you ticked survives a
+// reload. Import it on any page that uses `- [ ]` items (today:
+// guides/before-production).
+//
+// Markdown renders the boxes `disabled`, so with JavaScript off the page
+// degrades to exactly what it is now — a styled, unticked list, with no note
+// promising a memory it doesn't have. Storage is best-effort: if localStorage
+// throws (private mode, blocked cookies) the boxes still tick, they just
+// don't persist.
+---
+
+<script>
+  const scope = document.querySelector(".sl-markdown-content");
+  const boxes = scope
+    ? Array.from(scope.querySelectorAll('li > input[type="checkbox"]'))
+    : [];
+
+  if (boxes.length > 0) {
+    const KEY = "ramose:checklist:" + location.pathname;
+
+    let saved = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    } catch {
+      saved = {};
+    }
+
+    // Key each box on its section heading plus its index within that section,
+    // so adding an item to one section never shifts another section's state.
+    const seen = new Map();
+    for (const box of boxes) {
+      let node = box.closest("ul, ol");
+      let section = "top";
+      while (node) {
+        node = node.previousElementSibling;
+        if (!node) break;
+        // Starlight wraps each heading in a .sl-heading-wrapper div.
+        const h = node.matches("h2, h3")
+          ? node
+          : node.querySelector(":scope > h2, :scope > h3");
+        if (h) {
+          section = h.id || "top";
+          break;
+        }
+      }
+      const n = seen.get(section) || 0;
+      seen.set(section, n + 1);
+      box.dataset.key = section + ":" + n;
+
+      box.disabled = false;
+      box.checked = saved[box.dataset.key] === true;
+      const item = box.parentElement;
+      const strong = item && item.querySelector("strong");
+      const name = strong
+        ? strong.textContent
+        : ((item && item.textContent) || "").trim().slice(0, 80);
+      if (name) box.setAttribute("aria-label", name);
+    }
+
+    // A one-line status, added only now that the boxes really work.
+    const note = document.createElement("p");
+    note.className = "rg-checklist-note";
+    const count = document.createElement("span");
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Clear";
+    note.append(count, document.createTextNode(" · this browser remembers "), reset);
+    // Under "You'll learn" if there is one, else straight above the list.
+    const learn = scope.querySelector(".rg-learn");
+    if (learn) learn.after(note);
+    else {
+      const firstList = boxes[0].closest("ul, ol");
+      firstList.parentNode.insertBefore(note, firstList);
+    }
+
+    const render = () => {
+      const done = boxes.filter((b) => b.checked).length;
+      count.textContent = done + " of " + boxes.length + " done";
+      reset.hidden = done === 0;
+    };
+
+    const save = () => {
+      const state = {};
+      for (const box of boxes) if (box.checked) state[box.dataset.key] = true;
+      try {
+        localStorage.setItem(KEY, JSON.stringify(state));
+      } catch {
+        // no storage available: ticking still works for this visit
+      }
+      render();
+    };
+
+    reset.addEventListener("click", () => {
+      for (const box of boxes) box.checked = false;
+      save();
+    });
+
+    for (const box of boxes) box.addEventListener("change", save);
+    render();
+  }
+</script>

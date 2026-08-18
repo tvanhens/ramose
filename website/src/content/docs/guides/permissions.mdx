@@ -1,0 +1,169 @@
+---
+title: Permissions
+description: Write a policy next to your schema, see a write refused and a field masked in Reef, and let the deploy fail before a screen quietly empties.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose decides, per fact, who may read it and who may change it. The rules live next to your schema, compile at deploy time, and run inside the database: a query returns fewer rows rather than trusting your UI to filter, and a forbidden write is refused rather than logged. This page walks Reef's real policy; it is for anyone who has run the Quickstart.
+
+*Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.*
+
+<Learn learn={["Read a real policy, rule by rule", "Watch a write get refused and a field get masked", "Deny by default and the deploy-time check"]} before={[{ href: "/getting-started/quickstart/", label: "Quickstart" }]} minutes={12} />
+
+## What a policy is
+
+The **policy** is a value: which roles may read, create, change or remove which fields, compiled to JSON for the server ([glossary](/concepts/glossary/#policy)). You write it in TypeScript against your schema's record types. The server enforces it on every read and write; your buttons are only a hint.
+
+## The three roles in Reef
+
+A **role** is a name carried in the **sign-in token** — the signed token the server verifies on every request ([glossary](/concepts/glossary/#token)). Rules refer to roles; the policy calls them *classes* ([glossary](/concepts/glossary/#role)).
+
+| role | may |
+| --- | --- |
+| `admin` | everything — bypasses every rule |
+| `member` | read; create issues and comments; change or delete their own |
+| `viewer` | read only — every write is refused |
+
+Reef maps the invite's role onto the token at sign-in — [What the token carries](/guides/sign-in/#what-the-token-carries).
+
+## Reef's policy, read aloud
+
+Helper expressions first, then one rule block per record type:
+
+```ts title="examples/reef/src/domain/policy.ts:26-32"
+const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
+const editor = P.or(P.class("admin"), P.class("member"));
+const admin = P.class("admin");
+
+/** `member` may touch an issue they created; `admin` never reaches the rules. */
+const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
+const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+```
+
+```ts title="examples/reef/src/domain/policy.ts:34-48"
+export const policy = P.policy(Reef, {
+  principal: User.sub,
+  classes: CLASSES,
+  ns: {
+    user: {
+      read: P.allow(anyone),
+      // First entry into a workspace writes your own row; `sub` is preset from
+      // the token, so you cannot register as someone else.
+      create: P.allow(editor),
+      preset: [P.preset(User.sub, P.claims.sub)],
+    },
+    label: {
+      read: P.allow(anyone),
+      create: P.allow(editor),
+    },
+```
+
+```ts title="examples/reef/src/domain/policy.ts:49-70"
+    issue: {
+      read: P.allow(anyone),
+      create: P.allow(editor),
+      add: P.allow(ownIssue),
+      retract: P.allow(ownIssue),
+      retractEntity: P.allow(ownIssue),
+      preset: [P.preset(Issue.creator, P.principal)],
+      attrs: [
+        // …
+        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+      ],
+    },
+    comment: {
+      read: P.allow(anyone),
+      create: P.allow(editor),
+      retract: P.allow(ownComment),
+      retractEntity: P.allow(ownComment),
+      preset: [P.preset(Comment.author, P.principal)],
+    },
+  },
+});
+```
+
+Read it as:
+
+| rule | plain English |
+| --- | --- |
+| `principal: User.sub` · `classes: CLASSES` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
+| `ownIssue` | I am a member **and** this issue's `creator` is me. Admins never reach the rules. |
+| `issue.read: anyone` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
+| `issue.add / retract / retractEntity: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `retract denied on :issue/status`. |
+| `preset: creator = principal` | The server stamps `creator` to the caller on create. |
+| (nothing) | Anything not mentioned is denied: no `add` arm on `label`, so members cannot recolour labels. |
+
+**Deny by default.** A record type or operation with no rule is invisible and unwritable ([glossary](/concepts/glossary/#deny-by-default)). You never have to remember to lock something down; you have to remember to open it. Field rules narrow the record type's rule, never widen it.
+
+## See a write refused
+
+Reef's buttons are polite; the proof is the server. Try it:
+
+1. `bun run dev:reef`, sign up, create a workspace, add the sample issues.
+2. **Invite** a second email as *viewer*.
+3. In a private window, sign up with that email, accept, open the board.
+4. Drag a card. It snaps back; a red toast reads `retract denied on :issue/status`.
+
+<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says retract denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
+
+What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":issue/status"`; Reef's `useTransact({ onError })` turns it into the toast. Writes are checked twice: on arrival, where a refusal is `Unauthorized`, and again before a version number is assigned, where a refusal is `TxRejected`. The second check runs inside **the writer**, the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)), and it is the authority — handle both. Both are in [Errors](/reference/errors/).
+
+## See a field masked
+
+Open the same issue as an admin and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
+
+<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts:56-60" />
+
+Reads do not fail. They shrink. A fact you may not read is absent — which is why Reef's panel shape asks for it as `privateNote: Issue.privateNote.optional` (`queries.ts:40-46`). Had it been required, the whole row would disappear: `pull` resolves to `null` and a list query drops that record. That is deliberate — an error message that distinguishes "forbidden" from "does not exist" is itself a leak.
+
+## Who is the caller?
+
+`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). Reef writes that record the first time an admin or member enters a workspace; viewers never need one, and until the record exists `P.principal` matches nothing.
+
+`P.preset(Issue.creator, P.principal)` makes `creator` a **server-filled field** ([glossary](/concepts/glossary/#preset)): on create the server stamps it to the caller. A client value identical to the preset is a no-op; a different one is refused. You cannot forge who created an issue.
+
+## The deploy-time check
+
+*Because the policy and the shapes your screens read are both values, `Ramose.Policy.compile(policy, { pulls })` checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.*
+
+```ts title="examples/reef/src/domain/policy.ts:76-77"
+export const compiledPolicy = (): string =>
+  P.compile(policy, { pulls: allShapes });
+```
+
+```ts title="examples/reef/test/policy.test.ts:65-70"
+  test("a masked attribute pulled as required is a compile error", () => {
+    const badShape = { note: Issue.privateNote };
+    expect(() =>
+      Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
+    ).toThrow(/privateNote/);
+  });
+```
+
+The check is opt-in: `compile(policy)` with no `pulls` skips it. Keep every shape your app reads in one list, as `allShapes` does.
+
+## The three server modes
+
+**The Ramose server** picks its mode from two environment variables. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
+
+| mode | environment | who gets in |
+| --- | --- | --- |
+| **Open** | neither set | everyone, as `admin`. Right for a laptop, wrong for the internet |
+| **Shared token** | `RAMOSE_TOKEN` | one bearer token, `admin` on every database — for a backend that is itself the authority |
+| **Policy** | `RAMOSE_POLICY` (+ **JWKS**, the sign-in provider's public keys — [glossary](/concepts/glossary/#jwks)) | every caller presents a sign-in token; reads are filtered and writes checked per fact |
+
+Setting `RAMOSE_POLICY` changes what `RAMOSE_TOKEN` means: its holder gets a role no rule can name — the surprise behind "my token stopped working when I turned on permissions".
+
+## Add a policy to your app
+
+1. Write `policy.ts` next to your schema and compile it with your shapes.
+2. Put it on the server with `Ramose.authEnv({ policy, jwksUrl, auth })` in the deploy file — [Deploy](/guides/deploy/#the-stack-file).
+3. Mint tokens carrying a role and a database name — [Sign in and roles](/guides/sign-in/).
+
+<Next links={[
+  { href: "/guides/sign-in/", label: "Sign in and roles", why: "where the token and the role come from" },
+  { href: "/reference/policy/", label: "Policy", why: "every expression and how rules combine" },
+  { href: "/guides/before-production/", label: "Before production", why: "the rest of the checklist" },
+]} />

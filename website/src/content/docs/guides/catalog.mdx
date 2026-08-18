@@ -1,0 +1,147 @@
+---
+title: Define your data
+description: Your data model in one TypeScript file — record types, fields, references, unique keys — and the types that flow from it.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+This page is everything about the **schema** — your data model as one TypeScript value (Ramose calls it a *catalog* — [glossary](/concepts/glossary/#schema)). It is for anyone who has built the first app and wants to model real data.
+
+<Learn learn={["The three constructors and what each means", "Every value type and option", "What is safe to change later"]} before={[{ href: "/getting-started/first-app/", label: "Build your first app" }]} minutes={8} />
+
+## Three pieces, and that is the whole vocabulary
+
+- **`Ramose.Attr`** declares one **field** — a named, typed slot ([glossary](/concepts/glossary/#field)) — and the values it accepts.
+- **`Ramose.Namespace`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`.
+- **`Ramose.Catalog`** collects record types into the schema a database installs.
+
+Value types come from [Effect Schema](https://effect.website), plus a few of Ramose's own.
+
+## Reef's schema, annotated
+
+Reef's whole data model is 76 lines. The parts that matter:
+
+```ts title="examples/reef/src/domain/schema.ts:15-27"
+export const User = Ramose.Namespace("user", {
+  sub: Ramose.Attr(Schema.String, {
+    unique: "identity",
+    doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
+  }),
+  name: Ramose.Attr(Schema.String),
+  email: Ramose.Attr(Schema.String),
+});
+
+export const Label = Ramose.Namespace("label", {
+  name: Ramose.Attr(Schema.String, { unique: "identity" }),
+  color: Ramose.Attr(Schema.String),
+});
+```
+
+```ts title="examples/reef/src/domain/schema.ts:29-46"
+export const Issue = Ramose.Namespace("issue", {
+  title: Ramose.Attr(Schema.String),
+  description: Ramose.Attr(Schema.String),
+  /** One of {@link STATUSES}. */
+  status: Ramose.Attr(Schema.String),
+  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
+  priority: Ramose.Attr(Ramose.Long),
+  /** Fractional order inside a column; drag-and-drop writes midpoints. */
+  rank: Ramose.Attr(Schema.Number),
+  createdAt: Ramose.Attr(Ramose.Instant),
+  creator: Ramose.Attr(Ramose.Ref(() => User)),
+  assignee: Ramose.Attr(Ramose.Ref(() => User)),
+  labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
+  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
+  privateNote: Ramose.Attr(Schema.String, {
+    doc: "visible to the admin class only",
+  }),
+});
+```
+
+`Comment` (`schema.ts:48-53`) has the same shape, and `Reef = Ramose.Catalog({ user, label, issue, comment })` (`schema.ts:55-60`) collects the four.
+
+| field | what it means |
+| --- | --- |
+| `user.sub` | The account id from the sign-in system. `unique: "identity"` = one **record** ([glossary](/concepts/glossary/#record)) per person, and you can look a user up by it. Used by permissions later. |
+| `issue.priority`, `issue.rank` | A whole number (`Ramose.Long`); a double (`Schema.Number`). |
+| `issue.creator` → `user` | A **reference** — a typed foreign key ([glossary](/concepts/glossary/#reference)). Permissions fill it in for you. |
+| `issue.labels` → `label` | A *set* of references — no join table. |
+| `issue.privateNote` | Admin-only text; the policy masks it for everyone else. |
+
+Every record type also gets an `id` field for free (`Issue.id`).
+
+## Value types
+
+| schema | stores |
+| --- | --- |
+| `Schema.String` · `Schema.Boolean` | text · true/false |
+| `Schema.Number` | a double (`Issue.rank`) |
+| `Ramose.Long` | a whole `number`, stored as a long (`Issue.priority`) — it is a JavaScript number, so nothing above 2⁵³ is exact |
+| `Ramose.Instant` | a point in time — you pass and receive a `Date` |
+| `Ramose.Ref(() => User)` · `Ramose.Ref.self` | a reference to a record of that type · of the same type |
+| `Ramose.Ref` | an untargeted reference — stores fine, but queries cannot hop through it |
+| `Ramose.UuidString` · `Ramose.Uuid` | a UUID as a string · as a structured value object (not a string) |
+| `Ramose.Bytes` | binary data (`Uint8Array`) |
+
+`String`, `Number`, and `Boolean` are inferred; anything else — a `Schema.Literal`, say — needs `{ valueType: ":db.type/string" }`, or installing the schema fails with `ramose/schema: cannot infer :db.type/*`.
+
+## Options
+
+| option | default | effect |
+| --- | --- | --- |
+| `unique` | none | `"identity"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up |
+| `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
+| `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
+| `isComponent` | `false` | the referenced record belongs to its parent and is deleted with it |
+| `doc` | none | a description stored with the field |
+| `valueType` | inferred | the stored type, when it cannot be inferred |
+
+## References between records
+
+`Ramose.Ref(() => User)` points at another record. Naming the target lets a query hop through it (`Issue.assignee.name`) and read backwards (`Issue.creator.reverse` — the issues that point at this user). The arrow function lets two record types point at each other.
+
+## Types flow out of the schema
+
+Nothing downstream needs a type annotation. Reef's board row is inferred:
+
+```ts title="examples/reef/src/domain/queries.ts:90-91"
+/** One row of {@link boardQuery} — inferred from the query, never restated. */
+export type BoardRow = Ramose.Row<typeof boardQuery>;
+```
+
+`BoardRow["priority"]` is a `number`, `createdAt` a `Date`, `assignee` `{ id; name } | undefined`. Writes are checked too: `issue.add(Issue.priority, "high")` does not compile. Your UI types are your database types; they cannot drift.
+
+## Where the schema gets installed
+
+`ramose.db(name, Reef)` names a database without touching the network, so something must **install** the schema — an ordinary write, safe to repeat ([glossary](/concepts/glossary/#install)). Two doors.
+
+At deploy, for a database you know up front (the todos app):
+
+```ts title="examples/todos/alchemy.run.ts:34"
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+```
+
+From the app, for names created at runtime — how Reef makes a workspace:
+
+```ts title="examples/reef/src/app/mutations.ts:28-33"
+export const provisionWorkspace = (
+  db: ReefDb,
+  me: { id: string; name: string; email: string },
+) =>
+  Effect.gen(function* () {
+    yield* db.install();
+```
+
+Which door, and why: [One database per customer](/guides/workspaces/#two-doors-to-install-the-schema).
+
+## Changing a schema later
+
+Adding a field or a record type is another install; the app keeps running. There is no destructive migration to fear, because Ramose never rewrites a **fact** — one statement about one record's field ([glossary](/concepts/glossary/#fact)). Old data keeps the field it was written with, reads of the past keep working, and removing a field from the schema does not delete the facts that used it.
+
+Three changes are *not* guarded: a field's value type, whether it holds one value or many, and whether it is a unique key. Existing data is neither re-typed nor checked — add a new field instead. Dropping an option is quieter still: nothing goes over the wire, so the old setting stays. Under a policy, only the `admin` role may change the schema.
+
+<Next links={[
+  { href: "/guides/transactions/", label: "Write data", why: "create, change and delete records, all-or-nothing" },
+  { href: "/guides/queries/", label: "Read data", why: "filter, shape and page through records" },
+  { href: "/concepts/glossary/", label: "Glossary", why: "every Ramose word in plain English" },
+]} />

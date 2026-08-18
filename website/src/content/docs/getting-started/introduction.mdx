@@ -1,0 +1,36 @@
+---
+title: What is Ramose
+description: The one-minute answer — a typed, realtime database for apps on Cloudflare, shown through Reef, the example issue tracker.
+---
+import Shot from "../../../components/Shot.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose is a database for apps you deploy on Cloudflare. You describe your data in TypeScript, write it through a typed API, and read it with queries that update themselves. Who may read or write each field is part of the database, not middleware you remember to add. This is the one-minute version, for React and TypeScript developers who are new here.
+
+<Shot src="/reef/board-dark.png" alt="Reef's kanban board in dark theme: four columns of issue cards with labels, priorities and assignee avatars, a live pill in the header" caption="This is Reef, built on Ramose. One live query draws the board." code="examples/reef/src/app/screens/BoardScreen.tsx:230-234" />
+
+The [Tour of Reef](/getting-started/tour-of-reef/) walks it screen by screen — all 680 lines of its backend.
+
+## What you get
+
+- **A typed schema** — one file your app, rules and deploy all import; Ramose calls it a *catalog* ([glossary](/concepts/glossary/#schema)) → [Define your data](/guides/catalog/)
+- **Live queries** — a query that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) → [Live queries](/guides/live-queries/)
+- **Permissions in the database**, enforced by the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)) → [Permissions](/guides/permissions/)
+- **A database per customer** — naming one costs nothing → [One database per customer](/guides/workspaces/)
+- **Nothing overwritten** — read the database as it was at any earlier version → [Time travel](/concepts/time-travel/)
+
+Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you ([Effect in five minutes](/concepts/effect/)). Every word we use, in plain English: [Glossary](/concepts/glossary/).
+
+## Good fit, bad fit
+
+**Reach for Ramose** on Cloudflare when you want a realtime UI, rules the database enforces, history you can query, and a database per customer without a deployment per customer.
+
+**Look elsewhere** for analytics or SQL, for more than a few hundred writes per second into a single database, or for a hosted console: Ramose has no dashboard and no managed service.
+
+Closest to Convex and Instant in feel, and to Supabase in that the rules live in the database — the row-by-row trade against all five is [How it compares](/getting-started/compare/).
+
+<Next links={[
+  { href: "/getting-started/quickstart/", label: "Quickstart", why: "a running realtime app in ten minutes" },
+  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "every screen and the code behind it" },
+  { href: "/getting-started/compare/", label: "How it compares", why: "against Convex, Supabase, Instant, Firebase, D1" },
+]} />

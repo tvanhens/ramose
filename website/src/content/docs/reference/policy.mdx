@@ -1,0 +1,280 @@
+---
+title: Policy
+description: The exact rules language — operations, expressions, how rules combine, where checks run — and the token the server verifies.
+---
+import Next from "../../../components/Next.astro";
+
+The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every operation, expression and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+
+*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+
+## Shape of a policy
+
+`Ramose.Policy` is deploy-side: import it from `@ramose/alchemy`, not `@ramose/alchemy/db`. The **policy** ([glossary](/concepts/glossary/#policy)) is one value built over your schema.
+
+```ts
+const P = Ramose.Policy;
+const policy = P.policy(Catalog, {
+  principal: User.sub,          // the field whose value is the token's `sub`
+  classes: ["admin", "member", "viewer"],
+  claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
+  ns: { issue: { read, create, add, retract, retractEntity, preset?, attrs? } },
+});
+```
+
+```ts title="examples/reef/src/domain/policy.ts:24-32"
+const P = Ramose.Policy;
+
+const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
+const editor = P.or(P.class("admin"), P.class("member"));
+const admin = P.class("admin");
+
+/** `member` may touch an issue they created; `admin` never reaches the rules. */
+const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
+const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+```
+
+```ts title="examples/reef/src/domain/policy.ts:34-61"
+export const policy = P.policy(Reef, {
+  principal: User.sub,
+  classes: CLASSES,
+  ns: {
+    user: {
+      read: P.allow(anyone),
+      // …
+      create: P.allow(editor),
+      preset: [P.preset(User.sub, P.claims.sub)],
+    },
+    // …
+    issue: {
+      read: P.allow(anyone),
+      create: P.allow(editor),
+      add: P.allow(ownIssue),
+      retract: P.allow(ownIssue),
+      retractEntity: P.allow(ownIssue),
+      preset: [P.preset(Issue.creator, P.principal)],
+      attrs: [
+        // …
+        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+      ],
+    },
+```
+
+- `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). `P.principal` in a rule means that record.
+- `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); each rule names them with `P.class`.
+- `ns` — one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
+
+`P.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, or a reference chain deeper than 3.
+
+## Operations
+
+| operation | when it is checked |
+| --- | --- |
+| `read` | every query, pull and live query — including `asOf` and `history` views |
+| `create` | the first `add` to a record that has no facts yet |
+| `add` | writing a value to a field of an existing record |
+| `retract` | clearing a value from a field |
+| `retractEntity` | deleting a whole record |
+
+```ts
+issue: { read: P.allow(anyone), create: P.allow(editor), add: P.allow(ownIssue) }
+```
+
+Each takes one arm or a list: `P.allow(expr)`, `P.deny(expr)`.
+
+## Expressions
+
+| expression | true when |
+| --- | --- |
+| `P.class("member")` | the caller's role is `member` (must be in `classes`) |
+| `P.eq(attr, operand)` | the record's `attr` equals the operand; on a many-valued field, contains it |
+| `P.ref(refAttr, expr \| attr)` | follow the reference and evaluate there (depth ≤ 3) |
+| `P.and(…)` `P.or(…)` `P.not(e)` | boolean composition |
+| `P.constant(true \| false)` | a fixed verdict |
+| `P.principal` | operand: the caller's record |
+| `P.claims.sub` `.iss` `.aud` `.exp` `.attrs.<key>` | operand: a claim from the token |
+| `P.claimsOf(struct).attrs.<key>` | the same, typed by your `claims` struct |
+| `P.lit(value)` | operand: an explicit literal (bare values are wrapped for you) |
+
+```ts
+// doc → project → org → members contains the caller
+const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
+const mine = P.eq(Doc.owner, P.principal);
+const sameOrg = P.eq(Doc.orgId, P.claims.attrs.org);
+```
+
+Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version.
+
+## How rules combine
+
+| situation | verdict |
+| --- | --- |
+| no rule for this record type and operation | **denied** |
+| one `allow` arm holds | allowed |
+| several `allow` arms, any one holds | allowed |
+| a `deny` arm holds | **denied**, whatever the allow arms say |
+| a field rule and its record-type rule | both must allow — the field rule only narrows |
+
+```ts
+// 1. no rule at all for doc → nothing about a document is readable
+ns: { }
+// 2. one arm: the owner may read their own documents
+ns: { doc: { read: P.allow(P.eq(Doc.owner, P.principal)) } }
+// 3. two arms: the owner *or* anyone in the document's org may read it
+ns: { doc: { read: [P.allow(P.eq(Doc.owner, P.principal)), P.allow(inOrg)] } }
+// 4. narrowed: everything above, except doc.audit, which is admins only
+ns: { doc: { read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
+             attrs: [P.attr(Doc.audit, { read: P.allow(P.class("admin")) })] } }
+```
+
+## preset
+
+`P.preset(attr, P.principal | P.claims.x)` — a **server-filled field** ([glossary](/concepts/glossary/#preset)): on `create` the server sets it from the caller. A client value identical to the preset is a no-op; a different one is refused with `Unauthorized`. The operand is `P.principal` or a claim, never a literal.
+
+```ts title="examples/reef/src/domain/policy.ts:55"
+      preset: [P.preset(Issue.creator, P.principal)],
+```
+
+## Field rules narrow
+
+`P.attr(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
+
+```ts title="examples/reef/src/domain/policy.ts:56-60"
+      attrs: [
+        // …
+        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+      ],
+```
+
+## admin and anonymous
+
+| class | meaning |
+| --- | --- |
+| `admin` | skips every rule — reads unfiltered, writes unchecked; the only class that may install schema, call `explain`, or `/admin/*` routes |
+| `anonymous` | given to a caller with no token, **only if the policy declares it**; otherwise token-less calls are `Unauthorized` |
+| `$token` | the `RAMOSE_TOKEN` holder under a policy; cannot be declared, so no rule admits it |
+
+:::caution
+`admin` bypasses everything, including field masks. Mint it only for people who should see all of a database. `anonymous` opens the door to the internet; declare it on purpose.
+:::
+
+## Where the checks run
+
+- **Reads are filtered, never rejected.** The server hides the facts you may not read; a list is shorter, a hidden required field makes `pull` return `null` — the same as a missing record. Rules evaluate against the unfiltered data, always at the *current* version, so reading the past cannot revive a revoked grant.
+- **Writes are checked twice.** Both checks run the same expansion first — implied retracts and `retractEntity` closure — and judge every fact that comes out, server-filled fields included. At the server's edge first, against a read copy that may lag: a refusal there is `Unauthorized` 403 with `code: "policy"` and the field name. Then inside the **writer**, against the writer's own current data: a refusal there is `TxRejected` 409, and no version number is used. (The writer is the one thing per database that commits writes — [glossary](/concepts/glossary/#writer).)
+- **The writer's check is the authority.** Because the edge reads a copy that lags the writer, it is best-effort in *both* directions: it can refuse a write the writer would allow, and it can let one through that the writer then refuses. Handle both `Unauthorized` and `TxRejected`.
+- **Refusals do not leak values.** A refused write names the field and a code, never a value.
+- **The server fails closed.** A malformed policy, or a policy without a working verifier, denies every `/db/*` request and logs once at start-up.
+
+## compile and the pulls check
+
+`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
+
+```ts title="examples/reef/src/domain/policy.ts:76-77"
+export const compiledPolicy = (): string =>
+  P.compile(policy, { pulls: allShapes });
+```
+
+## The token the server verifies
+
+```json
+{
+  "iss": "reef-demo-auth",
+  "aud": "ramose:reef",
+  "sub": "user_01HQ8ZK",
+  "iat": 1755499100,
+  "exp": 1755500000,
+  "ramose": { "db": "coral-team", "class": "member", "attrs": { "org": "org_42" } }
+}
+```
+
+| claim | rule |
+| --- | --- |
+| `iss` | in `RAMOSE_JWT_ISS` (comma-separated list) |
+| `aud` | equals `RAMOSE_JWT_AUD` |
+| `exp` | required; `exp - iat ≤ RAMOSE_JWT_MAX_TTL` (default 900 s) |
+| `sub` | non-empty; matched to the `principal` field |
+| `ramose.db` | equals the database in the URL — else `Unauthorized` "token is not valid for this database" |
+| `ramose.class` | a class the policy declares |
+| `ramose.attrs` | optional; your own claims, readable as `P.claims.attrs.<key>` |
+
+Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `@ramose/better-auth`.
+
+```ts
+Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the payload above; sign it yourself
+```
+
+## Server env keys
+
+`Ramose.authEnv({ policy, jwksUrl, auth: { issuer, audience, ttl }, allowedOrigins?, internalSecret? })` returns these for the server Worker's `env`; `AUTH_ENV_KEYS` names them.
+
+```ts title="examples/reef/src/infra/resources.ts:45-53"
+  env: {
+    STORE: Store,
+    TRANSACTOR: Transactor,
+    REPLICA: Replica,
+    ...Ramose.authEnv({
+      policy: compiledPolicy(),
+      auth: REEF_AUTH,
+      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
+    }),
+```
+
+| key | env var | meaning |
+| --- | --- | --- |
+| `policy` | `RAMOSE_POLICY` | the compiled JSON; setting it arms enforcement |
+| `jwksUrl` | `RAMOSE_JWKS_URL` | where the sign-in provider publishes its public keys |
+| `issuers` | `RAMOSE_JWT_ISS` | accepted `iss` values |
+| `aud` | `RAMOSE_JWT_AUD` | the required `aud` |
+| `maxTtl` | `RAMOSE_JWT_MAX_TTL` | cap on token lifetime, seconds (default 900) |
+| `allowedOrigins` | `RAMOSE_ALLOWED_ORIGINS` | CORS list; honoured only once a policy is set |
+| `internalSecret` | `RAMOSE_INTERNAL_SECRET` | Worker-to-writer gate; minted for you when unset and a policy is set |
+
+`auth: { issuer, audience, ttl }` fills `issuers`, `aud` and `maxTtl` from one value. Which mode a server runs in — open, shared token, or policy — is decided by `RAMOSE_POLICY` and `RAMOSE_TOKEN`: see [The three server modes](/guides/permissions/#the-three-server-modes).
+
+## Testing without a login provider
+
+`RAMOSE_JWKS_JSON` takes a literal key set instead of a URL, so a local server can verify tokens you sign yourself.
+
+<details>
+<summary>Sign your own tokens with jose</summary>
+
+```ts title="scripts/local-jwt.ts"
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
+
+const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+
+// 1. the server's verifier — set this as RAMOSE_JWKS_JSON
+console.log(JSON.stringify({
+  keys: [{ ...(await exportJWK(publicKey)), alg: "ES256", kid: "local" }],
+}));
+
+// 2. a token for one user of one database
+console.log(
+  await new SignJWT({ ramose: { db: "todos", class: "member" } })
+    .setProtectedHeader({ alg: "ES256", kid: "local" })
+    .setIssuer("https://local.test")
+    .setAudience("ramose:local")
+    .setSubject("user_ada")
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey),
+);
+```
+
+Then in the server Worker's `env`: `...Ramose.authEnv({ policy, issuers: "https://local.test", aud: "ramose:local" })` plus `RAMOSE_JWKS_JSON: process.env.RAMOSE_JWKS_JSON`. Run `bun alchemy dev` with `RAMOSE_JWKS_JSON` set to line 1 of the script's output, and hand line 2 to the client as `Ramose.token.static(token)`. Generate both once — every run mints a fresh key pair. Reef does not need this: its Better Auth Worker signs tokens locally.
+
+</details>
+
+## Limits
+
+- One policy per deployed server, over one schema; no per-database variants.
+- No cross-database rules.
+- Reference chains in rules are capped at depth 3.
+- 413 bodies (`clause`, `cells`, `limit`) and the `x-ramose-*` timing headers are not policy-filtered.
+
+<Next links={[
+  { href: "/guides/permissions/", label: "Permissions", why: "Reef's policy read aloud, with a refused write" },
+  { href: "/guides/sign-in/", label: "Sign in and roles", why: "minting tokens with Better Auth or your own signer" },
+  { href: "/reference/errors/", label: "Errors", why: "Unauthorized vs TxRejected" },
+]} />

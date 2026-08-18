@@ -1,0 +1,276 @@
+---
+title: Build your first app
+description: Read every file of the smallest Ramose app — a todo list in six files — then add a field and a live filter.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+This page reads every file of the smallest Ramose app — the Quickstart's todo list — then extends it. It is for readers who finished either Quickstart path and want to know what each line does.
+
+<Learn learn={["What each of the six files does", "How a query, a write and a live component fit together", "How to add a field and filter a live list"]} before={[{ href: "/getting-started/quickstart/", label: "Quickstart" }]} minutes={15} />
+
+## Run it
+
+In the clone:
+
+```sh frame="terminal"
+bun run dev:todos
+```
+
+Open [http://localhost:5173](http://localhost:5173). npm readers: same files in your `my-app` folder, started with `bun alchemy dev alchemy.run.ts`.
+
+## The schema
+
+```ts title="examples/todos/schema.ts:1-10"
+import * as Ramose from "@ramose/alchemy/db";
+import * as Schema from "effect/Schema";
+
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
+});
+
+export const Todos = Ramose.Catalog({ todo: Todo });
+```
+
+- `Ramose.Namespace("todo", …)` — a **record type**, a kind of record like a table ([glossary](/concepts/glossary/#record-type)).
+- `Ramose.Attr(…)` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)). `Ramose.Instant` is a timestamp.
+- `Ramose.Catalog({ todo: Todo })` — the **schema**, your data model as one value; Ramose calls it a catalog ([glossary](/concepts/glossary/#schema)).
+
+Every record type gets an `id` field for free: `Todo.id`.
+
+## The deploy file
+
+Alchemy is the TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `bun alchemy dev` runs it on your laptop, `bun alchemy deploy` ships it to Cloudflare.
+
+The deploy file names the three things the Ramose server needs on Cloudflare — a storage bucket where every version is kept, and two Durable Objects (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. [Why these three things →](/concepts/architecture/#what-runs-where)
+
+<details>
+<summary>Copy these two files as-is</summary>
+
+```ts title="examples/todos/resources.ts:1-14"
+import * as Ramose from "@ramose/alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+
+const Store = Cloudflare.R2.Bucket("Store");
+const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
+const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
+
+export const RamoseWorker = Cloudflare.Worker("Peer", {
+  main: "./packages/worker/src/index.ts",
+  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
+  env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
+});
+
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+```
+
+```ts title="examples/todos/alchemy.run.ts:20-77"
+import * as Ramose from "@ramose/alchemy";
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Command from "alchemy/Command";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { Server } from "./resources.ts";
+import { Todos } from "./schema.ts";
+
+// …
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+
+// …
+export const Ui = Command.Dev(
+  "Ui",
+  Effect.gen(function* () {
+    const server = yield* Server;
+    return {
+      command: "bunx vite examples/todos --port 5173 --strictPort",
+      env: { VITE_RAMOSE_URL: server.url },
+    };
+  }),
+);
+
+export default Alchemy.Stack(
+  // …
+  "ripple-todos",
+  {
+    providers: Layer.mergeAll(
+      Cloudflare.providers(),
+      Ramose.providers(),
+      Command.providers(),
+    ),
+    state: Alchemy.localState(),
+  },
+  Effect.gen(function* () {
+    const server = yield* Server;
+    yield* TodosDb;
+    const ui = yield* Ui;
+    return { peerUrl: server.url, uiUrl: ui.url };
+  }),
+);
+```
+
+</details>
+
+| Line | What it names |
+| --- | --- |
+| `Cloudflare.R2.Bucket("Store")` | Object storage: every version of every database is kept here |
+| `DurableObject("TransactorDO")` | The writer: commits each database's writes, in order |
+| `DurableObject("QueryReplicaDO")` | Read copies: where queries run |
+| `Cloudflare.Worker("Peer")` | The Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)). Its code ships with Ramose |
+| `Ramose.Server` / `Ramose.Database` | "This Worker is a Ramose server" / "install this schema as database `todos`" |
+
+## Connect
+
+```ts title="examples/todos/src/db.ts:11-22"
+import * as Ramose from "@ramose/alchemy/db";
+import { Todos } from "../schema.ts";
+
+const token = import.meta.env.VITE_RAMOSE_TOKEN;
+
+const ramose = Ramose.connect({
+  url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:8787",
+  // an open peer has no token: pass nothing rather than an empty credential
+  token: token ? Ramose.token.static(token) : undefined,
+});
+
+export const db = ramose.db("todos", Todos);
+```
+
+`url` is where the server listens — `http://localhost:1337`, handed in as `VITE_RAMOSE_URL` by the deploy file. The file's own `:8787` fallback is stale, and only matters if you run Vite without the deploy file. No token: a local server with no policy lets everyone in.
+
+## A query and a write
+
+```ts title="examples/todos/src/todos.ts:10-23"
+export const todoShape = {
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+} as const;
+
+// …
+export const todoQuery = Ramose.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
+
+/** One row from {@link todoQuery} — inferred from the query, never restated. */
+export type TodoRow = Ramose.Row<typeof todoQuery>;
+```
+
+The shape is the fields you ask for; the query is a value you can run once, live, or in the past. `TodoRow` is inferred from it.
+
+:::note[Effect, in three rules]
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)`. That is all you need for now — [Effect in five minutes](/concepts/effect/).
+:::
+
+```ts title="examples/todos/src/todos.ts:33-44"
+export const addTodo = (db: TodosDb, title: string) =>
+  db.transact(function* (tx) {
+    const t = yield* tx.entity();
+    yield* t.add(Todo.title, title);
+    yield* t.add(Todo.done, false);
+    yield* t.add(Todo.createdAt, new Date());
+  });
+
+export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
+  db.transact(function* (tx) {
+    yield* tx.add(eid.id, Todo.done, done);
+  });
+```
+
+```ts title="examples/todos/src/todos.ts:46-49"
+export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
+  db.transact(function* (tx) {
+    yield* tx.retractEntity(eid.id);
+  });
+```
+
+Each function is one **write** — one all-or-nothing change; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `add` sets a field, `retractEntity` deletes the record. Nothing runs yet; the UI runs it.
+
+## The UI
+
+```tsx title="examples/todos/src/App.tsx:14-25"
+const TodoList = () => {
+  const { rows, error } = useLive(db, todoQuery);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => (
+        <TodoRowView key={row.id} row={row} />
+      ))}
+    </ul>
+  );
+};
+```
+
+`useLive(db, todoQuery)` is a **live query** — a query that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). A selected `id` is a number, so `key={row.id}`.
+
+```tsx title="examples/todos/src/App.tsx:27-36"
+const TodoRowView = ({ row }: { row: TodoRow }) => {
+  const { run } = useTransact();
+  return (
+    <li>
+      <label>
+        <input
+          type="checkbox"
+          checked={row.done}
+          onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+        />
+```
+
+`useTransact().run` runs a write from an event handler. No refetch follows: the write lands, the live query re-runs, the row re-renders.
+
+## Make it yours
+
+Add a priority — three edits, one per layer:
+
+```ts title="schema.ts — add one field"
+  priority: Ramose.Attr(Ramose.Long),
+```
+
+```ts title="src/todos.ts — add it to the shape and to addTodo"
+  priority: Todo.priority.optional,
+  // …
+    yield* t.add(Todo.priority, 2);
+```
+
+```tsx title="src/App.tsx — render it"
+<span>{row.priority ?? "–"}</span>
+```
+
+`TodoRow` gains `priority` with no other change — the type follows the query. `.optional` because earlier todos have no priority, and a required field in a shape hides records that lack it. Restart `bun run dev:todos`: `Ramose.Database` installs the schema when the stack starts, adding the new field.
+
+## Filter live
+
+A second query, and a toggle between the two:
+
+```ts title="src/todos.ts — a filtered query"
+export const openTodos = Ramose.query(Todo)
+  .where(Todo.done.eq(false))
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
+```
+
+```tsx title="src/App.tsx — a toggle"
+const [showAll, setShowAll] = useState(true);
+const { rows, error } = useLive(db, showAll ? todoQuery : openTodos);
+```
+
+Show open todos only and check one: it leaves the list on its own — no refetch, no cache invalidation.
+
+## Deploy (optional)
+
+`bun alchemy deploy alchemy.run.ts` ships the same stack to your Cloudflare account — see [Deploy](/guides/deploy/).
+
+:::caution
+A fresh server is open to everyone until you add a policy. Read [Permissions](/guides/permissions/) before you share a URL.
+:::
+
+<Next links={[
+  { href: "/guides/catalog/", label: "Define your data", why: "every value type and option" },
+  { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },
+  { href: "/guides/deploy/", label: "Deploy", why: "the same stack on real Cloudflare" },
+]} />

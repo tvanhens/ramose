@@ -35,14 +35,14 @@
   --sl-color-gray-1: #f1f4f2;
   --sl-color-gray-2: #d3dbd6;
   --sl-color-gray-3: var(--rg-grey);
-  --sl-color-gray-4: #6f7a73;
+  --sl-color-gray-4: #79847d;
   --sl-color-gray-5: #2a3a31;
   --sl-color-gray-6: #14231a;
   --sl-color-gray-7: var(--rg-forest);
   --sl-color-black: var(--rg-black);
 
   --sl-color-bg: var(--rg-black);
-  --sl-color-bg-nav: rgba(13, 13, 13, 0.88);
+  --sl-color-bg-nav: rgba(13, 13, 13, 0.96);
   --sl-color-bg-sidebar: var(--rg-black);
   --sl-color-hairline: #1c2a21;
   --sl-color-hairline-light: #1c2a21;
@@ -54,7 +54,7 @@
 
 /* Calm chrome: hairline borders, translucent header, generous space. */
 header.header {
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--sl-color-hairline);
 }
 
@@ -83,7 +83,10 @@ h1[data-page-title] {
 }
 
 /* The brand tagline, set as spaced caps: white lead, green resolution.
-   `<p class="rg-tagline">Reactive applications <em>that grow safely.</em></p>` */
+   `<p class="rg-tagline">Reactive applications <em>that grow safely.</em></p>`
+   Unused right now — it was the landing hero's eyebrow and was cut, because
+   it told a first-time reader nothing. Kept for whoever places the slogan
+   next (it also lives in public/brand/ramose-lockup-horizontal.svg). */
 .rg-tagline {
   font-size: 0.75rem;
   font-weight: 600;
@@ -147,161 +150,7 @@ h1[data-page-title] {
   }
 }
 
-/* --- Hero illustration: the same list, two tabs, one truth --------- */
-/* A diagram, not a screenshot: both panes flip on the same keyframe. */
-
-.rg-sync {
-  width: 100%;
-  display: grid;
-  gap: 0;
-  justify-items: stretch;
-}
-
-.rg-sync-pane {
-  background: var(--rg-forest);
-  border: 1px solid var(--sl-color-hairline);
-  border-radius: 0.75rem;
-  padding: 0.875rem 1rem 1rem;
-}
-
-.rg-sync-label {
-  font-size: 0.6875rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--sl-color-gray-4);
-}
-
-.rg-sync-pane ul {
-  list-style: none;
-  margin: 0.75rem 0 0;
-  padding: 0;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.rg-sync-pane li {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  font-size: 0.8125rem;
-  color: var(--sl-color-gray-2);
-}
-
-.rg-sync-pane li i {
-  flex: none;
-  width: 0.875rem;
-  height: 0.875rem;
-  border: 1px solid var(--sl-color-gray-5);
-  border-radius: 0.25rem;
-  position: relative;
-}
-
-.rg-sync-pane li.rg-is-done i {
-  background: var(--sl-color-gray-5);
-  border-color: var(--sl-color-gray-5);
-}
-.rg-sync-pane li.rg-is-done span {
-  color: var(--sl-color-gray-4);
-  text-decoration: line-through;
-}
-
-/* The moment: both panes check the same row at the same instant. */
-.rg-sync-pane li.rg-flip i {
-  animation: rg-check 5s ease-in-out infinite;
-}
-.rg-sync-pane li.rg-flip span {
-  animation: rg-strike 5s ease-in-out infinite;
-}
-
-@keyframes rg-check {
-  0%,
-  38% {
-    background: transparent;
-    border-color: var(--sl-color-gray-5);
-  }
-  44%,
-  92% {
-    background: var(--rg-green);
-    border-color: var(--rg-green);
-  }
-  100% {
-    background: transparent;
-    border-color: var(--sl-color-gray-5);
-  }
-}
-
-@keyframes rg-strike {
-  0%,
-  38% {
-    color: var(--sl-color-gray-2);
-  }
-  44%,
-  92% {
-    color: var(--sl-color-gray-4);
-    text-decoration: line-through;
-  }
-  100% {
-    color: var(--sl-color-gray-2);
-  }
-}
-
-/* The write travelling between them. */
-.rg-sync-wire {
-  position: relative;
-  height: 2.25rem;
-  margin-inline: auto;
-  width: 1px;
-  background: var(--sl-color-hairline);
-}
-.rg-sync-wire span {
-  position: absolute;
-  left: -0.1875rem;
-  width: 0.4375rem;
-  height: 0.4375rem;
-  border-radius: 999px;
-  background: var(--rg-green);
-  animation: rg-travel 5s ease-in-out infinite;
-}
-
-@keyframes rg-travel {
-  0%,
-  36% {
-    top: 0;
-    opacity: 0;
-  }
-  40% {
-    top: 0;
-    opacity: 1;
-  }
-  46% {
-    top: calc(100% - 0.4375rem);
-    opacity: 1;
-  }
-  52%,
-  100% {
-    top: calc(100% - 0.4375rem);
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rg-sync-pane li.rg-flip i,
-  .rg-sync-pane li.rg-flip span,
-  .rg-sync-wire span {
-    animation: none;
-  }
-  .rg-sync-pane li.rg-flip i {
-    background: var(--rg-green);
-    border-color: var(--rg-green);
-  }
-  /* Without the keyframes the dot has no `top`/`opacity`: park it arrived. */
-  .rg-sync-wire span {
-    top: calc(100% - 0.4375rem);
-    opacity: 1;
-  }
-}
-
-/* Reef screenshot under the try-it band: the one photograph on the page. */
+/* Screenshots (rendered by src/components/Shot.astro). */
 .rg-shot {
   margin: 1.75rem 0 0;
 }
@@ -309,6 +158,9 @@ h1[data-page-title] {
 .rg-shot img {
   display: block;
   width: 100%;
+  /* Never blown up past its own pixels: a tight crop stays sharp and
+     centred instead of stretching to the column (Shot.astro caps it). */
+  margin-inline: auto;
   height: auto;
   border: 1px solid var(--sl-color-hairline);
   border-radius: 0.75rem;
@@ -405,55 +257,6 @@ h1[data-page-title] {
 .rg-narrow {
   max-width: 52rem;
   margin-inline: auto;
-}
-
-/* --- "Try it" band ------------------------------------------------- */
-
-.rg-run {
-  max-width: 54rem;
-  margin-inline: auto;
-  text-align: center;
-}
-
-.rg-run .rg-run-note {
-  color: var(--sl-color-gray-2);
-  margin: 0 auto 1.5rem;
-  max-width: 40rem;
-  line-height: 1.6;
-  font-size: 0.9375rem;
-}
-.rg-run .rg-run-note strong {
-  color: var(--rg-white);
-}
-
-.rg-run .expressive-code {
-  text-align: start;
-}
-
-.rg-run .rg-run-after {
-  margin: 1.25rem 0 0;
-  font-size: 0.875rem;
-  line-height: 1.6;
-  color: var(--sl-color-gray-3);
-}
-.rg-run .rg-caveat {
-  display: block;
-  margin-top: 0.375rem;
-  color: var(--sl-color-gray-3);
-}
-
-.rg-run .rg-run-more {
-  margin: 0.75rem 0 0;
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--sl-color-gray-3);
-}
-.rg-run :not(pre) > code {
-  color: var(--sl-color-gray-2);
-  background: var(--sl-color-gray-6);
-  border-radius: 0.25rem;
-  padding: 0.0625rem 0.3125rem;
-  font-size: 0.8125rem;
 }
 
 /* --- Code moments -------------------------------------------------- */
@@ -612,39 +415,7 @@ h1[data-page-title] {
 }
 
 /* --- Instead of what? ---------------------------------------------- */
-
-.rg-vs {
-  border-top: 1px solid var(--sl-color-hairline);
-}
-
-.rg-vs-row {
-  display: grid;
-  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
-  gap: 1.25rem;
-  padding: 1.125rem 0;
-  border-bottom: 1px solid var(--sl-color-hairline);
-}
-
-@media (max-width: 40rem) {
-  .rg-vs-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.375rem;
-  }
-}
-
-.rg-vs-row h3 {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--rg-white);
-}
-
-.rg-vs-row p {
-  margin: 0;
-  font-size: 0.9375rem;
-  line-height: 1.65;
-  color: var(--sl-color-gray-3);
-}
+/* `.rg-vs` (a 3-column table) is styled in the overhaul block below. */
 
 .rg-limits {
   margin: 1.75rem 0 0;
@@ -748,4 +519,830 @@ h1[data-page-title] {
   color: var(--sl-color-gray-3);
   margin: 0 auto 1.75rem;
   max-width: 46ch;
+}
+
+/* ================================================================== */
+/* overhaul                                                            */
+/* Classes added by the landing + docs overhaul. Brand untouched: same */
+/* palette variables, same type. Components: src/components/*.astro.   */
+/* ================================================================== */
+
+/* --- Screenshots (Shot.astro) --------------------------------------- */
+
+.rg-shot img {
+  max-width: 100%;
+}
+
+.rg-shot figcaption a {
+  color: var(--sl-color-accent-high);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--rg-green) 45%, transparent);
+}
+.rg-shot figcaption a:hover {
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
+}
+.rg-shot figcaption code {
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-2);
+  background: var(--sl-color-gray-6);
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.3125rem;
+}
+
+/* --- "Also built in" (landing) --------------------------------------- */
+/* One card per row rather than a two-up: these two screenshots are the only
+   evidence the section offers, and at half the band they were 0.3 scale —
+   decoration, not proof. Full width they read; a tighter crop stops at its
+   own pixel size (Shot.astro caps it) instead of being blown up. */
+
+.rg-also {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.75rem;
+}
+
+.rg-also > * {
+  min-width: 0;
+  background: var(--rg-forest);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 0.875rem;
+  padding: 1.5rem;
+}
+
+.rg-also h3 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--rg-white);
+  margin: 0 0 0.625rem;
+}
+
+.rg-also p {
+  margin: 0 0 0.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--sl-color-gray-3);
+}
+
+.rg-also .expressive-code {
+  margin-top: 0.75rem;
+}
+
+.rg-also .rg-shot {
+  margin-top: 1.125rem;
+}
+
+/* --- Next (Next.astro): the last element on every doc page ---------- */
+
+.rg-next {
+  margin-top: clamp(2.5rem, 6vh, 4rem);
+  padding: 1.5rem 1.75rem 1.625rem;
+  background: var(--rg-forest);
+  border: 1px solid var(--sl-color-hairline);
+  border-top: 1px solid var(--sl-color-hairline);
+  border-radius: 0.875rem;
+}
+
+.rg-next h2 {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rg-green);
+}
+
+.rg-next ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.rg-next li {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--sl-color-gray-3);
+}
+
+.rg-next li a {
+  font-weight: 600;
+  color: var(--sl-color-accent-high);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--rg-green) 45%, transparent);
+}
+.rg-next li a:hover {
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
+}
+
+/* --- Learn (Learn.astro): "You'll learn" after the opener ----------- */
+
+.rg-learn {
+  margin: 1.5rem 0 0;
+  padding: 1.125rem 1.375rem 1.125rem;
+  border: 1px solid var(--sl-color-hairline);
+  border-inline-start: 2px solid var(--rg-green);
+  border-radius: 0 0.75rem 0.75rem 0;
+  background: var(--rg-forest);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--sl-color-gray-2);
+}
+
+.rg-learn .rg-learn-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rg-green);
+}
+
+.rg-learn ul {
+  margin: 0;
+  padding-inline-start: 1.125rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.rg-learn li {
+  margin: 0;
+}
+
+.rg-learn p {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+}
+.rg-learn p strong {
+  color: var(--sl-color-gray-2);
+}
+
+.rg-learn .rg-learn-time {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--sl-color-gray-4);
+}
+
+/* --- Instead of what? (landing): a 3-column table ------------------- */
+
+.rg-vs {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.rg-vs table {
+  width: 100%;
+  min-width: 36rem;
+  border-collapse: collapse;
+  border-top: 1px solid var(--sl-color-hairline);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.rg-vs th,
+.rg-vs td {
+  padding: 0.875rem 1rem 0.875rem 0;
+  border-bottom: 1px solid var(--sl-color-hairline);
+  vertical-align: top;
+  text-align: start;
+}
+.rg-vs th:last-child,
+.rg-vs td:last-child {
+  padding-inline-end: 0;
+}
+
+.rg-vs thead th {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-4);
+  padding-block: 0.75rem;
+}
+
+.rg-vs tbody th {
+  font-weight: 600;
+  color: var(--rg-white);
+}
+
+.rg-vs td {
+  color: var(--sl-color-gray-3);
+}
+
+.rg-vs tbody th,
+.rg-vs td:nth-child(2) {
+  width: 22%;
+}
+
+/* --- Trust strip (landing) ------------------------------------------ */
+
+.rg-trust {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+  margin: clamp(2.5rem, 6vh, 4rem) auto 0;
+  padding: 0.875rem 1.25rem;
+  max-width: 60rem;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--sl-color-gray-3);
+  text-align: center;
+}
+
+.rg-trust > * {
+  margin: 0;
+}
+
+.rg-trust .rg-trust-sep {
+  color: var(--sl-color-gray-4);
+}
+
+.rg-trust a {
+  color: var(--sl-color-accent-high);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--rg-green) 45%, transparent);
+}
+.rg-trust a:hover {
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
+}
+
+@media (max-width: 40rem) {
+  .rg-trust {
+    border-radius: 1rem;
+  }
+}
+
+/* --- Landing hero: eyebrow, copy, then Reef full width -------------- */
+/* Starlight's hero grid puts `hero.image.html` beside the copy. We flatten
+   that wrapper so its children (the eyebrow and the screenshot) take part in
+   the hero grid directly: eyebrow, then copy, then the product shot. */
+
+.hero > .hero-html {
+  display: contents;
+}
+
+.hero {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding-bottom: 0;
+}
+
+.hero > .hero-html > .rg-tagline {
+  order: 0;
+  margin: 0 0 1.25rem;
+}
+
+.hero > .stack {
+  order: 1;
+  text-align: start;
+  gap: 1.25rem;
+}
+.hero > .stack > .copy {
+  align-items: flex-start;
+}
+.hero > .stack > .actions {
+  justify-content: flex-start;
+}
+
+.hero > .hero-html > .rg-hero-shot {
+  order: 2;
+  margin: clamp(2rem, 5vh, 3.5rem) 0 0;
+  width: 100%;
+}
+
+.rg-hero-shot img {
+  border-color: var(--sl-color-gray-5);
+  border-radius: 0.875rem;
+  box-shadow: 0 30px 80px -30px rgba(66, 211, 122, 0.25);
+}
+
+.rg-hero-shot figcaption {
+  max-width: 64rem;
+  font-size: 0.875rem;
+}
+.rg-hero-shot figcaption a {
+  white-space: nowrap;
+}
+
+/* The hero panel and the content panel below share one surface. */
+.content-panel + .content-panel {
+  border-top: 0;
+}
+
+/* --- Landing: scan block tiles as links ------------------------------ */
+
+.rg-benefits--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 64rem) {
+  .rg-benefits--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 40rem) {
+  .rg-benefits--four {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+a.rg-benefit {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+a.rg-benefit:hover {
+  border-color: #24503a;
+}
+a.rg-benefit h3::after {
+  content: "\00a0→";
+  color: var(--rg-green);
+}
+
+/* --- Landing: moment extras ----------------------------------------- */
+
+/* Unused right now: the landing's one gloss line was cut for length. */
+.rg-moment-copy .rg-gloss {
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+  border-inline-start: 2px solid var(--sl-color-gray-5);
+  padding-inline-start: 0.875rem;
+}
+
+.rg-cta {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.rg-cta a,
+.rg-limits a,
+.rg-also a {
+  color: var(--sl-color-accent-high);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--rg-green) 45%, transparent);
+}
+.rg-cta a:hover,
+.rg-limits a:hover,
+.rg-also a:hover {
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
+}
+
+.rg-moment-code > * + * {
+  margin-top: 1rem;
+}
+.rg-moment-code > .rg-shot {
+  margin-top: 0;
+}
+.rg-moment-code > .rg-shot + .expressive-code,
+.rg-moment-code > .expressive-code + .rg-shot {
+  margin-top: 1rem;
+}
+
+.rg-also .rg-cta {
+  margin-top: 0.75rem;
+}
+
+/* --- Landing: "Instead of what?" and limits -------------------------- */
+
+.rg-section .rg-lede {
+  margin-bottom: 1.5rem;
+}
+
+.rg-limits p {
+  margin: 0.5rem 0 0;
+}
+
+/* --- Landing: closing ------------------------------------------------ */
+
+.rg-closing .rg-closing-code {
+  max-width: 44rem;
+  margin: 0.5rem auto 1.25rem;
+  text-align: start;
+}
+.rg-closing .rg-closing-note code {
+  color: var(--sl-color-gray-2);
+  background: var(--sl-color-gray-6);
+  border-radius: 0.25rem;
+  padding: 0.0625rem 0.3125rem;
+  font-size: 0.8125rem;
+}
+
+/* "Not on npm yet." — the caution has to read before the install line. */
+.rg-closing .rg-closing-note strong {
+  color: var(--rg-white);
+}
+
+/* --- Landing: footer nav into the docs ------------------------------ */
+/* The splash template renders no sidebar, so this is the landing page's
+   only map of what the documentation contains. */
+
+.sl-markdown-content > .rg-sitenav {
+  margin-top: clamp(3rem, 8vh, 4.5rem);
+}
+
+.rg-sitenav {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1.75rem 1.25rem;
+  padding-top: clamp(2rem, 5vh, 2.75rem);
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+@media (max-width: 60rem) {
+  .rg-sitenav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 34rem) {
+  .rg-sitenav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.rg-sitenav > * {
+  min-width: 0;
+  margin-top: 0;
+}
+
+.rg-sitenav h2 {
+  margin: 0 0 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rg-green);
+  border: 0;
+}
+
+.rg-sitenav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4375rem;
+}
+
+.rg-sitenav li {
+  margin: 0;
+}
+
+.rg-sitenav a {
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--sl-color-gray-3);
+  text-decoration: none;
+  border-bottom: 0;
+}
+.rg-sitenav a:hover {
+  color: var(--rg-white);
+}
+
+/* Code-block filename labels are long `path:line` strings in a flex tab;
+   without this they are clipped mid-character on a phone. */
+.expressive-code .frame.has-title:not(.is-terminal) .title {
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Starlight's markdown flow adds margin-top to every sibling; grid tiles
+   must not inherit it or the first tile sits higher than the rest. */
+.rg-benefits > *,
+.rg-how > *,
+.rg-also > *,
+.rg-moment > * {
+  margin-top: 0;
+}
+
+/* Phones: the compare table stacks — one card per row, labels from CSS. */
+@media (max-width: 40rem) {
+  .rg-vs {
+    overflow-x: visible;
+  }
+  .rg-vs table,
+  .rg-vs tbody,
+  .rg-vs tr,
+  .rg-vs th,
+  .rg-vs td,
+  .rg-vs tbody th,
+  .rg-vs td:nth-child(2) {
+    display: block;
+    width: auto;
+    min-width: 0;
+  }
+  .rg-vs thead {
+    display: none;
+  }
+  .rg-vs tbody tr {
+    padding: 0.875rem 0 1rem;
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+  .rg-vs tbody th,
+  .rg-vs td {
+    padding: 0;
+    border: 0;
+  }
+  .rg-vs tbody th {
+    margin-bottom: 0.375rem;
+  }
+  .rg-vs td + td {
+    margin-top: 0.375rem;
+  }
+  .rg-vs td::before {
+    display: block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-4);
+  }
+  .rg-vs td:nth-child(2)::before {
+    content: "Same idea";
+  }
+  .rg-vs td:nth-child(3)::before {
+    content: "What's different, and what you give up";
+  }
+}
+
+/* ================================================================== */
+/* Polish pass: default-stylesheet leakage, and the interactions the   */
+/* site performs most (deep links into the glossary, the production    */
+/* checklist). No new brand colours — palette variables only.          */
+/* ================================================================== */
+
+/* --- Deep links into a table (the glossary) -------------------------- */
+/* 157 links across 25 pages land on one glossary row. Mark the row the
+   reader was sent to, and keep it clear of the sticky header. */
+
+.sl-markdown-content :is(td, th) > span[id] {
+  scroll-margin-block-start: calc(var(--sl-nav-height, 3.5rem) + 1.5rem);
+}
+
+.sl-markdown-content tr:has(> :is(td, th) [id]:target) {
+  background: color-mix(in srgb, var(--sl-color-accent) 13%, transparent);
+  box-shadow: inset 3px 0 0 var(--sl-color-accent);
+}
+
+.sl-markdown-content tr:has(> :is(td, th) [id]:target) > td:first-child {
+  padding-inline-start: 0.75rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sl-markdown-content tbody tr {
+    transition: background 400ms ease-out;
+  }
+}
+
+/* Phones: the glossary's three columns become one card per term. Same
+   technique as the compare table on the landing — a 55-row, three-column
+   table in a 346px well wraps every cell to five lines otherwise. Scoped by
+   the anchor spans, which only the glossary has. */
+@media (max-width: 40rem) {
+  .sl-markdown-content table:has(td > span[id]),
+  .sl-markdown-content table:has(td > span[id]) :is(tbody, tr, td) {
+    display: block;
+    width: auto;
+  }
+  .sl-markdown-content table:has(td > span[id]) thead {
+    display: none;
+  }
+  .sl-markdown-content table:has(td > span[id]) tr {
+    padding: 0.875rem 0 1rem;
+    border-bottom: 1px solid var(--sl-color-gray-5);
+  }
+  .sl-markdown-content table:has(td > span[id]) td {
+    padding: 0;
+    border: 0;
+  }
+  .sl-markdown-content table:has(td > span[id]) td:first-child {
+    font-size: 1.0625rem;
+    color: var(--sl-color-white);
+  }
+  .sl-markdown-content table:has(td > span[id]) td + td {
+    margin-top: 0.4375rem;
+  }
+  .sl-markdown-content table:has(td > span[id]) td:last-child::before {
+    content: "In the code";
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-4);
+  }
+  /* The row is a block here, so the target marker indents the whole card. */
+  .sl-markdown-content tr:has(> :is(td, th) [id]:target) {
+    padding-inline-start: 0.75rem;
+  }
+  .sl-markdown-content tr:has(> :is(td, th) [id]:target) > td:first-child {
+    padding-inline-start: 0;
+  }
+}
+
+/* --- Task lists (guides/before-production) --------------------------- */
+/* GFM renders a disc marker *and* a raw system checkbox. Drop the marker,
+   draw the box in the palette, and hang the text off it. The boxes are
+   enabled and persisted by ChecklistState.astro; with JS off they simply
+   stay unchecked. */
+
+.sl-markdown-content .contains-task-list,
+.sl-markdown-content ul:has(> li > input[type="checkbox"]) {
+  list-style: none;
+  padding-inline-start: 0;
+}
+
+.sl-markdown-content .task-list-item,
+.sl-markdown-content li:has(> input[type="checkbox"]) {
+  padding-inline-start: 1.7em;
+  text-indent: -1.7em;
+}
+
+.sl-markdown-content li > input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  inline-size: 1.05em;
+  block-size: 1.05em;
+  /* 0.45em + the space GFM emits after the input = the 1.7em hang above. */
+  margin: 0 0.45em 0 0;
+  vertical-align: -0.15em;
+  border: 1px solid var(--sl-color-gray-4);
+  border-radius: 4px;
+  background: transparent;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100%;
+}
+
+.sl-markdown-content li > input[type="checkbox"]:not(:disabled) {
+  cursor: pointer;
+}
+
+.sl-markdown-content li > input[type="checkbox"]:not(:disabled):hover {
+  border-color: var(--sl-color-accent);
+}
+
+.sl-markdown-content li > input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+.sl-markdown-content li > input[type="checkbox"]:checked {
+  border-color: var(--sl-color-accent);
+  background-color: var(--sl-color-accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4 6.4 11.3 12.5 4.8' fill='none' stroke='%230d0d0d' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* Progress line, inserted by ChecklistState.astro once the boxes work. */
+.sl-markdown-content .rg-checklist-note {
+  margin-top: 1rem;
+  font-size: 0.8125rem;
+  color: var(--sl-color-gray-4);
+}
+
+.sl-markdown-content .rg-checklist-note span {
+  color: var(--sl-color-gray-2);
+}
+
+.sl-markdown-content .rg-checklist-note button {
+  font: inherit;
+  color: var(--sl-color-text-accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.sl-markdown-content .rg-checklist-note button:hover {
+  color: var(--rg-white);
+}
+
+/* Ticked items recede, so the list shows its own progress. */
+.sl-markdown-content li:has(> input[type="checkbox"]:checked) {
+  color: var(--sl-color-gray-4);
+}
+.sl-markdown-content li:has(> input[type="checkbox"]:checked) strong {
+  color: var(--sl-color-gray-3);
+  font-weight: 600;
+}
+
+/* --- Asides: on-palette, not stock indigo and mustard ---------------- */
+/* Same shape as the <Learn> block: hairline box, one coloured rule. */
+
+.sl-markdown-content .starlight-aside {
+  border: 1px solid var(--sl-color-hairline);
+  border-inline-start: 2px solid var(--sl-color-asides-border);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding: 1rem 1.25rem;
+}
+
+.sl-markdown-content .starlight-aside--note {
+  --sl-color-asides-text-accent: #8fb8a1;
+  --sl-color-asides-border: #2f5c45;
+  background-color: var(--rg-forest);
+}
+
+.sl-markdown-content .starlight-aside--tip {
+  --sl-color-asides-text-accent: var(--sl-color-accent-high);
+  --sl-color-asides-border: #2f7f52;
+  background-color: #0c2014;
+}
+
+.sl-markdown-content .starlight-aside--caution {
+  --sl-color-asides-text-accent: #d3b479;
+  --sl-color-asides-border: #7a6335;
+  background-color: #1d1a10;
+}
+
+.sl-markdown-content .starlight-aside--danger {
+  --sl-color-asides-text-accent: #d69f92;
+  --sl-color-asides-border: #7a4438;
+  background-color: #1e1310;
+}
+
+/* Starlight breaks list text `anywhere`, which splits a code token mid-word
+   even when the whole token would have fitted on the next line. `break-word`
+   only breaks a word that cannot fit on a line of its own. */
+.sl-markdown-content li:not(:where(.not-content *)) {
+  overflow-wrap: break-word;
+}
+
+/* --- Inline code: never a split pill --------------------------------- */
+/* A wrapped inline code span used to lose half its background. Each
+   fragment now carries its own padding and corners. Provenance chips in a
+   figure caption are short, so they never break at all. */
+
+.sl-markdown-content :not(pre) > code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.rg-shot figcaption code {
+  white-space: nowrap;
+}
+
+/* --- Diagrams (src/components/diagrams/*.astro) ---------------------- */
+/* The SVGs keep a min-width so their 13px labels stay legible; on a phone
+   that means the figure scrolls. macOS hides overlay scrollbars, so the cut
+   needs a fade to read as "more this way" — shown only when the figure is
+   actually narrower than its diagram (each component sets the threshold). */
+
+.rg-diagram {
+  display: grid;
+  margin: 1.5rem auto;
+  color: var(--sl-color-text);
+  container-type: inline-size;
+}
+
+.rg-diagram-scroll {
+  grid-area: 1 / 1;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.rg-diagram-fade {
+  grid-area: 1 / 1;
+  justify-self: end;
+  width: 3rem;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--sl-color-bg) 88%);
+}
+
+.rg-diagram svg {
+  display: block;
+  height: auto;
+}
+
+.rg-diagram figcaption {
+  grid-row: 2;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--sl-color-gray-3);
+}
+
+/* --- Code-block titles: wrap rather than vanish on a phone ----------- */
+/* The `path:lines` label is the site's credibility device; a two-file
+   citation loses its second half to the ellipsis in a 346px column. */
+
+@media (max-width: 40rem) {
+  .expressive-code .frame.has-title:not(.is-terminal) .title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

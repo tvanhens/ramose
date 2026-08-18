@@ -1,0 +1,122 @@
+---
+// How a write becomes a read: your app → the Ramose server → the writer →
+// object storage → read copies → every open tab. Inline SVG; strokes follow
+// the text colour, one accent (--rg-green). See blueprint §1.5.
+interface Props {
+  size?: "small" | "large";
+}
+const { size = "large" } = Astro.props;
+const maxWidth = size === "small" ? "36rem" : "100%";
+const accent = "var(--rg-green, #42d37a)";
+---
+
+<figure class="rg-diagram" style={`max-width:${maxWidth}`}>
+  <div class="rg-diagram-scroll">
+  <svg
+    viewBox="0 0 800 330"
+    width="100%"
+    role="img"
+    aria-labelledby="wrf-title wrf-desc"
+    xmlns="http://www.w3.org/2000/svg"
+    font-family="inherit"
+    font-size="14"
+    fill="currentColor"
+  >
+    <title id="wrf-title">How a write becomes a read in Ramose</title>
+    <desc id="wrf-desc">
+      Your app sends a write to the Ramose server. The server checks the token
+      and the rules and hands the write to the writer, one per database. The
+      writer commits it in order and stores every version in object storage.
+      Read copies learn the new version and every open tab is told within about
+      a second, so live queries re-run.
+    </desc>
+    <defs>
+      <marker id="wrf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+      <marker id="wrf-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill={accent} />
+      </marker>
+    </defs>
+
+    <g fill="none" stroke="currentColor" stroke-width="1.25">
+      <!-- top row: the write path -->
+      <rect x="5" y="40" width="165" height="64" rx="8" />
+      <rect x="222" y="40" width="165" height="64" rx="8" />
+      <rect x="440" y="40" width="165" height="64" rx="8" />
+      <!-- bottom row: storage and the read path -->
+      <rect x="630" y="196" width="160" height="76" rx="8" />
+      <rect x="440" y="196" width="165" height="76" rx="8" />
+      <rect x="5" y="196" width="165" height="76" rx="8" />
+    </g>
+
+    <!-- box labels -->
+    <g text-anchor="middle">
+      <text x="87.5" y="66" font-weight="600">your app</text>
+      <text x="87.5" y="87" font-size="13" opacity="0.8">browser or Worker</text>
+
+      <text x="304.5" y="66" font-weight="600">the Ramose server</text>
+      <text x="304.5" y="87" font-size="13" opacity="0.8">serves every database</text>
+
+      <text x="522.5" y="66" font-weight="600">the writer</text>
+      <text x="522.5" y="87" font-size="13" opacity="0.8">one per database</text>
+
+      <text x="710" y="222" font-weight="600">object storage (R2)</text>
+      <text x="710" y="243" font-size="13" opacity="0.8">every version kept,</text>
+      <text x="710" y="261" font-size="13" opacity="0.8">nothing overwritten</text>
+
+      <text x="522.5" y="222" font-weight="600">read copies</text>
+      <text x="522.5" y="243" font-size="13" opacity="0.8">where queries run</text>
+
+      <text x="87.5" y="222" font-weight="600">every open tab</text>
+      <text x="87.5" y="243" font-size="13" opacity="0.8">live queries re-run</text>
+    </g>
+
+    <!-- arrows: the write path in the accent, the fan-out in the text colour -->
+    <g fill="none" stroke-width="1.75">
+      <line x1="170" y1="72" x2="220" y2="72" stroke={accent} marker-end="url(#wrf-arrow-accent)" />
+      <line x1="387" y1="72" x2="438" y2="72" stroke={accent} marker-end="url(#wrf-arrow-accent)" />
+      <!-- writer → object storage -->
+      <path d="M 585 104 L 585 150 L 710 150 L 710 194" stroke="currentColor" marker-end="url(#wrf-arrow)" />
+      <!-- writer → read copies -->
+      <line x1="475" y1="104" x2="475" y2="194" stroke="currentColor" marker-end="url(#wrf-arrow)" />
+      <!-- read copies → every open tab -->
+      <line x1="440" y1="228" x2="172" y2="228" stroke="currentColor" marker-end="url(#wrf-arrow)" />
+    </g>
+
+    <!-- step numbers -->
+    <g opacity="0.85">
+      <text x="195" y="62" text-anchor="middle">1</text>
+      <text x="412" y="62" text-anchor="middle">2</text>
+      <text x="660" y="142" text-anchor="middle">3</text>
+      <text x="463" y="152" text-anchor="end">4</text>
+      <text x="304" y="220" text-anchor="middle">5</text>
+    </g>
+
+    <!-- legend -->
+    <g font-size="13" opacity="0.85">
+      <text x="5" y="300">1 write (HTTPS) · 2 token and rules checked, committed in order · 3 stored; every version kept</text>
+      <text x="5" y="320">4 read copies learn the new version · 5 every open tab told in about a second; live queries re-run</text>
+    </g>
+  </svg>
+  </div>
+  <div class="rg-diagram-fade" aria-hidden="true"></div>
+  <figcaption>
+    Green is the write path; grey is the fan-out that follows. On a narrow
+    screen, scroll the picture sideways.
+  </figcaption>
+</figure>
+
+<style>
+  /* Keeps the 13–14px labels legible when the figure scrolls on a phone;
+     the viewBox is 800 wide, so anything narrower shrinks the type. */
+  .rg-diagram svg {
+    min-width: 38rem;
+  }
+  /* Wider than the diagram: nothing is cut, so no fade. */
+  @container (min-width: 38rem) {
+    .rg-diagram-fade {
+      display: none;
+    }
+  }
+</style>

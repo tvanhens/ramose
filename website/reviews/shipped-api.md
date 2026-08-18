@@ -1,3 +1,9 @@
+> **Superseded.** This file was verified at `a15b538` and is stale in places —
+> its query semantics predate PR #30, and the packages/exports section predates
+> the Ramose rename. Use [`api-truth.md`](./api-truth.md) instead, which was
+> re-verified against the whole of `packages/*/src` at `2659601`. Kept for the
+> history of what the API used to be.
+
 # Ramose — what actually ships
 
 Ground truth for docs writers. Every code block below is **copied verbatim from the repo**

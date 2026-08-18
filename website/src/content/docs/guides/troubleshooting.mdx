@@ -1,0 +1,111 @@
+---
+title: Troubleshooting and FAQ
+description: Stuck? Every common error and question on one page — local dev, tokens, npm, Effect, history, and what Ramose does not do.
+---
+import Next from "../../../components/Next.astro";
+
+The page for when something is not working, or you have a question the guides did not answer. Every heading is one problem or question; scan the list on the right.
+
+## Alchemy asks me to log in
+
+The local emulator still wants placeholder Cloudflare credentials. Prefix the command:
+
+```sh frame="terminal"
+CI=1 ALCHEMY_STATE=local \
+  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
+  CLOUDFLARE_API_TOKEN=x \
+  bun alchemy dev examples/reef/alchemy.run.ts
+```
+
+Those are placeholders, not real credentials — and `bun run dev:reef` and `bun run dev:todos` already set them for you.
+
+## The terminal says the Worker's code had hung
+
+`The Workers runtime canceled this request because it detected that your Worker's code had hung` appears when a tab closes. It is the local emulator reaping a live-query socket, not a crash. The server keeps serving.
+
+## The second tab does not update
+
+It should: two windows on the same database update each other within about a second, locally and deployed. Check that both tabs use the same origin, the same database name, and the same server (port 1337 locally).
+
+## The list is empty after a restart
+
+With `ALCHEMY_STATE=local`, the emulator keeps your data in `.alchemy/` next to the repo root. Deleting that folder, running from another directory, or `alchemy destroy` starts you from an empty database. Your data was not lost anywhere else — there was nowhere else.
+
+## Is it on npm?
+
+{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
+:::caution[Not on npm yet]
+`@ramose/*` is not published yet. Until it is, use the *Inside the clone* path — it is the same code.
+:::
+
+Clone the repo, `bun install`, and build under it: [Quickstart, Path 2](/getting-started/quickstart/#path-2-start-your-own-app).
+
+## What is Effect and how much do I need?
+
+:::note[Effect, in three rules]
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)`. That is all you need for now — [Effect in five minutes](/concepts/effect/).
+:::
+
+## TypeScript cannot resolve the packages
+
+Set `"moduleResolution": "bundler"` in your `tsconfig.json`. Today the packages resolve only inside the clone (the root `tsconfig.json` maps `@ramose/*` to `packages/*/src`), so keep your app inside the repo and run `bun install` at the root.
+
+## The token is not valid for this database
+
+A sign-in token names one database in its `ramose.db` claim, and it must equal the name you passed to `ramose.db(name, …)`. Mint one token per database — Reef asks for `authClient.ramose.token({ db: slug })` when it opens a workspace. See [Sign in and roles](/guides/sign-in/#what-the-token-carries).
+
+## My token stopped working after fifteen minutes
+
+Tokens live at most `RAMOSE_JWT_MAX_TTL` seconds (900 by default). Use `Ramose.token.jwt(mint)`, which re-mints near expiry, instead of `Ramose.token.static(value)`. [Tokens refresh themselves](/guides/sign-in/#tokens-refresh-themselves).
+
+## Query budget exceeded (413)
+
+The query needed more memory on the server than the per-query limit allows. Narrow it — a tighter `where`, a `limit`, fewer fields — and retry. The limit is a setting: [Query budget](/reference/server/#query-budget).
+
+## CORS errors in the browser
+
+Until a policy is set, the server answers every origin. Once a policy is set, list your app's origins in `RAMOSE_ALLOWED_ORIGINS` (Reef sets it in `src/infra/resources.ts`). The setting is ignored without a policy — [Configuration](/reference/server/#configuration).
+
+## Port 1337 or 5173 is already in use
+
+Reef pins the server to 1337, its auth Worker to 1338 and the app to 5173. Stop the other `alchemy dev` (`lsof -i :1337` shows who holds it) and start again.
+
+## Where is the dashboard?
+
+There is none. Until a policy is set, the server serves a small demo console at `/`; `curl http://localhost:1337/health` answers `{ "ok": true, … }` at any time. Your app's screens are the dashboard.
+
+## Can I use SQL, count, or full-text search?
+
+No — none of the three exist. Count rows on the client for now. The full list is in [What Ramose does not have](/getting-started/compare/#what-ramose-does-not-have).
+
+## Does alchemy destroy delete my data?
+
+:::caution
+`alchemy destroy` deletes the stack's R2 bucket and Durable Object classes — your data goes with them. Only the `Ramose.*` resources are no-ops. Back up first.
+:::
+
+## Can I use it without React? Without Effect?
+
+Without React, yes: `Effect.runPromise(db.q(query))` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Without Effect, mostly: the React hooks run it for you; elsewhere you only need `Effect.runPromise` and `yield*` inside a write.
+
+## Can I use Clerk, Auth0, or my own login?
+
+Yes. Ramose verifies sign-in tokens; it never issues them. Any provider that publishes signing keys works, as long as the token carries `sub` and `ramose: { db, class }` — [With Clerk, Auth0, or your own signer](/guides/sign-in/#with-clerk-auth0-or-your-own-signer).
+
+## How much history is kept?
+
+History is kept as version numbers, not dates: `asOf` takes a `t`. Nothing prunes history — `RAMOSE_RETAIN_ROOTS` bounds how much storage the index costs, not how far back `asOf` reads — see [Retention](/reference/server/#retention).
+
+## Do I need to know another database first?
+
+No. Plain TypeScript is enough. If you want the mental model, [How Ramose thinks about data](/concepts/data-model/) is a ten-minute read that assumes nothing.
+
+## Something else
+
+[Open an issue](https://github.com/tvanhens/ramose/issues) with what you ran, what you saw, and the terminal output. The [Errors](/reference/errors/) page lists every error the client can raise and what the user sees.
+
+<Next links={[
+  { href: "/reference/errors/", label: "Errors", why: "every error, its status code, and what the user sees" },
+  { href: "/reference/server/", label: "The server", why: "settings, retention, operations" },
+  { href: "/getting-started/quickstart/", label: "Quickstart", why: "start again from a known-good state" },
+]} />

@@ -34,7 +34,9 @@
       "version": "0.1.0",
       "dependencies": {
         "@ramose/core": "workspace:*",
-        "alchemy": "latest",
+      },
+      "peerDependencies": {
+        "alchemy": ">=2.0.0-beta.72",
         "effect": ">=4.0.0-beta.105",
       },
     },
@@ -64,7 +66,6 @@
       "version": "0.1.0",
       "dependencies": {
         "@ramose/alchemy": "workspace:*",
-        "effect": ">=4.0.0-beta.105",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.0.0",
@@ -74,6 +75,7 @@
         "react-dom": "^19.0.0",
       },
       "peerDependencies": {
+        "effect": ">=4.0.0-beta.105",
         "react": ">=19",
       },
     },
@@ -84,6 +86,8 @@
         "@ramose/core": "workspace:*",
         "@ramose/storage": "workspace:*",
         "@ramose/transactor": "workspace:*",
+      },
+      "peerDependencies": {
         "effect": ">=4.0.0-beta.105",
       },
     },
@@ -100,6 +104,8 @@
       "dependencies": {
         "@ramose/core": "workspace:*",
         "@ramose/storage": "workspace:*",
+      },
+      "peerDependencies": {
         "effect": ">=4.0.0-beta.105",
       },
     },
@@ -111,8 +117,10 @@
         "@ramose/replica": "workspace:*",
         "@ramose/storage": "workspace:*",
         "@ramose/transactor": "workspace:*",
-        "effect": ">=4.0.0-beta.105",
         "jose": "^6.0.0",
+      },
+      "peerDependencies": {
+        "effect": ">=4.0.0-beta.105",
       },
     },
     "website": {

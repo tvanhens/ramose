@@ -1,0 +1,84 @@
+---
+title: Errors
+description: The eight client errors — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
+---
+import Next from "../../../components/Next.astro";
+
+Every error a call can fail with, what it means, and what to do about it. This page is for anyone who has read [Write data](/guides/transactions/) and is handling the failure path.
+
+*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+
+Every error is a tagged value and `DbError` is their union. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. Match by name with `Effect.catchTags`.
+
+```ts
+const rows = yield* db.q(query).pipe(
+  Effect.catchTags({
+    QueryBudgetExceeded: () => Effect.succeed([]),
+    Unavailable: () => Effect.succeed([]), // the writer is restarting; try later
+  }),
+);
+```
+
+## The errors
+
+| tag | means | typical cause |
+| --- | --- | --- |
+| `TxRejected` | the write was refused by the **writer** — the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)); no version number used | schema violation, unique-key conflict, a rule that failed at commit, schema not installed |
+| `Unavailable` | the server cannot serve right now (503) | the writer restarting after a failed storage write; carries `retryAfterMs` |
+| `InvalidRequest` | the request is malformed (400) | bad database name, unknown field, bad query or shape |
+| `DatabaseNotFound` | the route does not exist (404) | a wrong server URL or path — a database *name* always exists |
+| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies; carries `code: "policy"` and the field name, never a value |
+| `QueryBudgetExceeded` | the query went over the server's per-query memory limit ([glossary](/concepts/glossary/#query-budget)) (413) | too wide a query; carries `clause`, `cells`, `limit` |
+| `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
+| `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |
+
+## What the user sees
+
+Every error carries a `message`; `errorMessage(e)` from `@ramose/react` is `e.message ?? e._tag ?? String(e)`.
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+```
+
+`useTransact` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLive`, `useQuery`, `usePull` — report an Effect `Cause` instead, so unwrap it first: `errorMessage(Cause.squash(error))`, with `Cause` from `effect/Cause`.
+
+| tag | what to show | what to do |
+| --- | --- | --- |
+| `Unauthorized` (policy) | the server's message as a toast — in Reef a viewer who drags a card sees `retract denied on :issue/status` | nothing to retry; the button was only a hint |
+| `Unauthorized` (token) | "sign in again" | refresh the sign-in; a live query stops on it |
+| `TxRejected` | "someone changed this; try again" | re-read, then retry with fresh data |
+| `Unavailable` / `NetworkError` | "offline — retrying" or "try again" | already tried 6 times for you; if it still surfaces, the whole write may be retried — nothing landed |
+| `InvalidRequest` / `DatabaseNotFound` | a generic error | fix the app: name, field, URL |
+| `QueryBudgetExceeded` | a generic error | narrow the query; not retried |
+| `InternalError` | "something went wrong" | try later |
+
+## Retries
+
+- **`Unavailable` and `NetworkError` are retried for you** — 6 attempts on a jittered ladder from about 150 ms doubling to 2 s — on HTTPS and on the WebSocket alike. Nothing else is retried.
+- **A live query keeps going.** Beyond that ladder, dropped sockets and 5xx are retried with backoff (250 ms to 5 s). It stops only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized` or `QueryBudgetExceeded`.
+- **A write is not retried past the ladder.** An `Unavailable` after a writer restart means nothing from that write is stored — retry the whole write.
+- **`TxRejected` never retries.** Retrying the same write against the same data rejects again.
+- **Setup mistakes are not errors.** A missing service binding or malformed URL throws at start-up instead of failing requests.
+
+## HTTP status mapping
+
+| status | error |
+| --- | --- |
+| 400 | `InvalidRequest` |
+| 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule) |
+| 404 | `DatabaseNotFound` (unknown route) |
+| 409 | `TxRejected` (`{ error, tag, code }`) |
+| 413 | `QueryBudgetExceeded` |
+| 503 (+ `retry-after`) | `Unavailable` |
+| other 5xx | `InternalError` |
+| no response | `NetworkError` |
+
+A Cloudflare error page (HTML 404, 1xxx) is treated as `Unavailable`, so a deploy in progress retries instead of failing.
+
+<Next links={[
+  { href: "/reference/client-api/", label: "Client API", why: "the calls these errors come from" },
+  { href: "/guides/troubleshooting/", label: "Troubleshooting and FAQ", why: "when the fix is not in code" },
+  { href: "/guides/workers/", label: "Use it from a Worker", why: "mapping errors to HTTP in your own Worker" },
+]} />

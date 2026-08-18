@@ -1,0 +1,134 @@
+---
+title: React hooks
+description: Every export of @ramose/react — RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage — example first.
+---
+import Next from "../../../components/Next.astro";
+
+The exact surface of `@ramose/react`, one section per export. This page is for React developers who have read [Live queries](/guides/live-queries/) and want the signatures.
+
+*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+
+```tsx
+import { RamoseProvider, useRamose, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "@ramose/react";
+```
+
+Hooks only, no UI. They reach the Ramose server through one client. `useLive`, `useQuery`, `usePull` and `useBasis` take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+
+The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`), `Async` (`useQuery`), `Transact` (`useTransact`) and `RamoseProviderProps`.
+
+## RamoseProvider
+
+```tsx title="examples/reef/src/app/App.tsx:146-150"
+      <RamoseProvider
+        key={open.workspace.slug}
+        url={RAMOSE_URL}
+        token={open.workspace.token}
+      >
+```
+
+`RamoseProvider(props: ClientOptions & { children })` — owns one **client** ([glossary](/concepts/glossary/#client)) made with `Ramose.connect`, and closes it on unmount or when `url` / `token` / `fetch` / `webSocket` change.
+
+- `token` must be a stable **token source** ([glossary](/concepts/glossary/#token-source)) — module scope or `useMemo`, never built inline.
+- One customer per client: switch workspaces with React's `key`, as Reef does.
+
+## useDb
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:230"
+  const db = useDb(slug, Reef);
+```
+
+`useDb(name, catalog): Db<C>` — `client.db(name, catalog)` from the nearest provider, kept stable on `[client, name, catalog]`. Pass a module-scope schema. `useRamose(): Client` returns the provider's client itself. Both throw outside a provider.
+
+```tsx
+const client = useRamose();
+```
+
+## useLive
+
+```tsx title="examples/todos/src/App.tsx:14-25"
+const TodoList = () => {
+  const { rows, error } = useLive(db, todoQuery);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => (
+        <TodoRowView key={row.id} row={row} />
+      ))}
+    </ul>
+  );
+};
+```
+
+`useLive(db, query): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider.
+
+- `rows` is `undefined` until the first answer, and again right after `db` or `query` change.
+- `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the rows stay.
+- `ticks` counts updates after the first — Reef's "live" pill pulses on it.
+- `key={row.id}`: a selected `id: X.id` is a plain `number`.
+
+A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
+
+## useQuery
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:453"
+  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+```
+
+`useQuery(db, query): { data, error, loading }` — one `db.q` per `db` / `query` pair. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
+
+## usePull
+
+```tsx title="examples/reef/src/app/components/IssueDetail.tsx:258"
+  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+```
+
+`usePull(db, subject, shape): { rows: Pull | null, error, ticks }` — one record, live. `rows` is the record or `null` (missing, deleted, or a required field hidden from you). `{ id }` inline is fine; hoist the shape.
+
+## useBasis
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:448"
+  const maxT = useBasis(db);
+```
+
+`useBasis(db): number | undefined` — the **version number** this view reads at ([glossary](/concepts/glossary/#version-number)), refreshed on every update. Reef uses it as the slider's upper bound. `useBasis(db.asOf(t))` answers `t` at once with no request.
+
+## useTransact
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+```
+
+```tsx title="examples/todos/src/App.tsx:27-28"
+const TodoRowView = ({ row }: { row: TodoRow }) => {
+  const { run } = useTransact();
+```
+
+`useTransact(options?): { run, pending, error, clearError }` — runs a **write** ([glossary](/concepts/glossary/#write)) or any Effect from an event handler. Needs no provider and takes no `db`.
+
+- `run(effect): Promise<Exit>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe.
+- `pending` is `true` while any run is in flight; `error` holds the last failure until a run succeeds or `clearError()`; `onError` fires per failure.
+
+## errorMessage
+
+```ts
+errorMessage(e); // e.message ?? e._tag ?? String(e)
+```
+
+`errorMessage(error: unknown): string` — the one-liner for a toast; a policy denial shows the server's message, e.g. `retract denied on :issue/status`.
+
+## Rules
+
+- **Stable token source.** Build it once per sign-in, not per render.
+- **Hoist queries and shapes** to module scope; they are compared by identity. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
+- **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
+- **`key={row.id}`** in lists; the id is a `number`.
+- **`error` is not the same shape in every hook.** `useLive`, `useQuery` and `usePull` report an Effect `Cause`; `useTransact` reports the failure itself. So a toast is `errorMessage(Cause.squash(error))` from a read hook and `errorMessage(error)` from `useTransact`.
+
+<Next links={[
+  { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },
+  { href: "/reference/client-api/", label: "Client API", why: "the db handle the hooks wrap" },
+  { href: "/reference/errors/", label: "Errors", why: "what lands in error and what to show" },
+]} />

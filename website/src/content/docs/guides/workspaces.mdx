@@ -1,0 +1,101 @@
+---
+title: One database per customer
+description: Give every customer or team its own database with one call — from the browser, as Reef does, or from your own Worker.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A database is a name. Naming it creates it. This page is for anyone who wants each customer or team in its own database, from the browser (Reef) or from a Worker.
+
+<Learn learn={["Create a database with one call and install the schema", "The two places to install a schema, and when to use each", "Why one token opens one database", "The one limit per database"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/sign-in/", label: "Sign in and roles" }]} minutes={7} />
+
+## Name it, install it
+
+A **workspace** is one customer's isolated data, one database ([glossary](/concepts/glossary/#workspace)). In Reef you make one by typing a name and clicking Create: the name becomes a slug, and the slug becomes the database.
+
+<Shot src="/reef/workspace-create.png" alt="Reef's workspace picker: a New workspace form with Tidepool typed in and, beneath the field, a preview of the ramose.db install call it will run" caption="Typing a name previews the call; Create runs it. The database exists after that first write." code="examples/reef/src/app/screens/WorkspacesScreen.tsx:381-389" />
+
+*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+
+```ts title="examples/reef/src/app/ramose.ts:38-43"
+  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
+  try {
+    const db = ramose.db(slug, Reef);
+    if (provision) await Effect.runPromise(provisionWorkspace(db, user));
+```
+
+`ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels and your own user record:
+
+```ts title="examples/reef/src/app/mutations.ts:28-45"
+export const provisionWorkspace = (
+  db: ReefDb,
+  me: { id: string; name: string; email: string },
+) =>
+  Effect.gen(function* () {
+    yield* db.install();
+    yield* db.transact(function* (tx) {
+      const user = yield* tx.entity();
+      yield* user.add(User.sub, me.id);
+      yield* user.add(User.name, me.name);
+      yield* user.add(User.email, me.email);
+      // …
+    });
+  });
+```
+
+`db.install()` is safe to run twice: an unchanged schema costs one empty write.
+
+## What that buys you
+
+- **No fleet to manage.** One deployed server serves every name — one thing to deploy, not one per customer.
+- **Isolation by construction.** Every name gets its own prefix in storage and its own **writer**, the one thing per database that commits writes, in order ([glossary](/concepts/glossary/#writer)). Nothing done to one database touches another.
+
+## What counts as a name
+
+Letters, digits, `.`, `_`, `-`; up to 64 characters; starting with a letter or digit. `Ramose.isDatabaseName(name)` (and `Ramose.DATABASE_NAME_RE`) lets a "create workspace" form check first; a bad name fails the first call with `InvalidRequest` and never leaves the browser. Reef adds a stricter slug rule on top (`examples/reef/src/domain/shared.ts:57-60`).
+
+## Two doors to install the schema
+
+Something must install the schema before the first real read or write.
+
+**At deploy** — for databases you know by name. The todos app declares one:
+
+```ts title="examples/todos/alchemy.run.ts:34"
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+```
+
+**At creation** — for names that appear at run time. Reef calls `db.install()` from the browser under the creator's admin token; a Worker does the same at sign-up.
+
+`Ramose.Database` for the databases your app always has; `db.install()` when users create them. Never per request.
+
+## One token per workspace
+
+Under a policy, a sign-in token names one database in its `ramose.db` claim. A token for `coral-reef-divers` cannot open `kelp-forest`; the answer is `Unauthorized`. Opening another workspace means another token, so Reef gives `RamoseProvider` a `key={slug}` and the client is rebuilt (`examples/reef/src/app/App.tsx:144-158`). See [Sign in and roles](/guides/sign-in/#tokens-refresh-themselves).
+
+## From a Worker
+
+Your own Worker holds a typed client and does the same at sign-up:
+
+```ts title="examples/kv-style/app.ts:49-54"
+    /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
+    const createTenant = (tenantId: string) =>
+      Effect.gen(function* () {
+        const report = yield* ramose.db(tenantId, Movies).install();
+        return yield* HttpServerResponse.json({ tenant: tenantId, t: report.t });
+      });
+```
+
+Every later request is `ramose.db(tenantId, Movies)` again, pure, per request. How the Worker gets `ramose`: [Use it from a Worker](/guides/workers/).
+
+## The one limit
+
+One database has one writer: writes land in order, one **version number** `t` each ([glossary](/concepts/glossary/#version-number)). In our benchmark (`bench/RESULTS.md` in the repo) one database sustained a few hundred writes per second on Cloudflare — 166–879 per second depending on client count. Past that you split across databases: a function call, not a deployment. There are no queries across databases; that is the price of the split.
+
+<Next links={[
+  { href: "/guides/deploy/", label: "Deploy", why: "ship the same stack to your Cloudflare account" },
+  { href: "/guides/workers/", label: "Use it from a Worker", why: "create a customer's database at sign-up" },
+  { href: "/concepts/architecture/", label: "How Ramose works", why: "what a database is, physically" },
+]} />

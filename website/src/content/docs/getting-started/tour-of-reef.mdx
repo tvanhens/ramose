@@ -1,0 +1,339 @@
+---
+title: Tour of Reef
+description: Every screen of Reef, the example issue tracker, next to the code that drives it — and what Reef never had to write.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Reef is a small Linear-style issue tracker: sign up, create a workspace, and get a kanban board with drag-and-drop, an issue panel, invitations with three roles and a time-travel slider. Every change reaches every open tab within about a second, and each workspace is its own database. This page maps each screen to the code behind it; it works as a first page.
+
+<Learn learn={["The six ideas every Ramose app is made of, by looking at one", "Which file drives which screen", "What Reef did not have to write"]} minutes={12} />
+
+## Run it
+
+```sh frame="terminal"
+bun run dev:reef
+```
+
+Then open [http://localhost:5173](http://localhost:5173). Step by step: [Quickstart, Path 1](/getting-started/quickstart/#path-1-run-reef).
+
+## The whole backend in 700 lines
+
+| File | Lines | What it is |
+| --- | --- | --- |
+| `src/domain/schema.ts` | 76 | what exists — the schema |
+| `src/domain/policy.ts` | 77 | who may — the permissions |
+| `src/domain/queries.ts` | 95 | what screens read |
+| `src/infra/resources.ts` | 74 | the Ramose server, declared |
+| `src/infra/api.ts` | 139 | the sign-in Worker (Better Auth) |
+| `rank.ts` · `roles.ts` · `shared.ts` · `alchemy.run.ts` | 219 | drag ordering, role names, shared constants, the stack |
+
+680 lines by `wc -l`, comments included — everything in `src/domain/` and `src/infra/`, plus the deploy file. Zero lines of WebSocket server, REST endpoints, migrations, auth middleware or refetch code.
+
+## Sign in
+
+<Shot src="/reef/sign-in.png" alt="Reef's sign-in card headed Welcome back, with email and password fields over a soft glow, above Live, Multi-tenant and Time travel notes" caption="Better Auth owns identity. Ramose only verifies the sign-in token it mints." code="examples/reef/src/infra/api.ts:100-119" />
+
+Better Auth (the sign-in library) owns accounts; Ramose verifies the **sign-in token** — a signed token the server checks on every request and never issues ([glossary](/concepts/glossary/#token)). Two plugins do it:
+
+```ts title="examples/reef/src/infra/api.ts:100-119"
+        jwt({
+          jwt: {
+            issuer: REEF_AUTH.issuer,
+            audience: REEF_AUTH.audience,
+            expirationTime: `${REEF_AUTH.ttl}s`,
+          },
+        }),
+        // …
+        ramoseToken({
+          auth: REEF_AUTH,
+          policy: compiledPolicy(),
+          classOf: orgClassOf(),
+        }),
+```
+
+:::tip[What you didn't write]
+Password hashing, sessions, the token-mint route (`ramoseToken` is a plugin), auth middleware on the data path.
+:::
+
+→ [Sign in and roles](/guides/sign-in/)
+
+## Workspaces
+
+<Shot src="/reef/workspaces.png" alt="Reef's workspace picker listing two workspaces, Coral Reef Divers and Kelp Forest, each labelled with its own database name, above a New workspace form" caption="Each workspace is its own database. Create runs install() from the browser." code="examples/reef/src/app/mutations.ts:28-45" />
+
+A **workspace** is one customer's isolated data — one database ([glossary](/concepts/glossary/#workspace)). Create installs the schema into a fresh database and seeds it:
+
+*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+
+```ts title="examples/reef/src/app/mutations.ts:32-40"
+  Effect.gen(function* () {
+    yield* db.install();
+    yield* db.transact(function* (tx) {
+      const user = yield* tx.entity();
+      yield* user.add(User.sub, me.id);
+      yield* user.add(User.name, me.name);
+      yield* user.add(User.email, me.email);
+      for (const seed of SEED_LABELS) {
+        const label = yield* tx.entity();
+```
+
+Opening one mounts a provider keyed by its name; switching swaps the connection:
+
+```tsx title="examples/reef/src/app/App.tsx:146-150"
+      <RamoseProvider
+        key={open.workspace.slug}
+        url={RAMOSE_URL}
+        token={open.workspace.token}
+      >
+```
+
+:::tip[What you didn't write]
+Provisioning scripts, migrations, per-customer routing (`ramose.db(name)` is the routing), token refresh timers.
+:::
+
+→ [One database per customer](/guides/workspaces/)
+
+## The board
+
+<Shot src="/reef/board-dark.png" alt="Reef's board: four columns of issue cards with labels and assignees, a live pill in the header" caption="One live query, sorted by rank; the columns are rows.filter(status). The pill counts updates the server pushed." code="examples/reef/src/app/screens/BoardScreen.tsx:230-234" />
+
+The board is one **live query** — a query that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)):
+
+```ts title="examples/reef/src/domain/queries.ts:66-68"
+export const boardQuery = Ramose.query(Issue)
+  .orderBy(Issue.rank, "asc")
+  .select(boardShape);
+```
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:230-234"
+  const db = useDb(slug, Reef);
+
+  const board = useLive(db, boardQuery);
+  const people = useLive(db, peopleQuery);
+  const labels = useLive(db, labelsQuery);
+```
+
+:::tip[What you didn't write]
+A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write — there is none anywhere in Reef.
+:::
+
+→ [Live queries](/guides/live-queries/)
+
+## Move a card
+
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — and every other window on that workspace follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
+
+A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).)
+
+```ts title="examples/reef/src/app/mutations.ts:113-122"
+export const moveIssue = (
+  db: ReefDb,
+  issueId: number,
+  status: Status,
+  rank: number,
+) =>
+  db.transact(function* (tx) {
+    yield* tx.add(issueId, Issue.status, status);
+    yield* tx.add(issueId, Issue.rank, rank);
+  });
+```
+
+Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Every open tab hears that the database moved and re-runs its live queries. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
+
+:::tip[What you didn't write]
+`PATCH /issues/:id`, a reorder endpoint, conflict handling between tabs, WebSocket broadcast of the move.
+:::
+
+→ [Write data](/guides/transactions/)
+
+## The issue panel
+
+<Shot src="/reef/issue-detail.png" alt="The issue side panel: title, status, priority, assignee, label chips, description, admin note and a comment thread" caption="Status, assignee and labels come from the live board row; title, description and note ride one live pull." code="examples/reef/src/app/components/IssueDetail.tsx:258-270" />
+
+The panel **reads one record** with `usePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
+
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:258-270"
+  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  useEffect(() => {
+    if (extra === null) return;
+    setTitleDraft(extra.title);
+    setDescriptionDraft(extra.description ?? "");
+    setNoteDraft(extra.privateNote ?? "");
+  }, [extra]);
+
+  // built per id, so memoise the query on `issueId` — its one dependency
+  const comments = useLive(
+    db,
+    useMemo(() => commentsQuery(issueId), [issueId]),
+  );
+```
+
+The board's **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)). It follows references, so a card gets creator, assignee and labels inline:
+
+```ts title="examples/reef/src/domain/queries.ts:24-34"
+export const boardShape = {
+  id: Issue.id,
+  title: Issue.title,
+  status: Issue.status,
+  priority: Issue.priority,
+  rank: Issue.rank,
+  createdAt: Issue.createdAt,
+  creator: Issue.creator.select(personShape),
+  assignee: Issue.assignee.select(personShape).optional,
+  labels: Issue.labels.select(labelShape),
+} as const;
+```
+
+:::tip[What you didn't write]
+`GET /issues/:id`, per-field `PATCH` handlers, an `issue_labels` join table, "someone else edited this" logic.
+:::
+
+→ [Read data](/guides/queries/)
+
+## Invite a viewer
+
+<Shot src="/reef/invite.png" alt="The Invite dialog with an email field and the role select open on viewer" caption="Roles live in Better Auth; the token carries one; the policy enforces it." code="examples/reef/src/domain/policy.ts:26-32" />
+
+A **role** is admin, member or viewer — a name carried in the token that the rules refer to ([glossary](/concepts/glossary/#role)). The policy names them once:
+
+```ts title="examples/reef/src/domain/policy.ts:26-32"
+const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
+const editor = P.or(P.class("admin"), P.class("member"));
+const admin = P.class("admin");
+
+/** `member` may touch an issue they created; `admin` never reaches the rules. */
+const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
+const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+```
+
+<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The server refused; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+```
+
+:::tip[What you didn't write]
+Authorization middleware, per-endpoint role checks, an "is this my issue?" query before each update.
+:::
+
+→ [Permissions](/guides/permissions/)
+
+## The admin note
+
+<Shot src="/reef/masked-note.png" alt="The issue panel as a member: the Admin note field shows a masked-for-member tag and an empty box" caption="Members never receive the note. The server drops the field itself." code="examples/reef/src/domain/policy.ts:56-60" />
+
+One field has a narrower read rule, so shapes ask for it as optional — asking for it as required fails at deploy time:
+
+```ts title="examples/reef/src/domain/queries.ts:40-46"
+export const issueExtraShape = {
+  title: Issue.title,
+  description: Issue.description.optional,
+  // Read-masked for member/viewer (policy.ts): must be `.optional`, so for
+  // them the row survives and the field is simply absent.
+  privateNote: Issue.privateNote.optional,
+} as const;
+```
+
+```ts title="examples/reef/test/policy.test.ts:65-70"
+  test("a masked attribute pulled as required is a compile error", () => {
+    const badShape = { note: Issue.privateNote };
+    expect(() =>
+      Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
+    ).toThrow(/privateNote/);
+  });
+```
+
+:::tip[What you didn't write]
+Per-role serializers, "strip this column for non-admins" in every read path, a second DTO.
+:::
+
+→ [Permissions](/guides/permissions/) · [Policy](/reference/policy/)
+
+## Time travel
+
+<Shot src="/reef/time-travel.png" alt="Reef's board under a blue Time travel bar reading db.asOf(27) of 42, the header pill paused, and fewer cards in every column than the live board" caption="The same board query, read as of an earlier version. Nothing was copied." code="examples/reef/src/app/screens/BoardScreen.tsx:448-460" />
+
+Every write gets a **version number** `t`, in order ([glossary](/concepts/glossary/#version-number)). The slider picks one; the same `boardQuery` runs against `db.asOf(t)`, and `db.history` lists deleted issues too:
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:448-454"
+  const maxT = useBasis(db);
+  const [scrubbed, setScrubbed] = useState<number | null>(null);
+  const t = scrubbed ?? maxT;
+  // Until the basis lands, read the live view — the same rows the board
+  // already shows — so the hook order never varies.
+  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+  const everything = useQuery(db.history, everyIssueEverQuery);
+```
+
+```ts title="examples/reef/src/domain/queries.ts:84-88"
+/** Over `db.history` this also returns issues that no longer exist. */
+export const everyIssueEverQuery = Ramose.query(Issue).select({
+  id: Issue.id,
+  title: Issue.title,
+});
+```
+
+:::tip[What you didn't write]
+Audit tables, `updated_at` history rows, soft-delete columns, "as of" variants of every endpoint.
+:::
+
+→ [Time travel](/concepts/time-travel/)
+
+## The deploy file
+
+One file declares the server, its storage and the sign-in Worker; `bun run dev:reef` runs it locally.
+
+<details>
+<summary>The Ramose server, declared</summary>
+
+```ts title="examples/reef/src/infra/resources.ts:37-52"
+const Store = Cloudflare.R2.Bucket("Store");
+const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
+const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
+
+export const RamoseWorker = Cloudflare.Worker("Peer", {
+  main: "./packages/worker/src/index.ts",
+  compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
+  dev: { port: DEV_PEER_PORT },
+  env: {
+    STORE: Store,
+    TRANSACTOR: Transactor,
+    REPLICA: Replica,
+    ...Ramose.authEnv({
+      policy: compiledPolicy(),
+      auth: REEF_AUTH,
+      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
+```
+
+</details>
+
+:::note
+You don't need to understand Alchemy yet — [Deploy](/guides/deploy/) explains it.
+:::
+
+## What you didn't have to write
+
+- A WebSocket server, or any pub/sub fan-out
+- REST endpoints for issues, comments, labels
+- Migrations, or an ORM model
+- Auth middleware — the server verifies every request itself
+- Per-customer provisioning — a workspace is `ramose.db(name).install()`
+- Refetch or cache-invalidation code — there is none in Reef
+
+## Read the source
+
+- [`src/domain/schema.ts`](https://github.com/tvanhens/ramose/blob/master/examples/reef/src/domain/schema.ts) — what exists
+- [`src/domain/policy.ts`](https://github.com/tvanhens/ramose/blob/master/examples/reef/src/domain/policy.ts) — who may
+- [`src/domain/queries.ts`](https://github.com/tvanhens/ramose/blob/master/examples/reef/src/domain/queries.ts) — what screens read
+
+Smaller examples: [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos), the six-file todo list ([Build your first app](/getting-started/first-app/)), and [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style) ([Use it from a Worker](/guides/workers/)).
+
+<Next links={[
+  { href: "/getting-started/quickstart/", label: "Quickstart", why: "run Reef yourself in ten minutes" },
+  { href: "/guides/catalog/", label: "Define your data", why: "the schema, piece by piece" },
+  { href: "/guides/permissions/", label: "Permissions", why: "Reef's policy, read aloud" },
+]} />

@@ -1,0 +1,171 @@
+---
+title: Write data
+description: One function writes — db.transact. Create, change, clear and delete records, all-or-nothing, and read your own write straight back.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Every **write** goes through one function, `db.transact`, and it either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
+
+<Learn learn={["The four verbs, and that there is no fifth", "Create, change, clear and delete a record", "What a write returns; what a refused write looks like"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
+
+:::note[Effect, in three rules]
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)`. That is all you need for now — [Effect in five minutes](/concepts/effect/).
+:::
+
+## The four verbs
+
+The entire write vocabulary — no update, no merge:
+
+| call | does |
+| --- | --- |
+| `tx.entity()` | hands back a handle for a brand-new **record** ([glossary](/concepts/glossary/#record)) |
+| `tx.add(e, field, value)` | states a **fact** — this record's field has this value ([glossary](/concepts/glossary/#fact)) |
+| `tx.retract(e, field, value?)` | takes one value back, or every value of that field |
+| `tx.retractEntity(e)` | deletes the record — every fact about it, and any records it owns |
+
+The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.add(…)`, `issue.retract(…)`, `issue.retractEntity()`. Values are checked against the schema as you type.
+
+## Create a record
+
+Reef's "New issue" dialog is one write; everything inside lands together or not at all:
+
+```ts title="examples/reef/src/app/mutations.ts:87-110"
+export const createIssue = (
+  db: ReefDb,
+  myEid: number,
+  lastRankInColumn: number | undefined,
+  draft: NewIssue,
+) =>
+  db.transact(function* (tx) {
+    const issue = yield* tx.entity();
+    yield* issue.add(Issue.title, draft.title);
+    // …
+    yield* issue.add(Issue.status, draft.status);
+    yield* issue.add(Issue.priority, draft.priority);
+    yield* issue.add(Issue.rank, rankAfter(lastRankInColumn));
+    yield* issue.add(Issue.createdAt, new Date());
+    yield* issue.add(Issue.creator, myEid);
+    // …
+    for (const labelId of draft.labelIds ?? []) {
+      yield* issue.add(Issue.labels, labelId);
+    }
+  });
+```
+
+A **reference** field takes the other record's id as a number: `issue.add(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
+
+## Change fields
+
+Dragging a card in Reef is one write of two facts — new column, new position:
+
+```ts title="examples/reef/src/app/mutations.ts:113-122"
+export const moveIssue = (
+  db: ReefDb,
+  issueId: number,
+  status: Status,
+  rank: number,
+) =>
+  db.transact(function* (tx) {
+    yield* tx.add(issueId, Issue.status, status);
+    yield* tx.add(issueId, Issue.rank, rank);
+  });
+```
+
+A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
+
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts:113-122" />
+
+## Remove a value, delete a record
+
+Clearing a field is `retract` with no value; deleting a record is `retractEntity`:
+
+```ts title="examples/reef/src/app/mutations.ts:135-139"
+export const setDescription = (db: ReefDb, issueId: number, text: string) =>
+  db.transact(function* (tx) {
+    if (text === "") yield* tx.retract(issueId, Issue.description);
+    else yield* tx.add(issueId, Issue.description, text);
+  });
+```
+
+```ts title="examples/reef/src/app/mutations.ts:174-177"
+export const deleteIssue = (db: ReefDb, issueId: number) =>
+  db.transact(function* (tx) {
+    yield* tx.retractEntity(issueId);
+  });
+```
+
+Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
+
+## Many-valued fields
+
+A field declared `cardinality: "many"` is a set. One `add` per value; `retract` with the value takes one out:
+
+```ts title="examples/reef/src/app/mutations.ts:156-165"
+export const toggleLabel = (
+  db: ReefDb,
+  issueId: number,
+  labelId: number,
+  on: boolean,
+) =>
+  db.transact(function* (tx) {
+    if (on) yield* tx.add(issueId, Issue.labels, labelId);
+    else yield* tx.retract(issueId, Issue.labels, labelId);
+  });
+```
+
+## Ids, unique keys and lookups
+
+The first argument of `tx.add` names the record. It can be:
+
+- **an id as a number.** A query that selects `id: Issue.id` gives you `row.id` as a `number` — pass it straight in (that is `issueId` above). A query with no `.select` returns `{ id }` objects — pass `row.id` then too.
+- **a handle** from `tx.entity()` in the same write.
+- **a lookup by unique key** — `[User.sub, "user_ada"]` names the user whose `sub` is that value, no id in hand ([glossary](/concepts/glossary/#lookup)).
+
+## What a write returns
+
+`transact` resolves with `{ t, txEid, datomCount, dbAfter }`:
+
+- **`t`** — the **version number** the database is at after your write ([glossary](/concepts/glossary/#version-number)).
+- **`txEid`** — the write's own record id.
+- **`datomCount`** — how many facts landed.
+- **`dbAfter`** — the same database, pinned at `t`. Read through it and you see your own write with no second round trip.
+
+A new record's id is not in the report. Query for it — Reef does that when you first enter a workspace, reading its own write through `dbAfter` (`mineQuery` selects `{ id: User.id }` where `sub` is yours):
+
+```ts title="examples/reef/src/app/mutations.ts:67-74"
+    const report = yield* db.transact(function* (tx) {
+      const user = yield* tx.entity();
+      yield* user.add(User.sub, me.id);
+      yield* user.add(User.name, me.name);
+      yield* user.add(User.email, me.email);
+    });
+    const after = yield* report.dbAfter.q(mineQuery);
+    return after[0]?.id;
+```
+
+A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`. Nothing in your UI has to announce the change.
+
+## When a write is refused
+
+- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer**, the one thing per database that commits writes in order ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `retract denied on :issue/status`.
+- **`TxRejected`** (HTTP 409) — the writer refused it: a schema violation, a unique-key conflict, or a denial the first check missed. No version number is spent.
+
+Both are values you can match by name — see [Errors](/reference/errors/). Writes to one database apply one at a time, so there are no conflicts to retry, only refusals to handle.
+
+In React, `useTransact` runs the write and hands you the refusal:
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:241-245"
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+```
+
+<Next links={[
+  { href: "/guides/queries/", label: "Read data", why: "filter, shape and page through what you wrote" },
+  { href: "/guides/live-queries/", label: "Live queries", why: "make the screen update itself" },
+  { href: "/guides/permissions/", label: "Permissions", why: "who may write which field" },
+]} />

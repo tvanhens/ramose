@@ -1,0 +1,171 @@
+---
+title: Deploy
+description: Ship the same stack you ran on your laptop to your Cloudflare account with one command, and look up every Ramose deploy resource.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+This page ships the stack you ran locally to your own Cloudflare account. It is for anyone who has built the first app, and it is the one place the Ramose deploy resources are listed.
+
+<Learn learn={["What Alchemy is and what a stage is", "The stack file, line by line", "The commands and credentials you need", "What alchemy destroy deletes", "Every Ramose resource, with its inputs and outputs"]} before={[{ href: "/getting-started/first-app/", label: "Build your first app" }]} minutes={10} />
+
+## What Alchemy is
+
+Alchemy is the TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `bun alchemy dev` runs it on your laptop, `bun alchemy deploy` ships it to Cloudflare. ([glossary](/concepts/glossary/#alchemy))
+
+A **stage** is one isolated copy of the whole stack ([glossary](/concepts/glossary/#stage)): `bun alchemy deploy` ships your personal stage, `--stage prod` ships production.
+
+## The stack file
+
+The todos app's stack is two files. The deploy file names the three things the **Ramose server** needs on Cloudflare — a [storage bucket](/concepts/glossary/#object-storage) where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. That file is `resources.ts`; `alchemy.run.ts` installs the schema and declares the stack. The Ramose server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer* ([glossary](/concepts/glossary/#server)). [Why these three things →](/concepts/architecture/#what-runs-where)
+
+<details>
+<summary>Copy these two files as-is</summary>
+
+```ts title="examples/todos/resources.ts:1-14"
+import * as Ramose from "@ramose/alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+
+const Store = Cloudflare.R2.Bucket("Store");
+const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
+const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
+
+export const RamoseWorker = Cloudflare.Worker("Peer", {
+  main: "./packages/worker/src/index.ts",
+  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
+  env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
+});
+
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+```
+
+{/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
+`main` is a path inside the clone. Once `@ramose/worker` is published, `main: "@ramose/worker"` is the intended form.
+
+```ts title="examples/todos/alchemy.run.ts:20-77"
+import * as Ramose from "@ramose/alchemy";
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Command from "alchemy/Command";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { Server } from "./resources.ts";
+import { Todos } from "./schema.ts";
+
+// …
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+
+// …
+export default Alchemy.Stack(
+  // …
+  "ripple-todos",
+  {
+    providers: Layer.mergeAll(
+      Cloudflare.providers(),
+      Ramose.providers(),
+      Command.providers(),
+    ),
+    state: Alchemy.localState(),
+  },
+  Effect.gen(function* () {
+    const server = yield* Server;
+    yield* TodosDb;
+    const ui = yield* Ui;
+    return { peerUrl: server.url, uiUrl: ui.url };
+  }),
+);
+```
+
+The elided `Ui` resource starts Vite under `alchemy dev` only. `state: Alchemy.localState()` keeps deploy state on disk; the repo's root stack switches to `Cloudflare.state()` when `ALCHEMY_STATE` is not `local`.
+
+</details>
+
+`Ramose.Server` resolves the Worker's URL and, on a real deploy, waits until `GET /health` answers. `Ramose.Database` runs `db.install()` on that server, so a redeploy costs one empty write. Reef has no `Ramose.Database` at all: its databases are created by users ([One database per customer](/guides/workspaces/#two-doors-to-install-the-schema)).
+
+## Commands
+
+| command | what it does |
+| --- | --- |
+| `bun alchemy dev <stack>` | runs the stack on your laptop in the local Cloudflare emulator (bucket and both Durable Objects included) |
+| `bun alchemy deploy <stack>` | deploys your personal stage |
+| `bun alchemy deploy <stack> --stage prod` | deploys production |
+| `bun alchemy destroy <stack>` | tears a stage down — see [Tearing down](#tearing-down) |
+
+The stack argument is the file, for example `examples/todos/alchemy.run.ts`.
+
+## Credentials
+
+| name | purpose |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Workers Scripts Write (covers Durable Objects), Workers R2 Storage Write, Account Settings Read |
+| `CLOUDFLARE_ACCOUNT_ID` | the account to deploy into |
+
+Local dev needs neither for real: `CI=1 ALCHEMY_STATE=local`, any 32-hex placeholder account id and `CLOUDFLARE_API_TOKEN=x` keep everything on your machine.
+
+## Deploy Reef
+
+Reef's UI is served by its auth Worker, so it deploys in two passes with a build between them:
+
+```sh frame="terminal"
+bun alchemy deploy examples/reef/alchemy.run.ts          # first pass: the Workers, the R2 bucket, and Better Auth's D1 database
+VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/reef  # bake the peer URL into the SPA
+bun alchemy deploy examples/reef/alchemy.run.ts          # second pass: ship the assets
+```
+
+The API token also needs `Account / D1 / Edit` for Better Auth's database.
+
+## Auth at deploy
+
+:::caution[A new server is open to everyone]
+Until you add a policy there is no authentication: every caller has full rights on every database. Set one before you point real users at a deployed server, and walk [Before production](/guides/before-production/) first.
+:::
+
+Spread `Ramose.authEnv(auth)` into the server Worker's `env` and pass the same `auth` to `Ramose.Server`:
+
+```ts title="alchemy.run.ts"
+const auth: Ramose.PeerAuth = {
+  policy: process.env.RAMOSE_POLICY, // Ramose.Policy.compile(policy, { pulls })
+  jwksUrl: process.env.RAMOSE_JWKS_URL,
+  issuers: process.env.RAMOSE_JWT_ISS,
+  aud: process.env.RAMOSE_JWT_AUD,
+  allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
+};
+
+const Worker = Cloudflare.Worker("Peer", {
+  // …
+  env: { /* … */ ...Ramose.authEnv(auth) },
+});
+
+export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
+```
+
+`auth` on `Ramose.Server` is a deploy-time check only: a policy with no `jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every request at run time. Reef's real wiring is on [Sign in and roles](/guides/sign-in/#wire-the-server).
+
+## Tearing down
+
+:::caution
+`alchemy destroy` deletes the stack's R2 bucket and Durable Object classes — your data goes with them. Only the `Ramose.*` resources are no-ops. Back up first.
+:::
+
+## Reference: the Ramose resources
+
+`@ramose/alchemy` re-exports all of `@ramose/alchemy/db` and adds these. Import it as `* as Ramose`.
+
+| name | what it is |
+| --- | --- |
+| `Ramose.Server(id, props)` | the deployed server. Props: `worker` (a `Cloudflare.Worker`, `{ url, workerName? }`, or a bare URL string), `url?` (custom domain), `token?` (the server's `RAMOSE_TOKEN`), `auth?` (deploy-time check), `probe?` (`GET /health` retries: 30 attempts, 2 s apart; `false` skips). Outputs `{ url, workerName, token }`. Delete is a no-op. |
+| `Ramose.Database(id, props)` | "install this schema on that name", after the server. Props: `server`, `catalog`, `name?` (defaults to `id`). Outputs `{ name, server, t }`. Delete is a no-op. |
+| `Ramose.ReadWriteDatabases(server)` | a **capability** — what your Worker may do ([glossary](/concepts/glossary/#capability)): read and write every database on that server |
+| `Ramose.ReadDatabases(server)` | the same with writes removed: no `transact`, `install`, or `principal` |
+| `Ramose.ServerBinding` | how calls travel — a **service binding**, Worker to Worker, no URL ([glossary](/concepts/glossary/#service-binding)). A `Layer<ReadWriteDatabases \| ReadDatabases, never, WorkerEnvironment>`; needs `worker` to be a `Cloudflare.Worker`. No live queries. |
+| `Ramose.ServerHttp` | the same over the server's public URL. A `Layer<ReadWriteDatabases \| ReadDatabases>`. |
+| `Ramose.providers()` | merge into your stack's `providers` next to `Cloudflare.providers()` |
+| `Ramose.authEnv(auth)` | turns a `PeerAuth` (`policy`, `jwksUrl`, `issuers`, `aud`, `maxTtl`, `auth`, `allowedOrigins`, `internalSecret`) into the server Worker's environment variables |
+
+Using a capability inside a Worker is on [Use it from a Worker](/guides/workers/).
+
+<Next links={[
+  { href: "/guides/before-production/", label: "Before production", why: "the checklist before real users" },
+  { href: "/guides/workers/", label: "Use it from a Worker", why: "call your databases from your own Worker" },
+  { href: "/reference/server/", label: "The server", why: "every environment variable and route" },
+]} />

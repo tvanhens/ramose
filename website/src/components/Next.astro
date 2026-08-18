@@ -1,0 +1,22 @@
+---
+// The last element on every doc page. See blueprint §1.5.
+interface Props {
+  links: { href: string; label: string; why?: string }[];
+}
+
+const { links } = Astro.props;
+---
+
+<nav class="rg-next" aria-labelledby="next">
+  <h2 id="next">Next</h2>
+  <ul>
+    {
+      links.map((l) => (
+        <li>
+          <a href={l.href}>{l.label}</a>
+          {l.why && <span> — {l.why}</span>}
+        </li>
+      ))
+    }
+  </ul>
+</nav>

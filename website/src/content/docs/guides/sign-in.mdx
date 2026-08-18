@@ -1,0 +1,155 @@
+---
+title: Sign in and roles
+description: Get a real sign-in token to the client, with a role inside it — with Better Auth as Reef does, or with Clerk, Auth0, or your own signer.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose checks a token on every request; something else signs your users in. This page is for you once you have a policy — the value that says who may read and write what ([glossary](/concepts/glossary/#policy)) — and want real users behind it.
+
+<Learn learn={["What a sign-in token carries", "The Better Auth path, as Reef wires it", "The path for Clerk, Auth0, or your own signer", "How tokens refresh themselves"]} before={[{ href: "/guides/permissions/", label: "Permissions" }]} minutes={10} />
+
+Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.
+
+## What the token carries
+
+A **sign-in token** — a signed token the server verifies and never issues ([glossary](/concepts/glossary/#token)) — decodes to this:
+
+```json title="a decoded Reef token (illustrative)"
+{
+  "iss": "reef-demo-auth",
+  "aud": "ramose:reef",
+  "sub": "user_01HQ8ZK",
+  "iat": 1755499100,
+  "exp": 1755500000,
+  "ramose": { "db": "coral-team", "class": "member" }
+}
+```
+
+| claim | meaning | the server checks |
+| --- | --- | --- |
+| `iss` | who signed it | listed in `RAMOSE_JWT_ISS` |
+| `aud` | who it is for | equals `RAMOSE_JWT_AUD` |
+| `sub` | the user's id at your provider | non-empty; matched to the field the policy names for the **signed-in user** ([glossary](/concepts/glossary/#signed-in-user)) — Reef: `User.sub` |
+| `exp` | when it expires | `exp - iat` ≤ `RAMOSE_JWT_MAX_TTL` (900 s by default) |
+| `ramose.db` | the one database it opens | equals the database in the request |
+| `ramose.class` | the caller's role | a class the policy declares |
+
+`iss` and `aud` are the **issuer / audience** pair ([glossary](/concepts/glossary/#issuer-audience)). Signatures: RS256, ES256, or EdDSA. A wrong `db` or `class` is `Unauthorized`.
+
+## With Better Auth (what Reef does)
+
+<Shot src="/reef/sign-in.png" alt="Reef's sign-in card: the Reef logo, the heading Welcome back, empty email and password fields and a Sign in button, over a dark radial glow" caption="Better Auth owns this screen. Ramose never sees a password — only the token it signs." code="examples/reef/src/app/screens/AuthScreen.tsx:147-150" />
+
+Better Auth (the sign-in library — [glossary](/concepts/glossary/#better-auth)) plus the shipped `@ramose/better-auth` plugin is the shortest path. On the auth server, the `jwt` plugin publishes signing keys and `ramoseToken` adds the route that **mints** — creates and signs ([glossary](/concepts/glossary/#mint)) — a token for one database:
+
+```ts title="examples/reef/src/infra/api.ts:100-119"
+        jwt({
+          jwt: {
+            issuer: REEF_AUTH.issuer,
+            audience: REEF_AUTH.audience,
+            expirationTime: `${REEF_AUTH.ttl}s`,
+          },
+        }),
+        // …
+        ramoseToken({
+          auth: REEF_AUTH,
+          policy: compiledPolicy(),
+          classOf: orgClassOf(),
+        }),
+```
+
+In the browser, `ramoseTokenClient()` in the auth client's plugins (`examples/reef/src/app/auth.ts:12-18`) adds one call, `authClient.ramose.token({ db })`. Wrap it in a **token source** and it is what `Ramose.connect` takes — a token source is a self-refreshing credential ([glossary](/concepts/glossary/#token-source)):
+
+```ts title="examples/reef/src/app/ramose.ts:38-40"
+  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
+```
+
+The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, behind the session cookie. The server's `RAMOSE_JWKS_URL` points at Better Auth's `/api/auth/jwks` — the sign-in provider's public keys ([glossary](/concepts/glossary/#jwks)).
+
+## Roles become classes
+
+A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class`:
+
+```ts title="packages/better-auth/src/index.ts:224-235"
+export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
+  const primary = role.split(",")[0]?.trim() ?? role;
+  switch (primary) {
+    case "owner":
+    case "admin":
+      return "admin";
+    case "member":
+      return "member";
+    default:
+      return "viewer";
+  }
+};
+```
+
+Reef's `viewer` is a Better Auth role with no permissions (`examples/reef/src/domain/roles.ts:20-25`); a workspace's creator is `owner`. Change the mapping with `orgClassOf({ map })`. No organization and no membership are the same 403, so the route never reveals whether a workspace exists.
+
+## Invite flow
+
+<Shot src="/reef/invite.png" alt="Reef's Invite to this workspace dialog over a dimmed board: an email field reading grace@example.com and a role select showing viewer — read-only by policy" caption="The role chosen here becomes ramose.class in the next token minted for that person." code="examples/reef/src/app/auth.ts:87-100" />
+
+The invitee accepts from their workspaces screen and opens the board with that role's badge. Better Auth's organization plugin stores the invitation. The role only changes what the next minted token says.
+
+## With Clerk, Auth0, or your own signer
+
+Any provider that signs a token of the shape above and publishes its keys works. `Ramose.claims` builds the payload; you sign it:
+
+```ts title="mint-route.ts"
+const payload = Ramose.claims(
+  AUTH, // { issuer, audience, ttl } — the same values the server pins.
+  { sub: user.id, db: workspace, class: role },
+  compiledPolicy, // optional: refuses a class the policy does not declare.
+);
+// Sign `payload` with your key (RS256, ES256, or EdDSA); publish the public key as a JWKS.
+```
+
+In the browser, `Ramose.token.jwt(() => fetch("/api/ramose-token", { method: "POST" }).then((r) => r.json()))` wraps your route as Reef's line wraps Better Auth's; a string or `{ token }` both work.
+
+:::note[Two things called claims]
+`Ramose.claims(auth, input)` builds a payload to sign. `P.claims.sub` inside a policy reads a claim from the verified token. Same word, different jobs.
+:::
+
+## Wire the server
+
+The **Ramose server** needs the policy, the keys URL, and the issuer / audience pair. `Ramose.authEnv` turns one `auth` value into its environment variables:
+
+```ts title="examples/reef/src/infra/resources.ts:41-66"
+export const RamoseWorker = Cloudflare.Worker("Peer", {
+  // …
+  env: {
+    // …
+    ...Ramose.authEnv({
+      policy: compiledPolicy(),
+      auth: REEF_AUTH,
+      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
+    }),
+    [Ramose.AUTH_ENV_KEYS.jwksUrl]: Effect.map(
+      Api,
+      (api) => Output.interpolate`${api.url}${AUTH_BASE_PATH}/jwks`,
+    ),
+    // …
+  },
+});
+```
+
+With a policy set and any of the three missing, the server denies every request rather than falling open; pass the same `auth` to `Ramose.Server` and the [deploy](/guides/deploy/) fails instead. For offline tests, `RAMOSE_JWKS_JSON` takes a literal key set — [Policy](/reference/policy/#testing-without-a-login-provider).
+
+## Tokens refresh themselves
+
+`Ramose.token.jwt(mint)` calls `mint` on first use, caches the token, and mints again two minutes before `exp` (`refreshMargin` changes that). The client re-reads it on every reconnect and every write, so short tokens need no timers. Switching workspaces means a new token for a new name — see [One database per customer](/guides/workspaces/#one-token-per-workspace).
+
+- `source.claims()` is decoded, not verified: show the role badge with it, never trust it for access.
+- `mint` throwing `Unauthorized` (signed out, not a member) stops live queries for good; anything else is `NetworkError` and retried.
+
+<Next links={[
+  { href: "/guides/workspaces/", label: "One database per customer", why: "a token opens one database; here is how names work" },
+  { href: "/reference/policy/", label: "Policy", why: "every rule and operand, with the verified token shape" },
+  { href: "/guides/deploy/", label: "Deploy", why: "ship the server with its policy and keys" },
+]} />

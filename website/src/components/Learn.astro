@@ -1,0 +1,29 @@
+---
+// "You'll learn" box, placed after the opener on Start/Build/Ship/Concept
+// pages. See blueprint §1.5.
+interface Props {
+  learn: string[];
+  before?: { href: string; label: string }[];
+  minutes?: number;
+}
+
+const { learn, before, minutes } = Astro.props;
+---
+
+<aside class="rg-learn">
+  <p class="rg-learn-title">You'll learn</p>
+  <ul>
+    {learn.map((l) => <li>{l}</li>)}
+  </ul>
+  {
+    before && before.length > 0 && (
+      <p>
+        <strong>Before you start:</strong>{" "}
+        {/* One line: a newline between the comma and the <a> would be emitted
+            as a space, rendering "Deploy , Permissions". */}
+        {before.map((b, i) => (<>{i > 0 && ", "}<a href={b.href}>{b.label}</a></>))}
+      </p>
+    )
+  }
+  {minutes && <p class="rg-learn-time">~{minutes} min</p>}
+</aside>

@@ -1,0 +1,411 @@
+---
+title: Client API
+description: Every name @ramose/alchemy/db exports — schema, connect, the db handle, queries, writes, pull, types and errors — each with a short example.
+---
+import Next from "../../../components/Next.astro";
+
+Every exported name of the client package, with its signature and a short example. This page is for people who have built the first app and want the exact shape of every call to the Ramose server. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+
+*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+
+## Rules of thumb
+
+- **A `db` is a value.** `ramose.db(name, schema)` makes no request, and `asOf` and `history` are pure too.
+- **A write is all-or-nothing** — one **write** is one all-or-nothing change; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). It returns a `TxReport`; `report.dbAfter` reads your own write with no second round trip.
+- **Reads shrink, writes fail.** Fields you may not read are absent; a write you may not make is `Unauthorized`.
+- **Live queries need a WebSocket.** `db.live` and `db.livePull` retry network trouble on their own.
+- **Setup mistakes throw, they are not errors.** A malformed URL or missing `fetch` throws from `connect`; a `DbError` is always about a request.
+- **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one.
+
+*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+
+## Imports
+
+`@ramose/alchemy/db` is the portable half: browser, Worker, Node, tests. `@ramose/alchemy` re-exports all of it and adds the deploy half.
+
+```ts
+import * as Ramose from "@ramose/alchemy/db"; // schema, connect, db, query, errors
+import * as Ramose from "@ramose/alchemy";    // the same, plus Server, Database, Policy, authEnv, claims
+```
+
+| entry | runtime names |
+| --- | --- |
+| `@ramose/alchemy/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
+| `@ramose/alchemy` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
+
+## Schema
+
+The **schema** — your data model as one TypeScript value; Ramose calls it a *catalog* ([glossary](/concepts/glossary/#schema)) — is built from three constructors.
+
+```ts title="examples/todos/schema.ts:1-10"
+import * as Ramose from "@ramose/alchemy/db";
+import * as Schema from "effect/Schema";
+
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
+});
+
+export const Todos = Ramose.Catalog({ todo: Todo });
+```
+
+**`Ramose.Namespace(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`.
+
+**`Ramose.Attr(schema, options?)`** — one **field** ([glossary](/concepts/glossary/#field)).
+
+```ts
+Ramose.Attr(Schema.String)                                   // one string
+Ramose.Attr(Schema.String, { unique: "identity" })           // a unique key: look records up by it
+Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }) // a set of references
+```
+
+| option | values | default |
+| --- | --- | --- |
+| `cardinality` | `"one"` · `"many"` | `"one"` |
+| `unique` | `"identity"` · `"value"` | — |
+| `index` | `boolean` | `true` when `unique` is set, else `false` |
+| `isComponent` | `boolean` | `false` |
+| `doc` | `string` | — |
+| `valueType` | a `:db.type/*` name | inferred; required for a custom `Schema` |
+
+**`Ramose.Catalog({ key: Namespace, … })`** — the whole schema. The key (`todo`) is what a policy's `ns: { todo: … }` refers to. Type-level helpers: `Ramose.Catalog.Any` (the bound for generic code), `typeof Todos`.
+
+**Value helpers** — plain `Schema.String`, `Schema.Number` (stored as a double) and `Schema.Boolean` need no helper. For everything else:
+
+| helper | TypeScript value | stored as |
+| --- | --- | --- |
+| `Ramose.Instant` | `Date` | instant |
+| `Ramose.Long` | a whole `number` (a JavaScript double, so nothing above 2⁵³ is exact) | long |
+| `Ramose.Bytes` | `Uint8Array` | bytes |
+| `Ramose.UuidString` | canonical uuid `string` | uuid |
+| `Ramose.Uuid` | `{ vt: 6, v: string }` (not a string, not bytes) | uuid |
+| `Ramose.Ref(() => User)` | `number` (the target's id); enables `Todo.owner.name` and `.reverse` | ref |
+| `Ramose.Ref.self` | a reference to the same record type | ref |
+| `Ramose.Ref` (bare) | `number`, untargeted | ref |
+
+```ts title="examples/reef/src/domain/schema.ts:35-41"
+  priority: Ramose.Attr(Ramose.Long),
+  // …
+  createdAt: Ramose.Attr(Ramose.Instant),
+  creator: Ramose.Attr(Ramose.Ref(() => User)),
+  assignee: Ramose.Attr(Ramose.Ref(() => User)),
+  labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
+```
+
+## Client
+
+**`Ramose.connect(options): Client`** — the **client** talks to the server for one page and hands out `db` handles ([glossary](/concepts/glossary/#client)).
+
+```ts
+interface ClientOptions {
+  url: string;                       // the Ramose server's base URL
+  token?: TokenSource | Effect<Redacted<string>, DbError>;
+  fetch?: typeof fetch;              // defaults to the ambient fetch
+  webSocket?: typeof WebSocket;      // defaults to the ambient WebSocket; needed for live
+}
+interface Client {
+  db<C>(name: string, catalog: C): Db<C>;   // pure: no request
+  close(): Promise<void>;                   // safe to call twice; reads fail after it
+}
+```
+
+```ts title="examples/reef/src/app/ramose.ts:38-40"
+  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
+```
+
+**`Ramose.token.static(value)`** and **`Ramose.token.jwt(mint, options?)`** — the two **token sources** ([glossary](/concepts/glossary/#token-source)). `jwt` calls `mint` on first use, shares one in-flight mint, and re-mints within `refreshMargin` (default 2 minutes) of the token's `exp`. `mint` may resolve to the token string or to `{ token }`. A thrown `Unauthorized` passes through; any other throw becomes `NetworkError`.
+
+```ts
+const source = Ramose.token.static(import.meta.env.VITE_RAMOSE_TOKEN);
+const source = Ramose.token.jwt(() =>
+  fetch("/api/auth/ramose/token", { method: "POST", body }).then((r) => r.json()),
+);
+source.claims();      // decoded, NOT verified — UI hints only
+source.invalidate();  // forget the cached token (sign-out)
+```
+
+**`Ramose.layer(options): Layer<Databases>`** and **`Ramose.Databases`** — the same client for Effect programs; the layer closes its sockets when its scope ends.
+
+```ts
+const ramose = yield* Ramose.Databases;   // provide Ramose.layer({ url, token })
+const db = ramose.db("todos", Todos);
+```
+
+**`Ramose.DATABASE_NAME_RE`** / **`Ramose.isDatabaseName(name)`** — the **database name** rule ([glossary](/concepts/glossary/#database-name)): `/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`. A bad name never reaches the server; every call on it fails `InvalidRequest`.
+
+```ts
+if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only");
+```
+
+## Db
+
+`ramose.db(name, catalog)` returns a `Db`. `db.asOf(t)` and `db.history` return a `ReadDb` — everything below except `principal`, `transact` and `install`.
+
+**`db.q(query): Effect<Rows, DbError>`** — run a query once.
+
+```ts title="examples/reef/src/app/mutations.ts:61-64"
+    const mineQuery = Ramose.query(User)
+      .where(User.sub.eq(me.id))
+      .select({ id: User.id });
+    const existing = yield* db.q(mineQuery);
+```
+
+**`db.live(query): Stream<Rows, DbError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized` or `QueryBudgetExceeded`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
+
+```ts
+const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
+```
+
+**`db.pull(subject, shape): Effect<Pull | null, DbError>`** — read one record ([Pull](#pull) below).
+
+```ts title="examples/todos/src/todos.ts:26-31"
+export const pullTodo = (db: TodosDb, eid: TodoEid) =>
+  db.pull(eid, {
+    title: Todo.title,
+    done: Todo.done,
+    createdAt: Todo.createdAt,
+  });
+```
+
+**`db.livePull(subject, shape): Stream<Pull | null, DbError>`** — the live form; a deleted record emits `null` and the stream stays open.
+
+```ts
+const stream = db.livePull({ id: issueId }, issueExtraShape);
+```
+
+**`db.basis(): Effect<{ t: number }, DbError>`** — the **version number `t`** this view reads at ([glossary](/concepts/glossary/#version-number)); one request on a live view, no request on `asOf(t)`.
+
+```ts
+const { t } = yield* db.basis();
+```
+
+**`db.asOf(t): ReadDb`** — the database as it was right after write `t`. `t` is a version number, not a `Date`. Pure.
+
+```ts title="examples/kv-style/app.ts:109-112"
+        const beforeRows = yield* db
+          .asOf(report.t - 1)
+          .q(Ramose.query(User).select({ name: User.name }));
+        const before = beforeRows.map((r) => r.name);
+```
+
+**`db.history: ReadDb`** — a view that includes facts that were later removed. Pure.
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:454"
+  const everything = useQuery(db.history, everyIssueEverQuery);
+```
+
+**`db.principal(): Effect<{ eid: Eid | null; class: string }, DbError>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. `eid` is `null` until that user has a row; `class` is `"admin"` on a server with no policy.
+
+```ts
+const me = yield* db.principal();   // { eid: { id: 42 } | null, class: "member" }
+```
+
+**`db.transact(function* (tx) { … }): Effect<TxReport, DbError | E>`** — one write. The body is a generator; `yield*` each step. A failure inside sends nothing.
+
+```ts title="examples/todos/src/todos.ts:33-49"
+export const addTodo = (db: TodosDb, title: string) =>
+  db.transact(function* (tx) {
+    const t = yield* tx.entity();
+    yield* t.add(Todo.title, title);
+    yield* t.add(Todo.done, false);
+    yield* t.add(Todo.createdAt, new Date());
+  });
+
+export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
+  db.transact(function* (tx) {
+    yield* tx.add(eid.id, Todo.done, done);
+  });
+
+export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
+  db.transact(function* (tx) {
+    yield* tx.retractEntity(eid.id);
+  });
+```
+
+**`db.install(): Effect<TxReport, DbError>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only `admin` may run it.
+
+```ts title="examples/reef/src/app/mutations.ts:32-33"
+  Effect.gen(function* () {
+    yield* db.install();
+```
+
+## Transactions
+
+Inside `db.transact` you get a `tx`; `tx.entity()` gives an `Entity` handle. Both have the same three verbs.
+
+```ts
+interface Tx<C> {
+  entity(): Effect<Entity<C>>;                 // a new record
+  entity(id: TxEntity<C>): Effect<Entity<C>>;  // an existing one
+  add(e: TxEntity<C>, attr, value): Effect<void>;
+  retract(e: TxEntity<C>, attr, value?): Effect<void>;
+  retractEntity(e: TxEntity<C>): Effect<void>;
+}
+interface Entity<C> { eid; add(attr, value); retract(attr, value?); retractEntity(); }
+```
+
+`TxEntity` — not an exported name, just the shape these verbs accept — is a record id (`number`), an `Entity` handle, a lookup by unique key (`[User.sub, "abc"]`), or a temporary id string. `attr` is a handle (`Issue.title`) or its full name (`":issue/title"`).
+
+```ts title="examples/reef/src/app/mutations.ts:135-139"
+export const setDescription = (db: ReefDb, issueId: number, text: string) =>
+  db.transact(function* (tx) {
+    if (text === "") yield* tx.retract(issueId, Issue.description);
+    else yield* tx.add(issueId, Issue.description, text);
+  });
+```
+
+```ts title="examples/reef/src/app/mutations.ts:162-165"
+  db.transact(function* (tx) {
+    if (on) yield* tx.add(issueId, Issue.labels, labelId);
+    else yield* tx.retract(issueId, Issue.labels, labelId);
+  });
+```
+
+Rules:
+
+- A single-value field: `add` replaces the old value. A many-valued field: one `add` per value; `retract(attr, value)` removes one value, `retract(attr)` removes them all.
+- `retractEntity` removes every fact of the record. History keeps them.
+- A reference field takes the target's id (`issue.add(Issue.creator, myEid)`).
+- There is no update-or-create helper and no `preset` on the client; presets are a [policy](/reference/policy/) feature the server applies.
+- **`TxReport`** is `{ t, txEid, datomCount, dbAfter }`. It has no `tempids`; to learn a new record's id, query for it — `report.dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
+
+```ts title="examples/reef/src/app/mutations.ts:67-74"
+    const report = yield* db.transact(function* (tx) {
+      const user = yield* tx.entity();
+      yield* user.add(User.sub, me.id);
+      yield* user.add(User.name, me.name);
+      yield* user.add(User.email, me.email);
+    });
+    const after = yield* report.dbAfter.q(mineQuery);
+    return after[0]?.id;
+```
+
+## Query builder
+
+**`Ramose.query(Namespace)`** starts a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)). Pass the builder to `db.q` / `db.live` directly.
+
+```ts
+Ramose.query(Todo)
+  .where(...predicates)                 // any number; all must hold
+  .select({ key: Todo.field, … })       // the fields you want; without it rows are { id }
+  .orderBy(Todo.createdAt, "asc", { empty: "last" })   // "asc" | "desc"; "first" | "last"
+  .limit(20)
+  .offset(0);
+```
+
+```ts title="examples/reef/src/domain/queries.ts:78-82"
+export const commentsQuery = (issueId: number) =>
+  Ramose.query(Comment)
+    .where(Comment.issue.eq(issueId))
+    .orderBy(Comment.at, "asc")
+    .select(commentShape);
+```
+
+**Predicates** — on every field handle:
+
+| predicate | example |
+| --- | --- |
+| `eq` `ne` `lt` `lte` `gt` `gte` | `Issue.priority.gte(3)` |
+| `in([…])` | `Issue.status.in(["todo", "doing"])` |
+| `startsWith` `endsWith` `includes` | `Issue.title.startsWith("Fix")` |
+| `matches(re \| string)` | `Issue.title.matches("^Bug")` — a `RegExp` with flags throws |
+| `exists()` `missing()` | `Issue.assignee.missing()` |
+| `is(eid \| { id })` — references only | `Issue.creator.is({ id: myEid })` |
+| `some(p)` `every(p)` `none(p)` — many-valued only | `Issue.labels.some(Label.name.eq("bug"))` |
+| `.each` — the element of a many-valued scalar, inside `some/every/none` | `Todo.tags.some(Todo.tags.each.startsWith("a"))` |
+| `.where/.orderBy/.limit/.offset` on a many-valued field, before its `.select` | `Issue.labels.orderBy(Label.name).select(labelShape)` |
+
+**`Ramose.or(...preds)`** and **`Ramose.not(pred)`** combine predicates; `or()` with no arguments matches nothing.
+
+```ts
+Ramose.query(Todo).where(
+  Todo.done.eq(false),
+  Ramose.or(Todo.title.startsWith("a"), Ramose.not(Todo.owner.missing())),
+);
+```
+
+**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (always many-valued). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `.optional` for fields that may be absent.
+
+```ts title="examples/reef/src/domain/queries.ts:24-34"
+export const boardShape = {
+  id: Issue.id,
+  title: Issue.title,
+  status: Issue.status,
+  priority: Issue.priority,
+  rank: Issue.rank,
+  createdAt: Issue.createdAt,
+  creator: Issue.creator.select(personShape),
+  assignee: Issue.assignee.select(personShape).optional,
+  labels: Issue.labels.select(labelShape),
+} as const;
+```
+
+Rules the builder enforces:
+
+- A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`. `{ ownerName: Todo.owner.name }` is rejected.
+- `orderBy` across a many-valued hop throws; so does `orderBy(attr.each)`.
+- Everything — filter, order, limit, offset — runs on the server; `limit(20)` really is 20 rows.
+
+Not shipped: aggregates (`count`, `sum`, …), `groupBy`, cursors, full-text search, cross-database joins.
+
+## Pull
+
+**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`.
+
+```ts
+db.pull({ id: 17 }, { title: Issue.title, description: Issue.description.optional });
+db.pull([User.sub, "user_ada"], { name: User.name });
+```
+
+Result rules:
+
+- `null` when the record is missing **or a required (non-`.optional`) field is absent** — including a field the policy hides from you.
+- An unknown field in the shape is `InvalidRequest`.
+- `Ramose.Pull<typeof Todos, typeof shape>` names the result type.
+
+```ts title="examples/reef/src/domain/queries.ts:40-46"
+export const issueExtraShape = {
+  title: Issue.title,
+  description: Issue.description.optional,
+  // Read-masked for member/viewer (policy.ts): must be `.optional`, so for
+  // them the row survives and the field is simply absent.
+  privateNote: Issue.privateNote.optional,
+} as const;
+```
+
+## Types
+
+| type | what it is |
+| --- | --- |
+| `Ramose.Row<typeof q>` | one result **row** of a query ([glossary](/concepts/glossary/#row)) |
+| `Ramose.Rows<typeof q>` | `readonly Row[]` — what `db.q` resolves to |
+| `Ramose.Pull<C, P>` | the result of shape `P` |
+| `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
+| `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data |
+| `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
+| `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
+| `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
+| `Ramose.DbError` | the union of the eight errors |
+
+```ts title="examples/reef/src/domain/queries.ts:91"
+export type BoardRow = Ramose.Row<typeof boardQuery>;
+```
+
+## Errors
+
+Eight tagged errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError`, and `DbError`. Match by name with `Effect.catchTags`; each is described on [Errors](/reference/errors/).
+
+```ts
+db.q(query).pipe(
+  Effect.catchTags({ QueryBudgetExceeded: () => Effect.succeed([]) }),
+);
+```
+
+<Next links={[
+  { href: "/reference/react/", label: "React hooks", why: "every hook, example first" },
+  { href: "/reference/errors/", label: "Errors", why: "what each error means and what the user sees" },
+  { href: "/reference/policy/", label: "Policy", why: "the rules language and the token contract" },
+]} />

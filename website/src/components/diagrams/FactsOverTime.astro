@@ -1,0 +1,100 @@
+---
+// Three facts about one record over versions 1..12: the title (added at t=3,
+// still true), status "todo" (added at t=3, removed at t=9) and status "done"
+// (added at t=9). Inline SVG; strokes follow the text colour, one accent.
+// Used on concepts/data-model. See blueprint §1.5.
+interface Props {
+  size?: "small" | "large";
+}
+const { size = "large" } = Astro.props;
+const maxWidth = size === "small" ? "34rem" : "100%";
+
+// x for a version number: t=1 at 300, t=12 at 640.
+const x = (t: number) => 300 + ((t - 1) * 340) / 11;
+const ticks = Array.from({ length: 12 }, (_, i) => i + 1);
+---
+
+<figure class="rg-diagram" style={`max-width:${maxWidth}`}>
+  <div class="rg-diagram-scroll">
+  <svg
+    viewBox="0 0 680 210"
+    width="100%"
+    role="img"
+    aria-labelledby="fot-title fot-desc"
+    xmlns="http://www.w3.org/2000/svg"
+    font-family="inherit"
+    font-size="13"
+    fill="currentColor"
+  >
+    <title id="fot-title">Three facts about issue 17 across versions 1 to 12</title>
+    <desc id="fot-desc">
+      A timeline of version numbers 1 to 12. The fact "issue 17, title, Fix
+      login" is added at version 3 and is still true. The fact "issue 17,
+      status, todo" is added at version 3 and removed at version 9. The fact
+      "issue 17, status, done" is added at version 9 and is still true. Reading
+      at version 8 still sees "todo".
+    </desc>
+
+    <!-- row labels: record · field · value -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">
+      <text x="10" y="54">issue 17 · title · "Fix login"</text>
+      <text x="10" y="94">issue 17 · status · "todo"</text>
+      <text x="10" y="134">issue 17 · status · "done"</text>
+    </g>
+
+    <!-- axis -->
+    <g stroke="currentColor" stroke-width="1" fill="none" opacity="0.6">
+      <line x1={x(1)} y1="160" x2={x(12)} y2="160" />
+      {ticks.map((t) => <line x1={x(t)} y1="157" x2={x(t)} y2="163" />)}
+    </g>
+    <g text-anchor="middle" opacity="0.85">
+      {ticks.map((t) => <text x={x(t)} y="180">{t}</text>)}
+      <text x={x(1)} y="200" text-anchor="start">version number t →</text>
+      <text x={x(12)} y="200" text-anchor="end">now</text>
+    </g>
+
+    <!-- fact 1: title, added at t=3, still true -->
+    <g stroke="var(--rg-green, #42d37a)" stroke-width="6" stroke-linecap="round" fill="none">
+      <line x1={x(3)} y1="50" x2={x(12)} y2="50" />
+    </g>
+    <!-- fact 2: status todo, added at t=3, removed at t=9 -->
+    <g stroke="currentColor" stroke-width="6" stroke-linecap="round" fill="none" opacity="0.55">
+      <line x1={x(3)} y1="90" x2={x(9)} y2="90" />
+    </g>
+    <g stroke="currentColor" stroke-width="1.5" fill="none">
+      <line x1={x(9) - 5} y1="85" x2={x(9) + 5} y2="95" />
+      <line x1={x(9) - 5} y1="95" x2={x(9) + 5} y2="85" />
+    </g>
+    <text x={x(9) + 10} y="94" opacity="0.85">removed at t=9</text>
+    <!-- fact 3: status done, added at t=9, still true -->
+    <g stroke="var(--rg-green, #42d37a)" stroke-width="6" stroke-linecap="round" fill="none">
+      <line x1={x(9)} y1="130" x2={x(12)} y2="130" />
+    </g>
+
+    <!-- the write at t=9 -->
+    <g stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6">
+      <line x1={x(9)} y1="30" x2={x(9)} y2="150" />
+    </g>
+    <text x={x(9)} y="22" text-anchor="middle" opacity="0.85">write 9: moved to Done</text>
+  </svg>
+  </div>
+  <div class="rg-diagram-fade" aria-hidden="true"></div>
+  <figcaption>
+    Green means still true, grey means removed. On a narrow screen, scroll the
+    picture sideways.
+  </figcaption>
+</figure>
+
+<style>
+  /* Below this the 12.5px row labels stop being legible, so the figure
+     scrolls instead of shrinking. */
+  .rg-diagram svg {
+    min-width: 32rem;
+  }
+  /* Wider than the diagram: nothing is cut, so no fade. */
+  @container (min-width: 32rem) {
+    .rg-diagram-fade {
+      display: none;
+    }
+  }
+</style>

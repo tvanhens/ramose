@@ -1,0 +1,86 @@
+---
+title: Live queries
+description: Make a screen update itself with useLive — what re-runs, where it works, what it costs.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A live query answers itself: hand it the query you would run once, and you get the rows now and the rows again every time the database changes. This page is for React developers who have run a query and want the screen to stay current.
+
+<Learn learn={["Read a query live with useLive", "What re-runs, and when", "Where live queries work (and where they don't)"]} before={[{ href: "/guides/queries/", label: "Read data" }]} minutes={6} />
+
+## In React
+
+Reef's board is one **live query** — a query that re-runs itself whenever the database changes and hands your screen new rows ([glossary](/concepts/glossary/#live-query)):
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:230-234"
+  const db = useDb(slug, Reef);
+
+  const board = useLive(db, boardQuery);
+  const people = useLive(db, peopleQuery);
+  const labels = useLive(db, labelsQuery);
+```
+
+`useLive(db, query)` returns `{ rows, error, ticks }`. `rows` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `ticks` counts **updates** ([glossary](/concepts/glossary/#tick)) — each time the server tells this page that a newer **version number** exists ([glossary](/concepts/glossary/#version-number)). Render with `key={row.id}`.
+
+## See it
+
+Open the same workspace in two windows and drag a card. The other window moves it within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={ticks}` re-triggers the animation):
+
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
+
+There is no refetch code anywhere in Reef. Nothing at the write site announces the change, and there is no cache to invalidate.
+
+## What re-runs, and when
+
+- **After your own write** — including in the window that wrote.
+- **After anyone else's write.** Other windows hear about the new version over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run within about a second, locally and deployed. Writes always go over HTTPS; reads and updates share that connection.
+- **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.q`.
+- **Only news is emitted.** Identical results are not emitted again, so a write the query does not see is not a re-render.
+- **Dropped connections recover on their own** — retries back off from 250 ms to 5 s and the connection reconnects in place.
+- **A pinned view emits once and completes.** `useLive(db.asOf(t), query)` has no news to deliver; `rows` stays.
+
+## Live reads of one record
+
+`usePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
+
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:258"
+  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+```
+
+`{ id: issueId }` inline is fine — the subject is compared by value, not by identity.
+
+## Where live queries work
+
+A live query needs a WebSocket connection — that is how the server tells the page the database moved.
+
+| environment | live queries |
+| --- | --- |
+| a browser, through `Ramose.connect` (or `RamoseProvider`) | yes — this is the intended home |
+| a Worker calling the server through `Ramose.ServerBinding` | **no** — no WebSocket on that hop; `db.live` fails outright. See [Live queries need a browser](/guides/workers/#live-queries-need-a-browser) |
+| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ramose.connect` |
+
+## What it costs
+
+There is no per-query subscription state on the server. A live query is a re-run of the same read path, triggered by a version update. Bursts of small writes coalesce, because re-runs happen per update rather than per write.
+
+## Hoist your queries
+
+`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does. When a query takes an argument, memoise it on that argument:
+
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:266-270"
+  // built per id, so memoise the query on `issueId` — its one dependency
+  const comments = useLive(
+    db,
+    useMemo(() => commentsQuery(issueId), [issueId]),
+  );
+```
+
+`db.asOf(t)` inline is fine — views compare by value. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
+
+<Next links={[
+  { href: "/guides/permissions/", label: "Permissions", why: "who may read and write each field" },
+  { href: "/reference/react/", label: "React hooks", why: "every hook, with an example" },
+  { href: "/concepts/architecture/", label: "How Ramose works", why: "how a write becomes a read" },
+]} />

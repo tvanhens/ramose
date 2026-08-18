@@ -51,6 +51,38 @@ the Development environment to override the hostname. See
 `.github/workflows/docs-publish.yml`, and the "Docs previews" / "Docs
 production" sections of `CONTRIBUTING.md`.
 
+## Check
+
+```sh
+bun run check            # objective report on every page; exits 1 on errors
+bun run check --json     # machine-readable
+bun scripts/docs-check.mjs --page guides/catalog
+bun scripts/docs-check.mjs --only words|shape|terms|links|images|code
+```
+
+`scripts/docs-check.mjs` is the single source of truth for the objective facts
+about this site, so that reviews converge instead of arguing about measurement.
+It checks, with one fixed definition each:
+
+| check | what it verifies |
+| --- | --- |
+| `words` | prose and code word counts against the per-page budgets |
+| `shape` | frontmatter `title`/`description`, `<Learn>`, `<Next>`, unused component imports, heading order |
+| `terms` | banned prose vocabulary (code spans excluded), and that "Datomic" appears only on `concepts/data-model` |
+| `links` | every internal link resolves to a real page, and every `#anchor` to a real heading id |
+| `images` | every referenced image exists, has alt text and real dimensions; lists unused assets |
+| `code` | every ` ```ts title="path:lines" ` block against the real file at those lines, including multi-file citations |
+
+Word counts in particular were hand-counted three different ways during one
+review cycle, which is why they now have exactly one definition. Cite the tool,
+not a manual count.
+
+**The clean baseline is `0 errors, 9 warnings`.** All nine are the Glossary and
+"How Ramose thinks about data" naming the vocabulary they exist to replace
+(`datom`, `tempid`, `novelty`, `Datalog`), plus one line listing assets in
+`public/` that no page references. Anything beyond that is new and wants
+looking at.
+
 ## Layout
 
 | path | contents |

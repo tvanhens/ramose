@@ -1,0 +1,71 @@
+---
+title: How it compares
+description: Ramose next to Convex, Supabase, Instant, Firebase, D1 + Drizzle and Postgres — what is the same, what is different, what you give up.
+---
+import Next from "../../../components/Next.astro";
+
+Ramose is small and pre-release. Here is the honest trade against what you'd use otherwise — no feature matrix, just what's the same, what's different and what you give up. For a two-minute decision, read the table; the sections below add what you give up.
+
+## At a glance
+
+| Instead of | Same idea | What's different with Ramose |
+|---|---|---|
+| Convex | queries that re-run themselves, typed from your schema | runs in your Cloudflare account, not their cloud; a database per customer is a function call |
+| Supabase | rules enforced by the database | rules per field, deny by default, checked against your screens at deploy; your Cloudflare account, not their cloud |
+| Instant | read and write from the browser, live, with per-user permissions | you own the deploy end to end; nothing is hosted for you |
+| Firebase | realtime listeners and security rules | a typed schema in TypeScript; one database per customer by name; your Cloudflare account, not Google's |
+| D1 + Drizzle, or a Durable Object + SQLite | the same Cloudflare primitives, your account and deploy | already assembled: live fan-out, per-customer routing, permissions, history |
+| Postgres + an ORM | typed access | no migration ever rewrites old data; live queries and history come standard |
+
+Two words recur. The **schema** is your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)); a **database** is a named, isolated set of facts ([glossary](/concepts/glossary/#database)). One customer, one database — naming one is a line of code, not a project in a console.
+
+```ts title="examples/reef/src/app/ramose.ts:42"
+    // A new customer is a name, not a deployment.
+    const db = ramose.db(slug, Reef);
+```
+
+## Why not just Convex?
+
+**What you give up:** a hosted dashboard, scheduled functions and file storage.
+
+## Why not just Supabase?
+
+**What you give up:** SQL and the Postgres tool belt, built-in sign-in and file storage. Rules also work differently: per field and deny by default, checked at deploy against the shapes your screens read.
+
+## Why not just Instant?
+
+**What you give up:** the hosted service and its admin console — you own the deploy end to end.
+
+## Why not just Firebase?
+
+**What you give up:** Google's console, hosted auth and the offline-first mobile SDKs.
+
+## Why not just D1 + Drizzle, or a Durable Object + SQLite?
+
+**What you give up:** SQL and a hand-tuned storage layout. What you stop writing: the fan-out behind **live queries** ([glossary](/concepts/glossary/#live-query)), the migration runner, and the authorization middleware.
+
+## Why not just Postgres + an ORM?
+
+**What you give up:** SQL, a planner to tune, `psql`, and joins across databases.
+
+## What Ramose does not have
+
+- SQL, or joins across databases
+- A hosted dashboard
+- Sign-in of its own — it verifies tokens from Better Auth, Clerk, Auth0 or any provider that publishes signing keys, and never issues them
+- File storage
+- Scheduled jobs
+- Aggregates (`count`, `sum`) — count rows on the client for now
+- Full-text search
+
+## Numbers, honestly
+
+In our benchmark (`bench/RESULTS.md` in the repo) one database sustained a few hundred writes per second on Cloudflare — 166–879 per second depending on client count. Past that you split across databases: a function call, not a deployment.
+
+Each query has a memory limit on the server (about 48 MB by default). A query that exceeds it fails with a 413 instead of slowing everyone else down — narrow the query and retry.
+
+<Next links={[
+  { href: "/getting-started/quickstart/", label: "Quickstart", why: "run Reef in three commands" },
+  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "every screen beside the code that drives it" },
+  { href: "/guides/before-production/", label: "Before production", why: "the checklist before real users arrive" },
+]} />

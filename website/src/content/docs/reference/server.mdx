@@ -1,0 +1,223 @@
+---
+title: The server
+description: The one Worker that serves your databases — its HTTP routes, every environment variable, retention, operations, the write ceiling and storage layout.
+---
+import Next from "../../../components/Next.astro";
+
+The wire, the knobs and the operations for the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer* ([glossary](/concepts/glossary/#server)). This page is for people deploying or operating one; you declare this Worker, you never write it.
+
+*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+
+## HTTP API
+
+You only need this if you are not using the TypeScript client. Routes are per database: `/db/<name>/…`. Auth is `Authorization: Bearer <token>`, or `?token=` on the WebSocket upgrade.
+
+```
+GET  /health                                              → { ok, service: "ramose", stage, time }   (no token)
+POST /db/:name/transact   { tx }                          → { t, txEid, tempids, datoms }
+POST /db/:name/query      { query, inputs?, asOf?, history?, explain? } → { t, root, result }
+POST /db/:name/pull       { eid, pattern, asOf?, history? } → { t, result }
+GET  /db/:name/entity/:eid[?asOf=]                        → { t, entity }
+GET  /db/:name/info                                       → { db, t, principal: { eid, class } }
+GET  /db/:name/session    (Upgrade: websocket)
+POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only under a policy)
+```
+
+| route | notes |
+| --- | --- |
+| `/health` | liveness; needs no token even under a policy |
+| `/transact` | the only write; every key in the body is a full field name (`:todo/title`). The response is the wire body — the client reshapes it into `TxReport` |
+| `/query`, `/pull` | reads at the current version, or at `asOf` / with `history`. `t` is the version read at; `/query` also returns `root`, the newest snapshot behind it, and `explain: true` adds the plan (admin only) |
+| `/entity` | every field of one record, at the current version or at `?asOf=`. There is no `history` on this route |
+| `/info` | `t` and `principal` for everyone; admins also get writer, read-copy and Worker internals |
+| `/session` | the WebSocket connection ([glossary](/concepts/glossary/#connection)) behind `Ramose.connect`: reads travel on it, the server pushes `{ op: "t", t }` when the version moves; writes are always HTTPS |
+| `/admin/*` | index now, sweep storage, force a read copy to reconnect |
+
+**Errors on the wire** — see [Errors](/reference/errors/) for the client view.
+
+| status | body |
+| --- | --- |
+| 400 | `{ error }` malformed request |
+| 401 / 403 | `{ error, code: "policy" }` for a rule, plus `attr` when a field rule tripped; `{ error }` otherwise |
+| 404 | `{ error }` unknown route (a database *name* always exists) |
+| 409 | `{ error, tag, code }` write refused by the writer |
+| 413 | `{ error, clause, cells, limit }` over the query budget |
+| 503 (+ `retry-after`) | `{ error }` writer restarting |
+
+Only errors that come from the writer or a read copy carry a `code`; the Worker's own 400/404/500 bodies are `{ error }`.
+
+**Response headers** on every read: `x-ramose-ms` (server time), `x-ramose-r2-gets` (object-storage reads), `x-ramose-cache-hits`, `x-ramose-basis-*`, `x-ramose-colo`. All are exposed to browsers. Request headers `x-ramose-replica-hint`, `x-ramose-cache-basis`, `x-ramose-cache-mode` and `x-ramose-min-t` override the read-path defaults below per request; the first three come back on the response too, carrying the value that was actually used.
+
+:::note
+The Durable Objects (Cloudflare's single-instance stateful Workers) that hold the writer and the read copies are not on this surface. Only the Worker reaches them, and every internal call carries `RAMOSE_INTERNAL_SECRET`. Browser sockets end in the Worker.
+:::
+
+## Configuration
+
+Everything is an environment variable on the server Worker, declared in your Alchemy file and read at boot. Unset means the default. Set only what you change.
+
+```ts title="examples/reef/src/infra/resources.ts:41-53"
+export const RamoseWorker = Cloudflare.Worker("Peer", {
+  main: "./packages/worker/src/index.ts",
+  compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
+  dev: { port: DEV_PEER_PORT },
+  env: {
+    STORE: Store,
+    TRANSACTOR: Transactor,
+    REPLICA: Replica,
+    ...Ramose.authEnv({
+      policy: compiledPolicy(),
+      auth: REEF_AUTH,
+      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
+    }),
+```
+
+**Bindings** (fixed names): `STORE` — the R2 bucket, **object storage** where every version of every database is kept ([glossary](/concepts/glossary/#object-storage)); `TRANSACTOR` — the writer's Durable Object class `TransactorDO`; `REPLICA` — the read copy's class `QueryReplicaDO`; optional `ANALYTICS` — an Analytics Engine dataset. Compatibility flag `nodejs_compat` is required.
+
+**Auth**
+
+| var | default | effect |
+| --- | --- | --- |
+| `RAMOSE_TOKEN` | unset | one shared bearer token; a match is `admin`. Under a policy its holder gets class `$token`, which no rule admits |
+| `RAMOSE_POLICY` | unset | the compiled policy (`Ramose.Policy.compile`); setting it arms enforcement and fails closed |
+| `RAMOSE_JWKS_URL` / `RAMOSE_JWKS_JSON` | unset | the sign-in provider's public keys (`JSON` = a literal key set for tests); required once a policy is set |
+| `RAMOSE_JWT_ISS` | unset | accepted issuers, comma-separated |
+| `RAMOSE_JWT_AUD` | unset | the audience every token must carry |
+| `RAMOSE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, seconds |
+| `RAMOSE_ALLOWED_ORIGINS` | unset | CORS list, honoured **only once a policy is set**; without a policy CORS is `*` |
+| `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call; `authEnv` mints one when a policy is set. Pin it once you split the Worker out |
+
+`Ramose.authEnv({ … })` produces these keys — see [Policy → Server env keys](/reference/policy/).
+
+**Write path and indexing**
+
+| var | default | effect |
+| --- | --- | --- |
+| `RAMOSE_MAX_BATCH` | 0 (unbounded) | writes per storage flush; `1` turns batching off (benchmarks only) |
+| `RAMOSE_INDEX_TX_THRESHOLD` | 500 | take a snapshot after this many writes… |
+| `RAMOSE_INDEX_INTERVAL_MS` | 5000 | …or after this long. Lower both to keep the not-yet-indexed tail (and read-copy memory) small |
+| `RAMOSE_INDEX_MAX_TXS_PER_RUN` | 5000 | bound one snapshot run; it re-arms until caught up |
+| `RAMOSE_LOG_KEEP_TXS` | 20000 | write-log tail kept in the writer's SQLite for read-copy catch-up; older comes from `log/` in object storage |
+| `RAMOSE_TIMING_YIELDS` | unset | `"1"` adds timing marks in the commit loop (diagnostics) |
+
+Do not set `RAMOSE_MAX_BATCH` hoping for throughput — the default, unbounded, already batches everything in flight; see [The write ceiling](#the-write-ceiling).
+
+**Read path**
+
+| var | default | effect |
+| --- | --- | --- |
+| `RAMOSE_QUERY_MAX_CELLS` | 1,572,864 (≈ 48 MB) | memory limit per query — see [Query budget](#query-budget) |
+| `RAMOSE_CACHE_BASIS` | on (`"1"`) | reuse a cached version marker instead of asking the read copy on every read |
+| `RAMOSE_CACHE_MODE` | `ttl` (5 s) | `ttl`: the cached marker expires after 5 s; `peer`: no timer — only a write through this Worker instance, or a client `x-ramose-min-t` it cannot satisfy, refetches |
+| `RAMOSE_REPLICA_HINT` | `auto` | where the read copy is placed (`wnam`, `enam`, …, `auto` = near the caller) |
+
+**Retention and storage**
+
+| var | default | effect |
+| --- | --- | --- |
+| `RAMOSE_RETAIN_ROOTS` | 20 | how many **snapshots** ([glossary](/concepts/glossary/#snapshot)) stay addressable — bucket size, not how far back `asOf` reads; see [Retention](#retention) |
+| `RAMOSE_GC_EVERY_N_INDEXES` | 50 | how often storage is swept for tree nodes no retained snapshot uses |
+
+**Telemetry**
+
+| var | default | effect |
+| --- | --- | --- |
+| `RAMOSE_LOG_LEVEL` | `info` | `debug` also logs per-batch and per-query events |
+| `RAMOSE_STAGE` | `dev` | reported by `/health` |
+
+Every component logs one JSON object per line (`{ ts, level, component, event, db, … }`); read them with `wrangler tail`, Logpush, or the `alchemy dev` console. Bind `ANALYTICS` for write and HTTP metrics.
+
+**Declaring knobs in Alchemy** — bind only what is set:
+
+```ts
+const tuning = (...names: string[]): Record<string, string> =>
+  Object.fromEntries(
+    names.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]!]),
+  );
+
+env: { STORE, TRANSACTOR, REPLICA, ...tuning("RAMOSE_QUERY_MAX_CELLS", "RAMOSE_LOG_LEVEL"), ...Ramose.authEnv(auth) }
+```
+
+## Query budget
+
+Each query runs under a memory limit — the **query budget** ([glossary](/concepts/glossary/#query-budget)), `RAMOSE_QUERY_MAX_CELLS`, about 48 MB of intermediate rows × columns by default. Going over fails the query with `QueryBudgetExceeded` (HTTP 413) naming the clause and the cell count. Narrow the query rather than raising the ceiling by reflex; a live query does not retry this one, because re-running would fail the same way.
+
+## Retention
+
+*History is kept as version numbers, not dates: `asOf` takes a `t`. Nothing prunes history — `RAMOSE_RETAIN_ROOTS` bounds how much storage the index costs, not how far back `asOf` reads.*
+
+Every snapshot run writes a new index of the whole database, and `RAMOSE_RETAIN_ROOTS` (default 20) is how many of those stay addressable. The sweep (`RAMOSE_GC_EVERY_N_INDEXES`, or `POST /db/:name/admin/gc`) deletes index tree nodes that neither a retained snapshot nor the current one reaches, and drops the snapshot records it no longer keeps. So the knob bounds **bucket size**.
+
+It does not bound `asOf`. A read never opens an old snapshot: it opens the *current* index and hides facts newer than the `t` you asked for. That index keeps every fact ever written — the ones added and the ones removed — and the sweep always keeps everything the current index reaches. So after a sweep that retained only the newest 20 snapshots, `asOf` still answers at the database's very first version.
+
+## Operations
+
+One deployment is one Worker, one writer per database, some read copies per database, one bucket. Set `RAMOSE_LOG_LEVEL=debug` for per-batch and per-query events.
+
+**What to look at**
+
+| question | where |
+| --- | --- |
+| writes/s, batch size, commit latency | `GET /db/:name/info` (admin) → `transactor.metrics` (`txPerSec`, `batchSize.p50/p95`, `commitMs`); events `transactor/tx.commit` |
+| is the writer refusing writes, or dead? | events `transactor/tx.rejected` (schema or unique-key errors, per write) and `transactor/tx.aborted` (a storage write failed → the writer restarts; clients get 503 + `retry-after`) |
+| snapshot lag and cost | `/info` → `transactor.txsSinceIndex`, `indexer.lastRun`; events `indexer/index.run` (`txs`, `datoms`, `ms`, `r2Puts`, `remainingTxs`) |
+| read-copy health | `/info` → `replica.novelty` (facts not yet in a snapshot), `replica.connected`, `replica.stats.gaps`; events `replica/replica.connect`, `replica.root`, `replica.gap` |
+| read latency | `/info` → `peerMetrics.queryMs`; events `peer/query` (`ms`, `rows`, `r2Gets`, `cacheHits`, `peakCells`); header `x-ramose-ms` |
+| queries over budget | events `peer/query.budget-exceeded` (413, names the clause and cell count) |
+
+**Recovery**
+
+- **`tx.aborted`, or a read copy behind or disconnected** — both recover on their own; what happens is under [When something fails](#when-something-fails). Force a read copy to catch up now with `POST /db/:name/admin/replica/reconnect`.
+- **Snapshots not catching up** (`remainingTxs` never drops) — lower `RAMOSE_INDEX_MAX_TXS_PER_RUN`, or `POST /db/:name/admin/index` and read the `index.error` event.
+- **Bucket growing** — `POST /db/:name/admin/gc` sweeps tree nodes no retained snapshot uses. Keys are per database, so a sweep never touches another database.
+
+## The write ceiling
+
+Every database has exactly one **writer** — the one thing per database that commits writes, in order ([glossary](/concepts/glossary/#writer)). That is a design invariant, not a knob: it is what makes version numbers dense and unique keys consistent.
+
+*In our benchmark (`bench/RESULTS.md` in the repo) one database sustained a few hundred writes per second on Cloudflare — 166–879 per second depending on client count. Past that you split across databases: a function call, not a deployment.*
+
+**Signs a database is at the ceiling**
+
+- `transactor.metrics.txPerSec` flat while `batchSize.p95` grows and ack latency climbs.
+- `tx.commit` events show `queued` consistently above zero.
+- `txsSinceIndex` grows faster than snapshots drain it (`remainingTxs > 0` run after run).
+
+**What not to do** — do not add a second writer or let two Durable Objects accept writes for one database; there is no such configuration. Do not set `RAMOSE_MAX_BATCH`.
+
+**What to do: split along write ownership**, so one write never touches two databases.
+
+1. Pick a key every write carries (customer, account, region). Each value becomes a database — `ramose.db("tenant-" + key, Catalog)`.
+2. Install the schema on each new name (`db.install()`), then optionally backfill from the old database with queries and writes.
+3. Point writers at the new names. Reads that need a union run one query per database and merge in the app — there is no cross-database join.
+4. Retire the old database when its writers are gone; its history stays readable.
+
+Split *before* p95 latency matters to users. See [One database per customer](/guides/workspaces/#the-one-limit).
+
+## Storage layout
+
+Everything except `root/current` is written once and never rewritten; keys are per database (`db/<name>/…`):
+
+| key | contents |
+| --- | --- |
+| `db/<name>/seg/<hash>` | index tree leaves, addressed by content |
+| `db/<name>/n/<hash>` | index tree directory nodes |
+| `db/<name>/log/<t0>-<t1>` | write-log chunks, for read-copy catch-up |
+| `db/<name>/roots/<t>` | one snapshot per index run |
+| `db/<name>/root/current` | the only mutable key: the latest snapshot |
+
+The snapshot run happens inside the writer on a threshold or interval (`RAMOSE_INDEX_TX_THRESHOLD` / `RAMOSE_INDEX_INTERVAL_MS`), folding the newest writes into new index trees and moving `root/current`.
+
+## When something fails
+
+- **The writer's storage write fails** (`tx.aborted`) — the writer restarts from its log and `root/current`; nothing from the failed batch is stored; clients that saw a 503 retry; version numbers continue with no gap.
+- **A read copy is behind or disconnected** — it reconnects on the next request and catches up from the writer's log or from `log/` chunks in object storage.
+- **The WebSocket connection drops** — the client reconnects in place with backoff; live queries are not torn down.
+- **A token expires mid-session** — the client re-reads its token source and re-authenticates the connection; a live query fails only if the second attempt is also `Unauthorized`.
+- **The policy is malformed or its verifier is incomplete** — every `/db/*` request is denied and one line is logged at start-up. Fix the env and redeploy.
+
+<Next links={[
+  { href: "/guides/deploy/", label: "Deploy", why: "the file that declares this Worker" },
+  { href: "/guides/before-production/", label: "Before production", why: "the checklist" },
+  { href: "/reference/errors/", label: "Errors", why: "what each status becomes in the client" },
+]} />

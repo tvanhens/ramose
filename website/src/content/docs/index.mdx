@@ -1,6 +1,6 @@
 ---
 title: Ramose — the typed, realtime database for Cloudflare
-description: Ramose is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, all running in your own Cloudflare account.
+description: Describe your data in TypeScript. Queries update themselves in every open tab. Users see only what your rules allow. One deploy, into your Cloudflare account.
 template: splash
 head:
   - tag: title
@@ -10,112 +10,71 @@ head:
       property: og:type
       content: website
 hero:
-  title: Ramose — the typed, realtime database for Cloudflare
-  tagline: Reactive applications that grow safely. Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and one deploy puts it all in your own Cloudflare account.
+  tagline: Describe your data in TypeScript. Queries update themselves in every open tab. Each user sees only what your rules allow. One deploy, into your own Cloudflare account.
   actions:
     - text: Get started
       link: /getting-started/quickstart/
       variant: primary
-    - text: GitHub
-      link: https://github.com/tvanhens/ramose
+    - text: See a real app
+      link: /getting-started/tour-of-reef/
       variant: secondary
-      icon: github
   image:
     html: |
-      <div class="rg-sync" aria-hidden="true" data-pagefind-ignore>
-        <div class="rg-sync-pane">
-          <span class="rg-sync-label">one tab</span>
-          <ul>
-            <li class="rg-is-done"><i></i><span>write the schema</span></li>
-            <li class="rg-flip"><i></i><span>ship the landing page</span></li>
-            <li><i></i><span>open a second tab</span></li>
-          </ul>
-        </div>
-        <div class="rg-sync-wire"><span></span></div>
-        <div class="rg-sync-pane">
-          <span class="rg-sync-label">another tab</span>
-          <ul>
-            <li class="rg-is-done"><i></i><span>write the schema</span></li>
-            <li class="rg-flip"><i></i><span>ship the landing page</span></li>
-            <li><i></i><span>open a second tab</span></li>
-          </ul>
-        </div>
-      </div>
+      <figure class="rg-shot rg-hero-shot">
+        <img src="/reef/board-dark.png" width="1440" height="580" alt="Reef's board: four columns of issue cards, labels, assignees, and a live pill." loading="eager" decoding="async" fetchpriority="high">
+        <figcaption>Reef, the example app this site is built around: a multi-tenant, realtime issue tracker. Its whole backend — schema, rules, queries, deploy — is under 700 lines. <a href="/getting-started/tour-of-reef/">Tour of Reef →</a></figcaption>
+      </figure>
 ---
+import Shot from "../../components/Shot.astro";
 
-<div class="rg-band rg-run">
+<div class="rg-band">
 
-<p class="rg-eyebrow">Install the package</p>
+<h2 id="built-for-react-apps-on-cloudflare" class="rg-h2">Built for React apps on Cloudflare</h2>
+<p class="rg-lede">You know React and TypeScript. You want a backend you don't have to write.</p>
 
-<p class="rg-run-note">Add Ramose to an app the way you add any other library. The <a href="/getting-started/quickstart/">Quickstart</a> stands up a local peer and a live query — nothing else to run.</p>
-
-```sh title="In your project" frame="terminal" wrap
-npm install @ramose/alchemy @ramose/worker @ramose/react
-```
-
-<p class="rg-run-after">Import <code>@ramose/alchemy/db</code> from the browser, point a <code>Cloudflare.Worker</code> at <code>@ramose/worker</code>, and <code>db.live</code> keeps the list current. There is no refetch call anywhere in the app. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
-
-<p class="rg-run-more">Want a complete app to read? <a href="https://github.com/tvanhens/ramose/tree/master/examples/reef">Reef</a> is a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
-
-<figure class="rg-shot">
-  <img
-    src="/reef-board.png"
-    width="1600"
-    height="600"
-    loading="lazy"
-    decoding="async"
-    alt="Reef's board on localhost: four columns — Backlog, Todo, In Progress, Done — of labelled issue cards, with the workspace name, the database name db/coral-reef, and a live indicator in the header."
-  />
-  <figcaption>Reef on <code>localhost</code>. The header names the database this board reads — <code>db/coral-reef</code> — and the whole board is one <code>db.live</code> query.</figcaption>
-</figure>
+<div class="rg-benefits rg-benefits--four">
+  <a class="rg-benefit" href="/guides/catalog/">
+    <h3>Typed end to end</h3>
+    <p>The schema is a TypeScript file; a wrong write is a red squiggle, not a bad row.</p>
+  </a>
+  <a class="rg-benefit" href="/guides/live-queries/">
+    <h3>Realtime without plumbing</h3>
+    <p><code>useLive(db, query)</code>; the screen updates when the data does. Reef has no refetch code.</p>
+  </a>
+  <a class="rg-benefit" href="/guides/permissions/">
+    <h3>Permissions in the database</h3>
+    <p>Who may read or write each field, checked on the server, deny by default.</p>
+  </a>
+  <a class="rg-benefit" href="/guides/workspaces/">
+    <h3>A database per customer</h3>
+    <p><code>ramose.db("acme")</code> is a function call, not a provisioning step.</p>
+  </a>
+</div>
 
 </div>
 
 <div class="rg-moment">
   <div class="rg-moment-copy">
-    <h2>The schema is TypeScript</h2>
-    <p>
-      A catalog is a plain value: the attributes an entity can carry, their
-      types, cardinality, and whether one is unique. Your app, your Worker and
-      your deploy all read that one file — no codegen, no migration step, and
-      changing it never rewrites data you already wrote.
-    </p>
+    <h2 id="the-schema-is-typescript">The schema is TypeScript</h2>
+    <p>Reef's whole data model is one file. Fields have types, references point at other records, and a list is just <code>cardinality: "many"</code>. Your app, your rules and your deploy import it — no codegen, no migration step.</p>
+    <p class="rg-cta"><a href="/guides/catalog/">Define your data →</a></p>
   </div>
   <div class="rg-moment-code">
 
-```ts title="schema.ts"
-import * as Ramose from "@ramose/alchemy/db";
-import * as Schema from "effect/Schema";
-
-export const User = Ramose.Namespace("user", {
-  sub: Ramose.Attr(Schema.String, { unique: "identity" }),
-});
-
-export const Todo = Ramose.Namespace("todo", {
+```ts title="examples/reef/src/domain/schema.ts:29-46 (annotated)"
+export const Issue = Ramose.Namespace("issue", {
   title: Ramose.Attr(Schema.String),
-  done: Ramose.Attr(Schema.Boolean),
-  createdAt: Ramose.Attr(Ramose.Instant),
-  owner: Ramose.Attr(Ramose.Ref(() => User)),
-  /** private: only the owner reads it — see policy.ts */
-  note: Ramose.Attr(Schema.String),
-});
-
-export const Todos = Ramose.Catalog({ user: User, todo: Todo });
-```
-
-```ts title="todos.ts"
-await Effect.runPromise(
-  db.transact(function* (tx) {
-    const todo = yield* tx.entity();
-    yield* todo.add(Todo.title, "ship the landing page");
-    yield* todo.add(Todo.done, false);
-    yield* todo.add(Todo.createdAt, new Date());
-
-    // Does not compile — `todo/done` is a boolean, so
-    // this write never gets past your editor:
-    // yield* todo.add(Todo.done, "false");
+  status: Ramose.Attr(Schema.String),
+  priority: Ramose.Attr(Ramose.Long),
+  // …
+  assignee: Ramose.Attr(Ramose.Ref(() => User)),
+  labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
+  privateNote: Ramose.Attr(Schema.String, {
+    doc: "visible to the admin class only",
   }),
-);
+});
+// issue.add(Issue.priority, "high") does not compile:
+// priority is a number.
 ```
 
   </div>
@@ -123,51 +82,21 @@ await Effect.runPromise(
 
 <div class="rg-moment rg-moment--flip">
   <div class="rg-moment-copy">
-    <h2>One query, always current</h2>
-    <p>
-      <code>db.live</code> hands you a stream of rows. Anything that changes the
-      answer — this tab, another tab, another user, a Worker — pushes the rows
-      again. There is no cache to invalidate and nothing to remember at the
-      write site.
-    </p>
-    <p class="rg-aside">
-      Ramose is built on <a href="https://effect.website">Effect</a>: a
-      transaction is a generator, and <code>Effect.runPromise(…)</code> runs
-      anything a <code>db</code> returns — no runtime to set up. In React the
-      glue is shipped: <a href="/reference/react/"><code>useLive</code></a> turns
-      a standing query into state, and <code>useTransact</code> runs writes from
-      event handlers.
-    </p>
+    <h2 id="one-query-always-current">One query, always current</h2>
+    <p>The board is one query, read with <code>useLive</code>. Drag a card in one window and every other window moves it too — no WebSocket code, no refetch anywhere in Reef.</p>
+    <p>Ramose is built on <a href="https://effect.website">Effect</a>. In React you rarely see it — the hooks run it for you. <a href="/concepts/effect/">Effect in five minutes →</a></p>
+    <p class="rg-cta"><a href="/guides/live-queries/">Live queries →</a></p>
   </div>
   <div class="rg-moment-code">
+    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:230-234" />
 
-```ts title="todos.ts"
-export const todoShape = {
-  id: Todo.id,
-  title: Todo.title,
-  done: Todo.done,
-  createdAt: Todo.createdAt,
-} as const;
-
-// A value, not a callback: `db.q` runs it once,
-// `db.live` keeps it standing.
-export const todoQuery = Ramose.query(Todo)
-  .orderBy(Todo.createdAt, "asc")
-  .select(todoShape);
-```
-
-```tsx title="App.tsx"
-// built once, outside render — a standing query, not a fetch
-const todos = db.live(todoQuery);
-
-const TodoList = () => {
-  const { rows, error } = useLive(todos);
-  if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
-  return (
-    <ul>{rows.map((r) => <Row key={r.id} row={r} />)}</ul>
-  );
-};
+```ts title="examples/reef/src/domain/queries.ts:66-68 · app/screens/BoardScreen.tsx:230-232"
+export const boardQuery = Ramose.query(Issue)
+  .orderBy(Issue.rank, "asc")
+  .select(boardShape);
+// …
+const db = useDb(slug, Reef);
+const board = useLive(db, boardQuery);
 ```
 
   </div>
@@ -175,208 +104,171 @@ const TodoList = () => {
 
 <div class="rg-moment">
   <div class="rg-moment-copy">
-    <h2>Permissions are part of the database</h2>
-    <p>
-      One policy says who may read and write each attribute. Reads are filtered
-      before they leave the edge, so a query simply returns fewer rows. Writes
-      are checked twice: on the way in, then again by the writer against the
-      exact data the transaction would apply to. Deny by default — an operation
-      is allowed only if a rule allows it, and when an attribute carries its own
-      rule both it and its namespace rule must allow, so an attribute rule can
-      only narrow.
-    </p>
-    <p>
-      The policy and the shapes your app reads are both values, so
-      <code>Ramose.Policy.compile</code> checks them against each other at
-      deploy time: tighten a rule a screen depends on and the deploy fails,
-      rather than that screen quietly emptying for one customer.
-    </p>
-    <ol class="rg-frames">
-      <li>the policy</li>
-      <li>what a refused write looks like</li>
-      <li>the deploy-time check</li>
-    </ol>
-    <p class="rg-aside">
-      Ramose verifies tokens, it never issues them — bring Clerk, Auth0,
-      WorkOS, or any JWKS issuer.
-    </p>
+    <h2 id="permissions-are-part-of-the-database">Permissions are part of the database</h2>
+    <p>One policy says who may read and write each field. The buttons are just polite — the server refuses the write.</p>
+    <p>Because the policy and the shapes your screens read are both values, <code>Ramose.Policy.compile(policy, &#123; pulls &#125;)</code> checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.</p>
+    <p>Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.</p>
+    <p class="rg-cta"><a href="/guides/permissions/">Permissions →</a></p>
   </div>
   <div class="rg-moment-code">
 
-```ts title="policy.ts"
-// `Policy` lives in the deploy-time half of the package
-import * as Ramose from "@ramose/alchemy";
-import { Todo, Todos, User } from "./schema";
-
-const P = Ramose.Policy;
-
-export const policy = P.policy(Todos, {
-  principal: User.sub,   // the token's `sub` claim
-  classes: ["member"],
-  ns: {
-    user: { read: P.allow(P.eq(User.sub, P.claims.sub)) },
-    todo: {
-      read:    P.allow(P.eq(Todo.owner, P.principal)),
-      create:  P.allow(P.class("member")),
-      add:     P.allow(P.eq(Todo.owner, P.principal)),
-      retract: P.allow(P.eq(Todo.owner, P.principal)),
-      retractEntity: P.allow(P.eq(Todo.owner, P.principal)),
-      // every new todo is stamped with its owner
-      preset: [P.preset(Todo.owner, P.principal)],
-      // narrows the namespace read: `todo/note` never leaves
-      // the edge for anyone but its owner
-      attrs: [
-        P.attr(Todo.note, {
-          read: P.allow(P.eq(Todo.owner, P.principal)),
-        }),
-      ],
-    },
-  },
-});
+```ts title="examples/reef/src/domain/policy.ts:49-61 (comment simplified)"
+issue: {
+  read: P.allow(anyone),
+  create: P.allow(editor),
+  add: P.allow(ownIssue),
+  retract: P.allow(ownIssue),
+  retractEntity: P.allow(ownIssue),
+  preset: [P.preset(Issue.creator, P.principal)],
+  attrs: [
+    // Only admins receive this field; the server strips it for others.
+    P.attr(Issue.privateNote, { read: P.allow(admin) }),
+  ],
+},
 ```
 
-```ts title="app.ts"
-// Ada is signed in. Todo 1042 belongs to someone else.
-await Effect.runPromise(db.transact(function* (tx) {
-  yield* tx.add(1042, Todo.title, "mine now");
-}));
-
-// Unauthorized — 403, code "policy", attr ":todo/title"
-//   refused at the edge, before the write travels on
-// TxRejected — 409, no transaction number is spent
-//   refused by the writer, against the real data
-```
-
-```ts title="alchemy.run.ts"
-// `pulls` are the shapes your app reads. `todo/note` has a
-// narrowed read rule, so a shape asking for it as a required
-// key fails here — at deploy, not on somebody's screen.
-Ramose.Policy.compile(policy, { pulls: [todoShape] });
-```
+    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast retract denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
 
   </div>
 </div>
 
-<div class="rg-band rg-benefits-band">
+<div class="rg-band">
 
-<h2 class="rg-h2">What you get</h2>
+<h2 id="also-built-in" class="rg-h2">Also built in</h2>
 
-<div class="rg-benefits">
-  <div class="rg-benefit rg-benefit--lead">
-    <h3>A mistyped write does not compile</h3>
-    <p>
-      Names, value types, cardinality and uniqueness all come from the
-      catalog, so <code>tsc</code> checks every write and every query shape
-      against it. The bad write is a red squiggle, not a row in production.
-    </p>
-  </div>
-  <div class="rg-benefit rg-benefit--lead">
-    <h3>Queries update themselves</h3>
-    <p>
-      A standing query rides one WebSocket per page. Every write moves the
-      connection forward and each standing query re-runs against the new state:
-      no polling, no invalidation, no stale screen.
-    </p>
-  </div>
-  <div class="rg-benefit">
+<div class="rg-also">
+  <div>
     <h3>One database per customer, for free</h3>
-    <p>
-      <code>ramose.db("acme", Catalog)</code> is a pure function call — no
-      create, no provisioning, no request. One deployed peer serves every name,
-      each with its own writer and key prefix in storage.
-      <a href="/concepts/databases-are-names/">How that works →</a>
-    </p>
+    <p>Typing a workspace name in Reef creates a fresh, isolated database from the browser. No deploy, no migration, no per-customer server.</p>
+    <Shot src="/reef/workspaces.png" alt="Reef's workspaces screen with a New workspace form" caption="One install, one write, one new database." code="examples/reef/src/app/mutations.ts:33-36" />
+    <p class="rg-cta"><a href="/guides/workspaces/">One database per customer →</a></p>
   </div>
-  <div class="rg-benefit">
+  <div>
     <h3>Nothing is overwritten</h3>
-    <p>
-      Writes append facts, so <code>db.asOf(t)</code> reads the database as it
-      was at an earlier transaction and <code>db.history</code> shows what
-      changed. Reach is bounded by retained checkpoints — 20 by default, so pick
-      that number deliberately; it is not "forever".
-    </p>
+    <p>Drag the slider and the board becomes what it was after write number <code>t</code>. Same query, one extra argument, nothing copied.</p>
+    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx:448-453" />
+    <p class="rg-cta"><a href="/concepts/time-travel/">Time travel →</a></p>
   </div>
 </div>
 
 </div>
 
-<div class="rg-section rg-narrow">
+<div class="rg-section">
 
-<h2 class="rg-h2">Instead of what?</h2>
-
-<p class="rg-lede">
-  Ramose is small and pre-release. Here is the honest trade against what you
-  are probably using today.
-</p>
+<h2 id="instead-of-what" class="rg-h2">Instead of what?</h2>
+<p class="rg-lede">The honest trade against what you'd use otherwise:</p>
 
 <div class="rg-vs">
-  <div class="rg-vs-row">
-    <h3>Durable Objects + SQLite, or D1 + Drizzle</h3>
-    <p>The same primitives, already assembled: you stop writing the live fan-out, the per-tenant routing, the migration runner and the authorization middleware, and keep the account and deploy you already have. You give up SQL and hand-tuning the storage layout.</p>
-  </div>
-  <div class="rg-vs-row">
-    <h3>Postgres + an ORM</h3>
-    <p>You keep the types and lose SQL. No migration ever rewrites old data and live queries come standard — but there is no planner to tune, no <code>psql</code>, and no joins across two databases.</p>
-  </div>
-  <div class="rg-vs-row">
-    <h3>Convex</h3>
-    <p>The same "the query re-runs itself" model, deployed into your own Cloudflare account instead of a hosted platform, and a database per customer is a function call rather than a deployment. There is no dashboard, no scheduled functions and no file storage.</p>
-  </div>
-  <div class="rg-vs-row">
-    <h3>Supabase</h3>
-    <p>Row rules are here, per attribute, deny-by-default and running at the edge, and a database per tenant costs one function call. Ramose only verifies JWTs, though: bring your own identity provider and your own file storage.</p>
-  </div>
-  <div class="rg-vs-row">
-    <h3>Instant</h3>
-    <p>The same graph-in-the-browser feel with per-user permissions, except you own the deployment end to end. Nothing is hosted for you and there is no admin console.</p>
-  </div>
+<table>
+  <thead>
+    <tr><th>Instead of</th><th>Same idea</th><th>What's different, and what you give up</th></tr>
+  </thead>
+  <tbody>
+    <tr><th>Convex</th><td>queries that re-run themselves</td><td>runs in <em>your</em> Cloudflare account; a database per customer is a function call. No hosted dashboard, scheduled functions or file storage.</td></tr>
+    <tr><th>Supabase</th><td>rules enforced by the database</td><td>rules per field, deny by default, checked against your screens at deploy. No SQL; bring your own sign-in and file storage.</td></tr>
+    <tr><th>Instant / Firebase</th><td>read and write from the browser, it stays live, per-user rules</td><td>typed schema in TypeScript; one deploy you own. No console, no managed infra, no offline SDK.</td></tr>
+    <tr><th>D1 + Drizzle, or a Durable Object + SQLite</th><td>the same Cloudflare primitives, your account</td><td>already assembled: live fan-out, per-customer routing, permissions, history. You give up SQL.</td></tr>
+    <tr><th>Postgres + an ORM</th><td>typed access</td><td>no migration rewrites old data; live queries and history come standard. No SQL, no planner, no cross-database joins.</td></tr>
+  </tbody>
+</table>
 </div>
 
 <div class="rg-limits">
-  <strong>What Ramose does not have</strong>
-  <ul>
-    <li>SQL, or joins across databases</li>
-    <li>A hosted dashboard</li>
-    <li>An identity provider of its own — bring any issuer with a JWKS endpoint</li>
-  </ul>
-  <p>Throughput ceiling: low thousands of writes per second, per database. Past that you split into more databases — a function call, not a deployment — and the price is the no-joins line above.</p>
+  <strong>What Ramose does not have:</strong> SQL, or joins across databases · a hosted dashboard · its own sign-in · file storage · scheduled jobs.
+  <p><a href="/getting-started/compare/">Full comparison →</a></p>
 </div>
 
 </div>
 
-<div class="rg-band rg-how-band">
+<div class="rg-band">
 
-<h2 class="rg-h2">How it works</h2>
-<p class="rg-lede">Three parts, one deploy: one place commits writes, object storage keeps every version, reads run at the edge.</p>
+<h2 id="how-it-works" class="rg-h2">How it works</h2>
+<p class="rg-lede">Three parts, one deploy.</p>
 
 <div class="rg-how">
   <div class="rg-how-box">
     <span class="rg-step">writes</span>
-    <h3>One writer</h3>
-    <p>Each database has exactly one thing that commits writes, in order: no write conflicts to resolve, no leader election, no "eventually".</p>
+    <h3>One writer per database</h3>
+    <p>Writes commit in order; no conflicts, no "eventually".</p>
   </div>
   <div class="rg-how-box">
     <span class="rg-step">storage</span>
-    <h3>Durable storage</h3>
-    <p>A write is durable in the writer's own storage before your call returns. Immutable segments reach object storage afterwards and are never rewritten, which is why you can still read yesterday.</p>
+    <h3>Storage keeps every version</h3>
+    <p>A write is durable before your call returns; nothing is rewritten, so yesterday is still readable.</p>
   </div>
   <div class="rg-how-box">
     <span class="rg-step">reads</span>
-    <h3>Readers at the edge</h3>
-    <p>Queries run next to your app against copies of that storage, so reads never wait behind writes and a slow query cannot stall a commit.</p>
+    <h3>Reads run next to your users</h3>
+    <p>On copies, so a slow read never blocks a write.</p>
   </div>
 </div>
 
-<p class="rg-how-link"><a href="/concepts/architecture/">See the full architecture →</a></p>
+<p class="rg-how-link"><a href="/concepts/architecture/">How Ramose works →</a></p>
 
 </div>
+
+<p class="rg-trust"><span>Pre-release</span><span class="rg-trust-sep">·</span><span>no Ramose bill: it runs in your Cloudflare account, so you pay Cloudflare for what you use</span><span class="rg-trust-sep">·</span><span>662 tests run on every pull request and on master</span><span class="rg-trust-sep">·</span><span>built in the open — <a href="https://github.com/tvanhens/ramose">GitHub</a></span></p>
 
 <div class="rg-closing">
-  <p class="rg-eyebrow">Changes propagate.</p>
-  <p class="rg-big">Install the package, write a schema, run a live query.</p>
-  <p class="rg-closing-note"><code>npm install @ramose/alchemy</code> — then the Quickstart stands up a local peer in your own app.</p>
+  <p class="rg-eyebrow">Try it in two lines</p>
+  <p class="rg-big">Run Reef, read three files, build your own.</p>
+  <div class="rg-closing-code">
+
+```sh title="Try it" frame="terminal"
+git clone https://github.com/tvanhens/ramose && cd ripple && bun install
+bun run dev:reef        # a realtime, multi-tenant app on http://localhost:5173
+```
+
+  </div>
+  {/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
+  <p class="rg-closing-note"><strong>Not on npm yet.</strong> <code>@ramose/*</code> is unpublished, so today the clone above is the way in. Once it ships: <code>npm install @ramose/alchemy @ramose/worker @ramose/react</code>. The <a href="/getting-started/quickstart/#path-2-start-your-own-app">Quickstart</a> shows both paths.</p>
   <div class="rg-actions">
-    <a class="rg-button primary" href="/getting-started/quickstart/">Open the quickstart</a>
-    <a class="rg-button secondary" href="https://github.com/tvanhens/ramose/tree/master/examples/reef">See Reef</a>
+    <a class="rg-button primary" href="/getting-started/quickstart/">Open the Quickstart</a>
+    <a class="rg-button secondary" href="/getting-started/tour-of-reef/">See a real app</a>
   </div>
 </div>
+
+<nav class="rg-sitenav" aria-label="Documentation" data-pagefind-ignore>
+  <div>
+    <h2>Start</h2>
+    <ul>
+      <li><a href="/getting-started/introduction/">What is Ramose</a></li>
+      <li><a href="/getting-started/quickstart/">Quickstart</a></li>
+      <li><a href="/getting-started/first-app/">Build your first app</a></li>
+      <li><a href="/getting-started/tour-of-reef/">Tour of Reef</a></li>
+    </ul>
+  </div>
+  <div>
+    <h2>Build</h2>
+    <ul>
+      <li><a href="/guides/catalog/">Define your data</a></li>
+      <li><a href="/guides/queries/">Read data</a></li>
+      <li><a href="/guides/live-queries/">Live queries</a></li>
+      <li><a href="/guides/permissions/">Permissions</a></li>
+    </ul>
+  </div>
+  <div>
+    <h2>Ship</h2>
+    <ul>
+      <li><a href="/guides/deploy/">Deploy</a></li>
+      <li><a href="/guides/before-production/">Before production</a></li>
+      <li><a href="/guides/troubleshooting/">Troubleshooting and FAQ</a></li>
+    </ul>
+  </div>
+  <div>
+    <h2>Concepts</h2>
+    <ul>
+      <li><a href="/concepts/architecture/">How Ramose works</a></li>
+      <li><a href="/concepts/time-travel/">Time travel</a></li>
+      <li><a href="/concepts/glossary/">Glossary</a></li>
+    </ul>
+  </div>
+  <div>
+    <h2>Reference</h2>
+    <ul>
+      <li><a href="/reference/client-api/">Client API</a></li>
+      <li><a href="/reference/react/">React hooks</a></li>
+      <li><a href="/reference/server/">The server</a></li>
+    </ul>
+  </div>
+</nav>

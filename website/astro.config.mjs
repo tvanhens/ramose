@@ -9,11 +9,28 @@ const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
+  // Old URLs from before the docs overhaul. Astro emits a static
+  // meta-refresh page per entry; fragments are kept in the target URL.
+  // These stubs have no <html> element, so every build Pagefind logs
+  // "7 pages found without an <html> element" and skips them. Expected.
+  redirects: {
+    "/guides/auth/": "/reference/policy/",
+    "/concepts/databases-are-names/": "/guides/workspaces/",
+    "/concepts/for-datomic-users/":
+      "/concepts/data-model/#where-the-ideas-come-from",
+    "/reference/alchemy-resources/":
+      "/guides/deploy/#reference-the-ramose-resources",
+    "/reference/http-api/": "/reference/server/#http-api",
+    "/reference/configuration/": "/reference/server/#configuration",
+    "/reference/runbook/": "/reference/server/#operations",
+  },
   integrations: [
     starlight({
       title: "Ramose",
+      // Default meta description for any page without its own (today: /404).
+      // Keep it under 160 characters — Google truncates around there.
       description:
-        "Ramose is a typed, realtime database for apps you ship on Cloudflare: TypeScript schema, queries that update themselves, and per-user permissions, all running in your own Cloudflare account.",
+        "The typed, realtime database for Cloudflare. Describe your data in TypeScript, queries update themselves in every tab, users see only what your rules allow.",
       favicon: "/favicon.svg",
       head: [
         {
@@ -86,10 +103,13 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: "Getting started",
+          label: "Start",
           items: [
-            { label: "Introduction", slug: "getting-started/introduction" },
+            { label: "What is Ramose", slug: "getting-started/introduction" },
             { label: "Quickstart", slug: "getting-started/quickstart" },
+            { label: "Build your first app", slug: "getting-started/first-app" },
+            { label: "Tour of Reef", slug: "getting-started/tour-of-reef" },
+            { label: "How it compares", slug: "getting-started/compare" },
           ],
         },
         {
@@ -97,59 +117,40 @@ export default defineConfig({
           items: [
             { label: "Define your data", slug: "guides/catalog" },
             { label: "Write data", slug: "guides/transactions" },
-            { label: "Query and pull", slug: "guides/queries" },
+            { label: "Read data", slug: "guides/queries" },
             { label: "Live queries", slug: "guides/live-queries" },
             { label: "Permissions", slug: "guides/permissions" },
+            { label: "Sign in and roles", slug: "guides/sign-in" },
+            { label: "One database per customer", slug: "guides/workspaces" },
           ],
         },
         {
           label: "Ship",
           items: [
-            { label: "Deploy with Alchemy", slug: "guides/deploy" },
-            { label: "Workers and tenants", slug: "guides/workers" },
+            { label: "Deploy", slug: "guides/deploy" },
+            { label: "Use it from a Worker", slug: "guides/workers" },
             { label: "Before production", slug: "guides/before-production" },
+            { label: "Troubleshooting and FAQ", slug: "guides/troubleshooting" },
           ],
         },
         {
           label: "Concepts",
           items: [
-            { label: "Architecture", slug: "concepts/architecture" },
-            { label: "A database is a name", slug: "concepts/databases-are-names" },
+            { label: "How Ramose thinks about data", slug: "concepts/data-model" },
+            { label: "How Ramose works", slug: "concepts/architecture" },
             { label: "Time travel", slug: "concepts/time-travel" },
-            { label: "For Datomic users", slug: "concepts/for-datomic-users" },
-            { label: "Auth and policy", slug: "guides/auth" },
+            { label: "Effect in five minutes", slug: "concepts/effect" },
+            { label: "Glossary", slug: "concepts/glossary" },
           ],
         },
         {
           label: "Reference",
           items: [
             { label: "Client API", slug: "reference/client-api" },
-            { label: "React", slug: "reference/react" },
-            { label: "Alchemy resources", slug: "reference/alchemy-resources" },
-            { label: "HTTP API", slug: "reference/http-api" },
+            { label: "React hooks", slug: "reference/react" },
+            { label: "Policy", slug: "reference/policy" },
             { label: "Errors", slug: "reference/errors" },
-            { label: "Configuration", slug: "reference/configuration" },
-            { label: "Runbook", slug: "reference/runbook" },
-          ],
-        },
-        {
-          label: "Examples",
-          items: [
-            {
-              label: "Reef — multi-tenant issue tracker",
-              link: "https://github.com/tvanhens/ramose/tree/master/examples/reef",
-              attrs: { target: "_blank" },
-            },
-            {
-              label: "Todos — React + live queries",
-              link: "https://github.com/tvanhens/ramose/tree/master/examples/todos",
-              attrs: { target: "_blank" },
-            },
-            {
-              label: "Multi-tenant Worker",
-              link: "https://github.com/tvanhens/ramose/tree/master/examples/kv-style",
-              attrs: { target: "_blank" },
-            },
+            { label: "The server", slug: "reference/server" },
           ],
         },
       ],

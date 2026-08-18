@@ -1,0 +1,157 @@
+---
+title: Glossary
+description: Plain-word definitions of every Ramose word, with the API name beside each. Guides link here on first use.
+---
+import Next from "../../../components/Next.astro";
+
+Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on first use, and the row you were sent to is highlighted. In prose we use the plain word; the code uses the API name.
+
+## A–F
+
+| Term | What it means | In the code |
+|---|---|---|
+| <span id="alchemy"></span>**Alchemy** | The TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `bun alchemy dev` runs it on your laptop, `bun alchemy deploy` ships it. | `Alchemy.Stack`, [`alchemy dev` / `deploy`](/guides/deploy/#commands) |
+| <span id="as-of"></span><span id="asof"></span>**as of** | Read the database exactly as it was right after version number `t`. Same query, one extra call. | [`db.asOf(t)`](/reference/client-api/#db) |
+| <span id="better-auth"></span>**Better Auth** | An open-source sign-in library. Reef uses it; the `@ramose/better-auth` plugin mints Ramose tokens from it. | `ramoseToken`, `ramoseTokenClient` — [Sign in and roles](/guides/sign-in/#with-better-auth-what-reef-does) |
+| <span id="capability"></span>**capability** | What your own Worker is allowed to do with Ramose: read-only or read-write databases. | `ReadWriteDatabases`, `ReadDatabases` — [Use it from a Worker](/guides/workers/#what-the-worker-can-do) |
+| <span id="client"></span>**client** | The object that talks to the server for one page and hands out `db` handles. | `Ramose.connect`, `Client`, `RamoseProvider` |
+| <span id="database"></span>**database** | A named, isolated set of facts with its own writer. Naming one costs nothing; the first write creates it. | `ramose.db(name, catalog)` — [One database per customer](/guides/workspaces/) |
+| <span id="database-name"></span>**database name** | Letters, digits, `. _ -`, up to 64 characters, starting with a letter or digit. | `Ramose.DATABASE_NAME_RE`, `Ramose.isDatabaseName` |
+| <span id="dbafter"></span>**dbAfter** | The same database pinned at the version your write produced — read your own write with no second round trip. | `report.dbAfter` — [What a write returns](/guides/transactions/#what-a-write-returns) |
+| <span id="deny-by-default"></span>**deny by default** | An operation is refused unless a rule allows it. Forgetting a rule closes a door; it never opens one. | policy semantics — [How rules combine](/reference/policy/#how-rules-combine) |
+| <span id="durable-object"></span>**Durable Object** | Cloudflare's single-instance stateful Worker. Ramose runs the writer and the read copies as Durable Objects. | `TransactorDO`, `QueryReplicaDO` — [What runs where](/concepts/architecture/#what-runs-where) |
+| <span id="effect"></span>**Effect** | The TypeScript library Ramose is built on. Ramose calls return Effect values; the hooks run them; `Effect.runPromise` runs one elsewhere. | `Effect.runPromise`, `yield*` — [Effect in five minutes](/concepts/effect/) |
+| <span id="fact"></span><span id="datom"></span>**fact** | One statement: this record's field has this value, as of version `t`. Facts are added or removed, never overwritten. | `datomCount` ("how many facts landed") |
+| <span id="field"></span><span id="attribute"></span>**field** (attribute) | One named, typed slot on a record type, e.g. `issue.title`. Its full name is `:issue/title`. | [`Ramose.Attr`](/guides/catalog/#three-pieces-and-that-is-the-whole-vocabulary), `Issue.title` |
+
+## G–M
+
+| Term | What it means | In the code |
+|---|---|---|
+| <span id="history"></span>**history** | A read-only view that includes facts that were later removed. | [`db.history`](/concepts/time-travel/#history-including-what-was-deleted) |
+| <span id="id"></span><span id="eid"></span>**id** | Every record has a numeric id; every record type exposes it as a field for free. | `Issue.id`, `Eid` (an object `{ id }`) |
+| <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. | `db.install()`, `Ramose.Database` — [Two doors to install the schema](/guides/workspaces/#two-doors-to-install-the-schema) |
+| <span id="issuer-audience"></span>**issuer / audience** | Who signed a token and who it is for; the server checks both. | `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD` — [The token the server verifies](/reference/policy/#the-token-the-server-verifies) |
+| <span id="jwks"></span>**JWKS** | Your sign-in provider's public keys, at a URL, used to verify tokens. | `RAMOSE_JWKS_URL`, `RAMOSE_JWKS_JSON` |
+| <span id="live-query"></span><span id="standing-query"></span>**live query** | A query that re-runs itself whenever the database changes and hands your screen new rows. | `db.live`, [`useLive`](/reference/react/#uselive), `livePull`, `usePull` |
+| <span id="local-emulator"></span><span id="miniflare"></span>**local emulator** | The Cloudflare runtime `alchemy dev` runs on your laptop; nothing leaves your machine. | — |
+| <span id="lookup"></span><span id="lookup-ref"></span>**lookup by unique key** | Find a record by a unique field instead of its id: `[User.sub, "abc"]`. | `LookupRef` — [Read one record](/guides/queries/#read-one-record) |
+| <span id="mint"></span>**mint** | Create and sign a token for a user, a database and a role. Done by your auth server, never by Ramose. | `Ramose.claims`, `ramoseToken` — [Sign in and roles](/guides/sign-in/) |
+
+## N–S
+
+| Term | What it means | In the code |
+|---|---|---|
+| <span id="object-storage"></span><span id="r2"></span>**object storage** | Cloudflare R2, where every version of every database is kept. | `Cloudflare.R2.Bucket` |
+| <span id="one-or-many"></span><span id="cardinality"></span>**one value or many** | Whether a field holds one value or a set of values. Labels on an issue are "many". | `cardinality: "one"` \| `"many"` — [Options](/guides/catalog/#options) |
+| <span id="open-mode"></span>**open mode** | A server with no policy and no token: every caller is admin. Right for a laptop, wrong for the internet. | env unset — [The three server modes](/guides/permissions/#the-three-server-modes) |
+| <span id="policy"></span><span id="permissions"></span>**policy** | The value that says which roles may read, create, change or remove which fields; compiled to JSON for the server. | [`Ramose.Policy`](/reference/policy/), `RAMOSE_POLICY` |
+| <span id="preset"></span>**preset** | A field the server fills from the caller on create (creator = you). A different client value is refused; the same value is a no-op. | `P.preset(attr, P.principal)` — [Operations](/reference/policy/#operations) |
+| <span id="pull"></span>**pull** | Read one record by id or unique key with a chosen set of fields; `null` if missing or a required field is absent. | [`db.pull`](/reference/client-api/#pull), `usePull`, `Ramose.Pull` |
+| <span id="query"></span>**query** | A typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past. | [`Ramose.query`](/reference/client-api/#query-builder), `db.q`, `useQuery` |
+| <span id="query-budget"></span>**query budget** | A memory limit per query on the server; exceeding it fails the query with a 413 — narrow the query. | `QueryBudgetExceeded`, [`RAMOSE_QUERY_MAX_CELLS`](/reference/server/#query-budget) |
+| <span id="read-copy"></span><span id="replica"></span>**read copy** | Where queries run: a copy of the data near your users, kept current by the writer. | `QueryReplicaDO` |
+| <span id="record"></span><span id="entity"></span>**record** (entity) | One thing in the database — an issue, a user — identified by an id: the set of facts about that id. | `tx.entity()`, `retractEntity` — [The four verbs](/guides/transactions/#the-four-verbs) |
+| <span id="record-type"></span><span id="namespace"></span>**record type** (namespace) | A named group of fields, like a table: `issue`, `user`, `label`. | `Ramose.Namespace("issue", {…})`, policy `ns:` |
+| <span id="reference"></span><span id="ref"></span>**reference** | A field that points at another record — a typed foreign key. Queries can hop through it. | `Ramose.Ref(() => User)`, `.select`, `.reverse` — [Value types](/guides/catalog/#value-types) |
+| <span id="remove"></span><span id="retract"></span><span id="retract-entity"></span>**remove / delete** (retract) | Take a fact back: clear a field, or delete a whole record. History keeps it. | `tx.retract`, `tx.retractEntity` — [The four verbs](/guides/transactions/#the-four-verbs) |
+| <span id="role"></span><span id="class"></span>**role** (class) | A role name carried in the sign-in token; rules refer to it. Reef: admin, member, viewer. `admin` bypasses every rule. | `classes:`, `P.class(c)`, `ramose.class` — [Expressions](/reference/policy/#expressions) |
+| <span id="row"></span>**row** | One result of a query; its TypeScript type is inferred from the query. | `Ramose.Row<typeof q>` |
+| <span id="schema"></span><span id="catalog"></span>**schema** (catalog) | Your data model as one TypeScript value: record types and their fields. Shared by app, rules and deploy. | [`Ramose.Catalog`](/guides/catalog/) |
+| <span id="server"></span><span id="peer"></span>**the Ramose server** (peer) | The Cloudflare Worker that serves all your databases. Its code ships with Ramose; you declare it, you don't write it. | `Cloudflare.Worker("Peer")`, `Ramose.Server`, `@ramose/worker` — [The server](/reference/server/) |
+| <span id="service-binding"></span>**service binding** | Cloudflare's Worker-to-Worker call; how your Worker reaches the server without a URL. | `Ramose.ServerBinding` — [Use it from a Worker](/guides/workers/) |
+| <span id="shape"></span>**shape** | The fields you ask a query or pull to return, including fields of referenced records. | `.select({…})`, `.optional` — [Choose the fields](/guides/queries/#choose-the-fields) |
+| <span id="token"></span><span id="jwt"></span>**sign-in token** (JWT) | A signed token the server verifies on every request and never issues; carries `sub`, the database name and the role. | `Ramose.token.jwt` / `.static`, `TokenSource` — [What the token carries](/guides/sign-in/#what-the-token-carries) |
+| <span id="signed-in-user"></span><span id="principal"></span>**signed-in user** (principal) | The record that represents the caller, found by matching the token's `sub` to a unique field. | `principal: User.sub`, `P.principal`, `db.principal()` |
+| <span id="snapshot"></span><span id="root"></span>**snapshot** | A saved index of a whole database at a version. Retention counts snapshots. Reference only. | [`RAMOSE_RETAIN_ROOTS`](/reference/server/#retention) |
+| <span id="stage"></span>**stage** | An Alchemy deployment environment (dev, prod). | `--stage prod` — [Deploy](/guides/deploy/#commands) |
+
+## T–Z
+
+| Term | What it means | In the code |
+|---|---|---|
+| <span id="tick"></span>**tick / update** | The server telling an open page that the version moved; live queries re-run. | `useLive().ticks` |
+| <span id="time-travel"></span>**time travel** | Reading the database at an earlier version number with `asOf`. | `db.asOf(t)` — [Time travel](/concepts/time-travel/) |
+| <span id="token-source"></span>**token source** | A self-refreshing credential: a function that fetches a token, re-minted near expiry. | `Ramose.token.jwt(mint)` — [Tokens refresh themselves](/guides/sign-in/#tokens-refresh-themselves) |
+| <span id="unique-key"></span>**unique key** | A field whose value identifies one record; lets you look records up by it. | `unique: "identity"` — [Options](/guides/catalog/#options) |
+| <span id="version-number"></span><span id="basis"></span><span id="t"></span>**version number `t`** (basis) | The number every write gets, in order. Reads happen at a version; `asOf(t)` picks one. Not a date. | `report.t`, `db.basis()`, `useBasis` |
+| <span id="connection"></span><span id="session"></span>**WebSocket connection** (session) | The connection a browser holds to a database; carries reads and updates. Writes always use HTTPS. | `GET /db/:name/session` — [HTTP API](/reference/server/#http-api) |
+| <span id="worker"></span>**Worker** | Cloudflare's serverless function. Your app's backend and the Ramose server are Workers. | `Cloudflare.Worker` |
+| <span id="workspace"></span><span id="tenant"></span>**workspace / customer** (tenant) | One customer's isolated data — one database. Reef's word is workspace. | `ramose.db(slug, Reef)` — [One database per customer](/guides/workspaces/) |
+| <span id="write"></span><span id="transaction"></span><span id="transact"></span>**write** (transaction) | A group of changes that lands completely or not at all; gets one version number; the only way data enters. | [`db.transact`](/reference/client-api/#transactions), `TxReport` |
+| <span id="writer"></span><span id="transactor"></span>**writer** (transactor) | The one thing per database that commits writes, in order. | `TransactorDO` — [The four promises](/concepts/architecture/#the-four-promises) |
+
+## Reference-only words
+
+Words you will only meet in the Reference pages are defined where they appear: ident (a field's full name, `:issue/title`), tempid, novelty, segment, indexer, group commit, `TxReport` / `txEid` / `datomCount`, `ReadDb`, `authEnv` / `internalSecret`, the `RAMOSE_*` settings, and the Effect words Layer, Stream, fiber and Scope ([Effect in five minutes](/concepts/effect/)).
+
+<details>
+<summary>How we word these in the guides</summary>
+
+The house style behind the table above: which word goes in the prose, and how an API name is introduced. Useful if you are writing for this site; skippable otherwise.
+
+| Term | In prose |
+|---|---|
+| **Alchemy** | "Alchemy (the deploy tool)" |
+| **as of** | "as it was at version `t`" |
+| **Better Auth** | "Better Auth (the sign-in library)" |
+| **capability** | "what the Worker may do" |
+| **client** | "the client" |
+| **database** | "database" |
+| **database name** | "a valid name" |
+| **dbAfter** | "the database right after your write" |
+| **deny by default** | "deny by default" |
+| **Durable Object** | "Durable Object (Cloudflare's single-instance stateful Worker)" once, then "the writer" / "a read copy" |
+| **Effect** | "Effect (the library Ramose is built on)" |
+| **fact** | "fact" |
+| **field** | "field" |
+| **history** | "history" / "including what was deleted" |
+| **id** | "record id" |
+| **install** | "install the schema" |
+| **issuer / audience** | "issuer / audience" |
+| **JWKS** | "the sign-in provider's public keys" |
+| **live query** | "live query" |
+| **local emulator** | "the local Cloudflare emulator" |
+| **lookup by unique key** | "look up by unique key" |
+| **mint** | "mint (issue) a token" |
+| **object storage** | "object storage (R2)" |
+| **one value or many** | "single-value / many-valued field" |
+| **open mode** | "open" |
+| **policy** | "permissions" (the topic) / "the policy" (the value) |
+| **preset** | "server-filled field" |
+| **pull** | "read one record" |
+| **query** | "query" |
+| **query budget** | "memory limit per query" |
+| **read copy** | "read copy" |
+| **record** | "record" |
+| **record type** | "record type" / just "issues" |
+| **reference** | "reference" |
+| **remove / delete** | "clear a field" / "delete a record" |
+| **role** | "role (a *class* in the policy)" |
+| **row** | "row" |
+| **schema** | "schema" |
+| **the Ramose server** | "the Ramose server", then "the server" |
+| **service binding** | "service binding" |
+| **shape** | "shape (the fields you ask for)" |
+| **sign-in token** | "sign-in token", then "token" |
+| **signed-in user** | "the signed-in user" |
+| **snapshot** | "snapshot" |
+| **stage** | "stage" |
+| **tick / update** | "update" |
+| **time travel** | "time travel" |
+| **token source** | "token source" |
+| **unique key** | "unique key" |
+| **version number `t`** | "version number" / "version `t`"; "the version this view reads at" for `basis` |
+| **WebSocket connection** | "the WebSocket connection" |
+| **Worker** | "Worker" |
+| **workspace / customer** | "workspace" (Reef) / "customer" |
+| **write** | "write" |
+| **writer** | "the writer" |
+
+</details>
+
+<Next links={[
+  { href: "/getting-started/quickstart/", label: "Quickstart", why: "run a realtime app in ten minutes" },
+  { href: "/getting-started/introduction/", label: "What is Ramose", why: "the one-page picture" },
+  { href: "/concepts/data-model/", label: "How Ramose thinks about data", why: "facts, versions and names, in plain words" },
+]} />

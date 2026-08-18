@@ -1,0 +1,138 @@
+---
+title: Read data
+description: Build a query as a value, run it, filter it, choose the fields (through references), order and page, read one record, read the past.
+---
+import Shot from "../../../components/Shot.astro";
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen.
+
+<Learn learn={["Build a query and run it", "Filter, choose fields through references, order and page", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={10} />
+
+## A query is a value
+
+Reef's whole board is one query, built once at module scope:
+
+```ts title="examples/reef/src/domain/queries.ts:66-68"
+export const boardQuery = Ramose.query(Issue)
+  .orderBy(Issue.rank, "asc")
+  .select(boardShape);
+```
+
+`Ramose.query(Issue)` means "every issue"; everything after it narrows or shapes that set. Because it is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged.
+
+## Run it
+
+`db.q(query)` runs it once. Reef looks up your own user row this way when you enter a workspace:
+
+```ts title="examples/reef/src/app/mutations.ts:61-64"
+    const mineQuery = Ramose.query(User)
+      .where(User.sub.eq(me.id))
+      .select({ id: User.id });
+    const existing = yield* db.q(mineQuery);
+```
+
+In React, `useQuery(db, query)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.q(query))`.
+
+## Filter
+
+Every field carries its own predicates. `where` takes any number; all must hold:
+
+```ts title="examples/reef/src/domain/queries.ts:78-82"
+export const commentsQuery = (issueId: number) =>
+  Ramose.query(Comment)
+    .where(Comment.issue.eq(issueId))
+    .orderBy(Comment.at, "asc")
+    .select(commentShape);
+```
+
+| on | predicates |
+| --- | --- |
+| any field | `eq` `ne` `lt` `lte` `gt` `gte` `in([…])` `exists()` `missing()` |
+| strings | `startsWith` `endsWith` `includes` `matches` (case-sensitive; `matches` takes a string or a `RegExp` with no flags) |
+| references | `is(id)` — points at this record; hop through it and keep filtering: `Issue.assignee.name.startsWith("A")` |
+| many-valued fields | `some(p)` `every(p)` `none(p)` — quantify a predicate over the values; for many-valued scalars the value cursor is `.each` (`field.each.startsWith("a")`) |
+
+Absence is not a value: `eq` and the comparisons need the fact to be there, so ask with `exists()` or `missing()` when absence is the question. `Ramose.or(…)` and `Ramose.not(…)` combine predicates; a **reference** reads backwards with `.reverse` — `Issue.creator.reverse` from a user is "the issues that point at me" ([glossary](/concepts/glossary/#reference)).
+
+## Choose the fields
+
+`select` decides both the rows you get and their TypeScript type — the **shape** ([glossary](/concepts/glossary/#shape)). Reef's board shape follows two references and one set:
+
+```ts title="examples/reef/src/domain/queries.ts:24-34"
+export const boardShape = {
+  id: Issue.id,
+  title: Issue.title,
+  status: Issue.status,
+  priority: Issue.priority,
+  rank: Issue.rank,
+  createdAt: Issue.createdAt,
+  creator: Issue.creator.select(personShape),
+  assignee: Issue.assignee.select(personShape).optional,
+  labels: Issue.labels.select(labelShape),
+} as const;
+```
+
+- A field without `.optional` is required: an issue with no `title` is dropped from the results.
+- `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
+- `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
+
+The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects.
+
+## Order, limit, page
+
+`orderBy`, `limit`, and `offset` run on the server: rows are sorted, then paged, *then* shaped — so `limit(20)` returns twenty records and the client never sees the rows a page dropped. `limit` bounds what you receive, not what the query scans. Required fields are enforced before the limit, so the page you get is the page you keep.
+
+```ts
+  // Todo is the todos example's record type.
+  .orderBy(Todo.createdAt, "asc", { empty: "last" }).limit(20).offset(0);
+```
+
+`empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
+
+## Read one record
+
+When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:
+
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:258"
+  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+```
+
+```ts title="examples/reef/src/domain/queries.ts:40-46"
+export const issueExtraShape = {
+  title: Issue.title,
+  description: Issue.description.optional,
+  // Read-masked for member/viewer (policy.ts): must be `.optional`, so for
+  // them the row survives and the field is simply absent.
+  privateNote: Issue.privateNote.optional,
+} as const;
+```
+
+The subject is `{ id }` or a lookup by unique key, `[User.sub, "user_ada"]`. The result is the shape or `null` — `null` when the record is missing *or* a required field is absent (including one permissions hid from you). Outside React it is `db.pull(subject, shape)`.
+
+<Shot src="/reef/issue-detail.png" alt="Reef's issue panel open on one card: title, status, priority, assignee, labels, description and comments" caption="One pull for the panel's extras; the rest rides the live board row." code="examples/reef/src/app/components/IssueDetail.tsx:255-270" />
+
+## Read the past
+
+Every query runs unchanged against an earlier version of the database. Reef's time-travel slider is `useQuery` on `db.asOf(t)`; its "deleted, still in history" strip is the same idea over `db.history`:
+
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:453-454"
+  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+  const everything = useQuery(db.history, everyIssueEverQuery);
+```
+
+`t` is a **version number**, not a date ([glossary](/concepts/glossary/#version-number)): the `t` a write returns, or `useBasis(db)` for the current one. Both views are read-only. How far back, what history includes, and the rest of the slider: [Time travel](/concepts/time-travel/).
+
+## Rules the builder enforces
+
+- A select field is a direct field of the queried record type or a nested `ref.select({…})`; a hop in a select (`{ creatorName: Issue.creator.name }`) is a type error and a runtime error.
+- `orderBy` across a many-valued hop throws, and so does `orderBy(field.each)` — sort by a single-valued field.
+- `.each` only works inside its own collection's `some/every/none` or per-element constraints.
+- Everything runs on the server, under a memory limit per query; exceeding it fails with `QueryBudgetExceeded` — narrow the query. See [Query budget](/reference/server/#query-budget).
+
+<Next links={[
+  { href: "/guides/live-queries/", label: "Live queries", why: "the same query, re-run for you on every change" },
+  { href: "/guides/transactions/", label: "Write data", why: "the other half: create, change, delete" },
+  { href: "/reference/client-api/", label: "Client API", why: "every builder method, with an example" },
+]} />
