@@ -70,29 +70,41 @@ steps.push({
       : $`bun run scripts/check-release.ts --built`,
 });
 
-for (const [index, step] of steps.entries()) {
-  console.log(`\n\x1b[1m[${index + 1}/${steps.length + 2}] ${step.name}\x1b[0m`);
-  await step.run();
-}
-
-// From here the manifests are mutated, so everything is wrapped to guarantee
-// the restore. `prepare-publish` pins `workspace:*` to the release version;
-// leaving that pinned in a working tree would be committed by accident sooner
-// or later.
-console.log(`\n\x1b[1m[${steps.length + 1}/${steps.length + 2}] pin internal dependency ranges\x1b[0m`);
-await $`bun run scripts/prepare-publish.ts`;
+const total = steps.length + 2;
 
 try {
-  await $`bun run scripts/check-release.ts --built`;
+  for (const [index, step] of steps.entries()) {
+    console.log(`\n\x1b[1m[${index + 1}/${total}] ${step.name}\x1b[0m`);
+    await step.run();
+  }
 
-  console.log(`\n\x1b[1m[${steps.length + 2}/${steps.length + 2}] publish\x1b[0m`);
-  const flags = ["--tag", distTag];
-  if (dryRun) flags.push("--dry-run");
-  if (provenance) flags.push("--provenance");
-  await $`bun run scripts/publish-packages.ts ${flags}`;
-} finally {
-  console.log("\n\x1b[2mrestoring workspace ranges\x1b[0m");
-  await $`bun run scripts/prepare-publish.ts --restore`.quiet();
+  // From here the manifests are mutated, so everything is wrapped to guarantee
+  // the restore. `prepare-publish` pins `workspace:*` to the release version;
+  // leaving that pinned in a working tree would be committed by accident
+  // sooner or later.
+  console.log(`\n\x1b[1m[${total - 1}/${total}] pin internal dependency ranges\x1b[0m`);
+  await $`bun run scripts/prepare-publish.ts`;
+
+  try {
+    await $`bun run scripts/check-release.ts --built`;
+
+    console.log(`\n\x1b[1m[${total}/${total}] publish\x1b[0m`);
+    const flags = ["--tag", distTag];
+    if (dryRun) flags.push("--dry-run");
+    if (provenance) flags.push("--provenance");
+    await $`bun run scripts/publish-packages.ts ${flags}`;
+  } finally {
+    console.log("\n\x1b[2mrestoring workspace ranges\x1b[0m");
+    await $`bun run scripts/prepare-publish.ts --restore`.quiet();
+  }
+} catch (error) {
+  // The failing command has already written its own diagnostics to stderr.
+  // Rethrowing would make Bun print the whole nested ShellError on top of
+  // that, which buries the actual message, so report and exit instead.
+  const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+  console.error(`\n\x1b[31m✗ release failed: ${message}\x1b[0m`);
+  console.error("\x1b[2mworkspace ranges were restored; nothing is left pinned\x1b[0m");
+  process.exit(1);
 }
 
 console.log(

@@ -62,7 +62,18 @@ for (const pkg of ORDER) {
   if (dryRun) flags.push("--dry-run");
 
   console.log(`publish ${spec}${dryRun ? " (dry run)" : ""}`);
-  await $`npm publish ${flags}`.cwd(`packages/${pkg}`);
+  try {
+    await $`npm publish ${flags}`.cwd(`packages/${pkg}`);
+  } catch {
+    // npm has already explained itself on stderr. Printing the ShellError on
+    // top of that just buries the message.
+    console.error(`\nfailed to publish ${spec} — see the npm error above`);
+    if (published.length > 0) {
+      console.error(`already published this run: ${published.join(", ")}`);
+      console.error("re-running skips those, so it is safe to fix and retry");
+    }
+    process.exit(1);
+  }
   published.push(spec);
 }
 
