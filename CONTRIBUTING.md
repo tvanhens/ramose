@@ -127,23 +127,45 @@ a range).
 ### Cutting a release
 
 ```sh
-bun run release:version 0.2.0   # bumps root + all 8 manifests, commits them
-git tag v0.2.0
-git push origin HEAD --tags
+bun run release:dry 0.2.0   # rehearse it: no side effects whatsoever
+bun run release 0.2.0       # bump, commit, publish, tag, push
 ```
 
-`release:version` commits as `release: v<version>` so the message is the same
-every time. It stages the nine manifests by path, never `-a`, so anything else
-in your working tree stays out of the release commit. Pass `--no-commit` to
-edit the manifests and stop.
+That is the whole thing. In order it bumps the nine manifests and commits them
+as `release: v0.2.0`, typechecks, tests, builds, verifies, pins the
+`workspace:*` ranges, publishes all eight, tags the release commit, and pushes
+the branch and tag.
 
-Pushing the tag triggers `.github/workflows/release.yml`, which typechecks,
-tests, builds, verifies, and publishes. The tag is the source of truth: if it
-disagrees with the manifests the run fails before publishing anything.
+Omit the version to release whatever the manifests already say.
 
-To exercise the pipeline without spending a version number, use **Actions →
-Release → Run workflow**, which defaults to a dry run. This matters because npm
+#### Rerunning is safe
+
+Every step checks before it acts, so a run that dies halfway — a network blip,
+an expired 2FA ceremony — is fixed by running the same command again:
+
+| step | on a rerun |
+| --- | --- |
+| version bump | skipped when the manifests already say that version |
+| publish | skips versions already on the registry |
+| git tag | left alone if it exists |
+| push | no-op if the remote already has it |
+
+Two things never happen twice by overwriting: **an existing tag is never
+moved**, and **a published version is never republished**. If HEAD has advanced
+since the release, the tag stays on the commit that was actually released
+rather than being dragged forward.
+
+`release:dry` runs the identical sequence and uploads, commits, tags and
+pushes nothing — the manifests are put back afterwards. Use it freely; npm
 never allows a version to be reused, even after unpublishing.
+
+CI runs the same script. Pushing the tag triggers
+`.github/workflows/release.yml`, and since `bun run release` has already
+published, that run skips all eight and just creates the GitHub Release. The
+tag is checked against the manifests first, so a mistyped tag fails before
+anything is published.
+
+Useful flags: `--no-tag`, `--no-push`, `--tag <dist-tag>`, `--allow-dirty`.
 
 #### Prereleases
 
@@ -159,47 +181,38 @@ before uploading anything, so check that line if you are unsure. A dist-tag can
 be moved after the fact, but only after people have already installed what it
 pointed at.
 
-### Releasing by hand
+### Publishing locally vs from CI
 
-```sh
-bun run release:dry   # full sequence, publish is a dry run
-bun run release       # the real thing
-```
+`bun run release` publishes from your machine; the workflow publishes from CI.
+Both run `scripts/release.ts`, so the sequence cannot drift — the differences
+are only these:
 
-Both run `scripts/release.ts`, which is also what the workflow calls — there is
-one definition of the release sequence, so local and CI cannot drift.
+| | local | CI |
+| --- | --- | --- |
+| npm auth | your login (2FA ceremony in the browser) | trusted publishing (OIDC), `NPM_TOKEN` as fallback |
+| [provenance][provenance] | no — needs an OIDC issuer | yes |
+| GitHub Release | created by the workflow, from the pushed tag | same |
 
-Publishing locally still wants a tag, both to mark the released commit and to
-get a GitHub Release. Tag *after* the publish and push it:
+Publishing locally works with no `NPM_TOKEN` and no trusted publishing
+configured, which is what to do while OIDC is still being set up. The tag that
+`bun run release` pushes still triggers the workflow; every version is already
+on the registry by then, so all eight skip and the run only creates the GitHub
+Release. That skip path only reads the registry, which needs no credentials, so
+it succeeds even when CI cannot authenticate at all.
 
-```sh
-bun run release:version 0.2.0         # bumps and commits
-bun run release                       # publish from here
-git tag v0.2.0 && git push origin HEAD --tags
-```
-
-The tag still triggers the workflow, and that is fine: every version is already
-on the registry, so all eight are skipped and the run only creates the GitHub
-Release. The skip path reads the registry, which needs no credentials, so this
-works even with no `NPM_TOKEN` and no trusted publishing configured — useful
-while OIDC is still being set up.
-
-What a local publish gives up is [provenance][provenance]: attestation needs an
-OIDC issuer that only CI has, which is why `bun run release` passes
-`--no-provenance`. Packages published this way are not linked to the commit and
+What a local publish gives up is provenance: attestation needs an OIDC issuer
+that only CI has, which is why the local script passes `--no-provenance`.
+Packages published this way are not cryptographically linked to the commit and
 workflow that built them. Nothing breaks; the npm page just lacks the "Built
 and signed on GitHub Actions" badge.
 
+The release refuses to run against a dirty working tree (`--allow-dirty`
+overrides), so what gets published always corresponds to a commit. The publish
+is wrapped in a `finally` that restores the `workspace:*` ranges: pinning them
+mutates eight manifests, and a publish that fails halfway would otherwise leave
+them pinned in your tree, ready to be committed by accident.
+
 [provenance]: https://docs.npmjs.com/generating-provenance-statements
-
-It refuses to run against a dirty working tree (`--allow-dirty` overrides), so
-what gets published always corresponds to a commit. The publish is wrapped in a
-`finally` that restores the `workspace:*` ranges: pinning them mutates eight
-manifests, and a publish that fails halfway would otherwise leave them pinned
-in your tree, ready to be committed by accident.
-
-Provenance is requested in CI and disabled locally, since attestation needs an
-OIDC issuer that only CI has.
 
 ### The build
 
@@ -220,21 +233,21 @@ output. Deep subpaths accept all three spellings — `@ramose/core/datom`,
 
 ### Scripts
 
-Day to day you only need the four `bun run` aliases:
+Day to day you only need these:
 
 | command | what it does |
 | --- | --- |
+| `bun run release <v>` | the whole release: bump, commit, publish, tag, push |
+| `bun run release:dry <v>` | the same sequence with no side effects at all |
 | `bun run build` | compile all 8 packages to `dist` |
-| `bun run release:version <v>` | set the version across root + all 8 manifests, and commit it |
-| `bun run release:dry` | full release sequence, publish is a dry run |
-| `bun run release` | full release sequence, for real |
+| `bun run release:version <v>` | just the version bump and its commit |
 
 Those wrap the individual steps, each of which stays runnable on its own for
 debugging:
 
 | script | what it does |
 | --- | --- |
-| `scripts/release.ts` | the whole sequence, with guaranteed cleanup |
+| `scripts/release.ts` | the whole sequence, idempotent, with guaranteed cleanup |
 | `scripts/set-version.ts` | set the version across root + all 8 manifests, then commit (`--no-commit` to skip) |
 | `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE/README |
 | `scripts/check-release.ts` | verify versions agree, tag matches, exports resolve |
