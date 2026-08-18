@@ -25,6 +25,7 @@
  *                   anything repeated — see CONTRIBUTING.md.
  */
 
+import { readFileSync } from "node:fs";
 import { $ } from "bun";
 
 /**
@@ -58,9 +59,19 @@ const dryRun = has("--dry-run");
 const skipTests = has("--skip-tests");
 const allowDirty = has("--allow-dirty");
 const provenance = !has("--no-provenance");
-const distTag = valueOf("--tag") ?? "latest";
 const otp = valueOf("--otp");
 const releaseTag = process.env.RELEASE_TAG;
+
+// A prerelease must not land on `latest`, or every plain
+// `npm install @ramose/alchemy` picks it up. Derive the dist-tag from the
+// version unless one was given explicitly: 0.2.0 → latest, 0.2.0-alpha.1 →
+// next. Getting this wrong is not recoverable by republishing — the dist-tag
+// can be moved afterwards, but only after users have already installed it.
+const version = (
+  JSON.parse(readFileSync("packages/core/package.json", "utf8")) as { version: string }
+).version;
+const isPrerelease = version.includes("-");
+const distTag = valueOf("--tag") ?? (isPrerelease ? "next" : "latest");
 
 type Step = { name: string; run: () => Promise<unknown> };
 
@@ -148,6 +159,9 @@ try {
     await run(["bun", "run", "scripts/check-release.ts", "--built"]);
 
     console.log(`\n\x1b[1m[${total}/${total}] publish\x1b[0m`);
+    console.log(
+      `${version} → dist-tag "${distTag}"${isPrerelease && !valueOf("--tag") ? " (prerelease, kept off latest)" : ""}`,
+    );
     const flags = ["--tag", distTag];
     if (dryRun) flags.push("--dry-run");
     if (provenance) flags.push("--provenance");

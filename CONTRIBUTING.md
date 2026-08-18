@@ -141,6 +141,20 @@ To exercise the pipeline without spending a version number, use **Actions →
 Release → Run workflow**, which defaults to a dry run. This matters because npm
 never allows a version to be reused, even after unpublishing.
 
+#### Prereleases
+
+The dist-tag is derived from the version, so a prerelease stays off `latest`:
+
+| version | dist-tag | `npm install @ramose/alchemy` gets it? |
+| --- | --- | --- |
+| `0.2.0` | `latest` | yes |
+| `0.2.0-alpha.1` | `next` | no — needs `@next` |
+
+Pass `--tag <name>` to override. The publish prints the version and dist-tag
+before uploading anything, so check that line if you are unsure. A dist-tag can
+be moved after the fact, but only after people have already installed what it
+pointed at.
+
 ### Releasing by hand
 
 ```sh
