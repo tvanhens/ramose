@@ -166,6 +166,7 @@ const inProcessPeer = async () => {
 const User = Namespace("user", {
   name: Attr(Schema.String),
   friends: Attr(Ref.self, { cardinality: "many" }),
+  tags: Attr(Schema.String, { cardinality: "many" }),
 });
 
 const Todo = Namespace("todo", {
@@ -889,6 +890,7 @@ const userScope = [
   "or",
   ["?e", ":user/name", "_"],
   ["?e", ":user/friends", "_"],
+  ["?e", ":user/tags", "_"],
 ];
 
 describe("lowering: some / every / none quantify over a many hop", () => {
@@ -962,17 +964,141 @@ describe("lowering: some / every / none quantify over a many hop", () => {
     ]);
   });
 
-  test("quantifiers need a cardinality-many ref to quantify over", () => {
-    // the type says `never` for both; these are the runtime guards behind it
+  test("quantifiers need a cardinality-many attribute to quantify over", () => {
+    // the type says `never`; this is the runtime guard behind it
     const quantify = (attr: unknown) =>
       (attr as typeof User.friends).some(User.name.eq("Ada"));
     expect(() => quantify(Todo.owner)).toThrow(
       /only a cardinality-many attribute has elements/,
     );
-    const Post = Namespace("post", {
-      tags: Attr(Schema.String, { cardinality: "many" }),
-    });
-    expect(() => quantify(Post.tags)).toThrow(/must be a ref/);
+  });
+});
+
+describe("lowering: `.each` is the element of a cardinality-many attribute", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(User).where(...preds).build()).query.where;
+  /** the types reject these; the casts are how the runtime guards are reached */
+  const loose = (p: unknown) => p as WhereNode;
+
+  test("a scalar quantifier binds the element and compares it directly", () => {
+    // `some` is the existential the bare predicate already was, said out loud
+    expect(whereOf(User.tags.some(User.tags.each.eq("a")))).toEqual([
+      userScope,
+      ["?e", ":user/tags", "?x0"],
+      [["=", "?x0", "a"]],
+    ]);
+    expect(whereOf(User.tags.none(User.tags.each.eq("spam")))).toEqual([
+      userScope,
+      ["not-join", ["?e"], ["?e", ":user/tags", "?x0"], [["=", "?x0", "spam"]]],
+    ]);
+    // `every` is `no element fails`, so it is vacuously true of no elements
+    expect(whereOf(User.tags.every(User.tags.each.startsWith("a")))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/tags", "?x0"],
+        ["not-join", ["?x0"], [["starts-with?", "?x0", "a"]]],
+      ],
+    ]);
+  });
+
+  test("every operator has an element spelling on the bound variable", () => {
+    /** the clause one element predicate becomes, inside the hop that binds it */
+    const opOf = (p: Parameters<typeof User.tags.some>[0]) =>
+      (whereOf(User.tags.some(p)) as any[])[2];
+    expect(opOf(User.tags.each.ne("a"))).toEqual([["not=", "?x0", "a"]]);
+    expect(opOf(User.tags.each.gt("a"))).toEqual([[">", "?x0", "a"]]);
+    expect(opOf(User.tags.each.endsWith("z"))).toEqual([
+      ["ends-with?", "?x0", "z"],
+    ]);
+    expect(opOf(User.tags.each.includes("z"))).toEqual([
+      ["includes?", "?x0", "z"],
+    ]);
+    expect(opOf(User.tags.each.matches(/^a/))).toEqual([
+      ["re-find?", "^a", "?x0"],
+    ]);
+    // `?x0` is bound by the hop, so the collection binding filters it
+    expect(opOf(User.tags.each.in(["a", "b"]))).toEqual([
+      ["ground", ["a", "b"]],
+      ["?x0", "..."],
+    ]);
+    // the element exists by construction; `in([])` and `missing` match nothing
+    expect(whereOf(User.tags.some(User.tags.each.exists()))).toEqual([
+      userScope,
+      ["?e", ":user/tags", "?x0"],
+    ]);
+    expect(opOf(User.tags.each.in([]))).toEqual([["ground", []], ["?n1", "..."]]);
+    expect(opOf(User.tags.each.missing())).toEqual([
+      ["ground", []],
+      ["?n1", "..."],
+    ]);
+  });
+
+  test("combinators nest around element predicates", () => {
+    expect(
+      whereOf(
+        User.tags.every(
+          or(User.tags.each.startsWith("a"), User.tags.each.eq("keep")),
+        ),
+      ),
+    ).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/tags", "?x0"],
+        [
+          "not-join",
+          ["?x0"],
+          [
+            "or-join",
+            ["?x0"],
+            ["and", [["starts-with?", "?x0", "a"]]],
+            ["and", [["=", "?x0", "keep"]]],
+          ],
+        ],
+      ],
+    ]);
+    // and a quantifier is an ordinary where-node, so `or` / `not` take it
+    expect(
+      whereOf(not(User.tags.every(User.tags.each.startsWith("a")))).length,
+    ).toBe(2);
+  });
+
+  test("an element cursor is only meaningful inside its own collection", () => {
+    // a card-one attribute has no elements to cursor over
+    expect(() => (User.name as unknown as typeof User.tags).each).toThrow(
+      /only a cardinality-many attribute has elements/,
+    );
+    // …nor does the element of one
+    expect(() => (User.tags.each as unknown as typeof User.tags).each).toThrow(
+      /only a cardinality-many attribute has elements/,
+    );
+    // a foreign element cursor is not in scope, in a quantifier or a where
+    expect(() =>
+      User.friends.some(loose(User.tags.each.eq("x"))),
+    ).toThrow(/User.tags.each is only meaningful inside/);
+    expect(() =>
+      User.friends.where(loose(User.tags.each.eq("x"))),
+    ).toThrow(/User.tags.each is only meaningful inside/);
+    // and it is nothing at all in the query's own where or orderBy
+    expect(() => query(User).where(loose(User.tags.each.eq("x")))).toThrow(
+      /User.tags.each is only meaningful inside/,
+    );
+    expect(() =>
+      query(User).where(or(not(loose(User.tags.each.eq("x"))))),
+    ).toThrow(/User.tags.each is only meaningful inside/);
+    expect(() =>
+      query(User).orderBy(User.tags.each as never),
+    ).toThrow(/User.tags.each is only meaningful inside/);
+    // a scalar's elements are values: a path predicate has nothing to walk
+    expect(() => User.tags.every(loose(User.name.eq("Ada")))).toThrow(
+      /elements of a cardinality-many scalar are values/,
+    );
+    expect(() =>
+      User.tags.every(loose(User.friends.some(User.name.eq("Ada")))),
+    ).toThrow(/elements of a cardinality-many scalar are values/);
   });
 });
 
@@ -1428,9 +1554,130 @@ describe("lowering: nested where / orderBy / limit on a collection", () => {
     ]);
   });
 
-  test("what a nested constraint refuses to say", () => {
+  test("`every` inside a nested where is a quantifier the engine walks", () => {
+    const [spec] = pullOf(
+      query(User)
+        .select({
+          // my friends all of whose own friends are named A…, and all of whose
+          // tags start with "a" — an element with no value at all fails the
+          // first, which is exactly what an existential cannot say
+          friends: User.friends
+            .where(
+              User.friends.every(User.name.startsWith("A")),
+              User.tags.every(User.tags.each.startsWith("a")),
+            )
+            .select({ name: User.name }),
+        })
+        .build(),
+    );
+    expect(spec.where).toEqual([
+      {
+        every: {
+          path: [":user/friends"],
+          pred: { path: [":user/name"], op: "starts-with?", value: "A" },
+        },
+      },
+      {
+        every: {
+          path: [":user/tags"],
+          pred: { path: [], op: "starts-with?", value: "a" },
+        },
+      },
+    ]);
+  });
+
+  test("a negation underneath a `some` wraps the hop, rather than folding it", () => {
+    const [spec] = pullOf(
+      query(User)
+        .select({
+          friends: User.friends
+            .where(
+              // `∃x ¬P` — not the negation of an existential, so the hop is an
+              // explicit quantifier the engine walks element by element
+              User.friends.some(not(User.name.eq("Bob"))),
+              User.friends.some(User.friends.none(User.name.eq("Cyd"))),
+              User.friends.some(User.tags.every(User.tags.each.eq("a"))),
+            )
+            .select({ name: User.name }),
+        })
+        .build(),
+    );
+    expect(spec.where).toEqual([
+      {
+        some: {
+          path: [":user/friends"],
+          pred: { not: { path: [":user/name"], op: "=", value: "Bob" } },
+        },
+      },
+      {
+        some: {
+          path: [":user/friends"],
+          pred: {
+            not: { path: [":user/friends", ":user/name"], op: "=", value: "Cyd" },
+          },
+        },
+      },
+      {
+        some: {
+          path: [":user/friends"],
+          pred: {
+            every: {
+              path: [":user/tags"],
+              pred: { path: [], op: "=", value: "a" },
+            },
+          },
+        },
+      },
+    ]);
+  });
+
+  test("a card-many scalar carries the same constraints, with an empty path", () => {
+    const [spec] = pullOf(
+      query(User)
+        .select({
+          tags: User.tags
+            .where(User.tags.each.startsWith("a"))
+            .orderBy(User.tags.each, "desc")
+            .offset(1)
+            .limit(3),
+        })
+        .build(),
+    );
+    expect(spec).toEqual({
+      kind: "attr",
+      attr: ":user/tags",
+      reverse: false,
+      as: "tags",
+      // `path: []` is the value itself — the element of a scalar collection
+      where: [{ path: [], op: "starts-with?", value: "a" }],
+      order: [{ path: [], dir: "desc" }],
+      offset: 1,
+      limit: 3,
+    });
+    // a bare card-many scalar is still the whole collection
+    expect(pullOf(query(User).select({ tags: User.tags }).build())[0]).toEqual({
+      kind: "attr",
+      attr: ":user/tags",
+      reverse: false,
+      as: "tags",
+    });
+  });
+
+  test("a scalar collection never becomes a required clause either", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .select({
+          name: User.name,
+          tags: User.tags.where(User.tags.each.startsWith("a")).limit(1),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([userScope, ["?e", ":user/name", "_"]]);
+  });
+
+  test("what a nested constraint still refuses to say", () => {
     const todos = Todo.owner.reverse;
-    // only a card-many ref / backlink has elements
+    // only a cardinality-many attribute has elements
     const constrain = (attr: unknown) =>
       (attr as typeof todos).where(Todo.done.eq(false));
     expect(() => constrain(Todo.owner)).toThrow(
@@ -1442,29 +1689,44 @@ describe("lowering: nested where / orderBy / limit on a collection", () => {
     expect(() => todos.where(User.name.eq("Ada"))).toThrow(
       /rooted at the collection's element, which is a :todo\/… entity — :user\/name/,
     );
-
-    // `every` has no pull-phase spelling, and neither has `not` under `some`
-    expect(() => todos.where(Todo.owner.reverse.every(Todo.done.eq(true)))).toThrow(
-      /every\(\.\.\.\) is not expressible in a nested where/,
-    );
+    // …and a scalar element is a value, which no path walks from
     expect(() =>
-      todos.where(Todo.owner.reverse.some(not(Todo.done.eq(true)))),
-    ).toThrow(/not\(\.\.\.\) inside some\(\.\.\.\) is not expressible/);
+      User.tags.where(User.name.eq("Ada") as never),
+    ).toThrow(/rooted at the collection's element, which is a value/);
     expect(() =>
-      todos.where(Todo.owner.reverse.some(Todo.owner.reverse.none(Todo.done.eq(true)))),
-    ).toThrow(/none\(\.\.\.\) inside some\(\.\.\.\) is not expressible/);
+      User.tags.orderBy(User.name as never),
+    ).toThrow(/rooted at the collection's element, which is a value/);
+    // a foreign element cursor is out of scope in a nested where or orderBy
+    expect(() =>
+      todos.where(User.tags.each.eq("x") as never),
+    ).toThrow(/User.tags.each is only meaningful inside/);
+    expect(() =>
+      todos.orderBy(User.tags.each as never),
+    ).toThrow(/User.tags.each is only meaningful inside/);
 
     // a sort key is still a value, not a set
     expect(() => todos.orderBy(Todo.owner.reverse.title as never)).toThrow(
       /crosses a cardinality-many attribute/,
     );
 
-    // and a constrained collection is still a shape, not a bare field
+    // a constrained *ref* collection is still a shape, not a bare field
     expect(() =>
       lowerNavQuery(
         query(User).select({ todos: todos.limit(2) as never }).build(),
       ),
     ).toThrow(/filtered collection needs a shape/);
+    // …and a scalar one has no shape to ask for
+    expect(() =>
+      (User.tags.limit(2) as never as typeof todos).select({
+        title: Todo.title,
+      }),
+    ).toThrow(/cardinality-many scalar — its elements are values/);
+    // an element cursor is not a select field
+    expect(() =>
+      lowerNavQuery(
+        query(User).select({ tags: User.tags.each as never }).build(),
+      ),
+    ).toThrow(/is an element cursor, not a select field/);
   });
 });
 
@@ -1620,6 +1882,156 @@ describe("nested collections end to end: filtered on the peer, `[]` never a drop
       { name: "Bob", todos: [] },
       { name: "Cyd", todos: [] },
     ]);
+    await peer.dispose();
+  });
+});
+
+describe("card-many scalars end to end: `.each` on the peer", () => {
+  /**
+   * Ada — tags [a1, a2, a3]        every tag starts with "a"
+   * Bob — tags [a1, b1]            one does not
+   * Cyd — no tags at all           the vacuous-truth case
+   * Ada's friends are Bob and Cyd.
+   */
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+          for (const t of ["a1", "a2", "a3"]) yield* ada.add(User.tags, t);
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          for (const t of ["a1", "b1"]) yield* bob.add(User.tags, t);
+          const cyd = yield* tx.entity();
+          yield* cyd.add(User.name, "Cyd");
+          yield* ada.add(User.friends, bob.eid as never);
+          yield* ada.add(User.friends, cyd.eid as never);
+        });
+        return db;
+      }),
+    );
+  };
+
+  const names = async (
+    peer: Awaited<ReturnType<typeof inProcessPeer>>,
+    db: Awaited<ReturnType<typeof seed>>,
+    ...preds: WhereNode[]
+  ) => {
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(User)
+          .where(...preds)
+          .orderBy(User.name, "asc")
+          .select({ name: User.name }),
+      ),
+    );
+    expect(peer.seen[0]?.rows).toBe(rows.length);
+    return rows.map((r) => r.name);
+  };
+
+  test("every / none / some over a card-many scalar, on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    // Cyd has no tags at all, and `every` is true of nothing — same rule as
+    // the many-ref quantifiers, and the reason she comes back here
+    expect(
+      await names(peer, db, User.tags.every(User.tags.each.startsWith("a"))),
+    ).toEqual(["Ada", "Cyd"]);
+    expect(await names(peer, db, User.tags.none(User.tags.each.eq("b1")))).toEqual(
+      ["Ada", "Cyd"],
+    );
+    expect(await names(peer, db, User.tags.some(User.tags.each.eq("a1")))).toEqual(
+      ["Ada", "Bob"],
+    );
+    // a bare predicate on a many scalar already means `some`
+    expect(await names(peer, db, User.tags.eq("a1"))).toEqual(["Ada", "Bob"]);
+    // …and the element comparisons are the peer's, not a client-side filter
+    expect(
+      await names(peer, db, User.tags.every(User.tags.each.in(["a1", "a2", "a3"]))),
+    ).toEqual(["Ada", "Cyd"]);
+    expect(
+      await names(
+        peer,
+        db,
+        or(User.tags.none(User.tags.each.exists()), User.tags.every(User.tags.each.gt("a2"))),
+      ),
+    ).toEqual(["Cyd"]);
+
+    await peer.dispose();
+  });
+
+  test("a filtered, ordered, paged scalar collection is still one row", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            tags: User.tags
+              .where(User.tags.each.startsWith("a"))
+              .orderBy(User.tags.each, "desc")
+              .limit(2),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { name: "Ada", tags: ["a3", "a2"] },
+      { name: "Bob", tags: ["a1"] },
+      // a collection that filters to nothing is `[]`, never a dropped row
+      { name: "Cyd", tags: [] },
+    ]);
+    expect(peer.seen[0]?.rows).toBe(3);
+
+    // paging the collection changes what is inside a row, never how many
+    const paged = await run(
+      db.q(
+        query(User)
+          .where(User.name.eq("Ada"))
+          .select({
+            tags: User.tags.orderBy(User.tags.each, "asc").offset(1).limit(1),
+          }),
+      ),
+    );
+    expect(paged).toEqual([{ tags: ["a2"] }]);
+
+    await peer.dispose();
+  });
+
+  test("`every` inside a nested where filters the collection, per element", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            // the friends all of whose tags start with "a" — Cyd has none at
+            // all, so she is vacuously one of them; Bob's "b1" is not
+            friends: User.friends
+              .where(User.tags.every(User.tags.each.startsWith("a")))
+              .select({ name: User.name }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { name: "Ada", friends: [{ name: "Cyd" }] },
+      { name: "Bob", friends: [] },
+      { name: "Cyd", friends: [] },
+    ]);
+    expect(peer.seen[0]?.rows).toBe(3);
+
     await peer.dispose();
   });
 });
