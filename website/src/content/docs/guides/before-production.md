@@ -74,9 +74,11 @@ internet. Work down this list before you point real users at it.
       to 1,572,864 cells (about 48 MB of intermediate results). Over-budget
       queries fail with `QueryBudgetExceeded` (413), and a standing live query
       does not retry them.
-- [ ] **Remember `limit` does not bound server work.** Paging happens after the
-      full result arrives, so a `limit(20)` on a broad query still costs — and
-      can still exceed — the whole query.
+- [ ] **`limit` bounds what you receive, not what the query scans.** Sorting
+      and paging run on the peer, before pulls, so `limit(20)` pulls only twenty
+      entities and the client never sees the rest — but the `where` clauses
+      still build the full intermediate relation, so a broad query can still
+      exceed `RIPPLE_QUERY_MAX_CELLS`. Narrow with `where`, not with `limit`.
 
 ## Handle the failures that will happen
 

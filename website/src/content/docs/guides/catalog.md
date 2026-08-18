@@ -39,9 +39,10 @@ of its own for values TypeScript cannot describe on its own, such as
 
 The rest of these guides use the same todos catalog with two more attributes
 and a second namespace, so the examples have something to filter, sort, and
-own. Add them and you have the version every later page assumes:
+own. This is the version every later page assumes — read it here rather than
+editing the shipped example, whose tests use the smaller catalog:
 
-```ts title="schema.ts"
+```ts title="schema.ts — the grown catalog (not the file in examples/todos)"
 import * as Ripple from "@ripple/alchemy/db";
 import * as Schema from "effect/Schema";
 
@@ -86,8 +87,11 @@ for the database types that cannot be inferred from TypeScript alone:
 `String`, `Number`, and `Boolean` are inferred; everything else is not. If you
 declare an attribute with a schema Ripple cannot map — a `Schema.Struct`, say —
 pass the database type yourself with
-`Ripple.Attr(mySchema, { valueType: ":db.type/string" })`, or the call throws
-when the module loads.
+`Ripple.Attr(mySchema, { valueType: ":db.type/string" })`, or installing the
+catalog fails with `ripple/schema: cannot infer :db.type/* from this Schema`.
+The check runs when the catalog is installed — at deploy (`Ripple.Database`) or
+at `db.install()` — not when the module loads, so pass `valueType` as you write
+the attribute.
 :::
 
 ## Options
@@ -141,5 +145,8 @@ There is no destructive migration to fear, because facts are never rewritten:
 old data keeps the attribute it was written with, and reads of the past keep
 working. Removing an attribute from the catalog does not delete the facts that
 used it.
+
+**Checkpoint.** `bun test examples/todos` — four passing tests, driving the
+same `todoQuery` and `addTodo` the rest of these guides use.
 
 Next: [write some data](/guides/transactions/).

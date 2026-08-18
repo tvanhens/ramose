@@ -25,7 +25,7 @@ create-database call.
 | `:db.unique/identity` upsert, lookup refs | `{ unique: "identity" }`, `[User.email, "…"]` |
 | `:db.cardinality/many` | `{ cardinality: "many" }` |
 | `d/pull` | `db.pull(eid, shape)`, same nesting, `.optional` instead of a `:default` |
-| Datalog query | a typed navigational builder (`Ripple.query(Todo).where(…).select(…)`), plus a legacy callback builder |
+| Datalog query | a typed navigational builder — `Ripple.query(Todo).where(…).orderBy(…).limit(n).select(…)`, run by `db.q` / `db.live`; there is no string-variable escape hatch today |
 | `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only handle |
 | transaction entity for annotations | `report.txEid` |
 | `d/filter` | a compiled **policy**, evaluated per request against JWT claims |
@@ -41,7 +41,8 @@ create-database call.
   see [Time travel](/concepts/time-travel/).
 - **Queries are typed, and smaller.** `where`, `select`, `orderBy`, `limit`,
   `offset`. There are no aggregates, no rules, no reverse-ref navigation, and
-  no `d/with`. Ordering, limit, and offset run on the client today.
+  no `d/with`. Ordering, limit, and offset are lowered into the query and run on
+  the server, so `limit(20)` really is twenty rows on the wire.
 - **Live queries are first-class.** `db.live` is a stream that re-runs when the
   database advances — the feature Datomic leaves to `tx-report-queue` plus your
   own plumbing.

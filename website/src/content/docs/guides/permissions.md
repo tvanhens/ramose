@@ -60,7 +60,7 @@ export const policy = P.policy(Todos, {
     },
     user: {
       read: P.allow(P.eq(User.sub, P.claims.sub)),
-      // narrower than the namespace rule above: support staff only
+      // narrows the namespace rule above; it cannot widen it
       attrs: [P.attr(User.email, { read: P.allow(P.class("support")) })],
     },
   },
@@ -68,8 +68,11 @@ export const policy = P.policy(Todos, {
 ```
 
 Read it as: a member may see and change the todos they own; the server decides
-who owns a new todo; everyone may read their own user record; only the
-`support` class may read an email address.
+who owns a new todo; everyone may read their own user record; and an email
+address needs *both* rules to hold — the caller must already be able to read
+that user record **and** be in the `support` class. An attribute rule narrows;
+it cannot reach rows the namespace rule hides, so a support user reads their
+own email and no one else's.
 
 Two rules of the road:
 
@@ -91,6 +94,11 @@ The repository's larger worked example — documents, projects, and org
 membership — is on [Auth and policy](/guides/auth/#a-larger-policy).
 
 ## Running it locally
+
+These are files you create — `scripts/local-jwt.ts`, `policy.ts` and the
+`resources.ts` edits below do not exist in the clone, and the queries they
+import (`todoDetail`, `openTodos`) are the ones you added to `src/todos.ts` in
+[Query and pull](/guides/queries/). `examples/todos` ships without a policy.
 
 Ripple ships no token minter and no CLI, so a local loop is: generate a key
 pair, hand the public half to the peer, and sign your own tokens with it. That
@@ -130,7 +138,7 @@ Wire the policy and that key set into the peer Worker:
 import * as Ripple from "@ripple/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { policy } from "./policy.ts";
-import { todoDetail } from "./src/queries.ts";
+import { todoDetail } from "./src/todos.ts";
 
 const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", {
@@ -160,13 +168,31 @@ export const RippleWorker = Cloudflare.Worker("Peer", {
 export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
 ```
 
-Then run the app with the token:
+Then run it in two terminals. This is the manual form rather than `bun run
+dev:todos`, because the token has to reach Vite's environment and you are the
+one putting it there. Generate the key set and the token **once** — the script
+mints a fresh key pair every run, so a second invocation would not match the
+first:
+
+```sh title="Terminal 1 — the peer"
+bun run scripts/local-jwt.ts > .local-jwt.txt
+CI=1 ALCHEMY_STATE=local \
+  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
+  CLOUDFLARE_API_TOKEN=x \
+  RIPPLE_JWKS_JSON="$(head -1 .local-jwt.txt)" \
+  bun alchemy dev examples/todos/alchemy.run.ts
+```
+
+That stack starts its own Vite on :5173 with no token, so give your
+authenticated one a different port:
 
 ```sh title="Terminal 2 — the app"
 VITE_RIPPLE_URL=http://localhost:1337 \
-  VITE_RIPPLE_TOKEN="$(bun run scripts/local-jwt.ts | tail -1)" \
-  bunx vite examples/todos
+  VITE_RIPPLE_TOKEN="$(tail -1 .local-jwt.txt)" \
+  bunx vite examples/todos --port 5174
 ```
+
+Open `http://localhost:5174` — that is the tab whose requests carry the token.
 
 :::note[Deploying, not just running]
 Passing `auth` to `Ripple.Server` turns on a deploy-time check: a policy with
@@ -219,7 +245,7 @@ Reads do not fail. They shrink.
 import * as Effect from "effect/Effect";
 import type { Db } from "@ripple/alchemy/db";
 import type { Todos } from "../schema.ts";
-import { openTodos, todoDetail } from "./queries.ts";
+import { openTodos, todoDetail } from "./todos.ts";
 
 export const asAda = (db: Db<typeof Todos>) =>
   Effect.gen(function* () {

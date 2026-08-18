@@ -141,3 +141,6 @@ nothing in your UI has to announce the change.
   costs one no-op write.
 - You cannot write into the past: `db.asOf(t)` and `db.history` hand back
   read-only handles.
+
+**Checkpoint.** `bun test examples/todos` — four passing tests, driving the
+same `todoQuery` and `addTodo` shown here.

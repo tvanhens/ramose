@@ -107,7 +107,7 @@ const Org = Ripple.Namespace("org", {
 const Project = Ripple.Namespace("project", {
   org: Ripple.Attr(Ripple.Ref(() => Org)),
 });
-const Doc = Ripple.Namespace("doc", {
+export const Doc = Ripple.Namespace("doc", {
   title: Ripple.Attr(Schema.String),
   owner: Ripple.Attr(Ripple.Ref(() => User)),
   project: Ripple.Attr(Ripple.Ref(() => Project)),
@@ -228,8 +228,10 @@ skips the check entirely.
 
 ```ts title="alchemy.run.ts"
 import * as Ripple from "@ripple/alchemy";
-import { policy } from "./policy.ts";
-import { docShape } from "./src/queries.ts";
+import { Doc, policy } from "./policy.ts";
+
+// the pull patterns this app actually sends, so `compile` can check them
+const docShape = { title: Doc.title } as const;
 
 const auth: Ripple.PeerAuth = {
   policy: Ripple.Policy.compile(policy, { pulls: [docShape] }),

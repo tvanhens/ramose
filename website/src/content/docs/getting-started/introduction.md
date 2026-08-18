@@ -36,24 +36,38 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 One file, shared by your deploy script, your Worker, and your browser. Write
 the wrong type and the build fails.
 
+The **peer** is the Worker that serves your databases — one deploy, any number
+of databases.
+
 ## Good fit, bad fit
 
 **Reach for Ripple** on Cloudflare when you want a realtime UI, per-user rules
-the database enforces, a free audit trail, and one database per customer
-without one deployment per customer.
+the database enforces, history you can query with `db.asOf` and `db.history`
+(bounded by a retention window you set — 20 published roots by default), and
+one database per customer without one deployment per customer.
 
 **Look elsewhere** for analytics over enormous tables, for SQL, for more than a
 few thousand writes per second in one database, or for a hosted console: Ripple
 has no dashboard and no managed service.
 
+**If you are comparing:** Ripple is closest to Convex and Instant in feel —
+queries that re-run themselves — and closest to Supabase in that authorization
+is part of the database rather than middleware. The difference is that it
+deploys into your own Cloudflare account, and a per-customer database is a
+function call rather than a provisioning step. The full trade is on the [home
+page](/).
+
 ## Status: pre-release
 
 Nothing is published to npm yet: the packages are private and point at
-TypeScript source, so today you clone the repository and work inside it. The
-Quickstart does that in ten minutes.
+TypeScript source, so today you clone the repository and work inside it — three
+commands, under two minutes, in the Quickstart.
 
 ## Start here
 
 - [Quickstart](/getting-started/quickstart/) — a running app and a live query.
 - [Permissions in 10 minutes](/guides/permissions/) — watch a write get denied.
 - [Define your data](/guides/catalog/) — the catalog in full.
+- [Reef](https://github.com/tvanhens/ripple/tree/master/examples/reef) — the
+  flagship demo: multi-tenant workspaces, JWT auth and a compiled policy in one
+  app.

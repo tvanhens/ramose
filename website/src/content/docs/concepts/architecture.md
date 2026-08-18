@@ -19,8 +19,9 @@ Inside the Transactor:
 1. Transactions are batched (group commit) and applied serially.
 2. Tempids, lookup refs, and `:db.unique/identity` upserts resolve against the
    database value the transaction will actually apply to.
-3. The batch is persisted — the log in the DO's SQLite, segments and roots in
-   R2 — **before** any acknowledgement.
+3. The batch is persisted — the log lands in the Durable Object's SQLite
+   **before** any acknowledgement; segments and roots are published to R2
+   afterwards by the indexer, and never rewritten.
 4. Each transaction is assigned the next `t`. `t` is dense: no API mints,
    skips, or supplies one, so the log is gap-free by construction.
 

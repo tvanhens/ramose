@@ -6,9 +6,9 @@ export default defineConfig({
   site: "https://ripple-docs.tvanhens.workers.dev",
   integrations: [
     starlight({
-      title: "ripplegraph.ai",
+      title: "Ripple",
       description:
-        "Ripple is a typed, realtime database for apps you ship on Cloudflare: TypeScript schema, queries that update themselves, per-user permissions, nothing to operate.",
+        "Ripple is a typed, realtime database for apps you ship on Cloudflare: TypeScript schema, queries that update themselves, and per-user permissions, all running in your own Cloudflare account.",
       favicon: "/favicon.svg",
       head: [
         {
@@ -25,7 +25,7 @@ export default defineConfig({
           attrs: {
             property: "og:image:alt",
             content:
-              "Ripple — the typed, realtime database for apps you ship on Cloudflare",
+              "Ripple — the typed, realtime database for Cloudflare",
           },
         },
         {
@@ -126,6 +126,11 @@ export default defineConfig({
         {
           label: "Examples",
           items: [
+            {
+              label: "Reef — multi-tenant issue tracker",
+              link: "https://github.com/tvanhens/ripple/tree/master/examples/reef",
+              attrs: { target: "_blank" },
+            },
             {
               label: "Todos — React + live queries",
               link: "https://github.com/tvanhens/ripple/tree/master/examples/todos",

@@ -1,14 +1,17 @@
 ---
 title: Quickstart
-description: Ten minutes from a clone to a running todo app with a live query, then the one command that deploys the same stack.
+description: Two minutes from a clone to a running todo app with a live query, then the one command that deploys the same stack.
 ---
 
 import { Steps } from "@astrojs/starlight/components";
 
-In ten minutes you will have a todo app running on your machine: a typed
+In two minutes you will have a todo app running on your machine: a typed
 schema, a database behind it, and a list that updates itself when you write.
-The local half needs no account and no external database — everything runs in
-one process on your laptop.
+The local half needs no account and no external database — everything runs on
+your laptop.
+
+You need [Bun](https://bun.sh) — verified on 1.3.10. Nothing else: no Docker,
+no Postgres, no Cloudflare account.
 
 :::note[Pre-release]
 Ripple is not on npm. Every package in the repository is private and points at
@@ -31,43 +34,68 @@ TypeScript source, so today you run it from a clone. That is what step 1 does.
    finish with a `node_modules/` at the repository root; the examples resolve
    their imports through it, which is why they are always run from the root.
 
-2. **Start the database.** Leave this terminal running.
+2. **Start it.** Leave this terminal running.
 
-   ```sh title="Terminal 1 — the peer"
+   ```sh title="Terminal"
+   bun run dev:todos
+   ```
+
+   Alchemy brings up the peer — the Worker that serves your databases — on
+   **:1337**, then starts Vite on **:5173** and hands it `VITE_RIPPLE_URL`, so
+   you never set it yourself. You will see:
+
+   ```
+   [Peer] ready at http://localhost:1337
+   [Ui] ready at http://localhost:5173/
+   Done: 10 succeeded
+   ```
+
+   The UI is pinned with `--strictPort`, so a busy :5173 fails loudly instead
+   of quietly moving to :5174.
+
+   <details>
+   <summary>What that script expands to</summary>
+
+   ```sh
    CI=1 ALCHEMY_STATE=local \
      CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
      CLOUDFLARE_API_TOKEN=x \
      bun alchemy dev examples/todos/alchemy.run.ts
    ```
 
-   You should see Alchemy report the resources it created and a URL for the
-   peer — `http://localhost:1337`. Check it from a third terminal:
+   The account id is a placeholder and the API token is the literal letter
+   `x`: `ALCHEMY_STATE=local` keeps the whole stack in miniflare on your
+   machine, so nothing is sent to Cloudflare and nothing is billed. The script
+   defaults each variable only when it is unset, so run this form if you want
+   to override one.
 
-   ```sh title="Terminal 3 — checkpoint"
+   </details>
+
+   :::note[A harmless-looking scare]
+   When a tab closes you may see workerd print `The Workers runtime canceled
+   this request because it detected that your Worker's code had hung`. That is
+   the local emulator reaping a live-query socket, not a crash — the peer keeps
+   serving.
+   :::
+
+3. **Check it.** From a second terminal:
+
+   ```sh title="Terminal — checkpoint"
    curl http://localhost:1337/health
    # {"ok":true,"service":"ripple","stage":"dev","time":1755500000000}
    ```
 
-   The account id above is a placeholder and the API token is the literal
-   letter `x`: `ALCHEMY_STATE=local` keeps the whole stack in miniflare on your
-   machine, so nothing is sent to Cloudflare and nothing is billed.
+   Optional, and four seconds: `bun test examples/todos` — four passing tests
+   against a real connection, driving the same `todoQuery` and `addTodo` this
+   page documents below.
 
-3. **Start the UI.**
+4. **Open the app.** Vite is already serving `http://localhost:5173/`. You
+   should see a heading, a text box, and a list — empty on a first run.
+   Alchemy keeps its local state in the repository between runs, so anything
+   you added earlier is still there. Type "buy milk", press add, and the row
+   appears.
 
-   ```sh title="Terminal 2 — the app"
-   VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos
-   ```
-
-   Vite prints `Local: http://localhost:5173/`. Open it and you should see a
-   heading, a text box, and an empty list. Type "buy milk", press add, and the
-   row appears.
-
-   If the list never appears, the two ports are the usual cause: the peer is on
-   **1337** and the UI is on **5173**. `VITE_RIPPLE_URL` must point at the
-   peer. (Older notes in this repository say `8787` — that is wrangler's
-   default port, not this one.)
-
-4. **Watch a write travel.** In the browser, tick a todo's checkbox. The list
+5. **Watch a write travel.** In the browser, tick a todo's checkbox. The list
    re-renders without a refetch: nothing in the app calls "reload" after a
    write.
 
@@ -75,16 +103,14 @@ TypeScript source, so today you run it from a clone. That is what step 1 does.
    advances the connection's position in the database, and every standing query
    on that connection re-runs against the new position.
 
-   :::caution[Two tabs, locally]
-   Open a second tab and a write in one tab *should* wake the other. Under
-   local miniflare it usually does not: writes do not propagate between
-   isolates on a laptop, which is a known limitation of the local emulator
-   (`CONTRIBUTING.md`), not of `db.live`. Against a deployed peer, both tabs
-   update. Your own tab always updates immediately, because its own write moves
-   its own connection forward.
+   :::note[Two tabs, locally]
+   On the local emulator writes do not propagate between isolates, so a second
+   tab picks them up on reload. Your own tab always updates, because its own write
+   moves its own connection forward. Against a deployed peer, every connected
+   client updates.
    :::
 
-5. **Deploy it (optional).** The same file that ran under miniflare provisions
+6. **Deploy it (optional).** The same file that ran under miniflare provisions
    the real thing:
 
    ```sh title="Terminal"
@@ -98,6 +124,9 @@ TypeScript source, so today you run it from a clone. That is what step 1 does.
    accepts requests from anyone until you configure a policy.
 
 </Steps>
+
+Ctrl-C in the terminal running `bun run dev:todos` stops the peer and the UI
+together.
 
 ## What you just ran
 
@@ -130,6 +159,12 @@ export const TodosDb = Ripple.Database("todos", {
 });
 ```
 
+Ripple is built on [Effect](https://effect.website). Its API returns Effect
+values — descriptions of work — so one `ManagedRuntime` per page holds the
+connection and is disposed with it, `run(…)` executes one of those values from
+the browser, and `yield*` inside `db.transact` sequences the steps of a write.
+That is all the Effect the rest of this path needs.
+
 **The client** is one runtime for the page, disposed with it. Copy this file as
 it stands — the token guard matters, because your local peer has no token and
 wrapping an undefined one crashes on the first request:
@@ -145,7 +180,7 @@ const token = import.meta.env.VITE_RIPPLE_TOKEN;
 
 const runtime = ManagedRuntime.make(
   Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
+    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
     token:
       token === undefined || token === ""
         ? undefined
@@ -157,29 +192,28 @@ export const run = runtime.runPromise;
 export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 ```
 
-(The repository's copy of that file still falls back to `8787`. The fallback
-only applies when `VITE_RIPPLE_URL` is unset, which the command in step 3 never
-lets happen.)
-
 **The queries and writes** live in one module so the app and its tests drive
 exactly the same code:
 
 ```ts title="examples/todos/src/todos.ts"
 import * as Ripple from "@ripple/alchemy/db";
-import type { Db, Eid } from "@ripple/alchemy/db";
+import type { Db } from "@ripple/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
 
+/** The row shape, named once so a query and a `pull` can share it. */
+export const todoShape = {
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+} as const;
+
 /** A standing query is a value: run it once, run it live, or run it in the past. */
 export const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
-  .select({
-    id: Todo.id,
-    title: Todo.title,
-    done: Todo.done,
-    createdAt: Todo.createdAt,
-  });
+  .select(todoShape);
 
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {
@@ -190,9 +224,12 @@ export const addTodo = (db: TodosDb, title: string) =>
   });
 ```
 
+The shipped file also exports `pullTodo`, `setDone`, and `deleteTodo`, cut here
+for length; everything above is verbatim.
+
 `db.live(todoQuery)` in `src/App.tsx` is what redrew the list, and the
-thirteen-line `useLive` hook in `src/useLive.ts` is all it takes to turn that
-stream into React state.
+`useLive` hook in `src/useLive.ts` — about a dozen lines — is all it takes to
+turn that stream into React state.
 
 ## Next
 
@@ -206,11 +243,15 @@ administrator. That is right for a laptop and wrong for the internet.
 - [Live queries](/guides/live-queries/) — what re-runs, when, and what it
   costs.
 
-Both examples in the repository are small enough to read in one sitting:
+The examples in the repository are small enough to read in one sitting:
 
+- [`examples/reef`](https://github.com/tvanhens/ripple/tree/master/examples/reef)
+  — a Linear-style, multi-tenant issue tracker where every workspace is its own
+  database, with Better Auth JWTs and a compiled policy. `bun run dev:reef`
+  (peer on :1337, app on :5173).
 - [`examples/todos`](https://github.com/tvanhens/ripple/tree/master/examples/todos)
-  — the app you just ran: a catalog, a live query, and typed writes in about a
-  hundred and fifty lines of React.
+  — the app you just ran: a catalog, a live query, and typed writes in under two
+  hundred lines of React.
 - [`examples/kv-style`](https://github.com/tvanhens/ripple/tree/master/examples/kv-style)
   — one Worker serving a database per customer, with every client error mapped
   to a status code.

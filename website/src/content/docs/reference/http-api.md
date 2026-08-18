@@ -48,8 +48,11 @@ Every read carries its cost:
 | header | meaning |
 | --- | --- |
 | `x-ripple-ms` | server-side time for the request |
-| `r2-gets` | R2 object reads this query performed |
-| `cache-hits` | segment-cache hits |
+| `x-ripple-r2-gets` | R2 object reads this query performed |
+| `x-ripple-cache-hits` | segment-cache hits |
+
+All three are listed in `access-control-expose-headers`, so a browser can read
+them.
 
 ## Errors on the wire
 

@@ -35,7 +35,7 @@ export const Todos = Ripple.Catalog({ user: User, todo: Todo });
 
 ## One query, three runners
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 import * as Effect from "effect/Effect";
 import * as Ripple from "@ripple/alchemy/db";
 import type { Db } from "@ripple/alchemy/db";
@@ -68,7 +68,7 @@ Everything after it narrows or shapes that set.
 
 Attributes carry their own predicates, and a reference lets you keep walking:
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 // … same imports as above
 Todo.done.eq(false); // asserted false — a todo with no `done` fact does not match
 Todo.done.missing(); // no `done` fact at all
@@ -91,7 +91,7 @@ value: `eq` and the comparisons need the fact to be there, so ask with
 `select` decides both the rows you get and their TypeScript type. Ask for a
 key and it is in the type; omit it and it is not there at all.
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 // … same imports as above
 Ripple.query(Todo).select({
   id: Todo.id, // the entity id, as a number
@@ -111,7 +111,7 @@ paged, *then* shaped — so `limit(20)` reads twenty entities and the client nev
 sees the rows a page dropped. Required fields in the shape are enforced before
 the limit too, so the page you get is the page you keep.
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 // … same imports as above
 Ripple.query(Todo)
   .orderBy(Todo.due, "asc", { empty: "last" })
@@ -125,7 +125,7 @@ attribute; a missing fact is not the same thing as a null.
 
 ## Running a query
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 declare const db: Db<typeof Todos>;
 declare const t: number;
 
@@ -134,6 +134,20 @@ db.live(openTodos); // Stream — re-runs as the database advances
 db.asOf(t).q(openTodos); // once, against version t
 db.asOf(t).live(openTodos); // emits once, then completes: the past has no news
 ```
+
+`db.q` returns an Effect — a description of the work, not the work. From the
+browser you hand it to the `run` your `src/db.ts` exports:
+
+```ts title="src/App.tsx"
+import { db, run } from "./db.ts";
+import { openTodos } from "./todos.ts";
+
+const rows = await run(db.q(openTodos)); // from the app you have running
+```
+
+Inside a Worker, or inside another Effect, you `yield*` it instead of calling
+`run`. The [Quickstart](/getting-started/quickstart/#what-you-just-ran) has the
+short version of why the API is shaped this way.
 
 Values decode on the way out, so a `Ripple.Instant` attribute arrives as a
 `Date`.
@@ -146,7 +160,7 @@ does not see is not a re-render.
 
 When you already know which entity you want, skip the query:
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 import * as Effect from "effect/Effect";
 import type { Db } from "@ripple/alchemy/db";
 import { Todo, Todos, User } from "../schema.ts";
@@ -177,7 +191,7 @@ export const detail = (db: Db<typeof Todos>, id: number) =>
 
 Every query composes over the time-travel views unchanged:
 
-```ts title="src/queries.ts"
+```ts title="src/todos.ts"
 export const past = (db: Db<typeof Todos>, t: number) =>
   Effect.gen(function* () {
     const then = yield* db.asOf(t).q(openTodos);
@@ -203,4 +217,9 @@ way.
 Queries execute at the edge, in the Worker nearest the caller. It reads
 immutable data from object storage through a cache and merges in the newest
 writes from a replica, so a read never queues behind the writer. Response
-headers report what it cost: `x-ripple-ms`, `r2-gets`, `cache-hits`.
+headers report what it cost: `x-ripple-ms`, `x-ripple-r2-gets`, and
+`x-ripple-cache-hits` — all listed in `access-control-expose-headers`, so a
+browser can read them.
+
+**Checkpoint.** `bun test examples/todos` — four passing tests, driving the
+same `todoQuery` and `addTodo` these examples are built from.

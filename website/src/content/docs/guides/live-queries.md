@@ -8,9 +8,10 @@ give `db.q`, and instead of one result you get a stream of results: the rows
 now, and the rows again every time the database moves. Nothing at your write
 site has to announce the change, and there is no cache to invalidate.
 
+The query is a value, and it lives with your other queries:
+
 ```ts title="src/todos.ts"
 import * as Ripple from "@ripple/alchemy/db";
-import { db } from "./db.ts";
 import { Todo } from "../schema.ts";
 
 export const todoQuery = Ripple.query(Todo)
@@ -21,8 +22,15 @@ export const todoQuery = Ripple.query(Todo)
     done: Todo.done,
     createdAt: Todo.createdAt,
   });
+```
 
-// built once, at module scope — see the caution below
+The stream is built once, where the component that reads it lives:
+
+```tsx title="src/App.tsx"
+import { db } from "./db.ts";
+import { todoQuery } from "./todos.ts";
+
+// built once, outside render — see the caution below
 export const todos = db.live(todoQuery);
 // Stream<readonly { id: number; title: string; done: boolean; createdAt: Date }[], DbError>
 ```
@@ -90,11 +98,11 @@ tells the client it moved.
 | a Worker binding another Worker (`Ripple.ServerBinding`) | **no.** There is no socket on that hop; calling `db.live` fails the fiber outright rather than returning an error you can catch |
 | Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ripple.layer` |
 
-:::note[Two tabs on your laptop]
-Under the local emulator, a write in one browser tab often does not wake
-another tab: writes do not propagate between isolates on a single machine.
-Your own tab always updates, because its own write moves its own connection
-forward. Against a deployed peer, every connected client updates.
+:::note[Two tabs, locally]
+On the local emulator writes do not propagate between isolates, so a second
+tab picks them up on reload. Your own tab always updates, because its own write
+moves its own connection forward. Against a deployed peer, every connected
+client updates.
 :::
 
 ## What re-runs, and when
@@ -127,6 +135,9 @@ There is no per-query subscription state on the server. A live query is a
 re-run of the same read path, triggered by a version tick, served from the
 replica's view plus cached immutable data. Bursts of small writes coalesce
 naturally, because re-runs happen per tick rather than per write.
+
+**Checkpoint.** Tick a box in the running app and watch the list redraw with no
+refetch.
 
 Next: [put permissions on it](/guides/permissions/) so a standing query only
 ever returns rows that caller is allowed to see.
