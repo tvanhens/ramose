@@ -16,9 +16,17 @@
  * uses trusted publishing (OIDC) for any package configured for it and falls
  * back to NODE_AUTH_TOKEN otherwise; `--provenance` works with either.
  *
+ * If the account has 2FA set to "auth and writes", an interactive publish needs
+ * a one-time password. `--otp` passes one through, but note that a TOTP code is
+ * only valid for ~30s and eight publishes can outlast it — if it expires
+ * partway, re-run with a fresh code and the already-published packages are
+ * skipped. An automation or granular access token avoids the problem entirely
+ * and is what CI uses.
+ *
  * Usage:
  *   bun run scripts/publish-packages.ts --dry-run
  *   bun run scripts/publish-packages.ts --provenance
+ *   bun run scripts/publish-packages.ts --otp 123456
  */
 
 import { readFileSync } from "node:fs";
@@ -40,6 +48,7 @@ const argv = process.argv.slice(2);
 const dryRun = argv.includes("--dry-run");
 const provenance = argv.includes("--provenance");
 const tag = argv.includes("--tag") ? argv[argv.indexOf("--tag") + 1] : "latest";
+const otp = argv.includes("--otp") ? argv[argv.indexOf("--otp") + 1] : process.env.NPM_OTP;
 
 const published: string[] = [];
 const skipped: string[] = [];
@@ -60,6 +69,7 @@ for (const pkg of ORDER) {
   const flags = ["--access", "public", "--tag", tag];
   if (provenance) flags.push("--provenance");
   if (dryRun) flags.push("--dry-run");
+  if (otp) flags.push("--otp", otp);
 
   console.log(`publish ${spec}${dryRun ? " (dry run)" : ""}`);
   try {

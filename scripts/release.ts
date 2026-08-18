@@ -20,6 +20,9 @@
  *   --allow-dirty   do not require a clean git working tree
  *   --no-provenance do not request a provenance attestation (needed locally,
  *                   where there is no OIDC issuer to attest against)
+ *   --otp <code>    one-time password, if the npm account requires 2FA for
+ *                   writes. A token that bypasses 2FA is the better answer for
+ *                   anything repeated — see CONTRIBUTING.md.
  */
 
 import { $ } from "bun";
@@ -33,6 +36,7 @@ const skipTests = has("--skip-tests");
 const allowDirty = has("--allow-dirty");
 const provenance = !has("--no-provenance");
 const distTag = valueOf("--tag") ?? "latest";
+const otp = valueOf("--otp");
 const releaseTag = process.env.RELEASE_TAG;
 
 type Step = { name: string; run: () => Promise<unknown> };
@@ -92,6 +96,7 @@ try {
     const flags = ["--tag", distTag];
     if (dryRun) flags.push("--dry-run");
     if (provenance) flags.push("--provenance");
+    if (otp) flags.push("--otp", otp);
     await $`bun run scripts/publish-packages.ts ${flags}`;
   } finally {
     console.log("\n\x1b[2mrestoring workspace ranges\x1b[0m");

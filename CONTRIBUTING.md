@@ -217,7 +217,37 @@ After the first release, enable trusted publishing for each package at
 Actions, repo `tvanhens/ripple`, workflow `release.yml`). Once all eight are
 configured, `NPM_TOKEN` can be deleted.
 
+#### 2FA and the release token
+
+If the npm account has 2FA set to "auth and writes", `npm publish` demands a
+one-time password and fails with `EOTP` without one. `bun run release --otp
+<code>` passes one through, but a TOTP code lasts ~30 seconds and eight
+publishes can outrun it. The publish is idempotent, so a code that expires
+partway is recoverable — re-run with a fresh one and the packages that made it
+are skipped — but it is a poor loop to be in.
+
+The better answer is a token that bypasses 2FA, which is the same token CI
+needs. [Classic tokens were removed in November 2025][access-tokens]; create a
+**granular access token** at
+[npmjs.com/settings/~/tokens](https://www.npmjs.com/settings/~/tokens):
+
+- Packages and scopes: **Read and write**, limited to the `@ramose` scope
+- **Bypass 2FA**: enabled — without this it still prompts for an OTP
+- Expiration: as short as is practical
+
+Use it locally for one run without writing it to `~/.npmrc`:
+
+```sh
+NPM_CONFIG_//registry.npmjs.org/:_authToken=<token> bun run release
+```
+
+Add the same token as the `NPM_TOKEN` repository secret so the workflow can
+bootstrap packages that do not exist yet. Delete it once all eight packages
+have trusted publishing configured — at that point nothing needs a
+long-lived credential.
+
 [trusted-publishing]: https://docs.npmjs.com/trusted-publishers
+[access-tokens]: https://docs.npmjs.com/about-access-tokens
 
 ## Contributor License Agreement
 
