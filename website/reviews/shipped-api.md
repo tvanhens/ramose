@@ -1904,3 +1904,20 @@ Site pages that carried the stale claims were swept in cycle 2 (`guides/queries.
 `guides/live-queries.md`, `guides/before-production.md`, `concepts/for-datomic-users.md`);
 `docs/QUERY.md` on master already matches.
 
+
+### Also after #49, #53, #54 (second rebase)
+
+- **#54 `Ripple.connect(options): Client`** — `{ db(name, catalog), close() }`, the promise-land
+  entry over the same factory as `Ripple.layer`; no `ManagedRuntime`, no `run`. Every `Db`
+  method has `R = never`, so `Effect.runPromise(db.transact(…))` is the browser idiom.
+  `examples/todos/src/db.ts` exports only `db` now (`packages/alchemy/src/db/Databases.ts`,
+  `db/index.ts`). Anything on the site that taught `run(…)` from `db.ts` was ported.
+- **#49 query slice** — predicates `in`, `endsWith`, `matches` (RegExp, no flags — flagged
+  patterns are rejected), ref `is`; quantifiers `some` / `every` / `none` on card-many refs;
+  `Ripple.or` / `Ripple.not` (exported from `@ripple/alchemy/db`, `db/index.ts:36`); `.reverse`
+  backlinks in `where` and `select` (always many; `[]` when none; bare `.reverse` in a shape is
+  rejected; `orderBy` across one is rejected). Source: `NavQuery.ts:104-114`, `:418-447`,
+  `docs/QUERY.md`.
+- **#53 `db.basis(): Effect<{ t }, DbError>`** — one `GET /db/:name/info` for a live db;
+  `asOf(t)` answers `{ t }` with no request (`reference/client-api.md`, `concepts/time-travel.md`
+  on master already document it).

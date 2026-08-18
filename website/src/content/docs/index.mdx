@@ -106,7 +106,7 @@ export const Todos = Ripple.Catalog({ user: User, todo: Todo });
 ```
 
 ```ts title="todos.ts"
-await run(
+await Effect.runPromise(
   db.transact(function* (tx) {
     const todo = yield* tx.entity();
     yield* todo.add(Todo.title, "ship the landing page");
@@ -134,8 +134,8 @@ await run(
     </p>
     <p class="rg-aside">
       Ripple is built on <a href="https://effect.website">Effect</a>: a
-      transaction is a generator, and <code>run(…)</code> is the runtime you set
-      up once in the example's <code>db.ts</code>. There is no
+      transaction is a generator, and <code>Effect.runPromise(…)</code> runs
+      anything a <code>db</code> returns — no runtime to set up. There is no
       <code>@ripple/react</code> package yet — <a href="https://github.com/tvanhens/ripple/blob/master/examples/todos/src/useLive.ts"><code>useLive</code></a>
       is about a dozen lines you copy once, and the only React glue Ripple needs.
     </p>
@@ -238,7 +238,7 @@ export const policy = P.policy(Todos, {
 
 ```ts title="app.ts"
 // Ada is signed in. Todo 1042 belongs to someone else.
-await run(db.transact(function* (tx) {
+await Effect.runPromise(db.transact(function* (tx) {
   yield* tx.add(1042, Todo.title, "mine now");
 }));
 

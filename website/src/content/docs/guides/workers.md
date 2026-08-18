@@ -71,7 +71,7 @@ resolve a lookup or check an invariant.
 peer, and a Worker-to-Worker binding has none. Calling it there fails the fiber
 outright with `ripple: db.live needs the session socket` rather than returning
 an error you can catch. Stand live queries up in the browser through
-`Ripple.layer`, and let your Worker do request-shaped reads and writes.
+`Ripple.connect`, and let your Worker do request-shaped reads and writes.
 :::
 
 ## Transports

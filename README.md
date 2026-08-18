@@ -27,7 +27,7 @@ Catalog)` and you're in. No provision step.
 
 ## Get running with Alchemy
 
-The shortest path is the todos app — React, `Ripple.layer`, `db.live`:
+The shortest path is the todos app — React, `Ripple.connect`, `db.live`:
 
 ```sh
 bun install

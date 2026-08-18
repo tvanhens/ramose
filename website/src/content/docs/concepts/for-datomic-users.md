@@ -39,10 +39,11 @@ create-database call.
   layer keeps the newest `RIPPLE_RETAIN_ROOTS` roots (20 by default) and
   garbage-collects the segments behind older ones. History is not infinite —
   see [Time travel](/concepts/time-travel/).
-- **Queries are typed, and smaller.** `where`, `select`, `orderBy`, `limit`,
-  `offset`. There are no aggregates, no rules, no reverse-ref navigation, and
-  no `d/with`. Ordering, limit, and offset are lowered into the query and run on
-  the server, so `limit(20)` really is twenty rows on the wire.
+- **Queries are typed, and smaller.** `where` (with `or` / `not` and
+  `some` / `every` / `none` over many-valued refs), `select`, `.reverse`
+  backlinks, `orderBy`, `limit`, `offset`. There are no aggregates, no rules,
+  and no `d/with`. Ordering, limit, and offset are lowered into the query and
+  run on the server, so `limit(20)` really is twenty rows on the wire.
 - **Live queries are first-class.** `db.live` is a stream that re-runs when the
   database advances — the feature Datomic leaves to `tx-report-queue` plus your
   own plumbing.

@@ -79,12 +79,35 @@ Todo.owner.name.startsWith("A"); // hop through the owner, then filter
 
 | on | predicates |
 | --- | --- |
-| any attribute | `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing` |
-| strings | `startsWith` `includes` |
+| any attribute | `eq` `ne` `lt` `lte` `gt` `gte` `in` `exists` `missing` |
+| strings | `startsWith` `endsWith` `includes` `matches` (case-sensitive; `matches` takes a `RegExp` with no flags) |
+| references | `is` — points at this entity (an id or an `Eid`) |
+| many-valued references | `some` `every` `none` — a predicate on the target, quantified |
 
 Several predicates in one `where` are all required to hold. Absence is not a
 value: `eq` and the comparisons need the fact to be there, so ask with
 `exists` or `missing` when absence is the question.
+
+`Ripple.or` and `Ripple.not` say anything `where` cannot on its own, and a
+reference reads backwards with `.reverse` — from a `User`, `Todo.owner.reverse`
+is "the todos that point at me", a many-valued hop you can quantify over or
+select as an array:
+
+```ts title="src/todos.ts"
+// … same imports as above
+Ripple.query(Todo).where(
+  Todo.done.eq(false),
+  Ripple.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
+  Ripple.not(Todo.title.startsWith("draft")),
+);
+
+Ripple.query(User)
+  .where(Todo.owner.reverse.some(Todo.done.eq(false))) // users with an open todo
+  .select({
+    name: User.name,
+    todos: Todo.owner.reverse.select({ title: Todo.title }), // [] when none
+  });
+```
 
 ## Shaping the result
 
@@ -136,17 +159,18 @@ db.asOf(t).live(openTodos); // emits once, then completes: the past has no news
 ```
 
 `db.q` returns an Effect — a description of the work, not the work. From the
-browser you hand it to the `run` your `src/db.ts` exports:
+browser you run it with `Effect.runPromise`; nothing a `db` returns needs an
+environment:
 
 ```ts title="src/App.tsx"
-import { db, run } from "./db.ts";
+import * as Effect from "effect/Effect";
+import { db } from "./db.ts";
 import { openTodos } from "./todos.ts";
 
-const rows = await run(db.q(openTodos)); // from the app you have running
+const rows = await Effect.runPromise(db.q(openTodos)); // from the app you have running
 ```
 
-Inside a Worker, or inside another Effect, you `yield*` it instead of calling
-`run`. The [Quickstart](/getting-started/quickstart/#what-you-just-ran) has the
+Inside a Worker, or inside another Effect, you `yield*` it instead. The [Quickstart](/getting-started/quickstart/#what-you-just-ran) has the
 short version of why the API is shaped this way.
 
 Values decode on the way out, so a `Ripple.Instant` attribute arrives as a

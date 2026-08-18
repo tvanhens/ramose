@@ -94,9 +94,9 @@ tells the client it moved.
 
 | environment | live queries |
 | --- | --- |
-| a browser, through `Ripple.layer` | yes — this is the intended home |
+| a browser, through `Ripple.connect` (or `Ripple.layer` for Effect users) | yes — this is the intended home |
 | a Worker binding another Worker (`Ripple.ServerBinding`) | **no.** There is no socket on that hop; calling `db.live` fails the fiber outright rather than returning an error you can catch |
-| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ripple.layer` |
+| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ripple.connect` / `Ripple.layer` |
 
 :::note[Two tabs, locally]
 On the local emulator writes do not propagate between isolates, so a second

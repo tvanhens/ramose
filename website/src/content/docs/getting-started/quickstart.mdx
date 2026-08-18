@@ -160,36 +160,33 @@ export const TodosDb = Ripple.Database("todos", {
 ```
 
 Ripple is built on [Effect](https://effect.website). Its API returns Effect
-values — descriptions of work — so one `ManagedRuntime` per page holds the
-connection and is disposed with it, `run(…)` executes one of those values from
-the browser, and `yield*` inside `db.transact` sequences the steps of a write.
-That is all the Effect the rest of this path needs.
+values — descriptions of work — so `Effect.runPromise(…)` executes one of
+those values from the browser (nothing a `Db` returns needs an environment),
+and `yield*` inside `db.transact` sequences the steps of a write. That is all
+the Effect the rest of this path needs.
 
-**The client** is one runtime for the page, disposed with it. Copy this file as
-it stands — the token guard matters, because your local peer has no token and
+**The client** is one `Ripple.connect` handle for the page: a plain object, no
+runtime to build, nothing to dispose but `ripple.close()`. Copy this file as it
+stands — the token guard matters, because your local peer has no token and
 wrapping an undefined one crashes on the first request:
 
 ```ts title="examples/todos/src/db.ts"
 import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { Todos } from "../schema.ts";
 
 const token = import.meta.env.VITE_RIPPLE_TOKEN;
 
-const runtime = ManagedRuntime.make(
-  Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-    token:
-      token === undefined || token === ""
-        ? undefined
-        : Effect.succeed(Redacted.make(token)),
-  }),
-);
+const ripple = Ripple.connect({
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
+  token:
+    token === undefined || token === ""
+      ? undefined
+      : Effect.succeed(Redacted.make(token)),
+});
 
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+export const db = ripple.db("todos", Todos);
 ```
 
 **The queries and writes** live in one module so the app and its tests drive
