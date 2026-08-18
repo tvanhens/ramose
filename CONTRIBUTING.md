@@ -127,7 +127,7 @@ a range).
 ### Cutting a release
 
 ```sh
-bun run scripts/set-version.ts 0.2.0   # root + all 8 manifests
+bun run release:version 0.2.0   # root + all 8 manifests
 git commit -am "release: v0.2.0"
 git tag v0.2.0
 git push origin HEAD --tags
@@ -140,6 +140,25 @@ disagrees with the manifests the run fails before publishing anything.
 To exercise the pipeline without spending a version number, use **Actions →
 Release → Run workflow**, which defaults to a dry run. This matters because npm
 never allows a version to be reused, even after unpublishing.
+
+### Releasing by hand
+
+```sh
+bun run release:dry   # full sequence, publish is a dry run
+bun run release       # the real thing
+```
+
+Both run `scripts/release.ts`, which is also what the workflow calls — there is
+one definition of the release sequence, so local and CI cannot drift.
+
+It refuses to run against a dirty working tree (`--allow-dirty` overrides), so
+what gets published always corresponds to a commit. The publish is wrapped in a
+`finally` that restores the `workspace:*` ranges: pinning them mutates eight
+manifests, and a publish that fails halfway would otherwise leave them pinned
+in your tree, ready to be committed by accident.
+
+Provenance is requested in CI and disabled locally, since attestation needs an
+OIDC issuer that only CI has.
 
 ### The build
 
@@ -160,8 +179,21 @@ output. Deep subpaths accept all three spellings — `@ramose/core/datom`,
 
 ### Scripts
 
+Day to day you only need the four `bun run` aliases:
+
+| command | what it does |
+| --- | --- |
+| `bun run build` | compile all 8 packages to `dist` |
+| `bun run release:version <v>` | set the version across root + all 8 manifests |
+| `bun run release:dry` | full release sequence, publish is a dry run |
+| `bun run release` | full release sequence, for real |
+
+Those wrap the individual steps, each of which stays runnable on its own for
+debugging:
+
 | script | what it does |
 | --- | --- |
+| `scripts/release.ts` | the whole sequence, with guaranteed cleanup |
 | `scripts/set-version.ts` | set the version across root + all 8 manifests |
 | `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE/README |
 | `scripts/check-release.ts` | verify versions agree, tag matches, exports resolve |

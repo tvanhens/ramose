@@ -68,31 +68,19 @@ jobs:
       - name: Test
         run: bun run test
 
-      - name: Build packages
-        run: bun run build
-
-      - name: Verify release
-        env:
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: bun run scripts/check-release.ts --built
-
-      # `workspace:*` is not rewritten by npm the way it is by bun, so this has
-      # to happen before packing or the tarballs are uninstallable.
-      - name: Pin internal dependency ranges
-        run: bun run scripts/prepare-publish.ts
-
-      - name: Re-verify after pinning
-        run: bun run scripts/check-release.ts --built
-
-      - name: Publish
+      # scripts/release.ts is the same sequence used locally (`bun run
+      # release`), so the two cannot drift. Tests ran as their own steps above
+      # for readable logs, hence --skip-tests. Provenance is on here because CI
+      # has an OIDC issuer to attest against; the local scripts turn it off.
+      - name: Build, verify and publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" != "false" ]; then
-            bun run scripts/publish-packages.ts --dry-run --provenance
+            bun run scripts/release.ts --skip-tests --dry-run
           else
-            bun run scripts/publish-packages.ts --provenance
+            bun run scripts/release.ts --skip-tests
           fi
 
       - name: Create GitHub Release
