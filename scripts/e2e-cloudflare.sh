@@ -32,6 +32,14 @@ fail() { echo "error: $*" >&2; exit 1; }
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail "CLOUDFLARE_ACCOUNT_ID is not set (see .cursor/CLOUD.md)."
 command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
+# The Worker entry is `packages/worker/src/index.ts`, but it imports its
+# siblings as bare specifiers (`@ramose/transactor`), which the bundler
+# resolves through each package's `exports` — and those point at `dist`. Build
+# first or the deploy succeeds and the Worker dies at runtime with
+# `ScriptModuleNotFound: No such module "@ramose/transactor"`.
+echo ">> Building packages ..."
+bun run scripts/build-packages.ts
+
 # Unique DNS-safe stage so concurrent runs never share Worker/DO/R2 resources.
 STAGE="${ALCHEMY_STAGE:-${E2E_STAGE:-e2e-$(date +%s)-${RANDOM}}}"
 DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/ramose-e2e-deploy.XXXXXX.log")"

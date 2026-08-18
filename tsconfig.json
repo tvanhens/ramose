@@ -18,9 +18,22 @@
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
     "baseUrl": ".",
+    // Every workspace package maps to its source here, so `typecheck` reads
+    // the source of truth and never needs a build first. This has to list all
+    // eight: each package's `exports` resolves `types` to `dist/*.d.ts` for
+    // consumers, so without a mapping tsc would look there and find nothing
+    // until `bun run build` had run.
     "paths": {
       "@ramose/core": ["packages/core/src/index.ts"],
       "@ramose/core/*": ["packages/core/src/*"],
+      "@ramose/storage": ["packages/storage/src/index.ts"],
+      "@ramose/storage/*": ["packages/storage/src/*"],
+      "@ramose/transactor": ["packages/transactor/src/index.ts"],
+      "@ramose/transactor/*": ["packages/transactor/src/*"],
+      "@ramose/replica": ["packages/replica/src/index.ts"],
+      "@ramose/replica/*": ["packages/replica/src/*"],
+      "@ramose/worker": ["packages/worker/src/index.ts"],
+      "@ramose/worker/*": ["packages/worker/src/*"],
       "@ramose/alchemy": ["packages/alchemy/src/index.ts"],
       "@ramose/alchemy/db": ["packages/alchemy/src/db/index.ts"],
       "@ramose/react": ["packages/react/src/index.ts"],
