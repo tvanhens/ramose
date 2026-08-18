@@ -427,7 +427,7 @@ h1[data-page-title] {
   line-height: 1.6;
   color: var(--sl-color-gray-3);
 }
-.rg-run code {
+.rg-run :not(pre) > code {
   color: var(--sl-color-gray-2);
   background: var(--sl-color-gray-6);
   border-radius: 0.25rem;

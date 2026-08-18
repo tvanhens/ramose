@@ -226,7 +226,11 @@ export const policy = P.policy(Todos, {
       preset: [P.preset(Todo.owner, P.principal)],
       // narrows the namespace read: `todo/note` never leaves
       // the edge for anyone but its owner
-      attrs: [P.attr(Todo.note, { read: P.allow(P.eq(Todo.owner, P.principal)) })],
+      attrs: [
+        P.attr(Todo.note, {
+          read: P.allow(P.eq(Todo.owner, P.principal)),
+        }),
+      ],
     },
   },
 });
