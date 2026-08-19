@@ -7,14 +7,12 @@ dist/
 .env.*
 FABLE_TASK.md
 
-# Generated per-package publish artifacts (see scripts/build-packages.ts).
-# LICENSE/NOTICE are always copied from the repo root. A README is generated
-# only where the package does not already have a written one — those are
-# committed and negated below.
+# Generated publish artifacts (see scripts/build-packages.ts): LICENSE and
+# NOTICE are copied from the repo root on every build, so the root copies stay
+# the single source of truth. The package README is hand-written — it is the
+# npm landing page — and is committed.
 packages/*/LICENSE
 packages/*/NOTICE
-packages/*/README.md
-!packages/react/README.md
 
 # Claude Code scratch. `worktrees/` holds real git worktrees — committing one
 # would commit a checkout of another branch. Shared config (settings.json,

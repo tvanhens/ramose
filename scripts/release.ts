@@ -95,16 +95,15 @@ if (requestedVersion && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(requestedVersi
 }
 
 const manifestVersion = () =>
-  (JSON.parse(readFileSync("packages/core/package.json", "utf8")) as { version: string }).version;
+  (JSON.parse(readFileSync("packages/ramose/package.json", "utf8")) as { version: string }).version;
 
 const versionBefore = manifestVersion();
 const version = requestedVersion ?? versionBefore;
 
-// A prerelease must not land on `latest`, or every plain
-// `npm install @ramose/alchemy` picks it up. Derive the dist-tag from the
-// version unless one was given explicitly: 0.2.0 → latest, 0.2.0-alpha.1 →
-// next. The dist-tag can be moved afterwards, but only once people have
-// already installed what it pointed at.
+// A prerelease must not land on `latest`, or every plain `npm install ramose`
+// picks it up. Derive the dist-tag from the version unless one was given
+// explicitly: 0.2.0 → latest, 0.2.0-alpha.1 → next. The dist-tag can be moved
+// afterwards, but only once people have already installed what it pointed at.
 const isPrerelease = version.includes("-");
 const distTag = valueOf("--tag") ?? (isPrerelease ? "next" : "latest");
 const gitTag = `v${version}`;
@@ -181,7 +180,7 @@ if (!skipTests) {
 }
 
 steps.push({
-  name: "build packages",
+  name: "build the package",
   run: () => run(["bun", "run", "scripts/build-packages.ts", "--clean"]),
 });
 
@@ -197,7 +196,7 @@ steps.push({
     ]),
 });
 
-const total = steps.length + 2 + (shouldTag && !dryRun ? 1 : 0);
+const total = steps.length + 1 + (shouldTag && !dryRun ? 1 : 0);
 let stepNumber = 0;
 const announce = (name: string) => console.log(`\n\x1b[1m[${++stepNumber}/${total}] ${name}\x1b[0m`);
 
@@ -207,29 +206,19 @@ try {
     await step.run();
   }
 
-  // From here the manifests are mutated, so everything is wrapped to guarantee
-  // the restore. `prepare-publish` pins `workspace:*` to the release version;
-  // leaving that pinned in a working tree would be committed by accident
-  // sooner or later.
-  announce("pin internal dependency ranges");
-  await run(["bun", "run", "scripts/prepare-publish.ts"]);
-
-  try {
-    await run(["bun", "run", "scripts/check-release.ts", "--built"]);
-
-    announce("publish");
-    console.log(
-      `${version} → dist-tag "${distTag}"${isPrerelease && !valueOf("--tag") ? " (prerelease, kept off latest)" : ""}`,
-    );
-    const flags = ["--tag", distTag];
-    if (dryRun) flags.push("--dry-run");
-    if (provenance) flags.push("--provenance");
-    if (otp) flags.push("--otp", otp);
-    await run(["bun", "run", "scripts/publish-packages.ts", ...flags]);
-  } finally {
-    console.log("\n\x1b[2mrestoring workspace ranges\x1b[0m");
-    await $`bun run scripts/prepare-publish.ts --restore`.quiet();
-  }
+  // Nothing mutates the manifests between here and the publish: collapsing the
+  // eight packages into one removed every internal `workspace:*` range, which
+  // is what the old pin/restore dance existed for. `check-release.ts` fails the
+  // release if a workspace range ever comes back.
+  announce("publish");
+  console.log(
+    `${version} → dist-tag "${distTag}"${isPrerelease && !valueOf("--tag") ? " (prerelease, kept off latest)" : ""}`,
+  );
+  const flags = ["--tag", distTag];
+  if (dryRun) flags.push("--dry-run");
+  if (provenance) flags.push("--provenance");
+  if (otp) flags.push("--otp", otp);
+  await run(["bun", "run", "scripts/publish-packages.ts", ...flags]);
 
   if (shouldTag && !dryRun) {
     announce(`tag ${gitTag}`);
@@ -246,7 +235,6 @@ try {
     error instanceof Error && (error.name === "ShellError" || error.name === "ExitError");
   const message = error instanceof Error ? error.message : String(error);
   console.error(`\n\x1b[31m✗ release failed: ${childFailure ? message.split("\n")[0] : message}\x1b[0m`);
-  console.error("\x1b[2mworkspace ranges were restored; nothing is left pinned\x1b[0m");
   console.error("\x1b[2mevery step is idempotent — fix the cause and run the same command again\x1b[0m");
   await restoreManifestsIfDryRun();
   process.exit(1);

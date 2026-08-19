@@ -32,12 +32,12 @@ fail() { echo "error: $*" >&2; exit 1; }
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail "CLOUDFLARE_ACCOUNT_ID is not set (see .cursor/CLOUD.md)."
 command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
-# The Worker entry is `packages/worker/src/index.ts`, but it imports its
-# siblings as bare specifiers (`@ramose/transactor`), which the bundler
-# resolves through each package's `exports` — and those point at `dist`. Build
-# first or the deploy succeeds and the Worker dies at runtime with
-# `ScriptModuleNotFound: No such module "@ramose/transactor"`.
-echo ">> Building packages ..."
+# `main` is `import.meta.resolve("ramose/worker")`, and which file that names
+# depends on the resolver's export conditions: `src/worker/index.ts` under Bun,
+# `dist/worker/index.js` everywhere else — and the Alchemy CLI is not always the
+# former. Build first so both answers exist; a missing `dist` deploys a Worker
+# that dies at runtime rather than failing here.
+echo ">> Building the package ..."
 bun run scripts/build-packages.ts
 
 # Unique DNS-safe stage so concurrent runs never share Worker/DO/R2 resources.

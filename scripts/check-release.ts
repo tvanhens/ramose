@@ -3,33 +3,26 @@
  * Pre-flight checks for a release. Run by CI before it publishes anything, and
  * safe to run locally at any time.
  *
- * Verifies, across every publishable package:
- *   - versions are identical (the packages release in lockstep)
+ * Verifies, for the published package:
+ *   - the workspace root and the package agree on the version
  *   - the git tag being released matches that version, when one is supplied
- *   - nothing is still `private: true`
+ *   - it is not still `private: true`
  *   - the metadata npm needs is present
  *   - no dependency is a floating `latest` / `*`, which would make a published
  *     version non-reproducible
+ *   - no dependency is left on the `workspace:` protocol, which npm cannot
+ *     resolve out of a tarball
  *   - every path named in `exports` actually exists (needs `bun run build`)
  *
  * Usage:
  *   bun run scripts/check-release.ts              # metadata only
  *   bun run scripts/check-release.ts --built      # also verify exports resolve
- *   bun run scripts/check-release.ts --tag v0.1.0 # also verify the tag matches
+ *   bun run scripts/check-release.ts --tag v0.2.0 # also verify the tag matches
  */
 
 import { existsSync, readFileSync } from "node:fs";
 
-const PACKAGES = [
-  "core",
-  "storage",
-  "alchemy",
-  "transactor",
-  "replica",
-  "worker",
-  "react",
-  "better-auth",
-] as const;
+const PACKAGE_DIR = "packages/ramose";
 
 const REQUIRED_FIELDS = ["name", "version", "description", "license", "repository", "exports", "files"] as const;
 
@@ -48,20 +41,18 @@ const tagIndex = argv.indexOf("--tag");
 const tag = tagIndex >= 0 ? argv[tagIndex + 1] : process.env.RELEASE_TAG;
 
 const errors: string[] = [];
-const manifests = new Map<string, Manifest>();
 
-for (const pkg of PACKAGES) {
-  const path = `packages/${pkg}/package.json`;
-  manifests.set(pkg, JSON.parse(readFileSync(path, "utf8")) as Manifest);
-}
+const manifest = JSON.parse(readFileSync(`${PACKAGE_DIR}/package.json`, "utf8")) as Manifest;
+const root = JSON.parse(readFileSync("package.json", "utf8")) as Manifest;
+const label = manifest.name;
+const version = manifest.version;
 
-// --- versions agree ---------------------------------------------------------
-const versions = new Set([...manifests.values()].map((m) => m.version));
-if (versions.size !== 1) {
-  const detail = [...manifests].map(([p, m]) => `  @ramose/${p} → ${m.version}`).join("\n");
-  errors.push(`packages disagree on version:\n${detail}`);
+// --- the workspace root moves in lockstep -----------------------------------
+// It is private and never published, but scripts/set-version.ts writes both and
+// the release notes read the root. A drift means one of them was hand-edited.
+if (root.version !== version) {
+  errors.push(`the workspace root is at ${root.version} but ${label} is at ${version}`);
 }
-const version = [...versions][0];
 
 // --- the tag matches --------------------------------------------------------
 if (tag) {
@@ -71,46 +62,45 @@ if (tag) {
   }
 }
 
-// --- per-package metadata ---------------------------------------------------
-for (const [pkg, manifest] of manifests) {
-  const label = `@ramose/${pkg}`;
+// --- metadata ---------------------------------------------------------------
+if (manifest.private) {
+  errors.push(`${label} is still marked "private": true and cannot be published`);
+}
 
-  if (manifest.private) {
-    errors.push(`${label} is still marked "private": true and cannot be published`);
+for (const field of REQUIRED_FIELDS) {
+  if (manifest[field] === undefined) {
+    errors.push(`${label} is missing the "${field}" field`);
   }
+}
 
-  for (const field of REQUIRED_FIELDS) {
-    if (manifest[field] === undefined) {
-      errors.push(`${label} is missing the "${field}" field`);
+for (const group of ["dependencies", "peerDependencies"] as const) {
+  for (const [dep, range] of Object.entries(manifest[group] ?? {})) {
+    // A floating range makes a published version non-reproducible: a consumer
+    // installing 0.2.0 a month from now can resolve a different dependency tree.
+    if (range === "latest" || range === "*" || range === "") {
+      errors.push(`${label} has a floating ${group} range: "${dep}": "${range}"`);
+    }
+    // `workspace:` is a package-manager protocol, not a version. npm leaves it
+    // verbatim in the tarball and the install then fails for everyone.
+    if (range.startsWith("workspace:")) {
+      errors.push(`${label} has a workspace range npm cannot resolve: "${dep}": "${range}"`);
     }
   }
+}
 
-  // A floating range makes a published version non-reproducible: a consumer
-  // installing 0.1.0 a month from now can resolve a different dependency tree.
-  for (const group of ["dependencies", "peerDependencies"] as const) {
-    for (const [dep, range] of Object.entries(manifest[group] ?? {})) {
-      if (range === "latest" || range === "*" || range === "") {
-        errors.push(`${label} has a floating ${group} range: "${dep}": "${range}"`);
-      }
+// --- exports resolve --------------------------------------------------------
+if (checkBuilt) {
+  for (const target of exportTargets(manifest.exports)) {
+    // The `bun` condition points at TypeScript source, which ships too.
+    if (!existsSync(`${PACKAGE_DIR}/${target}`)) {
+      errors.push(`${label} exports "${target}" but ${PACKAGE_DIR}/${target} does not exist`);
     }
   }
-
-  // Internal deps must move in lockstep. Before scripts/prepare-publish.ts runs
-  // they are `workspace:*`; after it they are pinned to the release version.
-  // Anything else means the two are out of step.
-  for (const [dep, range] of Object.entries(manifest.dependencies ?? {})) {
-    if (!dep.startsWith("@ramose/")) continue;
-    if (range !== "workspace:*" && range !== version) {
-      errors.push(`${label} depends on ${dep} via "${range}"; expected "workspace:*" or "${version}"`);
-    }
-  }
-
-  if (checkBuilt) {
-    for (const target of exportTargets(manifest.exports)) {
-      // The `bun` condition points at TypeScript source, which ships too.
-      if (!existsSync(`packages/${pkg}/${target}`)) {
-        errors.push(`${label} exports "${target}" but packages/${pkg}/${target} does not exist`);
-      }
+  // `files` decides what npm puts in the tarball; a missing entry is a broken
+  // install that only shows up after publishing.
+  for (const file of (manifest.files ?? []) as string[]) {
+    if (!existsSync(`${PACKAGE_DIR}/${file}`)) {
+      errors.push(`${label} lists "${file}" in "files" but ${PACKAGE_DIR}/${file} does not exist`);
     }
   }
 }
@@ -122,7 +112,7 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log(`release checks passed — ${PACKAGES.length} packages at ${version}${tag ? ` (tag ${tag})` : ""}`);
+console.log(`release checks passed — ${label} at ${version}${tag ? ` (tag ${tag})` : ""}`);
 
 /** Every concrete file path named in an `exports` map, ignoring `*` patterns. */
 function exportTargets(exports: unknown): string[] {

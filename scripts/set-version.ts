@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Set the version on the root manifest and all publishable packages, then
- * commit that change with a standard message.
+ * Set the version on the workspace root and the published package, then commit
+ * that change with a standard message.
  *
- * The packages release in lockstep, so their versions must never drift —
- * scripts/check-release.ts fails the release if they do. This is the supported
- * way to move them.
+ * The root is private and never ships, but it carries the version the release
+ * notes read, so the two must never drift — scripts/check-release.ts fails the
+ * release if they do. This is the supported way to move them.
  *
  *   bun run release:version 0.2.0
  *   git tag v0.2.0 && git push origin HEAD --tags
  *
- * Only the nine manifests are staged, by path. A blanket `git commit -a` would
+ * Only those two manifests are staged, by path. A blanket `git commit -a` would
  * sweep up whatever else happens to be in the working tree, and a release
  * commit should contain the version bump and nothing else.
  *
@@ -24,17 +24,6 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-
-const PACKAGES = [
-  "core",
-  "storage",
-  "alchemy",
-  "transactor",
-  "replica",
-  "worker",
-  "react",
-  "better-auth",
-] as const;
 
 const argv = process.argv.slice(2);
 const noCommit = argv.includes("--no-commit");
@@ -52,7 +41,7 @@ if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
   process.exit(1);
 }
 
-const manifests = ["package.json", ...PACKAGES.map((p) => `packages/${p}/package.json`)];
+const manifests = ["package.json", "packages/ramose/package.json"];
 
 let changed = 0;
 for (const path of manifests) {
