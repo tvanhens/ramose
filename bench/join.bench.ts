@@ -4,7 +4,7 @@
  *
  *   bun run bench/join.bench.ts [people=100000]
  */
-import { type QueryStats, query } from "../packages/core/src/index.ts";
+import { type QueryStats, query } from "../packages/ramose/src/internal/core/index.ts";
 import { buildBenchDb, fmt, percentile } from "./lib.ts";
 
 const people = Number(process.argv[2] ?? 100_000);

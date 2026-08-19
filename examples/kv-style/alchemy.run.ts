@@ -10,7 +10,7 @@
  * alchemy 2.0.0-beta.72 bundling issue that forces the split.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";

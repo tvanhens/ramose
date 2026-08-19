@@ -17,7 +17,7 @@
  * `VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/todos`.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";

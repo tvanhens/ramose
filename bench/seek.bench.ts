@@ -4,7 +4,7 @@
  *
  *   bun run bench/seek.bench.ts [people=100000]
  */
-import { Index, seekOne, ValueTag } from "../packages/core/src/index.ts";
+import { Index, seekOne, ValueTag } from "../packages/ramose/src/internal/core/index.ts";
 import { ATTR, FIRST_PERSON, buildBenchDb, fmt, mulberry32, percentile } from "./lib.ts";
 
 const people = Number(process.argv[2] ?? 100_000);

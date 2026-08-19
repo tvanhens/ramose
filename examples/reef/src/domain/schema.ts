@@ -8,7 +8,7 @@
  * (`Issue.assignee.name`).
  */
 
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
 /** One row per human who has entered the workspace. `sub` is the JWT subject. */

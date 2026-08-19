@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Harness, attribute } from "../packages/transactor/test/harness.ts";
+import { Harness, attribute } from "../packages/ramose/test/internal/transactor/harness.ts";
 import { fmt, percentile } from "./lib.ts";
 
 const conc = Number(process.argv[2] ?? 64);

@@ -18,36 +18,30 @@
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
     "baseUrl": ".",
-    // Every workspace package maps to its source here, so `typecheck` reads
-    // the source of truth and never needs a build first. This has to list all
-    // eight: each package's `exports` resolves `types` to `dist/*.d.ts` for
-    // consumers, so without a mapping tsc would look there and find nothing
-    // until `bun run build` had run.
+    // The one published package maps to its source here, so `typecheck` reads
+    // the source of truth and never needs a build first: `exports` resolves
+    // `types` to `dist/*.d.ts` for consumers, so without these mappings tsc
+    // would look there and find nothing until `bun run build` had run. The
+    // named entries mirror the `exports` map in packages/ramose/package.json;
+    // the trailing wildcard covers deep module paths (`ramose/db/Db.ts`,
+    // `ramose/internal/core/policy/ast.ts`) the same way `exports` does.
     "paths": {
-      "@ramose/core": ["packages/core/src/index.ts"],
-      "@ramose/core/*": ["packages/core/src/*"],
-      "@ramose/storage": ["packages/storage/src/index.ts"],
-      "@ramose/storage/*": ["packages/storage/src/*"],
-      "@ramose/transactor": ["packages/transactor/src/index.ts"],
-      "@ramose/transactor/*": ["packages/transactor/src/*"],
-      "@ramose/replica": ["packages/replica/src/index.ts"],
-      "@ramose/replica/*": ["packages/replica/src/*"],
-      "@ramose/worker": ["packages/worker/src/index.ts"],
-      "@ramose/worker/*": ["packages/worker/src/*"],
-      "@ramose/alchemy": ["packages/alchemy/src/index.ts"],
-      "@ramose/alchemy/db": ["packages/alchemy/src/db/index.ts"],
-      "@ramose/react": ["packages/react/src/index.ts"],
-      "@ramose/better-auth": ["packages/better-auth/src/index.ts"],
-      "@ramose/better-auth/client": ["packages/better-auth/src/client.ts"]
+      "ramose": ["packages/ramose/src/index.ts"],
+      "ramose/db": ["packages/ramose/src/db/index.ts"],
+      "ramose/worker": ["packages/ramose/src/worker/index.ts"],
+      "ramose/react": ["packages/ramose/src/react/index.ts"],
+      "ramose/better-auth": ["packages/ramose/src/better-auth/index.ts"],
+      "ramose/better-auth/client": ["packages/ramose/src/better-auth/client.ts"],
+      "ramose/*": ["packages/ramose/src/*"]
     }
   },
   "include": [
     "alchemy.run.ts",
     "website/alchemy.run.ts",
-    "packages/*/src/**/*.ts",
-    "packages/*/src/**/*.tsx",
-    "packages/*/test/**/*.ts",
-    "packages/*/test/**/*.tsx",
+    "packages/ramose/src/**/*.ts",
+    "packages/ramose/src/**/*.tsx",
+    "packages/ramose/test/**/*.ts",
+    "packages/ramose/test/**/*.tsx",
     "bench/**/*.ts",
     "test/**/*.ts",
     "examples/**/*.ts",

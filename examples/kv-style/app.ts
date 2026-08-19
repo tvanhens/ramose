@@ -12,7 +12,7 @@
  * module's default export (see alchemy/src/Runtime.ts).
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";

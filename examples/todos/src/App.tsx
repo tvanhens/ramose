@@ -1,4 +1,4 @@
-import { useLive, useTransact } from "@ramose/react";
+import { useLive, useTransact } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";

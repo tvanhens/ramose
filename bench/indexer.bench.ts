@@ -9,10 +9,10 @@
  * are the merge cost itself (structural-sharing rewrite of touched paths, gzip
  * + sha256 per new object), not R2 round trips.
  */
-import { Schema, type Datom, ValueTag, FIRST_USER_EID, attributeDatoms, bootstrapDatoms, buildRoots, gzipCodec, reachable, treeDepth } from "../packages/core/src/index.ts";
-import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, recordToRoots, rootsToRecord } from "../packages/storage/src/index.ts";
-import { MemoryBucket } from "../packages/storage/src/memory.ts";
-import { Harness } from "../packages/transactor/test/harness.ts";
+import { Schema, type Datom, ValueTag, FIRST_USER_EID, attributeDatoms, bootstrapDatoms, buildRoots, gzipCodec, reachable, treeDepth } from "../packages/ramose/src/internal/core/index.ts";
+import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, recordToRoots, rootsToRecord } from "../packages/ramose/src/internal/storage/index.ts";
+import { MemoryBucket } from "../packages/ramose/src/internal/storage/memory.ts";
+import { Harness } from "../packages/ramose/test/internal/transactor/harness.ts";
 import { fmt } from "./lib.ts";
 
 const people = Number(process.argv[2] ?? 300_000);

@@ -14,7 +14,7 @@ import {
   useLive,
   useQuery,
   useTransact,
-} from "@ramose/react";
+} from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useCallback, useState } from "react";
 import {

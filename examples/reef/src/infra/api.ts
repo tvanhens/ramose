@@ -1,7 +1,7 @@
 /**
  * The Reef auth Worker — Better Auth on Cloudflare D1 via
  * `@alchemy.run/better-auth`. The bridge to Ramose is not a custom route any
- * more: it is `@ramose/better-auth`'s `ramoseToken` plugin.
+ * more: it is `ramose/better-auth`'s `ramoseToken` plugin.
  *
  * What it serves:
  *
@@ -29,7 +29,7 @@
 
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
-import { orgClassOf, ramoseToken } from "@ramose/better-auth";
+import { orgClassOf, ramoseToken } from "ramose/better-auth";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";

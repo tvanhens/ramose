@@ -1,7 +1,7 @@
 # Todos
 
 The consumer proof for navigational query (`docs/QUERY.md`) on
-`Ramose.connect` + `@ramose/react` — every name in it is shipped.
+`Ramose.connect` + `ramose/react` — every name in it is shipped.
 
 ## Run it
 
@@ -32,12 +32,12 @@ examples/todos` builds the same bundle for production.
 
 | file | what it is |
 |---|---|
-| `schema.ts` | the catalog, on `@ramose/alchemy/db` — shared by the stack, a Worker and the browser |
+| `schema.ts` | the catalog, on `ramose/db` — shared by the stack, a Worker and the browser |
 | `resources.ts` / `alchemy.run.ts` | `Ramose.Server` + `Ramose.Database`: the one place the catalog is installed |
 | `src/db.ts` | one client, closed with the page. `db`, nothing else |
 | `src/todos.ts` | `Ramose.query(Todo).select(…)` and writes, so the test drives exactly what the UI does |
-| `src/App.tsx` | the UI on `useLive` + `useTransact` from `@ramose/react` — no hand-rolled hooks |
-| `test/todos.test.ts` | those helpers against a real `@ramose/core` `Connection` over both wires |
+| `src/App.tsx` | the UI on `useLive` + `useTransact` from `ramose/react` — no hand-rolled hooks |
+| `test/todos.test.ts` | those helpers against a real `ramose/internal/core` `Connection` over both wires |
 
 `src/db.ts` is the whole client:
 
@@ -49,7 +49,7 @@ export const db = ramose.db("todos", Todos);
 No `await` at module scope (`connect` throws only on a provisioning mistake
 and the socket opens lazily), no runtime and no `run` — every `Db` method
 needs no environment, so the shipped hooks run them directly — and
-no Vite alias: `@ramose/alchemy/db` is a real `exports` entry and nothing it
+no Vite alias: `ramose/db` is a real `exports` entry and nothing it
 reaches imports the deploy engine, so the built bundle contains no `alchemy`
 code at all. (Effect users: `Ramose.layer({ url, token })` is the same client
 as a scoped `Layer<Databases>`.)

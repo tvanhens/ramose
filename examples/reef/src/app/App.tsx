@@ -10,7 +10,7 @@
  * match. The choice is persisted; first visit follows the OS.
  */
 
-import { errorMessage, RamoseProvider } from "@ramose/react";
+import { errorMessage, RamoseProvider } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import {
   createContext,

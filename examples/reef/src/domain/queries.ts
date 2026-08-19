@@ -6,8 +6,8 @@
  * required is a deploy-time error, not a silently dropped row.
  */
 
-import type { Db } from "@ramose/alchemy/db";
-import * as Ramose from "@ramose/alchemy/db";
+import type { Db } from "ramose/db";
+import * as Ramose from "ramose/db";
 import { Comment, Issue, Label, Reef, User } from "./schema.ts";
 
 export type ReefDb = Db<typeof Reef>;

@@ -19,7 +19,7 @@
  * and /cloudflare/compute/durable-objects for alchemy 2.0.0-beta.72.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -41,12 +41,12 @@ export const Store = Cloudflare.R2.Bucket("Store");
  * Worker body to be authored inline (`main: import.meta.url`, handlers
  * returned from the generator). This Worker is a plain async Worker whose
  * script also re-exports both Durable Object classes (single-script pattern,
- * packages/worker/src/index.ts), so the DOs would lose their env. The `env`
+ * packages/ramose/src/worker/index.ts), so the DOs would lose their env. The `env`
  * form emits the same binding — `{ type: "analytics_engine", name: "ANALYTICS",
  * dataset: "ripple_tx" }` (alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts
  * `isDataset` arm) — under the name we choose, so the Worker *and* both DOs see
  * `env.ANALYTICS.writeDataPoint`. The Effect-shaped client lives in the Worker
- * instead (packages/worker/src/analytics.ts).
+ * instead (packages/ramose/src/worker/analytics.ts).
  */
 // `dataset: "ripple_tx"` — physical name pinned; product is Ramose. Renaming it
 // would start a fresh dataset and orphan every point already written.
@@ -70,7 +70,11 @@ export const Transactor = Cloudflare.DurableObject("TransactorDO", { className: 
 export const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const Worker = Cloudflare.Worker("Worker", {
-  main: "./packages/worker/src/index.ts",
+  // `main` is a path, not a specifier — Alchemy `realpath`s it — so the peer
+  // Worker is named the same way a consumer names it, through the package's
+  // `ramose/worker` export. In this repo that resolves through the workspace
+  // symlink to packages/ramose/src/worker/index.ts.
+  main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: {
     STORE: Store,
@@ -78,7 +82,7 @@ export const Worker = Cloudflare.Worker("Worker", {
     REPLICA: Replica,
     ANALYTICS: Analytics,
     RAMOSE_STAGE: stage,
-    // tuning knobs (see packages/transactor/src/env.ts); only bound when set
+    // tuning knobs (see packages/ramose/src/internal/transactor/env.ts); only bound when set
     ...tuning("RAMOSE_MAX_BATCH", "RAMOSE_QUERY_MAX_CELLS", "RAMOSE_LOG_LEVEL", "RAMOSE_INDEX_TX_THRESHOLD", "RAMOSE_INDEX_INTERVAL_MS", "RAMOSE_LOG_KEEP_TXS", "RAMOSE_REPLICA_HINT", "RAMOSE_CACHE_BASIS", "RAMOSE_CACHE_MODE", "RAMOSE_TIMING_YIELDS"),
     // RAMOSE_TOKEN: Config.redacted("RAMOSE_TOKEN")  ← the peer's one bearer token for prod
     // RAMOSE_POLICY / _JWKS_URL / _JWT_ISS / _JWT_AUD / _JWT_MAX_TTL / _ALLOWED_ORIGINS / _INTERNAL_SECRET
@@ -86,11 +90,11 @@ export const Worker = Cloudflare.Worker("Worker", {
   },
 });
 
-/** Typed `env` for the Worker entrypoint (mirrors packages/transactor/src/env.ts#RamoseEnv). */
+/** Typed `env` for the Worker entrypoint (mirrors packages/ramose/src/internal/transactor/env.ts#RamoseEnv). */
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 /**
- * The Ramose server on this peer Worker (`@ramose/alchemy`).
+ * The Ramose server on this peer Worker (`ramose`).
  *
  * Nothing is provisioned and no database name is pinned here: a Ramose
  * database is a *name*, the Transactor DO is `idFromName(name)` and the

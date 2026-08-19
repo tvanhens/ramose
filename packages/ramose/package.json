@@ -1,0 +1,172 @@
+{
+  "name": "ramose",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: the schema and client (`ramose/db`), the Alchemy resources (`ramose`), the peer Worker (`ramose/worker`), the React hooks (`ramose/react`) and the Better Auth plugins (`ramose/better-auth`).",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ramose.git",
+    "directory": "packages/ramose"
+  },
+  "bugs": {
+    "url": "https://github.com/tvanhens/ramose/issues"
+  },
+  "keywords": [
+    "ramose",
+    "database",
+    "datalog",
+    "datomic",
+    "immutable",
+    "graph-database",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "effect",
+    "alchemy",
+    "realtime"
+  ],
+  "//dependencies": [
+    "Ramose owns its whole runtime graph on purpose: `bun add ramose` has to be",
+    "enough. Two of these ranges are load-bearing rather than incidental.",
+    "",
+    "`effect` — a bare `effect` in a consumer's manifest installs 3.x, which is",
+    "the wrong major and typechecks against nothing here. Owning the dependency",
+    "with a prerelease floor is what makes the Effect 4 line resolve without the",
+    "consumer ever typing `effect@rc`. The floor carries a prerelease tag so",
+    "semver admits the other 4.0.0 prereleases; `<5.0.0` keeps the next major",
+    "out.",
+    "",
+    "Effect types cross the public API boundary (a `Db` is parameterised by",
+    "`Schema`s, a live query is a `Stream`), so two copies of `effect` in one",
+    "tree do not merely duplicate bytes — they produce two mutually unassignable",
+    "sets of types and nothing typechecks. The mitigation is that a consumer",
+    "never has to name `effect` at all: it arrives under `ramose`, and the",
+    "`ramose/effect` and `ramose/schema` subpaths re-export the same module",
+    "instances for resolvers that do not hoist (pnpm's default, Yarn PnP). A",
+    "consumer who *does* add `effect` to their own manifest should use a range",
+    "compatible with this one; anything else is the one way back to two copies.",
+    "",
+    "`alchemy` is a real dependency, not a peer: it also carries the `alchemy`",
+    "CLI the quickstart runs, and a peer would put its installation back on the",
+    "consumer. React stays an optional peer — a server-only app needs none of it",
+    "— and so does `better-auth`, which only `ramose/better-auth` touches."
+  ],
+  "sideEffects": [
+    "./src/worker/**",
+    "./src/internal/transactor/**",
+    "./src/internal/replica/**",
+    "./dist/worker/**",
+    "./dist/internal/transactor/**",
+    "./dist/internal/replica/**"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./db": {
+      "bun": "./src/db/index.ts",
+      "types": "./dist/db/index.d.ts",
+      "default": "./dist/db/index.js"
+    },
+    "./worker": {
+      "bun": "./src/worker/index.ts",
+      "types": "./dist/worker/index.d.ts",
+      "default": "./dist/worker/index.js"
+    },
+    "./react": {
+      "bun": "./src/react/index.ts",
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./better-auth": {
+      "bun": "./src/better-auth/index.ts",
+      "types": "./dist/better-auth/index.d.ts",
+      "default": "./dist/better-auth/index.js"
+    },
+    "./better-auth/client": {
+      "bun": "./src/better-auth/client.ts",
+      "types": "./dist/better-auth/client.d.ts",
+      "default": "./dist/better-auth/client.js"
+    },
+    "./workerEntry": {
+      "bun": "./src/workerEntry.ts",
+      "types": "./dist/workerEntry.d.ts",
+      "default": "./dist/workerEntry.js"
+    },
+    "./effect": {
+      "bun": "./src/effect.ts",
+      "types": "./dist/effect.d.ts",
+      "default": "./dist/effect.js"
+    },
+    "./schema": {
+      "bun": "./src/schema.ts",
+      "types": "./dist/schema.d.ts",
+      "default": "./dist/schema.js"
+    },
+    "./*.js": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*.ts": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./*": {
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@effect/platform-bun": ">=4.0.0-beta.105 <5.0.0",
+    "@effect/platform-node": ">=4.0.0-beta.105 <5.0.0",
+    "alchemy": ">=2.0.0-beta.72 <3.0.0",
+    "effect": ">=4.0.0-beta.105 <5.0.0",
+    "jose": "^6.0.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "better-auth": ">=1.6.0",
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "better-auth": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.0.0",
+    "@testing-library/dom": "^10.0.0",
+    "@testing-library/react": "^16.0.0",
+    "better-auth": "^1.6.30",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

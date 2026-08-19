@@ -1,8 +1,8 @@
 /**
  * The ops HTTP harness — **not** a client SDK and not a package.
  *
- * `docs/API.md` deletes `@ramose/client`: the typed surface is
- * `@ramose/alchemy/db` (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is
+ * `docs/API.md` deletes the idea of a separate client package: the typed
+ * surface is `ramose/db` (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is
  * Worker internals. What is left here is the *ops* half that no public API
  * names — raw datalog strings, the metrics response headers, and the admin
  * routes `docs/RUNBOOK.md` documents (`/info`, `/admin/index`, `/admin/gc`,
@@ -13,8 +13,8 @@
  * `packages/**` imports it.
  */
 
-import { fromJson, toJson } from "@ramose/core";
-import type { TxData } from "@ramose/core";
+import { fromJson, toJson } from "ramose/internal/core";
+import type { TxData } from "ramose/internal/core";
 
 export interface PeerOptions {
   token?: string;

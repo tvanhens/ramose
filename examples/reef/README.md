@@ -6,7 +6,7 @@ headline feature — reactivity (`useLive` over `db.live`), multi-tenancy
 (`db.install()` at runtime), auth (Better Auth JWTs verified by the peer
 against a compiled `Ramose.Policy`), immutability (`db.asOf` time travel +
 `db.history`), and a StyleX design system with dark/light themes. The UI is
-written entirely with the `@ramose/react` hooks.
+written entirely with the `ramose/react` hooks.
 
 ## Run it
 
@@ -39,7 +39,7 @@ account to watch writes propagate live.
 > Cross-connection live updates (two windows, two sign-ins) work locally under
 > miniflare too. An earlier caveat here about writes only showing up on
 > reconnect was issue #28 — sessions sharing a database in one isolate dying on
-> the basis fan-out — fixed in `packages/worker/src/session.ts`.
+> the basis fan-out — fixed in `packages/ramose/src/worker/session.ts`.
 
 ## The architecture
 
@@ -57,7 +57,7 @@ auth Worker's URL (for `RAMOSE_JWKS_URL`), and the auth Worker needs nothing
 back.
 
 A workspace is born entirely from the browser: Better Auth org create →
-`POST /api/auth/ramose/token` (the `@ramose/better-auth` mint plugin) mints a
+`POST /api/auth/ramose/token` (the `ramose/better-auth` mint plugin) mints a
 15-minute JWT with
 `ramose: { db: <slug>, class: <role> }` → `ramose.db(slug, Reef).install()` →
 seed labels + the creator's `user` row. No resource, no deploy — a database is
@@ -86,7 +86,7 @@ examples/reef/
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
-| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `@ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
+| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ramose.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
 | `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus first-entry provisioning, handed to screens as `{ slug, cls, token, myEid }` — the living client is `<RamoseProvider key={slug}>`'s own |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |

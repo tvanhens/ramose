@@ -21,7 +21,7 @@
  * more so the built SPA ships as the auth Worker's assets.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";

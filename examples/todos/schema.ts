@@ -1,4 +1,4 @@
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Namespace("todo", {

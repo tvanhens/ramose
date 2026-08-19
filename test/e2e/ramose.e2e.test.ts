@@ -15,7 +15,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Ramose from "../../packages/alchemy/src/db/index.ts";
+import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
 const URL_ = process.env.RAMOSE_URL;

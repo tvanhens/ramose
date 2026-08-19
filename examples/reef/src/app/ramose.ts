@@ -1,12 +1,12 @@
 /**
- * Workspace wiring. The mint is the `@ramose/better-auth` client plugin
+ * Workspace wiring. The mint is the `ramose/better-auth` client plugin
  * (`authClient.ramose.token`); `Ramose.token.jwt` re-mints the JWT near
  * `exp`; `cls` is the decoded, unverified claim — UI hints only. The client
  * that lives with the board is owned by `<RamoseProvider key={slug}>` in
  * App.tsx; this module only runs the first-entry writes over a short-lived
  * one and hands the screens `{ slug, cls, token, myEid }`.
  */
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Effect from "effect/Effect";
 import { Reef } from "../domain/schema.ts";
 import type { RamoseClass } from "../domain/shared.ts";

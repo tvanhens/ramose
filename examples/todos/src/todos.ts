@@ -1,7 +1,7 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import * as Ramose from "@ramose/alchemy/db";
-import type { Db, Eid } from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
+import type { Db, Eid } from "ramose/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;

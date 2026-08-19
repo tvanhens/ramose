@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "@ramose/core/policy/ast.ts";
-import * as Ramose from "@ramose/alchemy";
-import { classOfRole } from "@ramose/better-auth";
+import { parsePolicy } from "ramose/internal/core/policy/ast.ts";
+import * as Ramose from "ramose";
+import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
@@ -76,7 +76,7 @@ describe("reef policy", () => {
   });
 });
 
-// The mapping lives in `@ramose/better-auth` now (the mint plugin's
+// The mapping lives in `ramose/better-auth` now (the mint plugin's
 // default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
   test("owner and admin mint the admin class", () => {

@@ -1,8 +1,8 @@
 {
-  "name": "ramose",
-  "version": "0.1.1",
+  "name": "ramose-monorepo",
+  "version": "0.2.0",
   "private": true,
-  "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
+  "description": "Development workspace for Ramose. The published package is `packages/ramose` (npm: `ramose`); this manifest is private and never ships.",
   "license": "Apache-2.0",
   "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
   "homepage": "https://ramose.ai",
@@ -21,7 +21,7 @@
     "release:dry": "bun run scripts/release.ts --dry-run --no-provenance",
     "release:version": "bun run scripts/set-version.ts",
     "release:check": "bun run scripts/check-release.ts --built",
-    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy packages/react packages/better-auth examples/todos examples/reef test/support",
+    "test": "bun test packages/ramose examples/todos examples/reef test/support",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
     "test:e2e:cf": "bash scripts/e2e-cloudflare.sh",
@@ -60,11 +60,9 @@
     "@alchemy.run/better-auth": "^2.0.0-beta.72",
     "@effect/platform-bun": ">=4.0.0-beta.105",
     "@effect/platform-node": ">=4.0.0-beta.105",
-    "@ramose/alchemy": "workspace:*",
-    "@ramose/better-auth": "workspace:*",
-    "@ramose/react": "workspace:*",
     "alchemy": "latest",
     "better-auth": "^1.6.30",
-    "effect": ">=4.0.0-beta.105"
+    "effect": ">=4.0.0-beta.105",
+    "ramose": "workspace:*"
   }
 }

@@ -8,7 +8,7 @@
  * and a browser never installs schema (`alchemy.run.ts` does that at deploy).
  */
 
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import { Todos } from "../schema.ts";
 
 const token = import.meta.env.VITE_RAMOSE_TOKEN;

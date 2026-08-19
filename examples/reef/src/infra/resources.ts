@@ -21,7 +21,7 @@
  * strings), so they are spelled directly with their `AUTH_ENV_KEYS` names.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
@@ -39,7 +39,7 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
+  main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
   dev: { port: DEV_PEER_PORT },
   env: {

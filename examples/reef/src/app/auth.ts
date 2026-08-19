@@ -3,7 +3,7 @@
  * /api to the auth Worker; deployed, the auth Worker serves these assets.
  */
 
-import { ramoseTokenClient } from "@ramose/better-auth/client";
+import { ramoseTokenClient } from "ramose/better-auth/client";
 import { organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { AUTH_BASE_PATH } from "../domain/shared.ts";

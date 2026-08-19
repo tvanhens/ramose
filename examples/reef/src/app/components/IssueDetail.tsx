@@ -8,7 +8,7 @@
  * write-denied below `admin`.
  */
 
-import { errorMessage, useLive, usePull, useTransact } from "@ramose/react";
+import { errorMessage, useLive, usePull, useTransact } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useEffect, useMemo, useState } from "react";
 import {

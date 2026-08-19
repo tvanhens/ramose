@@ -16,7 +16,7 @@
  * only when identical, so a member can never forge `issue.creator`.
  */
 
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
 import { CLASSES } from "./shared.ts";

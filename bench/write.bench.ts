@@ -5,7 +5,7 @@
  *
  *   bun run bench/write.bench.ts [txs=5000]
  */
-import { Connection } from "../packages/core/src/index.ts";
+import { Connection } from "../packages/ramose/src/internal/core/index.ts";
 import { fmt } from "./lib.ts";
 
 const N = Number(process.argv[2] ?? 5000);
