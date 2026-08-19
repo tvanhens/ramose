@@ -11,7 +11,7 @@ Every **write** goes through one function, `db.transact`, and it either lands co
 <Learn learn={["The four verbs, and that there is no fifth", "Create, change, clear and delete a record", "What a write returns; what a refused write looks like"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
 
 :::note[Effect, in three rules]
-Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)`. That is all you need for now — [Effect in five minutes](/concepts/effect/).
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
 :::
 
 ## The four verbs

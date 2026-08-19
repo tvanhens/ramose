@@ -1,156 +1,94 @@
 ---
-title: Quickstart
-description: A running realtime app on your laptop in under ten minutes — run Reef, the example issue tracker, or start your own app from the todo template.
+title: Getting started
+description: Build a realtime todo app from scratch with the Ramose packages — a schema, a live query and typed writes, running on your laptop in about fifteen minutes.
 ---
-import { Steps, Tabs, TabItem } from "@astrojs/starlight/components";
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Get a Ramose app running on your laptop in under ten minutes. Path 1 runs Reef, the example issue tracker — the fastest way to see live sync, roles and time travel. Path 2 starts your own app from the todo template.
+You are going to build a todo app from an empty folder. It stores todos in a Ramose database, and the list updates itself in every open tab — no refetch code, no WebSocket server, no REST endpoints. Everything installs from npm; you do not need to clone anything, and you do not need a Cloudflare account to run it.
 
-<Learn learn={["Run a realtime, multi-tenant app locally", "See a live query, a refused write and time travel", "Start your own app from a template"]} minutes={10} />
+<Learn learn={["Install Ramose and declare a schema", "Run the Ramose server on your laptop", "Read with a live query and write with a typed transaction", "Add a field and filter the list without touching a refetch"]} minutes={15} />
 
-You need git and [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). No Cloudflare account, no Docker. Path 1 starts from a clone, because Reef lives in this repository. Path 2 installs `@ramose/*` from npm. Ramose is pre-release, so expect the API to move between versions.
+You need [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). Ramose is pre-release: the install below takes carets, and once it works you may want to replace them with exact versions, because the API moves between releases.
 
-## Path 1: run Reef
-
-<Steps>
-
-1. ### Get the code
-
-   ```sh frame="terminal"
-   git clone https://github.com/tvanhens/ramose && cd ramose && bun install
-   ```
-
-2. ### Start it
-
-   ```sh frame="terminal"
-   bun run dev:reef
-   ```
-
-   Wait for `Done: 8 succeeded` and three URLs: `:1337` the Ramose server, `:1338` the sign-in Worker, `:5173` the app. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)).
-
-   Alchemy is the TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `bun alchemy dev` runs it on your laptop, `bun alchemy deploy` ships it to Cloudflare.
-
-   <details>
-   <summary>If Alchemy asks you to log in</summary>
-
-   The local Cloudflare emulator wants placeholder credentials, and an interactive login fails in CI-like shells. `bun run dev:reef` already sets them; you only need the prefix if you run `bun alchemy dev` directly:
-
-   ```sh frame="terminal"
-   CI=1 ALCHEMY_STATE=local \
-     CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
-     CLOUDFLARE_API_TOKEN=x \
-     bun alchemy dev examples/reef/alchemy.run.ts
-   ```
-
-   The account id is a placeholder and the token is the literal letter `x`. `ALCHEMY_STATE=local` keeps the whole stack on your machine, so nothing is billed. Each variable is only defaulted when unset.
-
-   </details>
-
-   :::note[A harmless-looking scare]
-   `your Worker's code had hung` lines are the local emulator closing a socket, not a crash. [Why that line appears](/guides/troubleshooting/#the-terminal-says-the-workers-code-had-hung).
-   :::
-
-3. ### Sign up and create a workspace
-
-   Open [http://localhost:5173](http://localhost:5173) and **Create account** (verified on the spot, no email). Then **New workspace**, type a name — the pictures here use `Tidepool` — and **Create**. A workspace is one customer's isolated data — its own database ([glossary](/concepts/glossary/#workspace)).
-
-   <Shot src="/reef/workspace-create.png" alt="Reef's New workspace form with the name Tidepool typed in, and a preview line beneath it reading ramose.db(&quot;tidepool&quot;).install()" caption="Create runs ramose.db(&quot;tidepool&quot;).install() from the browser — the workspace is its own database." code="examples/reef/src/app/mutations.ts:28-45" />
-
-   The pictures here come from a demo account with two workspaces and fifteen issues; yours will look sparser.
-
-4. ### Put issues on the board
-
-   Click **Add sample issues**. Drag one to **Done**.
-
-   <Shot src="/reef/board-dark.png" alt="Reef's board in dark theme: four columns — Backlog, Todo, In Progress, Done — of issue cards with coloured labels, priorities and assignee avatars" caption="The sample issues arrived in one write; the board is one live query." code="examples/reef/src/domain/queries.ts:66-68" />
-
-5. ### Open a second window
-
-   Same URL, same account. Drag a card in one; watch it move in the other. The `live` pill pulses on every update.
-
-   <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One live query drives both windows; the live pill pulses on each update." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
-
-   That is a live query — a query that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `useLive(db, boardQuery)` re-ran; there is no refetch code in Reef.
-
-6. ### Travel in time
-
-   Click **Time travel**, drag the slider left, then **Back to live**. That is **time travel**: reading the database as it was at an earlier version ([glossary](/concepts/glossary/#time-travel)).
-
-   <Shot src="/reef/time-travel.png" alt="Reef's board under a blue time-travel bar reading db.asOf(27) of 42, the header pill reading paused, showing fewer cards than live" caption="The same query, read as the database was at an earlier version number." code="examples/reef/src/app/screens/BoardScreen.tsx:448-460" />
-
-7. ### See a rule refuse a write
-
-   *(optional, 2 min)* **Invite** `viewer@example.com` as **viewer**. In a private window, sign up with that email, accept the invitation and open the board. Drag a card: a red toast says `retract denied on :issue/status` and the card snaps back. Buttons are hidden for viewers on purpose; the drag is the proof that a **role** ([glossary](/concepts/glossary/#role)) is enforced by the server, not the UI.
-
-   <Shot src="/reef/denied-toast.png" alt="A viewer's Reef board with a red toast reading retract denied on :issue/status and a VIEWER badge in the header" caption="The server refused the write; the UI only reported it." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
-
-8. ### What you just ran
-
-   Three files are the whole data layer: `schema.ts` — what exists · `queries.ts` — what screens read · `policy.ts` — who may. The heart of the schema (Ramose calls it a *catalog* — [glossary](/concepts/glossary/#schema)):
-
-   ```ts title="examples/reef/src/domain/schema.ts:29-46"
-   export const Issue = Ramose.Namespace("issue", {
-     title: Ramose.Attr(Schema.String),
-     /** One of {@link STATUSES}. */
-     status: Ramose.Attr(Schema.String),
-     /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-     priority: Ramose.Attr(Ramose.Long),
-     creator: Ramose.Attr(Ramose.Ref(() => User)),
-     assignee: Ramose.Attr(Ramose.Ref(() => User)),
-     labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
-     // …
-   });
-   ```
-
-   Try it: in `src/app/mutations.ts:100` change `draft.priority` to `"high"` — your editor underlines it; priority is a number. [Tour of Reef](/getting-started/tour-of-reef/) maps every screen to its code.
-
-9. ### Stop
-
-   Ctrl-C in the terminal.
-
-</Steps>
-
-## Path 2: start your own app
-
-The smallest Ramose app is a todo list: a schema, a deploy file, one query, one component. Get it running here; [Build your first app](/getting-started/first-app/) walks through every line.
-
-<Tabs syncKey="install">
-<TabItem label="npm">
+## Create the app
 
 ```sh frame="terminal"
-npm create vite@latest my-app -- --template react-ts && cd my-app
-npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
+mkdir my-todos && cd my-todos
+bun add @ramose/alchemy @ramose/worker @ramose/react alchemy react react-dom \
+  effect@rc @effect/platform-node@rc @effect/platform-bun@rc
+bun add -d vite @vitejs/plugin-react typescript @types/react @types/react-dom
 ```
 
-`bun add` and `pnpm add` work the same. Copy the files from [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos) and change the Vite template's `src/main.tsx` to `import { App } from "./App.tsx";`. Then start everything — Alchemy runs the whole stack on your laptop (see *If Alchemy asks you to log in* above):
+The `@rc` matters. Ramose is built on Effect 4, which is still a release candidate, so plain `effect` installs 3.x and nothing will typecheck. Alchemy needs the two `@effect/platform-*` packages but marks them optional, so nothing warns you when they are missing — you just get `Cannot find module '@effect/platform-node/NodeServices'` on the first run.
 
-```sh frame="terminal"
-bun alchemy dev alchemy.run.ts
+Now a `.env` file. `alchemy dev` reads it automatically:
+
+```sh title=".env"
+CI=1
+CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CLOUDFLARE_API_TOKEN=x
 ```
 
-</TabItem>
-<TabItem label="Inside the clone">
+`CI=1` is the one that does the work: it tells Alchemy to take credentials from the environment instead of a login profile. The other two are placeholders the local emulator insists on before it will start — the account id has to be 32 hex characters, the token can be any string, and nothing is uploaded anywhere. You swap in real ones only when you [deploy](/guides/deploy/).
 
-The same code, resolved from source rather than npm — which is what you want if you are also changing Ramose itself. Skip the first line if you already ran Path 1.
+Without them every resource fails and `alchemy dev` keeps running rather than exiting, so the terminal looks busy while nothing comes up. [What that looks like](/guides/troubleshooting/#no-credentials-configured-for-cloudflare).
 
-```sh frame="terminal"
-git clone https://github.com/tvanhens/ramose && cd ramose && bun install
-bun run dev:todos
+Add `.env` and `.alchemy/` to a `.gitignore` now — the first holds a real Cloudflare token once you deploy, the second is your entire local database:
+
+```sh title=".gitignore"
+node_modules/
+.alchemy/
+.env
 ```
 
-</TabItem>
-</Tabs>
+`bun add` wrote a `package.json` containing only `dependencies`. Merge these two keys into it — do not replace the file, or you will delete everything you just installed. Without `"type": "module"`, Vite warns that your config is loaded as CommonJS:
 
-Open [http://localhost:5173](http://localhost:5173), add "buy milk", then open a second tab — it is already there. Two windows on the same database update each other within about a second, locally and deployed.
+```json title="package.json — merge these in, keep dependencies"
+  "type": "module",
+  "scripts": { "dev": "alchemy dev" },
+```
 
-### What you just started
+Three small files finish the setup:
 
-Six files, about 240 lines. The **schema** ([glossary](/concepts/glossary/#schema)) is the one to read first:
+```json title="tsconfig.json"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["vite/client"]
+  }
+}
+```
 
-```ts title="examples/todos/schema.ts:1-10"
+```ts title="vite.config.ts"
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+export default defineConfig({ plugins: [react()] });
+```
+
+```html title="index.html"
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>todos</title></head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+## Describe your data
+
+```ts title="schema.ts"
 import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
@@ -163,10 +101,15 @@ export const Todo = Ramose.Namespace("todo", {
 export const Todos = Ramose.Catalog({ todo: Todo });
 ```
 
-The deploy file names the three things the Ramose server needs on Cloudflare — a storage bucket where every version is kept, and two Durable Objects (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. [Why these three things →](/concepts/architecture/#what-runs-where)
+- `Ramose.Namespace("todo", …)` — a **record type**, a kind of record like a table ([glossary](/concepts/glossary/#record-type)).
+- `Ramose.Attr(…)` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)). `Ramose.Instant` is a timestamp.
+- `Ramose.Catalog({ todo: Todo })` — the **schema**, your data model as one value; Ramose calls it a catalog ([glossary](/concepts/glossary/#schema)).
 
-<details>
-<summary>The deploy file — copy it, don't study it yet</summary>
+Every record type gets an `id` field for free: `Todo.id`. This one file is imported by your app, your rules and your deploy — there is no second copy to keep in sync.
+
+## Declare the server
+
+Ramose runs as one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `@ramose/worker`. You only name the storage it needs.
 
 ```ts title="resources.ts"
 import * as Ramose from "@ramose/alchemy";
@@ -177,15 +120,30 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  // The published package. Inside a clone of this repository it is a path
-  // instead: "./packages/worker/src/index.ts".
-  main: "@ramose/worker",
+  main: import.meta.resolve("@ramose/worker"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
 
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
+
+:::caution[`main` takes a path, not a package name]
+Write `import.meta.resolve("@ramose/worker")`, not `"@ramose/worker"`. `main` is resolved as a file path, so a bare package name silently finds nothing: the stack still reports the server as ready, but no Worker is ever bundled and every request hangs forever instead of failing. If your app starts and then nothing loads, this is why.
+:::
+
+| Line | What it names |
+| --- | --- |
+| `R2.Bucket("Store")` | Object storage: every version of every database is kept here |
+| `DurableObject("TransactorDO")` | The writer: commits each database's writes, in order |
+| `DurableObject("QueryReplicaDO")` | Read copies: where queries run |
+| `Worker("Peer")` | The Ramose server itself. `main` resolves the package to a path — its code ships with Ramose |
+
+[Why these three things →](/concepts/architecture/#what-runs-where)
+
+## Declare the stack
+
+Alchemy is the TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `alchemy dev` runs it on your laptop, `alchemy deploy` ships it to Cloudflare. It finds `alchemy.run.ts` by name, so keep that filename.
 
 ```ts title="alchemy.run.ts"
 import * as Ramose from "@ramose/alchemy";
@@ -204,14 +162,14 @@ export const Ui = Command.Dev(
   Effect.gen(function* () {
     const server = yield* Server;
     return {
-      command: "bunx vite . --port 5173 --strictPort",
+      command: "bunx vite --port 5173",
       env: { VITE_RAMOSE_URL: server.url },
     };
   }),
 );
 
 export default Alchemy.Stack(
-  "ripple-todos",
+  "my-todos",
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),
@@ -229,16 +187,261 @@ export default Alchemy.Stack(
 );
 ```
 
-</details>
+`Ramose.Database("todos", …)` installs the schema as a database named `todos`. `Ui` starts Vite once the server is answering and hands it the server's real URL as `VITE_RAMOSE_URL`, so the two can never disagree about the port.
 
-The other four files are the app itself: `src/db.ts` connects to the server, `src/todos.ts` holds the query and the three writes, `src/App.tsx` renders the list, and `src/main.tsx` mounts it.
+## Connect
 
-*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+```ts title="src/db.ts"
+import * as Ramose from "@ramose/alchemy/db";
+import { Todos } from "../schema.ts";
 
-[Build your first app](/getting-started/first-app/) reads all six, line by line, then adds a field and a live filter.
+const ramose = Ramose.connect({
+  url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:1337",
+});
+
+export const db = ramose.db("todos", Todos);
+```
+
+No `await`: the socket opens lazily, so there is nothing to wait for at module scope. No token either — a local server with no policy lets everyone in, which is fine until you share a URL.
+
+```ts title="src/vite-env.d.ts"
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_RAMOSE_URL?: string;
+}
+```
+
+## The query and the writes
+
+```ts title="src/todos.ts"
+import * as Ramose from "@ramose/alchemy/db";
+import type { Db, Eid } from "@ramose/alchemy/db";
+import { Todo, type Todos } from "../schema.ts";
+
+export type TodosDb = Db<typeof Todos>;
+export type TodoEid = Eid<typeof Todos>;
+
+export const todoShape = {
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+} as const;
+
+export const todoQuery = Ramose.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
+
+/** One row of {@link todoQuery} — inferred, never restated. */
+export type TodoRow = Ramose.Row<typeof todoQuery>;
+
+export const addTodo = (db: TodosDb, title: string) =>
+  db.transact(function* (tx) {
+    const t = yield* tx.entity();
+    yield* t.add(Todo.title, title);
+    yield* t.add(Todo.done, false);
+    yield* t.add(Todo.createdAt, new Date());
+  });
+
+export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
+  db.transact(function* (tx) {
+    yield* tx.add(eid.id, Todo.done, done);
+  });
+
+export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
+  db.transact(function* (tx) {
+    yield* tx.retractEntity(eid.id);
+  });
+```
+
+A query is a **value** — hoist it once and run it once, live, or in the past. `TodoRow` is read off the query, so adding a field to the shape changes the type everywhere it is used.
+
+Each write is one all-or-nothing change; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `add` sets a field, `retractEntity` deletes one.
+
+:::note[Effect, in three rules]
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
+:::
+
+## The screen
+
+```tsx title="src/App.tsx"
+import { useLive, useTransact } from "@ramose/react";
+import { useState } from "react";
+import { db } from "./db.ts";
+import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
+
+export const App = () => (
+  <main>
+    <h1>todos</h1>
+    <NewTodo />
+    <TodoList />
+  </main>
+);
+
+const TodoList = () => {
+  const { rows, error } = useLive(db, todoQuery);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => <TodoRowView key={row.id} row={row} />)}
+    </ul>
+  );
+};
+
+const TodoRowView = ({ row }: { row: TodoRow }) => {
+  const { run } = useTransact();
+  return (
+    <li>
+      <label>
+        <input
+          type="checkbox"
+          checked={row.done}
+          onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+        />
+        <span>{row.title}</span>
+      </label>
+      <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
+        delete
+      </button>
+    </li>
+  );
+};
+
+const NewTodo = () => {
+  const [title, setTitle] = useState("");
+  const { run } = useTransact();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (title.trim() === "") return;
+        void run(addTodo(db, title.trim()));
+        setTitle("");
+      }}
+    >
+      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="what needs doing?" />
+      <button type="submit">add</button>
+    </form>
+  );
+};
+```
+
+`useLive(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` runs a write from an event handler. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
+
+```tsx title="src/main.tsx"
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./App.tsx";
+
+const root = document.getElementById("root");
+if (root === null) throw new Error("no #root in the page");
+
+createRoot(root).render(<StrictMode><App /></StrictMode>);
+```
+
+## Run it
+
+```sh frame="terminal"
+bun run dev
+```
+
+A cold start takes a few seconds and ends with `Done: 10 succeeded`. Four lines are the ones to look for — the Ramose server on `:1337`, the Worker actually booting, your database installed, and the app on `:5173`:
+
+```ansi frame="terminal"
+[Peer] ready at http://localhost:1337
+INFO: [Peer] Started in 214ms
+[todos] created
+[Ui] ready at http://localhost:5173/
+```
+
+`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-package-name mistake above, and on this release it fails silently and waits forever.
+
+Open the `[Ui] ready at` URL — `http://localhost:5173` unless something else had the port — and add "buy milk". Then open a second tab on the same URL: the todo is already there. Tick it in one tab and watch it strike through in the other, in about a second. That is one live query in two tabs; there is no code in this app that makes it happen.
+
+Types are the point of all this, so check them:
+
+```sh frame="terminal"
+bunx tsc --noEmit
+```
+
+:::note[A harmless-looking scare]
+`your Worker's code had hung` lines are the local emulator closing a socket, not a crash. [Why that line appears](/guides/troubleshooting/#the-terminal-says-the-workers-code-had-hung).
+:::
+
+If `:1337` or `:5173` is already busy, both fall back to the next free port and print where they actually landed — read the URLs off the terminal rather than assuming. Anything else, see [Troubleshooting](/guides/troubleshooting/).
+
+## Add a field
+
+Four edits, one per layer. Add the field to the record type in `schema.ts`:
+
+```ts title="schema.ts — inside Ramose.Namespace(\"todo\", { … })"
+  priority: Ramose.Attr(Ramose.Long),
+```
+
+Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
+
+```ts title="src/todos.ts — one line into todoShape, one into addTodo"
+  priority: Todo.priority.optional,   // in todoShape
+
+  yield* t.add(Todo.priority, 2);     // in addTodo, beside the other adds
+```
+
+Then render it in `TodoRowView`, in `src/App.tsx`, next to the title:
+
+```tsx title="src/App.tsx — inside TodoRowView"
+<span>{row.priority ?? "–"}</span>
+```
+
+`TodoRow` gains `priority` with nothing else to change — the type follows the query. It is `.optional` because the todos you already added have no priority, and a required field in a shape hides every record that lacks it.
+
+Leave `bun run dev` running while you make these edits. It watches the stack files, so saving `schema.ts` re-applies it on its own — the terminal prints `Plan: 1 to update` and then `[todos] updated`. If you restart instead, you will see `[todos] noop`, because the change already landed.
+
+## Filter live
+
+Add a second query in `src/todos.ts`:
+
+```ts title="src/todos.ts"
+export const openTodos = Ramose.query(Todo)
+  .where(Todo.done.eq(false))
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
+```
+
+Import it in `src/App.tsx` alongside `todoQuery`, then switch `TodoList` between the two:
+
+```tsx title="src/App.tsx — TodoList"
+const TodoList = () => {
+  const [showAll, setShowAll] = useState(true);
+  const { rows, error } = useLive(db, showAll ? todoQuery : openTodos);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <>
+      <button type="button" onClick={() => setShowAll((v) => !v)}>
+        {showAll ? "show open only" : "show all"}
+      </button>
+      <ul>
+        {rows.map((row) => <TodoRowView key={row.id} row={row} />)}
+      </ul>
+    </>
+  );
+};
+```
+
+Show open todos only, then tick one: it leaves the list on its own. No refetch, no cache invalidation, no subscription to wire up.
+
+## Deploy
+
+`bunx alchemy deploy` ships this exact stack to your own Cloudflare account — the same files, real credentials instead of the placeholders. [Deploy](/guides/deploy/) walks through it.
+
+:::caution
+A fresh server is open to everyone until you add a policy. Read [Permissions](/guides/permissions/) before you put a URL in front of anyone.
+:::
 
 <Next links={[
-  { href: "/getting-started/first-app/", label: "Build your first app", why: "every file of the todo app, then extend it" },
-  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "each screen and the code that drives it" },
-  { href: "/guides/deploy/", label: "Deploy", why: "the same stack, on real Cloudflare" },
+  { href: "/guides/catalog/", label: "Define your data", why: "every value type and option" },
+  { href: "/guides/permissions/", label: "Permissions", why: "rules the database enforces, before you share a URL" },
+  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "a real app — roles, invitations and time travel" },
 ]} />

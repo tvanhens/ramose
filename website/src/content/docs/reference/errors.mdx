@@ -6,7 +6,7 @@ import Next from "../../../components/Next.astro";
 
 Every error a call can fail with, what it means, and what to do about it. This page is for anyone who has read [Write data](/guides/transactions/) and is handling the failure path.
 
-*New here? Start with the [Quickstart](/getting-started/quickstart/).*
+*New here? Start with [Getting started](/getting-started/quickstart/).*
 
 Every error is a tagged value and `DbError` is their union. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. Match by name with `Effect.catchTags`.
 

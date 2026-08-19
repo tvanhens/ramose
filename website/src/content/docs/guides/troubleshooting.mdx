@@ -6,18 +6,43 @@ import Next from "../../../components/Next.astro";
 
 The page for when something is not working, or you have a question the guides did not answer. Every heading is one problem or question; scan the list on the right.
 
-## Alchemy asks me to log in
+## No credentials configured for Cloudflare
 
-The local emulator still wants placeholder Cloudflare credentials. Prefix the command:
+Every resource fails, and `alchemy dev` keeps running anyway — so the terminal looks busy rather than broken:
 
-```sh frame="terminal"
-CI=1 ALCHEMY_STATE=local \
-  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
-  CLOUDFLARE_API_TOKEN=x \
-  bun alchemy dev examples/reef/alchemy.run.ts
+```ansi frame="terminal"
+[Store] fail (local)
+alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.
+AuthError: No credentials configured for 'Cloudflare' in profile 'default',
+and this process is non-interactive so it can't be configured interactively.
 ```
 
-Those are placeholders, not real credentials — and `bun run dev:reef` and `bun run dev:todos` already set them for you.
+Two stack traces follow. Nothing will come up; stop it with Ctrl-C.
+
+The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Three do it:
+
+```sh title=".env"
+CI=1
+CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CLOUDFLARE_API_TOKEN=x
+```
+
+`alchemy dev` reads `.env` on its own. `CI=1` is what makes it read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. These are placeholders: the account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is unnecessary when your stack calls `Alchemy.localState()`. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` set everything.
+
+## The server says ready but nothing ever loads
+
+Requests hang rather than fail. Check `main` in `resources.ts`:
+
+```ts title="resources.ts"
+main: "@ramose/worker",                       // resolves to nothing; never boots
+main: import.meta.resolve("@ramose/worker"),  // a real path — this one works
+```
+
+`main` is resolved as a file path, so a bare package name quietly finds no entry and no Worker is bundled. The tell is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`. Without it, everything downstream — including the step that installs your schema — waits on a server that never answers.
+
+## My schema change did nothing
+
+`alchemy dev` watches the stack files, so saving `schema.ts` re-applies it on its own: `Plan: 1 to update`, then `[todos] updated`. If you restarted instead, you will see `[todos] noop` — the change already landed.
 
 ## The terminal says the Worker's code had hung
 
@@ -25,28 +50,29 @@ Those are placeholders, not real credentials — and `bun run dev:reef` and `bun
 
 ## The second tab does not update
 
-It should: two windows on the same database update each other within about a second, locally and deployed. Check that both tabs use the same origin, the same database name, and the same server (port 1337 locally).
+It should: two windows on the same database update each other within about a second, locally and deployed. Check that both tabs use the same origin, the same database name, and the same server (`:1337` locally, or wherever it actually came up).
 
-## The list is empty after a restart
+## How do I stop it, or start over?
 
-With `ALCHEMY_STATE=local`, the emulator keeps your data in `.alchemy/` next to the repo root. Deleting that folder, running from another directory, or `alchemy destroy` starts you from an empty database. Your data was not lost anywhere else — there was nowhere else.
+Ctrl-C stops `alchemy dev`. Your data lives in `.alchemy/` beside your stack file and survives a restart; delete that folder — or run from another directory by accident — to start from an empty database. `alchemy destroy` tears the stack down [and deletes your data](#does-alchemy-destroy-delete-my-data). Nothing is stored anywhere else.
 
 ## Is it on npm?
 
 Yes:
 
 ```sh frame="terminal"
-npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
+bun add @ramose/alchemy @ramose/worker @ramose/react alchemy \
+  effect@rc @effect/platform-node@rc @effect/platform-bun@rc
 ```
 
-`bun add` and `pnpm add` work the same. Ramose is pre-release, so expect the API to move between versions — pin what you install.
+`npm install` and `pnpm add` work the same. The `@rc` is required: Ramose needs Effect 4, and plain `effect` still resolves to 3.x. The `@effect/platform-*` packages are optional peers of Alchemy, so nothing warns you when they are missing — you get `Cannot find module '@effect/platform-node/NodeServices'` instead.
 
-Working inside a clone of this repository instead is the same code, resolved from source: [Quickstart, Path 2](/getting-started/quickstart/#path-2-start-your-own-app).
+[Getting started](/getting-started/quickstart/) builds a todo app from an empty folder.
 
 ## What is Effect and how much do I need?
 
 :::note[Effect, in three rules]
-Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)`. That is all you need for now — [Effect in five minutes](/concepts/effect/).
+Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
 :::
 
 ## TypeScript cannot resolve the packages
@@ -73,11 +99,21 @@ Until a policy is set, the server answers every origin. Once a policy is set, li
 
 ## Port 1337 or 5173 is already in use
 
-Reef pins the server to 1337, its auth Worker to 1338 and the app to 5173. Stop the other `alchemy dev` (`lsof -i :1337` shows who holds it) and start again.
+Usually nothing to fix. Both fall back to the next free port and print where they landed:
+
+```ansi frame="terminal"
+WARN: Port 1337 is in use by another process; serving on 1339 instead.
+Port 5173 is in use, trying another one...
+[Ui] ready at http://localhost:5174/
+```
+
+Read the URLs off the terminal — the next free port may not be the next number. Your app is handed the server's real URL through `VITE_RAMOSE_URL`, so the two never disagree.
+
+Reef is the exception: it pins its ports, so a collision there is real. `lsof -i :1337` shows who holds it — stop that process only if it is yours.
 
 ## Where is the dashboard?
 
-There is none. Until a policy is set, the server serves a small demo console at `/`; `curl http://localhost:1337/health` answers `{ "ok": true, … }` at any time. Your app's screens are the dashboard.
+There is none. Until a policy is set, the server serves a small demo console at `/`; `curl http://localhost:1337/health` — on whichever port the server reported — answers `{ "ok": true, … }` at any time. Your app's screens are the dashboard.
 
 ## Can I use SQL, count, or full-text search?
 
@@ -112,5 +148,5 @@ No. Plain TypeScript is enough. If you want the mental model, [How Ramose thinks
 <Next links={[
   { href: "/reference/errors/", label: "Errors", why: "every error, its status code, and what the user sees" },
   { href: "/reference/server/", label: "The server", why: "settings, retention, operations" },
-  { href: "/getting-started/quickstart/", label: "Quickstart", why: "start again from a known-good state" },
+  { href: "/getting-started/quickstart/", label: "Getting started", why: "start again from a known-good state" },
 ]} />

@@ -23,6 +23,9 @@ export default defineConfig({
     "/reference/http-api/": "/reference/server/#http-api",
     "/reference/configuration/": "/reference/server/#configuration",
     "/reference/runbook/": "/reference/server/#operations",
+    // Quickstart and "Build your first app" were consolidated into one
+    // Getting started guide, which keeps the /quickstart/ URL.
+    "/getting-started/first-app/": "/getting-started/quickstart/",
   },
   integrations: [
     starlight({
@@ -106,8 +109,7 @@ export default defineConfig({
           label: "Start",
           items: [
             { label: "What is Ramose", slug: "getting-started/introduction" },
-            { label: "Quickstart", slug: "getting-started/quickstart" },
-            { label: "Build your first app", slug: "getting-started/first-app" },
+            { label: "Getting started", slug: "getting-started/quickstart" },
             { label: "Tour of Reef", slug: "getting-started/tour-of-reef" },
             { label: "How it compares", slug: "getting-started/compare" },
           ],

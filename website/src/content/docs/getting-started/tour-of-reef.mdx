@@ -12,11 +12,16 @@ Reef is a small Linear-style issue tracker: sign up, create a workspace, and get
 
 ## Run it
 
+Reef lives in the Ramose repository rather than on npm, so this one starts from a clone:
+
 ```sh frame="terminal"
+git clone https://github.com/tvanhens/ramose && cd ramose && bun install
 bun run dev:reef
 ```
 
-Then open [http://localhost:5173](http://localhost:5173). Step by step: [Quickstart, Path 1](/getting-started/quickstart/#path-1-run-reef).
+Wait for three URLs — the Ramose server on `:1337`, the sign-in Worker on `:1338`, the app on `:5173` — then open [http://localhost:5173](http://localhost:5173) and **Create account**. It is verified on the spot, with no email. Then **New workspace**, name it, and **Add sample issues**.
+
+To build your own app instead, nothing is cloned: [Getting started](/getting-started/quickstart/) installs the packages from npm.
 
 ## The whole backend in 700 lines
 
@@ -330,7 +335,7 @@ You don't need to understand Alchemy yet — [Deploy](/guides/deploy/) explains 
 - [`src/domain/policy.ts`](https://github.com/tvanhens/ramose/blob/master/examples/reef/src/domain/policy.ts) — who may
 - [`src/domain/queries.ts`](https://github.com/tvanhens/ramose/blob/master/examples/reef/src/domain/queries.ts) — what screens read
 
-Smaller examples: [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos), the six-file todo list ([Build your first app](/getting-started/first-app/)), and [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style) ([Use it from a Worker](/guides/workers/)).
+Smaller examples: [`examples/todos`](https://github.com/tvanhens/ramose/tree/master/examples/todos), the todo list you build in [Getting started](/getting-started/quickstart/), and [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style) ([Use it from a Worker](/guides/workers/)).
 
 <Next links={[
   { href: "/getting-started/quickstart/", label: "Quickstart", why: "run Reef yourself in ten minutes" },

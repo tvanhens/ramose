@@ -7,7 +7,7 @@ import Next from "../../../components/Next.astro";
 
 This page ships the stack you ran locally to your own Cloudflare account. It is for anyone who has built the first app, and it is the one place the Ramose deploy resources are listed.
 
-<Learn learn={["What Alchemy is and what a stage is", "The stack file, line by line", "The commands and credentials you need", "What alchemy destroy deletes", "Every Ramose resource, with its inputs and outputs"]} before={[{ href: "/getting-started/first-app/", label: "Build your first app" }]} minutes={10} />
+<Learn learn={["What Alchemy is and what a stage is", "The stack file, line by line", "The commands and credentials you need", "What alchemy destroy deletes", "Every Ramose resource, with its inputs and outputs"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }]} minutes={10} />
 
 ## What Alchemy is
 
@@ -39,7 +39,7 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-In your own app, `main` is the package: `main: "@ramose/worker"`. The excerpt above is from `examples/todos`, which lives inside this repository and so points at the source directly.
+The excerpt above is from `examples/todos`, which lives inside this repository and so points at the source directly. In your own app it is `main: import.meta.resolve("@ramose/worker")` — a path, not a package name. A bare `main: "@ramose/worker"` resolves to nothing and produces a server that reports ready and then never answers. [Getting started](/getting-started/quickstart/) sets it up.
 
 ```ts title="examples/todos/alchemy.run.ts:20-77"
 import * as Ramose from "@ramose/alchemy";
