@@ -12,10 +12,9 @@
  *      drags the engine — segment trees, the query planner, the store — into a
  *      browser bundle.
  *   3. every file in the graph is under `src/db/` or `src/internal/core/`.
- *      Since 0.2.0 the server, the React hooks and the Better Auth plugins are
- *      folders in the same package rather than separate ones, so nothing but
- *      this assertion stops a stray relative import from pulling the peer
- *      Worker into a browser bundle.
+ *      The server, the React hooks and the Better Auth plugins are folders in
+ *      this same package, so nothing but this assertion stops a stray relative
+ *      import from pulling the peer Worker into a browser bundle.
  *
  * The walk is static and includes `import type`: a type-only edge to `alchemy`
  * is still a coupling this entry is not allowed to have.

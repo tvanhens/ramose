@@ -206,10 +206,9 @@ try {
     await step.run();
   }
 
-  // Nothing mutates the manifests between here and the publish: collapsing the
-  // eight packages into one removed every internal `workspace:*` range, which
-  // is what the old pin/restore dance existed for. `check-release.ts` fails the
-  // release if a workspace range ever comes back.
+  // Nothing mutates the manifests between here and the publish: there are no
+  // internal `workspace:*` ranges to pin and restore, and `check-release.ts`
+  // fails the release if one ever appears.
   announce("publish");
   console.log(
     `${version} → dist-tag "${distTag}"${isPrerelease && !valueOf("--tag") ? " (prerelease, kept off latest)" : ""}`,
