@@ -34,11 +34,11 @@ CLOUDFLARE_API_TOKEN=x
 Requests hang rather than fail. Check `main` in `resources.ts`:
 
 ```ts title="resources.ts"
-main: "@ramose/worker",                       // resolves to nothing; never boots
-main: import.meta.resolve("@ramose/worker"),  // a real path — this one works
+main: "ramose/worker",                       // resolves to nothing; never boots
+main: import.meta.resolve("ramose/worker"),  // a real path — this one works
 ```
 
-`main` is resolved as a file path, so a bare package name quietly finds no entry and no Worker is bundled. The tell is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`. Without it, everything downstream — including the step that installs your schema — waits on a server that never answers.
+`main` is resolved as a file path, so a bare module specifier quietly finds no entry and no Worker is bundled. The tell is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`. Without it, everything downstream — including the step that installs your schema — waits on a server that never answers.
 
 ## My schema change did nothing
 
@@ -61,11 +61,10 @@ Ctrl-C stops `alchemy dev`. Your data lives in `.alchemy/` beside your stack fil
 Yes:
 
 ```sh frame="terminal"
-bun add @ramose/alchemy @ramose/worker @ramose/react alchemy \
-  effect@rc @effect/platform-node@rc @effect/platform-bun@rc
+bun add ramose react react-dom
 ```
 
-`npm install` and `pnpm add` work the same. The `@rc` is required: Ramose needs Effect 4, and plain `effect` still resolves to 3.x. The `@effect/platform-*` packages are optional peers of Alchemy, so nothing warns you when they are missing — you get `Cannot find module '@effect/platform-node/NodeServices'` instead.
+`npm install` and `pnpm add` work the same. One package: `effect`, `alchemy` and the two `@effect/platform-*` packages come with it, at versions that resolve, so there is no `@rc` to remember. React is an optional peer — a server-only app installs `ramose` alone.
 
 [Getting started](/getting-started/quickstart/) builds a todo app from an empty folder.
 
@@ -75,11 +74,11 @@ bun add @ramose/alchemy @ramose/worker @ramose/react alchemy \
 Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
 :::
 
-## TypeScript cannot resolve the packages
+## TypeScript cannot resolve `ramose`
 
-The packages ship compiled ESM with type declarations, so an ordinary install needs no `tsconfig.json` setting. If your editor cannot find them, check the install landed (`npm ls @ramose/alchemy`) before reaching for `moduleResolution`.
+`ramose` ships compiled ESM with type declarations, so an ordinary install needs no `tsconfig.json` setting. If your editor cannot find it, check the install landed (`npm ls ramose`) before reaching for `moduleResolution`.
 
-Inside a clone of this repository they resolve from source instead, through the `@ramose/*` paths in the root `tsconfig.json` — run `bun install` at the root.
+Inside a clone of this repository it resolves from source instead, through the `ramose` paths in the root `tsconfig.json` — run `bun install` at the root.
 
 ## The token is not valid for this database
 

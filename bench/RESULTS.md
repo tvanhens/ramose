@@ -54,7 +54,7 @@ SQLite storage, miniflare emulation; `RAMOSE_URL=… bun run bench/write-do.benc
 |---|---|---|---|---|---|---|
 | 64 | 1,744 | 27 ms | 117 ms | 570 | 15.4 | 35 |
 
-Correctness (`bun test packages/transactor`): contiguous `t` under 500
+Correctness (`bun test packages/ramose/test/internal/transactor`): contiguous `t` under 500
 concurrent clients; storage-fault injection → batch all-or-nothing, instance
 aborted, restart continues with no gaps/dupes; novelty frames + resume /
 gap catch-up; alarm-driven indexing.

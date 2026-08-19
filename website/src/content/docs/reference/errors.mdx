@@ -34,7 +34,7 @@ const rows = yield* db.q(query).pipe(
 
 ## What the user sees
 
-Every error carries a `message`; `errorMessage(e)` from `@ramose/react` is `e.message ?? e._tag ?? String(e)`.
+Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.message ?? e._tag ?? String(e)`.
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
   const { run } = useTransact({

@@ -13,8 +13,8 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 ## Lint / test / build
 - There is no separate linter. The type checker is the lint gate:
   `bun run typecheck` (`bunx tsc --noEmit`).
-- Tests: `bun run test` (unit/integration across `packages/*` + `examples/todos`,
-  ~390 tests via `bun:test`, no services required).
+- Tests: `bun run test` (unit/integration across `packages/ramose` + `examples/*`,
+  ~670 tests via `bun:test`, no services required).
 - `bun run test:e2e` runs `test/e2e` against a live peer and only executes when
   `RAMOSE_URL` is set (otherwise the tests skip). Point it at a local peer
   (`RAMOSE_URL=http://localhost:1337 bun run test:e2e`) or use
@@ -23,7 +23,7 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
     including the cross-connection "a write on another connection wakes db.live"
     case. (An earlier local caveat about that case failing was issue #28 — the
     shared basis watcher's cross-context fan-out killing sessions — fixed in
-    `packages/worker/src/session.ts`.)
+    `packages/ramose/src/worker/session.ts`.)
 - There is no production "build" step for local dev; the app runs via `alchemy dev`
   (miniflare) and Vite.
 

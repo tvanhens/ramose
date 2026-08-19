@@ -10,7 +10,7 @@ only; no engine change, no deploy.
 
 Numbers quoted from `bench/RESULTS.md` are marked *RESULTS*; numbers marked
 *local* were measured for this doc on the dev box (Bun 1.3.14, 8 vCPU, shared)
-with two throw-away scripts that drive `packages/transactor/test/harness.ts`
+with two throw-away scripts that drive `packages/ramose/test/internal/transactor/harness.ts`
 and `Connection` directly (not committed). Re-run before trusting them on other
 hardware.
 
@@ -45,21 +45,21 @@ default config (`RAMOSE_MAX_BATCH=0`, index every 500 txs / 5 s).
 
 | step | where | on the ack path? |
 |---|---|---|
-| 1. Client `db.transact(tx)` → `POST /db/:name/transact {tx}` (JSON, `toJson`) | `packages/alchemy/src/db/http.ts` | yes (WAN RTT) |
-| 2. Worker: auth, `request.text()`, **one DO `fetch` per POST** to `TRANSACTOR.idFromName(db)`; response body streamed back; `invalidateBasis(db)` | `packages/worker/src/index.ts:99-113` | yes (Worker→DO hop, ~one intra-CF RTT) |
-| 3. DO shell: `assign(db)`, `await core.init()`, route to `Transactor.handleRequest` | `packages/transactor/src/transactor-do.ts:98-122` | yes |
-| 4. `handleRequest`: `fromJson(await request.json())`, `this.transact(body.tx)` | `packages/transactor/src/transactor.ts:443-447` | yes |
+| 1. Client `db.transact(tx)` → `POST /db/:name/transact {tx}` (JSON, `toJson`) | `packages/ramose/src/db/http.ts` | yes (WAN RTT) |
+| 2. Worker: auth, `request.text()`, **one DO `fetch` per POST** to `TRANSACTOR.idFromName(db)`; response body streamed back; `invalidateBasis(db)` | `packages/ramose/src/worker/index.ts:99-113` | yes (Worker→DO hop, ~one intra-CF RTT) |
+| 3. DO shell: `assign(db)`, `await core.init()`, route to `Transactor.handleRequest` | `packages/ramose/src/internal/transactor/transactor-do.ts:98-122` | yes |
+| 4. `handleRequest`: `fromJson(await request.json())`, `this.transact(body.tx)` | `packages/ramose/src/internal/transactor/transactor.ts:443-447` | yes |
 | 5. `transact()`: push `{tx, resolve, reject}` onto `queue`; start `commitLoop` if idle | `transactor.ts:259-268` | yes |
 | 6. `commitLoop`: **batch window** = one `setTimeout(0)` yield (`yieldToEventLoop`, `:86`), then `takeBatch()` = everything queued (unbounded when `maxBatch=0`) | `transactor.ts:281-287` | yes |
-| 7. **Resolve**, serially per tx in arrival order: `conn.transact(p.tx)` → `processTx(dbBefore, tx, t=basisT+1, nextEid, now)`; on success `nextEid`, `schema = schema.clone().apply(datoms)`, `novelty.add(datoms)`, `basisT = t`; on `TxError` the tx is rejected here and **does not consume `t`** (guarantee 2) | `transactor.ts:291-303`, `packages/core/src/conn.ts:216-230`, `packages/core/src/tx.ts:155-425` | yes — `stats.resolveMs` |
+| 7. **Resolve**, serially per tx in arrival order: `conn.transact(p.tx)` → `processTx(dbBefore, tx, t=basisT+1, nextEid, now)`; on success `nextEid`, `schema = schema.clone().apply(datoms)`, `novelty.add(datoms)`, `basisT = t`; on `TxError` the tx is rejected here and **does not consume `t`** (guarantee 2) | `transactor.ts:291-303`, `packages/ramose/src/internal/core/conn.ts:216-230`, `packages/ramose/src/internal/core/tx.ts:155-425` | yes — `stats.resolveMs` |
 | 7a. inside `processTx`: `flatten` map forms → **upsert pass** (one `db.first(AVET, {a,v})` per unique-identity add, `tx.ts:233-271`) → main pass: `resolveEntity` (tempid alloc), `valueFor`/`coerce`, `emitAdd` = `current(e,a)` (one `db.datomsArray(EAVT,{e,a})` per (e,a) touched, `:276-284`) + **unique check** (`db.first(AVET,…)` again, `:298`) + card-one implicit retract; `retractEntity` reads EAVT `{e}` + VAET `{v:e}` and scans the whole in-tx overlay (`:336-364`) | `tx.ts` | yes |
-| 7b. every `Db` read = `scan()` over the tree (`R2NodeStore`, LRU of 4096 nodes, **no SQLite tier on the transactor**, miss = R2 GET, `transactor.ts:135`) merged with `novelty.byIndex[i].range(prefix)` through three async generators (`db.ts:116-121`); `range()` calls `flush()` which sorts `pending` and does `sortedUnion(base, pending)` — a full copy of the novelty array — `packages/core/src/novelty.ts:38-51`, `:59-67`, `tree.ts:655-670` | core | yes |
+| 7b. every `Db` read = `scan()` over the tree (`R2NodeStore`, LRU of 4096 nodes, **no SQLite tier on the transactor**, miss = R2 GET, `transactor.ts:135`) merged with `novelty.byIndex[i].range(prefix)` through three async generators (`db.ts:116-121`); `range()` calls `flush()` which sorts `pending` and does `sortedUnion(base, pending)` — a full copy of the novelty array — `packages/ramose/src/internal/core/novelty.ts:38-51`, `:59-67`, `tree.ts:655-670` | core | yes |
 | 8. **Persist**: one `host.transactionSync` for the batch: `INSERT INTO log` per tx (`encodeLogChunk([e])`, `:182-187`) + `meta.next_eid`; failure → `die()` (503, DO abort, reboot from SQLite; no `t` burned) | `transactor.ts:305-317` | yes — `stats.commitMs` (on workerd this is the *synchronous* SQLite work; the durability wait is paid by the DO output gate on the response, so it is on the client's ack latency but not on the loop) |
 | 9. Stats, then `p.resolve(ack)` for every tx in the batch | `transactor.ts:318-328` | ack |
 | 10. `broadcast(txFrame(e))` per tx: `JSON.stringify` once, `ws.send` per subscriber (replica WS) | `transactor.ts:329`, `:358-368` | after ack, same thread, same loop iteration |
 | 11. `indexer.maybeSchedule()`: `getAlarm()` (+ `setAlarm(now)` when `txsSinceIndex ≥ 500`) — a DO storage call per batch | `transactor.ts:330`, `indexer.ts:62-72` | after ack, but before the next batch starts |
 | 12. Alarm → `Indexer.runOnce`: `readLogEntries` slice (≤ 5,000 txs) → `putLogChunk` (R2) → `conn.index(toT)` = `mergeRoots` (CPU: `mergeTree` ×4, gzip+sha256 per node, R2 puts) → `publishRoot` → `adoptRoot` (root frame to replicas) → `pruneLog` | `indexer.ts:84-147`, `conn.ts:236-251` | **off the ack path, on the writer thread** — every synchronous slice of the merge blocks the commit loop, and every `await` inside it lets a batch through |
-| 13. Replica: WS `tx` frame → SQLite `novelty` row + in-memory entries; Workers read basis from the replica | `packages/replica/src/replica-do.ts` | off path (guarantee 7 intact) |
+| 13. Replica: WS `tx` frame → SQLite `novelty` row + in-memory entries; Workers read basis from the replica | `packages/ramose/src/internal/replica/replica-do.ts` | off path (guarantee 7 intact) |
 
 What is *not* on the path: R2 (except node-cache misses in 7b), the replica,
 the indexer's CPU (except by thread contention, step 12), and any Worker-side
@@ -224,7 +224,7 @@ SPEC §1; the log, `t` density and unique semantics are per element.
 decides). It is the largest in-process lever and it removes the degradation
 mode of §2.1.
 
-What: `packages/core/src/novelty.ts:38-51` rebuilds `base` with
+What: `packages/ramose/src/internal/core/novelty.ts:38-51` rebuilds `base` with
 `sortedUnion(base, pending)` on the first read after any add — O(|base|) per
 index per tx. Options that keep `all()`/`range()` semantics: (a) two-level:
 keep `pending` sorted+deduped separately, let `range()` return the union of two

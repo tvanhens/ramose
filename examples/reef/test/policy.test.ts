@@ -2,6 +2,11 @@
  * The deploy-time artifacts, checked at test time: the policy compiles
  * against the catalog, carries exactly the rules the demo narrates, and the
  * app's pull shapes survive the masked-read check.
+ *
+ * `parsePolicy` comes from `ramose/internal/*` — the engine, reachable but
+ * unsupported — because "core accepts this JSON" is the assertion, and the
+ * public surface only offers the compiler that produces it. An app never
+ * imports it.
  */
 
 import { describe, expect, test } from "bun:test";

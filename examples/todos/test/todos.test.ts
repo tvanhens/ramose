@@ -1,10 +1,14 @@
 /**
- * The consumer proof: the app's own query and writes against a real
- * `ramose/internal/core` `Connection`, over the two wires the client actually uses —
- * writes as `POST /db/todos/transact`, reads and `t` ticks as session frames.
+ * The consumer proof: the app's own query and writes against a real engine
+ * `Connection`, over the two wires the client actually uses — writes as
+ * `POST /db/todos/transact`, reads and `t` ticks as session frames.
  *
  * What it pins is the loop the UI depends on: a write moves the live stream
  * with no refetch and no invalidation call of its own.
+ *
+ * `ramose/internal/*` is the engine, reachable but unsupported: it is how this
+ * test stands an in-process server up without a Worker. An app never imports
+ * it — `ramose/db` and `ramose` are the surface.
  */
 
 import { describe, expect, test } from "bun:test";

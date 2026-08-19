@@ -10,7 +10,7 @@ The exact rules language and token contract. This page is for people who have re
 
 ## Shape of a policy
 
-`Ramose.Policy` is deploy-side: import it from `@ramose/alchemy`, not `@ramose/alchemy/db`. The **policy** ([glossary](/concepts/glossary/#policy)) is one value built over your schema.
+`Ramose.Policy` is deploy-side: import it from `ramose`, not `ramose/db`. The **policy** ([glossary](/concepts/glossary/#policy)) is one value built over your schema.
 
 ```ts
 const P = Ramose.Policy;
@@ -198,7 +198,7 @@ export const compiledPolicy = (): string =>
 | `ramose.class` | a class the policy declares |
 | `ramose.attrs` | optional; your own claims, readable as `P.claims.attrs.<key>` |
 
-Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `@ramose/better-auth`.
+Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `ramose/better-auth`.
 
 ```ts
 Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the payload above; sign it yourself

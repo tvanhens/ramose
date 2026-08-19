@@ -12,7 +12,7 @@ brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
 ```sh
 bun install
 bun run typecheck
-bun test                        # unit/integration (~390 tests, no services)
+bun test                        # unit/integration (~670 tests, no services)
 bun run dev:todos               # local peer on :1337, todos app on :5173
 bun run dev:reef                # the Reef example instead
 ```
@@ -123,10 +123,17 @@ cache miss). Manual republish: **Actions → Docs publish → Run workflow**.
 
 ## Releasing to npm
 
-Eight packages publish to npm under the `@ramose` scope, all at the same
-version. They are only tested as a matched set, so they move in lockstep and
-their internal dependencies are pinned exactly (`"@ramose/core": "0.1.0"`, not
-a range).
+One package publishes to npm: `ramose`, from `packages/ramose`. Its five
+consumer-facing entries — `ramose`, `ramose/db`, `ramose/worker`,
+`ramose/react`, `ramose/better-auth` — are subpath exports of that one
+manifest, and the engine (`core`, `storage`, `transactor`, `replica`) lives
+under `src/internal/` and is not published under any other name. Until 0.2.0
+these were eight `@ramose`-scoped packages released in lockstep; collapsing
+them is what removed the pinning, ordering and workspace-protocol machinery the
+rest of this section used to describe.
+
+The private workspace root carries the same version, and
+`scripts/check-release.ts` fails the release if the two drift.
 
 ### Cutting a release
 
@@ -135,10 +142,9 @@ bun run release:dry 0.2.0   # rehearse it: no side effects whatsoever
 bun run release 0.2.0       # bump, commit, publish, tag, push
 ```
 
-That is the whole thing. In order it bumps the nine manifests and commits them
-as `release: v0.2.0`, typechecks, tests, builds, verifies, pins the
-`workspace:*` ranges, publishes all eight, tags the release commit, and pushes
-the branch and tag.
+That is the whole thing. In order it bumps the two manifests and commits them
+as `release: v0.2.0`, typechecks, tests, builds, verifies, publishes, tags the
+release commit, and pushes the branch and tag.
 
 Omit the version to release whatever the manifests already say.
 
@@ -165,7 +171,7 @@ never allows a version to be reused, even after unpublishing.
 
 CI runs the same script. Pushing the tag triggers
 `.github/workflows/release.yml`, and since `bun run release` has already
-published, that run skips all eight and just creates the GitHub Release. The
+published, that run skips the publish and just creates the GitHub Release. The
 tag is checked against the manifests first, so a mistyped tag fails before
 anything is published.
 
@@ -175,7 +181,7 @@ Useful flags: `--no-tag`, `--no-push`, `--tag <dist-tag>`, `--allow-dirty`.
 
 The dist-tag is derived from the version, so a prerelease stays off `latest`:
 
-| version | dist-tag | `npm install @ramose/alchemy` gets it? |
+| version | dist-tag | `npm install ramose` gets it? |
 | --- | --- | --- |
 | `0.2.0` | `latest` | yes |
 | `0.2.0-alpha.1` | `next` | no — needs `@next` |
@@ -199,8 +205,8 @@ are only these:
 
 Publishing locally works with no `NPM_TOKEN` and no trusted publishing
 configured, which is what to do while OIDC is still being set up. The tag that
-`bun run release` pushes still triggers the workflow; every version is already
-on the registry by then, so all eight skip and the run only creates the GitHub
+`bun run release` pushes still triggers the workflow; the version is already on
+the registry by then, so the publish skips and the run only creates the GitHub
 Release. That skip path only reads the registry, which needs no credentials, so
 it succeeds even when CI cannot authenticate at all.
 
@@ -211,17 +217,16 @@ workflow that built them. Nothing breaks; the npm page just lacks the "Built
 and signed on GitHub Actions" badge.
 
 The release refuses to run against a dirty working tree (`--allow-dirty`
-overrides), so what gets published always corresponds to a commit. The publish
-is wrapped in a `finally` that restores the `workspace:*` ranges: pinning them
-mutates eight manifests, and a publish that fails halfway would otherwise leave
-them pinned in your tree, ready to be committed by accident.
+overrides), so what gets published always corresponds to a commit. Nothing
+mutates a manifest between the build and the publish, so there is nothing to
+restore if it fails halfway.
 
 [provenance]: https://docs.npmjs.com/generating-provenance-statements
 
 ### The build
 
-`bun run build` compiles each package to `packages/<name>/dist` with `tsc`.
-There is no bundler.
+`bun run build` compiles `packages/ramose/src` to `packages/ramose/dist` with
+`tsc`, in one pass. There is no bundler and no build order.
 
 The source imports relative modules with explicit `.ts` extensions
 (`./datom.ts`), which Bun resolves natively but Node, esbuild, and a consumer's
@@ -229,11 +234,19 @@ The source imports relative modules with explicit `.ts` extensions
 rewrites those to `.js` on the way out. Emit is unbundled so the file layout —
 and therefore the subpath exports — survives the build.
 
-Each package's `exports` map serves both audiences: the `bun` condition points
-at TypeScript source (which also ships), everything else resolves to `dist`.
-That is what keeps `bun test` instant in this repo while consumers get compiled
-output. Deep subpaths accept all three spellings — `@ramose/core/datom`,
-`datom.ts`, and `datom.js` all land on the same module.
+The `exports` map serves both audiences: the `bun` condition points at
+TypeScript source (which also ships), everything else resolves to `dist`. That
+is what keeps `bun test` instant in this repo while consumers get compiled
+output. Deep subpaths accept all three spellings — `ramose/db/Db`, `Db.ts` and
+`Db.js` all land on the same module.
+
+`ramose/effect` and `ramose/schema` are re-export modules, not code of ours:
+they exist so a consumer whose resolver refuses undeclared imports (pnpm
+without hoisting, Yarn PnP) never has to name `effect` in their own manifest.
+Two copies of `effect` in one tree would be two incompatible sets of types —
+Effect types cross Ramose's public API — so the ranges in
+`packages/ramose/package.json` are load-bearing; the `//dependencies` key there
+explains each one.
 
 ### Scripts
 
@@ -243,7 +256,7 @@ Day to day you only need these:
 | --- | --- |
 | `bun run release <v>` | the whole release: bump, commit, publish, tag, push |
 | `bun run release:dry <v>` | the same sequence with no side effects at all |
-| `bun run build` | compile all 8 packages to `dist` |
+| `bun run build` | compile the package to `dist` |
 | `bun run release:version <v>` | just the version bump and its commit |
 
 Those wrap the individual steps, each of which stays runnable on its own for
@@ -251,29 +264,29 @@ debugging:
 
 | script | what it does |
 | --- | --- |
-| `scripts/release.ts` | the whole sequence, idempotent, with guaranteed cleanup |
-| `scripts/set-version.ts` | set the version across root + all 8 manifests, then commit (`--no-commit` to skip) |
-| `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE/README |
-| `scripts/check-release.ts` | verify versions agree, tag matches, exports resolve |
-| `scripts/prepare-publish.ts` | rewrite `workspace:*` → the release version |
-| `scripts/publish-packages.ts` | publish in dependency order, skipping what exists |
+| `scripts/release.ts` | the whole sequence, idempotent |
+| `scripts/set-version.ts` | set the version on the root + the package, then commit (`--no-commit` to skip) |
+| `scripts/build-packages.ts` | compile to `dist`, stage LICENSE/NOTICE |
+| `scripts/check-release.ts` | verify the versions agree, the tag matches, `exports` and `files` resolve |
+| `scripts/publish-packages.ts` | publish, skipping a version already on the registry |
 
-`prepare-publish.ts` is not optional. `npm publish` does not rewrite the
-`workspace:` protocol the way `bun publish` does — it would ship
-`"@ramose/core": "workspace:*"` in the tarball, which npm cannot resolve. Run
-`--restore` to put the workspace ranges back after a local dry run.
+There used to be a `prepare-publish.ts` here, rewriting the internal
+`workspace:*` ranges `npm publish` (unlike `bun publish`) ships verbatim and
+npm then cannot resolve. With one package there are no internal ranges left, so
+it is deleted; `check-release.ts` fails the release if a `workspace:` range ever
+reappears, which keeps the guarantee without the pin/restore dance.
 
 ### npm authentication
 
 The release workflow prefers [trusted publishing][trusted-publishing] (OIDC)
 and falls back to the `NPM_TOKEN` secret. OIDC cannot bootstrap a package that
 does not exist yet — the setting only appears on a package's settings page once
-it is on the registry — so the first publish of each package uses the token.
+it is on the registry — so the first publish uses the token.
 
-After the first release, enable trusted publishing for each package at
-`https://www.npmjs.com/package/@ramose/<name>/access` (publisher: GitHub
-Actions, repo `tvanhens/ramose`, workflow `release.yml`). Once all eight are
-configured, `NPM_TOKEN` can be deleted.
+After the first release, enable trusted publishing at
+`https://www.npmjs.com/package/ramose/access` (publisher: GitHub Actions, repo
+`tvanhens/ramose`, workflow `release.yml`). Once it is configured, `NPM_TOKEN`
+can be deleted.
 
 #### npm version
 
@@ -293,21 +306,20 @@ npm install -g npm@latest
 With a passkey or security key, `npm publish` hands off to the browser, you
 approve with Touch ID or the key, and the publish continues. There is no code
 to type — `--otp` only applies to a TOTP account, where it passes a code
-through. A TOTP code lasts ~30 seconds and eight publishes can outrun it; the
-publish is idempotent, so an expired code is recoverable (re-run and the
-packages that made it are skipped).
+through. A TOTP code lasts ~30 seconds, which one publish comfortably fits
+inside; the publish is idempotent anyway, so an expired code is recoverable.
 
 #### The release token
 
-CI needs a credential for packages that do not exist yet, since OIDC cannot
+CI needs a credential for a package that does not exist yet, since OIDC cannot
 bootstrap one. [Classic tokens were removed in November 2025][access-tokens];
 create a **granular access token** at
 [npmjs.com/settings/~/tokens](https://www.npmjs.com/settings/~/tokens):
 
 - **Bypass two-factor authentication**: checked — without this it still prompts
-- Packages and scopes: **Read and write**. Select the `@ramose` *scope*, not
-  individual packages — a token limited to named packages cannot create ones
-  that do not exist yet, which is exactly what a first publish does.
+- Packages and scopes: **Read and write**. Scope it broadly enough to *create*
+  `ramose` — a token limited to named packages cannot create one that does not
+  exist yet, which is exactly what a first publish does.
 - Expiration: as short as is practical
 
 Add it as the `NPM_TOKEN` repository secret. To use one locally for a single

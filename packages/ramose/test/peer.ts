@@ -1,6 +1,6 @@
 /**
  * One fake peer for the whole client suite: an HTTPS `fetch` and a
- * `WebSocket` that speak the shapes `packages/worker/src` actually speaks.
+ * `WebSocket` that speak the shapes `packages/ramose/src/worker` actually speaks.
  *
  * The split matters, because it is the design: **writes are HTTPS**
  * (`POST /db/:name/transact`) and **reads and `t` ticks are the socket**

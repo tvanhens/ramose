@@ -37,7 +37,7 @@ examples/todos` builds the same bundle for production.
 | `src/db.ts` | one client, closed with the page. `db`, nothing else |
 | `src/todos.ts` | `Ramose.query(Todo).select(…)` and writes, so the test drives exactly what the UI does |
 | `src/App.tsx` | the UI on `useLive` + `useTransact` from `ramose/react` — no hand-rolled hooks |
-| `test/todos.test.ts` | those helpers against a real `ramose/internal/core` `Connection` over both wires |
+| `test/todos.test.ts` | those helpers against a real engine `Connection` over both wires |
 
 `src/db.ts` is the whole client:
 

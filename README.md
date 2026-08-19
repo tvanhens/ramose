@@ -7,7 +7,7 @@
 <br />
 <br />
 
-[![npm](https://img.shields.io/npm/v/%40ramose%2Falchemy?style=flat-square&color=42D37A&label=%40ramose%2Falchemy)](https://www.npmjs.com/package/@ramose/alchemy)
+[![npm](https://img.shields.io/npm/v/ramose?style=flat-square&color=42D37A&label=ramose)](https://www.npmjs.com/package/ramose)
 [![license](https://img.shields.io/badge/license-Apache%202.0-42D37A?style=flat-square)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-ramose.ai-42D37A?style=flat-square)](https://ramose.ai)
 
@@ -24,8 +24,8 @@ themselves in every open tab.
 A schema, a live query, and a typed write — that is the whole app:
 
 ```tsx
-import * as Ramose from "@ramose/alchemy/db";
-import { useLive, useTransact } from "@ramose/react";
+import * as Ramose from "ramose/db";
+import { useLive, useTransact } from "ramose/react";
 import * as Schema from "effect/Schema";
 
 const Todo = Ramose.Namespace("todo", {
@@ -82,9 +82,12 @@ is a query the server keeps up to date, in every tab that is watching it.
   managed service.
 
 ```sh
-bun add @ramose/alchemy @ramose/worker @ramose/react alchemy \
-  effect@rc @effect/platform-node@rc @effect/platform-bun@rc
+bun add ramose react react-dom
 ```
+
+One package. `effect`, `alchemy` and the two `@effect/platform-*` packages come
+with it at versions that resolve, so there is nothing else to pin. React is an
+optional peer — a server-only app installs `ramose` alone.
 
 ## Learn more
 

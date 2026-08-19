@@ -14,13 +14,13 @@ imported as `* as Ramose`.
 
 ## 2. The names a consumer imports
 
-- **`@ramose/alchemy/db`** — portable: browser, Node/Bun, tests. A real `exports`
+- **`ramose/db`** — portable: browser, Node/Bun, tests. A real `exports`
   entry, so the Vite alias dies. It must not import `alchemy` (implementation:
-  deep-import the `@ramose/core` codec, not the barrel; `sideEffects: false`).
-- **`@ramose/alchemy`** — all of `/db`, plus the resources, the capability and
+  deep-import the `ramose/internal/core` codec, not the barrel; `sideEffects: false`).
+- **`ramose`** — all of `/db`, plus the resources, the capability and
   the two transport layers.
 
-### `@ramose/alchemy/db`
+### `ramose/db`
 
 **Schema**
 
@@ -71,7 +71,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized`
 `QueryBudgetExceeded` `InternalError` `NetworkError`, and the union `DbError`.
 
-### `@ramose/alchemy` (adds)
+### `ramose` (adds)
 
 | name | signature |
 |---|---|
@@ -88,7 +88,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 **schema.ts** — shared by the stack, the Worker and the browser.
 
 ```ts
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Namespace("todo", {
@@ -102,20 +102,20 @@ export const Todos = Ramose.Catalog({ todo: Todo });
 **alchemy.run.ts** — the server, and the one place the catalog is installed.
 
 ```ts
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Todos } from "./schema.ts";
 
-const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("@ramose/worker") });
+const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("ramose/worker") });
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
 ```
 
 `main` is a **path**, not a module specifier — Alchemy `realpath`s it before
 bundling — so the package name goes through `import.meta.resolve`. A bare
-`"@ramose/worker"` resolves against the working directory, finds nothing, and
+`"ramose/worker"` resolves against the working directory, finds nothing, and
 leaves a peer that binds its port and never answers.
-`Ramose.workerEntry()` from `@ramose/alchemy/workerEntry` is the same
+`Ramose.workerEntry()` from `ramose/workerEntry` is the same
 resolution with an error worth reading when the package is not installed.
 
 **An app Worker** — db-per-tenant is a function call.
@@ -146,7 +146,7 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
 
 ```ts
 // db.ts — one client, closed with the page
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import { Todos } from "./schema.ts";
 
 const token = Effect.succeed(Redacted.make(import.meta.env.VITE_RAMOSE_TOKEN));
@@ -245,7 +245,7 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 | `WireTx*`, `WireEntity`, `AddOp`, `RetractOp`, `RetractEntityOp`, `transactWire`, `transactUntyped` | deleted; one tx form, the generator |
 | `Ident`, `EntityRef`, `CatalogIdent`, `AttrAtIdent`, `ValueAtIdent`, `CardAtIdent`, `WriteAtIdent`, `ReadAtIdent` | internal; `LookupRef` stays |
 | admin (`/admin/{index,gc,replica/reconnect}`, `RamoseDb.{index,gc,reconnectReplica}`) | Worker routes; `docs/RUNBOOK.md` |
-| `@ramose/client` package (`RamoseClient`, `RamoseDb`, `RamoseError`, `ClientOptions`, `TxAck`, `QueryResponse`, `attribute`) | package deleted; zero real consumers |
+| the separate client package (`RamoseClient`, `RamoseDb`, `RamoseError`, `ClientOptions`, `TxAck`, `QueryResponse`, `attribute`) | package deleted; zero real consumers |
 | `RuntimeContext` requirement, `RuntimeContext.phantom`, hand-rolled `run` | deleted from every signature |
 | Vite `/schema` alias + tsconfig path | deleted; `"./db"` is a real `exports` entry |
 
@@ -260,8 +260,12 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **Browser sockets terminate in the Worker isolate.** The client speaks only `GET /db/:name/session`; no DO route is reachable or nameable.
 - **Write-WS is not the default, and `processTx` / `SortedNovelty.flush` are untouched.** Writes go over HTTPS `/transact`; `install()` is an ordinary transaction.
 
-## 7. Open question
+## 7. Resolved: subpaths, not packages
 
-Ship the portable half as the `@ramose/alchemy/db` subpath, or as its own
-`@ramose/db` package? **Default: subpath now** — one package, one version; the
-split costs nothing once a non-Alchemy deploy target exists.
+The open question was whether to ship the portable half as the `ramose/db`
+subpath or as its own package. 0.2.0 answers it for the whole product, not just
+that half: everything is one `ramose` package with subpath exports, and the
+engine (`core`, `storage`, `transactor`, `replica`) is folders under
+`src/internal/` rather than four more published names. One package, one version,
+one install line — and re-splitting costs nothing later, because a subpath is
+the same import a package would have been.

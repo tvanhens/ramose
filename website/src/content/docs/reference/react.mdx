@@ -1,15 +1,15 @@
 ---
 title: React hooks
-description: Every export of @ramose/react — RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage — example first.
+description: Every export of ramose/react — RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage — example first.
 ---
 import Next from "../../../components/Next.astro";
 
-The exact surface of `@ramose/react`, one section per export. This page is for React developers who have read [Live queries](/guides/live-queries/) and want the signatures.
+The exact surface of `ramose/react`, one section per export. This page is for React developers who have read [Live queries](/guides/live-queries/) and want the signatures.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ```tsx
-import { RamoseProvider, useRamose, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "@ramose/react";
+import { RamoseProvider, useRamose, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
 ```
 
 Hooks only, no UI. They reach the Ramose server through one client. `useLive`, `useQuery`, `usePull` and `useBasis` take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.

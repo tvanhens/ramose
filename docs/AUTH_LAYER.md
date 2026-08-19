@@ -23,14 +23,14 @@ Reads become a **filtered `Db`** built at `dbFromBasis` — a datom `[e a v t]` 
 
 `Claims = Schema.Struct({ iss, sub, aud, exp, iat?, ramose: Schema.Struct({ db, class, attrs? }) })`. `P.claims.sub`, `.iss`, `.aud`, `.exp` are those standard fields, typed; app attributes live under `P.claims.attrs`. **With no token**: if the policy declares an `anonymous` class, that class applies (the public-read shape); otherwise `Unauthorized`.
 
-This shape is a builder on the deploy side: `Ramose.claims(auth, { sub, db, class, attrs?, now? }, policy?)` (`alchemy/src/Auth.ts`) constructs the payload above from one `AuthConfig` (`{ issuer, audience, ttl }`) — the same value `authEnv({ auth })` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` / `RAMOSE_JWT_MAX_TTL` from, so `exp - iat === ttl === maxTtl` by construction. It is pure (no signing, no I/O; the app signs with its own JWKS key) and validates at mint what the peer rejects at verify: the db name, and — given the compiled policy — that `class` is declared. For Better Auth apps, `@ramose/better-auth` (`packages/better-auth`) packages the whole mint route as a server plugin (`ramoseToken({ auth, policy?, classOf })`, signing with the `jwt` plugin's JWKS) plus a client plugin whose `authClient.ramose.token({ db })` feeds `Ramose.token.jwt` directly.
+This shape is a builder on the deploy side: `Ramose.claims(auth, { sub, db, class, attrs?, now? }, policy?)` (`packages/ramose/src/Auth.ts`) constructs the payload above from one `AuthConfig` (`{ issuer, audience, ttl }`) — the same value `authEnv({ auth })` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` / `RAMOSE_JWT_MAX_TTL` from, so `exp - iat === ttl === maxTtl` by construction. It is pure (no signing, no I/O; the app signs with its own JWKS key) and validates at mint what the peer rejects at verify: the db name, and — given the compiled policy — that `class` is declared. For Better Auth apps, `ramose/better-auth` (`packages/ramose/src/better-auth`) packages the whole mint route as a server plugin (`ramoseToken({ auth, policy?, classOf })`, signing with the `jwt` plugin's JWKS) plus a client plugin whose `authClient.ramose.token({ db })` feeds `Ramose.token.jwt` directly.
 
 Membership, ownership and sharing are **datoms** (`[?org :org/members ?user]`), never token tuples: revocation lands on the next basis tick and a rule reads a grant at the basis it needs it. The token carries only the policy selector.
 
 ## 2. Policy in the catalog
 
 ```ts
-import * as Ramose from "@ramose/alchemy";   // `Policy` is deploy-time, so it is not on `@ramose/alchemy/db`
+import * as Ramose from "ramose";   // `Policy` is deploy-time, so it is not on `ramose/db`
 
 const User    = Ramose.Namespace("user", { sub: Ramose.Attr(Schema.String, { unique: "identity" }) });
 const Org     = Ramose.Namespace("org",  { members: Ramose.Attr(Ramose.Ref, { cardinality: "many" }) });

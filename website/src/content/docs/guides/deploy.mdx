@@ -23,7 +23,7 @@ The todos app's stack is two files. The deploy file names the three things the *
 <summary>Copy these two files as-is</summary>
 
 ```ts title="examples/todos/resources.ts:1-14"
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -31,7 +31,7 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
+  main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
@@ -39,10 +39,10 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-The excerpt above is from `examples/todos`, which lives inside this repository and so points at the source directly. In your own app it is `main: import.meta.resolve("@ramose/worker")` — a path, not a package name. A bare `main: "@ramose/worker"` resolves to nothing and produces a server that reports ready and then never answers. [Getting started](/getting-started/quickstart/) sets it up.
+The excerpt above is from `examples/todos`, and it is what your own app writes too — `main` is a path, not a module specifier, so `import.meta.resolve` is what turns the `ramose/worker` subpath into one. A bare `main: "ramose/worker"` resolves to nothing and produces a server that reports ready and then never answers. [Getting started](/getting-started/quickstart/) sets it up.
 
 ```ts title="examples/todos/alchemy.run.ts:20-77"
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -148,7 +148,7 @@ export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 
 ## Reference: the Ramose resources
 
-`@ramose/alchemy` re-exports all of `@ramose/alchemy/db` and adds these. Import it as `* as Ramose`.
+`ramose` re-exports all of `ramose/db` and adds these. Import it as `* as Ramose`.
 
 | name | what it is |
 | --- | --- |

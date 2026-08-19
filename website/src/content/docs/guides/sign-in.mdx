@@ -42,7 +42,7 @@ A **sign-in token** — a signed token the server verifies and never issues ([gl
 
 <Shot src="/reef/sign-in.png" alt="Reef's sign-in card: the Reef logo, the heading Welcome back, empty email and password fields and a Sign in button, over a dark radial glow" caption="Better Auth owns this screen. Ramose never sees a password — only the token it signs." code="examples/reef/src/app/screens/AuthScreen.tsx:147-150" />
 
-Better Auth (the sign-in library — [glossary](/concepts/glossary/#better-auth)) plus the shipped `@ramose/better-auth` plugin is the shortest path. On the auth server, the `jwt` plugin publishes signing keys and `ramoseToken` adds the route that **mints** — creates and signs ([glossary](/concepts/glossary/#mint)) — a token for one database:
+Better Auth (the sign-in library — [glossary](/concepts/glossary/#better-auth)) plus the shipped `ramose/better-auth` plugin is the shortest path. On the auth server, the `jwt` plugin publishes signing keys and `ramoseToken` adds the route that **mints** — creates and signs ([glossary](/concepts/glossary/#mint)) — a token for one database:
 
 ```ts title="examples/reef/src/infra/api.ts:100-119"
         jwt({
@@ -74,7 +74,7 @@ The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, b
 
 A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class`:
 
-```ts title="packages/better-auth/src/index.ts:224-235"
+```ts title="packages/ramose/src/better-auth/index.ts:224-235"
 export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {

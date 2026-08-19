@@ -75,7 +75,7 @@ Rules of thumb: split *before* p95 ack latency matters to users, and split
 along the same lines you would shard any single-writer system — no
 distributed transactions across partitions.
 
-## Other knobs (env, see `packages/transactor/src/env.ts`)
+## Other knobs (env, see `packages/ramose/src/internal/transactor/env.ts`)
 
 | var | default | effect |
 |---|---|---|
@@ -94,7 +94,7 @@ distributed transactions across partitions.
 | `RAMOSE_ALLOWED_ORIGINS` | unset | once a policy is set, CORS narrows to this list (empty = no CORS header) |
 | `RAMOSE_INTERNAL_SECRET` | unset (no gate) | Worker→DO shared secret; every internal fetch carries it, `/subscribe` included |
 
-`principalOf()` (`packages/worker/src/auth.ts`) resolves the caller per request from
+`principalOf()` (`packages/ramose/src/worker/auth.ts`) resolves the caller per request from
 `Authorization: Bearer <token>` (or `?token=`, since a browser cannot set headers on a
 WebSocket upgrade). With no `RAMOSE_POLICY` that is today's shared-token mode —
 `RAMOSE_TOKEN` unset is open, set is one service principal — and a `Ramose.Server`
@@ -108,7 +108,7 @@ set, a JWT is the only data-plane principal: it is bound to exactly one database
   write failed after `t` was assigned). The DO aborts itself; the next request
   reboots it from SQLite (`log`) + `root/current`. Nothing from the failed
   batch is durable; clients that got 503 must retry. `t` continues with no
-  gap. This is tested (`packages/transactor/test/transactor.test.ts`).
+  gap. This is tested (`packages/ramose/test/internal/transactor/transactor.test.ts`).
 - **Replica behind / disconnected**: it reconnects on the next request
   (`resume` from its watermark, `gap` → `log/` chunks in R2). Force it with
   `POST /db/:name/admin/replica/reconnect`.

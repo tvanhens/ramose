@@ -1,10 +1,10 @@
 ---
 title: Client API
-description: Every name @ramose/alchemy/db exports — schema, connect, the db handle, queries, writes, pull, types and errors — each with a short example.
+description: Every name ramose/db exports — schema, connect, the db handle, queries, writes, pull, types and errors — each with a short example.
 ---
 import Next from "../../../components/Next.astro";
 
-Every exported name of the client package, with its signature and a short example. This page is for people who have built the first app and want the exact shape of every call to the Ramose server. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+Every exported name of `ramose/db`, with its signature and a short example. This page is for people who have built the first app and want the exact shape of every call to the Ramose server. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
@@ -21,24 +21,39 @@ Every exported name of the client package, with its signature and a short exampl
 
 ## Imports
 
-`@ramose/alchemy/db` is the portable half: browser, Worker, Node, tests. `@ramose/alchemy` re-exports all of it and adds the deploy half.
+`ramose/db` is the portable half: browser, Worker, Node, tests. `ramose` re-exports all of it and adds the deploy half.
 
 ```ts
-import * as Ramose from "@ramose/alchemy/db"; // schema, connect, db, query, errors
-import * as Ramose from "@ramose/alchemy";    // the same, plus Server, Database, Policy, authEnv, claims
+import * as Ramose from "ramose/db"; // schema, connect, db, query, errors
+import * as Ramose from "ramose";    // the same, plus Server, Database, Policy, authEnv, claims
 ```
 
 | entry | runtime names |
 | --- | --- |
-| `@ramose/alchemy/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
-| `@ramose/alchemy` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
+| `ramose/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
+| `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
+
+Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
+
+### Effect comes with Ramose
+
+`effect` is a dependency of `ramose`, not something you install beside it, so `import * as Schema from "effect/Schema"` resolves in a project whose only dependency is `ramose`. That is deliberate: Effect types cross Ramose's public API — a `Db` is parameterised by your schemas, a live query is a `Stream` — so two copies of `effect` in one tree are two mutually unassignable sets of types, and nothing typechecks. Declare `effect` in your own `package.json` only at a version that agrees with Ramose's.
+
+Two subpaths let you avoid naming it at all, which is what a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) needs:
+
+```ts
+import * as Schema from "ramose/schema";        // === effect/Schema
+import { Effect, Layer, Stream } from "ramose/effect";
+```
+
+They re-export the module instances `effect` itself exports, so the two spellings are interchangeable — in the same file, and across a package boundary.
 
 ## Schema
 
 The **schema** — your data model as one TypeScript value; Ramose calls it a *catalog* ([glossary](/concepts/glossary/#schema)) — is built from three constructors.
 
 ```ts title="examples/todos/schema.ts:1-10"
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Namespace("todo", {

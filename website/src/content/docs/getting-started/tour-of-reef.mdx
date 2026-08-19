@@ -21,7 +21,7 @@ bun run dev:reef
 
 Wait for three URLs — the Ramose server on `:1337`, the sign-in Worker on `:1338`, the app on `:5173` — then open [http://localhost:5173](http://localhost:5173) and **Create account**. It is verified on the spot, with no email. Then **New workspace**, name it, and **Add sample issues**.
 
-To build your own app instead, nothing is cloned: [Getting started](/getting-started/quickstart/) installs the packages from npm.
+To build your own app instead, nothing is cloned: [Getting started](/getting-started/quickstart/) installs Ramose from npm.
 
 ## The whole backend in 700 lines
 
@@ -301,7 +301,7 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
+  main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
   dev: { port: DEV_PEER_PORT },
   env: {

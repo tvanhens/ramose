@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Build a realtime todo app from scratch with the Ramose packages — a schema, a live query and typed writes, running on your laptop in about fifteen minutes.
+description: Build a realtime todo app from scratch with Ramose — a schema, a live query and typed writes, running on your laptop in about fifteen minutes.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
@@ -9,18 +9,17 @@ You are going to build a todo app from an empty folder. It stores todos in a Ram
 
 <Learn learn={["Install Ramose and declare a schema", "Run the Ramose server on your laptop", "Read with a live query and write with a typed transaction", "Add a field and filter the list without touching a refetch"]} minutes={15} />
 
-You need [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). Ramose is pre-release: the install below takes carets, and once it works you may want to replace them with exact versions, because the API moves between releases.
+You need [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). Ramose is pre-release: `bun add` writes a caret range, and once the app works you may want to pin an exact version, because the API moves between releases.
 
 ## Create the app
 
 ```sh frame="terminal"
 mkdir my-todos && cd my-todos
-bun add @ramose/alchemy @ramose/worker @ramose/react alchemy react react-dom \
-  effect@rc @effect/platform-node@rc @effect/platform-bun@rc
+bun add ramose react react-dom
 bun add -d vite @vitejs/plugin-react typescript @types/react @types/react-dom
 ```
 
-The `@rc` matters. Ramose is built on Effect 4, which is still a release candidate, so plain `effect` installs 3.x and nothing will typecheck. Alchemy needs the two `@effect/platform-*` packages but marks them optional, so nothing warns you when they are missing — you just get `Cannot find module '@effect/platform-node/NodeServices'` on the first run.
+One package. Ramose brings Effect 4 and Alchemy 2 — both prereleases — with it at versions that resolve, so there is no `@rc` to remember and nothing else to pin, `alchemy` included. React is an optional peer: a server-only app installs `ramose` alone. Already using Effect? [Read this first](/reference/client-api/#effect-comes-with-ramose).
 
 Now a `.env` file. `alchemy dev` reads it automatically:
 
@@ -89,7 +88,7 @@ export default defineConfig({ plugins: [react()] });
 ## Describe your data
 
 ```ts title="schema.ts"
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Namespace("todo", {
@@ -109,10 +108,10 @@ Every record type gets an `id` field for free: `Todo.id`. This one file is impor
 
 ## Declare the server
 
-Ramose runs as one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `@ramose/worker`. You only name the storage it needs.
+Ramose runs as one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `ramose/worker`. You only name the storage it needs.
 
 ```ts title="resources.ts"
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -120,7 +119,7 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("@ramose/worker"),
+  main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
@@ -128,8 +127,8 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-:::caution[`main` takes a path, not a package name]
-Write `import.meta.resolve("@ramose/worker")`, not `"@ramose/worker"`. `main` is resolved as a file path, so a bare package name silently finds nothing: the stack still reports the server as ready, but no Worker is ever bundled and every request hangs forever instead of failing. If your app starts and then nothing loads, this is why.
+:::caution[`main` takes a path, not a module specifier]
+Write `import.meta.resolve("ramose/worker")`, not `"ramose/worker"`. `main` is resolved as a file path, so a bare specifier silently finds nothing: the stack still reports the server as ready, but no Worker is ever bundled and every request hangs forever instead of failing. If your app starts and then nothing loads, this is why.
 :::
 
 | Line | What it names |
@@ -137,7 +136,7 @@ Write `import.meta.resolve("@ramose/worker")`, not `"@ramose/worker"`. `main` is
 | `R2.Bucket("Store")` | Object storage: every version of every database is kept here |
 | `DurableObject("TransactorDO")` | The writer: commits each database's writes, in order |
 | `DurableObject("QueryReplicaDO")` | Read copies: where queries run |
-| `Worker("Peer")` | The Ramose server itself. `main` resolves the package to a path — its code ships with Ramose |
+| `Worker("Peer")` | The Ramose server itself. `main` resolves the `ramose/worker` subpath to a file — its code ships with Ramose |
 
 [Why these three things →](/concepts/architecture/#what-runs-where)
 
@@ -146,7 +145,7 @@ Write `import.meta.resolve("@ramose/worker")`, not `"@ramose/worker"`. `main` is
 Alchemy is the TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `alchemy dev` runs it on your laptop, `alchemy deploy` ships it to Cloudflare. It finds `alchemy.run.ts` by name, so keep that filename.
 
 ```ts title="alchemy.run.ts"
-import * as Ramose from "@ramose/alchemy";
+import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -192,7 +191,7 @@ export default Alchemy.Stack(
 ## Connect
 
 ```ts title="src/db.ts"
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 import { Todos } from "../schema.ts";
 
 const ramose = Ramose.connect({
@@ -215,8 +214,8 @@ interface ImportMetaEnv {
 ## The query and the writes
 
 ```ts title="src/todos.ts"
-import * as Ramose from "@ramose/alchemy/db";
-import type { Db, Eid } from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
+import type { Db, Eid } from "ramose/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
@@ -266,7 +265,7 @@ Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.t
 ## The screen
 
 ```tsx title="src/App.tsx"
-import { useLive, useTransact } from "@ramose/react";
+import { useLive, useTransact } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
@@ -356,7 +355,7 @@ INFO: [Peer] Started in 214ms
 [Ui] ready at http://localhost:5173/
 ```
 
-`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-package-name mistake above, and on this release it fails silently and waits forever.
+`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-specifier mistake above, and on this release it fails silently and waits forever.
 
 Open the `[Ui] ready at` URL — `http://localhost:5173` unless something else had the port — and add "buy milk". Then open a second tab on the same URL: the todo is already there. Tick it in one tab and watch it strike through in the other, in about a second. That is one live query in two tabs; there is no code in this app that makes it happen.
 

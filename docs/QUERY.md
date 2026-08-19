@@ -7,7 +7,7 @@ already evaluates — filters, shape, order and paging all run on the peer, in o
 round trip.
 
 ```ts
-import * as Ramose from "@ramose/alchemy/db";
+import * as Ramose from "ramose/db";
 
 const openTodos = Ramose.query(Todo)
   .where(Todo.done.eq(false), Todo.owner.name.startsWith("A"))
@@ -457,7 +457,7 @@ Status of the navigational surface relative to the intended design.
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ramose.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ramose.explain` / `withBasis` |
 | Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many and backlink `orderBy` rejected | — |
-| IR hatch | — (the string-var callback builder is retired) | `@ramose/alchemy/db/datalog` typed IR, rules |
+| IR hatch | — (the string-var callback builder is retired) | `ramose/db/datalog` typed IR, rules |
 
 ---
 
@@ -486,7 +486,7 @@ cut.
 - **Aggregates / `groupBy`**, `.one()` / `.oneOrFail()`, cursors (`.after`).
 - **`.expand`** for bounded recursive trees in shapes; then **`.traverse` /
   `.paths` / `reaches`** for graph walks.
-- Typed **`@ramose/alchemy/db/datalog`** escape hatch (logic vars as values,
+- Typed **`ramose/db/datalog`** escape hatch (logic vars as values,
   rules as P1).
 - Live **footprint invalidation**, **`db.changes`**, shape-hash multiplexing.
 - Optional **`:db/ns` marker** instead of or-join scope; `db.asOf(date)` /
