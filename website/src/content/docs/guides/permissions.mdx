@@ -133,7 +133,7 @@ export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```
 
-```ts title="examples/reef/test/policy.test.ts:65-70"
+```ts title="examples/reef/test/policy.test.ts:70-75"
   test("a masked attribute pulled as required is a compile error", () => {
     const badShape = { note: Issue.privateNote };
     expect(() =>
