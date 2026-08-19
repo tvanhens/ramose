@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Database, Policy,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
+| `ramose/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `all` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
 | `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -305,7 +305,7 @@ Rules:
 ```ts
 Ramose.query(Todo)
   .where(...predicates)                 // any number; all must hold
-  .select({ key: Todo.field, … })       // the fields you want; without it rows are { id }
+  .select({ key: Todo.field, … })       // or Ramose.all(Todo); without it rows are { id }
   .orderBy(Todo.createdAt, "asc", { empty: "last" })   // "asc" | "desc"; "first" | "last"
   .limit(20)
   .offset(0);
@@ -342,7 +342,7 @@ Ramose.query(Todo).where(
 );
 ```
 
-**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (always many-valued). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `.optional` for fields that may be absent.
+**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (many-valued, unless the reference is `{ isComponent: true }` — then the reverse is one record). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts:24-34"
 export const boardShape = {
@@ -368,10 +368,12 @@ Not shipped: aggregates (`count`, `sum`, …), `groupBy`, cursors, full-text sea
 
 ## Pull
 
-**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`.
+**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`, including `.orDefault(v)` and `Ramose.all(N)`.
 
 ```ts
 db.pull({ id: 17 }, { title: Issue.title, description: Issue.description.optional });
+db.pull({ id: 17 }, { done: Todo.done.orDefault(false) });
+db.pull({ id: 17 }, Ramose.all(Issue));
 db.pull([User.sub, "user_ada"], { name: User.name });
 ```
 
@@ -398,6 +400,7 @@ export const issueExtraShape = {
 | `Ramose.Row<typeof q>` | one result **row** of a query ([glossary](/concepts/glossary/#row)) |
 | `Ramose.Rows<typeof q>` | `readonly Row[]` — what `db.q` resolves to |
 | `Ramose.Pull<C, P>` | the result of shape `P` |
+| `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
 | `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
 | `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |

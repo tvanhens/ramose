@@ -24,6 +24,7 @@ import {
   Instant,
   Namespace,
   Ref,
+  all,
   cardsOf,
   finalizeNavResult,
   pathOf,
@@ -178,6 +179,25 @@ const Todo = Namespace("todo", {
 
 const Todos = Catalog({ user: User, todo: Todo });
 
+const Address = Namespace("address", {
+  city: Attr(Schema.String),
+  zip: Attr(Schema.String),
+});
+
+/**
+ * `:person/address` is a **component** ref: the address is owned by its
+ * person, so at most one person points at it and the backlink answers one
+ * entity. `:person/mailbox` is the same target without componenthood — the
+ * ordinary, many-valued backlink, for contrast.
+ */
+const Person = Namespace("person", {
+  name: Attr(Schema.String),
+  address: Attr(Ref(() => Address), { isComponent: true }),
+  mailbox: Attr(Ref(() => Address)),
+});
+
+const People = Catalog({ person: Person, address: Address });
+
 describe("nav query", () => {
   test("Todo.owner.name path + lowerer", () => {
     const q = query(Todo)
@@ -285,6 +305,16 @@ describe("a select field is a direct attribute, never a flattened path", () => {
       lowerNavQuery(
         query(Todo)
           .select({ ownerName: hopped(Todo.owner.name.optional) })
+          .build(),
+      ),
+    ).toThrow(/multi-hop|nested select/);
+  });
+
+  test("`.orDefault` does not make a hop a direct attribute either", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ ownerName: hopped(Todo.owner.name.orDefault("")) })
           .build(),
       ),
     ).toThrow(/multi-hop|nested select/);
@@ -516,6 +546,14 @@ describe("lowering: everything that changes the row set is the peer's", () => {
         .build(),
     );
     expect(bareRef.query.where).toEqual([todoScope, ["?e", ":todo/owner", "_"]]);
+    // …and neither does a defaulted one: the row without the datom is exactly
+    // the row `.orDefault` exists to keep
+    const defaulted = lowerNavQuery(
+      query(Todo)
+        .select({ title: Todo.title, done: Todo.done.orDefault(false) })
+        .build(),
+    );
+    expect(defaulted.query.where).toEqual([todoScope, ["?e", ":todo/title", "_"]]);
   });
 
   test("orderBy across a cardinality-many attribute is rejected at build time", () => {
@@ -556,6 +594,194 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       { id: 10 },
       { id: 20 },
     ]);
+  });
+});
+
+describe("`.orDefault`: a missing card-one scalar reads as a value", () => {
+  /** A default the attribute's type does not admit — `null` is still one. */
+  const anyValue = <T>(value: T) => value as never;
+
+  test("it lowers to the pull's `default`, not to a required clause", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .select({ title: Todo.title, done: Todo.done.orDefault(false) })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+          {
+            kind: "attr",
+            attr: ":todo/done",
+            reverse: false,
+            as: "done",
+            default: false,
+          },
+        ],
+      ],
+    ]);
+    // the defaulted field emits no `["?e", ":todo/done", "_"]`: it would drop
+    // exactly the rows the default is for, and `:limit` would page a lie
+    expect(q.where).toEqual([todoScope, ["?e", ":todo/title", "_"]]);
+  });
+
+  test("a falsy default is a default — including `null`", () => {
+    const specOf = (field: unknown) =>
+      (
+        lowerNavQuery(
+          query(Todo).select({ done: field as never }).build(),
+        ).query.find[0] as unknown[]
+      )[2] as Record<string, unknown>[];
+
+    expect(specOf(Todo.due.orDefault(anyValue(null)))[0]).toEqual({
+      kind: "attr",
+      attr: ":todo/due",
+      reverse: false,
+      as: "done",
+      default: null,
+    });
+    expect(specOf(Todo.title.orDefault(""))[0]).toHaveProperty("default", "");
+    // no `.orDefault` at all is no `default` key, not `default: undefined`
+    expect("default" in specOf(Todo.title)[0]!).toBe(false);
+  });
+
+  test("`.orDefault(undefined)` is rejected — that field is `.optional`", () => {
+    // `{default: undefined}` would not survive the JSON the spec travels as,
+    // and the peer's gate is `spec.default !== undefined`: the row would read
+    // `undefined` while the type promised a value
+    expect(() => Todo.done.orDefault(anyValue(undefined))).toThrow(
+      /\.orDefault\(undefined\) is not a default/,
+    );
+    expect(() => Todo.done.orDefault(anyValue(undefined))).toThrow(/`\.optional`/);
+  });
+
+  const seeded = async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const a = yield* tx.entity();
+        yield* a.add(Todo.title, "a");
+        yield* a.add(Todo.done, true);
+        // "b" has no `:todo/done` datom at all — the row `.orDefault` is for
+        const b = yield* tx.entity();
+        yield* b.add(Todo.title, "b");
+        const c = yield* tx.entity();
+        yield* c.add(Todo.title, "c");
+        yield* c.add(Todo.done, true);
+      }),
+    );
+    return { peer, db };
+  };
+
+  test("the missing value reads as the default, the present one wins", async () => {
+    const { peer, db } = await seeded();
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+    expect(rows).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: false },
+      { title: "c", done: true },
+    ]);
+    // the row type is the attribute's, so this needs no narrowing
+    const stillOpen: boolean = rows[1]!.done;
+    expect(stillOpen).toBe(false);
+
+    await peer.dispose();
+  });
+
+  test("the default is read, never written: the datom is still absent", async () => {
+    const { peer, db } = await seeded();
+
+    await run(
+      db.q(
+        query(Todo).select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+
+    // the same entity, asked without a default: the attribute is still missing
+    const maybe = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.optional }),
+      ),
+    );
+    expect(maybe).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: undefined },
+      { title: "c", done: true },
+    ]);
+    // …and the peer's own index agrees
+    const missing = await run(
+      db.q(query(Todo).where(Todo.done.missing()).select({ title: Todo.title })),
+    );
+    expect(missing).toEqual([{ title: "b" }]);
+
+    await peer.dispose();
+  });
+
+  test("`null` is a default like any other, end to end", async () => {
+    const { peer, db } = await seeded();
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.orDefault(anyValue(null)) }),
+      ),
+    );
+    expect(rows).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: null as never },
+      { title: "c", done: true },
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("`.limit` counts the defaulted row, where a required field drops it", async () => {
+    const { peer, db } = await seeded();
+
+    const defaulted = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .limit(2)
+          .select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+    expect(defaulted).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: false },
+    ]);
+
+    // the same page, asked for the datom itself: "b" is not a row, so the
+    // limit reaches past it
+    const required = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .limit(2)
+          .select({ title: Todo.title, done: Todo.done }),
+      ),
+    );
+    expect(required).toEqual([
+      { title: "a", done: true },
+      { title: "c", done: true },
+    ]);
+
+    await peer.dispose();
   });
 });
 
@@ -1229,6 +1455,324 @@ describe("lowering: reverse refs walk a ref hop backwards", () => {
     expect(() => query(User).orderBy(Todo.owner.reverse.title)).toThrow(
       /orderBy\(:todo\/owner → :todo\/title\) crosses a cardinality-many attribute/,
     );
+  });
+});
+
+describe("lowering: a component ref's backlink is single-valued", () => {
+  const addressScope = [
+    "or",
+    ["?e", ":address/city", "_"],
+    ["?e", ":address/zip", "_"],
+  ];
+
+  test("the backlink of a component ref is a card-one reversed hop", () => {
+    // it is a nav, not a throw: componenthood picks the cardinality
+    const back = Person.address.reverse;
+    expect(pathOf(back)).toEqual([":person/address"]);
+    expect(cardsOf(back)).toEqual(["one"]);
+    expect(revsOf(back)).toEqual([true]);
+    // the same ref without `isComponent` is the ordinary many backlink
+    expect(cardsOf(Person.mailbox.reverse)).toEqual(["many"]);
+    expect(revsOf(Person.mailbox.reverse)).toEqual([true]);
+    // walking on from the backlink is unchanged: forwards, in :person/…
+    expect(pathOf(back.name)).toEqual([":person/address", ":person/name"]);
+    expect(cardsOf(back.name)).toEqual(["one", "one"]);
+    expect(revsOf(back.name)).toEqual([true, false]);
+  });
+
+  test("a predicate through a component backlink flips the datom", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address).where(Person.address.reverse.name.eq("Ada")).build(),
+    );
+    expect(q.where).toEqual([
+      addressScope,
+      ["?j0", ":person/address", "?e"],
+      ["?j0", ":person/name", "Ada"],
+    ]);
+  });
+
+  test("`.reverse.select` is card-one: required, and read backwards", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          city: Address.city,
+          owner: Person.address.reverse.select({ name: Person.name }),
+        })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":address/city", reverse: false, as: "city" },
+          {
+            kind: "attr",
+            attr: ":person/address",
+            reverse: true,
+            as: "owner",
+            sub: [
+              { kind: "attr", attr: ":person/name", reverse: false, as: "name" },
+            ],
+          },
+        ],
+      ],
+    ]);
+    // the required clause is the datom the other way: the owner points at ?e
+    expect(q.where).toEqual([
+      addressScope,
+      ["?e", ":address/city", "_"],
+      ["?r0", ":person/address", "?e"],
+      ["?r0", ":person/name", "_"],
+    ]);
+  });
+
+  test("a reversed required clause binds a variable even with nothing nested", () => {
+    // the entity position of a clause cannot be `_`: it *is* the join target
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          owner: Person.address.reverse.select({ name: Person.name.optional }),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([addressScope, ["?r0", ":person/address", "?e"]]);
+  });
+
+  test("`.optional` on a component backlink drops no rows", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          city: Address.city,
+          owner: Person.address.reverse.select({ name: Person.name }).optional,
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([addressScope, ["?e", ":address/city", "_"]]);
+  });
+
+  test("a many backlink is still never required", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          residents: Person.mailbox.reverse.select({ name: Person.name }),
+        })
+        .build(),
+    );
+    expect((q.find[0] as unknown[])[2]).toEqual([
+      {
+        kind: "attr",
+        attr: ":person/mailbox",
+        reverse: true,
+        as: "residents",
+        sub: [{ kind: "attr", attr: ":person/name", reverse: false, as: "name" }],
+      },
+    ]);
+    expect(q.where).toEqual([addressScope]);
+  });
+
+  test("a bare component backlink still needs a shape", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Address).select({ owner: Person.address.reverse as never }).build(),
+      ),
+    ).toThrow(/backlinks need a shape/);
+  });
+
+  test("a single-valued backlink has no elements to quantify or filter", () => {
+    const many = (x: unknown) => x as { [k: string]: (...args: any[]) => any };
+    expect(() => many(Person.address.reverse).some(Person.name.eq("Ada"))).toThrow(
+      /only a cardinality-many attribute has elements to quantify over/,
+    );
+    expect(() => many(Person.address.reverse).where(Person.name.eq("Ada"))).toThrow(
+      /cardinality-many collection/,
+    );
+    expect(() => many(Person.address.reverse).limit(1)).toThrow(
+      /cardinality-many collection/,
+    );
+    // the many backlink keeps them
+    expect(() =>
+      many(Person.mailbox.reverse).some(Person.name.eq("Ada")),
+    ).not.toThrow();
+  });
+
+  test("orderBy may cross a component backlink — the key is one value", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address).orderBy(Person.address.reverse.name).build(),
+    );
+    expect(q.order).toEqual([{ var: "?o0", dir: "asc", empty: "last" }]);
+    expect(q.where).toEqual([
+      addressScope,
+      [
+        "or-join",
+        ["?e", "?o0"],
+        [
+          "and",
+          ["?j1", ":person/address", "?e"],
+          ["?j1", ":person/name", "?o0"],
+        ],
+        [
+          "and",
+          [
+            "not",
+            ["?j2", ":person/address", "?e"],
+            ["?j2", ":person/name", "_"],
+          ],
+          [["ground", [null]], ["?o0", "..."]],
+        ],
+      ],
+    ]);
+  });
+});
+
+describe("component backlinks end to end", () => {
+  /**
+   * Ada — address Paris, mailbox Oslo
+   * Bob — address Rome,  mailbox Oslo
+   * Oslo — nobody's address (the orphan component)
+   */
+  const seedPeople = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("people", People);
+    await run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const paris = yield* tx.entity();
+          yield* paris.add(Address.city, "Paris");
+          yield* paris.add(Address.zip, "75001");
+          const rome = yield* tx.entity();
+          yield* rome.add(Address.city, "Rome");
+          yield* rome.add(Address.zip, "00184");
+          const oslo = yield* tx.entity();
+          yield* oslo.add(Address.city, "Oslo");
+          yield* oslo.add(Address.zip, "0155");
+
+          const ada = yield* tx.entity();
+          yield* ada.add(Person.name, "Ada");
+          yield* ada.add(Person.address, paris.eid as never);
+          yield* ada.add(Person.mailbox, oslo.eid as never);
+          const bob = yield* tx.entity();
+          yield* bob.add(Person.name, "Bob");
+          yield* bob.add(Person.address, rome.eid as never);
+          yield* bob.add(Person.mailbox, oslo.eid as never);
+        });
+      }),
+    );
+    return db;
+  };
+
+  test("`db.install` tells the peer the ref is a component", async () => {
+    const peer = await inProcessPeer();
+    await seedPeople(peer);
+    const install = peer.seen.find((c) => c.op === "transact")!;
+    expect(
+      (install.body.tx as Record<string, unknown>[]).find(
+        (m) => m[":db/ident"] === ":person/address",
+      ),
+    ).toEqual({
+      ":db/ident": ":person/address",
+      ":db/valueType": ":db.type/ref",
+      ":db/cardinality": ":db.cardinality/one",
+      ":db/isComponent": true,
+    });
+    await peer.dispose();
+  });
+
+  test("a component backlink reads as one nested object, not an array", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            owner: Person.address.reverse.select({ name: Person.name }).optional,
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      // the orphan keeps its row, and its owner is simply absent
+      { city: "Oslo", owner: undefined },
+      { city: "Paris", owner: { name: "Ada" } },
+      { city: "Rome", owner: { name: "Bob" } },
+    ]);
+    expect(Array.isArray(rows[1]?.owner)).toBe(false);
+    expect(peer.seen[0]?.rows).toBe(3);
+
+    await peer.dispose();
+  });
+
+  test("a required component backlink drops the orphan — on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            owner: Person.address.reverse.select({ name: Person.name }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { city: "Paris", owner: { name: "Ada" } },
+      { city: "Rome", owner: { name: "Bob" } },
+    ]);
+    // the required reversed clause did the dropping, so `:limit` pages honestly
+    expect(peer.seen[0]?.rows).toBe(2);
+
+    await peer.dispose();
+  });
+
+  test("the same target's non-component backlink is still an array", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            residents: Person.mailbox.reverse.select({ name: Person.name }),
+          }),
+      ),
+    );
+    expect(
+      rows.map((r) => ({
+        city: r.city,
+        residents: r.residents.map((p) => p.name).sort(),
+      })),
+    ).toEqual([
+      { city: "Oslo", residents: ["Ada", "Bob"] },
+      { city: "Paris", residents: [] },
+      { city: "Rome", residents: [] },
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("a component backlink is a card-one sort key, end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Person.address.reverse.name, "asc", { empty: "last" })
+          .select({ city: Address.city }),
+      ),
+    );
+    // Ada's address, then Bob's, then the one nobody owns
+    expect(rows.map((r) => r.city)).toEqual(["Paris", "Rome", "Oslo"]);
+
+    await peer.dispose();
   });
 });
 
@@ -2140,6 +2684,172 @@ describe("paging end to end: the peer pages, the client keeps what it gets", () 
     expect(titles.map((r) => r.title)).toEqual(["a-alice", "b-nameless", "c-bob", "d-nobody"]);
     const page = await run(db.q(query(Todo).orderBy(Todo.title, "desc").offset(1).limit(2)));
     expect(page).toEqual([all[2]!, all[1]!]);
+    await peer.dispose();
+  });
+});
+
+describe("lowering: `all(N)` is the peer's wildcard, not a client-side map", () => {
+  test("it lowers to the pull pattern `[\"*\"]`, and to no required clause", () => {
+    const { query: q, pullMap } = lowerNavQuery(
+      query(Todo).select(all(Todo)).build(),
+    );
+    // the scope clause and nothing else: every key of a wildcard row is
+    // optional, so there is no field whose absence could drop the row
+    expect(q).toEqual({ find: [["pull", "?e", ["*"]]], where: [todoScope] });
+    // what travels is the peer's own pattern — the client never expands the
+    // wildcard into a map of the namespace's attributes
+    expect(pullMap).toEqual(["*"]);
+  });
+
+  test("where / orderBy / offset / limit compose with it", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .where(Todo.done.eq(false))
+        .orderBy(Todo.title)
+        .offset(1)
+        .limit(2)
+        .select(all(Todo))
+        .build(),
+    );
+    expect(q.find).toEqual([["pull", "?e", ["*"]]]);
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/done", false],
+      [
+        "or-join",
+        ["?e", "?o0"],
+        ["and", ["?e", ":todo/title", "?o0"]],
+        [
+          "and",
+          ["not", ["?e", ":todo/title", "_"]],
+          [["ground", [null]], ["?o0", "..."]],
+        ],
+      ],
+    ]);
+    expect(q.order).toEqual([{ var: "?o0", dir: "asc", empty: "last" }]);
+    expect(q.offset).toBe(1);
+    expect(q.limit).toBe(2);
+  });
+
+  /**
+   * The engine does answer a nested `{:todo/owner [*]}`, but the row it makes
+   * is keyed by the *target's* idents inside a row keyed by the caller's
+   * names. Rejected at the type level (see nav-query-types.ts) and here, where
+   * the cast defeats the type.
+   */
+  test("`all(N)` as a field of a shape is rejected, top-level and nested", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo).select({ everything: all(Todo) as never }).build(),
+      ),
+    ).toThrow(/all\(N\) is the whole shape of a query/);
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ owner: Todo.owner.select(all(User) as never) })
+          .build(),
+      ),
+    ).toThrow(/all\(N\) is the whole shape of a query/);
+  });
+});
+
+describe("`all(N)` end to end: the peer's wildcard row", () => {
+  const seed = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const bob = yield* tx.entity();
+        yield* bob.add(User.name, "Bob");
+        const alice = yield* tx.entity();
+        yield* alice.add(User.name, "Alice");
+        yield* alice.add(User.tags, "admin");
+        yield* alice.add(User.tags, "eng");
+        yield* alice.add(User.friends, bob.eid as never);
+        const ship = yield* tx.entity();
+        yield* ship.add(Todo.title, "ship");
+        yield* ship.add(Todo.done, false);
+        yield* ship.add(Todo.owner, alice.eid as never);
+        // no `:todo/done`, no `:todo/owner`, no `:todo/due`
+        const bare = yield* tx.entity();
+        yield* bare.add(Todo.title, "bare");
+      }),
+    );
+    return db;
+  };
+
+  test("rows are ident-keyed maps: `:db/id`, refs as `{\":db/id\"}`", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).select(all(Todo))),
+    );
+    expect(rows.map((r) => r[":todo/title"])).toEqual(["bare", "ship"]);
+
+    const ship = rows[1]!;
+    expect(typeof ship[":db/id"]).toBe("number");
+    expect(ship[":todo/done"]).toBe(false);
+    expect(ship[":todo/owner"]).toEqual({ ":db/id": expect.any(Number) });
+
+    // the bare todo carries neither datom, so the map carries neither key —
+    // and it is a row all the same
+    const bare = rows[0]!;
+    expect(bare[":todo/done"]).toBeUndefined();
+    expect(":todo/owner" in bare).toBe(false);
+    expect(Object.keys(bare)).toEqual([":db/id", ":todo/title"]);
+
+    await peer.dispose();
+  });
+
+  test("a cardinality-many attribute is an array, scalars and refs alike", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(User).orderBy(User.name).select(all(User))),
+    );
+    const [alice, bob] = rows;
+    expect(alice?.[":user/name"]).toBe("Alice");
+    expect(alice?.[":user/tags"]).toEqual(["admin", "eng"]);
+    expect(alice?.[":user/friends"]).toEqual([{ ":db/id": bob![":db/id"] }]);
+    // Bob has neither: the keys are absent, not empty arrays
+    expect(bob?.[":user/tags"]).toBeUndefined();
+    expect(bob?.[":user/friends"]).toBeUndefined();
+
+    await peer.dispose();
+  });
+
+  test("the row is exactly what `db.pull(eid, [\"*\"])` answers", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).select(all(Todo))),
+    );
+    for (const row of rows) {
+      const eid = row[":db/id"] as never;
+      // the ident-array escape: the same wildcard, asked of one entity
+      expect(await run(db.pull(eid, ["*"] as const))).toEqual(row as never);
+      // …and the marker as a pull pattern lowers to that same `["*"]`
+      expect(await run(db.pull(eid, all(Todo)))).toEqual(row as never);
+    }
+
+    await peer.dispose();
+  });
+
+  test("`.limit` counts rows: the peer pages the wildcard like any select", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).limit(1).select(all(Todo))),
+    );
+    expect(rows.map((r) => r[":todo/title"])).toEqual(["bare"]);
+    expect(peer.seen[0]?.op).toBe("q");
+    expect(peer.seen[0]?.rows).toBe(1);
+
     await peer.dispose();
   });
 });

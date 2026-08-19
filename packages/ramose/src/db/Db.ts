@@ -108,7 +108,10 @@ export interface TxReport<C extends AnyCatalog = AnyCatalog> {
   readonly dbAfter: Db<C>;
 }
 
-/** The pull pattern a subject accepts: a literate map, or the ident-array escape. */
+/**
+ * The pull pattern a subject accepts: a literate map, `Ramose.all(N)` (the
+ * peer's wildcard row), or the ident-array escape.
+ */
 type PullPattern<C extends AnyCatalog, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
   : ValidatePull<C, P>;

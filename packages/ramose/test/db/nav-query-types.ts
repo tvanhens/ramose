@@ -17,6 +17,7 @@ import {
   type Expect,
   Instant,
   Namespace,
+  all,
   not,
   or,
   query,
@@ -32,12 +33,15 @@ declare const db: Db<typeof Movies>;
 
 /** A second catalog whose refs are targeted, so a path can hop. */
 const Author = Namespace("author", { name: Attr(Schema.String) });
+/** A component target: the cover is owned by the book that refers to it. */
+const Cover = Namespace("cover", { art: Attr(Schema.String) });
 const Book = Namespace("book", {
   title: Attr(Schema.String),
   published: Attr(Instant),
   author: Attr(Ref(() => Author)),
+  cover: Attr(Ref(() => Cover), { isComponent: true }),
 });
-const Library = Catalog({ author: Author, book: Book });
+const Library = Catalog({ author: Author, book: Book, cover: Cover });
 declare const library: Db<typeof Library>;
 
 // ── no `.select` yields the matched entity ids ─────────────────────────────
@@ -250,6 +254,45 @@ type _backlinks = Expect<
 /** an untargeted ref has a backlink too — only the owning namespace matters */
 query(User).where(User.bestFriend.reverse.name.eq("Ada"));
 
+// ── the backlink of a component ref is single-valued ───────────────────────
+
+/**
+ * A `:db/isComponent` ref owns what it points at, so at most one entity
+ * points *back*: the backlink is card-one, its shape is one nested object,
+ * and `.optional` is how a component without an owner is spelled.
+ */
+const componentBacklink = library.q(
+  query(Cover).select({
+    art: Cover.art,
+    book: Book.cover.reverse.select({ title: Book.title }),
+    maybeBook: Book.cover.reverse.select({ published: Book.published }).optional,
+  }),
+);
+type _componentBacklink = Expect<
+  Equal<
+    Effect.Success<typeof componentBacklink>,
+    readonly {
+      readonly art: string;
+      readonly book: { readonly title: string };
+      readonly maybeBook: { readonly published: Date } | undefined;
+    }[]
+  >
+>;
+
+/** the hop is card-one, so a path through it is an ordinary predicate… */
+library.q(query(Cover).where(Book.cover.reverse.title.eq("Calculus")));
+/** …and a legal sort key, which a many backlink never is */
+library.q(query(Cover).orderBy(Book.cover.reverse.published, "desc"));
+
+// @ts-expect-error one owner is no collection: nothing to quantify over
+query(Cover).where(Book.cover.reverse.some(Book.title.eq("x")));
+// @ts-expect-error …nothing to filter…
+Book.cover.reverse.where(Book.title.eq("x"));
+// @ts-expect-error …and nothing to page
+Book.cover.reverse.limit(1);
+// @ts-expect-error a backlink is still a ref: no value to stand in for
+Book.cover.reverse.orDefault("x");
+
 // ── nested where / orderBy / limit on a collection ─────────────────────────
 
 /**
@@ -402,6 +445,62 @@ query(Author).where(Book.title.reverse.eq("x"));
 
 // @ts-expect-error a backlink exposes the *owning* namespace's attributes
 query(Author).where(Book.author.reverse.name.eq("Ada"));
+
+// ── `.orDefault`: a missing card-one scalar reads as a value ───────────────
+
+/**
+ * `.orDefault(v)` is the pull's `:default`, not a client-side `??`: the peer
+ * substitutes `v` for the entity that has no such datom, so the row is kept
+ * and the field reads as the attribute's own type — never `| undefined`.
+ */
+const defaulted = db.q(
+  query(User).select({ name: User.name, age: User.age.orDefault(0) }),
+);
+type _defaulted = Expect<
+  Equal<
+    Effect.Success<typeof defaulted>,
+    readonly { readonly name: string; readonly age: number }[]
+  >
+>;
+/** …which is exactly the difference from `.optional` */
+type _defaultedIsNotMaybe = Expect<
+  Equal<
+    Equal<Effect.Success<typeof defaulted>, Effect.Success<typeof maybeAge>>,
+    false
+  >
+>;
+library.q(query(Book).select({ title: Book.title.orDefault("untitled") }));
+blog.q(query(Post).select({ title: Post.title.orDefault("") }));
+
+// @ts-expect-error `:user/age` is a number attribute, and so is its stand-in
+query(User).select({ age: User.age.orDefault("none") });
+
+// @ts-expect-error `:book/published` is an Instant, not a string
+query(Book).select({ published: Book.published.orDefault("2026-01-01") });
+
+// @ts-expect-error a card-many scalar is `[]` when it has no values
+query(Post).select({ tags: Post.tags.orDefault(["a"]) });
+
+// @ts-expect-error a card-many ref is `[]` too — and an entity is not a value
+query(User).select({ friends: User.friends.orDefault([]) });
+
+// @ts-expect-error a card-one ref reaches an entity, whose stand-in is a shape
+query(User).select({ best: User.bestFriend.orDefault(1) });
+
+// @ts-expect-error `:db/id` is the entity itself, and is never missing
+query(Movie).select({ id: Movie.id.orDefault(0) });
+
+// @ts-expect-error `.orDefault` does not make a hop a direct attribute
+query(Book).select({ authorName: Book.author.name.orDefault("") });
+
+// @ts-expect-error … nor is an element cursor a select field
+query(Post).select({ tags: Post.tags.each.orDefault("") });
+
+// @ts-expect-error a defaulted field always reads, so there is no `.optional`
+query(User).select({ age: User.age.orDefault(0).optional });
+
+// @ts-expect-error … and a maybe field has no value to default
+query(User).select({ age: User.age.optional.orDefault(0) });
 
 // ── `.orderBy` takes an attribute, including one across a ref ──────────────
 
@@ -561,3 +660,50 @@ const histEids = hist.q(query(User));
 type _histEids = Expect<
   Equal<Effect.Success<typeof histEids>, readonly Eid<typeof Movies>[]>
 >;
+
+// ── `all(N)`: the wildcard row, keyed by the namespace's idents ────────────
+
+const everything = db.q(query(User).select(all(User)));
+type Everything = Effect.Success<typeof everything>[number];
+
+/** the wildcard always carries `:db/id` — it is the entity, not a datom */
+type _allId = Expect<Equal<Everything[":db/id"], number>>;
+/**
+ * Every attribute is optional: a datom the entity does not have is a key the
+ * map does not have. (The runtime map is a *superset* of these keys — the
+ * entity may carry other namespaces' datoms too — so this is a lower bound.)
+ */
+type _allName = Expect<Equal<Everything[":user/name"], string | undefined>>;
+type _allAge = Expect<Equal<Everything[":user/age"], number | undefined>>;
+/** a ref reads as the entity the peer answers with, not as its id */
+type _allBest = Expect<
+  Equal<Everything[":user/bestFriend"], { readonly ":db/id": number } | undefined>
+>;
+/** cardinality-many is an array of those */
+type _allFriends = Expect<
+  Equal<
+    Everything[":user/friends"],
+    readonly { readonly ":db/id": number }[] | undefined
+  >
+>;
+/** the row is selected, so `db.q` does not re-brand it as `readonly Eid[]` */
+type _allNotEids = Expect<
+  Equal<
+    Effect.Success<typeof everything> extends readonly Eid<typeof Movies>[]
+      ? true
+      : false,
+    false
+  >
+>;
+/** `Row` / `Rows` name it like any other selected row */
+const allQuery = query(User).select(all(User));
+type _allRow = Expect<Equal<Row<typeof allQuery>, Everything>>;
+type _allRows = Expect<Equal<Rows<typeof allQuery>, readonly Everything[]>>;
+
+// @ts-expect-error a wildcard of another namespace is not this query's row
+query(User).select(all(Movie));
+
+query(User).select({
+  // @ts-expect-error `all(N)` is the whole shape of a query, never one field
+  everything: all(User),
+});

@@ -54,7 +54,7 @@ export const commentsQuery = (issueId: number) =>
 | references | `is(id)` — points at this record; hop through it and keep filtering: `Issue.assignee.name.startsWith("A")` |
 | many-valued fields | `some(p)` `every(p)` `none(p)` — quantify a predicate over the values; for many-valued scalars the value cursor is `.each` (`field.each.startsWith("a")`) |
 
-Absence is not a value: `eq` and the comparisons need the fact to be there, so ask with `exists()` or `missing()` when absence is the question. `Ramose.or(…)` and `Ramose.not(…)` combine predicates; a **reference** reads backwards with `.reverse` — `Issue.creator.reverse` from a user is "the issues that point at me" ([glossary](/concepts/glossary/#reference)).
+Absence is not a value: `eq` and the comparisons need the fact to be there, so ask with `exists()` or `missing()` when absence is the question. `Ramose.or(…)` and `Ramose.not(…)` combine predicates; a **reference** reads backwards with `.reverse` — `Issue.creator.reverse` from a user is "the issues that point at me" ([glossary](/concepts/glossary/#reference)). That backlink is many-valued (an array in a shape). The exception is a `{ isComponent: true }` reference: its reverse is one record, because a component has at most one owner.
 
 ## Choose the fields
 
@@ -76,9 +76,10 @@ export const boardShape = {
 
 - A field without `.optional` is required: an issue with no `title` is dropped from the results.
 - `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
+- `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
 
-The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects.
+The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose.
 
 ## Order, limit, page
 

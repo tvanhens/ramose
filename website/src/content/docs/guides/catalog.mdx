@@ -92,7 +92,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `unique` | none | `"identity"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up |
 | `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
-| `isComponent` | `false` | the referenced record belongs to its parent and is deleted with it |
+| `isComponent` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
 | `doc` | none | a description stored with the field |
 | `valueType` | inferred | the stored type, when it cannot be inferred |
 

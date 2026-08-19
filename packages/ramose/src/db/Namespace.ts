@@ -1,6 +1,6 @@
 /** Named group of attributes. `User.name` is the stamped attr ref (`:user/name`). */
 
-import type { AnyAttribute } from "./Attribute.ts";
+import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import {
   attachAttrNav,
   cardsOf,
@@ -48,10 +48,36 @@ export type StampedAttribute<
  * of the ref's *owning* namespace that point at you.
  *
  * It is a path node, not a datom: no `schema` (a backlink has no scalar value
- * — select a shape through it), always cardinality-many (any number of
- * entities may point at one), and it exposes the owning namespace's attrs so
+ * — select a shape through it), and it exposes the owning namespace's attrs so
  * the path can keep walking. The depth budget makes `X.reverse.y.reverse…`
  * well-founded, exactly as it does for self-refs.
+ *
+ * `Card` is the backlink's own cardinality — see {@link ReverseNav} and
+ * {@link ComponentReverseNav}.
+ */
+type BacklinkNav<
+  Ns extends string,
+  Attrs extends AttributeMap,
+  A extends AnyAttribute,
+  Name extends string,
+  D extends number,
+  Card extends "one" | "many",
+> = AttrNav<
+  Omit<A, "cardinality" | "valueType" | "schema"> & {
+    readonly attrName: Name;
+    readonly ident: `:${Ns}/${Name}`;
+    readonly cardinality: Card;
+    readonly valueType: ":db.type/ref";
+  } & PathCarrier
+> &
+  ([Dec<D>] extends [never]
+    ? unknown
+    : Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>);
+
+/**
+ * The ordinary backlink: cardinality-many, because any number of entities may
+ * point at one. It quantifies (`.some` / `.every` / `.none`), it filters
+ * (`.where` / `.orderBy` / `.limit` / `.offset`), and its shape is an array.
  */
 export type ReverseNav<
   Ns extends string,
@@ -59,17 +85,25 @@ export type ReverseNav<
   A extends AnyAttribute,
   Name extends string,
   D extends number,
-> = AttrNav<
-  Omit<A, "cardinality" | "valueType" | "schema"> & {
-    readonly attrName: Name;
-    readonly ident: `:${Ns}/${Name}`;
-    readonly cardinality: "many";
-    readonly valueType: ":db.type/ref";
-  } & PathCarrier
-> &
-  ([Dec<D>] extends [never]
-    ? unknown
-    : Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>);
+> = BacklinkNav<Ns, Attrs, A, Name, D, "many">;
+
+/**
+ * The backlink of a `:db/isComponent` ref: cardinality-**one**. A component is
+ * owned by the entity that refers to it, so at most one entity points at it,
+ * and the peer answers such a backlink with a single value rather than a
+ * collection (`cardMany = !attr.isComponent` in the pull engine).
+ *
+ * Being card-one, it has no elements: the quantifiers and the collection
+ * methods are `never` on it, and `.reverse.select({ … })` reads as one nested
+ * object — `.optional` when the component may have no owner.
+ */
+export type ComponentReverseNav<
+  Ns extends string,
+  Attrs extends AttributeMap,
+  A extends AnyAttribute,
+  Name extends string,
+  D extends number,
+> = BacklinkNav<Ns, Attrs, A, Name, D, "one">;
 
 /**
  * One navigation hop: a targeted ref exposes its target's stamped attrs.
@@ -83,7 +117,15 @@ export type NavStamp<
   D extends number = 6,
 > = A["valueType"] extends ":db.type/ref"
   ? ForwardStamp<Ns, Attrs, A, Name, D> & {
-      readonly reverse: ReverseNav<Ns, Attrs, A, Name, D>;
+      /**
+       * A component ref's backlink is single-valued; every other one is a
+       * collection. An attribute whose componenthood is not known statically
+       * (a plain `boolean`, as {@link AnyAttribute} carries) takes the
+       * many-valued reading — the one that holds for any ref.
+       */
+      readonly reverse: [A["isComponent"]] extends [true]
+        ? ComponentReverseNav<Ns, Attrs, A, Name, D>
+        : ReverseNav<Ns, Attrs, A, Name, D>;
     }
   : StampedAttribute<Ns, Name, A>;
 
@@ -177,6 +219,7 @@ const OWN_ATTR_KEYS = new Set([
   "doc",
   "valueType",
   "optional",
+  "orDefault",
   "select",
   "eq",
   "ne",
@@ -210,28 +253,30 @@ const OWN_ATTR_KEYS = new Set([
 /**
  * `attr.reverse` — the same ref hop, walked backwards. The path keeps its
  * prefix (so a reverse part-way along a path works), the last hop flips to
- * reversed and to cardinality-many, and navigation continues into the ref's
- * *owning* namespace rather than its target.
+ * reversed, and navigation continues into the ref's *owning* namespace rather
+ * than its target.
+ *
+ * The hop's cardinality is the backlink's: many for an ordinary ref (any
+ * number of entities may point at one), **one** for a `:db/isComponent` ref —
+ * the component is owned by its referrer, so at most one entity points at it,
+ * and the peer answers that backlink with a single value.
  */
 const reverseNode = (
   from: PathCarrier,
   ownMap: Record<string, unknown>,
 ): unknown => {
-  if ((from as { isComponent?: boolean }).isComponent === true) {
-    throw new Error(
-      `ramose/query: ${from.ident} is a component ref, whose backlink is single-valued — \`.reverse\` only models the many-valued case`,
-    );
-  }
+  const card: Cardinality =
+    (from as { isComponent?: boolean }).isComponent === true ? "one" : "many";
   const path = pathOfSafe(from);
   const cards = [...cardsOf(from)];
   const revs = [...revsOf(from)];
-  cards[cards.length - 1] = "many";
+  cards[cards.length - 1] = card;
   revs[revs.length - 1] = true;
 
   const node = attachAttrNav({
     ...(from as object),
     ident: from.ident,
-    cardinality: "many" as const,
+    cardinality: card,
     __path: path,
     __cards: cards,
     __revs: revs,

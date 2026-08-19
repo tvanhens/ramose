@@ -227,6 +227,18 @@ describe("masked attributes in pull patterns", () => {
     ).toThrow(/:doc\/audit/);
   });
 
+  test("`.orDefault` does not qualify — the default would stand in for the redaction", () => {
+    const defaulted = { title: Doc.title, audit: Doc.audit.orDefault("—") };
+    expect(() => P.compile(specPolicy, { pulls: [defaulted] })).toThrow(PolicyError);
+    expect(() => P.compile(specPolicy, { pulls: [defaulted] })).toThrow(
+      /must be pulled as `\.optional` — `\.orDefault` does not qualify/,
+    );
+    // …and the unmasked field next to it is still fine defaulted
+    expect(() =>
+      P.compile(specPolicy, { pulls: [{ title: Doc.title.orDefault("untitled") }] }),
+    ).not.toThrow();
+  });
+
   test("an unmasked attribute is fine required", () => {
     expect(() => P.compile(specPolicy, { pulls: [{ title: Doc.title }] })).not.toThrow();
     expect(() => P.checkPulls(specPolicy, [{ title: Doc.title }])).not.toThrow();

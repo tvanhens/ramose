@@ -446,6 +446,12 @@ export interface CompileOptions {
  * `reshapePullResult` drops an entity that is missing a *required* key, so a
  * read-masked attribute pulled as required would delete the row instead of
  * redacting the field. Deploy-time error, not a printed list.
+ *
+ * `.orDefault(v)` is required for this purpose, deliberately: it is not a way
+ * to keep the row. The masked datom comes back absent, so the default would
+ * *stand in* for it — the caller reads `v` as if it were the hidden value,
+ * which is worse than the `undefined` `.optional` gives them. Fail closed:
+ * only `.optional` (or a card-many field, which is `[]`) passes.
  */
 export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
   if (p.maskedReads.size === 0) return;
@@ -460,7 +466,10 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
           : undefined;
       if (ident !== undefined && p.maskedReads.has(ident) && !info.optional && !info.many) {
         fail(
-          `${where}.${key}: ${ident} has a narrowed read rule and must be pulled as \`.optional\``,
+          `${where}.${key}: ${ident} has a narrowed read rule and must be pulled as \`.optional\`` +
+            (info.hasDefault
+              ? " — `.orDefault` does not qualify: it would stand in for the redacted value"
+              : ""),
           ident,
         );
       }

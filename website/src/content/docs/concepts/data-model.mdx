@@ -68,7 +68,7 @@ These ideas — facts instead of rows, a database you can read at any earlier ve
 | tempids resolved in the transactor | `tx.entity()` — the new ids are **not** returned; query for them |
 | `:db.unique/identity`, lookup refs | `{ unique: "identity" }`, `[User.sub, "…"]` |
 | `:db.cardinality/many` | `{ cardinality: "many" }` |
-| `d/pull` | `db.pull({ id }, shape)`, same nesting, `.optional` instead of a `:default` |
+| `d/pull` | `db.pull({ id }, shape)`, same nesting; `.optional` for absence, `.orDefault(v)` for a pull `:default` |
 | Datalog query | a typed builder — `Ramose.query(Issue).where(…).orderBy(…).limit(n).offset(n).select(…)`, run by `db.q` / `db.live`; the predicates are listed under [Filter](/guides/queries/#filter). No aggregates, no rules, no string escape hatch |
 | `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only view |
 | transaction entity | `report.txEid` |

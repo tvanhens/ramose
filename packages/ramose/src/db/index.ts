@@ -35,6 +35,8 @@ export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
 export { not, or, query } from "./NavQuery.ts";
+// `Ramose.all(Todo)` — the wildcard pull, as a select shape or a pull pattern
+export { all } from "./Pull.ts";
 export type {
   EidLike,
   NavQuery,
@@ -67,7 +69,13 @@ export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 // the pattern-side types too, so `ramose/react`'s `usePull` can accept
 // exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)
-export type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
+export type {
+  AllRow,
+  AllShape,
+  IdentPullPattern,
+  Pull,
+  ValidatePull,
+} from "./Pull.ts";
 export type { Entity, Tx } from "./Tx.ts";
 
 // ── errors ─────────────────────────────────────────────────────────────────

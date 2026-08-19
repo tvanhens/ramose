@@ -5,8 +5,8 @@ import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import type { CatalogIdent, ReadAtIdent } from "./idents.ts";
-import type { AttributeMap } from "./Namespace.ts";
+import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
+import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
 
@@ -41,6 +41,18 @@ export interface PullOptional<F = unknown> {
     : never;
 }
 
+/**
+ * A card-one scalar with a stand-in for "no datom": the field reads as `value`
+ * when the entity has none. It lowers to the pull-phase `:default`, so the
+ * substitution is the *peer's* — the row is neither dropped nor invented, and
+ * no datom is written. The result type is the attribute's, never `| undefined`.
+ */
+export interface PullDefault<F = unknown> {
+  readonly _tag: "default";
+  readonly field: F;
+  readonly value: unknown;
+}
+
 export interface PullNested<A = unknown, P = unknown> {
   readonly _tag: "nested";
   readonly attr: A;
@@ -67,6 +79,30 @@ export const optional = <const F>(field: F): PullOptional<F> => ({
   select: ((pattern: Record<string, unknown>) =>
     optional(nested(field as never, pattern))) as unknown as PullOptional<F>["select"],
 });
+
+/**
+ * Internal: implements `attr.orDefault(value)`. The value travels verbatim —
+ * `null` is a default like any other, which is why lowering asks *whether*
+ * there is one rather than comparing against `undefined`.
+ *
+ * `undefined` is the one value that cannot be a default: it does not survive
+ * the JSON the spec travels as (`{default: undefined}` is dropped) and the
+ * peer's own gate is `spec.default !== undefined`, so the field would read as
+ * `undefined` while its type promised a value. That is `.optional`, spelled
+ * wrong — so it is an error rather than a silent lie.
+ */
+export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => {
+  if (value === undefined) {
+    throw new Error(
+      "ramose/query: .orDefault(undefined) is not a default — the peer would read the field as missing anyway. Use `.optional` for a field that may be absent.",
+    );
+  }
+  return {
+    _tag: "default",
+    field,
+    value,
+  };
+};
 
 /**
  * Internal: nested pull field. Prefer `attr.select({ … })` on stamped attrs;
@@ -109,11 +145,53 @@ export const pick = <
   };
 };
 
+// ── the wildcard ───────────────────────────────────────────────────────────
+
+/**
+ * `Ramose.all(Todo)` — the peer's wildcard pull (`[*]`), as a client term.
+ *
+ * It is **not** a shape the client expands into a map of every attribute:
+ * lowering emits the literal `["*"]` and the peer answers it, so what comes
+ * back is every datom the entity carries, keyed by ident (`":todo/title"`),
+ * refs as `{":db/id": n}` and cardinality-many attributes as arrays.
+ *
+ * The namespace is what the *type* is read against — see {@link AllRow} — and
+ * what the query is already scoped to; the value it carries is unused at
+ * runtime.
+ */
+export interface AllShape<N extends AnyNamespace = AnyNamespace> {
+  readonly _tag: "all";
+  readonly ns: N;
+}
+
+/**
+ * Every attribute of the matched entity: `query(Todo).select(all(Todo))`, or
+ * `db.pull(eid, all(Todo))`. The same wildcard `db.pull(eid, ["*"])` asks for,
+ * with the namespace's idents typed.
+ */
+export const all = <const N extends AnyNamespace>(ns: N): AllShape<N> => ({
+  _tag: "all",
+  ns,
+});
+
+export const isAllShape = (value: unknown): value is AllShape =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "all" &&
+  "ns" in value;
+
 export const isPullOptional = (value: unknown): value is PullOptional =>
   typeof value === "object" &&
   value !== null &&
   (value as { _tag?: unknown })._tag === "optional" &&
   "field" in value;
+
+export const isPullDefault = (value: unknown): value is PullDefault =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "default" &&
+  "field" in value &&
+  "value" in value;
 
 export const isPullNested = (value: unknown): value is PullNested =>
   typeof value === "object" &&
@@ -143,7 +221,10 @@ type NestedResult<A, P> = A extends { readonly cardinality: "many" }
   ? readonly FieldsResult<P>[]
   : FieldsResult<P>;
 
-type FieldResult<F> = F extends PullOptional<infer Inner>
+type FieldResult<F> = F extends PullDefault<infer Inner>
+  ? // a default stands in for the missing datom, so the field always reads
+    FieldResult<Inner>
+  : F extends PullOptional<infer Inner>
   ? FieldResult<Inner> | undefined
   : F extends PullNested<infer A, infer P>
     ? NestedResult<A, P>
@@ -186,6 +267,29 @@ export type IdentPullIdents<
   P extends IdentPullPattern<C>,
 > = IdentOfPull<C, P[number]>;
 
+/**
+ * One value in a pull result, from the attribute that carries it.
+ *
+ * A ref reads as the entity it points at — `{":db/id": n}` — not as the
+ * number a `:db.type/ref` datom stores: with no nested pattern to expand, the
+ * engine answers a ref (wildcard or named) with a one-key map. That is why
+ * this is not `ReadAtIdent`, which is the *write* value of the same ident.
+ */
+type PullValue<A> = A extends { readonly cardinality: "many" }
+  ? readonly PullValueOne<A>[]
+  : PullValueOne<A>;
+
+type PullValueOne<A> = A extends { readonly valueType: ":db.type/ref" }
+  ? { readonly ":db/id": number }
+  : A extends { readonly schema: infer S }
+    ? SchemaType<S>
+    : never;
+
+/** {@link PullValue} at one catalog ident. */
+type PullReadAtIdent<C extends AnyCatalog, I extends string> = PullValue<
+  AttrAtIdent<C, I>
+>;
+
 export type IdentPullResult<
   C extends AnyCatalog,
   P extends IdentPullPattern<C>,
@@ -193,16 +297,36 @@ export type IdentPullResult<
   ? {
       readonly ":db/id": number;
     } & {
-      readonly [I in CatalogIdent<C>]?: ReadAtIdent<C, I>;
+      readonly [I in CatalogIdent<C>]?: PullReadAtIdent<C, I>;
     }
   : {
       readonly ":db/id"?: number;
     } & {
-      readonly [I in IdentPullIdents<C, P> & CatalogIdent<C>]?: ReadAtIdent<
+      readonly [I in IdentPullIdents<C, P> & CatalogIdent<C>]?: PullReadAtIdent<
         C,
         I
       >;
     };
+
+/**
+ * A wildcard row, read against one namespace: `:db/id` — the wildcard always
+ * carries it — and every `:ns/attr` of `N`, each optional, because a datom the
+ * entity does not have is a key the map does not have.
+ *
+ * **A lower bound, not an exact type.** The runtime map is a superset: query
+ * scope is "at least one `:ns/*` datom", so a matched entity may carry any
+ * other namespace's attributes too, and the peer returns those keys as well.
+ * Typing them would mean naming a catalog, which a namespace-scoped query
+ * does not have — so the keys named here are the ones you may rely on.
+ */
+export type AllRow<N extends AnyNamespace> = {
+  readonly ":db/id": number;
+} & {
+  readonly [A in keyof N["attributes"] & string as Ident<
+    N["ns"],
+    A
+  >]?: PullValue<N["attributes"][A]>;
+};
 
 // ── catalog constraint ─────────────────────────────────────────────────────
 
@@ -213,6 +337,8 @@ export type IdentPullResult<
  * those blow the client type (`Type instantiation is excessively deep`).
  */
 type IdentsIn<P> = [P] extends [PullOptional<infer I>]
+  ? IdentsIn<I>
+  : [P] extends [PullDefault<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullNested<infer A, infer Inner>]
     ? IdentsIn<A> | IdentsIn<Inner>
@@ -242,24 +368,34 @@ type IdentsInFields<F> = F extends object
 /**
  * `P` when every named ident is in the catalog (or `*`); otherwise a
  * string literal so the call is a type error.
+ *
+ * {@link AllShape} names a whole namespace rather than fields, so it is
+ * checked the same way, against the idents that namespace stamps.
  */
-export type ValidatePull<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
-  CatalogIdent<C> | "*",
+export type ValidatePull<C extends AnyCatalog, P> = [P] extends [
+  { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
 ]
-  ? P
-  : "unknown attribute in pull pattern";
+  ? [IdentsIn<A>] extends [CatalogIdent<C>]
+    ? P
+    : "namespace is not in this database's catalog"
+  : [IdentsIn<P>] extends [CatalogIdent<C> | "*"]
+    ? P
+    : "unknown attribute in pull pattern";
 
 /**
  * Inferred result of `eid.pull(pattern)`. Fields object → caller
  * keys, required vs optional honored. Array → ident keys, all optional.
+ * `all(N)` → the wildcard map, keyed by `N`'s idents ({@link AllRow}).
  */
 export type Pull<C extends AnyCatalog, P> = [P] extends [
-  readonly unknown[],
+  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
 ]
-  ? P extends IdentPullPattern<C>
-    ? IdentPullResult<C, P>
-    : never
-  : StructPullResult<P>;
+  ? AllRow<N>
+  : [P] extends [readonly unknown[]]
+    ? P extends IdentPullPattern<C>
+      ? IdentPullResult<C, P>
+      : never
+    : StructPullResult<P>;
 
 // ── wire lowering ──────────────────────────────────────────────────────────
 
@@ -413,11 +549,17 @@ const isElementCarrier = (value: unknown): boolean =>
   value !== null &&
   typeof (value as { __each?: unknown }).__each === "string";
 
-/** Inspect a literate pull field: optional / many / nested pattern. */
+/** Inspect a literate pull field: optional / default / many / nested pattern. */
 export const inspectPullField = (
   field: unknown,
 ): {
   readonly optional: boolean;
+  /**
+   * The field carries a stand-in for the missing datom. Separate from
+   * {@link defaultValue} so `null` — a perfectly good default — is one.
+   */
+  readonly hasDefault: boolean;
+  readonly defaultValue: unknown;
   readonly many: boolean;
   readonly reverse: boolean;
   readonly nestedPattern: unknown | undefined;
@@ -425,9 +567,15 @@ export const inspectPullField = (
   readonly attr: unknown;
 } => {
   let optional = false;
+  let hasDefault = false;
+  let defaultValue: unknown;
   let current = field;
   if (isPullOptional(current)) {
     optional = true;
+    current = current.field;
+  } else if (isPullDefault(current)) {
+    hasDefault = true;
+    defaultValue = current.value;
     current = current.field;
   }
   if (isElementCarrier(current)) {
@@ -445,6 +593,8 @@ export const inspectPullField = (
     }
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: true,
       reverse: false,
       nestedPattern: undefined,
@@ -455,6 +605,8 @@ export const inspectPullField = (
   if (isPullNested(current)) {
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.pattern,
@@ -465,6 +617,8 @@ export const inspectPullField = (
   if (isSelectNestedField(current)) {
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.shape,
@@ -474,6 +628,8 @@ export const inspectPullField = (
   }
   return {
     optional,
+    hasDefault,
+    defaultValue,
     many: cardinalityOf(current) === "many",
     reverse: isReverseCarrier(current),
     nestedPattern: undefined,
@@ -495,6 +651,13 @@ const constraintFields = (
         ...(c.limit !== undefined ? { limit: c.limit } : {}),
       };
 
+/** `.orDefault(v)` is the pull-phase `:default` — the peer's substitution. */
+const defaultField = (info: {
+  readonly hasDefault: boolean;
+  readonly defaultValue: unknown;
+}): Record<string, unknown> =>
+  info.hasDefault ? { default: info.defaultValue } : {};
+
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
   assertDirectField(as, info.attr, info.nestedPattern !== undefined);
@@ -504,13 +667,15 @@ const lowerField = (as: string, field: unknown): unknown => {
       attr: identOf(info.attr),
       reverse: info.reverse,
       as,
+      ...defaultField(info),
       ...constraintFields(info.constraints),
       sub: lowerLiterateMap(info.nestedPattern),
     };
   }
   if (info.reverse) {
-    // the peer answers a bare backlink with `{":db/id": n}` objects, which is
-    // neither a scalar nor the selected shape — ask for the shape you want
+    // the peer answers a bare backlink with `{":db/id": n}` — one of them for
+    // a component ref, an array of them otherwise — which is neither a scalar
+    // nor the selected shape, so ask for the shape you want
     throw new Error(
       `ramose/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
@@ -521,6 +686,7 @@ const lowerField = (as: string, field: unknown): unknown => {
     attr: identOf(info.attr),
     reverse: false,
     as,
+    ...defaultField(info),
     ...constraintFields(info.constraints),
   };
 };
@@ -540,8 +706,12 @@ const lowerIdentPull = (pattern: readonly unknown[]): unknown[] =>
 /**
  * Lower a literate pull map (or ident-keyed array escape) to a peer pull
  * pattern. Literate maps become AST specs with `:as` / nested `sub`.
+ *
+ * `all(N)` is the peer's own wildcard, so it lowers to exactly that — the
+ * client never expands it into a map of the namespace's attributes.
  */
 export const lowerPullPattern = (pattern: unknown): unknown[] => {
+  if (isAllShape(pattern)) return ["*"];
   if (Array.isArray(pattern)) return lowerIdentPull(pattern);
   return lowerLiterateMap(pattern);
 };
@@ -550,15 +720,17 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  * Enforce required vs optional so the TypeScript type matches the value.
  *
  * A bare attr is required: missing / null / undefined drops the entity
- * (`null` at the top level). `.optional` may be missing (`undefined`).
+ * (`null` at the top level). `.optional` may be missing (`undefined`), and
+ * `.orDefault(v)` reads as `v` (the peer already substituted it; this is the
+ * same answer for a result that arrived without one).
  * Required `.select` drops the parent when the ref is missing or the nested
  * object fails *its* required fields. Cardinality-many `.select` filters the
- * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
- * the peer returned them (all optional in the type).
+ * array (empty `[]` is still a valid many). Ident-keyed arrays and the
+ * wildcard are left as the peer returned them (all optional in the type).
  */
 export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
   if (result === null || result === undefined) return null;
-  if (Array.isArray(pattern)) return result;
+  if (isAllShape(pattern) || Array.isArray(pattern)) return result;
   const filtered = filterPull(pattern, result);
   return filtered === undefined ? null : filtered;
 };
@@ -576,7 +748,8 @@ const isPresent = (value: unknown): boolean =>
  */
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
-  if (Array.isArray(pattern)) return result;
+  // a wildcard row has no required field to fail: every key is optional
+  if (isAllShape(pattern) || Array.isArray(pattern)) return result;
   if (typeof result !== "object") return undefined;
 
   const fields = fieldsOf(pattern);
@@ -623,6 +796,13 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     }
 
     if (missing) {
+      // the peer already substituted the default; this is the same answer for
+      // a result that reached here without one (`db.pull` of a stale cache,
+      // an ident-keyed reply reshaped by hand)
+      if (info.hasDefault) {
+        out[key] = info.defaultValue;
+        continue;
+      }
       if (info.optional) {
         out[key] = undefined;
         continue;

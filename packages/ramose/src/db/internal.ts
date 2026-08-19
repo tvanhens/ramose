@@ -22,20 +22,27 @@ export * from "./Namespace.ts";
 export * from "./NavQuery.ts";
 export * from "./Eid.ts";
 export {
+  type AllRow,
+  type AllShape,
   type AttrPull,
   type IdentPullAttr,
   type IdentPullIdents,
   type IdentPullPattern,
   type IdentPullResult,
   type Pull,
+  type PullDefault,
   type PullNested,
   type PullOptional,
   type StructPullResult,
   type ValidatePull,
+  all,
+  isAllShape,
+  isPullDefault,
   isPullNested,
   isPullOptional,
   lowerPullPattern,
   pick,
+  pullDefault,
   reshapePullResult,
 } from "./Pull.ts";
 export * as Policy from "./Policy.ts";

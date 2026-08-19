@@ -14,6 +14,7 @@ import {
   type Equal,
   type Expect,
   Namespace,
+  all,
   pick,
 } from "../../src/db/internal.ts";
 
@@ -44,6 +45,17 @@ const maybe = db.pull(eid, {
 type MaybePull = NonNullable<Effect.Success<typeof maybe>>;
 type _optName = Expect<Equal<MaybePull["name"], string | undefined>>;
 type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
+
+/** `.orDefault` is required-shaped: the peer substitutes, so it always reads. */
+const defaulted = db.pull(eid, {
+  name: User.name,
+  age: User.age.orDefault(0),
+});
+type DefaultedPull = NonNullable<Effect.Success<typeof defaulted>>;
+type _defAge = Expect<Equal<DefaultedPull["age"], number>>;
+
+// @ts-expect-error `:user/age` is a number attribute, and so is its stand-in
+db.pull(eid, { age: User.age.orDefault("none") });
 
 // ── .select nest: many → array, one → object ───────────────────────────────
 
@@ -153,6 +165,43 @@ type Soup = NonNullable<Effect.Success<typeof soup>>;
 type _soupName = Expect<Equal<Soup[":user/name"], string | undefined>>;
 type _soupAge = Expect<Equal<Soup[":user/age"], number | undefined>>;
 
+/** A ref with no nested pattern reads as the entity: `{":db/id": n}`. */
+const refSoup = db.pull(eid, [User.bestFriend, ":user/friends"] as const);
+type RefSoup = NonNullable<Effect.Success<typeof refSoup>>;
+type _refSoupOne = Expect<
+  Equal<RefSoup[":user/bestFriend"], { readonly ":db/id": number } | undefined>
+>;
+type _refSoupMany = Expect<
+  Equal<
+    RefSoup[":user/friends"],
+    readonly { readonly ":db/id": number }[] | undefined
+  >
+>;
+
+// ── `all(N)`: the same wildcard, with the namespace's idents typed ──────────
+
+const wild = db.pull(eid, ["*"] as const);
+type Wild = NonNullable<Effect.Success<typeof wild>>;
+/** the wildcard always carries `:db/id`; every catalog ident is optional */
+type _wildId = Expect<Equal<Wild[":db/id"], number>>;
+type _wildName = Expect<Equal<Wild[":user/name"], string | undefined>>;
+type _wildTitle = Expect<Equal<Wild[":movie/title"], string | undefined>>;
+
+const everything = db.pull(eid, all(User));
+type EverythingPull = NonNullable<Effect.Success<typeof everything>>;
+type _everythingId = Expect<Equal<EverythingPull[":db/id"], number>>;
+type _everythingName = Expect<
+  Equal<EverythingPull[":user/name"], string | undefined>
+>;
+/** `all(User)` names one namespace, so the catalog's other idents are not keys */
+type _everythingNoMovie = Expect<
+  Equal<":movie/title" extends keyof EverythingPull ? true : false, false>
+>;
+/** the two agree where they overlap — it is the one wildcard the peer answers */
+type _everythingAgrees = Expect<
+  Equal<EverythingPull[":user/friends"], Wild[":user/friends"]>
+>;
+
 // ── unknown attr is a type error ───────────────────────────────────────────
 
 // @ts-expect-error unknown attr on the namespace
@@ -176,4 +225,7 @@ db.pull(eid, {
 const Other = Namespace("tag", { label: Attr(Schema.String) });
 // @ts-expect-error attr from a catalog that is not on this client
 db.pull(eid, { label: Other.label });
+
+// @ts-expect-error the wildcard of a namespace that is not in this catalog
+db.pull(eid, all(Other));
 

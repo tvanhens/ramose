@@ -149,6 +149,7 @@ describe("the `/db` barrel's public names", () => {
         "query",
         "or",
         "not",
+        "all",
         // connecting
         "connect",
         "layer",

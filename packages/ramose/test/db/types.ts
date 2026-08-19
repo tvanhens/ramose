@@ -124,6 +124,27 @@ type _overrideVt = Expect<
   Equal<(typeof Typed)["override"]["valueType"], ":db.type/uuid">
 >;
 
+/**
+ * Componenthood is inferred as a *type*, not just a flag: `attr.reverse` reads
+ * it to decide whether the backlink is one entity or a collection.
+ */
+const Owned = Namespace("owned", {
+  part: Attr(Ref, { isComponent: true }),
+  peer: Attr(Ref, { cardinality: "many" }),
+  plain: Attr(Ref),
+  label: Attr(Schema.String),
+});
+type _componentTrue = Expect<Equal<(typeof Owned)["part"]["isComponent"], true>>;
+type _componentFalse = Expect<Equal<(typeof Owned)["peer"]["isComponent"], false>>;
+type _componentDefault = Expect<
+  Equal<(typeof Owned)["plain"]["isComponent"], false>
+>;
+type _componentScalar = Expect<
+  Equal<(typeof Owned)["label"]["isComponent"], false>
+>;
+/** an attribute whose componenthood is not statically known stays `boolean` */
+type _componentAny = Expect<Equal<AnyAttribute["isComponent"], boolean>>;
+
 // .select is callable on inferred refs; a non-ref is a type error
 const _refSelect = Typed.r.select({ s: Typed.s });
 void _refSelect;
