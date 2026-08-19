@@ -352,6 +352,19 @@ for (const page of pages) {
 
   // CODE provenance
   if (run("code")) {
+    // `Cloudflare.Worker`'s `main` is a filesystem path, not a module
+    // specifier: a bare "@ramose/worker" resolves to nothing, and the failure
+    // is silent — the server reports ready and every request hangs forever.
+    // This spelling shipped in the docs for months. A block may still show it
+    // as a counter-example, but only alongside the spelling that works.
+    for (const b of blocks) {
+      if (/main:\s*["'`]@ramose\/worker["'`]/.test(b.code) &&
+          !b.code.includes("import.meta.resolve")) {
+        add("ERROR", "code", page.slug,
+          'main: "@ramose/worker" resolves to nothing and hangs silently',
+          'use import.meta.resolve("@ramose/worker"), or show both to contrast them');
+      }
+    }
     for (const b of blocks) {
       const title = b.info.match(/title="([^"]+)"/)?.[1];
       if (!title) continue;
