@@ -1,7 +1,7 @@
 # Cursor Cloud environment notes
 
 Non-obvious setup and runtime caveats for Cursor Cloud Agents working on Ramose.
-Standard commands live in `README.md` and the `scripts` block of `package.json`;
+Standard commands live in `CONTRIBUTING.md` and the `scripts` block of `package.json`;
 this file is only the harness-specific detail. The update script has already
 installed Bun and run `bun install`, so dependencies are ready when an agent starts.
 
@@ -38,7 +38,7 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
   - Full command:
     `CI=1 ALCHEMY_STATE=local CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=x bun alchemy dev examples/todos/alchemy.run.ts`
 - **Port gotcha:** this Alchemy version serves the peer on **`http://localhost:1337`**,
-  not `8787` as written in `README.md`/docs. Point the UI and e2e tests at 1337:
+  not `8787` as some older notes say. Point the UI and e2e tests at 1337:
   `VITE_RAMOSE_URL=http://localhost:1337 bunx vite examples/todos` (UI on `:5173`).
 - HTTP API routes are prefixed per database: `POST /db/<name>/transact`,
   `POST /db/<name>/query`, `POST /db/<name>/pull`, `GET /db/<name>/info`. There is a

@@ -1,10 +1,11 @@
 # Contributing to Ramose
 
 Development notes for people changing Ramose itself. Consumer docs live at
-[ramose.ai](https://ramose.ai)
-(source in `website/`); the short path is [`README.md`](README.md). In-repo
-design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
-`RUNBOOK.md`).
+[ramose.ai](https://ramose.ai) (source in `website/`). In-repo design notes stay
+in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`, `RUNBOOK.md`,
+`TX_WRITE_PERF.md`); recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
+brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
+[`website/public/brand/`](website/public/brand/).
 
 ## Local checks
 
@@ -12,11 +13,14 @@ design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
 bun install
 bun run typecheck
 bun test                        # unit/integration (~390 tests, no services)
+bun run dev:todos               # local peer on :1337, todos app on :5173
+bun run dev:reef                # the Reef example instead
 ```
 
-Local peer + UI (miniflare): see [`README.md`](README.md). Cursor Cloud Agents
-should also read [`.cursor/CLOUD.md`](.cursor/CLOUD.md) for harness-specific
-port and credential caveats.
+`dev:*` runs the whole stack under miniflare with placeholder Cloudflare
+credentials — nothing is uploaded. Cursor Cloud Agents should also read
+[`.cursor/CLOUD.md`](.cursor/CLOUD.md) for harness-specific port and credential
+caveats.
 
 ## End-to-end tests
 
@@ -327,11 +331,3 @@ trusted publishing as soon as the packages exist and delete the token.
 
 [trusted-publishing]: https://docs.npmjs.com/trusted-publishers
 [access-tokens]: https://docs.npmjs.com/about-access-tokens
-
-## Contributor License Agreement
-
-Outside contributions require signing [CLA.md](CLA.md), enforced by
-`.github/workflows/cla.yml`. It grants the right to license contributions under
-terms of the maintainer's choosing, which is what keeps relicensing possible
-later without tracking down every past contributor. See the workflow header for
-the one-time setup (a signatures repo and the `CLA_SIGNATURES_TOKEN` secret).
