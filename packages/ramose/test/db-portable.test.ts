@@ -5,9 +5,8 @@
  * Three guards, all on the *whole transitive import graph* of the barrel:
  *
  *   1. nothing reaches `alchemy` (the deploy engine — `alchemy`,
- *      `alchemy/RuntimeContext`, `alchemy/Binding`, …). That import is what
- *      forced the old `@ramose/alchemy/schema` Vite alias, before the packages
- *      were collapsed into one.
+ *      `alchemy/RuntimeContext`, `alchemy/Binding`, …). Such an import would
+ *      force every browser build to carry a bundler alias.
  *   2. nothing reaches the engine barrel (`src/internal/core/index.ts`). Deep
  *      imports (`internal/core/json.ts`) are how the codec is taken; the barrel
  *      drags the engine — segment trees, the query planner, the store — into a

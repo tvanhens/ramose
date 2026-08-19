@@ -127,10 +127,7 @@ One package publishes to npm: `ramose`, from `packages/ramose`. Its five
 consumer-facing entries — `ramose`, `ramose/db`, `ramose/worker`,
 `ramose/react`, `ramose/better-auth` — are subpath exports of that one
 manifest, and the engine (`core`, `storage`, `transactor`, `replica`) lives
-under `src/internal/` and is not published under any other name. Until 0.2.0
-these were eight `@ramose`-scoped packages released in lockstep; collapsing
-them is what removed the pinning, ordering and workspace-protocol machinery the
-rest of this section used to describe.
+under `src/internal/` and is not published under any other name.
 
 The private workspace root carries the same version, and
 `scripts/check-release.ts` fails the release if the two drift.
@@ -270,11 +267,9 @@ debugging:
 | `scripts/check-release.ts` | verify the versions agree, the tag matches, `exports` and `files` resolve |
 | `scripts/publish-packages.ts` | publish, skipping a version already on the registry |
 
-There used to be a `prepare-publish.ts` here, rewriting the internal
-`workspace:*` ranges `npm publish` (unlike `bun publish`) ships verbatim and
-npm then cannot resolve. With one package there are no internal ranges left, so
-it is deleted; `check-release.ts` fails the release if a `workspace:` range ever
-reappears, which keeps the guarantee without the pin/restore dance.
+`check-release.ts` fails the release if a `workspace:` range appears in the
+published manifest: `npm publish` (unlike `bun publish`) ships those verbatim
+and npm cannot resolve them.
 
 ### npm authentication
 

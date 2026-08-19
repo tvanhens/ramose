@@ -4,8 +4,8 @@ Two of the four items here are done. The repository is public and the package is
 on npm, so the "not published yet" hedges and the `git clone`-only install path
 are gone from the site; `getting-started/first-app.mdx` was folded into the
 Quickstart, which now builds an app from an empty folder against the published
-package. As of 0.2.0 that package is a single `ramose` rather than eight
-`@ramose`-scoped ones, so every install line on the site is one `bun add`.
+package. It is a single `ramose` package, so every install line on the site
+is one `bun add`.
 
 ```sh
 grep -rni "not on npm yet\|not published yet\|unpublished" website/src/content/docs

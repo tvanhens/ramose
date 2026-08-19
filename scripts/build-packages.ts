@@ -5,8 +5,7 @@
  *
  * There is one package and therefore no build order: `tsc` compiles the whole
  * `src` tree — the four public entries, the `ramose/worker` script and the
- * engine under `src/internal/` — in a single pass, so what used to be a
- * topological sort of eight manifests is now one invocation.
+ * engine under `src/internal/` — in a single pass.
  *
  * The staged LICENSE/NOTICE are generated artifacts — gitignored and rewritten
  * on every build, so the root LICENSE stays the single source of truth. The
