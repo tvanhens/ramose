@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   type HitNode,
   afterCardBeforeId,
+  applyPendingMove,
   dropTargetFromStack,
   homeDropTarget,
   insertIndex,
+  pendingMoveSettled,
   pinScrollLeft,
   pinWindowScroll,
   rankForDrop,
@@ -67,6 +69,34 @@ describe("insertIndex / homeDropTarget", () => {
     expect(homeDropTarget(rows, 1)).toEqual({ status: "todo", beforeId: 2 });
     expect(homeDropTarget(rows, 2)).toEqual({ status: "todo", beforeId: undefined });
     expect(homeDropTarget(rows, 3)).toEqual({ status: "doing", beforeId: undefined });
+  });
+});
+
+describe("applyPendingMove", () => {
+  test("keeps a dropped card at the insert index until live rows match", () => {
+    const pending = { id: 1, status: "doing" as const, beforeId: undefined };
+    expect(pendingMoveSettled(rows, pending)).toBe(false);
+    expect(applyPendingMove(rows, pending).map((r) => [r.id, r.status])).toEqual([
+      [2, "todo"],
+      [3, "doing"],
+      [1, "doing"],
+    ]);
+  });
+
+  test("same-column reorder stays at the new index while rank is stale", () => {
+    const pending = { id: 1, status: "todo" as const, beforeId: undefined };
+    expect(applyPendingMove(rows, pending).map((r) => r.id)).toEqual([2, 1, 3]);
+  });
+
+  test("hands live rows through once status and rank match", () => {
+    const moved = [
+      { id: 2, status: "todo" as const, rank: RANK_GAP },
+      { id: 3, status: "doing" as const, rank: RANK_GAP },
+      { id: 1, status: "doing" as const, rank: 2 * RANK_GAP },
+    ];
+    const pending = { id: 1, status: "doing" as const, beforeId: undefined };
+    expect(pendingMoveSettled(moved, pending)).toBe(true);
+    expect(applyPendingMove(moved, pending)).toEqual(moved);
   });
 });
 

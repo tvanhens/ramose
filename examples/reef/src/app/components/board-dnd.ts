@@ -78,6 +78,59 @@ export const rankForDrop = (
   return rankBetween(column[i - 1]?.rank, column[i]?.rank);
 };
 
+/** A committed drop that live `rows` have not yet reflected. */
+export interface PendingMove {
+  readonly id: number;
+  readonly status: Status;
+  readonly beforeId: number | undefined;
+}
+
+const ranksClose = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+
+/** True once the live row already sits at the drop's status + rank. */
+export const pendingMoveSettled = (
+  rows: readonly { id: number; status: string; rank: number }[],
+  pending: PendingMove,
+): boolean => {
+  const row = rows.find((r) => r.id === pending.id);
+  if (row === undefined) return true;
+  if (row.status !== pending.status) return false;
+  return ranksClose(
+    row.rank,
+    rankForDrop(rows, pending.id, pending.status, pending.beforeId),
+  );
+};
+
+/**
+ * Keep a just-dropped card at its insert point until `useLive` catches up.
+ * Clearing drag state first would flash the card back in its old column.
+ */
+export const applyPendingMove = <T extends { id: number; status: string; rank: number }>(
+  rows: readonly T[],
+  pending: PendingMove | null,
+): T[] => {
+  if (pending === null) return [...rows];
+  const row = rows.find((r) => r.id === pending.id);
+  if (row === undefined || pendingMoveSettled(rows, pending)) return [...rows];
+  const rest = rows.filter((r) => r.id !== pending.id);
+  const dest = rest.filter((r) => r.status === pending.status);
+  const at = insertIndex(
+    dest.map((r) => r.id),
+    pending.beforeId,
+  );
+  const moved = { ...row, status: pending.status };
+  const out: T[] = [];
+  for (const status of STATUSES) {
+    const col = rest.filter((r) => r.status === status);
+    if (status === pending.status) {
+      out.push(...col.slice(0, at), moved, ...col.slice(at));
+    } else {
+      out.push(...col);
+    }
+  }
+  return out;
+};
+
 /**
  * Walk `elementsFromPoint` (or a test stack) and pick a column / insert-before
  * card. The dragged card itself is skipped so the column underneath still hits.

@@ -1,8 +1,8 @@
 /**
  * The kanban board. Rows come straight from one `useLive(db, boardQuery)`
  * read (already rank-sorted); a drag writes exactly two datoms (status +
- * rank) and the board re-renders when the peer's basis tick comes back —
- * there is no local reordering state to reconcile.
+ * rank). Until that overlay lands, a just-dropped card is pinned at the
+ * insert point so it does not flash back in its old column.
  *
  * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
  * hold-still then move on a `pointerType: "touch" | "pen"` pointer does
@@ -13,7 +13,7 @@
  */
 
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BoardRow } from "../../domain/queries.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
@@ -22,13 +22,16 @@ import {
   TOUCH_CANCEL_PX,
   TOUCH_HOLD_MS,
   afterCardBeforeId,
+  applyPendingMove,
   dropTargetFromPoint,
   homeDropTarget,
   insertIndex,
   lockPageScroll,
+  pendingMoveSettled,
   pinScrollLeft,
   rankForDrop,
   type DropTarget,
+  type PendingMove,
 } from "./board-dnd.ts";
 
 export const COLUMN_TINTS: Record<Status, string> = {
@@ -283,6 +286,7 @@ export const Board = ({
 }) => {
   const [dragId, setDragId] = useState<number | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
+  const [pending, setPending] = useState<PendingMove | null>(null);
   const [slotHeight, setSlotHeight] = useState(72);
   const [ghost, setGhost] = useState<{
     title: string;
@@ -339,6 +343,7 @@ export const Board = ({
   const lift = (row: BoardRow, el: HTMLElement) => {
     const box = el.getBoundingClientRect();
     setSlotHeight(Math.max(56, Math.round(box.height)));
+    setPending(null);
     setOver(homeDropTarget(rowsRef.current, row.id));
     setDragId(row.id);
   };
@@ -347,8 +352,22 @@ export const Board = ({
     const id = dragIdRef.current;
     if (id === null) return;
     onMoveRef.current(id, status, rankForDrop(rowsRef.current, id, status, beforeId));
+    setPending({ id, status, beforeId });
     resetDrag();
   };
+
+  const displayRows = useMemo(() => applyPendingMove(rows, pending), [rows, pending]);
+
+  useEffect(() => {
+    if (pending === null) return;
+    if (pendingMoveSettled(rows, pending)) setPending(null);
+  }, [rows, pending]);
+
+  useEffect(() => {
+    if (pending === null) return;
+    const timer = window.setTimeout(() => setPending(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
 
   const drop = (status: Status, before: BoardRow | undefined) => {
     commitDrop(status, before?.id);
@@ -476,7 +495,7 @@ export const Board = ({
         {...stylex.props(styles.board, dragging && styles.boardDragging)}
       >
       {STATUSES.map((status) => {
-        const column = rows.filter((r) => r.status === status);
+        const column = displayRows.filter((r) => r.status === status);
         const visible = dragging ? column.filter((r) => r.id !== dragId) : column;
         const hovering = over?.status === status && dragging;
         const slotAt = hovering ? insertIndex(visible.map((r) => r.id), over.beforeId) : -1;
