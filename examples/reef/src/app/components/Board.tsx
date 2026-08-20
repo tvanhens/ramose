@@ -1,8 +1,10 @@
 /**
  * The kanban board. Rows come straight from one `useLive(db, boardQuery)`
- * read (already rank-sorted); a drag writes exactly two datoms (status +
- * rank). Until that overlay lands, a just-dropped card is pinned at the
- * insert point so it does not flash back in its old column.
+ * read (already rank-sorted) against the session overlay. A drag writes
+ * exactly two datoms (status + rank); the overlay applies them locally
+ * and the standing query re-runs. Until that apply is in `rows`, a
+ * just-dropped card is pinned at the insert point so clearing drag
+ * state does not flash it back in its old column.
  *
  * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
  * hold-still then move on a `pointerType: "touch" | "pen"` pointer does

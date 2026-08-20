@@ -28,17 +28,17 @@ The five numbered arrows are the five steps below, in the same order.
 
 Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of changes; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). Here is its journey:
 
-1. Your app sends the write over HTTPS to **the Ramose server** — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)).
-2. The server verifies the sign-in token, then checks the rules in the policy (the writer checks them again before committing). A viewer moving a card is refused here; nothing else happens.
+1. The writing tab applies the change on its local overlay and the live query re-runs there. Then the app sends the write over HTTPS to **the Ramose server** — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)).
+2. The server verifies the sign-in token, then checks the rules in the policy (the writer checks them again before committing). A viewer moving a card is refused here; the overlay drops the pending layer and the card snaps back.
 3. The server hands the write to **the writer** — the one thing per database that commits writes, in order ([glossary](/concepts/glossary/#writer)). The writer stores it before answering, the database's **version number `t`** goes up by one ([glossary](/concepts/glossary/#version-number)), and your app gets `report.t` back.
 4. The read copies learn the new version.
-5. Every open tab is told within about a second, and every **live query** on those pages re-runs and hands the screen new rows ([glossary](/concepts/glossary/#live-query)). Nobody subscribed to anything.
+5. Other open tabs receive a filtered transaction within about a second, and every **live query** on those pages re-runs locally ([glossary](/concepts/glossary/#live-query)). Nobody subscribed to anything. Pinned `asOf` still reads the server.
 
 ## A read, step by step
 
-1. A query runs on a **read copy** — a copy of the data near your users, kept current by the writer ([glossary](/concepts/glossary/#read-copy)). It never waits on the writer.
-2. The rules filter what comes back: a field you may not read is missing, not an error.
-3. The read happens at a version. Live reads follow the newest one; `db.asOf(t)` pins an earlier one.
+1. A current-view live query runs on the session overlay. First sync and pinned `asOf` / `history` still read a **read copy** — a copy of the data near your users, kept current by the writer ([glossary](/concepts/glossary/#read-copy)).
+2. The rules filter what a session may keep: a field you may not read is missing, not an error, and never arrives as a transaction frame.
+3. The read happens at a version. Live reads follow the newest overlay; `db.asOf(t)` pins an earlier one on the server.
 
 ## The four promises
 

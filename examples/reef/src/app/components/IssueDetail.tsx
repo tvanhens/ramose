@@ -1,9 +1,10 @@
 /**
  * The issue side panel. Status / priority / assignee / labels come straight
- * from the live board row (so they update in place); description and the
- * admin-only note ride one standing `usePull`, so an edit from any tab lands
- * without a refetch. Every control is enabled regardless of role — the
- * peer's policy is the enforcement, and a denial surfaces as a toast.
+ * from the live board row (overlay current-view); description and the
+ * admin-only note ride one standing `usePull`, so a local edit and an
+ * inbound filtered `tx` both land in place. Every control is enabled
+ * regardless of role — the peer's policy is the enforcement, a denial
+ * drops the pending layer, and the toast is all the UI does.
  * `privateNote` demonstrates per-attribute rules: read-masked and
  * write-denied below `admin`.
  */
@@ -233,7 +234,7 @@ export const IssueDetail = ({
   onClose,
 }: {
   db: ReefDb;
-  /** The live board row — already re-rendering on every basis tick. */
+  /** The live board row — already re-rendering on every overlay apply. */
   row: BoardRow;
   myEid: number | undefined;
   cls: RamoseClass;

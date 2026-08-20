@@ -1,7 +1,8 @@
 /**
  * Every read the app asks, as hoisted navigational query values — stable
- * dependencies for `useLive`, runnable one-shot (`db.q`), live (`db.live`) or
- * in the past (`db.asOf(t).q`) unchanged. The pull shapes are also fed to
+ * dependencies for `useLive`, runnable one-shot (`db.q`), live (`db.live`)
+ * against the session overlay, or in the past (`db.asOf(t).q`) on the
+ * peer. The pull shapes are also fed to
  * `Ramose.Policy.compile({ pulls })` so a read-masked attribute pulled as
  * required is a deploy-time error, not a silently dropped row.
  */

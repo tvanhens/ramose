@@ -1,6 +1,6 @@
 {
   "name": "ramose-monorepo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Development workspace for Ramose. The published package is `packages/ramose` (npm: `ramose`); this manifest is private and never ships.",
   "license": "Apache-2.0",

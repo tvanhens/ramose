@@ -1,8 +1,9 @@
 /**
  * Every write the app makes. Each is one `db.transact` generator — the
- * whole body commits atomically or the peer's policy rejects it with
- * `Unauthorized`, which the UI surfaces as a toast (enforcement is
- * server-side; the buttons are merely polite).
+ * session overlay applies it locally, then the peer commits it or the
+ * policy rejects it with `Unauthorized` / `TxRejected`. A denial drops
+ * the pending layer; the UI surfaces the error as a toast (enforcement
+ * is server-side; the buttons are merely polite).
  */
 
 import * as Effect from "effect/Effect";

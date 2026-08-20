@@ -71,7 +71,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useQuery
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:453"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:475"
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
@@ -87,7 +87,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useBasis
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:448"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:469"
   const maxT = useBasis(db);
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "ramose",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: the schema and client (`ramose/db`), the Alchemy resources (`ramose`), the peer Worker (`ramose/worker`), the React hooks (`ramose/react`) and the Better Auth plugins (`ramose/better-auth`).",
   "license": "Apache-2.0",

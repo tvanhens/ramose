@@ -22,20 +22,20 @@ Reef's board is one **live query** — a query that re-runs itself whenever the 
   const labels = useLive(db, labelsQuery);
 ```
 
-`useLive(db, query)` returns `{ rows, error, ticks }`. `rows` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `ticks` counts **updates** ([glossary](/concepts/glossary/#tick)) — each time the server tells this page that a newer **version number** exists ([glossary](/concepts/glossary/#version-number)). Render with `key={row.id}`.
+`useLive(db, query)` returns `{ rows, error, ticks }`. `rows` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `ticks` counts **updates** ([glossary](/concepts/glossary/#tick)) — a local write applied on the overlay, or a filtered transaction arriving on the **WebSocket connection** ([glossary](/concepts/glossary/#connection)). Render with `key={row.id}`.
 
 ## See it
 
-Open the same workspace in two windows and drag a card. The other window moves it within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={ticks}` re-triggers the animation):
+Open the same workspace in two windows and drag a card. The window you dragged in moves immediately; the other window follows within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={ticks}` re-triggers the animation):
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:257-260" />
 
 There is no refetch code anywhere in Reef. Nothing at the write site announces the change, and there is no cache to invalidate.
 
 ## What re-runs, and when
 
-- **After your own write** — including in the window that wrote.
-- **After anyone else's write.** Other windows hear about the new version over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run within about a second, locally and deployed. Writes always go over HTTPS; reads and updates share that connection. A write this caller cannot read does not wake the connection. If their access itself changes (they gain or lose a record), the connection says so and the next run sees the new view.
+- **After your own write** — the overlay applies it locally and the query re-runs in the window that wrote, before the HTTPS POST returns.
+- **After anyone else's write.** Other windows receive a filtered transaction over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run locally. Writes always go over HTTPS. A write this caller cannot read does not arrive on the connection. If their access itself changes (they gain or lose a record), the connection says so and the next run sees the new view.
 - **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.q`.
 - **Only news is emitted.** Identical results are not emitted again, so a write the query does not see is not a re-render.
 - **Dropped connections recover on their own** — retries back off from 250 ms to 5 s and the connection reconnects in place.
@@ -53,7 +53,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 
 ## Where live queries work
 
-A live query needs a WebSocket connection — that is how the server tells the page the database moved.
+A live query needs a WebSocket connection — that is how filtered transactions reach the page, and how the session hosts the overlay the query runs against.
 
 | environment | live queries |
 | --- | --- |
@@ -80,7 +80,7 @@ That call runs until you interrupt it, re-emitting the whole result set on every
 
 ## What it costs
 
-There is no per-query subscription state on the server. A live query is a re-run of the same read path, triggered by a version update. Bursts of small writes coalesce, because re-runs happen per update rather than per write.
+There is no per-query subscription state on the server. A live query is a re-run of the same read path against the local overlay, triggered by an overlay apply or an inbound filtered transaction. Bursts of small writes coalesce, because re-runs happen per update rather than per write. Pinned `asOf` / `history` still read the server.
 
 ## Hoist your queries
 

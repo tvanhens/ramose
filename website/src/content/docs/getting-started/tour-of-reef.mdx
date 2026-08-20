@@ -6,7 +6,7 @@ import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Reef is a small Linear-style issue tracker: sign up, create a workspace, and get a kanban board with drag-and-drop, an issue panel, invitations with three roles and a time-travel slider. Every change reaches every open tab within about a second, and each workspace is its own database. This page maps each screen to the code behind it; it works as a first page.
+Reef is a small Linear-style issue tracker: sign up, create a workspace, and get a kanban board with drag-and-drop, an issue panel, invitations with three roles and a time-travel slider. Your own tab updates immediately; every other open tab follows within about a second, and each workspace is its own database. This page maps each screen to the code behind it; it works as a first page.
 
 <Learn learn={["The six ideas every Ramose app is made of, by looking at one", "Which file drives which screen", "What Reef did not have to write"]} minutes={12} />
 
@@ -102,7 +102,7 @@ Provisioning scripts, migrations, per-customer routing (`ramose.db(name)` is the
 
 ## The board
 
-<Shot src="/reef/board-dark.png" alt="Reef's board: four columns of issue cards with labels and assignees, a live pill in the header" caption="One live query, sorted by rank; the columns are rows.filter(status). The pill counts updates the server pushed." code="examples/reef/src/app/screens/BoardScreen.tsx:230-234" />
+<Shot src="/reef/board-dark.png" alt="Reef's board: four columns of issue cards with labels and assignees, a live pill in the header" caption="One live query, sorted by rank; the columns are rows.filter(status). The pill counts overlay updates — your writes, then everyone else's." code="examples/reef/src/app/screens/BoardScreen.tsx:233-237" />
 
 The board is one **live query** — a query that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)):
 
@@ -112,7 +112,7 @@ export const boardQuery = Ramose.query(Issue)
   .select(boardShape);
 ```
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:230-234"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:233-237"
   const db = useDb(slug, Reef);
 
   const board = useLive(db, boardQuery);
@@ -128,7 +128,7 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 ## Move a card
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — and every other window on that workspace follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — the card moves here at once, and every other window follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:369-370" />
 
 A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
@@ -145,7 +145,7 @@ export const moveIssue = (
   });
 ```
 
-Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Every open tab hears that the database moved and re-runs its live queries. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
+The card moves on the local overlay before the POST returns. Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Other open tabs receive a filtered transaction and re-run locally. A denial drops the pending layer and the card snaps back. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
 
 :::tip[What you didn't write]
 `PATCH /issues/:id`, a reorder endpoint, conflict handling between tabs, WebSocket broadcast of the move.
@@ -209,9 +209,9 @@ const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
 const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
 ```
 
-<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The server refused; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
+<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:247-249" />
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:243-245"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:247-249"
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
@@ -256,11 +256,11 @@ Per-role serializers, "strip this column for non-admins" in every read path, a s
 
 ## Time travel
 
-<Shot src="/reef/time-travel.png" alt="Reef's board under a blue Time travel bar reading db.asOf(27) of 42, the header pill paused, and fewer cards in every column than the live board" caption="The same board query, read as of an earlier version. Nothing was copied." code="examples/reef/src/app/screens/BoardScreen.tsx:448-460" />
+<Shot src="/reef/time-travel.png" alt="Reef's board under a blue Time travel bar reading db.asOf(27) of 42, the header pill paused, and fewer cards in every column than the live board" caption="The same board query, read as of an earlier version. Nothing was copied." code="examples/reef/src/app/screens/BoardScreen.tsx:471-477" />
 
 Every write gets a **version number** `t`, in order ([glossary](/concepts/glossary/#version-number)). The slider picks one; the same `boardQuery` runs against `db.asOf(t)`, and `db.history` lists deleted issues too:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:448-454"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:471-477"
   const maxT = useBasis(db);
   const [scrubbed, setScrubbed] = useState<number | null>(null);
   const t = scrubbed ?? maxT;

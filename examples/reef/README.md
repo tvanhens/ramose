@@ -100,13 +100,14 @@ examples/reef/
   `<RamoseProvider key={slug}>` closes the old client and connects a new one
   whose `Ramose.token.jwt` source re-mints as the token nears `exp`, so
   15-minute tokens refresh themselves.
-- **Board** — reactivity. Columns render one `useLive(db, boardQuery)` read;
-  a drag is one `useTransact` `run` writing two datoms (status + rank) and
-  the board re-renders when the peer's basis ticks — the `live` pill in the
-  header pulses on every `ticks` bump `useLive` reports. There is no refetch
-  code anywhere in the app. On a phone, hold a card still, then drag — a
-  flick still scrolls the board. An empty board offers **Add sample issues**:
-  nine issues, labels and assignees in one `db.transact`.
+- **Board** — local-first reactivity. Columns render one `useLive(db, boardQuery)`
+  read against the session overlay; a drag is one `useTransact` `run` writing
+  two datoms (status + rank) and the card moves as soon as the pending layer
+  applies — the `live` pill pulses on every `ticks` bump `useLive` reports
+  (local apply, ack, or an inbound filtered `tx`). There is no refetch code
+  anywhere in the app. On a phone, hold a card still, then drag — a flick
+  still scrolls the board. An empty board offers **Add sample issues**: nine
+  issues, labels and assignees in one `db.transact`.
 - **Issue detail** — policy in the small. Description and the admin-only
   note ride one standing `usePull`, so edits from another tab land in place.
   That note is `Issue.privateNote.optional` in pull shapes (required pulls of
@@ -114,8 +115,9 @@ examples/reef/
   comments — a `useLive` on a per-issue query — carry `preset` authorship.
 - **Invite → viewer** — enforcement is server-side. A viewer's UI is polite
   (no + buttons, a `viewer` badge, the admin note tagged *masked*), but the
-  proof is that a forced write — drag a card — comes back from the peer as
-  `Unauthorized` and surfaces as a toast: "retract denied on :issue/status".
+  proof is that a forced write — drag a card — applies locally, then comes
+  back from the peer as `Unauthorized`; the pending layer drops, the card
+  snaps back, and the toast reads "retract denied on :issue/status".
 - **Time travel** — immutability. The slider re-renders the whole board via
   `useQuery(db.asOf(t), boardQuery)` — same query, one extra argument —
   `useBasis` is the slider's ceiling, and deleted issues are recovered from

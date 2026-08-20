@@ -1,10 +1,11 @@
 /**
  * One open workspace: header, live kanban, issue panel, time travel.
  *
- * Everything on screen is derived from three `useLive(db, query)` reads;
- * every write goes through `useTransact` and the peer's policy may deny it —
- * denials become toasts, because enforcement is server-side and the UI is
- * only a hint.
+ * Everything on screen is derived from three `useLive(db, query)` reads
+ * against the session overlay; every write goes through `useTransact` so
+ * the pending layer paints before the Transactor acks. The peer's policy
+ * may still deny a write — the layer drops, the board snaps back, and the
+ * denial becomes a toast (enforcement is server-side; the UI is a hint).
  */
 
 import {
@@ -16,7 +17,7 @@ import {
   useTransact,
 } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   boardQuery,
   everyIssueEverQuery,
@@ -236,6 +237,7 @@ export const BoardScreen = ({
   const labels = useLive(db, labelsQuery);
 
   const [selected, setSelected] = useState<number | null>(null);
+  const lastSelected = useRef<BoardRow | undefined>(undefined);
   const [draftStatus, setDraftStatus] = useState<Status | null>(null);
   const [invite, setInvite] = useState(false);
   const [timeTraveling, setTimeTraveling] = useState(false);
@@ -254,6 +256,34 @@ export const BoardScreen = ({
     }, []),
   );
 
+  const liveRows = board.rows;
+  // `ticks` counts overlay emissions after the first — local apply, ack,
+  // or an inbound filtered `tx` — and the pulse makes that visible.
+  const ticks = board.ticks;
+  // Derived from the live rows, so a deleted issue closes its own panel.
+  // An optimistic create remaps its eid on ack; rebind by the facts that
+  // survived (title / column / rank / creator) so the panel stays open.
+  const prior = lastSelected.current;
+  const selectedRow =
+    liveRows === undefined || selected === null
+      ? undefined
+      : (liveRows.find((r) => r.id === selected) ??
+        liveRows.find(
+          (r) =>
+            prior !== undefined &&
+            r.title === prior.title &&
+            r.status === prior.status &&
+            r.rank === prior.rank &&
+            r.creator.id === prior.creator.id,
+        ));
+  if (selectedRow !== undefined) lastSelected.current = selectedRow;
+  useEffect(() => {
+    if (selectedRow !== undefined && selectedRow.id !== selected) {
+      setSelected(selectedRow.id);
+    }
+  }, [selected, selectedRow]);
+  const canWrite = myEid !== undefined;
+
   if (board.error !== undefined) {
     return (
       <div {...stylex.props(styles.screen)}>
@@ -261,16 +291,7 @@ export const BoardScreen = ({
       </div>
     );
   }
-  if (board.rows === undefined) return <Loading text={`opening ${slug}…`} />;
-
-  const liveRows = board.rows;
-  // `ticks` counts emissions after the first — every one is a basis change
-  // the peer pushed, and the pulse makes that reactivity visible.
-  const ticks = board.ticks;
-  // Derived from the live rows, so a deleted issue closes its own panel.
-  const selectedRow =
-    selected === null ? undefined : liveRows.find((r) => r.id === selected);
-  const canWrite = myEid !== undefined;
+  if (liveRows === undefined) return <Loading text={`opening ${slug}…`} />;
 
   return (
     <div {...stylex.props(styles.screen)}>
@@ -288,7 +309,7 @@ export const BoardScreen = ({
         <span {...stylex.props(styles.spacer)} />
         <span
           {...stylex.props(styles.live, styles.wide)}
-          title="Every board update is a basis tick pushed by the peer over db.live"
+          title="Live: your writes paint on the local overlay; other sessions arrive as filtered transactions"
         >
           <span
             key={ticks}
