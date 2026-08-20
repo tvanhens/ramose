@@ -15,6 +15,15 @@ export interface RamoseEnv {
   RAMOSE_POLICY?: string;
   /** JWKS endpoint for the issuer's public keys */
   RAMOSE_JWKS_URL?: string;
+  /**
+   * Name of a service binding on this Worker to route the `RAMOSE_JWKS_URL`
+   * fetch through, when the issuer is another Worker on the same account.
+   * Cloudflare answers a Worker→Worker subrequest over `*.workers.dev` with
+   * error 1042 rather than the response, so a peer that verifies tokens
+   * issued by a sibling Worker must dispatch through the binding instead of
+   * the public hostname. Unset = a plain `fetch` of the URL.
+   */
+  RAMOSE_JWKS_SERVICE?: string;
   /** test/offline seam: a literal JWK Set, used when RAMOSE_JWKS_URL is unset */
   RAMOSE_JWKS_JSON?: string;
   /** accepted `iss` values, comma-separated */

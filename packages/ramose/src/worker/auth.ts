@@ -6,7 +6,9 @@
  *
  * A configured policy makes verification mandatory: a missing JWKS / issuer /
  * audience denies every `/db/*` and logs once, never falls open. Keys come from
- * `RAMOSE_JWKS_URL`, or `RAMOSE_JWKS_JSON` for offline runs.
+ * `RAMOSE_JWKS_URL`, or `RAMOSE_JWKS_JSON` for offline runs; when the issuer is
+ * a sibling Worker, `RAMOSE_JWKS_SERVICE` names the service binding the fetch
+ * is dispatched through (see {@link jwksFetch}).
  */
 
 import {
@@ -24,7 +26,7 @@ import {
 } from "../internal/core/index.ts";
 import { type Basis, dbFromBasis } from "../internal/replica/basis.ts";
 import { type RamoseEnv, envInt, policyOf } from "../internal/transactor/index.ts";
-import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from "jose";
+import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 import { Unauthorized } from "./errors.ts";
 
 /** Verifier algorithms, explicit — never whatever the token's header asks for. */
@@ -57,11 +59,32 @@ export interface AuthState {
 
 type AuthEnv = Pick<
   RamoseEnv,
-  "RAMOSE_POLICY" | "RAMOSE_TOKEN" | "RAMOSE_JWKS_URL" | "RAMOSE_JWKS_JSON" | "RAMOSE_JWT_ISS" | "RAMOSE_JWT_AUD" | "RAMOSE_JWT_MAX_TTL" | "RAMOSE_ALLOWED_ORIGINS"
+  "RAMOSE_POLICY" | "RAMOSE_TOKEN" | "RAMOSE_JWKS_URL" | "RAMOSE_JWKS_JSON" | "RAMOSE_JWKS_SERVICE" | "RAMOSE_JWT_ISS" | "RAMOSE_JWT_AUD" | "RAMOSE_JWT_MAX_TTL" | "RAMOSE_ALLOWED_ORIGINS"
 >;
 
 const states = new Map<string, AuthState>();
 const complained = new Set<string>();
+/** Verification failures already logged by this isolate, by reason. */
+const reported = new Set<string>();
+
+/**
+ * Why verification failed, once per isolate per distinct reason.
+ *
+ * The caller gets the same opaque 401 either way — a rejected token must not
+ * say which check it failed. The operator, though, cannot tell "the JWKS is
+ * unreachable" from "someone is spraying forged tokens" without this: both are
+ * a silent 401 on every request, and the first is a total outage. Deduped by
+ * reason so a flood of bad tokens costs one line, not one per request.
+ */
+function reportVerifyFailure(err: unknown): void {
+  const reason = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown })?.code;
+  const key = typeof code === "string" ? `${code}|${reason}` : reason;
+  if (reported.has(key)) return;
+  if (reported.size > 16) reported.clear();
+  reported.add(key);
+  log.warn("auth.verify-failed", { reason, ...(typeof code === "string" ? { code } : {}) });
+}
 
 const csv = (v: string | undefined): string[] =>
   (v ?? "")
@@ -69,8 +92,31 @@ const csv = (v: string | undefined): string[] =>
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
+/** A service binding, as much of it as the JWKS fetch needs. */
+type Fetcher = { readonly fetch: (input: string | Request, init?: RequestInit) => Promise<Response> };
+
+const isFetcher = (x: unknown): x is Fetcher =>
+  typeof x === "object" && x !== null && typeof (x as Fetcher).fetch === "function";
+
+/**
+ * How the JWKS is fetched. `RAMOSE_JWKS_SERVICE` names a service binding —
+ * the only way to reach a sibling Worker: Cloudflare refuses a Worker→Worker
+ * subrequest over `*.workers.dev` with error 1042 (an HTML body on a 404), so
+ * a plain `fetch` of the issuer's public URL never returns the key set and
+ * every token fails to verify. A named binding that is absent is a
+ * configuration error, not a silent fallback to the URL that cannot work.
+ */
+function jwksFetch(env: AuthEnv): { readonly [customFetch]: Fetcher["fetch"] } | undefined {
+  const name = env.RAMOSE_JWKS_SERVICE;
+  if (!name) return undefined;
+  // the app's own binding, under whatever name it chose: not a `RamoseEnv` key
+  const binding = (env as Record<string, unknown>)[name];
+  if (!isFetcher(binding)) throw new Error(`RAMOSE_JWKS_SERVICE names "${name}", which is not a service binding on this Worker`);
+  return { [customFetch]: (input, init) => binding.fetch(input, init) };
+}
+
 function keySetOf(env: AuthEnv): JWTVerifyGetKey {
-  if (env.RAMOSE_JWKS_URL) return createRemoteJWKSet(new URL(env.RAMOSE_JWKS_URL));
+  if (env.RAMOSE_JWKS_URL) return createRemoteJWKSet(new URL(env.RAMOSE_JWKS_URL), jwksFetch(env));
   return createLocalJWKSet(JSON.parse(env.RAMOSE_JWKS_JSON as string));
 }
 
@@ -98,7 +144,7 @@ function build(env: AuthEnv): AuthState {
 
 /** The peer's auth configuration, resolved once per isolate. */
 export function authState(env: AuthEnv): AuthState {
-  const key = [env.RAMOSE_POLICY, env.RAMOSE_JWKS_URL, env.RAMOSE_JWKS_JSON, env.RAMOSE_JWT_ISS, env.RAMOSE_JWT_AUD, env.RAMOSE_JWT_MAX_TTL].join("|");
+  const key = [env.RAMOSE_POLICY, env.RAMOSE_JWKS_URL, env.RAMOSE_JWKS_JSON, env.RAMOSE_JWKS_SERVICE, env.RAMOSE_JWT_ISS, env.RAMOSE_JWT_AUD, env.RAMOSE_JWT_MAX_TTL].join("|");
   const hit = states.get(key);
   if (hit) return hit;
   const state = build(env);
@@ -115,6 +161,7 @@ export function authState(env: AuthEnv): AuthState {
 export function clearAuthCache(): void {
   states.clear();
   complained.clear();
+  reported.clear();
   principals.clear();
   eids.clear();
 }
@@ -192,7 +239,8 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
   let payload: JWTPayload;
   try {
     ({ payload } = await jwtVerify(token, st.keys as JWTVerifyGetKey, { algorithms: ALGS, issuer: st.issuers as string[], audience: st.aud }));
-  } catch {
+  } catch (err) {
+    reportVerifyFailure(err);
     throw new Unauthorized({});
   }
   if (typeof payload.exp !== "number") throw new Unauthorized({});

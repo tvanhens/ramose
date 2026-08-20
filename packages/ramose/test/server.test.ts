@@ -137,6 +137,7 @@ describe("the server's auth env", () => {
     expect(AUTH_ENV_KEYS).toEqual({
       policy: "RAMOSE_POLICY",
       jwksUrl: "RAMOSE_JWKS_URL",
+      jwksService: "RAMOSE_JWKS_SERVICE",
       issuers: "RAMOSE_JWT_ISS",
       aud: "RAMOSE_JWT_AUD",
       maxTtl: "RAMOSE_JWT_MAX_TTL",

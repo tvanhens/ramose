@@ -10,6 +10,7 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { events } from "../internal/transactor/harness.ts";
 import { type Peer, makePeer, post } from "./harness.ts";
 
 // ---- signing ---------------------------------------------------------------
@@ -168,6 +169,93 @@ describe("policy configured", () => {
       expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, tok))).status).toBe(401);
       peer.close();
     }
+  });
+
+  /**
+   * Deployed, the issuer is usually another Worker on the same account, and
+   * Cloudflare answers a Worker→Worker subrequest over `*.workers.dev` with
+   * error 1042 (a 404 carrying an HTML body) instead of the key set — so a
+   * plain `fetch` of `RAMOSE_JWKS_URL` never returns the JWKS and every token
+   * 401s. `RAMOSE_JWKS_SERVICE` names the service binding to dispatch
+   * through. Global `fetch` here answers exactly as the edge does, so the
+   * test fails if the binding is ever bypassed.
+   */
+  describe("RAMOSE_JWKS_SERVICE — the issuer is a sibling Worker", () => {
+    const JWKS_URL = "https://auth-worker.example.workers.dev/api/auth/jwks";
+    const error1042 = () => new Response("error code: 1042\n", { status: 404 });
+
+    const withEdge = async <A,>(run: () => Promise<A>): Promise<A> => {
+      const real = globalThis.fetch;
+      globalThis.fetch = (() => Promise.resolve(error1042())) as unknown as typeof fetch;
+      try {
+        return await run();
+      } finally {
+        globalThis.fetch = real;
+      }
+    };
+
+    /** The service binding: what `env.AUTH.fetch` hands back, plus a call count. */
+    const authBinding = () => {
+      const calls: string[] = [];
+      return {
+        calls,
+        fetch: (input: string | Request) => {
+          calls.push(typeof input === "string" ? input : input.url);
+          return Promise.resolve(new Response(JWKS, { headers: { "content-type": "application/json" } }));
+        },
+      };
+    };
+
+    /** `/info` names the verified caller: 200 once the token verifies, 401 while it does not. */
+    const info = async (peer: Peer) =>
+      peer.json(`/db/acme/info`, { headers: { authorization: `Bearer ${await token("acme", "admin")}` } });
+
+    /** A peer whose only difference from `fixture()` is where its keys come from. */
+    const peerWith = async (env: Record<string, unknown>): Promise<Peer> => {
+      const peer = makePeer("acme", { env: env as never });
+      await peer.seed(SCHEMA);
+      return peer;
+    };
+
+    test("the JWKS fetch is dispatched through the named binding", async () => {
+      const AUTH = authBinding();
+      await withEdge(async () => {
+        const peer = await peerWith({ ...policyEnv({ RAMOSE_JWKS_JSON: undefined, RAMOSE_JWKS_URL: JWKS_URL, RAMOSE_JWKS_SERVICE: "AUTH" }), AUTH });
+        expect((await info(peer)).status).toBe(200);
+        peer.close();
+      });
+      expect(AUTH.calls).toEqual([JWKS_URL]);
+    });
+
+    test("without the binding the same peer 401s — the edge is what it is", async () => {
+      await withEdge(async () => {
+        const peer = await peerWith(policyEnv({ RAMOSE_JWKS_JSON: undefined, RAMOSE_JWKS_URL: JWKS_URL }));
+        expect((await info(peer)).status).toBe(401);
+        peer.close();
+      });
+    });
+
+    test("the reason reaches the logs, so an outage is not just a 401", async () => {
+      const from = events.length;
+      await withEdge(async () => {
+        const peer = await peerWith(policyEnv({ RAMOSE_JWKS_JSON: undefined, RAMOSE_JWKS_URL: JWKS_URL }));
+        expect((await info(peer)).status).toBe(401);
+        peer.close();
+      });
+      // the caller learns nothing; the operator learns why — and not the token
+      const failed = events.slice(from).filter((e) => e.event === "auth.verify-failed");
+      expect(failed).toHaveLength(1);
+      expect(String(failed[0]!.reason)).not.toContain("eyJ");
+    });
+
+    test("a name that is not a service binding fails closed, it does not fall back to the URL", async () => {
+      await withEdge(async () => {
+        const peer = await peerWith(policyEnv({ RAMOSE_JWKS_JSON: undefined, RAMOSE_JWKS_URL: JWKS_URL, RAMOSE_JWKS_SERVICE: "NOPE" }));
+        expect((await peer.json("/health")).status).toBe(200);
+        expect((await info(peer)).status).toBe(401);
+        peer.close();
+      });
+    });
   });
 
   test("ramose.db is an exact match — nothing else opens another name", async () => {

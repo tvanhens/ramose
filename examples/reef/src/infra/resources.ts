@@ -10,6 +10,12 @@
  *                           an `Output.interpolate` over `Api.url`, which is
  *                           the one edge between the two Workers (the auth
  *                           Worker needs nothing back, so the graph is a DAG)
+ *   RAMOSE_JWKS_SERVICE     the name of the `AUTH` service binding below, which
+ *                           that fetch is dispatched through — deployed, both
+ *                           Workers sit on `*.workers.dev`, and Cloudflare
+ *                           answers a Worker→Worker subrequest there with
+ *                           error 1042 instead of the key set (a failure the
+ *                           local miniflare run cannot show you)
  *   RAMOSE_JWT_ISS/_AUD     REEF_AUTH — the one AuthConfig the jwt plugin
  *   RAMOSE_JWT_MAX_TTL      and the mint route (`Ramose.claims`) also read,
  *                           so the cap equals the minted lifetime exactly
@@ -49,8 +55,13 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
     ...Ramose.authEnv({
       policy: compiledPolicy(),
       auth: REEF_AUTH,
+      jwksService: "AUTH",
       internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
     }),
+    // The service binding `RAMOSE_JWKS_SERVICE` names. Yielding the same `Api`
+    // declaration the JWKS URL interpolates over reuses the one Worker, so
+    // this adds an edge to the existing peer→auth dependency, not a cycle.
+    AUTH: Api,
     // Yielding the Api declaration registers (or reuses) the Worker in the
     // stack and hands back the resource whose attributes are Outputs — the
     // interpolation is then resolved by the engine at reconcile.

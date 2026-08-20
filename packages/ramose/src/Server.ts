@@ -131,6 +131,14 @@ export interface PeerAuth {
   readonly policy?: string | undefined;
   /** Where the issuer's public keys live. Required once `policy` is set. */
   readonly jwksUrl?: string | undefined;
+  /**
+   * Name of a service binding on the server Worker to fetch `jwksUrl`
+   * through. Required when the issuer is another Worker on the same account:
+   * Cloudflare answers a Worker→Worker subrequest over `*.workers.dev` with
+   * error 1042, so the peer must dispatch through the binding. Bind the
+   * issuer Worker under this name in the same `env` (examples/reef).
+   */
+  readonly jwksService?: string | undefined;
   /** Accepted `iss` values — one, or a comma-separated set. Required once `policy` is set. */
   readonly issuers?: readonly string[] | string | undefined;
   /** The `aud` every token must carry. Required once `policy` is set. */
@@ -178,6 +186,7 @@ export type ServerProps = {
 export const AUTH_ENV_KEYS = {
   policy: "RAMOSE_POLICY",
   jwksUrl: "RAMOSE_JWKS_URL",
+  jwksService: "RAMOSE_JWKS_SERVICE",
   issuers: "RAMOSE_JWT_ISS",
   aud: "RAMOSE_JWT_AUD",
   maxTtl: "RAMOSE_JWT_MAX_TTL",
@@ -259,6 +268,7 @@ export const authEnv = (
   };
   set(k.policy, auth.policy);
   set(k.jwksUrl, auth.jwksUrl);
+  set(k.jwksService, auth.jwksService);
   set(k.issuers, list(auth.issuers));
   set(k.aud, auth.aud);
   set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
