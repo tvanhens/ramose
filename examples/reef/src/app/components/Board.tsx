@@ -41,6 +41,21 @@ const styles = stylex.create({
     padding: space.lg,
     touchAction: "pan-x pan-y",
   },
+  wrap: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minHeight: 0,
+    minWidth: 0,
+  },
+  touchHint: {
+    display: { default: "none", "@media (hover: none)": "block" },
+    flexShrink: 0,
+    marginInline: space.lg,
+    marginTop: space.sm,
+    fontSize: type.xs,
+    color: colors.textFaint,
+  },
   column: {
     display: "flex",
     flexDirection: "column",
@@ -372,7 +387,9 @@ export const Board = ({
   const dragging = dragId !== null;
 
   return (
-    <div {...stylex.props(styles.board)}>
+    <div {...stylex.props(styles.wrap)}>
+      <p {...stylex.props(styles.touchHint)}>Hold a card, then drag to move it</p>
+      <div {...stylex.props(styles.board)}>
       {STATUSES.map((status) => {
         const column = rows.filter((r) => r.status === status);
         const over = overColumn === status && dragging;
@@ -509,6 +526,7 @@ export const Board = ({
           <p {...stylex.props(styles.ghostTitle)}>{ghost.title}</p>
         </div>
       )}
+      </div>
     </div>
   );
 };
