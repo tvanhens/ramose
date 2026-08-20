@@ -3,15 +3,25 @@
  * read (already rank-sorted); a drag writes exactly two datoms (status +
  * rank) and the board re-renders when the peer's basis tick comes back —
  * there is no local reordering state to reconcile.
+ *
+ * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
+ * hold-still then move on a `pointerType: "touch" | "pen"` pointer does
+ * the same `onMove` — a tap still opens the card, and a flicked scroll
+ * cancels the hold so the board can pan.
  */
 
 import * as stylex from "@stylexjs/stylex";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BoardRow } from "../../domain/queries.ts";
-import { rankAfter, rankBetween } from "../../domain/rank.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import { Avatar, Icon, IconButton, LabelBadge, PriorityIcon } from "../ui.tsx";
+import {
+  TOUCH_CANCEL_PX,
+  TOUCH_HOLD_MS,
+  dropTargetFromPoint,
+  rankForDrop,
+} from "./board-dnd.ts";
 
 export const COLUMN_TINTS: Record<Status, string> = {
   backlog: "#8b93a3",
@@ -29,6 +39,7 @@ const styles = stylex.create({
     minHeight: 0,
     overflowX: "auto",
     padding: space.lg,
+    touchAction: "pan-x pan-y",
   },
   column: {
     display: "flex",
@@ -112,12 +123,41 @@ const styles = stylex.create({
     boxShadow: colors.shadowSm,
     transition: "border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease",
     outline: "none",
+    userSelect: "none",
+    touchAction: "manipulation",
   },
   cardSelected: {
     borderColor: { default: colors.accent, ":hover": colors.accent },
     boxShadow: `0 0 0 3px ${colors.ring}`,
   },
-  cardDragging: { opacity: 0.35, transform: "scale(0.98)" },
+  cardDragging: { opacity: 0.35, transform: "scale(0.98)", touchAction: "none" },
+  ghost: {
+    position: "fixed",
+    left: 0,
+    top: 0,
+    zIndex: 40,
+    pointerEvents: "none",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.accent,
+    borderRadius: radii.md,
+    paddingBlock: "10px",
+    paddingInline: space.md,
+    boxShadow: colors.shadow,
+    opacity: 0.96,
+  },
+  ghostTitle: {
+    fontSize: type.md,
+    fontWeight: 500,
+    color: colors.text,
+    lineHeight: 1.4,
+    margin: 0,
+    overflow: "hidden",
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
+  },
   cardTop: {
     display: "flex",
     alignItems: "center",
@@ -192,20 +232,141 @@ export const Board = ({
 }) => {
   const [dragId, setDragId] = useState<number | null>(null);
   const [overColumn, setOverColumn] = useState<Status | null>(null);
+  const [ghost, setGhost] = useState<{
+    title: string;
+    width: number;
+    x: number;
+    y: number;
+  } | null>(null);
 
-  const drop = (status: Status, before: BoardRow | undefined) => {
-    if (dragId === null) return;
-    const column = rows.filter((r) => r.status === status && r.id !== dragId);
-    const rank =
-      before === undefined
-        ? rankAfter(column[column.length - 1]?.rank)
-        : rankBetween(
-            column[column.findIndex((r) => r.id === before.id) - 1]?.rank,
-            before.rank,
-          );
-    onMove(dragId, status, rank);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const dragIdRef = useRef(dragId);
+  dragIdRef.current = dragId;
+  const onMoveRef = useRef(onMove);
+  onMoveRef.current = onMove;
+  const suppressClick = useRef(false);
+  const touch = useRef<{
+    pointerId: number;
+    row: BoardRow;
+    el: HTMLElement;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const stopListen = useRef<(() => void) | null>(null);
+
+  const resetDrag = () => {
+    const held = touch.current;
+    if (held) {
+      clearTimeout(held.timer);
+      held.el.style.touchAction = "";
+    }
+    touch.current = null;
+    stopListen.current?.();
+    stopListen.current = null;
     setDragId(null);
     setOverColumn(null);
+    setGhost(null);
+  };
+
+  const commitDrop = (status: Status, beforeId: number | undefined) => {
+    const id = dragIdRef.current;
+    if (id === null) return;
+    onMoveRef.current(id, status, rankForDrop(rowsRef.current, id, status, beforeId));
+    resetDrag();
+  };
+
+  const drop = (status: Status, before: BoardRow | undefined) => {
+    commitDrop(status, before?.id);
+  };
+
+  useEffect(() => () => resetDrag(), []);
+
+  const listenTouch = () => {
+    stopListen.current?.();
+    const onMove = (e: PointerEvent) => {
+      const held = touch.current;
+      if (held === null || e.pointerId !== held.pointerId) return;
+      held.x = e.clientX;
+      held.y = e.clientY;
+      if (dragIdRef.current === null) {
+        const dx = e.clientX - held.startX;
+        const dy = e.clientY - held.startY;
+        if (dx * dx + dy * dy > TOUCH_CANCEL_PX * TOUCH_CANCEL_PX) {
+          clearTimeout(held.timer);
+          touch.current = null;
+          stopListen.current?.();
+          stopListen.current = null;
+        }
+        return;
+      }
+      e.preventDefault();
+      setGhost((g) => (g === null ? g : { ...g, x: e.clientX, y: e.clientY }));
+      setOverColumn(dropTargetFromPoint(e.clientX, e.clientY, dragIdRef.current)?.status ?? null);
+    };
+    const onUp = (e: PointerEvent) => {
+      const held = touch.current;
+      if (held === null || e.pointerId !== held.pointerId) return;
+      const id = dragIdRef.current;
+      if (id === null) {
+        resetDrag();
+        return;
+      }
+      const target = dropTargetFromPoint(e.clientX, e.clientY, id);
+      if (target) commitDrop(target.status, target.beforeId);
+      else resetDrag();
+    };
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    stopListen.current = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  };
+
+  const onCardPointerDown = (row: BoardRow, e: React.PointerEvent<HTMLElement>) => {
+    if (readOnly || e.button !== 0) return;
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    const el = e.currentTarget;
+    clearTimeout(touch.current?.timer);
+    touch.current = {
+      pointerId: e.pointerId,
+      row,
+      el,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: e.clientX,
+      y: e.clientY,
+      timer: setTimeout(() => {
+        const held = touch.current;
+        if (held === null) return;
+        suppressClick.current = true;
+        held.el.style.touchAction = "none";
+        try {
+          held.el.setPointerCapture(held.pointerId);
+        } catch {
+          /* capture is optional — window listeners still track the finger */
+        }
+        try {
+          navigator.vibrate?.(10);
+        } catch {
+          /* iOS has no vibrate */
+        }
+        setDragId(held.row.id);
+        setGhost({
+          title: held.row.title,
+          width: held.el.getBoundingClientRect().width,
+          x: held.x,
+          y: held.y,
+        });
+      }, TOUCH_HOLD_MS),
+    };
+    listenTouch();
   };
 
   const dragging = dragId !== null;
@@ -219,6 +380,7 @@ export const Board = ({
           <section
             key={status}
             aria-label={STATUS_LABELS[status]}
+            data-reef-column={status}
             {...stylex.props(styles.column, over && styles.columnOver)}
             onDragOver={(e) => {
               e.preventDefault();
@@ -273,19 +435,28 @@ export const Board = ({
                 <article
                   key={row.id}
                   tabIndex={0}
+                  data-reef-card={row.id}
+                  data-reef-status={status}
                   draggable={!readOnly}
                   {...stylex.props(
                     styles.card,
                     row.id === selectedId && styles.cardSelected,
                     row.id === dragId && styles.cardDragging,
                   )}
-                  onClick={() => onSelect(row.id)}
+                  onClick={() => {
+                    if (suppressClick.current) {
+                      suppressClick.current = false;
+                      return;
+                    }
+                    onSelect(row.id);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       onSelect(row.id);
                     }
                   }}
+                  onPointerDown={(e) => onCardPointerDown(row, e)}
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = "move";
                     setDragId(row.id);
@@ -293,6 +464,7 @@ export const Board = ({
                   onDragEnd={() => {
                     setDragId(null);
                     setOverColumn(null);
+                    setGhost(null);
                   }}
                   onDrop={(e) => {
                     e.preventDefault();
@@ -326,6 +498,17 @@ export const Board = ({
           </section>
         );
       })}
+      {ghost !== null && (
+        <div
+          {...stylex.props(styles.ghost)}
+          style={{
+            width: ghost.width,
+            transform: `translate(${ghost.x - ghost.width / 2}px, ${ghost.y - 56}px) rotate(2deg)`,
+          }}
+        >
+          <p {...stylex.props(styles.ghostTitle)}>{ghost.title}</p>
+        </div>
+      )}
     </div>
   );
 };

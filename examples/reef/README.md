@@ -104,8 +104,9 @@ examples/reef/
   a drag is one `useTransact` `run` writing two datoms (status + rank) and
   the board re-renders when the peer's basis ticks — the `live` pill in the
   header pulses on every `ticks` bump `useLive` reports. There is no refetch
-  code anywhere in the app. An empty board offers **Add sample issues**: nine
-  issues, labels and assignees in one `db.transact`.
+  code anywhere in the app. On a phone, hold a card still, then drag — a
+  flick still scrolls the board. An empty board offers **Add sample issues**:
+  nine issues, labels and assignees in one `db.transact`.
 - **Issue detail** — policy in the small. Description and the admin-only
   note ride one standing `usePull`, so edits from another tab land in place.
   That note is `Issue.privateNote.optional` in pull shapes (required pulls of

@@ -130,7 +130,7 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — and every other window on that workspace follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:264-267" />
 
-A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).)
+A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
 ```ts title="examples/reef/src/app/mutations.ts:113-122"
 export const moveIssue = (
