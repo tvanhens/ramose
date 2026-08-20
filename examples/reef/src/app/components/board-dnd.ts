@@ -73,6 +73,66 @@ export const pinScrollLeft = (el: { scrollLeft: number }): (() => void) => {
   };
 };
 
+export const pinWindowScroll = (win: {
+  scrollX: number;
+  scrollY: number;
+  scrollTo: (x: number, y: number) => void;
+}): (() => void) => {
+  const x = win.scrollX;
+  const y = win.scrollY;
+  return () => {
+    win.scrollTo(x, y);
+  };
+};
+
+/**
+ * Freeze the document viewport for a drag: html/body cannot overflow, and
+ * window `touchmove` / `wheel` are cancelled so iOS does not rubber-band.
+ */
+export const lockPageScroll = (
+  doc: Document = document,
+  win: Window = window,
+): (() => void) => {
+  const html = doc.documentElement;
+  const body = doc.body;
+  const prevHtml = {
+    overflow: html.style.overflow,
+    overscroll: html.style.overscrollBehavior,
+    touch: html.style.touchAction,
+  };
+  const prevBody = {
+    overflow: body.style.overflow,
+    overscroll: body.style.overscrollBehavior,
+    touch: body.style.touchAction,
+  };
+  html.style.overflow = "hidden";
+  body.style.overflow = "hidden";
+  html.style.overscrollBehavior = "none";
+  body.style.overscrollBehavior = "none";
+  html.style.touchAction = "none";
+  body.style.touchAction = "none";
+  const pin = pinWindowScroll(win);
+  pin();
+  const prevent = (e: Event) => {
+    e.preventDefault();
+  };
+  win.addEventListener("scroll", pin);
+  win.addEventListener("touchmove", prevent, { passive: false });
+  win.addEventListener("wheel", prevent, { passive: false });
+  return () => {
+    win.removeEventListener("scroll", pin);
+    win.removeEventListener("touchmove", prevent);
+    win.removeEventListener("wheel", prevent);
+    html.style.overflow = prevHtml.overflow;
+    html.style.overscrollBehavior = prevHtml.overscroll;
+    html.style.touchAction = prevHtml.touch;
+    body.style.overflow = prevBody.overflow;
+    body.style.overscrollBehavior = prevBody.overscroll;
+    body.style.touchAction = prevBody.touch;
+    pin();
+  };
+};
+
 export const dropTargetFromPoint = (
   x: number,
   y: number,

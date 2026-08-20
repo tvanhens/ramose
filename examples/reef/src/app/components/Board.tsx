@@ -20,6 +20,7 @@ import {
   TOUCH_CANCEL_PX,
   TOUCH_HOLD_MS,
   dropTargetFromPoint,
+  lockPageScroll,
   pinScrollLeft,
   rankForDrop,
 } from "./board-dnd.ts";
@@ -280,6 +281,16 @@ export const Board = ({
   } | null>(null);
   const stopListen = useRef<(() => void) | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
+  const pageLock = useRef<(() => void) | null>(null);
+
+  const startPageLock = () => {
+    if (pageLock.current !== null) return;
+    pageLock.current = lockPageScroll();
+  };
+  const stopPageLock = () => {
+    pageLock.current?.();
+    pageLock.current = null;
+  };
 
   const resetDrag = () => {
     const held = touch.current;
@@ -290,6 +301,7 @@ export const Board = ({
     touch.current = null;
     stopListen.current?.();
     stopListen.current = null;
+    stopPageLock();
     setDragId(null);
     setOverColumn(null);
     setGhost(null);
@@ -308,11 +320,13 @@ export const Board = ({
 
   useEffect(() => () => resetDrag(), []);
 
-  // The board is `overflow-x: auto` so columns can pan. While a card is
-  // in flight that same scroller would follow the finger/pointer — pin it.
+  // The board is `overflow-x: auto` so columns can pan, and the document
+  // itself rubber-bands on iOS. While a card is in flight, freeze both.
   useLayoutEffect(() => {
+    if (dragId === null) return;
+    startPageLock();
     const el = boardRef.current;
-    if (el === null || dragId === null) return;
+    if (el === null) return;
     const pin = pinScrollLeft(el);
     pin();
     const prevent = (e: Event) => {
@@ -326,6 +340,7 @@ export const Board = ({
       el.removeEventListener("touchmove", prevent);
       el.removeEventListener("wheel", prevent);
       pin();
+      stopPageLock();
     };
   }, [dragId]);
 
@@ -390,6 +405,7 @@ export const Board = ({
         const held = touch.current;
         if (held === null) return;
         suppressClick.current = true;
+        startPageLock();
         held.el.style.touchAction = "none";
         try {
           held.el.setPointerCapture(held.pointerId);
@@ -508,9 +524,11 @@ export const Board = ({
                   onPointerDown={(e) => onCardPointerDown(row, e)}
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = "move";
+                    startPageLock();
                     setDragId(row.id);
                   }}
                   onDragEnd={() => {
+                    stopPageLock();
                     setDragId(null);
                     setOverColumn(null);
                     setGhost(null);

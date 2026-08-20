@@ -3,6 +3,7 @@ import {
   type HitNode,
   dropTargetFromStack,
   pinScrollLeft,
+  pinWindowScroll,
   rankForDrop,
 } from "../src/app/components/board-dnd.ts";
 import { RANK_GAP } from "../src/domain/rank.ts";
@@ -53,6 +54,24 @@ describe("pinScrollLeft", () => {
     el.scrollLeft = 240;
     pin();
     expect(el.scrollLeft).toBe(80);
+  });
+});
+
+describe("pinWindowScroll", () => {
+  test("scrollTo writes the snapshotted x/y back", () => {
+    const win = {
+      scrollX: 0,
+      scrollY: 64,
+      scrollTo(x: number, y: number) {
+        this.scrollX = x;
+        this.scrollY = y;
+      },
+    };
+    const pin = pinWindowScroll(win);
+    win.scrollY = 180;
+    pin();
+    expect(win.scrollY).toBe(64);
+    expect(win.scrollX).toBe(0);
   });
 });
 
