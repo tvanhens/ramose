@@ -21,11 +21,49 @@ export interface DropTarget {
 /** `Element` in the browser; a `{ closest, dataset }` stub in tests. */
 export interface HitNode {
   closest(selector: string): HitNode | null;
-  readonly dataset?: { reefCard?: string; reefStatus?: string; reefColumn?: string };
+  readonly dataset?: {
+    reefCard?: string;
+    reefStatus?: string;
+    reefColumn?: string;
+    reefSlot?: string;
+    reefBefore?: string;
+  };
 }
 
 const isStatus = (value: string | undefined): value is Status =>
   value !== undefined && (STATUSES as readonly string[]).includes(value);
+
+/** Index of the placeholder among `ids` (the column with the dragged card removed). */
+export const insertIndex = (
+  ids: readonly number[],
+  beforeId: number | undefined,
+): number => {
+  if (beforeId === undefined) return ids.length;
+  const i = ids.indexOf(beforeId);
+  return i < 0 ? ids.length : i;
+};
+
+/** Insert after `hoveredId` — `undefined` means append. */
+export const afterCardBeforeId = (
+  ids: readonly number[],
+  hoveredId: number,
+): number | undefined => {
+  const i = ids.indexOf(hoveredId);
+  if (i < 0 || i >= ids.length - 1) return undefined;
+  return ids[i + 1];
+};
+
+/** The slot that replaces a just-lifted card so neighbours do not jump. */
+export const homeDropTarget = (
+  rows: readonly { id: number; status: string }[],
+  dragId: number,
+): DropTarget | null => {
+  const row = rows.find((r) => r.id === dragId);
+  if (row === undefined || !isStatus(row.status)) return null;
+  const full = rows.filter((r) => r.status === row.status);
+  const idx = full.findIndex((r) => r.id === dragId);
+  return { status: row.status, beforeId: full[idx + 1]?.id };
+};
 
 /** Rank written for a drop, matching the HTML5 `onDrop` behaviour. */
 export const rankForDrop = (
@@ -48,6 +86,18 @@ export const dropTargetFromStack = (
   stack: readonly HitNode[],
   dragId: number,
 ): DropTarget | null => {
+  for (const el of stack) {
+    const slot = el.closest("[data-reef-slot]");
+    const slotStatus = slot?.dataset?.reefStatus;
+    if (isStatus(slotStatus)) {
+      const raw = slot?.dataset?.reefBefore;
+      const beforeId = raw === undefined || raw === "" ? undefined : Number(raw);
+      return {
+        status: slotStatus,
+        beforeId: beforeId !== undefined && Number.isFinite(beforeId) ? beforeId : undefined,
+      };
+    }
+  }
   for (const el of stack) {
     const card = el.closest("[data-reef-card]");
     const id = Number(card?.dataset?.reefCard);
@@ -137,7 +187,19 @@ export const dropTargetFromPoint = (
   x: number,
   y: number,
   dragId: number,
-): DropTarget | null =>
-  typeof document === "undefined"
-    ? null
-    : dropTargetFromStack(document.elementsFromPoint(x, y) as HitNode[], dragId);
+): DropTarget | null => {
+  if (typeof document === "undefined") return null;
+  const raw = dropTargetFromStack(document.elementsFromPoint(x, y) as HitNode[], dragId);
+  if (raw === null || raw.beforeId === undefined) return raw;
+  const card = document.querySelector(`[data-reef-card="${raw.beforeId}"]`);
+  if (!(card instanceof HTMLElement)) return raw;
+  const box = card.getBoundingClientRect();
+  if (y <= (box.top + box.bottom) / 2) return raw;
+  const col = card.closest("[data-reef-column]");
+  const ids = col
+    ? [...col.querySelectorAll("[data-reef-card]")]
+        .map((el) => Number((el as HTMLElement).dataset.reefCard))
+        .filter((id) => Number.isFinite(id) && id !== dragId)
+    : [];
+  return { status: raw.status, beforeId: afterCardBeforeId(ids, raw.beforeId) };
+};

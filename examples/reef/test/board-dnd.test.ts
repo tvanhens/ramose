@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   type HitNode,
+  afterCardBeforeId,
   dropTargetFromStack,
+  homeDropTarget,
+  insertIndex,
   pinScrollLeft,
   pinWindowScroll,
   rankForDrop,
@@ -22,6 +25,7 @@ const hit = (
     dataset,
     closest(selector) {
       if (selector === "[data-reef-card]" && dataset.reefCard !== undefined) return node;
+      if (selector === "[data-reef-slot]" && dataset.reefSlot !== undefined) return node;
       if (selector === "[data-reef-column]" && dataset.reefColumn !== undefined) {
         return node;
       }
@@ -44,6 +48,25 @@ describe("rankForDrop", () => {
 
   test("an empty target column gets the first gap", () => {
     expect(rankForDrop(rows, 1, "done", undefined)).toBe(RANK_GAP);
+  });
+});
+
+describe("insertIndex / homeDropTarget", () => {
+  test("a missing beforeId appends", () => {
+    expect(insertIndex([1, 2, 3], undefined)).toBe(3);
+    expect(insertIndex([1, 2, 3], 2)).toBe(1);
+    expect(insertIndex([1, 2, 3], 99)).toBe(3);
+  });
+
+  test("inserting after the last card appends", () => {
+    expect(afterCardBeforeId([1, 2, 3], 3)).toBeUndefined();
+    expect(afterCardBeforeId([1, 2, 3], 1)).toBe(2);
+  });
+
+  test("lifting a card leaves a slot in its old place", () => {
+    expect(homeDropTarget(rows, 1)).toEqual({ status: "todo", beforeId: 2 });
+    expect(homeDropTarget(rows, 2)).toEqual({ status: "todo", beforeId: undefined });
+    expect(homeDropTarget(rows, 3)).toEqual({ status: "doing", beforeId: undefined });
   });
 });
 
@@ -103,5 +126,17 @@ describe("dropTargetFromStack", () => {
 
   test("a miss is null", () => {
     expect(dropTargetFromStack([hit({})], 1)).toBeNull();
+  });
+
+  test("the drop slot keeps the same insert point", () => {
+    expect(
+      dropTargetFromStack(
+        [hit({ reefSlot: "1", reefStatus: "todo", reefBefore: "2" })],
+        1,
+      ),
+    ).toEqual({ status: "todo", beforeId: 2 });
+    expect(
+      dropTargetFromStack([hit({ reefSlot: "1", reefStatus: "doing" })], 1),
+    ).toEqual({ status: "doing", beforeId: undefined });
   });
 });

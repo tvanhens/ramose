@@ -7,7 +7,9 @@
  * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
  * hold-still then move on a `pointerType: "touch" | "pen"` pointer does
  * the same `onMove` — a tap still opens the card, and a flicked scroll
- * cancels the hold so the board can pan.
+ * cancels the hold so the board can pan. While a card is in flight a
+ * dashed slot tracks the insert point and the other cards shift to open
+ * a gap of the same height.
  */
 
 import * as stylex from "@stylexjs/stylex";
@@ -19,10 +21,14 @@ import { Avatar, Icon, IconButton, LabelBadge, PriorityIcon } from "../ui.tsx";
 import {
   TOUCH_CANCEL_PX,
   TOUCH_HOLD_MS,
+  afterCardBeforeId,
   dropTargetFromPoint,
+  homeDropTarget,
+  insertIndex,
   lockPageScroll,
   pinScrollLeft,
   rankForDrop,
+  type DropTarget,
 } from "./board-dnd.ts";
 
 export const COLUMN_TINTS: Record<Status, string> = {
@@ -146,7 +152,7 @@ const styles = stylex.create({
     flexDirection: "column",
     gap: "8px",
     boxShadow: colors.shadowSm,
-    transition: "border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease",
+    transition: "border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease",
     outline: "none",
     userSelect: "none",
     touchAction: "manipulation",
@@ -155,7 +161,27 @@ const styles = stylex.create({
     borderColor: { default: colors.accent, ":hover": colors.accent },
     boxShadow: `0 0 0 3px ${colors.ring}`,
   },
-  cardDragging: { opacity: 0.35, transform: "scale(0.98)", touchAction: "none" },
+  cardLifted: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: 0,
+    overflow: "hidden",
+    opacity: 0,
+    pointerEvents: "none",
+    borderWidth: 0,
+  },
+  slot: {
+    flexShrink: 0,
+    boxSizing: "border-box",
+    borderRadius: radii.md,
+    borderWidth: 2,
+    borderStyle: "dashed",
+    borderColor: colors.accent,
+    backgroundColor: colors.accentSoft,
+    transition: "height 160ms ease",
+  },
   ghost: {
     position: "fixed",
     left: 0,
@@ -256,7 +282,8 @@ export const Board = ({
   onMove: (id: number, status: Status, rank: number) => void;
 }) => {
   const [dragId, setDragId] = useState<number | null>(null);
-  const [overColumn, setOverColumn] = useState<Status | null>(null);
+  const [over, setOver] = useState<DropTarget | null>(null);
+  const [slotHeight, setSlotHeight] = useState(72);
   const [ghost, setGhost] = useState<{
     title: string;
     width: number;
@@ -305,8 +332,15 @@ export const Board = ({
     stopListen.current = null;
     stopPageLock();
     setDragId(null);
-    setOverColumn(null);
+    setOver(null);
     setGhost(null);
+  };
+
+  const lift = (row: BoardRow, el: HTMLElement) => {
+    const box = el.getBoundingClientRect();
+    setSlotHeight(Math.max(56, Math.round(box.height)));
+    setOver(homeDropTarget(rowsRef.current, row.id));
+    setDragId(row.id);
   };
 
   const commitDrop = (status: Status, beforeId: number | undefined) => {
@@ -366,7 +400,8 @@ export const Board = ({
       }
       e.preventDefault();
       setGhost((g) => (g === null ? g : { ...g, x: e.clientX, y: e.clientY }));
-      setOverColumn(dropTargetFromPoint(e.clientX, e.clientY, dragIdRef.current)?.status ?? null);
+      const next = dropTargetFromPoint(e.clientX, e.clientY, dragIdRef.current);
+      if (next) setOver(next);
     };
     const onUp = (e: PointerEvent) => {
       const held = touch.current;
@@ -419,7 +454,7 @@ export const Board = ({
         } catch {
           /* iOS has no vibrate */
         }
-        setDragId(held.row.id);
+        lift(held.row, held.el);
         setGhost({
           title: held.row.title,
           width: held.el.getBoundingClientRect().width,
@@ -442,23 +477,25 @@ export const Board = ({
       >
       {STATUSES.map((status) => {
         const column = rows.filter((r) => r.status === status);
-        const over = overColumn === status && dragging;
+        const visible = dragging ? column.filter((r) => r.id !== dragId) : column;
+        const hovering = over?.status === status && dragging;
+        const slotAt = hovering ? insertIndex(visible.map((r) => r.id), over.beforeId) : -1;
         return (
           <section
             key={status}
             aria-label={STATUS_LABELS[status]}
             data-reef-column={status}
-            {...stylex.props(styles.column, over && styles.columnOver)}
+            {...stylex.props(styles.column, hovering && styles.columnOver)}
             onDragOver={(e) => {
               e.preventDefault();
-              setOverColumn(status);
-            }}
-            onDragLeave={(e) => {
-              if (e.currentTarget === e.target) setOverColumn(null);
+              const hit = e.target as Element;
+              if (hit.closest?.("[data-reef-card]") || hit.closest?.("[data-reef-slot]")) return;
+              setOver({ status, beforeId: undefined });
             }}
             onDrop={(e) => {
               e.preventDefault();
-              drop(status, undefined);
+              if (over?.status === status) commitDrop(over.status, over.beforeId);
+              else drop(status, undefined);
             }}
           >
             <header {...stylex.props(styles.columnHead)}>
@@ -481,9 +518,9 @@ export const Board = ({
               )}
             </header>
             <div {...stylex.props(styles.cards)}>
-              {column.length === 0 && (
+              {visible.length === 0 && slotAt < 0 && (
                 <div
-                  {...stylex.props(styles.emptyColumn, over && styles.emptyColumnOver)}
+                  {...stylex.props(styles.emptyColumn, hovering && styles.emptyColumnOver)}
                 >
                   <span {...stylex.props(styles.emptyColumnHint)}>
                     {dragging ? (
@@ -498,71 +535,104 @@ export const Board = ({
                   </span>
                 </div>
               )}
-              {column.map((row) => (
-                <article
-                  key={row.id}
-                  tabIndex={0}
-                  data-reef-card={row.id}
-                  data-reef-status={status}
-                  draggable={!readOnly}
-                  {...stylex.props(
-                    styles.card,
-                    row.id === selectedId && styles.cardSelected,
-                    row.id === dragId && styles.cardDragging,
-                  )}
-                  onClick={() => {
-                    if (suppressClick.current) {
-                      suppressClick.current = false;
-                      return;
-                    }
-                    onSelect(row.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onSelect(row.id);
-                    }
-                  }}
-                  onPointerDown={(e) => onCardPointerDown(row, e)}
-                  onDragStart={(e) => {
-                    e.dataTransfer.effectAllowed = "move";
-                    startPageLock();
-                    setDragId(row.id);
-                  }}
-                  onDragEnd={() => {
-                    stopPageLock();
-                    setDragId(null);
-                    setOverColumn(null);
-                    setGhost(null);
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    drop(status, row);
-                  }}
-                >
-                  <div {...stylex.props(styles.cardTop)}>
-                    <PriorityIcon
-                      level={row.priority}
-                      size={14}
-                      title={PRIORITIES[row.priority] ?? PRIORITIES[0]}
-                    />
-                    <span {...stylex.props(styles.cardId)}>#{row.id}</span>
-                    <span {...stylex.props(styles.spacer)} />
-                    {row.assignee !== undefined && (
-                      <Avatar name={row.assignee.name} title={`Assigned to ${row.assignee.name}`} />
+              {column.map((row) => {
+                const liftedCard = row.id === dragId;
+                const visIdx = visible.findIndex((r) => r.id === row.id);
+                const order =
+                  visIdx < 0
+                    ? 50
+                    : slotAt >= 0 && visIdx >= slotAt
+                      ? visIdx + 1
+                      : visIdx;
+                return (
+                  <article
+                    key={row.id}
+                    tabIndex={liftedCard ? -1 : 0}
+                    data-reef-card={row.id}
+                    data-reef-status={status}
+                    draggable={!readOnly}
+                    {...stylex.props(
+                      styles.card,
+                      !liftedCard && row.id === selectedId && styles.cardSelected,
+                      liftedCard && styles.cardLifted,
                     )}
-                  </div>
-                  <p {...stylex.props(styles.cardTitle)}>{row.title}</p>
-                  {row.labels.length > 0 && (
-                    <div {...stylex.props(styles.cardMeta)}>
-                      {row.labels.map((label) => (
-                        <LabelBadge key={label.id} name={label.name} color={label.color} />
-                      ))}
+                    style={{ order }}
+                    onClick={() => {
+                      if (liftedCard || suppressClick.current) {
+                        suppressClick.current = false;
+                        return;
+                      }
+                      onSelect(row.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelect(row.id);
+                      }
+                    }}
+                    onPointerDown={(e) => onCardPointerDown(row, e)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      startPageLock();
+                      lift(row, e.currentTarget);
+                    }}
+                    onDragEnd={() => {
+                      stopPageLock();
+                      setDragId(null);
+                      setOver(null);
+                      setGhost(null);
+                    }}
+                    onDragOver={(e) => {
+                      if (liftedCard) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const box = e.currentTarget.getBoundingClientRect();
+                      const after = e.clientY > (box.top + box.bottom) / 2;
+                      const ids = visible.map((r) => r.id);
+                      setOver({
+                        status,
+                        beforeId: after ? afterCardBeforeId(ids, row.id) : row.id,
+                      });
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (over?.status === status) commitDrop(over.status, over.beforeId);
+                      else drop(status, row);
+                    }}
+                  >
+                    <div {...stylex.props(styles.cardTop)}>
+                      <PriorityIcon
+                        level={row.priority}
+                        size={14}
+                        title={PRIORITIES[row.priority] ?? PRIORITIES[0]}
+                      />
+                      <span {...stylex.props(styles.cardId)}>#{row.id}</span>
+                      <span {...stylex.props(styles.spacer)} />
+                      {row.assignee !== undefined && (
+                        <Avatar name={row.assignee.name} title={`Assigned to ${row.assignee.name}`} />
+                      )}
                     </div>
-                  )}
-                </article>
-              ))}
+                    <p {...stylex.props(styles.cardTitle)}>{row.title}</p>
+                    {row.labels.length > 0 && (
+                      <div {...stylex.props(styles.cardMeta)}>
+                        {row.labels.map((label) => (
+                          <LabelBadge key={label.id} name={label.name} color={label.color} />
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+              {slotAt >= 0 && (
+                <div
+                  data-reef-slot=""
+                  data-reef-status={status}
+                  data-reef-before={over?.beforeId ?? ""}
+                  {...stylex.props(styles.slot)}
+                  style={{ height: slotHeight, order: slotAt }}
+                />
+              )}
             </div>
           </section>
         );
