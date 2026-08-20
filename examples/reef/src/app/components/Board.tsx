@@ -42,7 +42,7 @@ const styles = stylex.create({
     overflowX: "auto",
     padding: space.lg,
     touchAction: "pan-x pan-y",
-    overscrollBehaviorX: "none",
+    overscrollBehavior: "none",
   },
   boardDragging: {
     overflowX: "hidden",
@@ -55,6 +55,7 @@ const styles = stylex.create({
     flexGrow: 1,
     minHeight: 0,
     minWidth: 0,
+    overscrollBehavior: "none",
   },
   touchHint: {
     display: { default: "none", "@media (hover: none)": "block" },
@@ -129,6 +130,7 @@ const styles = stylex.create({
     overflowY: "auto",
     flexGrow: 1,
     minHeight: "80px",
+    overscrollBehavior: "contain",
   },
   card: {
     position: "relative",

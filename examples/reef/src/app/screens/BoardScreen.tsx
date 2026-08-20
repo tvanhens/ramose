@@ -74,6 +74,7 @@ const styles = stylex.create({
     minHeight: 0,
     height: "100dvh",
     overflow: "hidden",
+    overscrollBehavior: "none",
   },
   header: {
     display: "flex",

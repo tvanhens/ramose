@@ -11,6 +11,9 @@ html,
 body,
 #root {
   height: 100%;
+  /* Chrome/Safari treat root overscroll as pull-to-refresh. Inner
+     overflow:auto columns still scroll; this only stops the chain. */
+  overscroll-behavior: none;
 }
 
 body {
