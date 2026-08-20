@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type HitNode,
   dropTargetFromStack,
+  pinScrollLeft,
   rankForDrop,
 } from "../src/app/components/board-dnd.ts";
 import { RANK_GAP } from "../src/domain/rank.ts";
@@ -42,6 +43,16 @@ describe("rankForDrop", () => {
 
   test("an empty target column gets the first gap", () => {
     expect(rankForDrop(rows, 1, "done", undefined)).toBe(RANK_GAP);
+  });
+});
+
+describe("pinScrollLeft", () => {
+  test("writes the snapshotted offset back", () => {
+    const el = { scrollLeft: 80 };
+    const pin = pinScrollLeft(el);
+    el.scrollLeft = 240;
+    pin();
+    expect(el.scrollLeft).toBe(80);
   });
 });
 

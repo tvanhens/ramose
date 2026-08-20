@@ -65,6 +65,14 @@ export const dropTargetFromStack = (
   return null;
 };
 
+/** Snapshot `scrollLeft` and write it back — used while a card is in flight. */
+export const pinScrollLeft = (el: { scrollLeft: number }): (() => void) => {
+  const left = el.scrollLeft;
+  return () => {
+    el.scrollLeft = left;
+  };
+};
+
 export const dropTargetFromPoint = (
   x: number,
   y: number,

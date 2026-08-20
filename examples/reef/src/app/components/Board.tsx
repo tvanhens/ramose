@@ -11,7 +11,7 @@
  */
 
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { BoardRow } from "../../domain/queries.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
@@ -20,6 +20,7 @@ import {
   TOUCH_CANCEL_PX,
   TOUCH_HOLD_MS,
   dropTargetFromPoint,
+  pinScrollLeft,
   rankForDrop,
 } from "./board-dnd.ts";
 
@@ -40,6 +41,12 @@ const styles = stylex.create({
     overflowX: "auto",
     padding: space.lg,
     touchAction: "pan-x pan-y",
+    overscrollBehaviorX: "none",
+  },
+  boardDragging: {
+    overflowX: "hidden",
+    touchAction: "none",
+    overscrollBehavior: "none",
   },
   wrap: {
     display: "flex",
@@ -272,6 +279,7 @@ export const Board = ({
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
   const stopListen = useRef<(() => void) | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
 
   const resetDrag = () => {
     const held = touch.current;
@@ -299,6 +307,27 @@ export const Board = ({
   };
 
   useEffect(() => () => resetDrag(), []);
+
+  // The board is `overflow-x: auto` so columns can pan. While a card is
+  // in flight that same scroller would follow the finger/pointer — pin it.
+  useLayoutEffect(() => {
+    const el = boardRef.current;
+    if (el === null || dragId === null) return;
+    const pin = pinScrollLeft(el);
+    pin();
+    const prevent = (e: Event) => {
+      e.preventDefault();
+    };
+    el.addEventListener("scroll", pin);
+    el.addEventListener("touchmove", prevent, { passive: false });
+    el.addEventListener("wheel", prevent, { passive: false });
+    return () => {
+      el.removeEventListener("scroll", pin);
+      el.removeEventListener("touchmove", prevent);
+      el.removeEventListener("wheel", prevent);
+      pin();
+    };
+  }, [dragId]);
 
   const listenTouch = () => {
     stopListen.current?.();
@@ -389,7 +418,10 @@ export const Board = ({
   return (
     <div {...stylex.props(styles.wrap)}>
       <p {...stylex.props(styles.touchHint)}>Hold a card, then drag to move it</p>
-      <div {...stylex.props(styles.board)}>
+      <div
+        ref={boardRef}
+        {...stylex.props(styles.board, dragging && styles.boardDragging)}
+      >
       {STATUSES.map((status) => {
         const column = rows.filter((r) => r.status === status);
         const over = overColumn === status && dragging;
