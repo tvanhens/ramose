@@ -135,3 +135,14 @@ The API token needs the `todos` e2e permissions (Workers Scripts, R2 — see
 CONTRIBUTING.md) **plus `Account / D1 / Edit`** for the Better Auth database.
 The deployed SPA is served by the auth Worker itself, so cookies stay
 same-origin with no proxy.
+
+Two things the local run cannot show you, both handled in
+`src/infra/resources.ts`:
+
+- The peer reaches the auth Worker's JWKS through the `AUTH` **service
+  binding** (`RAMOSE_JWKS_SERVICE`), not its public URL. Deployed, both Workers
+  sit on `*.workers.dev`, and Cloudflare answers a Worker→Worker subrequest
+  there with error 1042 instead of the key set — every token would 401.
+- `RAMOSE_POLICY` is a plain-text binding, capped at 5.1 kB. The compiled
+  policy is namespace-shaped for that reason (`test/policy.test.ts` pins the
+  size); miniflare enforces no such limit.

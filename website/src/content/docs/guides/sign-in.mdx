@@ -120,7 +120,7 @@ In the browser, `Ramose.token.jwt(() => fetch("/api/ramose-token", { method: "PO
 
 The **Ramose server** needs the policy, the keys URL, and the issuer / audience pair. `Ramose.authEnv` turns one `auth` value into its environment variables:
 
-```ts title="examples/reef/src/infra/resources.ts:41-66"
+```ts title="examples/reef/src/infra/resources.ts:47-77"
 export const RamoseWorker = Cloudflare.Worker("Peer", {
   // …
   env: {
@@ -128,8 +128,10 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
     ...Ramose.authEnv({
       policy: compiledPolicy(),
       auth: REEF_AUTH,
+      jwksService: "AUTH",
       internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
     }),
+    AUTH: Api,
     [Ramose.AUTH_ENV_KEYS.jwksUrl]: Effect.map(
       Api,
       (api) => Output.interpolate`${api.url}${AUTH_BASE_PATH}/jwks`,
@@ -140,6 +142,12 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 ```
 
 With a policy set and any of the three missing, the server denies every request rather than falling open; pass the same `auth` to `Ramose.Server` and the [deploy](/guides/deploy/) fails instead. For offline tests, `RAMOSE_JWKS_JSON` takes a literal key set — [Policy](/reference/policy/#testing-without-a-login-provider).
+
+`AUTH: Api` binds the sign-in Worker into the server, and `jwksService` names
+that binding as the route to the keys. Deployed, both are `workers.dev` hosts,
+and Cloudflare answers a Worker-to-Worker request there with error 1042 rather
+than the key set — so the public URL alone rejects every token, and only once
+deployed ([Server](/reference/server/)).
 
 ## Tokens refresh themselves
 

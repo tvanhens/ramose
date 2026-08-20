@@ -125,7 +125,7 @@ Any denied op rejects the whole tx. Cost: one policy pass per non-admin tx on th
 | client session | `packages/ramose/src/db/session.ts` | token stays on the upgrade; internal `setToken` + the refresh `auth` frame; reconnect in place |
 | errors | `packages/ramose/src/worker/errors.ts:23`, `toHttp:71-72`; `packages/ramose/src/db/Errors.ts` and the 401/403 arm of `packages/ramose/src/db/http.ts` | `Unauthorized` gains `code`/`attr`; upstream bodies mapped, not passed through; `PolicyError` in `packages/ramose/src/db/SchemaErrors.ts` |
 | policy value | `packages/ramose/src/db/Catalog.ts` | `Catalog` unchanged; `Ramose.Policy.policy(catalog, …)` is a separate value on the non-portable entry |
-| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RAMOSE_TOKEN`: `...Ramose.authEnv({ policy: Ramose.Policy.compile(policy), jwksUrl, auth: AUTH })` — the `AuthConfig` from §1 stands in for the loose `issuers` / `aud` / `maxTtl` keys (which still work, and win when set) and lowers to `RAMOSE_JWKS_URL`, `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD`, `RAMOSE_JWT_MAX_TTL` |
+| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RAMOSE_TOKEN`: `...Ramose.authEnv({ policy: Ramose.Policy.compile(policy), jwksUrl, auth: AUTH })` — the `AuthConfig` from §1 stands in for the loose `issuers` / `aud` / `maxTtl` keys (which still work, and win when set) and lowers to `RAMOSE_JWKS_URL`, `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD`, `RAMOSE_JWT_MAX_TTL`. When the issuer is another Worker on the same account, `jwksService` names a service binding on the peer and the JWKS fetch is dispatched through it — Cloudflare refuses the same request over `*.workers.dev` with error 1042 (docs/RUNBOOK.md) |
 
 ## 5. Out of scope
 

@@ -208,7 +208,7 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
 
 `Ramose.authEnv({ policy, jwksUrl, auth: { issuer, audience, ttl }, allowedOrigins?, internalSecret? })` returns these for the server Worker's `env`; `AUTH_ENV_KEYS` names them.
 
-```ts title="examples/reef/src/infra/resources.ts:45-53"
+```ts title="examples/reef/src/infra/resources.ts:51-60"
   env: {
     STORE: Store,
     TRANSACTOR: Transactor,
@@ -216,6 +216,7 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
     ...Ramose.authEnv({
       policy: compiledPolicy(),
       auth: REEF_AUTH,
+      jwksService: "AUTH",
       internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
     }),
 ```
@@ -224,6 +225,7 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
 | --- | --- | --- |
 | `policy` | `RAMOSE_POLICY` | the compiled JSON; setting it arms enforcement |
 | `jwksUrl` | `RAMOSE_JWKS_URL` | where the sign-in provider publishes its public keys |
+| `jwksService` | `RAMOSE_JWKS_SERVICE` | service binding to fetch `jwksUrl` through; needed when the provider is a Worker on your account ([Server](/reference/server/)) |
 | `issuers` | `RAMOSE_JWT_ISS` | accepted `iss` values |
 | `aud` | `RAMOSE_JWT_AUD` | the required `aud` |
 | `maxTtl` | `RAMOSE_JWT_MAX_TTL` | cap on token lifetime, seconds (default 900) |

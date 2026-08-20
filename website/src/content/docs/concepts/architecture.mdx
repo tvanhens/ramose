@@ -59,7 +59,7 @@ Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of 
 
 That table is why the deploy file names three things: a storage bucket where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) — one for the writer, one for the read copy.
 
-```ts title="examples/reef/src/infra/resources.ts:37-39"
+```ts title="examples/reef/src/infra/resources.ts:43-45"
 const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });

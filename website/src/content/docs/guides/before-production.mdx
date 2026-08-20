@@ -23,6 +23,11 @@ A freshly deployed **Ramose server** accepts every request, from anyone, with fu
       `RAMOSE_JWT_ISS`, and `RAMOSE_JWT_AUD`. Pass the same `auth` object to
       `Ramose.Server` and the deploy fails loudly when one is missing — better
       than a server that denies every request at runtime.
+- [ ] **Route the keys through a binding.** If your sign-in provider is another
+      Worker on the same account, bind it into the server and name that binding
+      in `RAMOSE_JWKS_SERVICE`. Fetching its `workers.dev` URL returns
+      Cloudflare error 1042, not the keys, so every token is rejected — and only
+      after you deploy, since local runs have no such limit.
 - [ ] **Narrow the origins.** Without a policy the server answers CORS for `*`
       and ignores `RAMOSE_ALLOWED_ORIGINS`. Once a policy is set, list your own
       origins there. An empty list sends no CORS header at all, which blocks

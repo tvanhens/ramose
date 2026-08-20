@@ -89,10 +89,21 @@ distributed transactions across partitions.
 | `RAMOSE_TOKEN` | unset (auth off) | one bearer token, checked for every database name |
 | `RAMOSE_POLICY` | unset | compiled policy (`Ramose.Policy.compile`); set = enforcement is armed and fails closed |
 | `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`) | unset | the issuer's public keys; required once `RAMOSE_POLICY` is set |
+| `RAMOSE_JWKS_SERVICE` | unset (plain `fetch`) | name of a service binding to fetch `RAMOSE_JWKS_URL` through — required when the issuer is another Worker on the same account (see below) |
 | `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` | unset | accepted issuers (comma-separated) and the audience every token must carry |
 | `RAMOSE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, in seconds |
 | `RAMOSE_ALLOWED_ORIGINS` | unset | once a policy is set, CORS narrows to this list (empty = no CORS header) |
 | `RAMOSE_INTERNAL_SECRET` | unset (no gate) | Worker→DO shared secret; every internal fetch carries it, `/subscribe` included |
+
+**The issuer is usually a sibling Worker.** Cloudflare answers a Worker→Worker
+subrequest over `*.workers.dev` with error 1042 — a 404 carrying an HTML body,
+not the key set — so a peer that fetches its issuer's JWKS over the public
+hostname verifies nothing and 401s every token. Bind the issuer Worker into the
+peer and name that binding in `RAMOSE_JWKS_SERVICE`; the fetch is dispatched
+through it (`examples/reef/src/infra/resources.ts`). The failure is invisible
+locally: miniflare has no such restriction, so `alchemy dev` passes and only the
+deploy 401s. A named binding that is missing fails closed rather than falling
+back to a fetch that cannot work.
 
 `principalOf()` (`packages/ramose/src/worker/auth.ts`) resolves the caller per request from
 `Authorization: Bearer <token>` (or `?token=`, since a browser cannot set headers on a

@@ -239,7 +239,7 @@ export const issueExtraShape = {
 } as const;
 ```
 
-```ts title="examples/reef/test/policy.test.ts:70-75"
+```ts title="examples/reef/test/policy.test.ts:80-85"
   test("a masked attribute pulled as required is a compile error", () => {
     const badShape = { note: Issue.privateNote };
     expect(() =>
@@ -291,7 +291,7 @@ One file declares the server, its storage and the sign-in Worker; `bun run dev:r
 <details>
 <summary>The Ramose server, declared</summary>
 
-```ts title="examples/reef/src/infra/resources.ts:37-52"
+```ts title="examples/reef/src/infra/resources.ts:43-59"
 const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
