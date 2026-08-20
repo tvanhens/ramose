@@ -48,8 +48,18 @@ describe("reef policy", () => {
     expect(arms).toEqual([
       { _tag: "allow", expr: { _tag: "class", class: "admin" } },
     ]);
-    // …and the namespace read stays broad for every other issue attribute.
-    expect(parsed.attrs[":issue/title"]?.read).toEqual(parsed.ns?.issue?.read);
+    // …and it is the only narrowing: every other issue attribute is unnamed
+    // and inherits the broad namespace read at eval time.
+    expect(Object.keys(parsed.attrs)).toEqual([":issue/privateNote"]);
+    expect(parsed.ns?.issue?.read).toBeDefined();
+  });
+
+  // `RAMOSE_POLICY` is a Cloudflare plain-text binding, capped at 5.1 kB —
+  // over it the peer Worker cannot be deployed at all, which is a failure only
+  // a real deploy surfaces (miniflare enforces no such limit).
+  test("compiles small enough to bind on Cloudflare", () => {
+    const bytes = new TextEncoder().encode(compiledPolicy()).length;
+    expect(bytes).toBeLessThan(5 * 1024);
   });
 
   test("viewers have no write arms anywhere", () => {

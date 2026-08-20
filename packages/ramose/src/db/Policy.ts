@@ -393,12 +393,19 @@ const claimsJson = (struct: Schema.Struct<Schema.Struct.Fields> | undefined): un
 };
 
 /**
- * Lower to the compiled AST. Namespace rules are materialised onto every
- * attribute the catalog declares under that prefix *and* kept under `ns`, so
- * an attribute added later still inherits them. Core ANDs `attrs[ident][op]`
- * with `ns[prefix][op]`, so a materialised op is the identical arm list on
- * both sides (AND is idempotent) and an attribute rule is emitted alone —
- * core supplies the narrowing.
+ * Lower to the compiled AST. Namespace rules are emitted once, under `ns`;
+ * `attrs` carries only the attributes that narrow their namespace. Core ANDs
+ * `attrs[ident][op]` with `ns[prefix][op]` and falls back to whichever side is
+ * present (internal/core/policy/eval.ts#allowsOp), so an attribute inherits its
+ * namespace without being named and an attribute rule is emitted alone — core
+ * supplies the narrowing.
+ *
+ * Materialising the namespace arms onto every declared attribute instead (what
+ * this did until the wire form grew past what a deploy could carry) is the same
+ * policy — AND is idempotent — but sizes the JSON by catalog × ops rather than
+ * by the rules actually written, and `RAMOSE_POLICY` is a Cloudflare plain-text
+ * binding capped at 5.1 kB. Reef's four namespaces compiled to 14 kB that way
+ * and could not deploy at all.
  */
 const lower = (p: Policy): CompiledPolicy => {
   const attrs: Record<string, AttrRules> = {};
@@ -409,19 +416,16 @@ const lower = (p: Policy): CompiledPolicy => {
     const declared = (p.catalog.namespaces as Record<string, { attributes: Record<string, unknown> }>)[nsKey]!;
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = entry.rules;
 
-    for (const key of Object.keys(declared.attributes)) {
-      const ident = `:${entry.prefix}/${key}`;
-      const own = entry.attrs[ident];
-      const merged: Record<string, readonly Arm[]> = {};
+    const declaredIdents = new Set(Object.keys(declared.attributes).map((key) => `:${entry.prefix}/${key}`));
+    for (const [ident, own] of Object.entries(entry.attrs)) {
+      // an attribute rule on an ident the catalog no longer declares is a bug
+      if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the catalog`, ident);
+      const narrowed: Record<string, readonly Arm[]> = {};
       for (const op of POLICY_OPS) {
-        const arms = own?.[op] ?? entry.rules[op];
-        if (arms) merged[op] = arms;
+        const arms = own[op];
+        if (arms) narrowed[op] = arms;
       }
-      if (Object.keys(merged).length > 0) attrs[ident] = merged as AttrRules;
-    }
-    // an attribute rule on an ident the catalog no longer declares is a bug
-    for (const ident of Object.keys(entry.attrs)) {
-      if (attrs[ident] === undefined) fail(`ns.${nsKey}.attrs: ${ident} is not in the catalog`, ident);
+      if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed as AttrRules;
     }
     Object.assign(preset, entry.preset);
   }

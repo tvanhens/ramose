@@ -51,15 +51,16 @@ describe("compile", () => {
     expect(c.claims).toBeDefined();
   });
 
-  test("namespace rules land on every attribute of the namespace", () => {
+  test("namespace rules are emitted once, under `ns`", () => {
     const c = compiled();
-    for (const ident of [":doc/title", ":doc/owner", ":doc/project", ":doc/audit"]) {
-      expect(c.attrs[ident]).toBeDefined();
-      expect(c.attrs[ident]!.add).toEqual(c.ns!.doc!.add!);
-    }
-    // and `ns` is emitted too, so a later `:doc/ssn` inherits rather than leaks
     expect(Object.keys(c.ns!).sort()).toEqual(["doc", "org", "project", "user"]);
     expect(c.ns!.doc!.read).toBeDefined();
+    // An attribute with no rule of its own is not named at all: `allowsOp`
+    // falls back to `ns[prefix]`, so it inherits — and a later `:doc/ssn`
+    // inherits by the same path rather than leaking.
+    for (const ident of [":doc/title", ":doc/owner", ":doc/project"]) {
+      expect(c.attrs[ident]).toBeUndefined();
+    }
   });
 
   test("an attribute rule is emitted alone; core ANDs it with the namespace rule", () => {
@@ -67,16 +68,18 @@ describe("compile", () => {
     expect(c.attrs[":doc/audit"]!.read).toEqual([
       { _tag: "allow", expr: { _tag: "class", class: "admin" } },
     ]);
-    // ops the attribute rule does not name still inherit the namespace rule
-    expect(c.attrs[":doc/audit"]!.add).toEqual(c.ns!.doc!.add!);
+    // Only the narrowed op is carried; the rest of `:doc/audit` is the
+    // namespace rule, reached through `ns` at eval time.
+    expect(Object.keys(c.attrs[":doc/audit"]!)).toEqual(["read"]);
     // the namespace read is still on `ns`, so the AND in `allowsOp` narrows
     expect(c.ns!.doc!.read).not.toEqual(c.attrs[":doc/audit"]!.read);
-    expect(c.attrs[":doc/title"]!.read).toEqual(c.ns!.doc!.read!);
+    // `attrs` carries narrowings and nothing else
+    expect(Object.keys(c.attrs)).toEqual([":doc/audit"]);
   });
 
   test("nested ref lowers to nested ref exprs; a bare attr target means the principal", () => {
     const c = compiled();
-    const read = c.attrs[":doc/project"]!.read!;
+    const read = c.ns!.doc!.read!;
     expect(read[0]!.expr).toEqual({
       _tag: "or",
       exprs: [
@@ -105,7 +108,7 @@ describe("compile", () => {
 
   test("a claim operand keeps its path", () => {
     const c = compiled();
-    expect(c.attrs[":user/sub"]!.read![0]!.expr).toEqual({
+    expect(c.ns!.user!.read![0]!.expr).toEqual({
       _tag: "eq",
       attr: ":user/sub",
       operand: { _tag: "claim", path: ["sub"] },
