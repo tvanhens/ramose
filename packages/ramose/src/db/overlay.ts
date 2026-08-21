@@ -734,9 +734,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const finishCatchUp = (): void => {
     catchingUp = false;
     catchUpDirty = false;
-    // Always notify so hydrate-`[]` during the walk is distinct from a
-    // truly empty board after catch-up. Reef uses that second emission.
-    notify();
   };
 
   const sync = async (retry = true): Promise<void> => {
@@ -762,11 +759,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         options.session.bump(t);
         schedulePersist();
       }
-      // One epoch for the walk, then outbox flush is apply-is-notify.
+      // Always notify so hydrate-`[]` during the walk is distinct from a
+      // truly empty board after catch-up. Stamp readyGen first.
       finishCatchUp();
+      notify();
       await flush();
     } catch (cause) {
-      finishCatchUp();
       const fail = isDatabaseError(cause)
         ? cause
         : new NetworkError({
@@ -780,16 +778,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           walkFail = undefined;
           readyGen = options.session.generation;
         }
+        finishCatchUp();
+        notify();
         return;
       }
       // Auth / request failure is not a loader — stamp it and notify
       // so live can keep the last rows (or honest empty) and surface it.
+      // walkFail must be set *before* notify, or live retries a clean ready().
       if (!options.session.closed) {
         walkFail = fail;
         readyGen = options.session.generation;
+        finishCatchUp();
         notify();
         return;
       }
+      finishCatchUp();
       throw fail;
     }
   };

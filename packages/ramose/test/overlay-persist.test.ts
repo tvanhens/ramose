@@ -884,7 +884,9 @@ describe("flushPersist keeps unpublished when saveView throws", () => {
         }
         await memory.put(key, value);
       },
-      delete: (key) => memory.delete?.(key),
+      delete: async (key) => {
+        await memory.delete?.(key);
+      },
     };
     const world = await schemaConn();
     await world.transact([{ ":user/name": "Ada" }]);
