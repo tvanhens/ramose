@@ -74,9 +74,10 @@ stage name is unguessable and torn down at the end of the run.
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |
+| `.github/workflows/reef-preview.yml` | PRs touching `examples/reef/` or `packages/ramose/` | deploy a `pr-<n>` preview of the Reef demo, comment the SPA URL, destroy on close |
 | `.github/workflows/reef-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the Reef demo `prod` stage to https://reef.ramose.ai |
 
-The e2e, docs-preview, docs-publish, and reef-publish jobs use the GitHub **Development**
+The e2e, docs-preview, docs-publish, reef-preview, and reef-publish jobs use the GitHub **Development**
 environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
 a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
 `RAMOSE_DOCS_DOMAIN` (variable) overrides the production docs hostname
@@ -85,7 +86,9 @@ token must be able to read the zone and edit its Workers). The existing GitHub
 variable may still be named `RIPPLE_DOCS_DOMAIN` — `docs-publish.yml` maps
 whichever name is set onto `RAMOSE_DOCS_DOMAIN` for the deploy, so rename the
 variable at your convenience. `REEF_DOMAIN` (variable) overrides the
-Reef demo's hostname (default `reef.ramose.ai`); publishing Reef additionally
+Reef demo's hostname (default `reef.ramose.ai`) and is read **only** by
+`reef-publish.yml` — preview never sets it, so a `pr-<n>` stage cannot adopt
+the production D1 / R2 / hostname. Publishing or previewing Reef additionally
 needs **Account / D1 / Edit** on the token, for the Better Auth database. Cursor Cloud Agents
 need the same names in the Cursor secrets panel — see
 [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
@@ -113,6 +116,19 @@ deleting the Worker named in the preview comment directly via the Cloudflare
 API. The minimal CI token above covers everything; Cloudflare-hosted Alchemy
 state (`Cloudflare.state()`) is not used because its state store needs Secrets
 Store and edge-preview token scopes beyond that minimal set.
+
+### Reef previews
+
+A PR that touches `examples/reef/` or `packages/ramose/` (the overlay/client
+the demo consumes) gets its own preview: an Alchemy stage named `pr-<number>`
+on workers.dev, with the SPA URL posted/updated as a PR comment on every push.
+`REEF_DOMAIN` is unset, so the stage is an ordinary personal deploy — isolated
+D1 + R2 + Workers, no `reef.ramose.ai` route, no pinned `ramose-reef-*` names.
+The peer URL is only knowable after the first deploy, so CI follows the
+two-pass flow in `examples/reef/README.md` and comments the auth Worker URL
+(the page a human opens), not the peer. When the PR closes — merged or not —
+the stage is destroyed and the comment is edited to say so. Leftover Worker
+deletion only accepts names that embed this `pr-<n>` stage.
 
 ### Docs production
 
