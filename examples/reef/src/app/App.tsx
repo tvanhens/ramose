@@ -2,10 +2,8 @@
  * Session-gated shell: Better Auth session → workspace picker → board.
  * Paths are the pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a
  * shared URL land on the same screen. The active workspace's Ramose client is
- * owned by `<RamoseProvider key={slug}>` as soon as the session user and
- * slug exist — first paint is hydrate, not a JWT loader. Switching
- * workspaces changes the key, which closes the old client and connects
- * the next one. `cls` / org name fill in after claims.
+ * owned by `<RamoseProvider key={slug}>`: switching workspaces changes the
+ * key, which closes the old client and connects the next one.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
  * token overrides also reach UI portaled to `document.body` — dialogs and
@@ -21,16 +19,10 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useState,
 } from "react";
 import { authClient, listWorkspaces, type SessionUser } from "./auth.ts";
-import {
-  mintWorkspace,
-  openWorkspace,
-  RAMOSE_URL,
-} from "./ramose.ts";
-import type { RamoseClass } from "../domain/shared.ts";
+import { openWorkspace, RAMOSE_URL, type Workspace } from "./ramose.ts";
 import { RouteProvider, useRoute } from "./route.tsx";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
@@ -123,48 +115,58 @@ export const App = () => {
   );
 };
 
+interface Open {
+  readonly workspace: Workspace;
+  /** Display name (the Better Auth organization name); the slug is the db. */
+  readonly name: string;
+}
+
 const Root = () => {
   const session = authClient.useSession();
   const toast = useToast();
   const { route, navigate } = useRoute();
+  const [open, setOpen] = useState<Open | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   const user = session.data?.user;
+  const userId = user?.id;
+  const userName = user?.name;
+  const userEmail = user?.email;
   const wantedSlug = route.kind === "board" ? route.slug : null;
-  // Token is lazy. Mount the Provider as soon as the session user and
-  // slug exist — do not await claims / listWorkspaces before first paint.
-  const workspace = useMemo(
-    () => (wantedSlug === null ? null : mintWorkspace(wantedSlug)),
-    [wantedSlug],
-  );
-  const [name, setName] = useState(wantedSlug ?? "");
-  const [cls, setCls] = useState<RamoseClass>("viewer");
+  const loadedSlug = open?.workspace.slug ?? null;
 
   useEffect(() => {
-    if (wantedSlug === null || workspace === null) {
-      setName("");
-      setCls("viewer");
+    if (wantedSlug === null) {
+      setOpen(null);
       return;
     }
+    if (userId === undefined || userName === undefined || userEmail === undefined) {
+      return;
+    }
+    if (loadedSlug === wantedSlug) return;
+    const self: SessionUser = { id: userId, name: userName, email: userEmail };
     let cancelled = false;
-    setName(wantedSlug);
-    setCls("viewer");
+    setOpening(wantedSlug);
     void (async () => {
-      const orgs = await listWorkspaces().catch(() => []);
-      if (cancelled) return;
-      const org = orgs.find((o) => o.slug === wantedSlug);
-      if (org !== undefined) setName(org.name);
       try {
-        const claims = await workspace.token.claims();
+        const orgs = await listWorkspaces().catch(() => []);
         if (cancelled) return;
-        setCls((claims.ramose?.class ?? "viewer") as RamoseClass);
+        const org = orgs.find((o) => o.slug === wantedSlug);
+        const workspace = await openWorkspace(wantedSlug, self, false);
+        if (cancelled) return;
+        setOpen({ workspace, name: org?.name ?? wantedSlug });
       } catch (err) {
         if (cancelled) return;
         toast("error", errorMessage(err));
+        setOpen(null);
+        navigate({ kind: "home" }, { replace: true });
+      } finally {
+        if (!cancelled) setOpening(null);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [wantedSlug, workspace, toast]);
+  }, [wantedSlug, loadedSlug, userId, userName, userEmail, toast, navigate]);
 
   const createAndOpen = useCallback(
     async (slug: string, user: SessionUser) => {
@@ -183,27 +185,30 @@ const Root = () => {
   if (user === undefined) return <AuthScreen />;
   const me: SessionUser = { id: user.id, name: user.name, email: user.email };
 
-  if (wantedSlug !== null && workspace !== null) {
-    return (
-      <RamoseProvider
-        key={wantedSlug}
-        url={RAMOSE_URL}
-        token={workspace.token}
-      >
-        <BoardScreen
-          workspace={{ ...workspace, cls }}
-          name={name === "" ? wantedSlug : name}
-          user={me}
-          onLeave={() => navigate({ kind: "home" })}
-        />
-      </RamoseProvider>
-    );
+  if (wantedSlug !== null) {
+    if (open !== null && open.workspace.slug === wantedSlug) {
+      return (
+        <RamoseProvider
+          key={open.workspace.slug}
+          url={RAMOSE_URL}
+          token={open.workspace.token}
+        >
+          <BoardScreen
+            workspace={open.workspace}
+            name={open.name}
+            user={me}
+            onLeave={() => navigate({ kind: "home" })}
+          />
+        </RamoseProvider>
+      );
+    }
+    return <Loading text={`opening ${wantedSlug}…`} />;
   }
 
   return (
     <WorkspacesScreen
       user={me}
-      opening={null}
+      opening={opening}
       onOpen={(slug) => navigate({ kind: "board", slug })}
       onCreate={(slug) => createAndOpen(slug, me)}
     />

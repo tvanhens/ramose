@@ -23,8 +23,8 @@ import { schemaTx } from "../src/db/ensure.ts";
 import { NetworkError, TxRejected } from "../src/db/Errors.ts";
 import {
   followerWorkerUrl,
+  followerWorkerUrlBeside,
   openFollower,
-  openFollowerHost,
 } from "../src/db/follower.ts";
 import { fromStandardFetch } from "../src/db/http.ts";
 import { query } from "../src/db/NavQuery.ts";
@@ -635,127 +635,6 @@ describe("two ports, one follower", () => {
   });
 });
 
-describe("resync rebases pending, it does not wipe", () => {
-  test("hydrate/move pending Bea, dump of Ada — Bea stays on view / live", async () => {
-    const store = memoryStore();
-    const world = await schemaConn();
-    await world.transact([{ ":user/name": "Ada" }]);
-    const dump = await snapshotDatoms(world);
-
-    const live = openOverlay({
-      session: fakeSession(),
-      post: () => Effect.fail(new NetworkError({ message: "offline" })),
-      catalog: Movies,
-      store,
-      name: "movies",
-    });
-    await run(live.ready());
-    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
-    await run(live.transact([{ ":user/name": "Bea" }]));
-    expect(await namesOf(live)).toEqual(["Ada", "Bea"]);
-    const before = await live.snapshot();
-    expect(before.pending).toHaveLength(1);
-    const beaId = before.pending[0]!.clientTxId;
-
-    const ticks: number[] = [];
-    const liveNames: string[][] = [];
-    live.onChange(() => {
-      ticks.push(live.epoch);
-      void namesOf(live).then((n) => liveNames.push(n));
-    });
-
-    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
-    expect(await namesOf(live)).toEqual(["Ada", "Bea"]);
-    await until(() => liveNames.some((n) => n.includes("Bea")));
-    expect(liveNames.at(-1)).toEqual(["Ada", "Bea"]);
-    const after = await live.snapshot();
-    expect(after.pending).toHaveLength(1);
-    expect(after.pending[0]!.clientTxId).toBe(beaId);
-    expect(after.confirmed.some((d) => d[3] === "Ada")).toBe(true);
-    expect(after.confirmed.some((d) => d[3] === "Bea")).toBe(false);
-    expect(ticks.length).toBeGreaterThan(0);
-
-    const reloaded = openOverlay({
-      session: fakeSession({
-        onSync: (from) => ({ body: { t: from, from } }),
-      }),
-      post: () => Effect.fail(new NetworkError({ message: "still offline" })),
-      catalog: Movies,
-      store,
-      name: "movies",
-    });
-    expect(reloaded).not.toBe(live);
-    await run(reloaded.ready());
-    expect(await namesOf(reloaded)).toEqual(["Ada", "Bea"]);
-    expect((await reloaded.snapshot()).pending[0]!.clientTxId).toBe(beaId);
-  });
-
-  test("a dump already on applied cannot interleave with the layer's first notify", async () => {
-    const memory = memoryStore();
-    let holdPuts = false;
-    let waitingPuts = 0;
-    let releasePuts!: () => void;
-    const putsHeld = new Promise<void>((resolve) => {
-      releasePuts = resolve;
-    });
-    const store: ByteStore = {
-      get: (key) => memory.get(key),
-      put: async (key, value) => {
-        if (holdPuts) {
-          waitingPuts += 1;
-          await putsHeld;
-        }
-        await memory.put(key, value);
-      },
-    };
-
-    const world = await schemaConn();
-    await world.transact([{ ":user/name": "Ada" }]);
-    const dump = await snapshotDatoms(world);
-
-    const overlay = openOverlay({
-      session: fakeSession(),
-      post: () => Effect.fail(new NetworkError({ message: "offline" })),
-      catalog: Movies,
-      store,
-      name: "movies",
-    });
-    await run(overlay.ready());
-    await overlay.handlePush({ op: "resync", t: world.t, datoms: dump });
-    expect(await namesOf(overlay)).toEqual(["Ada"]);
-
-    holdPuts = true;
-    const dumpP = overlay.handlePush({
-      op: "resync",
-      t: world.t,
-      datoms: dump,
-    });
-    await until(() => waitingPuts === 1);
-    holdPuts = false;
-
-    const paints: string[][] = [];
-    overlay.onChange(() => {
-      void namesOf(overlay).then((n) => paints.push(n));
-    });
-
-    const transactP = run(overlay.transact([{ ":user/name": "Bea" }]));
-    expect(waitingPuts).toBe(1);
-    expect(paints).toEqual([]);
-
-    releasePuts();
-    await dumpP;
-    await transactP;
-
-    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
-    await until(() => paints.some((n) => n.includes("Bea")));
-    const beaAt = paints.findIndex((n) => n.includes("Bea"));
-    expect(beaAt).toBeGreaterThanOrEqual(0);
-    expect(paints.slice(beaAt).every((n) => n.includes("Bea"))).toBe(true);
-    expect(paints.at(-1)).toEqual(["Ada", "Bea"]);
-    expect((await overlay.snapshot()).pending).toHaveLength(1);
-  });
-});
-
 describe("from < rootT resync persists the dump", () => {
   test("cursor-only snap is first paint; the dump is the next epoch", async () => {
     const store = memoryStore();
@@ -826,55 +705,20 @@ describe("from < rootT resync persists the dump", () => {
 });
 
 describe("the worker specifier exists", () => {
-  test("is bundler-static .js beside this module; not a computed extension", async () => {
-    const followerSrc = await readFile(
-      new URL("../src/db/follower.ts", import.meta.url),
-      "utf8",
-    );
-    const databasesSrc = await readFile(
-      new URL("../src/db/Databases.ts", import.meta.url),
-      "utf8",
-    );
-    const staticUrl = /new URL\(\s*["']\.\/follower-worker\.js["']\s*,\s*import\.meta\.url\s*\)/;
-    expect(followerSrc).toMatch(staticUrl);
-    expect(databasesSrc).toMatch(staticUrl);
-    expect(followerSrc).not.toMatch(/follower-worker\$\{/);
-    expect(databasesSrc).not.toMatch(/follower-worker\$\{/);
-
+  test("follows this module's emit; dist looks for .js, not .ts", () => {
     const url = followerWorkerUrl();
-    expect(url.pathname.endsWith("follower-worker.js")).toBe(true);
-
-    const srcWorker = fileURLToPath(
-      new URL("../src/db/follower-worker.ts", import.meta.url),
-    );
-    expect(existsSync(srcWorker)).toBe(true);
+    expect(url.pathname.endsWith("follower-worker.ts")).toBe(true);
+    expect(existsSync(fileURLToPath(url))).toBe(true);
     expect(
-      existsSync(
-        fileURLToPath(new URL("../src/db/follower.ts", import.meta.url)),
+      followerWorkerUrlBeside("file:///pkg/dist/db/follower.js").pathname.endsWith(
+        "follower-worker.js",
       ),
     ).toBe(true);
     expect(
-      existsSync(
-        fileURLToPath(new URL("../src/db/Databases.ts", import.meta.url)),
+      followerWorkerUrlBeside("file:///pkg/src/db/follower.ts").pathname.endsWith(
+        "follower-worker.ts",
       ),
     ).toBe(true);
-
-    const pkg = JSON.parse(
-      await readFile(new URL("../package.json", import.meta.url), "utf8"),
-    ) as { exports: { "./follower-worker": { default: string } } };
-    expect(pkg.exports["./follower-worker"].default).toBe(
-      "./dist/db/follower-worker.js",
-    );
-
-    const distWorker = fileURLToPath(
-      new URL("../dist/db/follower-worker.js", import.meta.url),
-    );
-    const distFollower = fileURLToPath(
-      new URL("../dist/db/follower.js", import.meta.url),
-    );
-    if (existsSync(distFollower)) {
-      expect(existsSync(distWorker)).toBe(true);
-    }
   });
 });
 
@@ -971,137 +815,6 @@ describe("a dead SharedWorker is not a follower", () => {
       else g.SharedWorker = prevSW;
       g.WebSocket = prevWS;
     }
-  });
-});
-
-describe("host post waits for the token", () => {
-  const rpc = (port: MessagePort, msg: object) =>
-    new Promise<unknown>((resolve) => {
-      const id = Math.floor(Math.random() * 1e9);
-      const onMsg = (ev: MessageEvent) => {
-        const data = ev.data as PortEvent;
-        if (data.op === "reply" && data.id === id) {
-          port.removeEventListener("message", onMsg);
-          resolve(data);
-        }
-      };
-      port.addEventListener("message", onMsg);
-      port.postMessage({ id, ...msg });
-    });
-
-  const silentConnect = () => ({
-    send() {},
-    close() {},
-    addEventListener(type: string, cb: (ev: unknown) => void) {
-      if (type === "open") queueMicrotask(() => cb({}));
-    },
-  });
-
-  test("open with no token, transact, then auth — POST has the bearer, layer is not dropped", async () => {
-    const store = memoryStore();
-    const world = await schemaConn();
-    await world.transact([{ ":user/name": "Ada" }]);
-    const dump = await snapshotDatoms(world);
-    const seed = openOverlay({
-      session: fakeSession(),
-      post: () => Effect.fail(new NetworkError({ message: "offline" })),
-      catalog: Movies,
-      store,
-      name: "movies",
-    });
-    await run(seed.ready());
-    await seed.handlePush({ op: "resync", t: world.t, datoms: dump });
-
-    const posts: string[] = [];
-    const host = openFollowerHost({
-      store,
-      fetch: async (_url, init) => {
-        posts.push(init.headers.authorization ?? "");
-        throw new TypeError("offline");
-      },
-      connect: silentConnect,
-    });
-    const chan = new MessageChannel();
-    host.attach(chan.port1);
-    chan.port2.start();
-    await rpc(chan.port2, {
-      op: "open",
-      name: "movies",
-      url: "https://peer.example.com",
-      schema: schemaTx(Movies),
-    });
-    const follower = host.follower("movies");
-    expect(follower).toBeDefined();
-
-    const painted = Date.now();
-    await follower!.ready();
-    expect(Date.now() - painted).toBeLessThan(1_000);
-    expect(await namesOf(follower!.overlay)).toEqual(["Ada"]);
-    expect(posts).toEqual([]);
-
-    const transactP = run(
-      follower!.overlay.transact([{ ":user/name": "Bea" }]),
-    );
-    let names: string[] = [];
-    for (let i = 0; i < 80; i++) {
-      names = await namesOf(follower!.overlay);
-      if (names.includes("Bea")) break;
-      await Bun.sleep(5);
-    }
-    expect(names).toEqual(["Ada", "Bea"]);
-    expect(posts).toEqual([]);
-    expect((await follower!.overlay.snapshot()).pending).toHaveLength(1);
-
-    await rpc(chan.port2, { op: "auth", token: "secret" });
-    await transactP;
-    expect(posts.length).toBeGreaterThan(0);
-    expect(posts.every((h) => h === "Bearer secret")).toBe(true);
-    expect(await namesOf(follower!.overlay)).toEqual(["Ada", "Bea"]);
-    expect((await follower!.overlay.snapshot()).pending).toHaveLength(1);
-    host.close();
-  }, 15_000);
-
-  test("401 after a real token still drops the layer", async () => {
-    const store = memoryStore();
-    const world = await schemaConn();
-    await world.transact([{ ":user/name": "Ada" }]);
-    const dump = await snapshotDatoms(world);
-    const seed = openOverlay({
-      session: fakeSession(),
-      post: () => Effect.fail(new NetworkError({ message: "offline" })),
-      catalog: Movies,
-      store,
-      name: "movies",
-    });
-    await run(seed.ready());
-    await seed.handlePush({ op: "resync", t: world.t, datoms: dump });
-
-    const host = openFollowerHost({
-      store,
-      fetch: async () =>
-        new Response(JSON.stringify({ error: "unauthorized" }), {
-          status: 401,
-          headers: { "content-type": "application/json" },
-        }),
-      connect: silentConnect,
-    });
-    const chan = new MessageChannel();
-    host.attach(chan.port1);
-    chan.port2.start();
-    await rpc(chan.port2, {
-      op: "open",
-      name: "movies",
-      url: "https://peer.example.com",
-      schema: schemaTx(Movies),
-      token: "secret",
-    });
-    const follower = host.follower("movies")!;
-    await follower.ready();
-    await expect(
-      run(follower.overlay.transact([{ ":user/name": "Bea" }])),
-    ).rejects.toMatchObject({ _tag: "Unauthorized" });
-    expect((await follower.overlay.snapshot()).pending).toHaveLength(0);
-    host.close();
   });
 });
 

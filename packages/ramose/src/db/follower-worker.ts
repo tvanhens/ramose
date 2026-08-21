@@ -1,6 +1,6 @@
 /**
  * SharedWorker entry — one follower host per origin. Tabs connect with
- * `new SharedWorker(new URL("./follower-worker.js", import.meta.url), { type: "module", name: "ramose" })`
+ * `new SharedWorker(followerWorkerUrl(), { type: "module", name: "ramose" })`
  * and speak the port protocol. The package ships this file; apps do not
  * copy it.
  */

@@ -39,6 +39,7 @@ import {
 import { schemaTx } from "./ensure.ts";
 import {
   defaultStore,
+  followerWorkerUrl,
   openFollower,
   type Follower,
 } from "./follower.ts";
@@ -222,16 +223,10 @@ export const makeDatabases = (
     if (!useShared || workerDead) return undefined;
     if (workerPort !== undefined) return workerPort;
     try {
-      // Bundler-visible specifier — same file `ramose/follower-worker`
-      // exports. A computed extension is a 404 the constructor still
-      // accepts, then every tab is its own follower.
-      const sw = new SharedWorker(
-        new URL("./follower-worker.js", import.meta.url),
-        {
-          type: "module",
-          name: "ramose",
-        },
-      );
+      const sw = new SharedWorker(followerWorkerUrl().href, {
+        type: "module",
+        name: "ramose",
+      });
       workerFail = new Promise<never>((_, reject) => {
         const fail = () =>
           reject(new NetworkError({ message: "ramose: follower worker failed" }));
@@ -288,15 +283,20 @@ export const makeDatabases = (
     const sw = sharedPort();
     if (sw === undefined) return undefined;
     const url = await Effect.runPromise(config.url);
+    const tok =
+      config.token === undefined
+        ? undefined
+        : await token()
+            .then((t) => (t === undefined ? undefined : Redacted.value(t)))
+            .catch(() => undefined);
     const catalog = catalogs.get(name);
-    // Handshake is not a token mint. Hydrate / first paint run without
-    // it; auth rides a follow-up so the socket and writes can wait.
     const opened = connectSharedFollower(
       sw,
       {
         name,
         url,
         schema: catalog !== undefined ? schemaTx(catalog) : undefined,
+        token: tok,
       },
       { timeoutMs: workerReadyMs },
     );
@@ -305,13 +305,6 @@ export const makeDatabases = (
         ? opened
         : Promise.race([opened, workerFail]));
       ports.set(name, client);
-      if (config.token === undefined) {
-        void client.auth("");
-      } else {
-        void token()
-          .then((t) => client.auth(t === undefined ? "" : Redacted.value(t)))
-          .catch(() => client.auth(""));
-      }
       return client;
     } catch {
       abandonWorker();

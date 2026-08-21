@@ -15,9 +15,7 @@
  * persist without per-frame notify; epoch moves once when that walk
  * finishes. After that, apply is the notify per commit. A leading
  * `{ op: resync }` (`from < rootT`) is the same catch-up snap as a
- * long walk — the hydrated view at `confirmedT` is first paint. A
- * resync dump replaces confirmed and rebases still-unacked pending
- * layers; it does not wipe the outbox.
+ * long walk — the hydrated view at `confirmedT` is first paint.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -338,9 +336,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   /**
    * Orderer only. An idle, sync `fn` (a `{ op: tx }` with a ready
    * follower) runs before this returns — apply is the notify. A busy
-   * queue (in-flight resync) defers `fn` onto the tail. Local
-   * `transact` push + persist/notify rides this too, so a dump already
-   * on `applied` cannot interleave with the layer's first notify.
+   * queue (in-flight resync) defers `fn` onto the tail.
    */
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
     if (applyQueued === 0) {
@@ -538,47 +534,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     if (typeof coveredId !== "string" || coveredId.length === 0) return;
     const layer = dropLayer(coveredId);
     if (layer !== undefined) remapDropped(layer, incoming);
-  };
-
-  const coveredClientTxIds = (frame: Record<string, unknown>): Set<string> => {
-    const out = new Set<string>();
-    if (typeof frame.clientTxId === "string" && frame.clientTxId.length > 0) {
-      out.add(frame.clientTxId);
-    }
-    if (Array.isArray(frame.clientTxIds)) {
-      for (const id of frame.clientTxIds) {
-        if (typeof id === "string" && id.length > 0) out.add(id);
-      }
-    }
-    return out;
-  };
-
-  /**
-   * `{ op: resync }` is a new confirmed snap, not a wipe of the outbox.
-   * Drop only layers the dump names; rebase the rest onto the new view.
-   */
-  const rebasePending = async (): Promise<void> => {
-    if (conn === undefined || pending.length === 0) return;
-    const keep = pending.splice(0, pending.length);
-    for (const layer of keep) {
-      try {
-        const expansion = await processTx(
-          view(),
-          layer.tx,
-          Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-          nextEid(),
-          Date.now(),
-        );
-        pending.push({
-          clientTxId: layer.clientTxId,
-          tx: layer.tx,
-          datoms: expansion.datoms,
-          tempids: expansion.tempids,
-        });
-      } catch {
-        pending.push(layer);
-      }
-    }
   };
 
   const hydrate = async (snap: OverlaySnap): Promise<void> => {
@@ -916,18 +871,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
 
           const id = clientTxId();
-          yield* Effect.promise(() =>
-            enqueueApply(() => {
-              pending.push({
-                clientTxId: id,
-                tx: tx as unknown[],
-                datoms: expansion.datoms,
-                tempids: expansion.tempids,
-              });
-              unsent.add(id);
-              return persistThenNotify();
-            }),
-          );
+          pending.push({
+            clientTxId: id,
+            tx: tx as unknown[],
+            datoms: expansion.datoms,
+            tempids: expansion.tempids,
+          });
+          unsent.add(id);
+          yield* Effect.promise(() => Promise.resolve(persistThenNotify()));
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             const run = () => postLayer(id, tx as unknown[], resume);
@@ -956,17 +907,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       return ensureConn().then(() => applyFrame(frame));
     }
     if (frame.op === "resync") {
-      const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
-      const covered = coveredClientTxIds(frame);
-      for (const id of covered) {
-        const layer = dropLayer(id);
-        if (layer !== undefined) remapDropped(layer, incoming);
-      }
+      pending.length = 0;
+      unsent.clear();
       const t = typeof frame.t === "number" ? frame.t : 0;
-      return replaceConfirmed(incoming, t).then(async () => {
-        await rebasePending();
-        return inboundPersist();
-      });
+      return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
+        () => inboundPersist(),
+      );
     }
     if (frame.op === "tx") return applyTx(frame);
   };

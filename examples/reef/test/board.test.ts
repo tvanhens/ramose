@@ -36,7 +36,7 @@ import {
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
 import { createIssue, moveIssue, setTitle } from "../src/app/mutations.ts";
-import { bindSelf, mintWorkspace, openWorkspace } from "../src/app/ramose.ts";
+import { bindSelf, openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
 
@@ -610,19 +610,6 @@ const countingConnect = () => {
 };
 
 describe("refresh open is one session, not two", () => {
-  test("mintWorkspace is sync; first paint does not await claims", () => {
-    let minted = 0;
-    const token = Ramose.token.jwt(async () => {
-      minted += 1;
-      return jwtOf({ ramose: { db: "coral-team", class: "admin" } });
-    });
-    const ws = mintWorkspace("coral-team", { token });
-    expect(ws.slug).toBe("coral-team");
-    expect(ws.cls).toBe("viewer");
-    expect(ws.token).toBe(token);
-    expect(minted).toBe(0);
-  });
-
   test("provision:false does not connect; the board client pays one resync dump", async () => {
     const peer = await inProcessPeer();
     await peer.closeClients();
