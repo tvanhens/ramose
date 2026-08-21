@@ -237,7 +237,7 @@ export const IssueDetail = ({
   /** The live board row — already re-rendering on every overlay apply. */
   row: BoardRow;
   myEid: number | undefined;
-  cls: RamoseClass;
+  cls: RamoseClass | undefined;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;
@@ -415,14 +415,18 @@ export const IssueDetail = ({
           <div {...stylex.props(styles.sectionLabel)}>
             <Icon name="lock" size={12} />
             Admin note
-            {cls !== "admin" && <Tag tone="warn">masked for {cls}</Tag>}
+            {cls !== undefined && cls !== "admin" && (
+              <Tag tone="warn">masked for {cls}</Tag>
+            )}
           </div>
           <TextArea
             value={note}
             placeholder={
               cls === "admin"
                 ? "Visible to admins only…"
-                : "Read-masked for your class — a write here is denied by the peer"
+                : cls === undefined
+                  ? ""
+                  : "Read-masked for your class — a write here is denied by the peer"
             }
             onChange={(e) => setNoteDraft(e.target.value)}
             onBlur={() => {

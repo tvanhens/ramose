@@ -240,8 +240,14 @@ export const BoardScreen = ({
   const userName = user?.name;
   const userEmail = user?.email;
   // After paint. Hydrate / first columns do not wait on the session user.
+  // Do not bindSelf with a guessed class — wait for claims.
   useEffect(() => {
-    if (userId === undefined || userName === undefined || userEmail === undefined) {
+    if (
+      cls === undefined ||
+      userId === undefined ||
+      userName === undefined ||
+      userEmail === undefined
+    ) {
       return;
     }
     let cancelled = false;
@@ -341,12 +347,14 @@ export const BoardScreen = ({
         <LogoMark size={22} />
         <span {...stylex.props(styles.wsName)}>{name}</span>
         <span {...stylex.props(styles.wsSlug, styles.wide)}>db/{slug}</span>
-        <Tag
-          tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
-          title="your ramose.class in this workspace"
-        >
-          {cls}
-        </Tag>
+        {cls !== undefined && (
+          <Tag
+            tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
+            title="your ramose.class in this workspace"
+          >
+            {cls}
+          </Tag>
+        )}
         <span {...stylex.props(styles.spacer)} />
         <span
           {...stylex.props(styles.live, styles.wide)}
@@ -425,9 +433,9 @@ export const BoardScreen = ({
                           Add your first issue, or start from a sample board —
                           nine issues in one <Code>db.transact</Code>.
                         </>
-                      ) : (
+                      ) : cls === "viewer" ? (
                         "You are a viewer here — issues will appear as members add them."
-                      )
+                      ) : undefined
                     }
                     actions={
                       canWrite ? (

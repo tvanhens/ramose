@@ -36,7 +36,7 @@ import {
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
 import { createIssue, moveIssue, setTitle } from "../src/app/mutations.ts";
-import { bindSelf, openWorkspace } from "../src/app/ramose.ts";
+import { bindSelf, mintWorkspace, openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
 
@@ -610,6 +610,18 @@ const countingConnect = () => {
 };
 
 describe("refresh open is one session, not two", () => {
+  test("mintWorkspace does not guess viewer; bindSelf waits for a real class", async () => {
+    expect(mintWorkspace("coral-team").cls).toBeUndefined();
+    const eid = await Effect.runPromise(
+      bindSelf(
+        null as unknown as ReefDb,
+        { id: "ada", name: "Ada", email: "ada@reef.test" },
+        undefined,
+      ),
+    );
+    expect(eid).toBeUndefined();
+  });
+
   test("provision:false does not connect; the board client pays one resync dump", async () => {
     const peer = await inProcessPeer();
     await peer.closeClients();

@@ -3,7 +3,7 @@
  * (`authClient.ramose.token`); `Ramose.token.jwt` re-mints the JWT near
  * `exp`; `cls` is the decoded, unverified claim — UI hints only. Token
  * is for the socket and writes, not first paint: `mintWorkspace` is
- * sync (`cls: "viewer"` until claims). The client that lives with the
+ * sync (`cls` unknown until claims). The client that lives with the
  * board is owned by `<RamoseProvider key={slug}>` in App.tsx. Create
  * still `install()`s and seeds over a short-lived client. `ensureSelf`
  * (the caller's `user` row) runs on the Provider client — see `bindSelf`.
@@ -20,7 +20,8 @@ export const RAMOSE_URL =
 
 export interface Workspace {
   readonly slug: string;
-  readonly cls: RamoseClass;
+  /** Set once `token.claims()` returns. Never a `"viewer"` placeholder. */
+  readonly cls: RamoseClass | undefined;
   /** Stable for the workspace's lifetime — `RamoseProvider` keys its client on it. */
   readonly token: Ramose.TokenSource;
 }
@@ -39,7 +40,7 @@ export type OpenWorkspaceOptions = Pick<
 };
 
 /**
- * Sync mint — lazy token source, `cls: "viewer"` until claims. First
+ * Sync mint — lazy token source, `cls` unknown until claims. First
  * paint mounts this; org name / class fill in after.
  */
 export const mintWorkspace = (
@@ -47,7 +48,7 @@ export const mintWorkspace = (
   options?: Pick<OpenWorkspaceOptions, "token">,
 ): Workspace => ({
   slug,
-  cls: "viewer",
+  cls: undefined,
   token:
     options?.token ??
     Ramose.token.jwt(async () => {
@@ -95,9 +96,13 @@ export const openWorkspace = async (
 /**
  * The caller's `user` row on the client that stays mounted with the board.
  * Viewers skip the write (`cls !== "viewer"`) and stay `undefined`.
+ * Unknown class does not write — wait for claims, do not guess `"viewer"`.
  */
 export const bindSelf = (
   db: ReefDb,
   user: { id: string; name: string; email: string },
-  cls: RamoseClass,
-) => ensureSelf(db, user, cls !== "viewer");
+  cls: RamoseClass | undefined,
+) =>
+  cls === undefined
+    ? Effect.succeed(undefined)
+    : ensureSelf(db, user, cls !== "viewer");

@@ -6,8 +6,8 @@
  * a JWT loader. Token is lazy (`mintWorkspace`). When the session settles:
  * a user `bindSelf`s after paint; no user bounces to Auth. `/` (no slug)
  * still waits on session. Switching workspaces changes the key, which
- * closes the old client and connects the next one. `cls` / org name fill
- * in after claims.
+ * closes the old client and connects the next one. `cls` is unknown until
+ * claims return — never a `"viewer"` placeholder. Org name fills in after.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
  * token overrides also reach UI portaled to `document.body` — dialogs and
@@ -139,16 +139,15 @@ const Root = () => {
     [wantedSlug],
   );
   const [name, setName] = useState(wantedSlug ?? "");
-  const [cls, setCls] = useState<RamoseClass>("viewer");
+  const [cls, setCls] = useState<RamoseClass | undefined>(undefined);
 
   useEffect(() => {
-    if (wantedSlug === null || workspace === null) {
-      setName("");
-      setCls("viewer");
-      return;
-    }
-    setName(wantedSlug);
-    setCls("viewer");
+    setName(wantedSlug ?? "");
+    setCls(undefined);
+  }, [wantedSlug]);
+
+  useEffect(() => {
+    if (wantedSlug === null || workspace === null) return;
     if (userId === undefined) return;
     let cancelled = false;
     void (async () => {
