@@ -14,6 +14,7 @@ import { parsePolicy } from "ramose/internal/core/policy/ast.ts";
 import * as Ramose from "ramose";
 import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
+import { policyWire } from "../src/domain/policy-wire.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
 import { CLASSES } from "../src/domain/shared.ts";
@@ -24,6 +25,10 @@ describe("reef policy", () => {
     const parsed = parsePolicy(JSON.parse(json));
     expect(parsed.principal).toBe(":user/sub");
     expect(parsed.classes).toEqual([...CLASSES]);
+  });
+
+  test("the SPA wire JSON stays the compiled policy", () => {
+    expect(JSON.parse(policyWire)).toEqual(JSON.parse(compiledPolicy()));
   });
 
   test("presets pin creator, author and sub to the caller", () => {

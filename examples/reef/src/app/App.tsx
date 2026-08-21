@@ -39,6 +39,7 @@ import { RouteProvider, useRoute } from "./route.tsx";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
 import { WorkspacesScreen } from "./screens/WorkspacesScreen.tsx";
+import { policyWire } from "../domain/policy-wire.ts";
 import { colors, type } from "./theme/tokens.stylex";
 import { light } from "./theme/themes.stylex";
 import { IconButton, Loading, ToastProvider, useToast } from "./ui.tsx";
@@ -161,7 +162,12 @@ const SlugBoard = ({
   if (needAuth) return <AuthScreen />;
 
   return (
-    <RamoseProvider key={slug} url={RAMOSE_URL} token={workspace.token}>
+    <RamoseProvider
+      key={slug}
+      url={RAMOSE_URL}
+      token={workspace.token}
+      policy={policyWire}
+    >
       <BoardScreen
         workspace={{ ...workspace, cls }}
         name={name}

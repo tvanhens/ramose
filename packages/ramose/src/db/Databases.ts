@@ -45,7 +45,7 @@ import {
   type SessionPrincipal,
   type SocketFactory,
 } from "./session.ts";
-import type { TokenSource } from "./token.ts";
+import type { Claims, TokenSource } from "./token.ts";
 
 /** One method, because a database is a name. */
 export interface DatabasesShape {
@@ -88,6 +88,11 @@ export interface ClientOptions {
    * fresh `memoryStore()` that dies on refresh.
    */
   readonly persist?: ByteStore | undefined;
+  /**
+   * Compiled `RAMOSE_POLICY` JSON. Overlay current-view reads filter
+   * locally so a refresh does not wait on the socket for `ramose.class`.
+   */
+  readonly policy?: string | undefined;
 }
 
 // ── the internal factory ───────────────────────────────────────────────────
@@ -111,6 +116,8 @@ export interface DatabasesConfig {
   /** Extra headers on every HTTPS request (`x-ramose-replica-hint`, …). */
   readonly headers?: Record<string, string> | undefined;
   readonly persist?: ByteStore | undefined;
+  readonly claims?: (() => Promise<Claims>) | undefined;
+  readonly policy?: unknown;
 }
 
 /** The credential as the wire wants it: a string, or nothing. */
@@ -213,6 +220,8 @@ export const makeDatabases = (
         catalog: catalogs.get(name),
         store: pageStore,
         name,
+        claims: config.claims,
+        policy: config.policy,
       });
       overlays.set(name, existing);
     }
@@ -433,18 +442,25 @@ const configure = (
       options.webSocket === undefined
         ? globalWebSocket()
         : (url) => new options.webSocket!(url) as never;
-    // a TokenSource is its `.token` Effect; the layer never sees the rest
+    // a TokenSource is its `.token` Effect; `.claims` stays so overlay
+    // can apply `ramose.class` when the mint lands, not at `{op:sync}`.
     const token =
       options.token === undefined || Effect.isEffect(options.token)
         ? options.token
         : options.token.token;
+    const claims =
+      options.token === undefined || Effect.isEffect(options.token)
+        ? undefined
+        : options.token.claims;
     return Effect.succeed({
       url: Effect.succeed(options.url.replace(/\/+$/, "")),
       token,
+      claims,
       fetch:
         options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
       webSocket: socket,
       persist: options.persist,
+      policy: options.policy,
     });
   });
 

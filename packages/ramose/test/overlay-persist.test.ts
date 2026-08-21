@@ -39,8 +39,41 @@ import {
   snapKey,
 } from "../src/db/persist.ts";
 import type { Session } from "../src/db/session.ts";
+import { token } from "../src/db/token.ts";
 import { Movies, User } from "./db/fixture.ts";
 import { fakePeer } from "./peer.ts";
+
+/** Reef-shaped: namespaced read needs admin|member|viewer. No class ⇒ deny. */
+const ANYONE_POLICY = JSON.stringify({
+  version: 1,
+  principal: ":user/name",
+  classes: ["admin", "member", "viewer"],
+  attrs: {},
+  ns: {
+    user: {
+      read: [
+        {
+          _tag: "allow",
+          expr: {
+            _tag: "or",
+            exprs: [
+              { _tag: "class", class: "admin" },
+              { _tag: "class", class: "member" },
+              { _tag: "class", class: "viewer" },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  preset: {},
+});
+
+const jwtOf = (claims: Record<string, unknown>): string => {
+  const b64url = (value: unknown) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
+};
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 
@@ -477,6 +510,165 @@ describe("hydrate then sync is a walk", () => {
       await Bun.sleep(80);
       expect(seen.some((e) => e.names.length === 0)).toBe(false);
       expect(seen[0]?.names).toEqual(["Ada"]);
+    } finally {
+      await run(Fiber.interrupt(fiber));
+      await close();
+    }
+  });
+
+  test("seeded snap + class admin first-emits rows while token() is unresolved", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const writer = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+      policy: ANYONE_POLICY,
+      class: "admin",
+    });
+    await run(writer.ready());
+    await writer.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await writer.flushDisk();
+    const snap = await loadSnap(store, "movies");
+    expect(snap?.class).toBe("admin");
+    expect(snap?.confirmed.length).toBeGreaterThan(0);
+    await until(() => writer.class === "admin");
+
+    let minted = false;
+    const hung = token.jwt(() => new Promise(() => {}));
+    hung.claims().then(() => {
+      minted = true;
+    }, () => {});
+    const peer = fakePeer({
+      answer: () => undefined,
+    });
+    const { databases, close } = makeDatabases({
+      url: Effect.succeed("https://peer.example.com"),
+      token: hung.token,
+      claims: hung.claims,
+      policy: ANYONE_POLICY,
+      fetch: fromStandardFetch(peer.fetch),
+      webSocket: (url) => new peer.webSocket(url) as never,
+      persist: store,
+    });
+    const names = query(User).select({ name: User.name });
+    const seen: { name: string }[][] = [];
+    let mintedAtFirstEmit = true;
+    const fiber = Effect.runFork(
+      Stream.runForEach(databases.db("movies", Movies).live(names), (rows) =>
+        Effect.sync(() => {
+          if (seen.length === 0) mintedAtFirstEmit = minted;
+          seen.push(rows as { name: string }[]);
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => {
+            if (!Cause.hasInterrupts(cause)) throw Cause.squash(cause);
+          }),
+        ),
+      ),
+    );
+    try {
+      const started = Date.now();
+      await until(() => seen.length > 0, 400);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(seen[0]?.map((r) => r.name)).toEqual(["Ada"]);
+      expect(seen[0]).not.toEqual([]);
+      expect(mintedAtFirstEmit).toBe(false);
+      expect(peer.frameOps("sync")).toEqual([]);
+    } finally {
+      await run(Fiber.interrupt(fiber));
+      await close();
+    }
+  });
+
+  test("claims() resolve notifies before session.request({op:sync})", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const writer = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+      policy: ANYONE_POLICY,
+      class: "admin",
+    });
+    await run(writer.ready());
+    await writer.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await writer.flushDisk();
+
+    let release!: (value: string) => void;
+    const delayed = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    let resolved = false;
+    const late = token.jwt(() =>
+      delayed.then((value) => {
+        resolved = true;
+        return value;
+      }),
+    );
+    const peer = fakePeer({
+      answer: (frame) => {
+        if (frame.op === "sync") {
+          return { body: { t: rootT, from: frame.from ?? 0, datoms: [] } };
+        }
+        return { body: { t: 0 } };
+      },
+    });
+    const { databases, close } = makeDatabases({
+      url: Effect.succeed("https://peer.example.com"),
+      token: late.token,
+      claims: late.claims,
+      policy: ANYONE_POLICY,
+      fetch: fromStandardFetch(peer.fetch),
+      webSocket: (url) => new peer.webSocket(url) as never,
+      persist: store,
+    });
+    const names = query(User).select({ name: User.name });
+    const seen: { names: string[]; resolved: boolean; syncs: number }[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(databases.db("movies", Movies).live(names), (rows) =>
+        Effect.sync(() => {
+          seen.push({
+            names: (rows as { name: string }[]).map((r) => r.name),
+            resolved,
+            syncs: peer.frameOps("sync").length,
+          });
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => {
+            if (!Cause.hasInterrupts(cause)) throw Cause.squash(cause);
+          }),
+        ),
+      ),
+    );
+    try {
+      await until(() => seen.length > 0, 400);
+      expect(seen[0]?.resolved).toBe(false);
+      expect(seen[0]?.names).toEqual(["Ada"]);
+      expect(seen[0]?.syncs).toBe(0);
+      release(jwtOf({ ramose: { db: "movies", class: "admin" } }));
+      await until(() => resolved, 400);
+      await Bun.sleep(30);
+      expect(seen.some((e) => e.names.length === 0)).toBe(false);
+      const after = seen.find((e) => e.resolved);
+      if (after !== undefined) {
+        expect(after.names).toEqual(["Ada"]);
+        expect(after.syncs).toBe(0);
+      }
     } finally {
       await run(Fiber.interrupt(fiber));
       await close();

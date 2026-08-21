@@ -15,10 +15,13 @@
  *
  * First paint is hydrate (`loadSnap`). First `ready` / `read` wait only
  * for that. Empty OPFS (first visit) is an honest empty emission; a snap
- * emits those rows, never an empty frame first. A hydrated `ready()`
- * notifies and returns; `{ op: sync }` is a later macrotask so the first
- * `db.live` emission is `view()` in the same turn, before
- * `session.request`. `sync({ from: confirmedT })` applies behind paint.
+ * emits those rows, never an empty frame first. Last `ramose.class` is
+ * persisted with the snap so a policy read does not deny-without-class
+ * (empty columns) before JWT. `claims()` notifies in that turn — not at
+ * `finishCatchUp`. A hydrated `ready()` notifies and returns; `{ op: sync }`
+ * is a later macrotask so the first `db.live` emission is `view()` in the
+ * same turn, before `session.request`. `sync({ from: confirmedT })` applies
+ * behind paint.
  * Many walked `{ op: tx }` or one `{ op: resync }` is one notify when
  * catch-up finishes. User `transact` is not on that queue. A dump rebases
  * still-unacked pending; it does not wipe the outbox.
@@ -34,6 +37,10 @@ import {
   type WireDatom,
 } from "../internal/core/log.ts";
 import { Novelty } from "../internal/core/novelty.ts";
+import type { CompiledPolicy } from "../internal/core/policy/ast.ts";
+import { parsePolicy } from "../internal/core/policy/ast.ts";
+import { filterDb } from "../internal/core/policy/filter.ts";
+import type { Principal } from "../internal/core/policy/principal.ts";
 import type { Schema } from "../internal/core/schema.ts";
 import {
   QueryBudgetError,
@@ -70,6 +77,7 @@ import {
   saveView,
 } from "./persist.ts";
 import type { Session } from "./session.ts";
+import type { Claims } from "./token.ts";
 
 export interface OverlayAck {
   readonly t: number;
@@ -97,6 +105,8 @@ export interface Overlay {
   readonly catchingUp: boolean;
   /** `loadSnap` returned confirmed facts (not a cursor-only wipe). */
   readonly hasSnap: boolean;
+  /** Last `ramose.class` applied to {@link view} — snap, then claims. */
+  readonly class: string | undefined;
   ready(retry?: boolean): Effect.Effect<void, DbError>;
   read(
     op: "q" | "pull",
@@ -129,6 +139,19 @@ export interface OverlayOptions {
   readonly store?: ByteStore | undefined;
   /** Persist key (`<db name>`). Required with {@link store}. */
   readonly name?: string | undefined;
+  /**
+   * Compiled `RAMOSE_POLICY`. Overlay `q` / `pull` filter the same way
+   * the peer does. Deny is the default: no class ⇒ no namespaced rows.
+   */
+  readonly policy?: unknown;
+  /**
+   * JWT peek — HTTP mint, no socket. When it resolves, overlay applies
+   * `ramose.class` and notifies in that turn so `live` does not wait
+   * for `{op:sync}` / `finishCatchUp`.
+   */
+  readonly claims?: () => Promise<Claims>;
+  /** Test / hydrate seed. Prefer {@link claims} or a persisted snap class. */
+  readonly class?: string;
 }
 
 interface PendingLayer {
@@ -313,6 +336,34 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
   });
 };
 
+const asPolicy = (raw: unknown): CompiledPolicy | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  try {
+    const json = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return parsePolicy(json);
+  } catch {
+    return undefined;
+  }
+};
+
+const principalOf = (
+  cls: string,
+  claims: Claims | undefined,
+  db: string,
+): Principal => ({
+  kind: "user",
+  class: cls,
+  sub: typeof claims?.sub === "string" ? claims.sub : undefined,
+  claims: {
+    sub: typeof claims?.sub === "string" ? claims.sub : undefined,
+    iss: typeof claims?.iss === "string" ? claims.iss : undefined,
+    aud: typeof claims?.aud === "string" ? claims.aud : undefined,
+    exp: typeof claims?.exp === "number" ? claims.exp : undefined,
+    attrs: claims?.ramose?.attrs,
+  },
+  db,
+});
+
 const installSchema = async (
   next: Connection,
   options: OverlayOptions,
@@ -366,6 +417,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let firstEmitLogged = false;
   /** First `view()` already ran; `{op:sync}` must not start before that. */
   let didView = false;
+  /** Last `ramose.class` — snap, then `claims()`, then the socket principal. */
+  let principalClass: string | undefined = options.class;
+  let principalClaims: Claims | undefined;
+  let compiled = asPolicy(options.policy);
 
   const mark = (label: string, extra?: Record<string, unknown>): void => {
     if (typeof console === "undefined" || typeof console.info !== "function") {
@@ -424,6 +479,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       confirmedT,
       confirmed,
       pending: pending.map(pendingToSnap),
+      class: principalClass,
+      policy: compiled,
     };
   };
 
@@ -495,6 +552,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         dropTs: drop,
         pending: pending.map(pendingToSnap),
         dump,
+        class: principalClass,
+        policy: compiled,
       });
       const saved = new Set(entries);
       for (let i = unpublished.length - 1; i >= 0; i--) {
@@ -544,11 +603,59 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     return out;
   };
 
+  const activeClass = (): string | undefined =>
+    principalClass ?? options.session.principal?.class;
+
   const view = (): EngineDb => {
     if (conn === undefined) {
       throw new Error("ramose: overlay view before the follower is ready");
     }
-    return overlayDb(conn.db(), pendingDatoms());
+    const raw = overlayDb(conn.db(), pendingDatoms());
+    if (compiled === undefined) return raw;
+    const cls = activeClass();
+    if (cls === undefined) {
+      // Last session already sieved this blob. Deny-without-class on a
+      // hydrated current-view paints empty columns until JWT/socket.
+      // New snaps persist class; this is only torn / pre-class meta.
+      if (hasSnap) return raw;
+      return filterDb(
+        raw,
+        raw,
+        compiled,
+        principalOf("", undefined, options.name ?? ""),
+      );
+    }
+    return filterDb(
+      raw,
+      raw,
+      compiled,
+      principalOf(cls, principalClaims, options.name ?? ""),
+    );
+  };
+
+  const applyClaims = (claims: Claims): boolean => {
+    const cls = claims.ramose?.class;
+    if (typeof cls !== "string" || cls.length === 0) return false;
+    const prev = principalClass;
+    principalClass = cls;
+    principalClaims = claims;
+    mark("claims", { cls, prev });
+    return prev !== cls;
+  };
+
+  const peekClaims = (): Promise<void> => {
+    if (options.claims === undefined) return Promise.resolve();
+    return options.claims().then(
+      (claims) => {
+        if (applyClaims(claims)) {
+          notify();
+          schedulePersist();
+        }
+      },
+      () => {
+        // mint failed; the walk retries
+      },
+    );
   };
 
   const nextEid = (): number => {
@@ -719,6 +826,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     // WireDatom is `[e, a, vt, v, t, op]` — `d[4]` is `t`.
     for (const d of snap.confirmed) knownTs.add(d[4]);
     hasSnap = snap.confirmed.length > 0;
+    if (typeof snap.class === "string" && snap.class.length > 0) {
+      principalClass = snap.class;
+    }
+    if (compiled === undefined && snap.policy !== undefined) {
+      compiled = asPolicy(snap.policy);
+    }
   };
 
   const openConn = async (): Promise<void> => {
@@ -911,6 +1024,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         // for the walk, an OPFS write, or a token. `catchingUp` is true
         // until that walk finishes (a no-op `kickWalk` leaves it alone).
         if (readyGen !== options.session.generation) catchingUp = true;
+        // Claims is HTTP mint, not the socket. Start it now so `live`
+        // re-runs in the same turn the JWT lands — not at finishCatchUp.
+        void peekClaims();
         if (first) {
           notify();
           mark("first-notify", {
@@ -918,6 +1034,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             hasSnap,
             confirmedT,
             epoch,
+            class: activeClass(),
           });
         }
         // Never return `kickWalk()` from this async function — that
@@ -1003,6 +1120,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               generation: options.session.generation,
               epoch,
               catchingUp,
+              class: activeClass(),
               find: find.slice(0, 120),
             });
             firstEmitLogged = true;
@@ -1221,6 +1339,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     },
     get hasSnap() {
       return hasSnap;
+    },
+    get class() {
+      return activeClass();
     },
     onChange: (cb) => {
       listeners.add(cb);

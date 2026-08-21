@@ -36,6 +36,13 @@ export interface OverlaySnap {
   readonly confirmedT: number;
   readonly confirmed: WireDatom[];
   readonly pending: readonly PendingSnap[];
+  /**
+   * Last `ramose.class` this blob was written under. Hydrate applies it
+   * so a policy read does not deny-without-class on first paint.
+   */
+  readonly class?: string;
+  /** Compiled policy JSON that sieved this snap, when the page had one. */
+  readonly policy?: unknown;
 }
 
 /** Cursor + log index + outbox. One JSON blob; facts live in per-`t` RLG1. */
@@ -44,6 +51,8 @@ export interface OverlayMeta {
   readonly confirmedT: number;
   readonly ts: readonly number[];
   readonly pending: readonly PendingSnap[];
+  readonly class?: string;
+  readonly policy?: unknown;
 }
 
 /** Novelty to append, the full `t` index, and optional stale blobs to drop. */
@@ -58,6 +67,8 @@ export interface PersistView {
    * Per-`t` `entries` are incremental; the dump is what was on screen.
    */
   readonly dump?: readonly LogEntry[];
+  readonly class?: string;
+  readonly policy?: unknown;
 }
 
 /** The storage seam. Keys are per-db. Values are opaque bytes. */
@@ -247,6 +258,9 @@ export const entriesFromDatoms = (datoms: readonly Datom[]): LogEntry[] => {
 export const logKey = (name: string, t: number): string =>
   `overlay.${sanitize(name)}.t.${t}`;
 
+const asClass = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value : undefined;
+
 export const encodeMeta = (meta: OverlayMeta): Uint8Array =>
   new TextEncoder().encode(
     stringifyJson({
@@ -254,6 +268,8 @@ export const encodeMeta = (meta: OverlayMeta): Uint8Array =>
       confirmedT: meta.confirmedT,
       ts: meta.ts,
       pending: meta.pending,
+      ...(meta.class !== undefined ? { class: meta.class } : {}),
+      ...(meta.policy !== undefined ? { policy: meta.policy } : {}),
     }),
   );
 
@@ -280,6 +296,8 @@ export const decodeMeta = (bytes: Uint8Array): OverlayMeta | undefined => {
     confirmedT: o.confirmedT,
     ts,
     pending: pendingLayers(o.pending),
+    class: asClass(o.class),
+    policy: o.policy,
   };
 };
 
@@ -327,6 +345,8 @@ export const loadSnap = async (
         confirmedT: 0,
         confirmed,
         pending: meta.pending,
+        class: meta.class,
+        policy: meta.policy,
       };
     }
     return {
@@ -334,6 +354,8 @@ export const loadSnap = async (
       confirmedT: meta.confirmedT,
       confirmed,
       pending: meta.pending,
+      class: meta.class,
+      policy: meta.policy,
     };
   });
 
@@ -362,6 +384,8 @@ export const saveView = async (
         confirmedT: view.confirmedT,
         ts: view.ts,
         pending: view.pending,
+        class: view.class,
+        policy: view.policy,
       }),
     );
   });

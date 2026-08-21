@@ -43,8 +43,10 @@ import {
   setTitle,
 } from "../src/app/mutations.ts";
 import { bindSelf, mintWorkspace, openWorkspace } from "../src/app/ramose.ts";
+import { policyWire } from "../src/domain/policy-wire.ts";
 import {
   type ByteStore,
+  decodeMeta,
   loadSnap,
   memoryStore,
   persistKey,
@@ -68,7 +70,12 @@ const snapshotOf = async (conn: Connection) => {
   return { t: conn.t, datoms };
 };
 
-const inProcessPeer = async (opts?: { seed?: boolean; persist?: ByteStore }) => {
+const inProcessPeer = async (opts?: {
+  seed?: boolean;
+  persist?: ByteStore;
+  token?: Ramose.TokenSource;
+  policy?: string;
+}) => {
   const conn = await Connection.create();
   const pushes: ((frame: unknown) => void)[] = [];
   const frames: { op: string; [k: string]: unknown }[] = [];
@@ -195,6 +202,8 @@ const inProcessPeer = async (opts?: { seed?: boolean; persist?: ByteStore }) => 
       fetch: fetchImpl,
       webSocket: WebSocketImpl as unknown as typeof WebSocket,
       persist: opts?.persist,
+      token: opts?.token,
+      policy: opts?.policy,
     });
     const db: ReefDb = ramose.db("coral-team", Reef);
     const opened = { db, close: () => ramose.close() };
@@ -928,11 +937,11 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
 
     peer.holdCatchUp();
     peer.resetTraffic();
-    let tokenReads = 0;
-    const hung = Ramose.token.jwt(() => {
-      tokenReads += 1;
-      return new Promise(() => {});
-    });
+    let minted = false;
+    const hung = Ramose.token.jwt(() => new Promise(() => {}));
+    hung.claims().then(() => {
+      minted = true;
+    }, () => {});
     const b = Ramose.connect({
       url: "https://peer.local",
       fetch: peer.fetch,
@@ -941,11 +950,11 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
       token: hung,
     });
     const seen: string[][] = [];
-    let tokenAtFirstEmit = -1;
+    let mintedAtFirstEmit = true;
     const fiber = Effect.runFork(
       Stream.runForEach(b.db("coral-team", Reef).live(boardQuery), (rows) =>
         Effect.sync(() => {
-          if (tokenAtFirstEmit < 0) tokenAtFirstEmit = tokenReads;
+          if (seen.length === 0) mintedAtFirstEmit = minted;
           seen.push(rows.map((r) => r.title));
         }),
       ),
@@ -956,12 +965,182 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
       expect(seen.length).toBeGreaterThan(0);
       expect(Date.now() - started).toBeLessThan(200);
       expect([...seen[0]!].sort()).toEqual([...titlesA].sort());
-      expect(tokenAtFirstEmit).toBe(0);
+      expect(mintedAtFirstEmit).toBe(false);
       expect(peer.resyncDumps()).toEqual([]);
     } finally {
       await Effect.runPromise(Fiber.interrupt(fiber));
       await b.close();
       peer.releaseCatchUp();
+      await peer.dispose();
+    }
+  });
+
+  test("seeded snap + class admin first-emits issues while token() is unresolved", async () => {
+    const backing = memoryStore();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: (key, value) => backing.put(key, value),
+      delete: (key) => backing.delete?.(key) ?? Promise.resolve(),
+    };
+    const admin = Ramose.token.jwt(async () =>
+      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+    );
+    const peer = await inProcessPeer({
+      seed: false,
+      persist,
+      token: admin,
+      policy: policyWire,
+    });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(seedSampleIssues(a.db, people[0]!.id, labels));
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await admin.claims();
+    await Bun.sleep(0);
+    await a.close();
+
+    const snap = await loadSnap(persist, "coral-team");
+    expect(snap?.class).toBe("admin");
+    expect(snap?.confirmed.length).toBeGreaterThan(0);
+    expect(decodeMeta((await persist.get(persistKey("coral-team")))!)?.class).toBe(
+      "admin",
+    );
+
+    peer.holdCatchUp();
+    peer.resetTraffic();
+    let minted = false;
+    const hung = Ramose.token.jwt(() => new Promise(() => {}));
+    hung.claims().then(() => {
+      minted = true;
+    }, () => {});
+    const b = Ramose.connect({
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      persist,
+      token: hung,
+      policy: policyWire,
+    });
+    const seen: string[][] = [];
+    let mintedAtFirstEmit = true;
+    let syncAtFirstEmit: unknown[] | undefined;
+    const fiber = Effect.runFork(
+      Stream.runForEach(b.db("coral-team", Reef).live(boardQuery), (rows) =>
+        Effect.sync(() => {
+          if (seen.length === 0) mintedAtFirstEmit = minted;
+          if (syncAtFirstEmit === undefined) {
+            syncAtFirstEmit = peer.frames.filter((f) => f.op === "sync");
+          }
+          seen.push(rows.map((r) => r.title));
+        }),
+      ),
+    );
+    try {
+      const started = Date.now();
+      for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(10);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect([...seen[0]!].sort()).toEqual([...titlesA].sort());
+      expect(seen[0]).not.toEqual([]);
+      expect(mintedAtFirstEmit).toBe(false);
+      expect(syncAtFirstEmit).toEqual([]);
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      await b.close();
+      peer.releaseCatchUp();
+      await peer.dispose();
+    }
+  });
+
+  test("claims() resolve must not emit [] and must not wait for {op:sync}", async () => {
+    const backing = memoryStore();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: (key, value) => backing.put(key, value),
+      delete: (key) => backing.delete?.(key) ?? Promise.resolve(),
+    };
+    const admin = Ramose.token.jwt(async () =>
+      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+    );
+    const peer = await inProcessPeer({
+      seed: false,
+      persist,
+      token: admin,
+      policy: policyWire,
+    });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(seedSampleIssues(a.db, people[0]!.id, labels));
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await admin.claims();
+    await Bun.sleep(0);
+    await a.close();
+
+    peer.resetTraffic();
+    let release!: (token: string) => void;
+    const delayed = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    let resolved = false;
+    const late = Ramose.token.jwt(() =>
+      delayed.then((value) => {
+        resolved = true;
+        return value;
+      }),
+    );
+    const b = Ramose.connect({
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      persist,
+      token: late,
+      policy: policyWire,
+    });
+    const seen: { titles: string[]; resolved: boolean; syncs: number }[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(b.db("coral-team", Reef).live(boardQuery), (rows) =>
+        Effect.sync(() => {
+          seen.push({
+            titles: rows.map((r) => r.title),
+            resolved,
+            syncs: peer.frames.filter((f) => f.op === "sync").length,
+          });
+        }),
+      ),
+    );
+    try {
+      const started = Date.now();
+      for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(10);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(seen[0]?.resolved).toBe(false);
+      expect([...seen[0]!.titles].sort()).toEqual([...titlesA].sort());
+      expect(seen[0]?.syncs).toBe(0);
+      release(jwtOf({ ramose: { db: "coral-team", class: "admin" } }));
+      for (let i = 0; i < 40 && !resolved; i++) await Bun.sleep(10);
+      expect(resolved).toBe(true);
+      await Bun.sleep(30);
+      expect(seen.some((e) => e.titles.length === 0)).toBe(false);
+      const after = seen.find((e) => e.resolved);
+      if (after !== undefined) {
+        expect(after.titles).toHaveLength(9);
+        expect(after.syncs).toBe(0);
+      }
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      await b.close();
       await peer.dispose();
     }
   });
