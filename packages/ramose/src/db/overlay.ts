@@ -328,8 +328,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   /** Opening `sync({ from })` — inbound frames persist, one notify at the end. */
   let catchingUp = false;
   let catchUpDirty = false;
-  /** A snap was loaded from the store. Empty OPFS is the only miss. */
-  let fromDisk = false;
   let applied: Promise<void> = Promise.resolve();
   let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
@@ -558,7 +556,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const snap = await loadSnap(options.store, options.name);
       if (snap !== undefined) {
         await hydrate(snap);
-        fromDisk = true;
         return;
       }
     }
@@ -690,10 +687,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         walkFail = undefined;
         const first = conn === undefined;
         await ensureConn();
-        // Last local snapshot is first paint. A `from < rootT` dump is
-        // catch-up, same as a long walk — do not withhold stale rows.
-        if (first && fromDisk) notify();
-        const hold = fromDisk;
+        // Loaded a snap → first paint. Cursor-only (`confirmedT > 0`,
+        // empty facts) is still a snap; a `from < rootT` dump is catch-up.
+        // Empty first boot (no snap) waits for the walk.
+        if (first && painted()) notify();
+        const hold = painted();
         const walk = kickWalk(retry, hold);
         if (hold) return;
         await walk;
@@ -710,52 +708,48 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     });
 
   const read: Overlay["read"] = (op, body) =>
-    // Capture epoch before `ready()` kicks a catch-up walk. A 401 notify
-    // during that walk must be newer than this pass so live re-runs and
-    // surfaces `walkFail` — capturing after the notify parks on it forever.
-    // Older than `view()` is safe (one extra pass); newer is the missed wake.
-    Effect.sync(() => epoch).pipe(
-      Effect.flatMap((viewed) =>
-        ready().pipe(
-          Effect.flatMap(() =>
-            Effect.tryPromise({
-              try: async () => {
-                // Hydrated view is first paint. Do not join a catch-up
-                // resync / `{ op: tx }` on `applied` — that walk is not a loader.
-                const db = view();
-                if (op === "pull") {
-                  const pattern = normalizePullPattern(body.pattern);
-                  const unknown = unknownPullAttrs(db, pattern as { kind: string; attr?: string }[]);
-                  if (unknown.length > 0) {
-                    throw new InvalidRequest({
-                      message: `unknown attribute${unknown.length > 1 ? "s" : ""} in pull pattern: ${unknown.join(", ")}`,
-                    });
-                  }
-                  const subject = body.eid;
-                  const eid =
-                    typeof subject === "number"
-                      ? subject
-                      : await db.entid(subject as number | string | [string, unknown]);
-                  if (eid === undefined) {
-                    return { t: confirmedT, result: null, epoch: viewed };
-                  }
-                  return {
-                    t: confirmedT,
-                    result: await enginePull(db, eid, pattern),
-                    epoch: viewed,
-                  };
-                }
-                const result = await engineQuery(
-                  db,
-                  body.query as object,
-                  Array.isArray(body.inputs) ? body.inputs : [],
-                );
-                return { t: confirmedT, root: confirmedT, result, epoch: viewed };
-              },
-              catch: classifyQuery,
-            }),
-          ),
-        ),
+    ready().pipe(
+      Effect.flatMap(() =>
+        Effect.tryPromise({
+          try: async () => {
+            // Hydrated view is first paint. Do not join a catch-up
+            // resync / `{ op: tx }` on `applied` — that walk is not a loader.
+            const db = view();
+            // Same turn as view() — a waiter that can observe a newer epoch
+            // than this view must not exist. Live parks on `epoch`, not on a
+            // session snapshot taken before the pass.
+            const viewed = epoch;
+            if (op === "pull") {
+              const pattern = normalizePullPattern(body.pattern);
+              const unknown = unknownPullAttrs(db, pattern as { kind: string; attr?: string }[]);
+              if (unknown.length > 0) {
+                throw new InvalidRequest({
+                  message: `unknown attribute${unknown.length > 1 ? "s" : ""} in pull pattern: ${unknown.join(", ")}`,
+                });
+              }
+              const subject = body.eid;
+              const eid =
+                typeof subject === "number"
+                  ? subject
+                  : await db.entid(subject as number | string | [string, unknown]);
+              if (eid === undefined) {
+                return { t: confirmedT, result: null, epoch: viewed };
+              }
+              return {
+                t: confirmedT,
+                result: await enginePull(db, eid, pattern),
+                epoch: viewed,
+              };
+            }
+            const result = await engineQuery(
+              db,
+              body.query as object,
+              Array.isArray(body.inputs) ? body.inputs : [],
+            );
+            return { t: confirmedT, root: confirmedT, result, epoch: viewed };
+          },
+          catch: classifyQuery,
+        }),
       ),
     );
 
