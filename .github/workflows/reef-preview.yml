@@ -314,9 +314,7 @@ jobs:
               echo "::error::Unexpected status $STATUS deleting leftover preview Worker $NAME."
               fail=1
             fi
-          done <<EOF
-$URLS
-EOF
+          done < <(printf '%s\n' "$URLS")
           exit $fail
       - name: Mark the preview comment as destroyed
         uses: actions/github-script@v7
