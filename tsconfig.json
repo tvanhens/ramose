@@ -32,7 +32,6 @@
       "ramose/react": ["packages/ramose/src/react/index.ts"],
       "ramose/better-auth": ["packages/ramose/src/better-auth/index.ts"],
       "ramose/better-auth/client": ["packages/ramose/src/better-auth/client.ts"],
-      "ramose/follower-worker": ["packages/ramose/src/db/follower-worker.ts"],
       "ramose/*": ["packages/ramose/src/*"]
     }
   },

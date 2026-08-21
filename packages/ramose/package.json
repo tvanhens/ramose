@@ -100,11 +100,6 @@
       "types": "./dist/workerEntry.d.ts",
       "default": "./dist/workerEntry.js"
     },
-    "./follower-worker": {
-      "bun": "./src/db/follower-worker.ts",
-      "types": "./dist/db/follower-worker.d.ts",
-      "default": "./dist/db/follower-worker.js"
-    },
     "./effect": {
       "bun": "./src/effect.ts",
       "types": "./dist/effect.d.ts",
