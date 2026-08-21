@@ -305,15 +305,6 @@ export const loadSnap = async (
         // torn dump — fall through to per-`t` blobs
       }
     }
-    if (typeof console !== "undefined" && console.debug !== undefined) {
-      console.debug("[ramose persist] loadSnap", {
-        name,
-        dump: confirmed.length,
-        ts: meta.ts.length,
-        pending: meta.pending.length,
-        confirmedT: meta.confirmedT,
-      });
-    }
     for (const t of meta.ts) {
       if (fromSnap.has(t)) continue;
       const blob = await store.get(logKey(name, t));
@@ -373,14 +364,4 @@ export const saveView = async (
         pending: view.pending,
       }),
     );
-    if (typeof console !== "undefined" && console.debug !== undefined) {
-      console.debug("[ramose persist] saveView", {
-        name,
-        dump: view.dump?.reduce((n, e) => n + e.datoms.length, 0) ?? 0,
-        entries: view.entries.length,
-        ts: view.ts.length,
-        confirmedT: view.confirmedT,
-        pending: view.pending.length,
-      });
-    }
   });

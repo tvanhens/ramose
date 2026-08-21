@@ -612,6 +612,7 @@ describe("reload restores confirmed and pending", () => {
     await run(live.ready());
     await live.handlePush({ op: "resync", t: world.t, datoms: dump });
     await run(live.transact([{ ":user/name": "Bea" }]));
+    await live.flushDisk();
 
     const dead = fakeSession({
       onSync: () => {

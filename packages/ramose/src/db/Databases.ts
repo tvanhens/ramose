@@ -402,8 +402,8 @@ export const makeDatabases = (
     },
     close: async () => {
       closed = true;
-      await Promise.all([...overlays.values()].map((o) => o.flushDisk()));
       for (const s of sessions.values()) s.close();
+      await Promise.all([...overlays.values()].map((o) => o.flushDisk()));
     },
   };
 };
