@@ -37,6 +37,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { compiledPolicy } from "../domain/policy.ts";
+import { REEF_DOMAIN, pinned } from "./domain.ts";
 import { ac, roles } from "../domain/roles.ts";
 import {
   AUTH_BASE_PATH,
@@ -45,8 +46,12 @@ import {
   REEF_AUTH,
 } from "../domain/shared.ts";
 
-/** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
-export const AuthDb = Cloudflare.D1.Database("AuthDb");
+/**
+ * Better Auth's tables (user/session/org/member/invitation/jwks) live here.
+ * Named explicitly on the published demo so a CI state-cache eviction adopts
+ * this database instead of minting an empty one — see `./domain.ts`.
+ */
+export const AuthDb = Cloudflare.D1.Database("AuthDb", pinned("authdb"));
 
 const json = (body: unknown, status = 200) =>
   HttpServerResponse.json(body, { status });
@@ -61,6 +66,13 @@ export const Api = Cloudflare.Worker(
     // every Effect-form Worker) crashes on `stdin.once` at isolate init.
     compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
     dev: { port: DEV_API_PORT },
+    // The published demo owns the whole hostname: this Worker answers
+    // everything except `/db/*`, which a route sends to the peer (see
+    // ../infra/resources.ts). Attaching the domain here also makes `url`
+    // resolve to it, so `RAMOSE_JWKS_URL` and `RAMOSE_ALLOWED_ORIGINS`
+    // pick up the public origin with no further wiring.
+    ...pinned("api"),
+    ...(REEF_DOMAIN ? { domain: REEF_DOMAIN } : {}),
     // The built SPA. Assets are served first for everything that is not
     // /api/*; unknown paths fall back to index.html (SPA routing). The
     // committed dist/ placeholder keeps first-run `alchemy dev` working

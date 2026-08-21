@@ -74,8 +74,9 @@ stage name is unguessable and torn down at the end of the run.
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |
+| `.github/workflows/reef-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the Reef demo `prod` stage to https://reef.ramose.ai |
 
-The e2e, docs-preview, and docs-publish jobs use the GitHub **Development**
+The e2e, docs-preview, docs-publish, and reef-publish jobs use the GitHub **Development**
 environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
 a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
 `RAMOSE_DOCS_DOMAIN` (variable) overrides the production docs hostname
@@ -83,7 +84,9 @@ a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
 token must be able to read the zone and edit its Workers). The existing GitHub
 variable may still be named `RIPPLE_DOCS_DOMAIN` — `docs-publish.yml` maps
 whichever name is set onto `RAMOSE_DOCS_DOMAIN` for the deploy, so rename the
-variable at your convenience. Cursor Cloud Agents
+variable at your convenience. `REEF_DOMAIN` (variable) overrides the
+Reef demo's hostname (default `reef.ramose.ai`); publishing Reef additionally
+needs **Account / D1 / Edit** on the token, for the Better Auth database. Cursor Cloud Agents
 need the same names in the Cursor secrets panel — see
 [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 

@@ -132,8 +132,49 @@ examples/reef/
 
 ## Deploying to real Cloudflare
 
+The live demo is **https://reef.ramose.ai**, republished from `master` by
+[`.github/workflows/reef-publish.yml`](../../.github/workflows/reef-publish.yml).
+One hostname serves both Workers:
+
+| path | Worker | how |
+|---|---|---|
+| `/db/*` | the Ramose peer | a zone route (`src/infra/resources.ts`) |
+| everything else | the auth Worker + the built SPA | a custom domain (`src/infra/api.ts`) |
+
+The data plane is therefore **same-origin** with the SPA — a transact is never
+preflighted — and the peer keeps its `workers.dev` hostname, which is what the
+`Ramose.Server` health check probes.
+
+`REEF_DOMAIN` is what turns all of that on (see `src/infra/domain.ts`). Set, it
+attaches the domain and the route and pins the physical names of the Workers,
+the D1 database and the R2 bucket; unset, a deploy is exactly what it always
+was. The pinning is not cosmetic: CI keeps stack state in the Actions cache,
+and Alchemy's generated names carry a random suffix, so without it an evicted
+cache would create an empty D1 and R2 and orphan every account and workspace.
+
+A one-off deploy to the real demo, the way CI does it — the peer's URL is known
+up front, so the SPA is built first and the whole thing ships in one pass:
+
+```sh
+REEF_DOMAIN=reef.ramose.ai
+bun run scripts/build-packages.ts                       # see the warning below
+VITE_RAMOSE_URL="https://$REEF_DOMAIN" bunx vite build examples/reef
+REEF_DOMAIN=$REEF_DOMAIN bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --adopt
+```
+
+> **Build the packages first, every time.** `ramose`'s exports resolve `bun` →
+> `src` but `default` → `dist`, and Vite is not Bun. The peer Worker is
+> resolved by Alchemy under Bun, so it always ships current `src` — but the
+> SPA bundles `packages/ramose/dist`, so a skipped build silently ships
+> whatever client was left over from the last one. Nothing fails; the bundle
+> hash simply does not move while `ramose/db` changes go missing.
+
+To a personal stage on `workers.dev`, where the peer URL only exists *after*
+the first deploy, it stays two passes:
+
 ```sh
 bun alchemy deploy examples/reef/alchemy.run.ts          # first pass: Workers + D1 + R2
+bun run scripts/build-packages.ts                        # refresh packages/ramose/dist
 VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/reef  # bake the peer URL into the SPA
 bun alchemy deploy examples/reef/alchemy.run.ts          # second pass: ship the assets
 ```

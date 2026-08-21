@@ -32,6 +32,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import { Api } from "./api.ts";
+import { REEF_DOMAIN, pinned, zoneOf } from "./domain.ts";
 import { compiledPolicy } from "../domain/policy.ts";
 import {
   AUTH_BASE_PATH,
@@ -40,7 +41,9 @@ import {
   REEF_AUTH,
 } from "../domain/shared.ts";
 
-const Store = Cloudflare.R2.Bucket("Store");
+// Every workspace's datoms live in this bucket, so it is named explicitly on
+// the published demo for the same reason `AuthDb` is — see ./domain.ts.
+const Store = Cloudflare.R2.Bucket("Store", pinned("store"));
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
@@ -48,6 +51,15 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: import.meta.resolve("ramose/worker"),
   compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
   dev: { port: DEV_PEER_PORT },
+  // The data plane rides the SPA's own origin: a route claims `/db/*` on the
+  // demo hostname, whose remaining paths belong to the auth Worker's custom
+  // domain. Same-origin means the browser never preflights a transact, and
+  // there is one hostname to remember. The Worker keeps its workers.dev URL,
+  // which is what `Ramose.Server` health-checks below.
+  ...pinned("peer"),
+  ...(REEF_DOMAIN
+    ? { routes: [{ pattern: `${REEF_DOMAIN}/db/*`, zoneName: zoneOf(REEF_DOMAIN) }] }
+    : {}),
   env: {
     STORE: Store,
     TRANSACTOR: Transactor,
