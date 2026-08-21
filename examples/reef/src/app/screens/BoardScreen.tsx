@@ -227,19 +227,23 @@ export const BoardScreen = ({
 }: {
   workspace: Workspace;
   name: string;
-  user: SessionUser;
+  /** Set once `get-session` settles; `bindSelf` waits for it. */
+  user: SessionUser | undefined;
   onLeave: () => void;
 }) => {
   const { cls, slug } = workspace;
   const toast = useToast();
   const db = useDb(slug, Reef);
   const [myEid, setMyEid] = useState<number | undefined>(undefined);
-  const [selfReady, setSelfReady] = useState(false);
 
-  const userId = user.id;
-  const userName = user.name;
-  const userEmail = user.email;
+  const userId = user?.id;
+  const userName = user?.name;
+  const userEmail = user?.email;
+  // After paint. Hydrate / first columns do not wait on the session user.
   useEffect(() => {
+    if (userId === undefined || userName === undefined || userEmail === undefined) {
+      return;
+    }
     let cancelled = false;
     void Effect.runPromise(
       bindSelf(db, { id: userId, name: userName, email: userEmail }, cls),
@@ -247,12 +251,10 @@ export const BoardScreen = ({
       (eid) => {
         if (cancelled) return;
         setMyEid(eid);
-        setSelfReady(true);
       },
       (err) => {
         if (cancelled) return;
         toast("error", errorMessage(err));
-        setSelfReady(true);
       },
     );
     return () => {
@@ -326,7 +328,9 @@ export const BoardScreen = ({
       </div>
     );
   }
-  if (!selfReady || liveRows === undefined) {
+  // First cards are the hydrated emission. `undefined` is not `[]` —
+  // do not paint empty columns before that. `[]` after hydrate is honest.
+  if (liveRows === undefined) {
     return <Loading text={`opening ${slug}…`} />;
   }
 
@@ -381,9 +385,11 @@ export const BoardScreen = ({
         )}
         <span {...stylex.props(styles.divider, styles.wide)} />
         <ThemeToggle />
-        <span {...stylex.props(styles.wide)}>
-          <Avatar name={user.name} size="md" title={`${user.name} · ${user.email}`} />
-        </span>
+        {user !== undefined && (
+          <span {...stylex.props(styles.wide)}>
+            <Avatar name={user.name} size="md" title={`${user.name} · ${user.email}`} />
+          </span>
+        )}
         <IconButton icon="logout" label="Sign out" onClick={() => void authClient.signOut()} />
       </header>
 

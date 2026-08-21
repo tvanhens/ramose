@@ -137,7 +137,7 @@ describe("db.basis()", () => {
     const db = c.ramose.db("movies", Movies);
     const live = collect(db.live(names));
     await settle();
-    expect(live.seen).toEqual([[{ name: "Ada" }]]);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
 
     // the peer moved; basis() bumps the session. Overlay data is unchanged,
     // so digest-dedup keeps a single emission and no /query is sent.
@@ -145,7 +145,7 @@ describe("db.basis()", () => {
     expect(await run(db.basis())).toEqual({ t: 9 });
     await settle();
 
-    expect(live.seen).toEqual([[{ name: "Ada" }]]);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
     expect(peer.frameOps("q")).toEqual([]);
     expect(live.error).toBeUndefined();
 

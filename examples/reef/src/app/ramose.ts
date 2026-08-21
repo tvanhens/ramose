@@ -1,11 +1,12 @@
 /**
  * Workspace wiring. The mint is the `ramose/better-auth` client plugin
  * (`authClient.ramose.token`); `Ramose.token.jwt` re-mints the JWT near
- * `exp`; `cls` is the decoded, unverified claim — UI hints only. The client
- * that lives with the board is owned by `<RamoseProvider key={slug}>` in
- * App.tsx. This module mints `{ slug, cls, token }` and, on create only,
- * runs `install()` + seeds over a short-lived client. `ensureSelf` (the
- * caller's `user` row) runs on the Provider client — see `bindSelf`.
+ * `exp`; `cls` is the decoded, unverified claim — UI hints only. Token
+ * is for the socket and writes, not first paint: `mintWorkspace` is
+ * sync (`cls: "viewer"` until claims). The client that lives with the
+ * board is owned by `<RamoseProvider key={slug}>` in App.tsx. Create
+ * still `install()`s and seeds over a short-lived client. `ensureSelf`
+ * (the caller's `user` row) runs on the Provider client — see `bindSelf`.
  */
 import * as Ramose from "ramose/db";
 import * as Effect from "effect/Effect";
@@ -38,10 +39,30 @@ export type OpenWorkspaceOptions = Pick<
 };
 
 /**
- * Mint the source and decode `cls`. A refresh / shared-URL open
- * (`provision: false`) stops there — no `Ramose.connect`. Create still
- * `install()`s and seeds over a client that is closed before the board
- * mounts; the caller's `user` row is `bindSelf` on the live client.
+ * Sync mint — lazy token source, `cls: "viewer"` until claims. First
+ * paint mounts this; org name / class fill in after.
+ */
+export const mintWorkspace = (
+  slug: string,
+  options?: Pick<OpenWorkspaceOptions, "token">,
+): Workspace => ({
+  slug,
+  cls: "viewer",
+  token:
+    options?.token ??
+    Ramose.token.jwt(async () => {
+      const { authClient } = await import("./auth.ts");
+      return authClient.ramose.token({ db: slug });
+    }),
+});
+
+/**
+ * Mint the source. A refresh / shared-URL open (`provision: false`)
+ * stays a token mint — no `Ramose.connect`. Create still `install()`s
+ * and seeds over a client that is closed before the board mounts; the
+ * caller's `user` row is `bindSelf` on the live client. Callers that
+ * await this still get `cls` from claims; App first paint uses
+ * {@link mintWorkspace} so it does not.
  */
 export const openWorkspace = async (
   slug: string,
@@ -49,12 +70,8 @@ export const openWorkspace = async (
   provision: boolean,
   options?: OpenWorkspaceOptions,
 ): Promise<Workspace> => {
-  const token =
-    options?.token ??
-    Ramose.token.jwt(async () => {
-      const { authClient } = await import("./auth.ts");
-      return authClient.ramose.token({ db: slug });
-    });
+  const workspace = mintWorkspace(slug, options);
+  const token = workspace.token;
   const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
   if (provision) {
     const connect = options?.connect ?? Ramose.connect;
@@ -72,7 +89,7 @@ export const openWorkspace = async (
       await ramose.close();
     }
   }
-  return { slug, cls, token };
+  return { ...workspace, cls };
 };
 
 /**

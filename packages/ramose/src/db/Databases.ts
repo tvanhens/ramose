@@ -37,6 +37,7 @@ import {
   send,
 } from "./http.ts";
 import { openOverlay, type Overlay } from "./overlay.ts";
+import { type ByteStore, defaultStore } from "./persist.ts";
 import {
   globalWebSocket,
   openSession,
@@ -80,6 +81,12 @@ export interface ClientOptions {
   readonly fetch?: typeof fetch | undefined;
   /** Injection seam — defaults to the ambient `WebSocket`. */
   readonly webSocket?: typeof WebSocket | undefined;
+  /**
+   * Overlay persist. Tests inject a byte store (memory / temp dir).
+   * The page default is OPFS via `navigator.storage.getDirectory()`,
+   * falling back to a fresh memory page when OPFS is missing.
+   */
+  readonly persist?: ByteStore | undefined;
 }
 
 // ── the internal factory ───────────────────────────────────────────────────
@@ -102,6 +109,7 @@ export interface DatabasesConfig {
   readonly webSocket?: SocketFactory | undefined;
   /** Extra headers on every HTTPS request (`x-ramose-replica-hint`, …). */
   readonly headers?: Record<string, string> | undefined;
+  readonly persist?: ByteStore | undefined;
 }
 
 /** The credential as the wire wants it: a string, or nothing. */
@@ -150,6 +158,19 @@ export const makeDatabases = (
   const overlays = new Map<string, Overlay>();
   const catalogs = new Map<string, AnyCatalog>();
   let closed = false;
+  const pageStore: ByteStore = {
+    get: async (key) => (await resolvedStore()).get(key),
+    put: async (key, value) => (await resolvedStore()).put(key, value),
+    delete: async (key) => {
+      await (await resolvedStore()).delete?.(key);
+    },
+  };
+  let storeOnce: Promise<ByteStore> | undefined;
+  const resolvedStore = (): Promise<ByteStore> => {
+    if (config.persist !== undefined) return Promise.resolve(config.persist);
+    storeOnce ??= defaultStore();
+    return storeOnce;
+  };
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
   // session's caller can tell a thrown Unauthorized from a transport failure
@@ -189,6 +210,8 @@ export const makeDatabases = (
         session: socket,
         post: (tx, clientTxId) => postTx(name, tx, clientTxId),
         catalog: catalogs.get(name),
+        store: pageStore,
+        name,
       });
       overlays.set(name, existing);
     }
@@ -419,6 +442,7 @@ const configure = (
       fetch:
         options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
       webSocket: socket,
+      persist: options.persist,
     });
   });
 

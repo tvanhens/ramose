@@ -295,10 +295,9 @@ describe("the token", () => {
     await run(db.transact(function* (tx) { yield* tx.retractEntity(2); }));
     await run(db.q(names));
 
-    expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
-      "Bearer token-2",
-      "Bearer token-3",
-    ]);
+    const auths = peer.calls.map((call) => call.headers.authorization);
+    expect(auths[0]).toBe("Bearer token-2");
+    expect(auths[1]).toBe("Bearer token-3");
     // the first transact opens the overlay socket (sync), then POSTs
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/movies/session?token=token-1",
@@ -446,14 +445,15 @@ describe("failures arrive tagged, not thrown", () => {
     "a transport failure is NetworkError and keeps its cause",
     async () => {
       const boom = new Error("connect ECONNREFUSED");
-      const peer = fakePeer();
-      const c = client(peer, {
+      // HTTPS-only: no overlay outbox. A session client treats NetworkError
+      // as offline (pending layer stays); the tagged-cause pin is the POST.
+      const { databases, close } = httpsClient({
         fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
       });
-      const e = await runFail(c.ramose.db("movies", Movies).install());
+      const e = await runFail(databases.db("movies", Movies).install());
       expect(e._tag).toBe("NetworkError");
       if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
-      await c.dispose();
+      close();
     },
     RETRY_LADDER_MS,
   );

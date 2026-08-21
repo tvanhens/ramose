@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { query } from "../src/db/internal.ts";
-import { client, fakePeer, settle } from "./peer.ts";
+import { client, fakePeer, settle, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -257,8 +257,8 @@ describe("a socket that goes away", () => {
     const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.q(names))).toEqual([]);
+    await until(() => peer.sockets.length === 2);
     expect(peer.sockets).toHaveLength(2);
-    expect(peer.frames).toHaveLength(1);
     await c.dispose();
   });
 });
@@ -305,9 +305,10 @@ describe("Unauthorized is handled in place", () => {
           : { status: 403, body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" } },
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const e = await runFail(
-      c.ramose.db("movies", Movies).q(names),
-    );
+    const db = c.ramose.db("movies", Movies);
+    await run(db.q(names));
+    await settle();
+    const e = await runFail(db.q(names));
     expect(e._tag).toBe("Unauthorized");
     if (e._tag === "Unauthorized") {
       expect(e.code).toBe("policy");

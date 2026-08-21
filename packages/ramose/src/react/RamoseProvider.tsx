@@ -35,7 +35,7 @@ export interface RamoseProviderProps extends ClientOptions {
 }
 
 export const RamoseProvider = (props: RamoseProviderProps) => {
-  const { url, token, fetch, webSocket, children } = props;
+  const { url, token, fetch, webSocket, persist, children } = props;
   const [generation, reconnect] = useReducer((n: number) => n + 1, 0);
   /** The client the last cleanup closed — identity, not a flag on the memo. */
   const closed = useRef<Client | null>(null);
@@ -43,8 +43,8 @@ export const RamoseProvider = (props: RamoseProviderProps) => {
   // a client StrictMode's double render discards is harmless: `connect`
   // opens no sockets until a first read, so there is nothing to close
   const client = useMemo(
-    () => connect({ url, token, fetch, webSocket }),
-    [url, token, fetch, webSocket, generation],
+    () => connect({ url, token, fetch, webSocket, persist }),
+    [url, token, fetch, webSocket, persist, generation],
   );
 
   useEffect(() => {

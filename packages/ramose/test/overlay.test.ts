@@ -42,6 +42,14 @@ const noteTitles = query(Note).select({ title: Note.title });
 const noteAudits = query(Note).select({ audit: Note.audit });
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+
+const until = async (pred: () => boolean, ms = 2_000): Promise<void> => {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error("until timed out");
+    await Bun.sleep(5);
+  }
+};
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
@@ -642,6 +650,7 @@ describe("confirmed follower", () => {
       catalog: Movies,
     });
     await run(overlay.ready());
+    await until(() => overlay.confirmedT === 8);
     expect(overlay.confirmedT).toBe(8);
     const body = (await run(
       overlay.read("q", {
@@ -752,6 +761,7 @@ describe("two-writer races", () => {
       catalog: Movies,
     });
     await run(overlay.ready());
+    await until(() => overlay.confirmedT === 39);
     expect(overlay.confirmedT).toBe(39);
 
     await run(overlay.transact([{ ":user/name": "Browser" }]));
@@ -821,6 +831,7 @@ describe("two-writer races", () => {
       catalog: Movies,
     });
     await run(overlay.ready());
+    await until(() => overlay.confirmedT === 39);
     await overlay.handlePush({ op: "tx", t: 41, datoms: [browser] });
     expect(overlay.confirmedT).toBe(39);
     await overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
@@ -898,6 +909,7 @@ describe("two-writer races", () => {
       catalog: Movies,
     });
     await run(overlay.ready());
+    await until(() => overlay.confirmedT === 39);
     expect(overlay.confirmedT).toBe(39);
 
     await run(overlay.transact([{ ":user/name": "Browser" }]));
@@ -1275,6 +1287,7 @@ describe("apply is the notify", () => {
       catalog: Movies,
     });
     await run(overlay.ready());
+    await until(() => overlay.confirmedT === 39);
 
     let notified = 0;
     overlay.onChange(() => {
