@@ -288,6 +288,13 @@ export const Board = ({
   onMove: (id: number, status: Status, rank: number) => void;
 }) => {
   const [dragId, setDragId] = useState<number | null>(null);
+  /**
+   * Whether the card in flight has been taken out of its column's flow yet.
+   * Split from `dragId` because Chrome cancels an HTML5 drag outright if the
+   * drag source's *layout box* changes during `dragstart` — see `onDragStart`.
+   * `dragId` is what a drop commits against; this is only the visual lift.
+   */
+  const [lifted, setLifted] = useState(false);
   const [over, setOver] = useState<DropTarget | null>(null);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const [slotHeight, setSlotHeight] = useState(72);
@@ -318,6 +325,12 @@ export const Board = ({
   const stopListen = useRef<(() => void) | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const pageLock = useRef<(() => void) | null>(null);
+  /**
+   * Which input owns the drag in flight. The page/board scroll locks exist for
+   * touch (iOS rubber-banding); on a mouse drag they would freeze the document
+   * and swallow the wheel for no reason, so they stay off.
+   */
+  const dragKind = useRef<"mouse" | "touch" | null>(null);
 
   const startPageLock = () => {
     if (pageLock.current !== null) return;
@@ -335,10 +348,12 @@ export const Board = ({
       held.el.style.touchAction = "";
     }
     touch.current = null;
+    dragKind.current = null;
     stopListen.current?.();
     stopListen.current = null;
     stopPageLock();
     setDragId(null);
+    setLifted(false);
     setOver(null);
     setGhost(null);
   };
@@ -381,7 +396,7 @@ export const Board = ({
   // The board is `overflow-x: auto` so columns can pan, and the document
   // itself rubber-bands on iOS. While a card is in flight, freeze both.
   useLayoutEffect(() => {
-    if (dragId === null) return;
+    if (dragId === null || dragKind.current !== "touch") return;
     startPageLock();
     const el = boardRef.current;
     if (el === null) return;
@@ -464,6 +479,7 @@ export const Board = ({
         const held = touch.current;
         if (held === null) return;
         suppressClick.current = true;
+        dragKind.current = "touch";
         startPageLock();
         held.el.style.touchAction = "none";
         try {
@@ -477,6 +493,8 @@ export const Board = ({
           /* iOS has no vibrate */
         }
         lift(held.row, held.el);
+        // Touch never uses HTML5 drag, so nothing constrains when it lifts.
+        setLifted(true);
         setGhost({
           title: held.row.title,
           width: held.el.getBoundingClientRect().width,
@@ -488,7 +506,9 @@ export const Board = ({
     listenTouch();
   };
 
-  const dragging = dragId !== null;
+  // Everything layout-affecting keys off `lifted`, not `dragId`: at `dragstart`
+  // the source card must still render exactly as it did, or Chrome kills the drag.
+  const dragging = lifted;
 
   return (
     <div {...stylex.props(styles.wrap)}>
@@ -508,8 +528,18 @@ export const Board = ({
             aria-label={STATUS_LABELS[status]}
             data-reef-column={status}
             {...stylex.props(styles.column, hovering && styles.columnOver)}
+            // A drop is only allowed if the *latest* drag event over the
+            // current target cancelled. Lifting the card shifts the layout
+            // under the cursor, so the last event before the release is often
+            // a `dragenter` on a newly-arrived element — cancel that too, or
+            // the release is refused and no `drop` fires.
+            onDragEnter={(e) => {
+              e.preventDefault();
+            }}
             onDragOver={(e) => {
               e.preventDefault();
+              // Safe here and not in `dragstart`: the drag is already under way.
+              setLifted(true);
               const hit = e.target as Element;
               if (hit.closest?.("[data-reef-card]") || hit.closest?.("[data-reef-slot]")) return;
               setOver({ status, beforeId: undefined });
@@ -558,7 +588,7 @@ export const Board = ({
                 </div>
               )}
               {column.map((row) => {
-                const liftedCard = row.id === dragId;
+                const liftedCard = lifted && row.id === dragId;
                 const visIdx = visible.findIndex((r) => r.id === row.id);
                 const order =
                   visIdx < 0
@@ -595,22 +625,37 @@ export const Board = ({
                     onPointerDown={(e) => onCardPointerDown(row, e)}
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = "move";
-                      startPageLock();
+                      // Only `dragId` is set here, never `lifted`. Chrome
+                      // cancels the drag if the source's layout box changes
+                      // inside `dragstart` — `cardLifted` takes the card out
+                      // of flow, and that alone is enough: `dragend` fires
+                      // immediately and no `dragover` or `drop` ever does.
+                      // (Deferring with a timer is not a fix either — macOS
+                      // runs the drag in a nested loop that starves timers
+                      // until after `dragend`.) `dragover` fires inside that
+                      // loop, so the visual lift happens there instead.
+                      dragKind.current = "mouse";
                       lift(row, e.currentTarget);
                     }}
                     onDragEnd={() => {
-                      stopPageLock();
-                      setDragId(null);
-                      setOver(null);
-                      setGhost(null);
+                      resetDrag();
+                    }}
+                    onDragEnter={(e) => {
+                      if (liftedCard) return;
+                      e.preventDefault();
                     }}
                     onDragOver={(e) => {
                       if (liftedCard) return;
                       e.preventDefault();
                       e.stopPropagation();
+                      setLifted(true);
+                      if (row.id === dragId) return;
                       const box = e.currentTarget.getBoundingClientRect();
                       const after = e.clientY > (box.top + box.bottom) / 2;
-                      const ids = visible.map((r) => r.id);
+                      // Always drop the dragged card from the neighbour list:
+                      // `visible` only excludes it once `lifted` is true, and the
+                      // first `dragover` arrives before that.
+                      const ids = column.filter((r) => r.id !== dragId).map((r) => r.id);
                       setOver({
                         status,
                         beforeId: after ? afterCardBeforeId(ids, row.id) : row.id,
