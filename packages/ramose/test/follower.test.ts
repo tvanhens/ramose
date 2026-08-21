@@ -285,17 +285,18 @@ describe("opening walk is one catch-up notify", () => {
     const dump = await snapshotDatoms(world);
     const rootT = world.t;
     const nameA = world.db().schema.requireAttr(":user/name").id;
+    // Stay above the local schema-install `t` hydrate assigns (rootT+1).
     const walked = ["Bea", "Cal", "Dot"].map((name, i) =>
       toWireDatom({
-        e: 3001 + i,
+        e: 50_001 + i,
         a: nameA,
         vt: ValueTag.Str,
         v: name,
-        t: rootT + 1 + i,
+        t: rootT + 10 + i,
         op: true,
       }),
     );
-    const tip = rootT + walked.length;
+    const tip = rootT + 10 + walked.length - 1;
 
     const first = fakeSession();
     const a = openOverlay({
@@ -319,7 +320,7 @@ describe("opening walk is one catch-up notify", () => {
           body: { t: tip, from },
           pushes: walked.map((datom, i) => ({
             op: "tx",
-            t: rootT + 1 + i,
+            t: rootT + 10 + i,
             datoms: [datom],
           })),
         };
