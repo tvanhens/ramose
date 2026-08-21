@@ -296,6 +296,20 @@ export const BoardScreen = ({
   // `ticks` counts overlay emissions after the first — local apply, ack,
   // or an inbound filtered `tx` — and the pulse makes that visible.
   const ticks = board.ticks;
+  useEffect(() => {
+    if (typeof console === "undefined" || typeof console.info !== "function") {
+      return;
+    }
+    const t =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    console.info("[ramose] board.rows", {
+      t,
+      rows: liveRows?.length,
+      ticks,
+    });
+  }, [liveRows, ticks]);
   // Derived from the live rows, so a deleted issue closes its own panel.
   // An optimistic create remaps its eid on ack; rebind by the facts that
   // survived (title / column / rank / creator) so the panel stays open.

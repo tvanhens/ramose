@@ -987,11 +987,25 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               Array.isArray(body.inputs) ? body.inputs : [],
             );
             didView = true;
-            if (!firstEmitLogged) {
-              firstEmitLogged = true;
-              const rows = Array.isArray(result) ? result.length : result == null ? 0 : 1;
-              mark("first-emit", { rows, hydrateFacts, hasSnap, confirmedT });
-            }
+            const rows = Array.isArray(result)
+              ? result.length
+              : result == null
+                ? 0
+                : 1;
+            const find = JSON.stringify(
+              (body.query as { find?: unknown } | undefined)?.find ?? "",
+            );
+            mark(firstEmitLogged ? "emit" : "first-emit", {
+              rows,
+              hydrateFacts,
+              hasSnap,
+              confirmedT,
+              generation: options.session.generation,
+              epoch,
+              catchingUp,
+              find: find.slice(0, 120),
+            });
+            firstEmitLogged = true;
             return { t: confirmedT, root: confirmedT, result, epoch: viewed };
           },
           catch: classifyQuery,
@@ -1163,6 +1177,22 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         if (layer !== undefined) remapDropped(layer, incoming);
       }
       const t = typeof frame.t === "number" ? frame.t : 0;
+      // A JWT/socket dump that carries no facts must not replace a
+      // hydrated snap — that is the ADMIN-then-cards wipe. Stamp the
+      // follow cursor; keep `view()`.
+      if (hasSnap && catchingUp && incoming.length === 0 && hydrateFacts > 0) {
+        mark("keep-snap", {
+          reason: "empty-resync",
+          hydrateFacts,
+          confirmedT: t,
+          generation: options.session.generation,
+        });
+        if (t > confirmedT) {
+          confirmedT = t;
+          options.session.bump(t);
+        }
+        return;
+      }
       return replaceConfirmed(incoming, t).then(async () => {
         await rebasePending();
         afterView({ replace: incoming });

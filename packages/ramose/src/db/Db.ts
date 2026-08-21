@@ -133,6 +133,10 @@ export interface Wire {
         >;
         /** View-visible mutation generation — captured at `view()`, not before the pass. */
         readonly epoch: number;
+        /** `loadSnap` returned confirmed facts — a later JWT must not blank them. */
+        readonly hasSnap: boolean;
+        /** Opening `sync({ from })` has not finished. */
+        readonly catchingUp: boolean;
         /** Subscribe to overlay apply (pending / ack / inbound tx / resync). */
         onChange(cb: () => void): () => void;
       }
@@ -574,8 +578,22 @@ const makeRead = <C extends AnyCatalog>(
           // a tick the pass's result did not notice is not news
           const digest = JSON.stringify(pass.raw) ?? "";
           if (digest !== last) {
-            last = digest;
-            yield* Queue.offer(queue, pass.value);
+            // Token / generation / empty resync can re-run onto `[]`
+            // while the hydrated snap is still the board. Do not offer
+            // that blank; `finishCatchUp` is not catchingUp and can
+            // still emit an honest empty after a real wipe.
+            const blankingSnap =
+              overlaid &&
+              overlay !== undefined &&
+              overlay.hasSnap &&
+              overlay.catchingUp &&
+              digest === "[]" &&
+              last !== undefined &&
+              last !== "[]";
+            if (!blankingSnap) {
+              last = digest;
+              yield* Queue.offer(queue, pass.value);
+            }
           }
           if (pinned || session === undefined) break;
           if (overlaid && overlay !== undefined) {

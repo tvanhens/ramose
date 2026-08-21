@@ -224,6 +224,16 @@ const BoardSession = ({
       try {
         const claims = await workspace.token.claims();
         if (cancelled) return;
+        if (typeof console !== "undefined" && typeof console.info === "function") {
+          const t =
+            typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now();
+          console.info("[ramose] claims", {
+            t,
+            cls: claims.ramose?.class,
+          });
+        }
         onCls((claims.ramose?.class ?? "viewer") as RamoseClass);
       } catch (err) {
         if (cancelled) return;

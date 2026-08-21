@@ -397,6 +397,92 @@ describe("hydrate then sync is a walk", () => {
     }
   });
 
+  test("token() resolve after a snap first-emit must not emit []", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const writer = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(writer.ready());
+    await writer.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await until(async () => {
+      const loaded = await loadSnap(store, "movies");
+      return loaded !== undefined && loaded.confirmedT === rootT;
+    });
+
+    let release!: (token: Redacted.Redacted<string>) => void;
+    const delayed = new Promise<Redacted.Redacted<string>>((resolve) => {
+      release = resolve;
+    });
+    let resolved = false;
+    const peer = fakePeer({
+      answer: (frame) => {
+        if (frame.op === "sync") {
+          // JWT/socket dump with no facts — the ADMIN-time wipe.
+          return { body: { t: rootT, from: frame.from ?? 0, datoms: [] } };
+        }
+        return { body: { t: 0 } };
+      },
+    });
+    const { databases, close } = makeDatabases({
+      url: Effect.succeed("https://peer.example.com"),
+      token: Effect.tryPromise({
+        try: () =>
+          delayed.then((token) => {
+            resolved = true;
+            return token;
+          }),
+        catch: (cause) =>
+          new NetworkError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      }),
+      fetch: fromStandardFetch(peer.fetch),
+      webSocket: (url) => new peer.webSocket(url) as never,
+      persist: store,
+    });
+    const names = query(User).select({ name: User.name });
+    const seen: { names: string[]; resolved: boolean }[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(databases.db("movies", Movies).live(names), (rows) =>
+        Effect.sync(() => {
+          seen.push({
+            names: (rows as { name: string }[]).map((r) => r.name),
+            resolved,
+          });
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => {
+            if (!Cause.hasInterrupts(cause)) throw Cause.squash(cause);
+          }),
+        ),
+      ),
+    );
+    try {
+      await until(() => seen.length > 0, 400);
+      expect(seen[0]?.resolved).toBe(false);
+      expect(seen[0]?.names).toEqual(["Ada"]);
+      release(Redacted.make("late-token"));
+      await until(() => resolved, 400);
+      await Bun.sleep(80);
+      expect(seen.some((e) => e.names.length === 0)).toBe(false);
+      expect(seen[0]?.names).toEqual(["Ada"]);
+    } finally {
+      await run(Fiber.interrupt(fiber));
+      await close();
+    }
+  });
+
   test("closed client fails ready — no session yet is not closed", async () => {
     const store = memoryStore();
     const world = await schemaConn();

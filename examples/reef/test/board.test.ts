@@ -965,4 +965,73 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
       await peer.dispose();
     }
   });
+
+  test("token() resolve after 2s must not emit [] once the snap has painted", async () => {
+    const backing = memoryStore();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: (key, value) => backing.put(key, value),
+      delete: (key) => backing.delete?.(key) ?? Promise.resolve(),
+    };
+    const peer = await inProcessPeer({ seed: false, persist });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(seedSampleIssues(a.db, people[0]!.id, labels));
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await a.close();
+
+    peer.resetTraffic();
+    let release!: (token: string) => void;
+    const delayed = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    let resolved = false;
+    const late = Ramose.token.jwt(() => {
+      return delayed.then((token) => {
+        resolved = true;
+        return token;
+      });
+    });
+    const b = Ramose.connect({
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      persist,
+      token: late,
+    });
+    const seen: { titles: string[]; resolved: boolean }[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(b.db("coral-team", Reef).live(boardQuery), (rows) =>
+        Effect.sync(() => {
+          seen.push({
+            titles: rows.map((r) => r.title),
+            resolved,
+          });
+        }),
+      ),
+    );
+    try {
+      const started = Date.now();
+      for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(10);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(seen[0]?.resolved).toBe(false);
+      expect([...seen[0]!.titles].sort()).toEqual([...titlesA].sort());
+      await Bun.sleep(50);
+      release("late-token");
+      await Bun.sleep(80);
+      expect(seen.some((e) => e.titles.length === 0)).toBe(false);
+      expect(seen.every((e) => e.titles.length === 9)).toBe(true);
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      await b.close();
+      await peer.dispose();
+    }
+  });
 });
