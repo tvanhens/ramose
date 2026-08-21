@@ -209,7 +209,14 @@ export const WorkspacesScreen = ({
 
   const create = async () => {
     if (!isWorkspaceSlug(slug)) {
-      toast("error", "workspace names need at least two letters or digits");
+      // Two failure modes, one check: too short to be a database name, or a
+      // slug the deployed demo reserves for its own paths (see RESERVED_SLUGS).
+      toast(
+        "error",
+        slug.length < 2
+          ? "workspace names need at least two letters or digits"
+          : `"${slug}" is reserved — pick another workspace name`,
+      );
       return;
     }
     setBusy(true);

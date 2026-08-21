@@ -35,6 +35,8 @@ describe("fractional ranks", () => {
   });
 });
 
+const SLUG_RE_SHAPE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+
 describe("workspace slugs", () => {
   test("slugify produces valid Ramose database names", () => {
     for (const name of ["Coral Team", "  Deep  Sea!  ", "Ops/2026", "élan vital"]) {
@@ -46,5 +48,18 @@ describe("workspace slugs", () => {
   test("degenerate names fail the check instead of reaching the peer", () => {
     expect(isWorkspaceSlug(slugify("!!!"))).toBe(false);
     expect(isWorkspaceSlug(slugify("a"))).toBe(false);
+  });
+
+  test("slugs that would shadow a deployed path are reserved", () => {
+    // A workspace lives at `/<slug>`; on the deployed demo `/db/*` is routed
+    // to the Ramose peer and `/api/*` to the auth Worker, so a board at either
+    // could never open an issue. Both are otherwise valid slugs.
+    for (const reserved of ["db", "api"]) {
+      expect(SLUG_RE_SHAPE.test(reserved)).toBe(true);
+      expect(isWorkspaceSlug(reserved)).toBe(false);
+    }
+    // The guard is exact, not a prefix match — these stay usable.
+    expect(isWorkspaceSlug("database")).toBe(true);
+    expect(isWorkspaceSlug("api-team")).toBe(true);
   });
 });

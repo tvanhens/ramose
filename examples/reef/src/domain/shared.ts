@@ -56,8 +56,25 @@ export type RamoseClass = (typeof CLASSES)[number];
  */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
+/**
+ * First path segments the deployed demo has already spent. A workspace lives
+ * at `/<slug>` and its issues at `/<slug>/issues/<id>`, so a slug that shadows
+ * one of these would route a page request away from the SPA entirely:
+ *
+ *   db    the Ramose data plane. On https://reef.ramose.ai a Worker route
+ *         claims `/db/*` for the peer, so `/db/issues/7` would answer with a
+ *         peer error instead of the board.
+ *   api   the auth Worker's, served ahead of the assets (`runWorkerFirst`),
+ *         so `/api/issues/7` would 404 as JSON.
+ *
+ * Rejecting them in `isWorkspaceSlug` covers both ends at once: no such
+ * workspace can be created, and `parsePath` falls back to the picker rather
+ * than rendering a board whose links cannot work.
+ */
+const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "db"]);
+
 export const isWorkspaceSlug = (slug: string): boolean =>
-  isDatabaseName(slug) && SLUG_RE.test(slug);
+  isDatabaseName(slug) && SLUG_RE.test(slug) && !RESERVED_SLUGS.has(slug);
 
 export const slugify = (name: string): string =>
   name
