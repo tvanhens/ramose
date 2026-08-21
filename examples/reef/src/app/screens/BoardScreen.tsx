@@ -486,7 +486,7 @@ export const BoardScreen = ({
         />
       )}
 
-      {invite && (
+      {invite && user !== undefined && (
         <InviteDialog slug={slug} user={user} onClose={() => setInvite(false)} />
       )}
     </div>
