@@ -8,22 +8,28 @@
  * assigned (`t`, eids) — `applyDatoms`, never `processTx`. Pending layers
  * stay off the confirmed log and are never sent to other sessions.
  *
- * First paint is the last local snapshot: after hydrate, notify so
- * `read` / first `q` / live emit those rows, then `sync({ from:
- * confirmedT })` is catch-up. Empty OPFS (first visit) is the only
- * time there is no local row. Walked `{ op: tx }` / one `{ op: resync }`
- * persist without per-frame notify; epoch moves once when that walk
- * finishes. After that, apply is the notify per commit. A leading
- * `{ op: resync }` (`from < rootT`) is the same catch-up snap as a
- * long walk — the hydrated view at `confirmedT` is first paint. A
- * resync dump replaces confirmed and rebases still-unacked pending
- * layers; it does not wipe the outbox.
+ * Memory is the current-view store. A `view()` change notifies in that
+ * turn — hydrate, pending push, ack, inbound `{ op: tx }`, `{ op: resync }`
+ * rebase — then returns. Persist and `sync({ from })` are behind that
+ * notify: durability of the same snap, and follow-cursor work.
+ *
+ * First paint is hydrate (`loadSnap`). First `ready` / `read` wait only
+ * for that. Empty OPFS (first visit) is an honest empty emission; a snap
+ * emits those rows, never an empty frame first. `sync({ from: confirmedT })`
+ * applies behind paint. Many walked `{ op: tx }` or one `{ op: resync }`
+ * is one notify when catch-up finishes. User `transact` is not on that
+ * queue. A dump rebases still-unacked pending; it does not wipe the outbox.
  */
 
 import { Connection } from "../internal/core/conn.ts";
 import { type Datom, Index, ValueTag } from "../internal/core/datom.ts";
 import { Db as EngineDb } from "../internal/core/db.ts";
-import { fromWireDatom, toWireDatom, type WireDatom } from "../internal/core/log.ts";
+import {
+  fromWireDatom,
+  type LogEntry,
+  toWireDatom,
+  type WireDatom,
+} from "../internal/core/log.ts";
 import { Novelty } from "../internal/core/novelty.ts";
 import type { Schema } from "../internal/core/schema.ts";
 import {
@@ -57,7 +63,7 @@ import {
   type OverlaySnap,
   pendingFromSnap,
   pendingToSnap,
-  saveSnap,
+  saveView,
 } from "./persist.ts";
 import type { Session } from "./session.ts";
 
@@ -88,7 +94,7 @@ export interface Overlay {
   ): Effect.Effect<unknown, DbError>;
   transact(tx: readonly unknown[]): Effect.Effect<OverlayAck, DbError>;
   handlePush(frame: Record<string, unknown>): Promise<void>;
-  /** Confirmed current-view + pending layers — what persist writes. */
+  /** Confirmed current-view + pending layers — memory, not the disk format. */
   snapshot(): Promise<OverlaySnap>;
   /**
    * POST every pending layer that is still the outbox (offline transact).
@@ -110,7 +116,7 @@ export interface OverlayOptions {
    * received `schemaTx` over the port). Same install as {@link catalog}.
    */
   readonly schema?: readonly unknown[] | undefined;
-  /** Injected byte store. Hydrate on first `ready()`, persist after apply. */
+  /** Injected byte store. Hydrate on first `ready()`, persist after notify. */
   readonly store?: ByteStore | undefined;
   /** Persist key (`<db name>`). Required with {@link store}. */
   readonly name?: string | undefined;
@@ -334,13 +340,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
   const listeners = new Set<() => void>();
+  /** Confirmed `t` values already on disk (or loaded from it). */
+  const knownTs = new Set<number>();
+  /** Novelty not yet written as RLG1 blobs. */
+  const unpublished: LogEntry[] = [];
+  /** Per-`t` blobs to drop on the next persist (a resync replaced the log). */
+  let staleTs: number[] = [];
+  let persistDirty = false;
+  let persistChain: Promise<void> = Promise.resolve();
 
   /**
-   * Orderer only. An idle, sync `fn` (a `{ op: tx }` with a ready
-   * follower) runs before this returns — apply is the notify. A busy
-   * queue (in-flight resync) defers `fn` onto the tail. Local
-   * `transact` push + persist/notify rides this too, so a dump already
-   * on `applied` cannot interleave with the layer's first notify.
+   * Inbound apply orderer only. An idle, sync `fn` (a `{ op: tx }` with
+   * a ready follower) runs before this returns — apply is the notify.
+   * A busy queue (in-flight resync) defers `fn` onto the tail. User
+   * `transact` does not ride this: push layer + notify now. Persist is
+   * never on this queue.
    */
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
     if (applyQueued === 0) {
@@ -384,39 +398,82 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     };
   };
 
-  /** Apply is the notify: persist matches `view()`, then epoch moves. */
+  /** Apply is the notify: mutate `view()`, then epoch moves. Persist is after. */
   const notify = (): void => {
     epoch += 1;
     options.session.nudge();
     for (const cb of [...listeners]) cb();
   };
 
-  const persist = (): void | Promise<void> => {
+  const remember = (datoms: readonly Datom[]): void => {
+    if (datoms.length === 0) return;
+    const groups = new Map<number, Datom[]>();
+    for (const d of datoms) {
+      let g = groups.get(d.t);
+      if (g === undefined) {
+        g = [];
+        groups.set(d.t, g);
+      }
+      g.push(d);
+    }
+    for (const [t, ds] of groups) {
+      if (knownTs.has(t)) continue;
+      knownTs.add(t);
+      unpublished.push({ t, txInstant: 0, datoms: ds });
+    }
+  };
+
+  const resetLog = (datoms: readonly Datom[]): void => {
+    for (const t of knownTs) staleTs.push(t);
+    knownTs.clear();
+    unpublished.length = 0;
+    remember(datoms);
+  };
+
+  const flushPersist = async (): Promise<void> => {
     const store = options.store;
     const name = options.name;
     if (store === undefined || name === undefined) return;
-    return takeSnapshot().then((snap) => saveSnap(store, name, snap));
+    if (!persistDirty) return;
+    persistDirty = false;
+    const entries = unpublished.splice(0);
+    const drop = staleTs.splice(0);
+    await saveView(store, name, {
+      confirmedT,
+      entries,
+      ts: [...knownTs].sort((a, b) => a - b),
+      dropTs: drop,
+      pending: pending.map(pendingToSnap),
+    });
+    if (persistDirty) await flushPersist();
   };
 
-  const persistThenNotify = (): void | Promise<void> => {
-    const done = persist();
-    if (done === undefined) {
-      notify();
+  /** Fire-and-forget durability of the current snap. Never awaited on apply. */
+  const schedulePersist = (): void => {
+    if (options.store === undefined || options.name === undefined) return;
+    persistDirty = true;
+    persistChain = persistChain.then(flushPersist, flushPersist);
+  };
+
+  /**
+   * A view-visible mutation just happened. Catch-up holds notify until the
+   * walk finishes; user transact / post-catch-up apply notify now. Persist
+   * is always behind that, never a lock.
+   */
+  const afterView = (opts?: {
+    readonly remember?: readonly Datom[];
+    readonly replace?: readonly Datom[];
+  }): void => {
+    if (opts?.replace !== undefined) resetLog(opts.replace);
+    else if (opts?.remember !== undefined) remember(opts.remember);
+    if (catchingUp) {
+      catchUpDirty = true;
+      schedulePersist();
       return;
     }
-    return done.then(() => {
-      notify();
-    });
+    notify();
+    schedulePersist();
   };
-
-  /** Opening walk: persist the frame, hold notify until catch-up finishes. */
-  const persistCatchUp = (): void | Promise<void> => {
-    catchUpDirty = true;
-    return persist();
-  };
-
-  const inboundPersist = (): void | Promise<void> =>
-    catchingUp ? persistCatchUp() : persistThenNotify();
 
   const pendingDatoms = (): Datom[] => {
     const out: Datom[] = [];
@@ -593,6 +650,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       pending.push(restored);
       unsent.add(restored.clientTxId);
     }
+    knownTs.clear();
+    unpublished.length = 0;
+    staleTs = [];
+    for (const d of snap.confirmed) knownTs.add(d[4]);
   };
 
   const ensureConn = async (): Promise<void> => {
@@ -664,6 +725,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       if (typeof t === "number" && t > confirmedT) {
         confirmedT = t;
         options.session.bump(t);
+        schedulePersist();
       }
       // One epoch for the walk, then outbox flush is apply-is-notify.
       finishCatchUp();
@@ -732,15 +794,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         walkFail = undefined;
         const first = conn === undefined;
         await ensureConn();
-        // Loaded a snap → first paint. Cursor-only (`confirmedT > 0`,
-        // empty facts) is still a snap; a `from < rootT` dump is catch-up.
-        // Empty first boot (no snap) waits for the walk.
-        if (first && painted()) notify();
-        const hold = painted();
-        const walk = kickWalk(retry, hold);
-        if (hold) return;
-        await walk;
-        await applied;
+        // First paint is hydrate — snap rows, or honest empty. Never wait
+        // for the walk, an OPFS write, or a token.
+        if (first) notify();
+        kickWalk(retry, true);
       },
       catch: (cause) =>
         isDatabaseError(cause)
@@ -841,9 +898,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         await enqueueApply(() => {
           unsent.delete(id);
           const layer = dropLayer(id);
-          if (ack.datoms.length > 0) paintFacts(ack.datoms.map(fromWireDatom));
+          const incoming =
+            ack.datoms.length > 0 ? ack.datoms.map(fromWireDatom) : [];
+          if (incoming.length > 0) paintFacts(incoming);
           if (layer !== undefined) remapQueued(ack.tempids, layer.tempids);
-          return persistThenNotify();
+          afterView(incoming.length > 0 ? { remember: incoming } : undefined);
         });
         resume?.(Effect.succeed(ack));
       })
@@ -857,7 +916,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         await enqueueApply(() => {
           unsent.delete(id);
           dropLayer(id);
-          return persistThenNotify();
+          afterView();
         });
         resume?.(Effect.fail(fail));
       });
@@ -916,18 +975,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
 
           const id = clientTxId();
-          yield* Effect.promise(() =>
-            enqueueApply(() => {
-              pending.push({
-                clientTxId: id,
-                tx: tx as unknown[],
-                datoms: expansion.datoms,
-                tempids: expansion.tempids,
-              });
-              unsent.add(id);
-              return persistThenNotify();
-            }),
-          );
+          pending.push({
+            clientTxId: id,
+            tx: tx as unknown[],
+            datoms: expansion.datoms,
+            tempids: expansion.tempids,
+          });
+          unsent.add(id);
+          notify();
+          schedulePersist();
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             const run = () => postLayer(id, tx as unknown[], resume);
@@ -940,15 +996,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
-  /** The one tx apply: paint, then notify. */
-  const applyTx = (frame: Record<string, unknown>): void | Promise<void> => {
+  /** The one tx apply: paint, then notify (or hold notify during catch-up). */
+  const applyTx = (frame: Record<string, unknown>): void => {
     const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
     applyConfirmed(incoming);
     dropCoveredPending(
       incoming,
       typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
     );
-    return inboundPersist();
+    afterView({ remember: incoming });
   };
 
   const applyFrame = (frame: Record<string, unknown>): void | Promise<void> => {
@@ -965,7 +1021,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const t = typeof frame.t === "number" ? frame.t : 0;
       return replaceConfirmed(incoming, t).then(async () => {
         await rebasePending();
-        return inboundPersist();
+        afterView({ replace: incoming });
       });
     }
     if (frame.op === "tx") return applyTx(frame);

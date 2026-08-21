@@ -1,14 +1,21 @@
 /**
- * Durable overlay snapshot: confirmed current-view + pending layers, as
- * bytes. OPFS is the browser page; tests inject a {@link ByteStore}
- * (memory or a temp dir). That is a storage seam, not a second database.
+ * Durable overlay log: novelty + follow cursor + pending layers.
+ *
+ * Memory is the current-view store. This module is async durability of
+ * the same snap — one RLG1 blob per confirmed `t`, a JSON meta blob for
+ * `confirmedT` + the `t` index + pending. Hydrate rebuilds a Connection
+ * from that log + cursor. Apply does not rewrite the full current-view
+ * EAVT as JSON.
  *
  * Encode copies into bytes; decode allocates new objects. A "reload" is a
  * new overlay over the same store, never the same Connection identity.
  */
 
 import {
+  decodeLogChunk,
+  encodeLogChunk,
   fromWireDatom,
+  type LogEntry,
   toWireDatom,
   type WireDatom,
 } from "../internal/core/log.ts";
@@ -22,7 +29,7 @@ export interface PendingSnap {
   readonly tempids: Record<string, number>;
 }
 
-/** Confirmed current-view + the outbox. What hydrate restores. */
+/** In-memory / hydrate reconstruction of confirmed + the outbox. */
 export interface OverlaySnap {
   readonly v: 1;
   readonly confirmedT: number;
@@ -30,34 +37,45 @@ export interface OverlaySnap {
   readonly pending: readonly PendingSnap[];
 }
 
-/** The storage seam. Keys are per-db (`<name>`). Values are opaque bytes. */
+/** Cursor + log index + outbox. One JSON blob; facts live in per-`t` RLG1. */
+export interface OverlayMeta {
+  readonly v: 2;
+  readonly confirmedT: number;
+  readonly ts: readonly number[];
+  readonly pending: readonly PendingSnap[];
+}
+
+/** Novelty to append, the full `t` index, and optional stale blobs to drop. */
+export interface PersistView {
+  readonly confirmedT: number;
+  readonly entries: readonly LogEntry[];
+  readonly ts: readonly number[];
+  readonly dropTs?: readonly number[];
+  readonly pending: readonly PendingSnap[];
+}
+
+/** The storage seam. Keys are per-db. Values are opaque bytes. */
 export interface ByteStore {
   get(key: string): Promise<Uint8Array | undefined>;
   put(key: string, value: Uint8Array): Promise<void>;
   delete?(key: string): Promise<void>;
 }
 
-const SNAP_VERSION = 1 as const;
+const META_VERSION = 2 as const;
 
-export const encodeSnap = (snap: OverlaySnap): Uint8Array =>
-  new TextEncoder().encode(stringifyJson({ ...snap, v: SNAP_VERSION }));
+const asTempids = (value: unknown): Record<string, number> => {
+  if (typeof value !== "object" || value === null) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+};
 
-export const decodeSnap = (bytes: Uint8Array): OverlaySnap | undefined => {
-  let raw: unknown;
-  try {
-    raw = parseJson(new TextDecoder().decode(bytes));
-  } catch {
-    return undefined;
-  }
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const o = raw as Record<string, unknown>;
-  if (o.v !== SNAP_VERSION) return undefined;
-  if (typeof o.confirmedT !== "number" || !Number.isFinite(o.confirmedT)) {
-    return undefined;
-  }
-  if (!Array.isArray(o.confirmed) || !Array.isArray(o.pending)) return undefined;
+const pendingLayers = (value: unknown): PendingSnap[] => {
+  if (!Array.isArray(value)) return [];
   const pending: PendingSnap[] = [];
-  for (const p of o.pending) {
+  for (const p of value) {
     if (typeof p !== "object" || p === null) continue;
     const layer = p as Record<string, unknown>;
     if (typeof layer.clientTxId !== "string") continue;
@@ -69,21 +87,7 @@ export const decodeSnap = (bytes: Uint8Array): OverlaySnap | undefined => {
       tempids: asTempids(layer.tempids),
     });
   }
-  return {
-    v: SNAP_VERSION,
-    confirmedT: o.confirmedT,
-    confirmed: o.confirmed as WireDatom[],
-    pending,
-  };
-};
-
-const asTempids = (value: unknown): Record<string, number> => {
-  if (typeof value !== "object" || value === null) return {};
-  const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
-  }
-  return out;
+  return pending;
 };
 
 export const pendingToSnap = (layer: {
@@ -177,21 +181,95 @@ export const opfsStore = async (
   };
 };
 
-export const persistKey = (name: string): string =>
-  `overlay.${name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+const sanitize = (name: string): string => name.replace(/[^a-zA-Z0-9._-]/g, "_");
+
+export const persistKey = (name: string): string => `overlay.${sanitize(name)}`;
+
+export const logKey = (name: string, t: number): string =>
+  `overlay.${sanitize(name)}.t.${t}`;
+
+export const encodeMeta = (meta: OverlayMeta): Uint8Array =>
+  new TextEncoder().encode(
+    stringifyJson({
+      v: META_VERSION,
+      confirmedT: meta.confirmedT,
+      ts: meta.ts,
+      pending: meta.pending,
+    }),
+  );
+
+export const decodeMeta = (bytes: Uint8Array): OverlayMeta | undefined => {
+  let raw: unknown;
+  try {
+    raw = parseJson(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const o = raw as Record<string, unknown>;
+  if (o.v !== META_VERSION) return undefined;
+  if (typeof o.confirmedT !== "number" || !Number.isFinite(o.confirmedT)) {
+    return undefined;
+  }
+  if (!Array.isArray(o.ts)) return undefined;
+  const ts: number[] = [];
+  for (const t of o.ts) {
+    if (typeof t === "number" && Number.isFinite(t)) ts.push(t);
+  }
+  return {
+    v: META_VERSION,
+    confirmedT: o.confirmedT,
+    ts,
+    pending: pendingLayers(o.pending),
+  };
+};
 
 export const loadSnap = async (
   store: ByteStore,
   name: string,
 ): Promise<OverlaySnap | undefined> => {
   const bytes = await store.get(persistKey(name));
-  return bytes === undefined ? undefined : decodeSnap(bytes);
+  if (bytes === undefined) return undefined;
+  const meta = decodeMeta(bytes);
+  if (meta === undefined) return undefined;
+  const confirmed: WireDatom[] = [];
+  for (const t of meta.ts) {
+    const blob = await store.get(logKey(name, t));
+    if (blob === undefined) continue;
+    try {
+      for (const entry of decodeLogChunk(blob)) {
+        for (const d of entry.datoms) confirmed.push(toWireDatom(d));
+      }
+    } catch {
+      // a torn blob is skipped; cursor + the rest of the log still hydrate
+    }
+  }
+  return {
+    v: 1,
+    confirmedT: meta.confirmedT,
+    confirmed,
+    pending: meta.pending,
+  };
 };
 
-export const saveSnap = async (
+export const saveView = async (
   store: ByteStore,
   name: string,
-  snap: OverlaySnap,
+  view: PersistView,
 ): Promise<void> => {
-  await store.put(persistKey(name), encodeSnap(snap));
+  for (const t of view.dropTs ?? []) {
+    await store.delete?.(logKey(name, t));
+  }
+  for (const entry of view.entries) {
+    await store.put(logKey(name, entry.t), encodeLogChunk([entry]));
+  }
+  await store.put(
+    persistKey(name),
+    encodeMeta({
+      v: META_VERSION,
+      confirmedT: view.confirmedT,
+      ts: view.ts,
+      pending: view.pending,
+    }),
+  );
 };

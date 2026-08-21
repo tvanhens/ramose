@@ -1,7 +1,8 @@
 /**
- * Durable overlay follower — persist is the apply path, pending is the
- * outbox, tabs speak a port protocol. Honest: new overlay objects, byte
- * stores (not the same Connection), real notify, pinned resync dumps.
+ * Durable overlay follower — memory is the current-view store, persist
+ * is behind notify, pending is the outbox, tabs speak a port protocol.
+ * Honest: new overlay objects, incremental byte stores (not the same
+ * Connection), real notify, pinned resync dumps.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -31,9 +32,12 @@ import { query } from "../src/db/NavQuery.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import {
   type ByteStore,
-  encodeSnap,
+  decodeMeta,
+  encodeMeta,
+  loadSnap,
+  logKey,
   memoryStore,
-  type OverlaySnap,
+  persistKey,
 } from "../src/db/persist.ts";
 import type { PortEvent } from "../src/db/port.ts";
 import type { Session } from "../src/db/session.ts";
@@ -66,9 +70,12 @@ const dirStore = (root: string): ByteStore => ({
   },
 });
 
-const until = async (pred: () => boolean, ms = 2_000): Promise<void> => {
+const until = async (
+  pred: () => boolean | Promise<boolean>,
+  ms = 2_000,
+): Promise<void> => {
   const start = Date.now();
-  while (!pred()) {
+  while (!(await pred())) {
     if (Date.now() - start > ms) throw new Error("until timed out");
     await Bun.sleep(5);
   }
@@ -217,6 +224,8 @@ describe("hydrate then sync is a walk", () => {
     expect(await namesOf(b)).toEqual(["Ada"]);
     await until(() => live.some((n) => n[0] === "Ada"));
     expect(live.at(-1)).toEqual(["Ada"]);
+    expect(live.some((n) => n.length === 0)).toBe(false);
+    expect(live.every((n) => n.includes("Ada"))).toBe(true);
     await until(() => walks.length === 1);
     expect(walks).toEqual([rootT]);
     expect(second.syncs).toEqual([rootT]);
@@ -364,6 +373,162 @@ describe("opening walk is one catch-up notify", () => {
   });
 });
 
+describe("transact is not on the catch-up persist queue", () => {
+  test("Bea is on view / live before the walk's OPFS writes finish", async () => {
+    const memory = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+    const nameA = world.db().schema.requireAttr(":user/name").id;
+    const walked = toWireDatom({
+      e: 50_001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Cal",
+      t: rootT + 10,
+      op: true,
+    });
+
+    const seed = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store: memory,
+      name: "movies",
+    });
+    await run(seed.ready());
+    await seed.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await until(async () => (await loadSnap(memory, "movies")) !== undefined);
+
+    let holdPuts = true;
+    let waitingPuts = 0;
+    let releasePuts!: () => void;
+    const putsHeld = new Promise<void>((resolve) => {
+      releasePuts = resolve;
+    });
+    const store: ByteStore = {
+      get: (key) => memory.get(key),
+      put: async (key, value) => {
+        if (holdPuts) {
+          waitingPuts += 1;
+          await putsHeld;
+        }
+        await memory.put(key, value);
+      },
+    };
+
+    let releaseWalk!: () => void;
+    const walkHeld = new Promise<void>((resolve) => {
+      releaseWalk = resolve;
+    });
+    let session!: ReturnType<typeof fakeSession>;
+    session = fakeSession({
+      onSync: async (from) => {
+        session.pusher({
+          op: "tx",
+          t: rootT + 10,
+          datoms: [walked],
+        });
+        await until(() => waitingPuts >= 1);
+        await walkHeld;
+        return { body: { t: rootT + 10, from } };
+      },
+    });
+    const overlay = openOverlay({
+      session,
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    const ticks: number[] = [];
+    overlay.onChange(() => {
+      ticks.push(overlay.epoch);
+    });
+    await run(overlay.ready());
+    expect(await namesOf(overlay)).toEqual(["Ada"]);
+    expect(ticks).toHaveLength(1);
+    await until(() => waitingPuts >= 1);
+
+    await run(overlay.transact([{ ":user/name": "Bea" }]));
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
+    expect(ticks).toHaveLength(2);
+    expect(waitingPuts).toBeGreaterThan(0);
+
+    releaseWalk();
+    await until(() => ticks.length === 3);
+    expect(ticks).toHaveLength(3);
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea", "Cal"]);
+    holdPuts = false;
+    releasePuts();
+  });
+});
+
+describe("persist does not block notify", () => {
+  test("onChange fires before store.put resolves", async () => {
+    const memory = memoryStore();
+    let holdPuts = false;
+    let releasePuts = (): void => {};
+    let putsHeld = Promise.resolve();
+    let putResolved = 0;
+    const store: ByteStore = {
+      get: (key) => memory.get(key),
+      put: async (key, value) => {
+        if (holdPuts) await putsHeld;
+        await memory.put(key, value);
+        putResolved += 1;
+      },
+    };
+
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const nameA = world.db().schema.requireAttr(":user/name").id;
+    const overlay = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(overlay.ready());
+    await overlay.handlePush({ op: "resync", t: world.t, datoms: dump });
+    await until(() => putResolved >= 1);
+
+    holdPuts = true;
+    putsHeld = new Promise<void>((resolve) => {
+      releasePuts = resolve;
+    });
+    const resolved = putResolved;
+    let notified = 0;
+    overlay.onChange(() => {
+      notified += 1;
+    });
+    const inbound = overlay.handlePush({
+      op: "tx",
+      t: world.t + 1,
+      datoms: [
+        toWireDatom({
+          e: 4001,
+          a: nameA,
+          vt: ValueTag.Str,
+          v: "Bea",
+          t: world.t + 1,
+          op: true,
+        }),
+      ],
+    });
+    expect(notified).toBe(1);
+    expect(putResolved).toBe(resolved);
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
+    releasePuts();
+    await inbound;
+    await until(() => putResolved > resolved);
+    expect(notified).toBe(1);
+  });
+});
+
 describe("reload restores confirmed and pending", () => {
   test("new overlay, same byte store — no network dump", async () => {
     const root = await mkdtemp(join(tmpdir(), "ramose-overlay-"));
@@ -396,10 +561,15 @@ describe("reload restores confirmed and pending", () => {
     const before = await live.snapshot();
     expect(before.pending).toHaveLength(1);
 
-    const bytes = await store.get("overlay.movies");
+    await until(async () => {
+      const bytes = await store.get(persistKey("movies"));
+      return bytes !== undefined && (decodeMeta(bytes)?.pending.length ?? 0) === 1;
+    });
+    const bytes = await store.get(persistKey("movies"));
     expect(bytes).toBeDefined();
-    const decoded = JSON.parse(new TextDecoder().decode(bytes));
-    expect(decoded.pending).toHaveLength(1);
+    const decoded = decodeMeta(bytes!);
+    expect(decoded?.pending).toHaveLength(1);
+    expect(decoded && "confirmed" in decoded).toBe(false);
 
     const reloaded = openOverlay({
       session: fakeSession({
@@ -690,7 +860,7 @@ describe("resync rebases pending, it does not wipe", () => {
     expect((await reloaded.snapshot()).pending[0]!.clientTxId).toBe(beaId);
   });
 
-  test("a dump already on applied cannot interleave with the layer's first notify", async () => {
+  test("transact during a dump persist notifies Bea before store.put resolves", async () => {
     const memory = memoryStore();
     let holdPuts = false;
     let waitingPuts = 0;
@@ -730,8 +900,7 @@ describe("resync rebases pending, it does not wipe", () => {
       t: world.t,
       datoms: dump,
     });
-    await until(() => waitingPuts === 1);
-    holdPuts = false;
+    await until(() => waitingPuts >= 1);
 
     const paints: string[][] = [];
     overlay.onChange(() => {
@@ -739,19 +908,16 @@ describe("resync rebases pending, it does not wipe", () => {
     });
 
     const transactP = run(overlay.transact([{ ":user/name": "Bea" }]));
-    expect(waitingPuts).toBe(1);
-    expect(paints).toEqual([]);
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
+    await until(() => paints.some((n) => n.includes("Bea")));
+    expect(paints.some((n) => n.includes("Bea"))).toBe(true);
+    expect((await overlay.snapshot()).pending).toHaveLength(1);
 
+    holdPuts = false;
     releasePuts();
     await dumpP;
     await transactP;
-
     expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
-    await until(() => paints.some((n) => n.includes("Bea")));
-    const beaAt = paints.findIndex((n) => n.includes("Bea"));
-    expect(beaAt).toBeGreaterThanOrEqual(0);
-    expect(paints.slice(beaAt).every((n) => n.includes("Bea"))).toBe(true);
-    expect(paints.at(-1)).toEqual(["Ada", "Bea"]);
     expect((await overlay.snapshot()).pending).toHaveLength(1);
   });
 });
@@ -766,13 +932,10 @@ describe("from < rootT resync persists the dump", () => {
     expect(dump.some((d) => d[3] === "Ada")).toBe(true);
     expect(dump.some((d) => d[3] === "Bea")).toBe(true);
 
-    const stale: OverlaySnap = {
-      v: 1,
-      confirmedT: 2,
-      confirmed: [],
-      pending: [],
-    };
-    await store.put("overlay.movies", encodeSnap(stale));
+    await store.put(
+      persistKey("movies"),
+      encodeMeta({ v: 2, confirmedT: 2, ts: [], pending: [] }),
+    );
 
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -816,12 +979,26 @@ describe("from < rootT resync persists the dump", () => {
       .filter((d) => d[3] === "Ada" || d[3] === "Bea")
       .map((d) => d[3]);
     expect(names.sort()).toEqual(["Ada", "Bea"]);
-    const raw = await store.get("overlay.movies");
-    expect(raw).toBeDefined();
-    const disk = JSON.parse(new TextDecoder().decode(raw)) as OverlaySnap;
-    expect(disk.confirmedT).toBe(world.t);
-    expect(disk.confirmed.some((d) => d[3] === "Ada")).toBe(true);
-    expect(disk.confirmed.some((d) => d[3] === "Bea")).toBe(true);
+    await until(async () => {
+      const snap = await loadSnap(store, "movies");
+      return (
+        snap !== undefined &&
+        snap.confirmedT === world.t &&
+        snap.confirmed.some((d) => d[3] === "Ada") &&
+        snap.confirmed.some((d) => d[3] === "Bea")
+      );
+    });
+    const disk = await loadSnap(store, "movies");
+    expect(disk?.confirmedT).toBe(world.t);
+    expect(disk?.confirmed.some((d) => d[3] === "Ada")).toBe(true);
+    expect(disk?.confirmed.some((d) => d[3] === "Bea")).toBe(true);
+    const metaBytes = await store.get(persistKey("movies"));
+    expect(metaBytes).toBeDefined();
+    const meta = decodeMeta(metaBytes!);
+    expect(meta?.ts.length).toBeGreaterThan(0);
+    expect(meta && "confirmed" in meta).toBe(false);
+    const firstT = meta!.ts[0]!;
+    expect(await store.get(logKey("movies", firstT))).toBeDefined();
   });
 });
 
@@ -887,7 +1064,39 @@ describe("a dead SharedWorker is not a follower", () => {
     close() {},
   });
 
-  test("constructor success + no reply falls through to the one in-page overlay", async () => {
+  test("no SharedWorker constructor uses the in-page overlay", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 0, result: [] } }),
+    });
+    const g = globalThis as {
+      SharedWorker?: unknown;
+      WebSocket: typeof WebSocket;
+    };
+    const prevSW = g.SharedWorker;
+    const prevWS = g.WebSocket;
+    delete g.SharedWorker;
+    g.WebSocket = peer.webSocket;
+    try {
+      const { databases, close } = makeDatabases({
+        url: Effect.succeed("https://peer.example.com"),
+        fetch: fromStandardFetch(peer.fetch),
+        webSocket: (url) => new peer.webSocket(url) as never,
+        socketInjected: false,
+      });
+      const rows = await run(
+        databases.db("movies", Movies).q(query(User).select({ name: User.name })),
+      );
+      expect(Array.isArray(rows)).toBe(true);
+      expect(peer.sockets.length).toBeGreaterThan(0);
+      close();
+    } finally {
+      if (prevSW === undefined) delete g.SharedWorker;
+      else g.SharedWorker = prevSW;
+      g.WebSocket = prevWS;
+    }
+  });
+
+  test("constructor success + no reply does not create a working second overlay", async () => {
     let constructed = 0;
     class SilentSharedWorker {
       readonly port = silentPort();
@@ -915,12 +1124,13 @@ describe("a dead SharedWorker is not a follower", () => {
         socketInjected: false,
         workerReadyMs: 40,
       });
-      const rows = await run(
-        databases.db("movies", Movies).q(query(User).select({ name: User.name })),
-      );
+      await expect(
+        run(
+          databases.db("movies", Movies).q(query(User).select({ name: User.name })),
+        ),
+      ).rejects.toMatchObject({ _tag: "NetworkError" });
       expect(constructed).toBeGreaterThan(0);
-      expect(Array.isArray(rows)).toBe(true);
-      expect(peer.sockets.length).toBeGreaterThan(0);
+      expect(peer.sockets.length).toBe(0);
       close();
     } finally {
       if (prevSW === undefined) delete g.SharedWorker;
@@ -929,7 +1139,7 @@ describe("a dead SharedWorker is not a follower", () => {
     }
   });
 
-  test("a worker error event falls through without sitting on the handshake", async () => {
+  test("a worker error event fails that boot without sitting on the handshake", async () => {
     class ErrorSharedWorker {
       readonly port = silentPort();
       onerror: ((ev: Event) => void) | null = null;
@@ -960,11 +1170,13 @@ describe("a dead SharedWorker is not a follower", () => {
         workerReadyMs: 4_000,
       });
       const started = Date.now();
-      await run(
-        databases.db("movies", Movies).q(query(User).select({ name: User.name })),
-      );
+      await expect(
+        run(
+          databases.db("movies", Movies).q(query(User).select({ name: User.name })),
+        ),
+      ).rejects.toMatchObject({ _tag: "NetworkError" });
       expect(Date.now() - started).toBeLessThan(1_000);
-      expect(peer.sockets.length).toBeGreaterThan(0);
+      expect(peer.sockets.length).toBe(0);
       close();
     } finally {
       if (prevSW === undefined) delete g.SharedWorker;

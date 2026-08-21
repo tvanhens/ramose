@@ -211,20 +211,15 @@ export const makeDatabases = (
 
   const workerReadyMs = config.workerReadyMs ?? 4_000;
   let workerPort: MessagePort | undefined;
-  let workerDead = false;
+  let workerCtorFailed = false;
   let workerFail: Promise<never> | undefined;
-  const abandonWorker = (): void => {
-    workerDead = true;
-    workerPort = undefined;
-    workerFail = undefined;
-  };
   const sharedPort = (): MessagePort | undefined => {
-    if (!useShared || workerDead) return undefined;
+    if (!useShared || workerCtorFailed) return undefined;
     if (workerPort !== undefined) return workerPort;
     try {
       // Bundler-visible specifier — same file `ramose/follower-worker`
-      // exports. A computed extension is a 404 the constructor still
-      // accepts, then every tab is its own follower.
+      // exports. Constructor success is the one follower: a timeout or
+      // 404 must not fall through to a second in-page overlay.
       const sw = new SharedWorker(
         new URL("./follower-worker.js", import.meta.url),
         {
@@ -242,7 +237,8 @@ export const makeDatabases = (
       workerPort = sw.port;
       return workerPort;
     } catch {
-      workerDead = true;
+      // No working constructor — the only in-page path.
+      workerCtorFailed = true;
       return undefined;
     }
   };
@@ -260,8 +256,9 @@ export const makeDatabases = (
 
   const session = (name: string): Session | undefined => {
     // The SharedWorker owns the one session socket. Tabs do not open a
-    // second follower.
-    if (useShared && sharedPort() !== undefined) {
+    // second follower. Constructor success keeps this path even when the
+    // handshake is still outstanding — timeout does not spawn in-page.
+    if (useShared && !workerCtorFailed && sharedPort() !== undefined) {
       return ports.get(name)?.session;
     }
     if (config.webSocket === undefined) return undefined;
@@ -281,16 +278,24 @@ export const makeDatabases = (
     return existing;
   };
 
-  const ensureShared = async (name: string): Promise<PortClient | undefined> => {
-    const hit = ports.get(name);
-    if (hit !== undefined) return hit;
-    if (workerDead) return undefined;
-    const sw = sharedPort();
-    if (sw === undefined) return undefined;
-    const url = await Effect.runPromise(config.url);
-    const catalog = catalogs.get(name);
-    // Handshake is not a token mint. Hydrate / first paint run without
-    // it; auth rides a follow-up so the socket and writes can wait.
+  const bindShared = (name: string, client: PortClient): PortClient => {
+    ports.set(name, client);
+    if (config.token === undefined) {
+      void client.auth("");
+    } else {
+      void token()
+        .then((t) => client.auth(t === undefined ? "" : Redacted.value(t)))
+        .catch(() => client.auth(""));
+    }
+    return client;
+  };
+
+  const handshakeShared = (
+    sw: MessagePort,
+    name: string,
+    url: string,
+    catalog: AnyCatalog | undefined,
+  ): Promise<PortClient> => {
     const opened = connectSharedFollower(
       sw,
       {
@@ -300,22 +305,39 @@ export const makeDatabases = (
       },
       { timeoutMs: workerReadyMs },
     );
+    return workerFail === undefined
+      ? opened
+      : Promise.race([opened, workerFail]);
+  };
+
+  const ensureShared = async (name: string): Promise<PortClient> => {
+    const hit = ports.get(name);
+    if (hit !== undefined) return hit;
+    const sw = sharedPort();
+    if (sw === undefined) {
+      throw new NetworkError({
+        message: "ramose: follower worker did not start",
+      });
+    }
+    const url = await Effect.runPromise(config.url);
+    const catalog = catalogs.get(name);
+    // Handshake is not a token mint. Hydrate / first paint run without
+    // it; auth rides a follow-up so the socket and writes can wait.
+    // Constructor success + no reply retries the same worker — it does
+    // not become a per-tab store.
     try {
-      const client = await (workerFail === undefined
-        ? opened
-        : Promise.race([opened, workerFail]));
-      ports.set(name, client);
-      if (config.token === undefined) {
-        void client.auth("");
-      } else {
-        void token()
-          .then((t) => client.auth(t === undefined ? "" : Redacted.value(t)))
-          .catch(() => client.auth(""));
+      return bindShared(name, await handshakeShared(sw, name, url, catalog));
+    } catch (first) {
+      try {
+        return bindShared(name, await handshakeShared(sw, name, url, catalog));
+      } catch {
+        throw first instanceof NetworkError
+          ? first
+          : new NetworkError({
+              message: "ramose: follower worker did not answer",
+              cause: first,
+            });
       }
-      return client;
-    } catch {
-      abandonWorker();
-      return undefined;
     }
   };
 
@@ -345,16 +367,7 @@ export const makeDatabases = (
     const stub = sharedStubs.get(name);
     if (stub !== undefined) return stub;
     const wait = async (): Promise<Overlay> => {
-      const client = await ensureShared(name);
-      if (client !== undefined) return client.overlay;
-      sharedStubs.delete(name);
-      const page = pageOverlay(name);
-      if (page === undefined) {
-        throw new NetworkError({
-          message: "ramose: follower worker did not answer",
-        });
-      }
-      return page;
+      return (await ensureShared(name)).overlay;
     };
     const overlay: Overlay = {
       get confirmedT() {
@@ -401,7 +414,7 @@ export const makeDatabases = (
   };
 
   const overlayOf = (name: string): Overlay | undefined => {
-    if (useShared && !workerDead && sharedPort() !== undefined) {
+    if (useShared && !workerCtorFailed && sharedPort() !== undefined) {
       return sharedOverlay(name);
     }
     return pageOverlay(name);

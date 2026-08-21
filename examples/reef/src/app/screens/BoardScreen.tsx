@@ -328,9 +328,8 @@ export const BoardScreen = ({
       </div>
     );
   }
-  // `undefined` is "no emission yet" — paint the shell, not a loader.
-  // `[]` after the first emission is an empty board.
-  const cards = liveRows ?? [];
+  // First cards are the hydrated emission. `undefined` is not `[]` —
+  // do not paint empty columns before that. `[]` after hydrate is honest.
 
   return (
     <div {...stylex.props(styles.screen)}>
@@ -393,26 +392,28 @@ export const BoardScreen = ({
         )}
       </header>
 
-      {timeTraveling ? (
+      {timeTraveling && liveRows !== undefined ? (
         <TimeTravelView
           db={db}
-          liveRows={cards}
+          liveRows={liveRows}
           onExit={() => setTimeTraveling(false)}
         />
       ) : (
         <div {...stylex.props(styles.main)}>
           <div {...stylex.props(styles.boardWrap)}>
-            <Board
-              rows={cards}
-              readOnly={false}
-              canCreate={canWrite}
-              selectedId={selected}
-              onSelect={(id) => setSelected(id)}
-              onNew={(status) => setDraftStatus(status)}
-              onMove={(id, status, rank) =>
-                void run(moveIssue(db, id, status, rank))
-              }
-            />
+            {liveRows !== undefined && (
+              <Board
+                rows={liveRows}
+                readOnly={false}
+                canCreate={canWrite}
+                selectedId={selected}
+                onSelect={(id) => setSelected(id)}
+                onNew={(status) => setDraftStatus(status)}
+                onMove={(id, status, rank) =>
+                  void run(moveIssue(db, id, status, rank))
+                }
+              />
+            )}
             {liveRows !== undefined && liveRows.length === 0 && (
               <div {...stylex.props(styles.emptyOverlay)}>
                 <div {...stylex.props(styles.emptyCard)}>
@@ -477,7 +478,10 @@ export const BoardScreen = ({
               toast("error", "viewers cannot create issues");
               return;
             }
-            const column = cards.filter((r) => r.status === draft.status);
+            const column =
+              liveRows === undefined
+                ? []
+                : liveRows.filter((r) => r.status === draft.status);
             void run(
               createIssue(db, myEid, column[column.length - 1]?.rank, draft),
             );
