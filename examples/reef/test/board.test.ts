@@ -680,6 +680,8 @@ describe("refresh open is one session, not two", () => {
       webSocket: opts.webSocket,
     });
     try {
+      await Effect.runPromise(live.db("coral-team", Reef).q(peopleQuery));
+      await settle();
       const myEid = await Effect.runPromise(
         bindSelf(live.db("coral-team", Reef), user, ws.cls),
       );
@@ -773,6 +775,8 @@ describe("refresh open is one session, not two", () => {
       webSocket: opts.webSocket,
     });
     try {
+      await Effect.runPromise(live.db("coral-team", Reef).q(peopleQuery));
+      await settle();
       const myEid = await Effect.runPromise(
         bindSelf(live.db("coral-team", Reef), user, ws.cls),
       );
@@ -897,6 +901,66 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
       expect(peer.resyncDumps()).toEqual([]);
     } finally {
       await Effect.runPromise(Fiber.interrupt(fiber));
+      peer.releaseCatchUp();
+      await peer.dispose();
+    }
+  });
+
+  test("first db.live emission with a snap does not wait on a hung token()", async () => {
+    const backing = memoryStore();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: (key, value) => backing.put(key, value),
+      delete: (key) => backing.delete?.(key) ?? Promise.resolve(),
+    };
+    const peer = await inProcessPeer({ seed: false, persist });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(seedSampleIssues(a.db, people[0]!.id, labels));
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await a.close();
+
+    peer.holdCatchUp();
+    peer.resetTraffic();
+    let tokenReads = 0;
+    const hung = Ramose.token.jwt(() => {
+      tokenReads += 1;
+      return new Promise(() => {});
+    });
+    const b = Ramose.connect({
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      persist,
+      token: hung,
+    });
+    const seen: string[][] = [];
+    let tokenAtFirstEmit = -1;
+    const fiber = Effect.runFork(
+      Stream.runForEach(b.db("coral-team", Reef).live(boardQuery), (rows) =>
+        Effect.sync(() => {
+          if (tokenAtFirstEmit < 0) tokenAtFirstEmit = tokenReads;
+          seen.push(rows.map((r) => r.title));
+        }),
+      ),
+    );
+    try {
+      const started = Date.now();
+      for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(10);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect([...seen[0]!].sort()).toEqual([...titlesA].sort());
+      expect(tokenAtFirstEmit).toBe(0);
+      expect(peer.resyncDumps()).toEqual([]);
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      await b.close();
       peer.releaseCatchUp();
       await peer.dispose();
     }

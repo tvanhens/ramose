@@ -29,7 +29,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
 
 /** What a standing read looks like from a component. */
@@ -93,7 +93,9 @@ export function useLive(
   // (or a new stream, in the stream form) is a blank slate
   const queryRef = useRef(query);
 
-  useEffect(() => {
+  // Layout, not paint: first emission is hydrate and must clear the
+  // opening loader before the browser paints `rows === undefined`.
+  useLayoutEffect(() => {
     const queryChanged = query !== queryRef.current;
     queryRef.current = query;
     if (query === undefined || queryChanged) {

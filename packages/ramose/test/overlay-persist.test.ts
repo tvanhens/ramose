@@ -11,6 +11,7 @@ import { join } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
@@ -318,6 +319,78 @@ describe("hydrate then sync is a walk", () => {
       // dispatched. A first emit that waited on `{op:sync}` would
       // hang (answer is undefined) or land only after a resync dump.
       expect(syncAtFirstEmit).toEqual([]);
+    } finally {
+      await run(Fiber.interrupt(fiber));
+      await close();
+    }
+  });
+
+  test("first db.live emission with a snap does not wait on token()", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const writer = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(writer.ready());
+    await writer.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await until(async () => {
+      const loaded = await loadSnap(store, "movies");
+      return loaded !== undefined && loaded.confirmedT === rootT;
+    });
+
+    let tokenReads = 0;
+    const hung = new Promise<Redacted.Redacted<string>>(() => {});
+    const peer = fakePeer({
+      answer: () => undefined,
+    });
+    const { databases, close } = makeDatabases({
+      url: Effect.succeed("https://peer.example.com"),
+      token: Effect.tryPromise({
+        try: () => {
+          tokenReads += 1;
+          return hung;
+        },
+        catch: (cause) =>
+          new NetworkError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      }),
+      fetch: fromStandardFetch(peer.fetch),
+      webSocket: (url) => new peer.webSocket(url) as never,
+      persist: store,
+    });
+    const names = query(User).select({ name: User.name });
+    const seen: { name: string }[][] = [];
+    let tokenAtFirstEmit = -1;
+    const fiber = Effect.runFork(
+      Stream.runForEach(databases.db("movies", Movies).live(names), (rows) =>
+        Effect.sync(() => {
+          if (tokenAtFirstEmit < 0) tokenAtFirstEmit = tokenReads;
+          seen.push(rows as { name: string }[]);
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => {
+            if (!Cause.hasInterrupts(cause)) throw Cause.squash(cause);
+          }),
+        ),
+      ),
+    );
+    try {
+      const started = Date.now();
+      await until(() => seen.length > 0, 400);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(seen[0]?.map((r) => r.name)).toEqual(["Ada"]);
+      expect(tokenAtFirstEmit).toBe(0);
     } finally {
       await run(Fiber.interrupt(fiber));
       await close();

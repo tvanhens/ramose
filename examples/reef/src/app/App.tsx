@@ -3,7 +3,8 @@
  * Paths are the pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a
  * shared URL land on the same screen. A slug mounts `<RamoseProvider
  * key={slug}>` immediately — first paint is hydrate, not `get-session` or
- * a JWT loader. Token is lazy (`mintWorkspace`). When the session settles:
+ * a JWT loader. `useSession` is a sibling of `BoardScreen` so get-session
+ * / mint cannot delay `useLive`. Token is lazy (`mintWorkspace`). When the session settles:
  * a user `bindSelf`s after paint; no user bounces to Auth. `/` (no slug)
  * still waits on session. Switching workspaces changes the key, which
  * closes the old client and connects the next one. `cls` is unknown until
@@ -31,6 +32,7 @@ import {
   mintWorkspace,
   openWorkspace,
   RAMOSE_URL,
+  type Workspace,
 } from "./ramose.ts";
 import type { RamoseClass } from "../domain/shared.ts";
 import { RouteProvider, useRoute } from "./route.tsx";
@@ -126,39 +128,103 @@ export const App = () => {
 };
 
 const Root = () => {
+  const { route, navigate } = useRoute();
+  const wantedSlug = route.kind === "board" ? route.slug : null;
+  // A slug mounts the Provider in this component — `useSession` lives
+  // in a sibling so get-session / mint cannot suspend or delay
+  // `useLive`. First paint is hydrate.
+  if (wantedSlug !== null) {
+    return (
+      <SlugBoard
+        slug={wantedSlug}
+        onLeave={() => navigate({ kind: "home" })}
+      />
+    );
+  }
+  return <Home />;
+};
+
+const SlugBoard = ({
+  slug,
+  onLeave,
+}: {
+  slug: string;
+  onLeave: () => void;
+}) => {
+  const workspace = useMemo(() => mintWorkspace(slug), [slug]);
+  const [name, setName] = useState(slug);
+  const [cls, setCls] = useState<RamoseClass | undefined>(undefined);
+  const [user, setUser] = useState<SessionUser | undefined>(undefined);
+  const [needAuth, setNeedAuth] = useState(false);
+  const onNeedAuth = useCallback(() => setNeedAuth(true), []);
+
+  if (needAuth) return <AuthScreen />;
+
+  return (
+    <RamoseProvider key={slug} url={RAMOSE_URL} token={workspace.token}>
+      <BoardScreen
+        workspace={{ ...workspace, cls }}
+        name={name}
+        user={user}
+        onLeave={onLeave}
+      />
+      <BoardSession
+        slug={slug}
+        workspace={workspace}
+        onName={setName}
+        onCls={setCls}
+        onUser={setUser}
+        onNeedAuth={onNeedAuth}
+      />
+    </RamoseProvider>
+  );
+};
+
+/** Session / JWT / org name — after the board is in the tree. */
+const BoardSession = ({
+  slug,
+  workspace,
+  onName,
+  onCls,
+  onUser,
+  onNeedAuth,
+}: {
+  slug: string;
+  workspace: Workspace;
+  onName: (name: string) => void;
+  onCls: (cls: RamoseClass | undefined) => void;
+  onUser: (user: SessionUser | undefined) => void;
+  onNeedAuth: () => void;
+}) => {
   const session = authClient.useSession();
   const toast = useToast();
-  const { route, navigate } = useRoute();
   const user = session.data?.user;
   const userId = user?.id;
-  const wantedSlug = route.kind === "board" ? route.slug : null;
-  // Token is lazy. A slug mounts the Provider now — do not await
-  // get-session / claims / listWorkspaces before first paint.
-  const workspace = useMemo(
-    () => (wantedSlug === null ? null : mintWorkspace(wantedSlug)),
-    [wantedSlug],
-  );
-  const [name, setName] = useState(wantedSlug ?? "");
-  const [cls, setCls] = useState<RamoseClass | undefined>(undefined);
 
   useEffect(() => {
-    setName(wantedSlug ?? "");
-    setCls(undefined);
-  }, [wantedSlug]);
+    if (!session.isPending && user === undefined) onNeedAuth();
+  }, [session.isPending, user, onNeedAuth]);
 
   useEffect(() => {
-    if (wantedSlug === null || workspace === null) return;
+    if (user === undefined) {
+      onUser(undefined);
+      return;
+    }
+    onUser({ id: user.id, name: user.name, email: user.email });
+  }, [user, onUser]);
+
+  useEffect(() => {
     if (userId === undefined) return;
     let cancelled = false;
     void (async () => {
       const orgs = await listWorkspaces().catch(() => []);
       if (cancelled) return;
-      const org = orgs.find((o) => o.slug === wantedSlug);
-      if (org !== undefined) setName(org.name);
+      const org = orgs.find((o) => o.slug === slug);
+      if (org !== undefined) onName(org.name);
       try {
         const claims = await workspace.token.claims();
         if (cancelled) return;
-        setCls((claims.ramose?.class ?? "viewer") as RamoseClass);
+        onCls((claims.ramose?.class ?? "viewer") as RamoseClass);
       } catch (err) {
         if (cancelled) return;
         toast("error", errorMessage(err));
@@ -167,7 +233,16 @@ const Root = () => {
     return () => {
       cancelled = true;
     };
-  }, [wantedSlug, workspace, userId, toast]);
+  }, [slug, workspace, userId, onName, onCls, toast]);
+
+  return null;
+};
+
+const Home = () => {
+  const session = authClient.useSession();
+  const toast = useToast();
+  const { navigate } = useRoute();
+  const user = session.data?.user;
 
   const createAndOpen = useCallback(
     async (slug: string, user: SessionUser) => {
@@ -181,30 +256,6 @@ const Root = () => {
     },
     [toast, navigate],
   );
-
-  if (wantedSlug !== null && workspace !== null) {
-    // Session settled with no user — bounce. Pending still paints the
-    // board so hydrate can run; Auth is the only other slug loader.
-    if (!session.isPending && user === undefined) return <AuthScreen />;
-    const me =
-      user === undefined
-        ? undefined
-        : { id: user.id, name: user.name, email: user.email };
-    return (
-      <RamoseProvider
-        key={wantedSlug}
-        url={RAMOSE_URL}
-        token={workspace.token}
-      >
-        <BoardScreen
-          workspace={{ ...workspace, cls }}
-          name={name === "" ? wantedSlug : name}
-          user={me}
-          onLeave={() => navigate({ kind: "home" })}
-        />
-      </RamoseProvider>
-    );
-  }
 
   if (session.isPending) return <Loading />;
   if (user === undefined) return <AuthScreen />;

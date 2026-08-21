@@ -920,15 +920,18 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             epoch,
           });
         }
-        // A hydrated snap must emit `view()` before `{op:sync}`. An
-        // empty first visit has nothing to paint — walk now.
+        // Never return `kickWalk()` from this async function — that
+        // awaits `session.request` → `token()` and holds first paint
+        // on get-session / mint. A snap defers the walk so the first
+        // `view()` offer cannot join the socket. An empty first visit
+        // starts the walk without awaiting it.
+        const retryWalk = retry;
         if (hasSnap) {
-          const retryWalk = retry;
           setTimeout(() => {
             kickWalk(retryWalk, true);
           }, 0);
         } else {
-          kickWalk(retry, true);
+          void kickWalk(retryWalk, true);
         }
       },
       catch: (cause) =>
