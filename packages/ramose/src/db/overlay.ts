@@ -697,6 +697,13 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const painted = (): boolean => confirmedT > 0 || pending.length > 0;
 
+  /** Follow failures live must not retry — paint already happened. */
+  const terminalFollow = (e: DbError): boolean =>
+    e._tag === "Unauthorized" ||
+    e._tag === "InvalidRequest" ||
+    e._tag === "DatabaseNotFound" ||
+    e._tag === "QueryBudgetExceeded";
+
   const finishCatchUp = (): void => {
     const dirty = catchUpDirty;
     catchingUp = false;
@@ -740,14 +747,16 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
       // Hydrated follower is the offline database. A walk that cannot
       // reach the peer is not a failed boot — pending stays the outbox.
-      if (fail._tag === "NetworkError" && !options.session.closed && painted()) {
-        walkFail = undefined;
-        readyGen = options.session.generation;
+      if (fail._tag === "NetworkError" && !options.session.closed) {
+        if (painted()) {
+          walkFail = undefined;
+          readyGen = options.session.generation;
+        }
         return;
       }
-      // Auth / request failure after paint is not a loader — stamp it
-      // and notify so live can keep the last rows and surface the error.
-      if (painted() && !options.session.closed) {
+      // Auth / request failure is not a loader — stamp it and notify
+      // so live can keep the last rows (or honest empty) and surface it.
+      if (!options.session.closed) {
         walkFail = fail;
         readyGen = options.session.generation;
         notify();
@@ -789,7 +798,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           walkFail !== undefined &&
           readyGen === options.session.generation
         ) {
-          throw walkFail;
+          if (terminalFollow(walkFail)) throw walkFail;
+          // Transient follow (5xx): paint stands. Retry the walk so
+          // live's backoff can succeed; do not poison `q`.
+          walkFail = undefined;
+          readyGen = -1;
         }
         walkFail = undefined;
         const first = conn === undefined;
