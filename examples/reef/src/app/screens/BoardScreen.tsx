@@ -234,7 +234,6 @@ export const BoardScreen = ({
   const toast = useToast();
   const db = useDb(slug, Reef);
   const [myEid, setMyEid] = useState<number | undefined>(undefined);
-  const [selfReady, setSelfReady] = useState(false);
 
   const userId = user.id;
   const userName = user.name;
@@ -247,12 +246,10 @@ export const BoardScreen = ({
       (eid) => {
         if (cancelled) return;
         setMyEid(eid);
-        setSelfReady(true);
       },
       (err) => {
         if (cancelled) return;
         toast("error", errorMessage(err));
-        setSelfReady(true);
       },
     );
     return () => {
@@ -326,7 +323,7 @@ export const BoardScreen = ({
       </div>
     );
   }
-  if (!selfReady || liveRows === undefined) {
+  if (liveRows === undefined) {
     return <Loading text={`opening ${slug}…`} />;
   }
 

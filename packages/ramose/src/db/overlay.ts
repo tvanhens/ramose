@@ -7,6 +7,11 @@
  * facts are visible to `view()`. Inbound confirmed datoms are already
  * assigned (`t`, eids) — `applyDatoms`, never `processTx`. Pending layers
  * stay off the confirmed log and are never sent to other sessions.
+ *
+ * First paint is hydrate: after disk restore, the Connection is the view
+ * and notify runs so live can emit. `sync({ from: confirmedT })` is
+ * catch-up — it does not hold `ready` / first `q`. A successful walk still
+ * applies `{ op: tx }` / `{ op: resync }` and `flush()`es the outbox.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -560,14 +565,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
+  const painted = (): boolean => confirmedT > 0 || pending.length > 0;
+
   const sync = async (retry = true): Promise<void> => {
     await ensureConn();
     try {
       // A hydrated view is already the database. One walk attempt, then
       // offline-ready — do not sit on the retry ladder before notify.
-      const hydrated = confirmedT > 0 || pending.length > 0;
       const reply = await Effect.runPromise(
-        retry && !hydrated
+        retry && !painted()
           ? retryTransient(requestSync, { while: () => !options.session.closed })
           : requestSync(),
       );
@@ -591,16 +597,34 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
       // Hydrated follower is the offline database. A walk that cannot
       // reach the peer is not a failed boot — pending stays the outbox.
-      if (
-        fail._tag === "NetworkError" &&
-        !options.session.closed &&
-        (confirmedT > 0 || pending.length > 0)
-      ) {
+      if (fail._tag === "NetworkError" && !options.session.closed && painted()) {
         readyGen = options.session.generation;
         return;
       }
       throw fail;
     }
+  };
+
+  /**
+   * Catch-up only. First paint does not await this. A painted follower
+   * swallows walk failure so an un-awaited kick is not an unhandled
+   * rejection — closed still fails the next `ready()`.
+   */
+  const kickWalk = (retry: boolean, hold: boolean): Promise<void> => {
+    if (readyGen === options.session.generation && conn !== undefined) {
+      return Promise.resolve();
+    }
+    if (opening !== undefined) return opening;
+    const started = sync(retry)
+      .catch((err) => {
+        if (hold) return;
+        throw err;
+      })
+      .finally(() => {
+        if (opening === started) opening = undefined;
+      });
+    opening = started;
+    return started;
   };
 
   const ready: Overlay["ready"] = (retry = true) =>
@@ -609,16 +633,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         if (options.session.closed) {
           throw new NetworkError({ message: "ramose: the client is closed" });
         }
-        if (readyGen !== options.session.generation || conn === undefined) {
-          if (opening !== undefined) await opening;
-          else {
-            const started = sync(retry).finally(() => {
-              if (opening === started) opening = undefined;
-            });
-            opening = started;
-            await started;
-          }
-        }
+        const first = conn === undefined;
+        await ensureConn();
+        // Hydrate is the view. Notify so live can emit those rows, then
+        // kick `sync({ from: confirmedT })` without holding first paint.
+        if (first && painted()) notify();
+        const hold = painted();
+        const walk = kickWalk(retry, hold);
+        if (hold) return;
+        await walk;
         await applied;
       },
       catch: (cause) =>
@@ -636,9 +659,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       Effect.flatMap(() =>
         Effect.tryPromise({
           try: async () => {
-            // Join the apply queue (resync / ack). Inbound `{ op: tx }`
-            // applies in the message turn when the queue is idle.
-            await applied;
+            // Hydrated view is first paint. Do not join a catch-up
+            // resync / `{ op: tx }` on `applied` — that walk is not a loader.
             const db = view();
             // Same turn as view() — a waiter that can observe a newer epoch
             // than this view must not exist. Live parks on `epoch`, not on a

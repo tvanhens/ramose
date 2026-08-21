@@ -66,12 +66,29 @@ const dirStore = (root: string): ByteStore => ({
   },
 });
 
+const until = async (pred: () => boolean, ms = 2_000): Promise<void> => {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error("until timed out");
+    await Bun.sleep(5);
+  }
+};
+
 const fakeSession = (opts?: {
-  readonly onSync?: (from: number) => {
-    readonly body: unknown;
-    readonly push?: Record<string, unknown>;
-  };
-}): Session & { readonly syncs: number[]; pusher: (f: Record<string, unknown>) => void } => {
+  readonly onSync?: (from: number) =>
+    | {
+        readonly body: unknown;
+        readonly push?: Record<string, unknown>;
+      }
+    | Promise<{
+        readonly body: unknown;
+        readonly push?: Record<string, unknown>;
+      }>;
+}): Session & {
+  readonly syncs: number[];
+  closed: boolean;
+  pusher: (f: Record<string, unknown>) => void;
+} => {
   const syncs: number[] = [];
   let basis = 0;
   let epoch = 0;
@@ -98,7 +115,7 @@ const fakeSession = (opts?: {
       if (frame.op === "sync") {
         const from = typeof frame.from === "number" ? frame.from : 0;
         syncs.push(from);
-        const got = opts?.onSync?.(from) ?? { body: { t: from, from } };
+        const got = (await opts?.onSync?.(from)) ?? { body: { t: from, from } };
         if (got.push !== undefined) pusher(got.push);
         return { status: 200, body: got.body };
       }
@@ -142,7 +159,7 @@ const namesOf = async (overlay: Overlay): Promise<string[]> => {
 };
 
 describe("hydrate then sync is a walk", () => {
-  test("from >= rootT sends sync({ from }) and does not dump", async () => {
+  test("first q / live emit Ada while sync is still in flight; from >= rootT is a walk", async () => {
     const store = memoryStore();
     const world = await schemaConn();
     await world.transact([{ ":user/name": "Ada" }]);
@@ -164,10 +181,15 @@ describe("hydrate then sync is a walk", () => {
     expect(snap.confirmedT).toBe(rootT);
     expect(snap.confirmed.length).toBeGreaterThan(0);
 
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const walks: number[] = [];
     const second = fakeSession({
-      onSync: (from) => {
+      onSync: async (from) => {
         walks.push(from);
+        await held;
         return { body: { t: rootT, from } };
       },
     });
@@ -179,12 +201,74 @@ describe("hydrate then sync is a walk", () => {
       name: "movies",
     });
     expect(b).not.toBe(a);
+
+    const live: string[][] = [];
+    b.onChange(() => {
+      void namesOf(b).then((n) => live.push(n));
+    });
+
     await run(b.ready());
+    expect(b.epoch).toBeGreaterThan(0);
+    expect(await namesOf(b)).toEqual(["Ada"]);
+    await until(() => live.some((n) => n[0] === "Ada"));
+    expect(live.at(-1)).toEqual(["Ada"]);
+    await until(() => walks.length === 1);
     expect(walks).toEqual([rootT]);
+    expect(second.syncs).toEqual([rootT]);
     expect(b.confirmedT).toBe(rootT);
+
+    release();
+    await until(() => second.syncs.length === 1 && walks.length === 1);
     expect(await namesOf(b)).toEqual(["Ada"]);
     const snapB = await b.snapshot();
     expect(snapB.confirmed).not.toBe(snap.confirmed);
+    expect(snapB.confirmedT).toBe(rootT);
+  });
+
+  test("closed client fails ready — no session yet is not closed", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const live = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(live.ready());
+    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
+
+    const closed = fakeSession();
+    closed.closed = true;
+    const overlay = openOverlay({
+      session: closed,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await expect(run(overlay.ready())).rejects.toMatchObject({
+      _tag: "NetworkError",
+    });
+
+    const connecting = fakeSession({
+      onSync: async () => {
+        await new Promise(() => {});
+        return { body: { t: world.t } };
+      },
+    });
+    const open = openOverlay({
+      session: connecting,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(open.ready());
+    expect(await namesOf(open)).toEqual(["Ada"]);
+    expect(connecting.closed).toBe(false);
   });
 });
 
@@ -275,6 +359,7 @@ describe("reload restores confirmed and pending", () => {
     await run(reloaded.ready());
     expect(reloaded.confirmedT).toBe(world.t);
     expect(await namesOf(reloaded)).toEqual(["Ada", "Bea"]);
+    await until(() => dead.syncs.length === 1);
     expect(dead.syncs).toEqual([world.t]);
   });
 });
@@ -493,7 +578,7 @@ describe("from < rootT resync persists the dump", () => {
       name: "movies",
     });
     await run(overlay.ready());
-    expect(overlay.confirmedT).toBe(world.t);
+    await until(() => overlay.confirmedT === world.t);
     expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
 
     const persisted = await overlay.snapshot();
@@ -674,6 +759,8 @@ describe("outbox drains on a successful walk", () => {
     });
     expect(online).not.toBe(live);
     await run(online.ready());
+    expect(await namesOf(online)).toEqual(["Ada", "Bea"]);
+    await until(() => posted.length === 1);
     expect(posted).toHaveLength(1);
     expect((await online.snapshot()).pending).toHaveLength(0);
   });
