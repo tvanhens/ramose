@@ -31,7 +31,6 @@ import { query } from "../src/db/NavQuery.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import {
   type ByteStore,
-  encodeSnap,
   memoryStore,
   type OverlaySnap,
 } from "../src/db/persist.ts";
@@ -636,26 +635,37 @@ describe("two ports, one follower", () => {
 });
 
 describe("from < rootT resync persists the dump", () => {
-  test("replaceConfirmed writes the dump bytes, not a stubbed skip", async () => {
+  test("stale hydrated Ada is first paint; the dump is one catch-up notify", async () => {
     const store = memoryStore();
     const world = await schemaConn();
     await world.transact([{ ":user/name": "Ada" }]);
+    const adaDump = await snapshotDatoms(world);
+    const adaT = world.t;
     await world.transact([{ ":user/name": "Bea" }]);
     const dump = await snapshotDatoms(world);
     expect(dump.some((d) => d[3] === "Ada")).toBe(true);
     expect(dump.some((d) => d[3] === "Bea")).toBe(true);
 
-    const stale: OverlaySnap = {
-      v: 1,
-      confirmedT: 2,
-      confirmed: [],
-      pending: [],
-    };
-    await store.put("overlay.movies", encodeSnap(stale));
+    const first = fakeSession();
+    const a = openOverlay({
+      session: first,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: adaT, datoms: adaDump });
+    expect(await namesOf(a)).toEqual(["Ada"]);
 
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const session = fakeSession({
-      onSync: (from) => {
-        expect(from).toBe(2);
+      onSync: async (from) => {
+        expect(from).toBe(adaT);
+        await held;
         return {
           body: { t: world.t, from },
           push: { op: "resync", t: world.t, datoms: dump },
@@ -669,14 +679,21 @@ describe("from < rootT resync persists the dump", () => {
       store,
       name: "movies",
     });
+    expect(overlay).not.toBe(a);
     const ticks: number[] = [];
     overlay.onChange(() => {
       ticks.push(overlay.epoch);
     });
     await run(overlay.ready());
+    expect(overlay.confirmedT).toBe(adaT);
+    expect(await namesOf(overlay)).toEqual(["Ada"]);
+    expect(ticks).toHaveLength(1);
+
+    release();
+    await until(() => ticks.length === 2);
+    expect(ticks).toHaveLength(2);
     expect(overlay.confirmedT).toBe(world.t);
     expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
-    expect(ticks).toHaveLength(1);
 
     const persisted = await overlay.snapshot();
     expect(persisted.confirmedT).toBe(world.t);

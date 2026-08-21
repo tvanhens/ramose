@@ -8,12 +8,14 @@
  * assigned (`t`, eids) — `applyDatoms`, never `processTx`. Pending layers
  * stay off the confirmed log and are never sent to other sessions.
  *
- * First paint is hydrate when the disk view has facts: notify so live
- * can emit, then `sync({ from: confirmedT })` is catch-up. Walked
- * `{ op: tx }` / one `{ op: resync }` persist without per-frame notify;
- * epoch moves once when that walk finishes. After that, apply is the
- * notify per commit. A leading `{ op: resync }` (`from < rootT`) is
- * first paint — do not emit stale hydrated rows and replace them.
+ * First paint is the last local snapshot: after hydrate, notify so
+ * `read` / first `q` / live emit those rows, then `sync({ from:
+ * confirmedT })` is catch-up. Empty OPFS (first visit) is the only
+ * time there is no local row. Walked `{ op: tx }` / one `{ op: resync }`
+ * persist without per-frame notify; epoch moves once when that walk
+ * finishes. After that, apply is the notify per commit. A leading
+ * `{ op: resync }` (`from < rootT`) is the same catch-up snap as a
+ * long walk — the hydrated view at `confirmedT` is first paint.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -326,6 +328,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   /** Opening `sync({ from })` — inbound frames persist, one notify at the end. */
   let catchingUp = false;
   let catchUpDirty = false;
+  /** A snap was loaded from the store. Empty OPFS is the only miss. */
+  let fromDisk = false;
   let applied: Promise<void> = Promise.resolve();
   let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
@@ -554,6 +558,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const snap = await loadSnap(options.store, options.name);
       if (snap !== undefined) {
         await hydrate(snap);
+        fromDisk = true;
         return;
       }
     }
@@ -588,8 +593,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const painted = (): boolean => confirmedT > 0 || pending.length > 0;
-  /** Disk/pending facts — not a cursor-only stale snap. In-window first paint. */
-  const hasView = (): boolean => pending.length > 0 || factTs.size > 0;
 
   const finishCatchUp = (): void => {
     const dirty = catchUpDirty;
@@ -687,10 +690,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         walkFail = undefined;
         const first = conn === undefined;
         await ensureConn();
-        // Hydrate with facts is first paint. A cursor-only snap waits
-        // for a leading `{ op: resync }` — that dump is first paint.
-        if (first && hasView()) notify();
-        const hold = hasView();
+        // Last local snapshot is first paint. A `from < rootT` dump is
+        // catch-up, same as a long walk — do not withhold stale rows.
+        if (first && fromDisk) notify();
+        const hold = fromDisk;
         const walk = kickWalk(retry, hold);
         if (hold) return;
         await walk;
