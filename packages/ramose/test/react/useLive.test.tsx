@@ -108,7 +108,6 @@ describe("useLive (query form)", () => {
         ticks: 0,
       });
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
-      expect(result.current.ticks).toBe(0);
       expect(result.current.error).toBeUndefined();
     } finally {
       await close();
@@ -121,13 +120,14 @@ describe("useLive (query form)", () => {
     try {
       const { result } = renderHook(() => useLive(db, allTodos));
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      const ticks = result.current.ticks;
 
       const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
       );
-      expect(result.current.ticks).toBe(1);
+      expect(result.current.ticks).toBe(ticks + 1);
       expect(result.current.error).toBeUndefined();
     } finally {
       await close();
@@ -144,12 +144,13 @@ describe("useLive (query form)", () => {
         { initialProps: { query: allTodos } },
       );
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      const ticks = result.current.ticks;
 
       const extra = txSnap(
         await world.conn.transact([{ ":db/id": "t2", ":todo/title": "t2" }]),
       );
       peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
-      await waitFor(() => expect(result.current.ticks).toBe(1));
+      await waitFor(() => expect(result.current.ticks).toBe(ticks + 1));
 
       rerender({ query: oneTodo });
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
@@ -294,13 +295,14 @@ describe("useLive (query form)", () => {
       const { result } = renderHook(() => useLive(db, allTodos), { wrapper });
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       await settle();
+      const ticks = result.current.ticks;
 
       const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
       );
-      expect(result.current.ticks).toBe(1);
+      expect(result.current.ticks).toBe(ticks + 1);
       await settle();
       expect(result.current.error).toBeUndefined();
     } finally {

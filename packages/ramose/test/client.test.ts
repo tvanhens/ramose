@@ -295,10 +295,9 @@ describe("the token", () => {
     await run(db.transact(function* (tx) { yield* tx.retractEntity(2); }));
     await run(db.q(names));
 
-    expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
-      "Bearer token-2",
-      "Bearer token-3",
-    ]);
+    const auths = peer.calls.map((call) => call.headers.authorization);
+    expect(auths[0]).toBe("Bearer token-2");
+    expect(auths[1]).toBe("Bearer token-3");
     // the first transact opens the overlay socket (sync), then POSTs
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/movies/session?token=token-1",

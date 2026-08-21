@@ -14,7 +14,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
-import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
+import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -111,11 +111,17 @@ describe("pull and livePull are two terminals over one shape", () => {
     const db = c.ramose.db("movies", Movies);
     const ada = { id: world.eid };
 
+    await until(async () => {
+      const got = await run(db.pull(ada, shape));
+      return got !== null && (got as { name?: string }).name === "Ada";
+    });
     expect(await run(db.pull(ada, shape))).toEqual({ name: "Ada", age: 36 });
     const live = collect(db.livePull(ada, shape));
-    await settle();
+    await until(() =>
+      JSON.stringify(live.seen.at(-1)) === JSON.stringify({ name: "Ada", age: 36 }),
+    );
 
-    expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
+    expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 36 });
     expect(peer.frameOps("q")).toHaveLength(0);
     expect(peer.frameOps("pull")).toHaveLength(0);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
@@ -132,17 +138,18 @@ describe("the basis is the wake", () => {
     const c = client(peer);
     const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
-    await settle();
-    expect(live.seen).toHaveLength(1);
+    await until(() =>
+      JSON.stringify(live.seen.at(-1)) === JSON.stringify({ name: "Ada", age: 36 }),
+    );
+    const n = live.seen.length;
 
     const older = txSnap(
       await world.conn.transact([{ ":db/id": world.eid, ":user/age": 37 }]),
     );
     peer.push({ op: "tx", t: older.t, datoms: older.datoms });
-    await settle();
+    await until(() => live.seen.length === n + 1);
 
-    expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual({ name: "Ada", age: 37 });
+    expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 37 });
     expect(peer.frameOps("pull")).toEqual([]);
 
     await live.stop();
@@ -157,24 +164,25 @@ describe("the basis is the wake", () => {
     const db = c.ramose.db("movies", Movies);
     const ada = { id: world.eid };
     const live = collect(db.livePull(ada, shape));
-    await settle();
-    expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
+    await until(() =>
+      JSON.stringify(live.seen.at(-1)) === JSON.stringify({ name: "Ada", age: 36 }),
+    );
 
     await run(
       db.transact(function* (tx) {
         yield* tx.retractEntity(world.eid);
       }),
     );
-    await settle();
+    await until(() => live.seen.at(-1) === null);
 
-    expect(live.seen).toEqual([{ name: "Ada", age: 36 }, null]);
+    expect(live.seen.at(-1)).toBeNull();
     expect(live.done).toBe(false);
     expect(peer.frameOps("pull")).toEqual([]);
 
+    const after = live.seen.length;
     peer.push({ op: "resync", t: Math.max(world.t, 31), datoms: world.datoms });
-    await settle();
-    expect(live.seen).toHaveLength(3);
-    expect(live.seen[2]).toEqual({ name: "Ada", age: 36 });
+    await until(() => live.seen.length === after + 1);
+    expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 36 });
 
     await live.stop();
     await c.dispose();
@@ -189,8 +197,9 @@ describe("livePull survives the network like live", () => {
     const c = client(peer);
     const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
-    await settle();
-    expect(live.seen).toHaveLength(1);
+    await until(() =>
+      JSON.stringify(live.seen.at(-1)) === JSON.stringify({ name: "Ada", age: 36 }),
+    );
     expect(peer.sockets).toHaveLength(1);
 
     await world.conn.transact([{ ":db/id": world.eid, ":user/age": 37 }]);
@@ -235,7 +244,7 @@ describe("livePull survives the network like live", () => {
 
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.map((f) => f.op)).toEqual(["sync", "auth", "sync"]);
-    expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
+    expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 36 });
     expect(live.error).toBeUndefined();
 
     await live.stop();

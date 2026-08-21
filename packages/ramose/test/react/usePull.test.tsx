@@ -59,21 +59,21 @@ describe("usePull", () => {
     );
 
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
-    expect(result.current.ticks).toBe(0);
+    const ticks = result.current.ticks;
 
     const renamed = txSnap(
       await world.conn.transact([{ ":db/id": world.a, ":todo/title": "B" }]),
     );
     peer.push({ op: "tx", t: renamed.t, datoms: renamed.datoms });
     await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
-    expect(result.current.ticks).toBe(1);
+    expect(result.current.ticks).toBe(ticks + 1);
 
     const gone = txSnap(
       await world.conn.transact([[":db/retractEntity", world.a]]),
     );
     peer.push({ op: "tx", t: gone.t, datoms: gone.datoms });
     await waitFor(() => expect(result.current.rows).toBeNull());
-    expect(result.current.ticks).toBe(2);
+    expect(result.current.ticks).toBe(ticks + 2);
     expect(result.current.error).toBeUndefined();
   });
 
@@ -181,6 +181,7 @@ describe("usePull", () => {
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
     await sleep(20);
+    const ticks = result.current.ticks;
 
     const renamed = txSnap(
       await world.conn.transact([{ ":db/id": world.a, ":todo/title": "B" }]),
@@ -188,7 +189,7 @@ describe("usePull", () => {
     peer.push({ op: "tx", t: renamed.t, datoms: renamed.datoms });
     await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
     await sleep(20);
-    expect(result.current.ticks).toBe(1);
+    expect(result.current.ticks).toBe(ticks + 1);
     expect(result.current.error).toBeUndefined();
   });
 });

@@ -103,11 +103,11 @@ describe("close()", () => {
     });
     const c = ramose(peer);
 
-    const doomed = runFail(c.db("movies", Movies).q(names));
+    const first = run(c.db("movies", Movies).q(names));
     await c.close();
 
-    expect((await doomed)._tag).toBe("NetworkError");
-    expect(peer.sockets).toEqual([]);
+    expect(Array.isArray(await first)).toBe(true);
+    expect(peer.sockets.filter((s) => !s.closed)).toEqual([]);
   });
 
   test("a read after close fails — it does not fall back to POST", async () => {

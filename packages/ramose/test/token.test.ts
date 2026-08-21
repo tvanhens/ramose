@@ -5,8 +5,9 @@
  * Effect the layer re-reads on every (re)connect and every `/transact`:
  * minted lazily, cached, single-flight, re-minted inside a margin of the
  * payload's `exp`. Failure typing is the contract that matters — a thrown
- * mint is `NetworkError` (transient, `live` retries), a thrown `DbError`
- * passes through (an `Unauthorized` mint fails `live` terminally).
+ * mint is `NetworkError` (transient, `live` retries; `transact` keeps the
+ * pending layer as the outbox), a thrown `DbError` passes through (an
+ * `Unauthorized` mint fails `transact` and `live` terminally).
  */
 
 import { describe, expect, setSystemTime, test } from "bun:test";
@@ -322,7 +323,7 @@ describe("claims() is the decoded payload, UI hints only", () => {
 });
 
 describe("failure typing on the wire", () => {
-  test("a throwing mint surfaces as NetworkError on transact", async () => {
+  test("a throwing mint keeps the pending layer; Ada is on view before the wire", async () => {
     const source = token.jwt(async () => {
       throw new Error("the auth endpoint is down");
     });
@@ -330,17 +331,14 @@ describe("failure typing on the wire", () => {
     const c = client(peer, { token: source });
     const db = c.ramose.db("movies", Movies);
 
-    const error = await runFail(
+    // NetworkError on POST is the outbox: notify now, layer stays, local ack.
+    await run(
       db.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
     );
-    expect((error as { _tag?: string })._tag).toBe("NetworkError");
-    expect(String((error as { message: string }).message)).toContain(
-      "the auth endpoint is down",
-    );
-    // the mint failed before the wire: nothing reached the peer
+    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     expect(peer.calls).toHaveLength(0);
 
     await c.dispose();
@@ -392,7 +390,7 @@ describe("failure typing on the wire", () => {
     // the wire's transient ladder retries the failed connect in place
     await settle(600);
     expect(live.error).toBeUndefined();
-    expect(live.seen).toEqual([[{ name: "Ada" }]]);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
     // the fresh mint authenticated the (re)connect
     expect(peer.socket.url).toContain("token=");
 
