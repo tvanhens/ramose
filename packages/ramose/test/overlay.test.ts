@@ -105,6 +105,8 @@ const seedClient = async (
   conn: Connection,
 ) => {
   await run(db.q(names));
+  // First view() emits before `{op:sync}`; the socket opens on the next macrotask.
+  await settle();
   const snap = await snapshotOf(conn);
   peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   await settle();

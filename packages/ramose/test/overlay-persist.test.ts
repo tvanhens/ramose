@@ -8,7 +8,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
   Index,
@@ -243,6 +246,82 @@ describe("hydrate then sync is a walk", () => {
     const snapB = await b.snapshot();
     expect(snapB.confirmed).not.toBe(snap.confirmed);
     expect(snapB.confirmedT).toBe(rootT);
+  });
+
+  test("first db.live emission is the snap and does not wait on session.request", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const writer = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(writer.ready());
+    await writer.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await until(async () => {
+      const loaded = await loadSnap(store, "movies");
+      return loaded !== undefined && loaded.confirmedT === rootT;
+    });
+
+    let syncReturned = false;
+    const peer = fakePeer({
+      answer: (frame) => {
+        if (frame.op === "sync") {
+          // Never answer. First live must be the hydrated view, not this.
+          return undefined;
+        }
+        if (frame.op === "q") {
+          return { body: { t: 0, result: [] } };
+        }
+        return { body: { t: 0 } };
+      },
+    });
+
+    const { databases, close } = makeDatabases({
+      url: Effect.succeed("https://peer.example.com"),
+      fetch: fromStandardFetch(peer.fetch),
+      webSocket: (url) => new peer.webSocket(url) as never,
+      persist: store,
+    });
+    const names = query(User).select({ name: User.name });
+    const seen: { name: string }[][] = [];
+    let syncAtFirstEmit: ReturnType<typeof peer.frameOps> | undefined;
+    const fiber = Effect.runFork(
+      Stream.runForEach(databases.db("movies", Movies).live(names), (rows) =>
+        Effect.sync(() => {
+          if (syncAtFirstEmit === undefined) {
+            syncAtFirstEmit = peer.frameOps("sync");
+          }
+          seen.push(rows as { name: string }[]);
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => {
+            if (!Cause.hasInterrupts(cause)) throw Cause.squash(cause);
+          }),
+        ),
+      ),
+    );
+    try {
+      const started = Date.now();
+      await until(() => seen.length > 0, 400);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(seen[0]?.map((r) => r.name)).toEqual(["Ada"]);
+      expect(syncReturned).toBe(false);
+      // Same turn as ready()/view(): the walk must not have been
+      // dispatched. A first emit that waited on `{op:sync}` would
+      // hang (answer is undefined) or land only after a resync dump.
+      expect(syncAtFirstEmit).toEqual([]);
+    } finally {
+      await run(Fiber.interrupt(fiber));
+      await close();
+    }
   });
 
   test("closed client fails ready — no session yet is not closed", async () => {
@@ -1241,6 +1320,7 @@ describe("one client mode — the page, not a worker", () => {
       );
       expect(Array.isArray(rows)).toBe(true);
       expect(constructed).toBe(0);
+      await new Promise((r) => setTimeout(r, 0));
       expect(peer.sockets.length).toBeGreaterThan(0);
       close();
     } finally {

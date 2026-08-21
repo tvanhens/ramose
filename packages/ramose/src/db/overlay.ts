@@ -15,10 +15,13 @@
  *
  * First paint is hydrate (`loadSnap`). First `ready` / `read` wait only
  * for that. Empty OPFS (first visit) is an honest empty emission; a snap
- * emits those rows, never an empty frame first. `sync({ from: confirmedT })`
- * applies behind paint. Many walked `{ op: tx }` or one `{ op: resync }`
- * is one notify when catch-up finishes. User `transact` is not on that
- * queue. A dump rebases still-unacked pending; it does not wipe the outbox.
+ * emits those rows, never an empty frame first. A hydrated `ready()`
+ * notifies and returns; `{ op: sync }` is a later macrotask so the first
+ * `db.live` emission is `view()` in the same turn, before
+ * `session.request`. `sync({ from: confirmedT })` applies behind paint.
+ * Many walked `{ op: tx }` or one `{ op: resync }` is one notify when
+ * catch-up finishes. User `transact` is not on that queue. A dump rebases
+ * still-unacked pending; it does not wipe the outbox.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -356,6 +359,24 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let staleTs: number[] = [];
   let persistDirty = false;
   let persistChain: Promise<void> = Promise.resolve();
+  /** Serialize the first `loadSnap` so concurrent `ready`/`read` share it. */
+  let ensuring: Promise<void> | undefined;
+  /** Confirmed facts `loadSnap` returned — DevTools: compare to first emit. */
+  let hydrateFacts = 0;
+  let firstEmitLogged = false;
+  /** First `view()` already ran; `{op:sync}` must not start before that. */
+  let didView = false;
+
+  const mark = (label: string, extra?: Record<string, unknown>): void => {
+    if (typeof console === "undefined" || typeof console.info !== "function") {
+      return;
+    }
+    const t =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+    console.info(`[ramose] ${label}`, { t, ...extra });
+  };
 
   /**
    * Inbound apply orderer only. An idle, sync `fn` (a `{ op: tx }` with
@@ -700,19 +721,46 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     hasSnap = snap.confirmed.length > 0;
   };
 
-  const ensureConn = async (): Promise<void> => {
+  const openConn = async (): Promise<void> => {
     if (conn !== undefined) return;
     if (options.store !== undefined && options.name !== undefined) {
       const snap = await loadSnap(options.store, options.name);
+      mark("loadSnap", {
+        facts: snap?.confirmed.length ?? 0,
+        confirmedT: snap?.confirmedT ?? 0,
+        pending: snap?.pending.length ?? 0,
+      });
       if (snap !== undefined) {
         await hydrate(snap);
+        hydrateFacts = snap.confirmed.length;
         hydrated = true;
+        mark("ensureConn", {
+          facts: hydrateFacts,
+          confirmedT,
+          hasSnap,
+        });
         return;
       }
     }
     conn = await Connection.create();
     await installSchema(conn, options);
+    hydrateFacts = 0;
     hydrated = true;
+    mark("ensureConn", { facts: 0, confirmedT: 0, hasSnap: false });
+  };
+
+  const ensureConn = async (): Promise<void> => {
+    if (conn !== undefined) return;
+    if (ensuring !== undefined) {
+      await ensuring;
+      return;
+    }
+    ensuring = openConn();
+    try {
+      await ensuring;
+    } finally {
+      ensuring = undefined;
+    }
   };
 
   const requestSync = () =>
@@ -753,6 +801,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const finishCatchUp = (): void => {
     catchingUp = false;
     catchUpDirty = false;
+    mark("finishCatchUp", { confirmedT, hydrateFacts });
   };
 
   const sync = async (retry = true): Promise<void> => {
@@ -826,6 +875,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       return Promise.resolve();
     }
     if (opening !== undefined) return opening;
+    mark("kickWalk", { confirmedT, hydrateFacts, didView });
     const started = sync(retry)
       .catch((err) => {
         if (hold) return;
@@ -861,8 +911,25 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         // for the walk, an OPFS write, or a token. `catchingUp` is true
         // until that walk finishes (a no-op `kickWalk` leaves it alone).
         if (readyGen !== options.session.generation) catchingUp = true;
-        if (first) notify();
-        kickWalk(retry, true);
+        if (first) {
+          notify();
+          mark("first-notify", {
+            hydrateFacts,
+            hasSnap,
+            confirmedT,
+            epoch,
+          });
+        }
+        // A hydrated snap must emit `view()` before `{op:sync}`. An
+        // empty first visit has nothing to paint — walk now.
+        if (hasSnap) {
+          const retryWalk = retry;
+          setTimeout(() => {
+            kickWalk(retryWalk, true);
+          }, 0);
+        } else {
+          kickWalk(retry, true);
+        }
       },
       catch: (cause) =>
         isDatabaseError(cause)
@@ -900,11 +967,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   ? subject
                   : await db.entid(subject as number | string | [string, unknown]);
               if (eid === undefined) {
+                didView = true;
                 return { t: confirmedT, result: null, epoch: viewed };
               }
+              const pulled = await enginePull(db, eid, pattern);
+              didView = true;
               return {
                 t: confirmedT,
-                result: await enginePull(db, eid, pattern),
+                result: pulled,
                 epoch: viewed,
               };
             }
@@ -913,6 +983,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               body.query as object,
               Array.isArray(body.inputs) ? body.inputs : [],
             );
+            didView = true;
+            if (!firstEmitLogged) {
+              firstEmitLogged = true;
+              const rows = Array.isArray(result) ? result.length : result == null ? 0 : 1;
+              mark("first-emit", { rows, hydrateFacts, hasSnap, confirmedT });
+            }
             return { t: confirmedT, root: confirmedT, result, epoch: viewed };
           },
           catch: classifyQuery,

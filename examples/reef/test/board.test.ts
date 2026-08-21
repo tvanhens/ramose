@@ -728,6 +728,7 @@ describe("refresh open is one session, not two", () => {
       );
       expect(myEid).toBeUndefined();
       expect(counted.connects).toBe(1);
+      await settle();
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
     } finally {
@@ -849,5 +850,55 @@ describe("seeded board hydrates from the page dump, not the walk", () => {
     expect(peer.resyncDumps()).toEqual([]);
     peer.releaseCatchUp();
     await peer.dispose();
+  });
+
+  test("first db.live emission is the snap and does not wait on session.request", async () => {
+    const backing = memoryStore();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: (key, value) => backing.put(key, value),
+      delete: (key) => backing.delete?.(key) ?? Promise.resolve(),
+    };
+    const peer = await inProcessPeer({ seed: false, persist });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(seedSampleIssues(a.db, people[0]!.id, labels));
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await a.close();
+
+    peer.holdCatchUp();
+    peer.resetTraffic();
+    const b = peer.openClient();
+    const seen: string[][] = [];
+    let syncAtFirstEmit: unknown[] | undefined;
+    const fiber = Effect.runFork(
+      Stream.runForEach(b.db.live(boardQuery), (rows) =>
+        Effect.sync(() => {
+          if (syncAtFirstEmit === undefined) {
+            syncAtFirstEmit = peer.frames.filter((f) => f.op === "sync");
+          }
+          seen.push(rows.map((r) => r.title));
+        }),
+      ),
+    );
+    try {
+      const started = Date.now();
+      for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(10);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThan(200);
+      expect([...seen[0]!].sort()).toEqual([...titlesA].sort());
+      expect(syncAtFirstEmit).toEqual([]);
+      expect(peer.resyncDumps()).toEqual([]);
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      peer.releaseCatchUp();
+      await peer.dispose();
+    }
   });
 });
