@@ -16,7 +16,7 @@ import * as Stream from "effect/Stream";
 import { query } from "../src/db/internal.ts";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
-import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
+import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -113,15 +113,10 @@ describe("q and live are two terminals over one query", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await until(async () =>
-      JSON.stringify(await run(db.q(names))) === JSON.stringify([{ name: "Ada" }]),
-    );
     expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     const live = collect(db.live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+    await settle();
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(peer.frameOps("q")).toEqual([]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
 
@@ -134,12 +129,9 @@ describe("q and live are two terminals over one query", () => {
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) ===
-      JSON.stringify([{ name: "Ada" }, { name: "Cy" }]),
-    );
+    await settle();
 
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Cy" }]);
+    expect(live.seen[0]).toEqual([{ name: "Ada" }, { name: "Cy" }]);
     expect(peer.frameOps("pull")).toHaveLength(0);
     expect(peer.frameOps("q")).toHaveLength(0);
 
@@ -155,17 +147,16 @@ describe("paint is the wake", () => {
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
-    const n = live.seen.length;
+    await settle();
+    expect(live.seen).toHaveLength(1);
 
     const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
     state.t = bob.t;
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
-    await until(() => live.seen.length === n + 1);
+    await settle();
 
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q")).toEqual([]);
 
     await live.stop();
@@ -179,10 +170,8 @@ describe("paint is the wake", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const live = collect(db.live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
-    const n = live.seen.length;
+    await settle();
+    expect(live.seen).toHaveLength(1);
 
     await run(
       db.transact(function* (tx) {
@@ -190,9 +179,10 @@ describe("paint is the wake", () => {
         yield* bob.add(User.name, "Bob");
       }),
     );
-    await until(() => live.seen.length === n + 1);
+    await settle();
 
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q")).toEqual([]);
 
     await live.stop();
@@ -204,18 +194,15 @@ describe("paint is the wake", () => {
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
+    await settle();
     const frames = peer.frames.length;
-    const n = live.seen.length;
 
     await live.stop();
     peer.push({ op: "tx", t: world.t + 1, datoms: [] });
     await settle();
 
     expect(peer.frames).toHaveLength(frames);
-    expect(live.seen).toHaveLength(n);
+    expect(live.seen).toHaveLength(1);
     await c.dispose();
   });
 });
@@ -227,9 +214,8 @@ describe("live survives the network", () => {
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
+    await settle();
+    expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
     const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
@@ -263,12 +249,11 @@ describe("live survives the network", () => {
     const live = collect(c.ramose.db("movies", Movies).live(names));
 
     await settle();
+    expect(live.seen).toHaveLength(0);
     expect(live.error).toBeUndefined();
 
-    await until(() =>
-      JSON.stringify(live.seen.at(-1)) === JSON.stringify([{ name: "Ada" }]),
-    );
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+    await settle(400); // the first backoff is 250ms
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.error).toBeUndefined();
 
     await live.stop();
@@ -300,7 +285,7 @@ describe("live survives the network", () => {
 
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.map((f) => f.op)).toEqual(["sync", "auth", "sync"]);
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.error).toBeUndefined();
 
     await live.stop();

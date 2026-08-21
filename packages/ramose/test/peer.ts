@@ -282,15 +282,3 @@ export const redacted = (value: string) => Redacted.make(value);
 
 /** Every pass is a handful of microtasks; a tick is plenty. */
 export const settle = (ms = 20) => Bun.sleep(ms);
-
-/** Catch-up and persist sit behind notify — poll, do not assume one emission. */
-export const until = async (
-  pred: () => boolean | Promise<boolean>,
-  ms = 2_000,
-): Promise<void> => {
-  const start = Date.now();
-  while (!(await pred())) {
-    if (Date.now() - start > ms) throw new Error("until timed out");
-    await Bun.sleep(5);
-  }
-};

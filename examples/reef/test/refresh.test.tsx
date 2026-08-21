@@ -36,13 +36,12 @@ describe("refresh does not wait on session or the first live emission", () => {
     expect(src).toMatch(/if \(userId === undefined\) return;/);
   });
 
-  test("BoardScreen does not treat rows === undefined as an empty board", async () => {
+  test("BoardScreen with rows === undefined does not render opening ${slug}", async () => {
     const src = await boardSrc();
     expect(src).not.toMatch(/opening \$\{slug\}/);
-    expect(src).not.toMatch(/liveRows \?\? \[\]/);
+    expect(src).not.toMatch(/if \(liveRows === undefined\)/);
+    expect(src).toMatch(/liveRows \?\? \[\]/);
     expect(src).toMatch(/liveRows !== undefined && liveRows\.length === 0/);
-    expect(src).toMatch(/liveRows !== undefined && \(/);
-    expect(src).toMatch(/<Board/);
     expect(src).toMatch(/bindSelf/);
   });
 

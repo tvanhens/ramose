@@ -4,8 +4,7 @@
  * writes two datoms; overlay pending + apply=notify re-runs the query.
  * `applyPendingMove` is paint-before-the-next-frame only: clearing drag
  * chrome in the same event would flash the card in its old column until
- * React commits the live emission. Overlay apply notifies in that turn,
- * so the pin clears on the next rows. It is not a second optimistic store
+ * React commits the live emission. It is not a second optimistic store
  * and is not what the two-writer live pins scrape.
  *
  * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
@@ -381,6 +380,12 @@ export const Board = ({
     if (pending === null) return;
     if (pendingMoveSettled(rows, pending)) setPending(null);
   }, [rows, pending]);
+
+  useEffect(() => {
+    if (pending === null) return;
+    const timer = window.setTimeout(() => setPending(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
 
   const drop = (status: Status, before: BoardRow | undefined) => {
     commitDrop(status, before?.id);

@@ -104,7 +104,7 @@ export const openFollower = (options: FollowerOptions): Follower => {
     }
   };
 
-  // Real notify — do not stub. Overlay apply notifies; persist is behind it.
+  // Real notify — do not stub. Persist already ran inside overlay apply.
   overlay.onChange(fanoutChange);
 
   const reply = (
