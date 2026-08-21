@@ -79,10 +79,12 @@ const fakeSession = (opts?: {
     | {
         readonly body: unknown;
         readonly push?: Record<string, unknown>;
+        readonly pushes?: readonly Record<string, unknown>[];
       }
     | Promise<{
         readonly body: unknown;
         readonly push?: Record<string, unknown>;
+        readonly pushes?: readonly Record<string, unknown>[];
       }>;
 }): Session & {
   readonly syncs: number[];
@@ -117,6 +119,9 @@ const fakeSession = (opts?: {
         syncs.push(from);
         const got = (await opts?.onSync?.(from)) ?? { body: { t: from, from } };
         if (got.push !== undefined) pusher(got.push);
+        if (got.pushes !== undefined) {
+          for (const frame of got.pushes) pusher(frame);
+        }
         return { status: 200, body: got.body };
       }
       return { status: 200, body: {} };
@@ -269,6 +274,92 @@ describe("hydrate then sync is a walk", () => {
     await run(open.ready());
     expect(await namesOf(open)).toEqual(["Ada"]);
     expect(connecting.closed).toBe(false);
+  });
+});
+
+describe("opening walk is one catch-up notify", () => {
+  test("many {op:tx} during the walk notify once; a later tx notifies once", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+    const nameA = world.db().schema.requireAttr(":user/name").id;
+    const walked = ["Bea", "Cal", "Dot"].map((name, i) =>
+      toWireDatom({
+        e: 3001 + i,
+        a: nameA,
+        vt: ValueTag.Str,
+        v: name,
+        t: rootT + 1 + i,
+        op: true,
+      }),
+    );
+    const tip = rootT + walked.length;
+
+    const first = fakeSession();
+    const a = openOverlay({
+      session: first,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: rootT, datoms: dump });
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const session = fakeSession({
+      onSync: async (from) => {
+        await held;
+        return {
+          body: { t: tip, from },
+          pushes: walked.map((datom, i) => ({
+            op: "tx",
+            t: rootT + 1 + i,
+            datoms: [datom],
+          })),
+        };
+      },
+    });
+    const overlay = openOverlay({
+      session,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    const ticks: number[] = [];
+    overlay.onChange(() => {
+      ticks.push(overlay.epoch);
+    });
+    await run(overlay.ready());
+    expect(await namesOf(overlay)).toEqual(["Ada"]);
+    expect(ticks).toHaveLength(1);
+    release();
+    await until(() => ticks.length === 2);
+    expect(ticks).toHaveLength(2);
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea", "Cal", "Dot"]);
+
+    await overlay.handlePush({
+      op: "tx",
+      t: tip + 1,
+      datoms: [
+        toWireDatom({
+          e: 4001,
+          a: nameA,
+          vt: ValueTag.Str,
+          v: "Eve",
+          t: tip + 1,
+          op: true,
+        }),
+      ],
+    });
+    expect(ticks).toHaveLength(3);
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea", "Cal", "Dot", "Eve"]);
   });
 });
 
@@ -577,9 +668,14 @@ describe("from < rootT resync persists the dump", () => {
       store,
       name: "movies",
     });
+    const ticks: number[] = [];
+    overlay.onChange(() => {
+      ticks.push(overlay.epoch);
+    });
     await run(overlay.ready());
-    await until(() => overlay.confirmedT === world.t);
+    expect(overlay.confirmedT).toBe(world.t);
     expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
+    expect(ticks).toHaveLength(1);
 
     const persisted = await overlay.snapshot();
     expect(persisted.confirmedT).toBe(world.t);

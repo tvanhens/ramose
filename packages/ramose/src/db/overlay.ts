@@ -8,10 +8,12 @@
  * assigned (`t`, eids) — `applyDatoms`, never `processTx`. Pending layers
  * stay off the confirmed log and are never sent to other sessions.
  *
- * First paint is hydrate: after disk restore, the Connection is the view
- * and notify runs so live can emit. `sync({ from: confirmedT })` is
- * catch-up — it does not hold `ready` / first `q`. A successful walk still
- * applies `{ op: tx }` / `{ op: resync }` and `flush()`es the outbox.
+ * First paint is hydrate when the disk view has facts: notify so live
+ * can emit, then `sync({ from: confirmedT })` is catch-up. Walked
+ * `{ op: tx }` / one `{ op: resync }` persist without per-frame notify;
+ * epoch moves once when that walk finishes. After that, apply is the
+ * notify per commit. A leading `{ op: resync }` (`from < rootT`) is
+ * first paint — do not emit stale hydrated rows and replace them.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -321,6 +323,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
    * happened; the next `ready()` surfaces it. Cleared on a new generation. */
   let walkFail: DbError | undefined;
   let opening: Promise<void> | undefined;
+  /** Opening `sync({ from })` — inbound frames persist, one notify at the end. */
+  let catchingUp = false;
+  let catchUpDirty = false;
   let applied: Promise<void> = Promise.resolve();
   let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
@@ -380,18 +385,32 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     for (const cb of [...listeners]) cb();
   };
 
-  const persistThenNotify = (): void | Promise<void> => {
+  const persist = (): void | Promise<void> => {
     const store = options.store;
     const name = options.name;
-    if (store === undefined || name === undefined) {
+    if (store === undefined || name === undefined) return;
+    return takeSnapshot().then((snap) => saveSnap(store, name, snap));
+  };
+
+  const persistThenNotify = (): void | Promise<void> => {
+    const done = persist();
+    if (done === undefined) {
       notify();
       return;
     }
-    return takeSnapshot().then(async (snap) => {
-      await saveSnap(store, name, snap);
+    return done.then(() => {
       notify();
     });
   };
+
+  /** Opening walk: persist the frame, hold notify until catch-up finishes. */
+  const persistCatchUp = (): void | Promise<void> => {
+    catchUpDirty = true;
+    return persist();
+  };
+
+  const inboundPersist = (): void | Promise<void> =>
+    catchingUp ? persistCatchUp() : persistThenNotify();
 
   const pendingDatoms = (): Datom[] => {
     const out: Datom[] = [];
@@ -569,9 +588,20 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const painted = (): boolean => confirmedT > 0 || pending.length > 0;
+  /** Disk/pending facts — not a cursor-only stale snap. In-window first paint. */
+  const hasView = (): boolean => pending.length > 0 || factTs.size > 0;
+
+  const finishCatchUp = (): void => {
+    const dirty = catchUpDirty;
+    catchingUp = false;
+    catchUpDirty = false;
+    if (dirty) notify();
+  };
 
   const sync = async (retry = true): Promise<void> => {
     await ensureConn();
+    catchingUp = true;
+    catchUpDirty = false;
     try {
       // A hydrated view is already the database. One walk attempt, then
       // offline-ready — do not sit on the retry ladder before notify.
@@ -590,8 +620,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         confirmedT = t;
         options.session.bump(t);
       }
+      // One epoch for the walk, then outbox flush is apply-is-notify.
+      finishCatchUp();
       await flush();
     } catch (cause) {
+      finishCatchUp();
       const fail = isDatabaseError(cause)
         ? cause
         : new NetworkError({
@@ -654,10 +687,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         walkFail = undefined;
         const first = conn === undefined;
         await ensureConn();
-        // Hydrate is the view. Notify so live can emit those rows, then
-        // kick `sync({ from: confirmedT })` without holding first paint.
-        if (first && painted()) notify();
-        const hold = painted();
+        // Hydrate with facts is first paint. A cursor-only snap waits
+        // for a leading `{ op: resync }` — that dump is first paint.
+        if (first && hasView()) notify();
+        const hold = hasView();
         const walk = kickWalk(retry, hold);
         if (hold) return;
         await walk;
@@ -869,7 +902,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       incoming,
       typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
     );
-    return persistThenNotify();
+    return inboundPersist();
   };
 
   const applyFrame = (frame: Record<string, unknown>): void | Promise<void> => {
@@ -881,7 +914,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       unsent.clear();
       const t = typeof frame.t === "number" ? frame.t : 0;
       return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
-        () => persistThenNotify(),
+        () => inboundPersist(),
       );
     }
     if (frame.op === "tx") return applyTx(frame);
