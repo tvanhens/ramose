@@ -28,9 +28,11 @@ import {
   defaultStore,
   encodeMeta,
   loadSnap,
+  logKey,
   memoryStore,
   noopStore,
   persistKey,
+  snapKey,
 } from "../src/db/persist.ts";
 import type { Session } from "../src/db/session.ts";
 import { Movies, User } from "./db/fixture.ts";
@@ -59,6 +61,14 @@ const dirStore = (root: string): ByteStore => ({
       join(root, key.replace(/[^a-zA-Z0-9._-]/g, "_")),
       value,
     );
+  },
+  delete: async (key) => {
+    const { unlink } = await import("node:fs/promises");
+    try {
+      await unlink(join(root, key.replace(/[^a-zA-Z0-9._-]/g, "_")));
+    } catch {
+      // missing is fine
+    }
   },
 });
 
@@ -868,6 +878,53 @@ describe("same ByteStore first-paints before the walk", () => {
     release();
     await until(() => b.catchingUp === false);
     expect(await namesOf(b)).toEqual(["Ada"]);
+  });
+
+  test("dump snap first-paints after per-t blobs are gone — new overlay, new store wrapper", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ramose-dump-"));
+    const writerStore = dirStore(root);
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const a = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store: writerStore,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: world.t, datoms: dump });
+    await a.flushDisk();
+    expect((await loadSnap(writerStore, "movies"))?.confirmed.some((d) => d[3] === "Ada")).toBe(true);
+    const meta = decodeMeta((await writerStore.get(persistKey("movies")))!);
+    expect(meta?.ts.length).toBeGreaterThan(0);
+    for (const t of meta!.ts) await writerStore.delete?.(logKey("movies", t));
+    expect(await writerStore.get(snapKey("movies"))).toBeDefined();
+
+    const readerStore = dirStore(root);
+    expect(readerStore).not.toBe(writerStore);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const b = openOverlay({
+      session: fakeSession({
+        onSync: async (from) => {
+          await held;
+          return { body: { t: from, from } };
+        },
+      }),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store: readerStore,
+      name: "movies",
+    });
+    await run(b.ready());
+    expect(b.catchingUp).toBe(true);
+    expect(await namesOf(b)).toEqual(["Ada"]);
+    expect(b.confirmedT).toBe(world.t);
+    release();
   });
 });
 

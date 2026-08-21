@@ -35,8 +35,21 @@ import {
   type ReefDb,
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
-import { createIssue, moveIssue, setTitle } from "../src/app/mutations.ts";
+import {
+  createIssue,
+  moveIssue,
+  provisionWorkspace,
+  seedSampleIssues,
+  setTitle,
+} from "../src/app/mutations.ts";
 import { bindSelf, mintWorkspace, openWorkspace } from "../src/app/ramose.ts";
+import {
+  type ByteStore,
+  loadSnap,
+  memoryStore,
+  persistKey,
+  snapKey,
+} from "../../../packages/ramose/src/db/persist.ts";
 
 const settle = () => Bun.sleep(30);
 
@@ -55,7 +68,7 @@ const snapshotOf = async (conn: Connection) => {
   return { t: conn.t, datoms };
 };
 
-const inProcessPeer = async (opts?: { seed?: boolean }) => {
+const inProcessPeer = async (opts?: { seed?: boolean; persist?: ByteStore }) => {
   const conn = await Connection.create();
   const pushes: ((frame: unknown) => void)[] = [];
   const frames: { op: string; [k: string]: unknown }[] = [];
@@ -64,12 +77,15 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   let sockets = 0;
   let hold: Promise<void> | undefined;
   let releaseHold: (() => void) | undefined;
+  let holdSync: Promise<void> | undefined;
+  let releaseSync: (() => void) | undefined;
   let rejectNext:
     | { status: number; body: Record<string, unknown> }
     | undefined;
 
   const answer = async (op: string, body: any) => {
     if (op === "sync") {
+      if (holdSync !== undefined) await holdSync;
       const snap = await snapshotOf(conn);
       return {
         status: 200,
@@ -178,6 +194,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
       url: "https://peer.local",
       fetch: fetchImpl,
       webSocket: WebSocketImpl as unknown as typeof WebSocket,
+      persist: opts?.persist,
     });
     const db: ReefDb = ramose.db("coral-team", Reef);
     const opened = { db, close: () => ramose.close() };
@@ -237,6 +254,16 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
     },
     rejectNextTransact: (body: Record<string, unknown>, status = 409) => {
       rejectNext = { status, body };
+    },
+    holdCatchUp: () => {
+      holdSync = new Promise<void>((resolve) => {
+        releaseSync = resolve;
+      });
+    },
+    releaseCatchUp: () => {
+      releaseSync?.();
+      holdSync = undefined;
+      releaseSync = undefined;
     },
     pushTx: (datoms: readonly unknown[]) => {
       for (const push of pushes) push({ op: "tx", t: conn.t, datoms });
@@ -757,5 +784,70 @@ describe("refresh open is one session, not two", () => {
       await live.close();
       await peer.dispose();
     }
+  });
+});
+
+describe("seeded board hydrates from the page dump, not the walk", () => {
+  test("new overlay after saveView of a seeded board first-paints issues while sync is held", async () => {
+    const backing = memoryStore();
+    const keys = new Set<string>();
+    const persist: ByteStore = {
+      get: (key) => backing.get(key),
+      put: async (key, value) => {
+        keys.add(key);
+        await backing.put(key, value);
+      },
+      delete: async (key) => {
+        keys.delete(key);
+        await backing.delete?.(key);
+      },
+    };
+    const peer = await inProcessPeer({ seed: false, persist });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const a = peer.openClient();
+    await Effect.runPromise(provisionWorkspace(a.db, user));
+    const people = await Effect.runPromise(a.db.q(peopleQuery));
+    const labels = await Effect.runPromise(a.db.q(labelsQuery));
+    await Effect.runPromise(
+      seedSampleIssues(a.db, people[0]!.id, labels),
+    );
+    const titlesA = (await Effect.runPromise(a.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesA).toHaveLength(9);
+    await a.close();
+
+    expect(
+      (await loadSnap(persist, "coral-team"))?.confirmed.some(
+        (d) => d[3] === titlesA[0],
+      ),
+    ).toBe(true);
+    expect(await persist.get(persistKey("coral-team"))).toBeDefined();
+
+    // Per-`t` blobs gone. Hydrate must use the dump — shared-memory
+    // overlay instances that still hold unpublished entries do not model
+    // this page lifecycle.
+    for (const key of [...keys]) {
+      if (key.includes(".t.")) {
+        await persist.delete?.(key);
+      }
+    }
+    expect(await persist.get(snapKey("coral-team"))).toBeDefined();
+    expect(
+      (await loadSnap(persist, "coral-team"))?.confirmed.some(
+        (d) => d[3] === titlesA[0],
+      ),
+    ).toBe(true);
+
+    peer.holdCatchUp();
+    peer.resetTraffic();
+    const b = peer.openClient();
+    const titlesB = (await Effect.runPromise(b.db.q(boardQuery))).map(
+      (r) => r.title,
+    );
+    expect(titlesB.sort()).toEqual([...titlesA].sort());
+    expect(peer.resyncDumps()).toEqual([]);
+    peer.releaseCatchUp();
+    await peer.dispose();
   });
 });

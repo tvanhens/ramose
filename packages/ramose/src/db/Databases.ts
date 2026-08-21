@@ -154,7 +154,7 @@ const parsePrincipal = (raw: unknown): SessionPrincipal | undefined => {
  */
 export const makeDatabases = (
   config: DatabasesConfig,
-): { readonly databases: DatabasesShape; readonly close: () => void } => {
+): { readonly databases: DatabasesShape; readonly close: () => Promise<void> } => {
   const sessions = new Map<string, Session>();
   const overlays = new Map<string, Overlay>();
   const catalogs = new Map<string, AnyCatalog>();
@@ -400,8 +400,9 @@ export const makeDatabases = (
       db: <C extends AnyCatalog>(name: string, catalog: C) =>
         makeDb(wire, name, catalog),
     },
-    close: () => {
+    close: async () => {
       closed = true;
+      await Promise.all([...overlays.values()].map((o) => o.flushDisk()));
       for (const s of sessions.values()) s.close();
     },
   };
@@ -457,7 +458,7 @@ export const layer = (options: ClientOptions): Layer.Layer<Databases> =>
     Databases,
     Effect.gen(function* () {
       const { databases, close } = makeDatabases(yield* configure(options));
-      yield* Effect.addFinalizer(() => Effect.sync(close));
+      yield* Effect.addFinalizer(() => Effect.promise(close));
       return databases;
     }),
   );
@@ -495,9 +496,6 @@ export const connect = (options: ClientOptions): Client => {
   );
   return {
     db: (name, catalog) => databases.db(name, catalog),
-    close: () => {
-      close();
-      return Promise.resolve();
-    },
+    close: () => close(),
   };
 };

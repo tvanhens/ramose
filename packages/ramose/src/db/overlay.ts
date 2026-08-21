@@ -59,6 +59,7 @@ import {
 import { record, retryTransient } from "./http.ts";
 import {
   type ByteStore,
+  entriesFromDatoms,
   loadSnap,
   type OverlaySnap,
   pendingFromSnap,
@@ -107,6 +108,8 @@ export interface Overlay {
    * 409 / reject drops only that layer.
    */
   flush(): Promise<void>;
+  /** Await in-flight OPFS writes. `close` uses this so a refresh cannot race persist. */
+  flushDisk(): Promise<void>;
 }
 
 export interface OverlayOptions {
@@ -435,6 +438,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     remember(datoms);
   };
 
+  const confirmedEntries = async (): Promise<LogEntry[]> => {
+    if (conn === undefined) return [];
+    const held: Datom[] = [];
+    for await (const chunk of conn.db().datoms(Index.EAVT, {})) {
+      for (const d of chunk) held.push(d);
+    }
+    return entriesFromDatoms(held);
+  };
+
   const flushPersist = async (): Promise<void> => {
     const store = options.store;
     const name = options.name;
@@ -443,9 +455,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     persistDirty = false;
     const entries = unpublished.slice();
     const drop = staleTs.slice();
+    const dump = await confirmedEntries();
     // A confirmedT bump with no facts must not write `{ ts: [] }` — that
     // hydrates as an empty board at a high cursor, then a full resync.
-    if (entries.length === 0 && knownTs.size === 0 && pending.length === 0) {
+    if (
+      entries.length === 0 &&
+      knownTs.size === 0 &&
+      pending.length === 0 &&
+      dump.length === 0
+    ) {
       return;
     }
     try {
@@ -455,6 +473,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         ts: [...knownTs].sort((a, b) => a - b),
         dropTs: drop,
         pending: pending.map(pendingToSnap),
+        dump,
       });
       const saved = new Set(entries);
       for (let i = unpublished.length - 1; i >= 0; i--) {
@@ -1106,5 +1125,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     handlePush,
     snapshot: takeSnapshot,
     flush,
+    flushDisk: async () => {
+      if (options.store === undefined || options.name === undefined) return;
+      persistDirty = true;
+      persistChain = persistChain.then(flushPersist, flushPersist);
+      await persistChain;
+    },
   };
 };

@@ -2,10 +2,11 @@
  * Durable overlay log: novelty + follow cursor + pending layers.
  *
  * Memory is the current-view store. This module is async durability of
- * the same snap — one RLG1 blob per confirmed `t`, a JSON meta blob for
- * `confirmedT` + the `t` index + pending. Hydrate rebuilds a Connection
- * from that log + cursor. Apply does not rewrite the full current-view
- * EAVT as JSON.
+ * the same snap — one RLG1 dump of the confirmed current-view, plus
+ * per-`t` novelty blobs and a JSON meta blob for `confirmedT` + the `t`
+ * index + pending. Hydrate prefers the dump so a torn per-`t` log (or a
+ * persist that never `remember()`'d every fact that was on screen) still
+ * first-paints the last view. Apply does not rewrite EAVT on notify.
  *
  * Encode copies into bytes; decode allocates new objects. A "reload" is a
  * new overlay over the same store, never the same Connection identity.
@@ -52,6 +53,11 @@ export interface PersistView {
   readonly ts: readonly number[];
   readonly dropTs?: readonly number[];
   readonly pending: readonly PendingSnap[];
+  /**
+   * Confirmed current-view as one RLG1 dump. Hydrate reads this first.
+   * Per-`t` `entries` are incremental; the dump is what was on screen.
+   */
+  readonly dump?: readonly LogEntry[];
 }
 
 /** The storage seam. Keys are per-db. Values are opaque bytes. */
@@ -214,9 +220,29 @@ const withOriginLock = async <A>(
 
 export const persistKey = (name: string): string => `overlay.${sanitize(name)}`;
 
+/** Last confirmed current-view as one RLG1 blob. Hydrate prefers this. */
+export const snapKey = (name: string): string =>
+  `overlay.${sanitize(name)}.snap`;
+
 /** Page default: OPFS when it works. Never a silent fresh `memoryStore`. */
 export const defaultStore = async (): Promise<ByteStore> =>
   (await opfsStore()) ?? noopStore();
+
+/** Group confirmed facts by `t` for the dump blob / per-`t` log. */
+export const entriesFromDatoms = (datoms: readonly Datom[]): LogEntry[] => {
+  const groups = new Map<number, Datom[]>();
+  for (const d of datoms) {
+    let g = groups.get(d.t);
+    if (g === undefined) {
+      g = [];
+      groups.set(d.t, g);
+    }
+    g.push(d);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, ds]) => ({ t, txInstant: 0, datoms: ds }));
+};
 
 export const logKey = (name: string, t: number): string =>
   `overlay.${sanitize(name)}.t.${t}`;
@@ -267,7 +293,29 @@ export const loadSnap = async (
     const meta = decodeMeta(bytes);
     if (meta === undefined) return undefined;
     const confirmed: WireDatom[] = [];
+    const fromSnap = new Set<number>();
+    const dump = await store.get(snapKey(name));
+    if (dump !== undefined) {
+      try {
+        for (const entry of decodeLogChunk(dump)) {
+          fromSnap.add(entry.t);
+          for (const d of entry.datoms) confirmed.push(toWireDatom(d));
+        }
+      } catch {
+        // torn dump — fall through to per-`t` blobs
+      }
+    }
+    if (typeof console !== "undefined" && console.debug !== undefined) {
+      console.debug("[ramose persist] loadSnap", {
+        name,
+        dump: confirmed.length,
+        ts: meta.ts.length,
+        pending: meta.pending.length,
+        confirmedT: meta.confirmedT,
+      });
+    }
     for (const t of meta.ts) {
+      if (fromSnap.has(t)) continue;
       const blob = await store.get(logKey(name, t));
       if (blob === undefined) continue;
       try {
@@ -310,6 +358,12 @@ export const saveView = async (
     for (const entry of view.entries) {
       await store.put(logKey(name, entry.t), encodeLogChunk([entry]));
     }
+    // The dump is the on-screen confirmed view. Write it before meta so a
+    // refresh that lands mid-persist still hydrates from the previous dump
+    // (meta still points at the last complete snap) or this one.
+    if (view.dump !== undefined && view.dump.length > 0) {
+      await store.put(snapKey(name), encodeLogChunk(view.dump));
+    }
     await store.put(
       persistKey(name),
       encodeMeta({
@@ -319,4 +373,14 @@ export const saveView = async (
         pending: view.pending,
       }),
     );
+    if (typeof console !== "undefined" && console.debug !== undefined) {
+      console.debug("[ramose persist] saveView", {
+        name,
+        dump: view.dump?.reduce((n, e) => n + e.datoms.length, 0) ?? 0,
+        entries: view.entries.length,
+        ts: view.ts.length,
+        confirmedT: view.confirmedT,
+        pending: view.pending.length,
+      });
+    }
   });
