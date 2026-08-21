@@ -25,10 +25,11 @@ import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import {
   type ByteStore,
   decodeMeta,
+  defaultStore,
   encodeMeta,
   loadSnap,
-  logKey,
   memoryStore,
+  noopStore,
   persistKey,
 } from "../src/db/persist.ts";
 import type { Session } from "../src/db/session.ts";
@@ -811,20 +812,28 @@ describe("resync rebases pending, it does not wipe", () => {
   });
 });
 
-describe("from < rootT resync persists the dump", () => {
-  test("cursor-only snap is first paint; the dump is the next epoch", async () => {
+describe("same ByteStore first-paints before the walk", () => {
+  test("overlay B's first ready notify has A's rows; sync has not finished", async () => {
     const store = memoryStore();
     const world = await schemaConn();
     await world.transact([{ ":user/name": "Ada" }]);
-    await world.transact([{ ":user/name": "Bea" }]);
     const dump = await snapshotDatoms(world);
-    expect(dump.some((d) => d[3] === "Ada")).toBe(true);
-    expect(dump.some((d) => d[3] === "Bea")).toBe(true);
+    const rootT = world.t;
 
-    await store.put(
-      persistKey("movies"),
-      encodeMeta({ v: 2, confirmedT: 2, ts: [], pending: [] }),
-    );
+    const a = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: rootT, datoms: dump });
+    expect(await namesOf(a)).toEqual(["Ada"]);
+    await until(async () => {
+      const loaded = await loadSnap(store, "movies");
+      return loaded !== undefined && loaded.confirmed.some((d) => d[3] === "Ada");
+    });
 
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -832,19 +841,238 @@ describe("from < rootT resync persists the dump", () => {
     });
     const session = fakeSession({
       onSync: async (from) => {
-        expect(from).toBe(2);
         await held;
-        return {
-          body: { t: world.t, from },
-          push: { op: "resync", t: world.t, datoms: dump },
-        };
+        return { body: { t: from, from } };
       },
     });
-    const overlay = openOverlay({
+    const b = openOverlay({
       session,
       post: () => Effect.succeed({}),
       catalog: Movies,
       store,
+      name: "movies",
+    });
+    const first: string[][] = [];
+    b.onChange(() => {
+      void namesOf(b).then((n) => first.push(n));
+    });
+    await run(b.ready());
+    expect(b.hasSnap).toBe(true);
+    expect(b.hydrated).toBe(true);
+    expect(b.catchingUp).toBe(true);
+    expect(await namesOf(b)).toEqual(["Ada"]);
+    expect(b.confirmedT).toBe(rootT);
+    await until(() => first.length >= 1);
+    expect(first[0]).toEqual(["Ada"]);
+    expect(first.some((n) => n.length === 0)).toBe(false);
+    release();
+    await until(() => b.catchingUp === false);
+    expect(await namesOf(b)).toEqual(["Ada"]);
+  });
+});
+
+describe("flushPersist keeps unpublished when saveView throws", () => {
+  test("a failed put still has the log for the next persist", async () => {
+    const memory = memoryStore();
+    let fails = 1;
+    const store: ByteStore = {
+      get: (key) => memory.get(key),
+      put: async (key, value) => {
+        if (fails > 0) {
+          fails -= 1;
+          throw new Error("disk full");
+        }
+        await memory.put(key, value);
+      },
+      delete: (key) => memory.delete?.(key),
+    };
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+
+    const a = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: world.t, datoms: dump });
+    expect(await namesOf(a)).toEqual(["Ada"]);
+    await until(() => fails === 0);
+    expect(await loadSnap(memory, "movies")).toBeUndefined();
+
+    await run(a.transact([{ ":user/name": "Bea" }]));
+    await until(async () => {
+      const loaded = await loadSnap(memory, "movies");
+      return loaded !== undefined && loaded.confirmed.some((d) => d[3] === "Ada");
+    });
+    const disk = await loadSnap(memory, "movies");
+    expect(disk?.confirmed.some((d) => d[3] === "Ada")).toBe(true);
+    expect(disk?.pending).toHaveLength(1);
+
+    const b = openOverlay({
+      session: fakeSession({
+        onSync: () => ({ body: { t: world.t, from: world.t } }),
+      }),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store: memory,
+      name: "movies",
+    });
+    await run(b.ready());
+    expect(await namesOf(b)).toEqual(["Ada", "Bea"]);
+  });
+});
+
+describe("cursor-only meta is not a successful hydrate", () => {
+  test("loadSnap refuses ts: [] at a high cursor with no pending", async () => {
+    const store = memoryStore();
+    await store.put(
+      persistKey("movies"),
+      encodeMeta({ v: 2, confirmedT: 2, ts: [], pending: [] }),
+    );
+    expect(await loadSnap(store, "movies")).toBeUndefined();
+
+    const overlay = openOverlay({
+      session: fakeSession({
+        onSync: (from) => ({ body: { t: from, from } }),
+      }),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(overlay.ready());
+    expect(overlay.hasSnap).toBe(false);
+    expect(overlay.confirmedT).not.toBe(2);
+    expect(await namesOf(overlay)).toEqual([]);
+  });
+
+  test("a T-only walk does not persist a cursor-only wipe over facts", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    await world.transact([{ ":user/name": "Bea" }]);
+    const dump = await snapshotDatoms(world);
+    const rootT = world.t;
+
+    const a = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(a.ready());
+    await a.handlePush({ op: "resync", t: rootT, datoms: dump });
+    await until(async () => {
+      const loaded = await loadSnap(store, "movies");
+      return (
+        loaded !== undefined &&
+        loaded.confirmed.some((d) => d[3] === "Ada") &&
+        loaded.confirmed.some((d) => d[3] === "Bea")
+      );
+    });
+    const before = await store.get(persistKey("movies"));
+    expect(decodeMeta(before!)?.ts.length).toBeGreaterThan(0);
+
+    const b = openOverlay({
+      session: fakeSession({
+        onSync: (from) => ({ body: { t: rootT + 50, from } }),
+      }),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(b.ready());
+    expect(await namesOf(b)).toEqual(["Ada", "Bea"]);
+    await until(() => b.catchingUp === false);
+    expect(b.confirmedT).toBe(rootT + 50);
+    await until(async () => {
+      const meta = decodeMeta((await store.get(persistKey("movies")))!);
+      return meta !== undefined && meta.confirmedT === rootT + 50;
+    });
+    const meta = decodeMeta((await store.get(persistKey("movies")))!);
+    expect(meta?.ts.length).toBeGreaterThan(0);
+    const disk = await loadSnap(store, "movies");
+    expect(disk?.confirmed.some((d) => d[3] === "Ada")).toBe(true);
+    expect(disk?.confirmed.some((d) => d[3] === "Bea")).toBe(true);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const c = openOverlay({
+      session: fakeSession({
+        onSync: async (from) => {
+          await held;
+          return { body: { t: from, from } };
+        },
+      }),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    const first: string[][] = [];
+    c.onChange(() => {
+      void namesOf(c).then((n) => first.push(n));
+    });
+    await run(c.ready());
+    expect(await namesOf(c)).toEqual(["Ada", "Bea"]);
+    await until(() => first.length >= 1);
+    expect(first[0]).toEqual(["Ada", "Bea"]);
+    expect(first.some((n) => n.length === 0)).toBe(false);
+    release();
+  });
+
+  test("meta.ts whose RLG1 blobs are missing is not an empty-board snap", async () => {
+    const store = memoryStore();
+    await store.put(
+      persistKey("movies"),
+      encodeMeta({ v: 2, confirmedT: 9, ts: [3, 5], pending: [] }),
+    );
+    expect(await loadSnap(store, "movies")).toBeUndefined();
+  });
+});
+
+describe("page defaultStore does not lie", () => {
+  test("noopStore get is undefined after put; defaultStore is not a fresh Map", async () => {
+    const silent = noopStore();
+    const bytes = new TextEncoder().encode("x");
+    await silent.put("overlay.movies", bytes);
+    expect(await silent.get("overlay.movies")).toBeUndefined();
+
+    const page = await defaultStore();
+    await page.put("overlay.movies", bytes);
+    // Bun has no OPFS — page default must not retain like memoryStore.
+    expect(await page.get("overlay.movies")).toBeUndefined();
+
+    const memory = memoryStore();
+    await memory.put("overlay.movies", bytes);
+    expect(await memory.get("overlay.movies")).toBeDefined();
+  });
+});
+
+describe("finishCatchUp notifies even when the walk was quiet", () => {
+  test("hydrate [] then a second epoch after catch-up", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const overlay = openOverlay({
+      session: fakeSession({
+        onSync: async (from) => {
+          await held;
+          return { body: { t: from, from } };
+        },
+      }),
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+      store: memoryStore(),
       name: "movies",
     });
     const ticks: number[] = [];
@@ -852,42 +1080,14 @@ describe("from < rootT resync persists the dump", () => {
       ticks.push(overlay.epoch);
     });
     await run(overlay.ready());
-    expect(overlay.confirmedT).toBe(2);
-    expect(await namesOf(overlay)).toEqual([]);
     expect(ticks).toHaveLength(1);
-
+    expect(overlay.catchingUp).toBe(true);
+    expect(overlay.hasSnap).toBe(false);
+    expect(await namesOf(overlay)).toEqual([]);
     release();
-    await until(() => ticks.length === 2);
+    await until(() => ticks.length === 2 && overlay.catchingUp === false);
     expect(ticks).toHaveLength(2);
-    expect(overlay.confirmedT).toBe(world.t);
-    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
-
-    const persisted = await overlay.snapshot();
-    expect(persisted.confirmedT).toBe(world.t);
-    const names = persisted.confirmed
-      .filter((d) => d[3] === "Ada" || d[3] === "Bea")
-      .map((d) => d[3]);
-    expect(names.sort()).toEqual(["Ada", "Bea"]);
-    await until(async () => {
-      const snap = await loadSnap(store, "movies");
-      return (
-        snap !== undefined &&
-        snap.confirmedT === world.t &&
-        snap.confirmed.some((d) => d[3] === "Ada") &&
-        snap.confirmed.some((d) => d[3] === "Bea")
-      );
-    });
-    const disk = await loadSnap(store, "movies");
-    expect(disk?.confirmedT).toBe(world.t);
-    expect(disk?.confirmed.some((d) => d[3] === "Ada")).toBe(true);
-    expect(disk?.confirmed.some((d) => d[3] === "Bea")).toBe(true);
-    const metaBytes = await store.get(persistKey("movies"));
-    expect(metaBytes).toBeDefined();
-    const meta = decodeMeta(metaBytes!);
-    expect(meta?.ts.length).toBeGreaterThan(0);
-    expect(meta && "confirmed" in meta).toBe(false);
-    const firstT = meta!.ts[0]!;
-    expect(await store.get(logKey("movies", firstT))).toBeDefined();
+    expect(await namesOf(overlay)).toEqual([]);
   });
 });
 

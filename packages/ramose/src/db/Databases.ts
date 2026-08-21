@@ -82,9 +82,10 @@ export interface ClientOptions {
   /** Injection seam — defaults to the ambient `WebSocket`. */
   readonly webSocket?: typeof WebSocket | undefined;
   /**
-   * Overlay persist. Tests inject a byte store (memory / temp dir).
-   * The page default is OPFS via `navigator.storage.getDirectory()`,
-   * falling back to a fresh memory page when OPFS is missing.
+   * Overlay persist. Tests inject a byte store (`memoryStore()`).
+   * The page default is OPFS via `navigator.storage.getDirectory()`.
+   * A missing or thrown OPFS open is a no-op store — never a silent
+   * fresh `memoryStore()` that dies on refresh.
    */
   readonly persist?: ByteStore | undefined;
 }

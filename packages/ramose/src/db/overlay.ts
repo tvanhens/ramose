@@ -87,6 +87,12 @@ export interface Overlay {
   readonly epoch: number;
   /** Fired after {@link epoch} moves — apply is the notify. */
   onChange(cb: () => void): () => void;
+  /** Persist hydrate finished (or there is no store). */
+  readonly hydrated: boolean;
+  /** Opening `sync({ from })` has not finished. */
+  readonly catchingUp: boolean;
+  /** `loadSnap` returned confirmed facts (not a cursor-only wipe). */
+  readonly hasSnap: boolean;
   ready(retry?: boolean): Effect.Effect<void, DbError>;
   read(
     op: "q" | "pull",
@@ -333,6 +339,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   /** Opening `sync({ from })` — inbound frames persist, one notify at the end. */
   let catchingUp = false;
   let catchUpDirty = false;
+  let hydrated = options.store === undefined || options.name === undefined;
+  let hasSnap = false;
   let applied: Promise<void> = Promise.resolve();
   let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
@@ -433,15 +441,33 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     if (store === undefined || name === undefined) return;
     if (!persistDirty) return;
     persistDirty = false;
-    const entries = unpublished.splice(0);
-    const drop = staleTs.splice(0);
-    await saveView(store, name, {
-      confirmedT,
-      entries,
-      ts: [...knownTs].sort((a, b) => a - b),
-      dropTs: drop,
-      pending: pending.map(pendingToSnap),
-    });
+    const entries = unpublished.slice();
+    const drop = staleTs.slice();
+    // A confirmedT bump with no facts must not write `{ ts: [] }` — that
+    // hydrates as an empty board at a high cursor, then a full resync.
+    if (entries.length === 0 && knownTs.size === 0 && pending.length === 0) {
+      return;
+    }
+    try {
+      await saveView(store, name, {
+        confirmedT: knownTs.size === 0 ? 0 : confirmedT,
+        entries,
+        ts: [...knownTs].sort((a, b) => a - b),
+        dropTs: drop,
+        pending: pending.map(pendingToSnap),
+      });
+      const saved = new Set(entries);
+      for (let i = unpublished.length - 1; i >= 0; i--) {
+        if (saved.has(unpublished[i]!)) unpublished.splice(i, 1);
+      }
+      if (drop.length > 0) {
+        const dropped = new Set(drop);
+        staleTs = staleTs.filter((t) => !dropped.has(t));
+      }
+    } catch (err) {
+      persistDirty = true;
+      throw err;
+    }
     if (persistDirty) await flushPersist();
   };
 
@@ -650,7 +676,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     knownTs.clear();
     unpublished.length = 0;
     staleTs = [];
+    // WireDatom is `[e, a, vt, v, t, op]` — `d[4]` is `t`.
     for (const d of snap.confirmed) knownTs.add(d[4]);
+    hasSnap = snap.confirmed.length > 0;
   };
 
   const ensureConn = async (): Promise<void> => {
@@ -659,11 +687,13 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const snap = await loadSnap(options.store, options.name);
       if (snap !== undefined) {
         await hydrate(snap);
+        hydrated = true;
         return;
       }
     }
     conn = await Connection.create();
     await installSchema(conn, options);
+    hydrated = true;
   };
 
   const requestSync = () =>
@@ -702,10 +732,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     e._tag === "QueryBudgetExceeded";
 
   const finishCatchUp = (): void => {
-    const dirty = catchUpDirty;
     catchingUp = false;
     catchUpDirty = false;
-    if (dirty) notify();
+    // Always notify so hydrate-`[]` during the walk is distinct from a
+    // truly empty board after catch-up. Reef uses that second emission.
+    notify();
   };
 
   const sync = async (retry = true): Promise<void> => {
@@ -805,7 +836,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         const first = conn === undefined;
         await ensureConn();
         // First paint is hydrate — snap rows, or honest empty. Never wait
-        // for the walk, an OPFS write, or a token.
+        // for the walk, an OPFS write, or a token. `catchingUp` is true
+        // until that walk finishes (a no-op `kickWalk` leaves it alone).
+        if (readyGen !== options.session.generation) catchingUp = true;
         if (first) notify();
         kickWalk(retry, true);
       },
@@ -1048,6 +1081,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     },
     get epoch() {
       return epoch;
+    },
+    get hydrated() {
+      return hydrated;
+    },
+    get catchingUp() {
+      return catchingUp;
+    },
+    get hasSnap() {
+      return hasSnap;
     },
     onChange: (cb) => {
       listeners.add(cb);

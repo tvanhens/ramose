@@ -421,7 +421,7 @@ export const BoardScreen = ({
                 void run(moveIssue(db, id, status, rank))
               }
             />
-            {liveRows.length === 0 && (
+            {liveRows.length === 0 && board.ticks > 0 && (
               <div {...stylex.props(styles.emptyOverlay)}>
                 <div {...stylex.props(styles.emptyCard)}>
                   <Empty

@@ -137,9 +137,20 @@ export const memoryStore = (): ByteStore => {
 };
 
 /**
+ * Page fallback when OPFS is missing or `getDirectory()` throws.
+ * `get` is always `undefined`; `put` / `delete` are no-ops. A refresh
+ * must not see a throwaway Map that looked like it persisted.
+ */
+export const noopStore = (): ByteStore => ({
+  get: async () => undefined,
+  put: async () => {},
+  delete: async () => {},
+});
+
+/**
  * Origin-private OPFS. Missing `navigator.storage` (tests, Node, older
- * browsers) returns `undefined` — the caller falls through to memory or
- * a no-op. Same-origin; no credentials in the bytes.
+ * browsers) or a thrown `getDirectory()` returns `undefined` — the
+ * caller must not swap in a fresh `memoryStore()`.
  */
 export const opfsStore = async (
   dir = "ramose",
@@ -203,9 +214,9 @@ const withOriginLock = async <A>(
 
 export const persistKey = (name: string): string => `overlay.${sanitize(name)}`;
 
-/** Page default: OPFS on the origin, else a fresh memory page (tests / Node). */
+/** Page default: OPFS when it works. Never a silent fresh `memoryStore`. */
 export const defaultStore = async (): Promise<ByteStore> =>
-  (await opfsStore()) ?? memoryStore();
+  (await opfsStore()) ?? noopStore();
 
 export const logKey = (name: string, t: number): string =>
   `overlay.${sanitize(name)}.t.${t}`;
@@ -264,8 +275,20 @@ export const loadSnap = async (
           for (const d of entry.datoms) confirmed.push(toWireDatom(d));
         }
       } catch {
-        // a torn blob is skipped; cursor + the rest of the log still hydrate
+        // a torn blob is skipped; the rest of the log still hydrates
       }
+    }
+    // Cursor-only meta (`ts: []` at a high confirmedT) or meta.ts whose
+    // RLG1 blobs are all missing is not a successful snap. Returning it
+    // would first-paint `[]` and walk `from` a cursor that has no facts.
+    if (confirmed.length === 0) {
+      if (meta.pending.length === 0) return undefined;
+      return {
+        v: 1,
+        confirmedT: 0,
+        confirmed,
+        pending: meta.pending,
+      };
     }
     return {
       v: 1,
