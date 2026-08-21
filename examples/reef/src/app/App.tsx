@@ -1,13 +1,11 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
  * Paths are the pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a
- * shared URL land on the same screen. A slug mounts `<RamoseProvider
- * key={slug}>` immediately — first paint is hydrate, not `get-session` or
- * a JWT loader. Token is lazy (`mintWorkspace`). When the session settles:
- * a user `bindSelf`s after paint; no user bounces to Auth. `/` (no slug)
- * still waits on session. Switching workspaces changes the key, which
- * closes the old client and connects the next one. `cls` / org name fill
- * in after claims.
+ * shared URL land on the same screen. The active workspace's Ramose client is
+ * owned by `<RamoseProvider key={slug}>` as soon as the session user and
+ * slug exist — first paint is hydrate, not a JWT loader. Switching
+ * workspaces changes the key, which closes the old client and connects
+ * the next one. `cls` / org name fill in after claims.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
  * token overrides also reach UI portaled to `document.body` — dialogs and
@@ -130,10 +128,9 @@ const Root = () => {
   const toast = useToast();
   const { route, navigate } = useRoute();
   const user = session.data?.user;
-  const userId = user?.id;
   const wantedSlug = route.kind === "board" ? route.slug : null;
-  // Token is lazy. A slug mounts the Provider now — do not await
-  // get-session / claims / listWorkspaces before first paint.
+  // Token is lazy. Mount the Provider as soon as the session user and
+  // slug exist — do not await claims / listWorkspaces before first paint.
   const workspace = useMemo(
     () => (wantedSlug === null ? null : mintWorkspace(wantedSlug)),
     [wantedSlug],
@@ -147,10 +144,9 @@ const Root = () => {
       setCls("viewer");
       return;
     }
+    let cancelled = false;
     setName(wantedSlug);
     setCls("viewer");
-    if (userId === undefined) return;
-    let cancelled = false;
     void (async () => {
       const orgs = await listWorkspaces().catch(() => []);
       if (cancelled) return;
@@ -168,7 +164,7 @@ const Root = () => {
     return () => {
       cancelled = true;
     };
-  }, [wantedSlug, workspace, userId, toast]);
+  }, [wantedSlug, workspace, toast]);
 
   const createAndOpen = useCallback(
     async (slug: string, user: SessionUser) => {
@@ -183,14 +179,11 @@ const Root = () => {
     [toast, navigate],
   );
 
+  if (session.isPending) return <Loading />;
+  if (user === undefined) return <AuthScreen />;
+  const me: SessionUser = { id: user.id, name: user.name, email: user.email };
+
   if (wantedSlug !== null && workspace !== null) {
-    // Session settled with no user — bounce. Pending still paints the
-    // board so hydrate can run; Auth is the only other slug loader.
-    if (!session.isPending && user === undefined) return <AuthScreen />;
-    const me =
-      user === undefined
-        ? undefined
-        : { id: user.id, name: user.name, email: user.email };
     return (
       <RamoseProvider
         key={wantedSlug}
@@ -206,10 +199,6 @@ const Root = () => {
       </RamoseProvider>
     );
   }
-
-  if (session.isPending) return <Loading />;
-  if (user === undefined) return <AuthScreen />;
-  const me: SessionUser = { id: user.id, name: user.name, email: user.email };
 
   return (
     <WorkspacesScreen

@@ -227,8 +227,7 @@ export const BoardScreen = ({
 }: {
   workspace: Workspace;
   name: string;
-  /** Set once `get-session` settles; `bindSelf` waits for it. */
-  user: SessionUser | undefined;
+  user: SessionUser;
   onLeave: () => void;
 }) => {
   const { cls, slug } = workspace;
@@ -236,14 +235,10 @@ export const BoardScreen = ({
   const db = useDb(slug, Reef);
   const [myEid, setMyEid] = useState<number | undefined>(undefined);
 
-  const userId = user?.id;
-  const userName = user?.name;
-  const userEmail = user?.email;
-  // After paint. Hydrate / first columns do not wait on the session user.
+  const userId = user.id;
+  const userName = user.name;
+  const userEmail = user.email;
   useEffect(() => {
-    if (userId === undefined || userName === undefined || userEmail === undefined) {
-      return;
-    }
     let cancelled = false;
     void Effect.runPromise(
       bindSelf(db, { id: userId, name: userName, email: userEmail }, cls),
@@ -328,9 +323,9 @@ export const BoardScreen = ({
       </div>
     );
   }
-  // `undefined` is "no emission yet" — paint the shell, not a loader.
-  // `[]` after the first emission is an empty board.
-  const cards = liveRows ?? [];
+  if (liveRows === undefined) {
+    return <Loading text={`opening ${slug}…`} />;
+  }
 
   return (
     <div {...stylex.props(styles.screen)}>
@@ -376,34 +371,30 @@ export const BoardScreen = ({
             <Icon name="history" size={13} /> Time travel
           </Button>
         )}
-        {cls === "admin" && user !== undefined && (
+        {cls === "admin" && (
           <Button size="sm" onClick={() => setInvite(true)}>
             <Icon name="userPlus" size={13} /> Invite
           </Button>
         )}
         <span {...stylex.props(styles.divider, styles.wide)} />
         <ThemeToggle />
-        {user !== undefined && (
-          <>
-            <span {...stylex.props(styles.wide)}>
-              <Avatar name={user.name} size="md" title={`${user.name} · ${user.email}`} />
-            </span>
-            <IconButton icon="logout" label="Sign out" onClick={() => void authClient.signOut()} />
-          </>
-        )}
+        <span {...stylex.props(styles.wide)}>
+          <Avatar name={user.name} size="md" title={`${user.name} · ${user.email}`} />
+        </span>
+        <IconButton icon="logout" label="Sign out" onClick={() => void authClient.signOut()} />
       </header>
 
       {timeTraveling ? (
         <TimeTravelView
           db={db}
-          liveRows={cards}
+          liveRows={liveRows}
           onExit={() => setTimeTraveling(false)}
         />
       ) : (
         <div {...stylex.props(styles.main)}>
           <div {...stylex.props(styles.boardWrap)}>
             <Board
-              rows={cards}
+              rows={liveRows}
               readOnly={false}
               canCreate={canWrite}
               selectedId={selected}
@@ -413,7 +404,7 @@ export const BoardScreen = ({
                 void run(moveIssue(db, id, status, rank))
               }
             />
-            {liveRows !== undefined && liveRows.length === 0 && (
+            {liveRows.length === 0 && (
               <div {...stylex.props(styles.emptyOverlay)}>
                 <div {...stylex.props(styles.emptyCard)}>
                   <Empty
@@ -477,7 +468,7 @@ export const BoardScreen = ({
               toast("error", "viewers cannot create issues");
               return;
             }
-            const column = cards.filter((r) => r.status === draft.status);
+            const column = liveRows.filter((r) => r.status === draft.status);
             void run(
               createIssue(db, myEid, column[column.length - 1]?.rank, draft),
             );
@@ -486,7 +477,7 @@ export const BoardScreen = ({
         />
       )}
 
-      {invite && user !== undefined && (
+      {invite && (
         <InviteDialog slug={slug} user={user} onClose={() => setInvite(false)} />
       )}
     </div>
