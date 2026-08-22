@@ -56,7 +56,7 @@ Every `db` method can be run this way directly; nothing else needs to be set up.
 
 A write's body is a generator. Read `yield*` as `await`: it runs the step and gives you its result. Reef's drag-and-drop is two steps:
 
-```ts title="examples/reef/src/app/mutations.ts:113-122"
+```ts title="examples/reef/src/app/mutations.ts:77-86"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,

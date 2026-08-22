@@ -27,9 +27,9 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
     if (provision) await Effect.runPromise(provisionWorkspace(db));
 ```
 
-`ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub` + `role`) at session establishment:
+`ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub`, `role`, name, email) at session establishment:
 
-```ts title="examples/reef/src/app/mutations.ts:42-52"
+```ts title="examples/reef/src/app/mutations.ts:29-39"
 export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
     yield* db.install();

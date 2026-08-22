@@ -23,7 +23,11 @@ A **sign-in token** — a signed token the server verifies and never issues ([gl
   "sub": "user_01HQ8ZK",
   "iat": 1755499100,
   "exp": 1755500000,
-  "ramose": { "db": "coral-team", "class": "member" }
+  "ramose": {
+    "db": "coral-team",
+    "class": "member",
+    "attrs": { "name": "Ada", "email": "ada@reef.test" }
+  }
 }
 ```
 
@@ -35,6 +39,7 @@ A **sign-in token** — a signed token the server verifies and never issues ([gl
 | `exp` | when it expires | `exp - iat` ≤ `RAMOSE_JWT_MAX_TTL` (900 s by default) |
 | `ramose.db` | the one database it opens | equals the database in the request |
 | `ramose.class` | the caller's role | a class the policy declares |
+| `ramose.attrs` | app claims the peer may stamp on the principal row | optional; Reef's `orgClassOf` puts `name` and `email` here |
 
 `iss` and `aud` are the **issuer / audience** pair ([glossary](/concepts/glossary/#issuer-audience)). Signatures: RS256, ES256, or EdDSA. A wrong `db` or `class` is `Unauthorized`.
 
@@ -72,9 +77,9 @@ The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, b
 
 ## Roles become classes
 
-A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class`:
+A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class` and copies the Better Auth user's name and email onto `ramose.attrs` so the peer can stamp them:
 
-```ts title="packages/ramose/src/better-auth/index.ts:224-235"
+```ts title="packages/ramose/src/better-auth/index.ts:306-317"
 export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {
@@ -104,7 +109,7 @@ Any provider that signs a token of the shape above and publishes its keys works.
 ```ts title="mint-route.ts"
 const payload = Ramose.claims(
   AUTH, // { issuer, audience, ttl } — the same values the server pins.
-  { sub: user.id, db: workspace, class: role },
+  { sub: user.id, db: workspace, class: role, attrs: { name: user.name, email: user.email } },
   compiledPolicy, // optional: refuses a class the policy does not declare.
 );
 // Sign `payload` with your key (RS256, ES256, or EdDSA); publish the public key as a JWKS.

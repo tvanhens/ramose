@@ -28,21 +28,14 @@ export const boardQuery = Query.q(() =>
 
 ## Run it
 
-`db.q(query)` runs it once. `db.principal()` is who the peer says you are (the row it upserts at session establishment). A lookup by `sub` is an ordinary query — the changing value is a declared **param**, bound at the call:
+`db.q(query)` runs it once. `db.principal()` is who the peer says you are — the row it upserts at session establishment (`sub`, `role`, and `ramose.attrs`) — so finding your own eid does not need a query:
 
-```ts title="examples/reef/src/app/mutations.ts:19-25"
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
-// …
-const existing = yield* db.q(mineQuery, { sub: me.id });
+```ts
+const who = yield* db.principal();
+const myEid = who.eid?.id;
 ```
 
-A param is declared from an attribute reference (`User.sub` — the hole takes that attribute's type) or any Effect Schema; `Ramose.EidOf(N)` declares an entity-valued hole, and `Ramose.optional(…)` one that may stay unbound. The query object never changes identity — only the bindings do.
+A lookup by any other field is an ordinary query — the changing value is a declared **param**, bound at the call. A param is declared from an attribute reference (`User.sub` — the hole takes that attribute's type) or any Effect Schema; `Ramose.EidOf(N)` declares an entity-valued hole, and `Ramose.optional(…)` one that may stay unbound. The query object never changes identity — only the bindings do.
 
 In React, `useQuery(db, query, params?)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.q(query))`.
 

@@ -161,15 +161,10 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 **`db.q(query, params?): Effect<Out, QueryError>`** — run a query once. Bind the query's declared params as the second argument. The result is the query's terminal: the rows array, one row (or `null`) after `q.one()` / `q.oneOrFail()` (`oneOrFail` fails with `NotOne`), a `{ rows, cursor }` page after `q.after(cursor)`.
 
-```ts title="examples/reef/src/app/mutations.ts:18-25"
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
-const existing = yield* db.q(mineQuery, { sub: me.id });
+```ts
+const who = yield* db.principal();
+const myEid = who.eid?.id;
+const people = yield* db.q(peopleQuery);
 ```
 
 **`db.live(query, params?): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query, params?)`](/reference/react/#uselive).
@@ -214,7 +209,7 @@ const { t } = yield* db.basis();
   const everything = useQuery(db.history, everyIssueEverQuery);
 ```
 
-**`db.principal(): Effect<{ eid: Eid | null; class: string }, DbError>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. `eid` is `null` until that user has a row; `class` is `"admin"` on a server with no policy.
+**`db.principal(): Effect<{ eid: Eid | null; class: string }, DbError>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. The peer upserts that row at session establishment, so a signed-in caller has an `eid` once the principal attr is deployed. `eid` stays `null` for anonymous and service callers; `class` is `"admin"` on a server with no policy.
 
 ```ts
 const me = yield* db.principal();   // { eid: { id: 42 } | null, class: "member" }
@@ -289,15 +284,9 @@ Rules:
 - There is no update-or-create helper and no `preset` on the client; presets are a [policy](/reference/policy/) feature the server applies.
 - **`TxReport`** is `{ t, txEid, datomCount, dbAfter }`. It has no `tempids`; to learn a new record's id, query for it — `report.dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
 
-```ts title="examples/reef/src/app/mutations.ts"
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-    });
-    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
-    return after[0]?.id;
+```ts
+const who = yield* db.principal();
+const myEid = who.eid?.id; // the peer-owned user row
 ```
 
 ## Queries

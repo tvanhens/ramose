@@ -31,7 +31,7 @@ The handle from `tx.entity()` carries the same three verbs without the first arg
 
 Reef's "New issue" dialog is one write; everything inside lands together or not at all:
 
-```ts title="examples/reef/src/app/mutations.ts:87-110"
+```ts title="examples/reef/src/app/mutations.ts:51-74"
 export const createIssue = (
   db: ReefDb,
   myEid: number,
@@ -60,7 +60,7 @@ A **reference** field takes the other record's id as a number: `issue.add(Issue.
 
 Dragging a card in Reef is one write of two facts — new column, new position:
 
-```ts title="examples/reef/src/app/mutations.ts:113-122"
+```ts title="examples/reef/src/app/mutations.ts:77-86"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
@@ -75,13 +75,13 @@ export const moveIssue = (
 
 A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts:113-122" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts:77-86" />
 
 ## Remove a value, delete a record
 
 Clearing a field is `retract` with no value; deleting a record is `retractEntity`:
 
-```ts title="examples/reef/src/app/mutations.ts:135-139"
+```ts title="examples/reef/src/app/mutations.ts:99-103"
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   db.transact(function* (tx) {
     if (text === "") yield* tx.retract(issueId, Issue.description);
@@ -89,7 +89,7 @@ export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   });
 ```
 
-```ts title="examples/reef/src/app/mutations.ts:174-177"
+```ts title="examples/reef/src/app/mutations.ts:138-141"
 export const deleteIssue = (db: ReefDb, issueId: number) =>
   db.transact(function* (tx) {
     yield* tx.retractEntity(issueId);
@@ -102,7 +102,7 @@ Neither erases history — [Time travel](/concepts/time-travel/) can still show 
 
 A field declared `cardinality: "many"` is a set. One `add` per value; `retract` with the value takes one out:
 
-```ts title="examples/reef/src/app/mutations.ts:156-165"
+```ts title="examples/reef/src/app/mutations.ts:120-129"
 export const toggleLabel = (
   db: ReefDb,
   issueId: number,
@@ -132,17 +132,11 @@ The first argument of `tx.add` names the record. It can be:
 - **`datomCount`** — how many facts landed.
 - **`dbAfter`** — the same database, pinned at `t`. Read through it and you see your own write with no second round trip.
 
-A new record's id is not in the report. Query for it — Reef does that when you first enter a workspace, reading its own write through `dbAfter` (`mineQuery` selects `{ id: User.id }` where `sub` is yours):
+A new record's id is not in the report. Query for it through `report.dbAfter`, or read the row the peer already upserted for you:
 
-```ts title="examples/reef/src/app/mutations.ts:67-74"
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-    });
-    const after = yield* report.dbAfter.q(mineQuery);
-    return after[0]?.id;
+```ts
+const who = yield* db.principal();
+const myEid = who.eid?.id;
 ```
 
 A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`. Nothing in your UI has to announce the change.
@@ -156,7 +150,7 @@ Both are values you can match by name — see [Errors](/reference/errors/). Writ
 
 In React, `useTransact` runs the write and hands you the refusal:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:246-250"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:268-272"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({

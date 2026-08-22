@@ -32,13 +32,13 @@ Reef maps the invite's role onto the token at sign-in — [What the token carrie
 
 Helper fragments first, then one rule block per record type:
 
-```ts title="examples/reef/src/domain/policy.ts:28-30"
+```ts title="examples/reef/src/domain/policy.ts:30-32"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:37-53"
+```ts title="examples/reef/src/domain/policy.ts:34-53"
 export const policy = Ramose.policy(
   {
     catalog: Reef,
@@ -48,8 +48,7 @@ export const policy = Ramose.policy(
   {
     user: {
       read: true,
-      // The peer upserts `sub` + `role`; clients only stamp profile fields.
-      add: self,
+      // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
     },
     label: {
       read: true,
@@ -57,7 +56,7 @@ export const policy = Ramose.policy(
     },
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:50-70"
+```ts title="examples/reef/src/domain/policy.ts:54-73"
     issue: {
       read: true,
       create: P.class("member"),
@@ -117,7 +116,7 @@ Reads do not fail. They shrink. A fact you may not read is absent — which is w
 
 ## Who is the caller?
 
-`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). That attr derives `me` in every arm. The peer upserts that record at session establishment (`sub` from the token, `role` from the token class) before any client write; anonymous and service callers stay unresolved and fragments that mention `me` match nothing.
+`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). That attr derives `me` in every arm. The peer upserts that record at session establishment (`sub` from the token, `role` from the token class, name and email from `ramose.attrs`) before any client write; anonymous and service callers stay unresolved and fragments that mention `me` match nothing. Clients never write this row — `db.principal()` is how you learn your eid.
 
 `P.preset(Issue.creator, P.principal)` makes `creator` a **server-filled field** ([glossary](/concepts/glossary/#preset)): on create the server stamps it to the caller. A client value identical to the preset is a no-op; a different one is refused. You cannot forge who created an issue.
 
@@ -125,7 +124,7 @@ Reads do not fail. They shrink. A fact you may not read is absent — which is w
 
 *Because the policy and the shapes your screens read are both values, `Ramose.Policy.compile(policy, { pulls })` checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.*
 
-```ts title="examples/reef/src/domain/policy.ts:77-78"
+```ts title="examples/reef/src/domain/policy.ts:80-81"
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```
