@@ -43,7 +43,7 @@ Two subpaths let you avoid naming it at all, which is what a resolver that refus
 
 ```ts
 import * as Schema from "ramose/schema";        // === effect/Schema
-import { Effect, Layer, Stream } from "ramose/effect";
+import { Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
 ```
 
 They re-export the module instances `effect` itself exports, so the two spellings are interchangeable — in the same file, and across a package boundary.

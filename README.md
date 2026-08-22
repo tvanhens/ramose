@@ -26,6 +26,7 @@ A schema, a live query, and a typed write — that is the whole app:
 ```tsx
 import * as Ramose from "ramose/db";
 import { useLive, useTransact } from "ramose/react";
+import { pipe } from "ramose/effect";
 import * as Schema from "effect/Schema";
 
 const Todo = Ramose.Namespace("todo", {
@@ -37,7 +38,12 @@ const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });
 const db = ramose.db("todos", Ramose.Catalog({ todo: Todo }));
 
 // A query is a value: declare it once, then run it live.
-const todos = Ramose.query(Todo).select({ id: Todo.id, title: Todo.title, done: Todo.done });
+const todos = Ramose.Query.q(() =>
+  pipe(
+    Ramose.Query.entities(Todo),
+    Ramose.Query.select({ id: Todo.id, title: Todo.title, done: Todo.done }),
+  ),
+);
 
 const Todos = () => {
   const { rows } = useLive(db, todos);   // re-runs itself whenever the data changes

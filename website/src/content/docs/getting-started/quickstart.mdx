@@ -216,6 +216,7 @@ interface ImportMetaEnv {
 ```ts title="src/todos.ts"
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
+import { pipe } from "ramose/effect";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;

@@ -42,7 +42,7 @@ export const policy = Ramose.policy(
   {
     user: {
       read: true,
-      add: self,
+      // The peer upserts this row; clients never write it.
     },
     // …
     issue: {

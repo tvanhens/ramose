@@ -12,13 +12,14 @@
  * a reader who would rather name one package than two:
  *
  * ```typescript
- * import { Effect, Layer, Schema } from "ramose/effect";
+ * import { Effect, Layer, Schema, Redacted, pipe } from "ramose/effect";
  * ```
  *
  * These are re-exports, not copies: the module instances and every type
  * identity are `effect`'s own, so the two spellings are interchangeable in the
  * same file and across a package boundary. Anything not re-exported here is
- * still reachable as `effect/<Module>`.
+ * still reachable as `effect/<Module>`. `pipe` and `Redacted` live here as
+ * well — this subpath is the Effect escape hatch, not the app path.
  *
  * @module
  */
@@ -27,5 +28,7 @@ export * as Cause from "effect/Cause";
 export * as Effect from "effect/Effect";
 export * as Exit from "effect/Exit";
 export * as Layer from "effect/Layer";
+export * as Redacted from "effect/Redacted";
 export * as Schema from "effect/Schema";
 export * as Stream from "effect/Stream";
+export { pipe } from "effect/Function";
