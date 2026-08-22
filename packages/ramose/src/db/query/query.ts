@@ -866,7 +866,12 @@ export const lowerQueryObject = (
       const [subject, list] = args;
       const values = operand(list) as unknown[];
       if (Array.isArray(values) && values.length === 0) return [neverClause()];
-      return [[["in", operand(subject!), values]]];
+      if (!isVar(subject)) {
+        throw new Error("ramose/query: Q.in's first argument is a bound var");
+      }
+      // the var is bound, so the collection binding filters it — one row
+      // per match, not one per value
+      return [[["ground", values], [nameOf(subject), "..."]]];
     }
     return [[[op, ...args.map(operand)]]];
   };

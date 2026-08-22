@@ -208,6 +208,10 @@ const seed = async (db: Db<typeof Tracker>) => {
       yield* c1.add(Comment.author, ada.eid as never);
       yield* c1.add(Comment.text, "on it");
 
+      // Lin has no age — the `missing` combinator's witness
+      const lin = yield* tx.entity();
+      yield* lin.add(User.name, "Lin");
+
       const root = yield* tx.entity();
       yield* root.add(Team.name, "root");
       yield* root.add(Team.members, ada.eid as never);
@@ -528,6 +532,115 @@ describe("db.q end to end", () => {
       expect(r.lastUpdated as number).toBeLessThan(1_000_000);
       expect(typeof r.title).toBe("string");
     }
+
+    await peer.dispose();
+  });
+
+  test("teamDigest: multi-root rows, a correlated open, pull cells in a record", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    // open issues owned by a member of the given team
+    const escalations = Query.q({ team: EidOf(Team) }, function* (p) {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.done, false)(issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      yield* Q.fact(p.team, Team.members, owner);
+      return Q.pull(issue, { title: Issue.title });
+    });
+
+    const teamDigest = Query.q({ me: EidOf(User) }, function* (p) {
+      const team = yield* Query.entities(Team);
+      yield* Q.fact(team, Team.members, p.me);
+      const { cols } = yield* escalations.open({ team });
+      return Q.rows({ team: Q.pull(team, { name: Team.name }), esc: cols });
+    });
+
+    const ada = await run(db.q(teamDigest, { me: ids.ada as never }));
+    expect(ada).toEqual([{ team: { name: "root" }, esc: { title: "ship the release" } }] as never);
+    const grace = await run(db.q(teamDigest, { me: ids.grace as never }));
+    expect(grace).toEqual([{ team: { name: "eng" }, esc: { title: "fix the flake" } }] as never);
+
+    await peer.dispose();
+  });
+
+  test("refine keeps the row and adds constraints", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const openIssues = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.done, false), Query.select({ title: Issue.title })),
+    );
+    const adaOnly = Query.refine(function* (e) {
+      const owner = yield* Query.follow(Issue.owner)(e);
+      yield* Q.fact(owner, User.name, "Ada");
+    })(openIssues);
+    const rows = await run(db.q(adaOnly));
+    expect(rows).toEqual([{ title: "ship the release" }] as never);
+
+    await peer.dispose();
+  });
+
+  test("aggregate cells group by the record's other cells", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const perOwner = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      return { owner: name.v, n: Q.count(issue) };
+    });
+    const rows = await run(db.q(perOwner));
+    const sorted = [...rows].sort((a, b) => String(a.owner).localeCompare(String(b.owner)));
+    expect(sorted).toEqual([
+      { owner: "Ada", n: 2 },
+      { owner: "Grace", n: 1 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
+  test("where, missing, every, and Q.in", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const inList = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.where(Issue.title, (t) => Q.in(t, ["fix the flake", "not a title"])),
+        Query.select({ title: Issue.title }),
+      ),
+    );
+    expect(await run(db.q(inList))).toEqual([{ title: "fix the flake" }] as never);
+
+    const ageless = Query.q(() =>
+      pipe(Query.entities(User), Query.missing(User.age), Query.select({ name: User.name })),
+    );
+    expect(await run(db.q(ageless))).toEqual([{ name: "Lin" }] as never);
+
+    // every comment is Ada's — vacuously true of uncommented issues
+    const allAda = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.every(Comment.issue, (c) =>
+        (function* () {
+          const author = yield* Query.follow(Comment.author)(c);
+          yield* Q.fact(author, User.name, "Ada");
+        })(),
+      )(issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v };
+    });
+    const rows = await run(db.q(allAda));
+    expect(rows.map((r) => r.title).sort()).toEqual([
+      "archive the docs",
+      "fix the flake",
+      "ship the release",
+    ]);
 
     await peer.dispose();
   });
