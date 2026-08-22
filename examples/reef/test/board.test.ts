@@ -674,21 +674,29 @@ describe("refresh open is one session, not two", () => {
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const who = await Effect.runPromise(live.db("coral-team", Reef).principal());
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
       expect(who.eid?.id).toBe(peer.myEid);
       expect(counted.connects).toBe(1);
+      // principal() is GET /info — no replica session yet
+      expect(peer.sockets()).toBe(0);
+      expect(peer.resyncDumps()).toEqual([]);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
       expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });
@@ -715,20 +723,26 @@ describe("refresh open is one session, not two", () => {
     expect(ws.cls).toBe("viewer");
     expect(counted.connects).toBe(0);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const who = await Effect.runPromise(live.db("coral-team", Reef).principal());
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
       expect(who.eid).toBeNull();
       expect(counted.connects).toBe(1);
+      expect(peer.sockets()).toBe(0);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });
@@ -766,21 +780,27 @@ describe("refresh open is one session, not two", () => {
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const who = await Effect.runPromise(live.db("coral-team", Reef).principal());
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
       expect(who.eid?.id).toBeGreaterThan(0);
       expect(counted.connects).toBe(afterProvision + 1);
+      expect(peer.sockets()).toBe(0);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
       expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });
