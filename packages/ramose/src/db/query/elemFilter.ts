@@ -1,9 +1,11 @@
 /**
  * Nested pull filters: kernel fragments, translated to the pull AST.
  *
- * A `.where(…)` on a cardinality-many collection takes the same filter
- * fragments the pipe uses (`is`, `has`, `Q.not`, a `where(attr, pred)`, any
- * userland combinator built from the kernel). The fragment runs against a
+ * The `where` entries of a cardinality-many collection's options record
+ * (`.select(shape, { where: [ … ] })`, or `values(attr, { where: [ … ] })`
+ * for a scalar) are the same filter fragments the pipe uses (`is`, `has`,
+ * `Q.not`, a `where(attr, pred)`, any userland combinator built from the
+ * kernel). Each fragment runs against a
  * synthetic *element* var, and the recorded clauses — both sides inert data —
  * compile into the engine's per-element predicate tree ({@link PullElemPred}):
  * facts chain into paths (or `some` hops when an element carries several
@@ -37,7 +39,7 @@ import {
   type SubBody,
 } from "./kernel.ts";
 
-/** One `.where` argument: a fragment over the element (an entity var for a
+/** One `where` entry: a fragment over the element (an entity var for a
  * ref collection, the value var itself for a card-many scalar). */
 export type ElemFilterFragment = (focus: AnyVar) => Iterable<unknown>;
 
@@ -145,7 +147,7 @@ const mentions = (c: BClause, v: AnyVar): boolean => {
 };
 
 /**
- * Lower `.where(…)` fragments into the pull AST's per-element predicates.
+ * Lower `where` fragments into the pull AST's per-element predicates.
  * `attr` is the collection hop the filter attaches to: a ref (or backlink)
  * hands the fragments an element *entity* var; a card-many scalar hands
  * them the value var itself, so comparisons lower with an empty path.
@@ -162,7 +164,7 @@ export const lowerElemFilter = (
   for (const p of preds) {
     if (typeof p !== "function") {
       err(
-        `.where(...) on ${attr.ident} takes filter fragments — is(...), has(...), a (v) => comparison, or any fragment built from the kernel`,
+        `the where filter on ${attr.ident} takes filter fragments — is(...), has(...), a (v) => comparison, or any fragment built from the kernel`,
       );
     }
     clauses.push(...collectBody(p(elem) as SubBody));
@@ -176,7 +178,7 @@ export const lowerElemFilter = (
   for (const id of seen) {
     if (id < elem.id) {
       err(
-        `.where(...) on ${attr.ident} closes over a var from the enclosing query — a pull-phase filter runs per element after the rows are fixed, so it cannot correlate with the outer query; constrain the rows in the query itself, or compare against a literal or param`,
+        `the where filter on ${attr.ident} closes over a var from the enclosing query — a pull-phase filter runs per element after the rows are fixed, so it cannot correlate with the outer query; constrain the rows in the query itself, or compare against a literal or param`,
       );
     }
   }
@@ -222,7 +224,7 @@ export const lowerElemFilter = (
         );
       default:
         return err(
-          `a clause in .where(...) on ${attr.ident} neither constrains the element nor chains from it — a pull-phase filter walks paths from each element; it cannot join two chains on a shared var or correlate with other clauses`,
+          `a clause in the where filter on ${attr.ident} neither constrains the element nor chains from it — a pull-phase filter walks paths from each element; it cannot join two chains on a shared var or correlate with other clauses`,
         );
     }
   };
@@ -237,7 +239,7 @@ export const lowerElemFilter = (
   ): PullElemPred => {
     if (bound.has(target.id)) {
       err(
-        `.where(...) on ${attr.ident} reaches one var by two facts — a pull-phase filter walks a tree of paths and cannot join them; chain from a single binding instead`,
+        `the where filter on ${attr.ident} reaches one var by two facts — a pull-phase filter walks a tree of paths and cannot join them; chain from a single binding instead`,
       );
     }
     bound.add(target.id);
@@ -273,12 +275,12 @@ export const lowerElemFilter = (
   const factPred = (c: FactCommand<unknown>, v: AnyVar, list: readonly BClause[]): PullElemPred => {
     if (c.attr === undefined) {
       err(
-        `.where(...) on ${attr.ident} uses an attribute-free fact — a pull filter walks named attributes from each element`,
+        `the where filter on ${attr.ident} uses an attribute-free fact — a pull filter walks named attributes from each element`,
       );
     }
     if (c.txVar !== undefined || c.opVar !== undefined) {
       err(
-        `.where(...) on ${attr.ident} reads a time position (f.t / f.tx / f.op) — the pull phase reads the present; ask time questions in the query itself`,
+        `the where filter on ${attr.ident} reads a time position (f.t / f.tx / f.op) — the pull phase reads the present; ask time questions in the query itself`,
       );
     }
     const ident = c.attr!.ident;
@@ -294,7 +296,7 @@ export const lowerElemFilter = (
       // reverse hop: [e ident elem] — who points at the element
       if (!isRefAttr(c.attr)) {
         err(
-          `.where(...) on ${attr.ident} walks ${ident} backwards — only a reference can be read from its target`,
+          `the where filter on ${attr.ident} walks ${ident} backwards — only a reference can be read from its target`,
         );
       }
       if (isVar(e)) return hopPred(ident, true, e, list);
@@ -307,7 +309,7 @@ export const lowerElemFilter = (
       };
     }
     return err(
-      `.where(...) on ${attr.ident}: a fact mentions the element only through a position the pull phase cannot walk`,
+      `the where filter on ${attr.ident}: a fact mentions the element only through a position the pull phase cannot walk`,
     );
   };
 
@@ -315,7 +317,7 @@ export const lowerElemFilter = (
     const other = args.find((a) => !(isVar(a) && a.id === v.id));
     if (isVar(other)) {
       err(
-        `.where(...) on ${attr.ident} compares two bound values — a pull-phase filter compares each reached value against a constant or param`,
+        `the where filter on ${attr.ident} compares two bound values — a pull-phase filter compares each reached value against a constant or param`,
       );
     }
     if (op === "re-find?") {
@@ -323,7 +325,7 @@ export const lowerElemFilter = (
       const [pattern, subject] = args;
       if (!(isVar(subject) && subject.id === v.id)) {
         err(
-          `.where(...) on ${attr.ident}: matches(...) must test the element's value — the pattern cannot be the bound side`,
+          `the where filter on ${attr.ident}: matches(...) must test the element's value — the pattern cannot be the bound side`,
         );
       }
       return {
@@ -336,7 +338,7 @@ export const lowerElemFilter = (
     const subjectFirst = isVar(first) && first.id === v.id;
     if (op === "in") {
       if (!subjectFirst) {
-        err(`.where(...) on ${attr.ident}: Q.in's first argument is the element's value`);
+        err(`the where filter on ${attr.ident}: Q.in's first argument is the element's value`);
       }
       const values = args[1];
       return {
@@ -353,8 +355,8 @@ export const lowerElemFilter = (
     if (mapped === undefined) {
       err(
         subjectFirst
-          ? `.where(...) on ${attr.ident}: the comparison "${op}" does not lower to a pull filter`
-          : `.where(...) on ${attr.ident}: "${op}" must test the element's value — write the element as the first operand`,
+          ? `the where filter on ${attr.ident}: the comparison "${op}" does not lower to a pull filter`
+          : `the where filter on ${attr.ident}: "${op}" must test the element's value — write the element as the first operand`,
       );
     }
     return { path: [], op: mapped!, value: lowerValue(other) };

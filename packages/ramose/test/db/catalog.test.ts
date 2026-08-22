@@ -209,7 +209,7 @@ describe("reshapePullResult", () => {
     const shape = {
       id: Node.id,
       label: Node.label,
-      kids: Node.kids.limit(10).select(again(2)),
+      kids: Node.kids.select(again(2), { limit: 10 }),
     };
     expect(
       reshapePullResult(shape, {

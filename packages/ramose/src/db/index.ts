@@ -39,6 +39,10 @@ export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
 export { all } from "./Pull.ts";
 // `Ramose.again(n)` — re-apply the enclosing select on a self-ref, n hops
 export { again } from "./Pull.ts";
+// `Ramose.values(attr, { where, limit, offset })` — a card-many scalar
+// collection with pull-phase constraints; refs take the same record in
+// `.select(shape, opts)`
+export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
 // value holes: declare with `params`, mark unbound-ok with `optional`,
 // gate clauses with `when`; `EidOf(N)` declares an entity-valued hole
 export { EidOf, optional, params } from "./Params.ts";

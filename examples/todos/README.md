@@ -59,9 +59,13 @@ The query is a **value**, so it is hoisted once at module scope in
 `src/todos.ts`, and one row is named from it, never restated:
 
 ```ts
-export const todoQuery = Ramose.query(Todo)
-  .orderBy(Todo.createdAt, "asc")
-  .select(todoShape);
+export const todoQuery = Ramose.Query.q(() =>
+  pipe(
+    Ramose.Query.entities(Todo),
+    Ramose.Query.select(todoShape),
+    Ramose.Query.orderBy(Todo.createdAt, "asc"),
+  ),
+);
 
 export type TodoRow = Ramose.Row<typeof todoQuery>;
 ```

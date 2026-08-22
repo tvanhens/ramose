@@ -119,13 +119,19 @@ const isRefNav = (attr: PathCarrier): boolean =>
 
 /**
  * `.select` on a ref: a named shape, `all(N)` — the target's wildcard
- * row — or `again(n)`, which re-applies the enclosing shape.
+ * row — or `again(n)`, which re-applies the enclosing shape. A card-many
+ * ref (or backlink) also takes its pull-phase constraints here, as one
+ * options record — see {@link NestedOpts}.
  */
 type RefSelect<A> = {
-  <const D extends RecurDepth>(shape: Again<D>): SelectNested<A, Again<D>>;
-  <const N extends AnyNamespace>(shape: AllShape<N>): SelectNested<A, AllShape<N>>;
-  <const S extends Shape>(shape: S & ValidShape<S>): SelectNested<A, S>;
+  <const D extends RecurDepth>(shape: Again<D>, opts?: SelectOpts<A>): SelectNested<A, Again<D>>;
+  <const N extends AnyNamespace>(shape: AllShape<N>, opts?: SelectOpts<A>): SelectNested<A, AllShape<N>>;
+  <const S extends Shape>(shape: S & ValidShape<S>, opts?: SelectOpts<A>): SelectNested<A, S>;
 };
+
+/** Where select options are legal: only a card-many collection has elements
+ * to filter, order, and page. A card-one ref rejects the record. */
+type SelectOpts<A> = [IsManyRef<A>] extends [true] ? NestedOpts<A> : never;
 
 export type OrderEmpty = "first" | "last";
 export type OrderDir = "asc" | "desc";
@@ -185,22 +191,71 @@ export type NestedOrderKey = PathCarrier & {
 };
 
 /**
- * One `.where` predicate for a nested collection: a filter fragment over the
+ * One `where` predicate for a nested collection: a filter fragment over the
  * element. A ref collection's element is an entity var — the same fragments
  * the pipe uses (`is`, `has`, `Q.not(…)`, any userland combinator built from
  * the kernel) apply verbatim. A card-many **scalar**'s element is the value
  * itself, so the fragment is handed the value var directly:
- * `User.tags.where((v) => Q.startsWith(v, "a"))`.
+ * `values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })`.
  */
 export type NestedElemPred<A> = A extends { readonly valueType: ":db.type/ref" }
   ? (focus: Var<EidCell>) => Iterable<unknown>
   : (v: Var<AttrValue<A>>) => Iterable<unknown>;
 
+/** One sort key with its direction: `{ key: Comment.createdAt, dir: "desc" }`.
+ * `dir` defaults to `"asc"`; `empty` places elements the key reaches no
+ * value for (default `"last"`, in both directions). */
+export interface NestedOrderSpec {
+  readonly key: NestedOrderKey;
+  readonly dir?: OrderDir;
+  readonly empty?: OrderEmpty;
+}
+
+/** The `orderBy` option: a bare key (ascending), one keyed record, or an
+ * array of either for a multi-key sort. */
+export type NestedOrderBy =
+  | NestedOrderKey
+  | NestedOrderSpec
+  | readonly (NestedOrderKey | NestedOrderSpec)[];
+
+/**
+ * Pull-phase constraints on a nested collection, as one record — the typed
+ * twin of the wire's own `{where, order, offset, limit}` map on a
+ * `PullAttrSpec`. Deliberately a record, not a chain or a pipe: the engine
+ * evaluates the four slots in a fixed order (`where` → `orderBy` → `offset`
+ * → `limit`) whatever the source spelling, so the syntax carries no sequence
+ * to mislead with. Evaluated *inside* the pull, after the outer `:order` /
+ * `:offset` / `:limit` slice — constraints page the collection, never the
+ * rows: an element-less collection is `[]`, not a dropped parent, so the
+ * outer `limit` still counts rows the client keeps.
+ *
+ * ```ts
+ * replies: Comment.replies.select(Ramose.again(4), {
+ *   where: [is(Comment.deleted, false)],
+ *   orderBy: { key: Comment.createdAt, dir: "asc" },
+ *   limit: 20,
+ * }),
+ * ```
+ *
+ * `where` entries are ANDed filter fragments over the element (see
+ * {@link NestedElemPred}); a card-many scalar takes the same record through
+ * {@link values}, minus `orderBy` (its elements are values, with no
+ * attributes to sort by).
+ */
+export interface NestedOpts<A = PathCarrier> {
+  readonly where?: readonly NestedElemPred<A>[];
+  readonly orderBy?: A extends { readonly valueType: ":db.type/ref" }
+    ? NestedOrderBy
+    : never;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
 /**
  * Predicate-free stamp on every attribute reference: the pull-shaping
  * methods. `.optional` / `.orDefault` wrap the receiver; `.select` opens a
- * nested shape on a ref; a card-many ref also orders and pages its
- * collection *inside* the pull (`.orderBy` / `.limit` / `.offset`).
+ * nested shape on a ref, and a card-many ref's pull-phase constraints ride
+ * its options record ({@link NestedOpts}).
  */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly optional: ReturnType<typeof optional<A>>;
@@ -216,61 +271,14 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? RefSelect<A>
     : never;
-  /** Card-many ref only: sort this collection by a card-one key of its
-   * element. Evaluated inside the pull — it never changes the row set. */
-  readonly orderBy: IsManyRef<A> extends true
-    ? (
-        key: NestedOrderKey,
-        dir?: OrderDir,
-        opts?: { readonly empty?: OrderEmpty },
-      ) => CollectionNav<A>
-    : never;
-  /** Card-many ref only: keep at most `n` elements. Required before
-   * `.select(again(n))` — the engine default is not a tree budget. */
-  readonly limit: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
-  /** Card-many ref only: drop `n` elements from the front. */
-  readonly offset: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
-  /**
-   * Card-many only: keep the elements that satisfy every per-element filter,
-   * evaluated *inside* the pull — it pages the collection, never the rows (a
-   * collection that filters to nothing is `[]`, not a dropped parent). Takes
-   * the same filter fragments the pipe uses; see {@link NestedElemPred}.
-   */
-  readonly where: IsMany<A> extends true
-    ? (...preds: readonly NestedElemPred<A>[]) => CollectionNav<A>
-    : never;
 };
 
-/**
- * A cardinality-many ref with pull-phase constraints attached:
- *
- * ```ts
- * Comment.replies.orderBy(Comment.createdAt, "asc").limit(20)
- *   .select({ id: Comment.id, body: Comment.body })
- * ```
- *
- * The constraints lower to the `PullAttrSpec` fields of *this* collection
- * (`:order` / `:offset` / `:limit`) and are evaluated inside the pull, after
- * the outer `:order` / `:offset` / `:limit` slice — they page the collection,
- * never the rows. An element-less collection is `[]`, not a dropped parent,
- * so the outer `limit` still counts rows the client keeps.
- */
-export interface CollectionNav<A extends PathCarrier = PathCarrier> {
+/** A card-many **scalar** collection with pull-phase constraints — the field
+ * {@link values} builds. Inert: the constraints are already lowered. */
+export interface ValuesField<A = PathCarrier> {
   readonly _tag: "collection";
   readonly attr: A;
-  /** Already lowered — each call lowers its argument eagerly. */
   readonly constraints: PullNestedConstraints;
-  orderBy(
-    key: NestedOrderKey,
-    dir?: OrderDir,
-    opts?: { readonly empty?: OrderEmpty },
-  ): CollectionNav<A>;
-  limit(n: number): CollectionNav<A>;
-  offset(n: number): CollectionNav<A>;
-  where(...preds: readonly NestedElemPred<A>[]): CollectionNav<A>;
-  readonly select: A extends { readonly valueType: ":db.type/ref" }
-    ? RefSelect<A>
-    : never;
 }
 
 const nestedCount = (n: unknown, what: string): number => {
@@ -300,69 +308,87 @@ const lowerElemOrder = (
   };
 };
 
-const collectionNav = <A extends PathCarrier>(
-  attr: A,
-  constraints: PullNestedConstraints,
-): CollectionNav<A> => {
-  const self: CollectionNav<A> = {
-    _tag: "collection",
-    attr,
-    constraints,
-    orderBy: (key, dir = "asc", opts) => {
-      if (!isRefNav(attr)) {
-        throw new Error(
-          `ramose/query: nested orderBy on ${pathOf(attr).join(" → ")} — a scalar collection's elements are its values; only a reference collection has attributes to sort by`,
-        );
-      }
-      return collectionNav(attr, {
-        ...constraints,
-        order: [...(constraints.order ?? []), lowerElemOrder(key, dir, opts?.empty)],
-      });
-    },
-    limit: (n) => collectionNav(attr, { ...constraints, limit: nestedCount(n, "limit") }),
-    offset: (n) => collectionNav(attr, { ...constraints, offset: nestedCount(n, "offset") }),
-    where: (...preds) =>
-      collectionNav(attr, {
-        ...constraints,
-        where: [
-          ...(constraints.where ?? []),
-          ...lowerElemFilter(preds as readonly ElemFilterFragment[], attr),
-        ],
-      }),
-    select: ((shape: Shape | AllShape | Again) => {
-      if (!isRefNav(attr)) {
-        throw new Error(
-          `ramose/query: ${pathOf(attr).join(" → ")}.select(...) — only a reference has a nested shape to select; a filtered scalar collection is the field itself`,
-        );
-      }
-      return makeSelectNested(attr, shape, constraints);
-    }) as CollectionNav<A>["select"],
-  };
-  return self;
-};
+const isOrderSpec = (k: NestedOrderKey | NestedOrderSpec): k is NestedOrderSpec =>
+  typeof k === "object" && k !== null && !("ident" in k) && "key" in k;
 
-/** Start constraining a collection: only a cardinality-many **ref** has
- * elements (entities) to order and page inside the pull. */
-const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
-  const cards = cardsOf(attr);
-  if (cards[cards.length - 1] !== "many" || !isRefNav(attr)) {
-    throw new Error(
-      `ramose/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested orderBy / limit / offset page a cardinality-many reference collection; constrain rows in the query itself`,
+/** Lower a {@link NestedOpts} record into the wire's nested constraints.
+ * Eager and total, like every shape-side lowering. */
+const lowerNestedOpts = (attr: PathCarrier, opts: NestedOpts<never>): PullNestedConstraints => {
+  for (const key of Object.keys(opts)) {
+    if (key !== "where" && key !== "orderBy" && key !== "limit" && key !== "offset") {
+      throw new Error(
+        `ramose/query: unknown select option "${key}" — a nested collection takes { where, orderBy, limit, offset }`,
+      );
+    }
+  }
+  const out: {
+    where?: PullNestedConstraints["where"];
+    order?: PullNestedConstraints["order"];
+    limit?: number;
+    offset?: number;
+  } = {};
+  if (opts.where !== undefined) {
+    out.where = lowerElemFilter(opts.where as readonly ElemFilterFragment[], attr);
+  }
+  if (opts.orderBy !== undefined) {
+    if (!isRefNav(attr)) {
+      throw new Error(
+        `ramose/query: orderBy on ${pathOf(attr).join(" → ")} — a scalar collection's elements are its values; only a reference collection has attributes to sort by`,
+      );
+    }
+    const keys = Array.isArray(opts.orderBy)
+      ? (opts.orderBy as readonly (NestedOrderKey | NestedOrderSpec)[])
+      : [opts.orderBy as NestedOrderKey | NestedOrderSpec];
+    out.order = keys.map((k) =>
+      isOrderSpec(k)
+        ? lowerElemOrder(k.key, k.dir ?? "asc", k.empty)
+        : lowerElemOrder(k, "asc", undefined),
     );
   }
-  return collectionNav(attr, {});
+  if (opts.limit !== undefined) out.limit = nestedCount(opts.limit, "limit");
+  if (opts.offset !== undefined) out.offset = nestedCount(opts.offset, "offset");
+  return out;
 };
 
-/** Start filtering a collection: any cardinality-many attribute — ref or
- * scalar — has elements to keep or drop inside the pull. */
-const filterableCollectionOf = (attr: PathCarrier): CollectionNav => {
+/** Select options need a collection: only a card-many hop has elements to
+ * filter, order, and page. */
+const assertManyForOpts = (attr: PathCarrier, spelling: string): void => {
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ramose/query: where(...) on ${pathOf(attr).join(" → ")} — a nested where filters the elements of a cardinality-many collection; constrain rows in the query itself`,
+      `ramose/query: ${spelling} on ${pathOf(attr).join(" → ")} — the options record filters and pages the elements of a cardinality-many collection; constrain rows in the query itself`,
     );
   }
-  return collectionNav(attr, {});
+};
+
+/**
+ * A card-many **scalar** collection with pull-phase constraints — the map
+ * form's spelling for a hop that has no shape to `.select` through, because
+ * its elements are the values themselves. `where` fragments are handed the
+ * value var directly; `orderBy` does not apply.
+ *
+ * ```ts
+ * aTags: Ramose.values(User.tags, { where: [(v) => Q.startsWith(v, "a")] }),
+ * ```
+ */
+export const values = <A extends PathCarrier>(
+  attr: A,
+  opts?: Omit<NestedOpts<A>, "orderBy">,
+): ValuesField<A> => {
+  if (typeof attr !== "object" || attr === null || typeof attr.ident !== "string") {
+    throw new Error("ramose/query: values(...) takes a card-many scalar attribute");
+  }
+  if (isRefNav(attr)) {
+    throw new Error(
+      `ramose/query: values(${pathOf(attr).join(" → ")}) — a reference collection has a shape to select; write .select({ … }, { where, orderBy, limit, offset })`,
+    );
+  }
+  assertManyForOpts(attr, "values(...)");
+  return {
+    _tag: "collection",
+    attr,
+    constraints: opts === undefined ? {} : lowerNestedOpts(attr, opts as NestedOpts<never>),
+  };
 };
 
 export interface SelectNested<A = unknown, S = unknown> {
@@ -392,7 +418,7 @@ export const makeSelectNested = (
     const cards = cardsOf(attr);
     if (cards[cards.length - 1] === "many" && constraints?.limit === undefined) {
       throw new Error(
-        `ramose/query: ${pathOf(attr).join(" → ")} is a card-many again edge — write .limit(n) before .select(Ramose.again(${shape.depth})); the engine default of 1000 is not a tree budget`,
+        `ramose/query: ${pathOf(attr).join(" → ")} is a card-many again edge — pass a width in the select options, .select(Ramose.again(${shape.depth}), { limit: n }); the engine default of 1000 is not a tree budget`,
       );
     }
   }
@@ -411,34 +437,22 @@ export const makeSelectNested = (
 /** Stamp an attribute reference with the pull-shaping methods. */
 export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
   const api = {
-    select(this: PathCarrier, shape: Shape | AllShape | Again) {
+    select(this: PathCarrier, shape: Shape | AllShape | Again, opts?: NestedOpts<never>) {
       if (!isRefNav(this)) {
         throw new Error(
           `ramose/query: ${pathOf(this).join(" → ")}.select(...) — only a reference has a nested shape to select`,
         );
       }
-      return makeSelectNested(this, shape);
+      if (opts !== undefined) assertManyForOpts(this, "select options");
+      return makeSelectNested(
+        this,
+        shape,
+        opts === undefined ? undefined : lowerNestedOpts(this, opts),
+      );
     },
     // like `.optional`, it wraps the *receiver* (issue #69)
     orDefault(this: PathCarrier, value: unknown) {
       return pullDefault(this, value);
-    },
-    orderBy(
-      this: PathCarrier,
-      key: NestedOrderKey,
-      dir: OrderDir = "asc",
-      opts?: { readonly empty?: OrderEmpty },
-    ) {
-      return collectionOf(this, "orderBy").orderBy(key, dir, opts);
-    },
-    limit(this: PathCarrier, n: number) {
-      return collectionOf(this, "limit").limit(n);
-    },
-    offset(this: PathCarrier, n: number) {
-      return collectionOf(this, "offset").offset(n);
-    },
-    where(this: PathCarrier, ...preds: readonly ElemFilterFragment[]) {
-      return filterableCollectionOf(this).where(...(preds as never[]));
     },
   };
 

@@ -282,7 +282,7 @@ declare const nodeEid: Eid<typeof Graph>;
 const pulledTree = graph.pull(nodeEid, {
   id: Node.id,
   label: Node.label,
-  kids: Node.kids.limit(8).select(again(1)),
+  kids: Node.kids.select(again(1), { limit: 8 }),
 });
 type PulledTree = NonNullable<Effect.Success<typeof pulledTree>>;
 type _pulledKidLabel = Expect<Equal<PulledTree["kids"][number]["label"], string>>;

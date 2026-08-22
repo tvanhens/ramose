@@ -17,9 +17,10 @@ import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
  * Pull-phase constraints on one nested collection, already lowered to the
  * engine's IR (`PullAttrSpec`'s `:where` / `:order` / `:offset` / `:limit`).
  *
- * The client builds them with `.where` / `.orderBy` / `.limit` / `.offset` on
- * a card-many ref or backlink nav (see `CollectionNav` in shapes.ts) and
- * lowers them there, eagerly — this module only carries them onto the spec.
+ * The client builds them from the `{ where, orderBy, limit, offset }` options
+ * record on a card-many ref's `.select(shape, opts)` — or `values(attr, opts)`
+ * for a card-many scalar (see shapes.ts) — and lowers them there, eagerly;
+ * this module only carries them onto the spec.
  * They are evaluated *inside* the pull, after the outer `:order` / `:offset` /
  * `:limit` slice, so they never change the row set.
  */
@@ -926,9 +927,8 @@ export const assertDirectField = (
 };
 
 /**
- * A constrained collection nav (`Todo.owner.reverse.where(…)`, or
- * `User.tags.where(…)`). Structural, like {@link isReverseCarrier} — pull
- * stays free of shapes.ts.
+ * A constrained scalar collection (`values(User.tags, { where: [ … ] })`).
+ * Structural, like {@link isReverseCarrier} — pull stays free of shapes.ts.
  */
 const isCollectionCarrier = (
   value: unknown,
@@ -990,7 +990,7 @@ export const inspectPullField = (
     // value has no shape to ask for. A ref one still needs its `.select`.
     if ((current.attr as { valueType?: unknown })?.valueType === ":db.type/ref") {
       throw new Error(
-        "ramose/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+        "ramose/schema: a filtered reference collection needs a shape — write `.select({ … }, { where: [ … ] })`",
       );
     }
     return {

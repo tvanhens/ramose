@@ -38,6 +38,7 @@ import {
   lowerQueryObject,
   optional,
   params,
+  values,
   type Db,
 } from "../../src/db/internal.ts";
 
@@ -1060,23 +1061,28 @@ describe("post-group filters (:having)", () => {
   });
 });
 
-// ── per-element pull filters: `.where(fragment)` on a collection ───────────
+// ── per-element pull filters: the select options record ────────────────────
 
-describe("per-element pull filters (.where)", () => {
-  test("lowering: fragments compile into the collection's :where", () => {
+describe("per-element pull filters (select options)", () => {
+  test("lowering: the options record compiles into the collection's :where / :order / :limit", () => {
     const q = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
       return Q.pull(issue, {
         title: Issue.title,
-        fresh: Comment.issue.reverse
-          .where(function* (c) {
-            const author = yield* Query.follow(Comment.author)(c);
-            yield* Q.fact(author, User.name, "Grace");
-            yield* Q.not(Query.is(Comment.text, "old take")(c));
-          })
-          .orderBy(Comment.text, "asc")
-          .limit(5)
-          .select({ text: Comment.text }),
+        fresh: Comment.issue.reverse.select(
+          { text: Comment.text },
+          {
+            where: [
+              function* (c) {
+                const author = yield* Query.follow(Comment.author)(c);
+                yield* Q.fact(author, User.name, "Grace");
+                yield* Q.not(Query.is(Comment.text, "old take")(c));
+              },
+            ],
+            orderBy: { key: Comment.text, dir: "asc" },
+            limit: 5,
+          },
+        ),
       });
     });
     const { query } = lowerQueryObject(q);
@@ -1090,17 +1096,26 @@ describe("per-element pull filters (.where)", () => {
     ]);
     expect(fresh.order).toEqual([{ path: [":comment/text"], dir: "asc" }]);
     expect(fresh.limit).toBe(5);
+
+    // a bare attr is the ascending shorthand
+    const bare = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      return Q.pull(issue, {
+        c: Comment.issue.reverse.select({ text: Comment.text }, { orderBy: Comment.text }),
+      });
+    });
+    const spec = ((lowerQueryObject(bare).query.find as unknown[][])[0]![2] as Record<string, unknown>[])[0]!;
+    expect(spec.order).toEqual([{ path: [":comment/text"], dir: "asc" }]);
   });
 
   test("lowering: Q.or, has, and eid literals", () => {
     const q = Query.q(function* () {
       const team = yield* Query.entities(Team);
       return Q.pull(team, {
-        members: Team.members
-          .where(
-            (u) => Q.or(Query.is(User.name, "Ada")(u), Query.has(User.age)(u)),
-          )
-          .select({ name: User.name }),
+        members: Team.members.select(
+          { name: User.name },
+          { where: [(u) => Q.or(Query.is(User.name, "Ada")(u), Query.has(User.age)(u))] },
+        ),
       });
     });
     const { query } = lowerQueryObject(q);
@@ -1134,12 +1149,17 @@ describe("per-element pull filters (.where)", () => {
       const issue = yield* Query.entities(Issue);
       return Q.pull(issue, {
         title: Issue.title,
-        adaSays: Comment.issue.reverse
-          .where(function* (c) {
-            const author = yield* Query.follow(Comment.author)(c);
-            yield* Q.fact(author, User.name, "Ada");
-          })
-          .select({ text: Comment.text }),
+        adaSays: Comment.issue.reverse.select(
+          { text: Comment.text },
+          {
+            where: [
+              function* (c) {
+                const author = yield* Query.follow(Comment.author)(c);
+                yield* Q.fact(author, User.name, "Ada");
+              },
+            ],
+          },
+        ),
       });
     });
     const rows = await run(db.q(q));
@@ -1161,9 +1181,10 @@ describe("per-element pull filters (.where)", () => {
       const team = yield* Query.entities(Team);
       return Q.pull(team, {
         name: Team.name,
-        seniors: Team.members
-          .where(Query.where(User.age, (a) => Q.gt(a, 40)))
-          .select({ name: User.name }),
+        seniors: Team.members.select(
+          { name: User.name },
+          { where: [Query.where(User.age, (a) => Q.gt(a, 40))] },
+        ),
       });
     });
     const rows = await run(db.q(q));
@@ -1183,7 +1204,7 @@ describe("per-element pull filters (.where)", () => {
       const user = yield* Query.entities(User);
       return Q.pull(user, {
         name: User.name,
-        aTags: User.tags.where((v) => Q.startsWith(v, "a")),
+        aTags: values(User.tags, { where: [(v) => Q.startsWith(v, "a")] }),
       });
     });
     const rows = await run(db.q(q));
@@ -1210,9 +1231,10 @@ describe("per-element pull filters (.where)", () => {
       const issue = yield* Query.entities(Issue);
       return Q.pull(issue, {
         title: Issue.title,
-        theirs: Comment.issue.reverse
-          .where(Query.is(Comment.author, p.who))
-          .select({ text: Comment.text }),
+        theirs: Comment.issue.reverse.select(
+          { text: Comment.text },
+          { where: [Query.is(Comment.author, p.who)] },
+        ),
       });
     });
     const rows = await run(db.q(q, { who: ids.ada as never }));
@@ -1225,53 +1247,80 @@ describe("per-element pull filters (.where)", () => {
   });
 
   test("what cannot translate is rejected, never approximated", async () => {
+    const commentShape = { text: Comment.text };
+
     // closing over an enclosing var: a pull filter cannot correlate
     const correlated = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
       const owner = yield* Query.follow(Issue.owner)(issue);
       return Q.pull(issue, {
-        c: Comment.issue.reverse
-          .where(Query.is(Comment.author, owner as never))
-          .select({ text: Comment.text }),
+        c: Comment.issue.reverse.select(commentShape, {
+          where: [Query.is(Comment.author, owner as never)],
+        }),
       });
     });
     expect(() => lowerQueryObject(correlated)).toThrow(/closes over a var from the enclosing query/);
 
     // entities(...) joins, and a pull filter cannot
     expect(() =>
-      Comment.issue.reverse.where(function* () {
-        yield* Query.entities(User);
+      Comment.issue.reverse.select(commentShape, {
+        where: [
+          function* () {
+            yield* Query.entities(User);
+          },
+        ],
       }),
     ).toThrow(/entities\(\.\.\.\) does not lower/);
 
     // Q.when gates on params, which bind after shapes are built
     expect(() =>
-      User.tags.where(function* (v) {
-        yield* Q.when(params({ on: optional(Schema.Boolean) }).on, Q.startsWith(v as never, "a"));
+      values(User.tags, {
+        where: [
+          function* (v) {
+            yield* Q.when(params({ on: optional(Schema.Boolean) }).on, Q.startsWith(v as never, "a"));
+          },
+        ],
       }),
     ).toThrow(/Q\.when\(\.\.\.\) does not lower/);
 
     // two values bound by different clauses cannot be compared per element
     expect(() =>
-      Comment.issue.reverse.where(function* (c) {
-        const a = yield* Q.fact(c, Comment.text);
-        const b = yield* Q.fact(c, Comment.text);
-        yield* Q.eq(a.v, b.v);
+      Comment.issue.reverse.select(commentShape, {
+        where: [
+          function* (c) {
+            const a = yield* Q.fact(c, Comment.text);
+            const b = yield* Q.fact(c, Comment.text);
+            yield* Q.eq(a.v, b.v);
+          },
+        ],
       }),
     ).toThrow(/compares two bound values/);
 
     // time positions have no pull-phase meaning
     expect(() =>
-      Comment.issue.reverse.where(function* (c) {
-        const f = yield* Q.fact(c, Comment.text);
-        yield* Q.gte(f.t, 1);
+      Comment.issue.reverse.select(commentShape, {
+        where: [
+          function* (c) {
+            const f = yield* Q.fact(c, Comment.text);
+            yield* Q.gte(f.t, 1);
+          },
+        ],
       }),
     ).toThrow(/time position/);
 
-    // .where needs a collection: a card-one ref has one element, the row's
-    expect(() => (Issue.owner as never as { where: (...a: unknown[]) => unknown }).where()).toThrow(
-      /cardinality-many/,
-    );
+    // options need a collection: a card-one ref has one element, the row's
+    expect(() =>
+      (Issue.owner.select as (...a: unknown[]) => unknown)({ name: User.name }, {}),
+    ).toThrow(/cardinality-many/);
+    // …and a scalar's spelling rejects refs, which have a shape to select
+    expect(() => values(Team.members as never, {})).toThrow(/reference collection/);
+    // a stray option key is named, not ignored
+    expect(() =>
+      (Team.members.select as (...a: unknown[]) => unknown)(
+        { name: User.name },
+        { order: User.name },
+      ),
+    ).toThrow(/unknown select option "order"/);
 
     // db.pull has no params to bind into a nested filter
     const peer = await inProcessPeer();
@@ -1282,7 +1331,9 @@ describe("per-element pull filters (.where)", () => {
     try {
       await run(
         db.pull(ids.fix!.id as never, {
-          c: Comment.issue.reverse.where(Query.is(Comment.author, hole)).select({ text: Comment.text }),
+          c: Comment.issue.reverse.select(commentShape, {
+            where: [Query.is(Comment.author, hole)],
+          }),
         } as never),
       );
     } catch (e) {

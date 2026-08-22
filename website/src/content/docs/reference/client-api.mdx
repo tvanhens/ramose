@@ -358,7 +358,7 @@ export const commentsQuery = Query.q({ issueId: Ramose.EidOf(Issue) }, (p) =>
 );
 ```
 
-**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `.limit(n)`; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ isComponent: true }` (then the reverse is one record). A many-valued reference orders and pages its own collection inside the pull with `.orderBy(key, dir)` / `.limit(n)` / `.offset(n)` before its `.select`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
+**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ isComponent: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts:28-38"
 export const boardShape = {
@@ -374,7 +374,7 @@ export const boardShape = {
 } as const;
 ```
 
-**Recursive trees.** A thread is a window, not one fetch. `again(4)` and `.limit(20)` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread, { root: clicked.id })`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
+**Recursive trees.** A thread is a window, not one fetch. `again(4)` and `{ limit: 20 }` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread, { root: clicked.id })`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
 
 ```ts
 const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
@@ -384,10 +384,10 @@ const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
     Query.select({
       id: Comment.id,
       body: Comment.body,
-      replies: Comment.replies
-        .orderBy(Comment.createdAt, "asc")
-        .limit(20)
-        .select(Ramose.again(4)),
+      replies: Comment.replies.select(Ramose.again(4), {
+        orderBy: Comment.createdAt,
+        limit: 20,
+      }),
     }),
   ),
 );
@@ -425,7 +425,7 @@ Rules the surface enforces:
 
 - Filter stages come before `select` — clauses close before the projection.
 - A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`.
-- `Ramose.again(n)` is only legal as `ref.select(Ramose.again(n))`. `n` is a literal `1`–`16`. A many-valued again edge needs `.limit(n)`. A shape that contains `again` must select `N.id`. The recur edge must land in the same record type as the enclosing shape.
+- `Ramose.again(n)` is only legal as `ref.select(Ramose.again(n))`. `n` is a literal `1`–`16`. A many-valued again edge needs `{ limit: n }` in its select options. A shape that contains `again` must select `N.id`. The recur edge must land in the same record type as the enclosing shape.
 - `orderBy` across a many-valued attribute throws — a sort key is one value per row.
 - Everything — filter, order, limit, offset, `one()` / `oneOrFail()`, aggregates, the cursor seek — runs on the server; `limit(20)` really is 20 rows, and `one()` asks for one.
 - `after` needs an `orderBy`, and does not combine with `offset` (a cursor already is the offset) or `one()`. A query with a cursor does not delegate into another query — strip it with `q.logic()`.
