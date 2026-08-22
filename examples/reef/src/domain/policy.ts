@@ -26,8 +26,8 @@ const P = Ramose.Policy;
 const { Query } = Ramose;
 
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
-const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
+const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 
 export const policy = Ramose.policy(
   {

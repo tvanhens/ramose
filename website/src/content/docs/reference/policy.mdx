@@ -28,8 +28,8 @@ const policy = Ramose.policy(
 
 ```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
-const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
+const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
 ```ts title="examples/reef/src/domain/policy.ts:32-61"
@@ -67,7 +67,7 @@ export const policy = Ramose.policy(
 
 `Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, or a rule body the query validator rejects.
 
-Standalone rules annotate `me` once (`(me: P.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
+Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
 ## Operations
 
@@ -98,14 +98,14 @@ Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, 
 
 ```ts
 // doc → project → org → members contains the caller
-const inOrg = (me: P.Me<typeof User>) =>
+const inOrg = (me: Ramose.Policy.Me<typeof User>) =>
   function* (doc) {
     const project = yield* Query.follow(Doc.project)(doc);
     const org = yield* Query.follow(Project.org)(project);
     yield* Query.is(Org.members, me)(org);
   };
 
-const mine = (me: P.Me<typeof User>) => Query.is(Doc.owner, me);
+const mine = (me: Ramose.Policy.Me<typeof User>) => Query.is(Doc.owner, me);
 ```
 
 The same `inOrg` value pipes in the app (`pipe(entities(Doc), Query.refine(inOrg(me)))`) and installs as the policy arm — UI filtering and enforcement cannot drift.

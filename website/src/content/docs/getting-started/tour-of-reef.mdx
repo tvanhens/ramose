@@ -205,8 +205,8 @@ A **role** is admin, member or viewer — a name carried in the token that the r
 
 ```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
-const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
+const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
 <Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />

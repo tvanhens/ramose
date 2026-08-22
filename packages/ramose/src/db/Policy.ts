@@ -87,7 +87,7 @@ export type ClassConfig<M> = {
 };
 
 /** One allow arm: a fragment, `true` (empty / public), or a class gate. */
-export type ArmValue<M> = true | FragFn<M> | ClassGate<true | FragFn<M>> | ClassFn | ClassConfig<M>;
+export type ArmValue<M> = true | FragFn<M> | ClassGate<true | FragFn<M>> | ClassConfig<M>;
 
 /** Arms per op; an array is OR. */
 export type RuleSpec<M> = {
@@ -245,7 +245,7 @@ export const classFn = (...classes: string[]): ClassFn => {
     _tag: "ClassGate" as const,
     classes,
     arm,
-  })) as ClassFn;
+  })) as unknown as ClassFn;
   return Object.assign(apply, { _tag: "ClassGate" as const, classes, arm: true as const });
 };
 export { classFn as class };
@@ -312,7 +312,7 @@ const unwrapGate = (
     return { classes: asClassList(v.class, "class"), body: inner as true | FragFn<Var<unknown>> };
   }
   if (isFragFn(v)) return { body: v };
-  fail("an arm is a fragment, true, or a class gate");
+  return fail("an arm is a fragment, true, or a class gate");
 };
 
 const promote = (
@@ -352,7 +352,7 @@ const lowerNamedRules = (named: readonly ReturnType<typeof rule>[]): unknown[] =
     const { query } = lowerQueryObject(dummy);
     return Array.isArray(query.rules) ? (query.rules as unknown[]) : [];
   } catch (cause) {
-    fail(`rule lowering failed: ${cause instanceof Error ? cause.message : String(cause)}`, undefined, cause);
+    return fail(`rule lowering failed: ${cause instanceof Error ? cause.message : String(cause)}`, undefined, cause);
   }
 };
 
@@ -387,11 +387,16 @@ const validateRuleBodies = (
  */
 export function policy<
   const C extends AnyCatalog,
-  const H extends PolicyHead<C>,
+  const I extends CatalogIdent<C>,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
-  head: H & PolicyHead<C, CF>,
-  arms: PolicyArms<C, PrincipalMe<C, H["principal"]["ident"]>>,
+  head: {
+    readonly catalog: C;
+    readonly principal: AttrRef & { readonly ident: I };
+    readonly classes: readonly string[];
+    readonly claims?: Schema.Struct<CF>;
+  },
+  arms: PolicyArms<C, PrincipalMe<C, I>>,
 ): Policy<C> {
   if (head == null || typeof head !== "object" || head.catalog == null) {
     fail("policy(head, arms) takes a head { catalog, principal, classes }");
@@ -462,7 +467,7 @@ export function policy<
     if (nsSpec === undefined) continue;
     const declared = (catalog.namespaces as Record<string, { ns: string } | undefined>)[nsKey];
     if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the catalog`);
-    const prefix = declared.ns;
+    const prefix = declared!.ns;
     const where = `ns.${nsKey}`;
 
     const rules = compileSpec(nsSpec, where, prefix);

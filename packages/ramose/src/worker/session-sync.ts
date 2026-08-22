@@ -70,10 +70,23 @@ export function grantIdents(policy: CompiledPolicy): Set<string> {
   };
   const walkRules = (rules: PolicyRules | undefined): void => {
     if (!rules) return;
-    for (const op of POLICY_OPS) for (const arm of rules[op] ?? []) walkExpr(arm.expr);
+    for (const op of POLICY_OPS) {
+      for (const arm of rules[op] ?? []) {
+        if ("expr" in arm) walkExpr(arm.expr);
+      }
+    }
   };
   for (const rules of Object.values(policy.attrs)) walkRules(rules);
   if (policy.ns) for (const rules of Object.values(policy.ns)) walkRules(rules);
+  const IDENT = /^:[^/]+\/[^/]+$/;
+  const walkForm = (x: unknown): void => {
+    if (typeof x === "string") {
+      if (IDENT.test(x) && !x.startsWith(":db/")) out.add(x);
+      return;
+    }
+    if (Array.isArray(x)) for (const y of x) walkForm(y);
+  };
+  if (policy.rules) walkForm(policy.rules);
   return out;
 }
 

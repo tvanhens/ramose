@@ -34,8 +34,8 @@ Helper fragments first, then one rule block per record type:
 
 ```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
-const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
+const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
 ```ts title="examples/reef/src/domain/policy.ts:32-49"

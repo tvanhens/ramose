@@ -19,8 +19,8 @@ import {
   Policy as P,
   Query,
   Ref,
-  type Var,
 } from "../../src/db/internal.ts";
+import type { Var } from "../../src/db/query/kernel.ts";
 
 const User = Namespace("user", {
   sub: Attr(Schema.String, { unique: "identity" }),
