@@ -20,6 +20,14 @@ import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
 import { NotOne, ParamError } from "./Errors.ts";
+import type { AnyNamespace } from "./Namespace.ts";
+import type {
+  AnyOperation,
+  OpReport,
+  Operation,
+  OperationInvocation,
+} from "./Operation.ts";
+import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import type { ParamArgs } from "./Params.ts";
@@ -85,6 +93,11 @@ export interface Wire {
     tx: readonly unknown[],
     clientTxId?: string,
   ): Effect.Effect<unknown, DbError>;
+  /** `POST /db/:name/op`. The operations writer, always over HTTPS. */
+  operation(
+    name: string,
+    invocation: OperationInvocation,
+  ): Effect.Effect<unknown, DbError>;
   /**
    * Session overlay — confirmed follower + pending layers. Absent on an
    * HTTPS-only client, where reads stay on the peer and writes have no
@@ -101,6 +114,25 @@ export interface Wire {
             readonly txEid: number;
             readonly datoms: unknown;
             readonly datomCount: number;
+          },
+          DbError
+        >;
+        run(args: {
+          readonly invocation: OperationInvocation;
+          readonly operation: AnyOperation;
+          readonly catalog: AnyCatalog;
+          readonly principal: {
+            readonly eid: number | null;
+            readonly class: string;
+          };
+          readonly db: string;
+        }): Effect.Effect<
+          {
+            readonly t: number;
+            readonly txEid: number;
+            readonly datomCount: number;
+            readonly output: unknown;
+            readonly clientOpId: string;
           },
           DbError
         >;
@@ -239,6 +271,22 @@ export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
 
   /** Idempotent catalog upsert, as an ordinary transaction. */
   install(): Effect.Effect<TxReport<C>, DbError>;
+
+  /**
+   * Run a named operation. Decode input, apply the optimistic prefix (steps
+   * before the first `op.effect`) as a pending layer, and POST the invocation.
+   * A contextual operation (`on: Namespace`) takes the entity as the second
+   * argument.
+   */
+  run<I, O>(
+    operation: Operation<string, I, O, undefined>,
+    input: I,
+  ): Effect.Effect<OpReport<O, C>, DbError>;
+  run<I, O, N extends AnyNamespace>(
+    operation: Operation<string, I, O, N>,
+    entity: unknown,
+    input: I,
+  ): Effect.Effect<OpReport<O, C>, DbError>;
 }
 
 // ── implementation ─────────────────────────────────────────────────────────
@@ -341,7 +389,8 @@ const terminal = (e: { readonly _tag: string }): boolean =>
   e._tag === "Unauthorized" ||
   e._tag === "QueryBudgetExceeded" ||
   e._tag === "NotOne" ||
-  e._tag === "ParamError";
+  e._tag === "ParamError" ||
+  e._tag === "OperationRejected";
 
 const isGenerator = (
   value: unknown,
@@ -786,5 +835,21 @@ export const makeDb = <C extends AnyCatalog>(
       })) as Db<C>["transact"],
 
     install: () => submit(schemaTx(catalog)),
+
+    run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
+      Effect.suspend(() => {
+        const contextual = operation.on !== undefined;
+        return runOperation(
+          wire,
+          name,
+          catalog,
+          view,
+          bad,
+          operation,
+          contextual ? a : undefined,
+          contextual ? b : a,
+          makeDb,
+        );
+      })) as Db<C>["run"],
   } as Db<C>;
 };

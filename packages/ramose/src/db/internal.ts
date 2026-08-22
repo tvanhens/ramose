@@ -68,4 +68,5 @@ export {
 export * from "./session.ts";
 export * from "./token.ts";
 export * from "./Tx.ts";
+export * from "./Operation.ts";
 export * from "./valueTypes.ts";

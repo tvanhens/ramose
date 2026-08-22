@@ -30,7 +30,8 @@ mock.module("cloudflare:workers", () => ({
 }));
 
 const { TransactorDO } = await import("../../src/internal/transactor/transactor-do.ts");
-const worker = (await import("../../src/worker/index.ts")).default;
+const { createPeer } = await import("../../src/worker/index.ts");
+import type { AnyOperations } from "../../src/db/Operation.ts";
 
 /** `DurableObjectState`, as much of it as the Transactor shell touches. */
 function fakeState(db: Database) {
@@ -55,6 +56,8 @@ function fakeState(db: Database) {
 export interface PeerOptions {
   /** every extra env var the peer reads (RAMOSE_POLICY, RAMOSE_TOKEN, …) */
   env?: Record<string, string | undefined>;
+  operations?: AnyOperations;
+  writes?: "all" | "operations";
 }
 
 export interface Peer {
@@ -125,7 +128,10 @@ export function makePeer(dbName: string, options: PeerOptions = {}): Peer {
     if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
     const request = new Request(`https://peer.test${path}`, { ...rest, headers });
     (request as any).cf = { colo: colo ?? "IAD", continent: "NA" };
-    return worker.fetch(request, env);
+    return createPeer({
+      operations: options.operations,
+      writes: options.writes,
+    }).fetch(request, env);
   };
 
   return {

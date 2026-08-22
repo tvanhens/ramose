@@ -402,6 +402,7 @@ describe("failures", () => {
             QueryBudgetExceeded: (e) => Effect.succeed(e._tag),
             InternalError: (e) => Effect.succeed(e._tag),
             NetworkError: (e) => Effect.succeed(e._tag),
+            OperationRejected: (e) => Effect.succeed(e._tag),
           }),
         ),
     );

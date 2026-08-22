@@ -15,6 +15,8 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Ramose from "ramose/db";
+import { InternalError } from "../../../packages/ramose/src/db/Errors.ts";
+import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
 import {
   Connection,
   Index,
@@ -35,7 +37,8 @@ import {
   type ReefDb,
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
-import { createIssue, moveIssue, setTitle } from "../src/app/mutations.ts";
+import { createIssue, moveIssue, operations, setTitle } from "../src/app/mutations.ts";
+import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
 import { bindSelf, openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
@@ -74,6 +77,79 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
       return {
         status: 200,
         body: { t: snap.t, from: body.from ?? 0, datoms: snap.datoms },
+      };
+    }
+    if (op === "op") {
+      if (hold !== undefined) await hold;
+      if (rejectNext !== undefined) {
+        const denied = rejectNext;
+        rejectNext = undefined;
+        return denied;
+      }
+      const operation = operations.get(String(body.name ?? ""));
+      if (operation === undefined) {
+        return { status: 400, body: { error: `unknown operation: ${body.name}` } };
+      }
+      const built = buildOp({
+        catalog: Reef,
+        db: "coral-team",
+        principal: { eid: null, class: "admin", claims: {} },
+        self: body.entity,
+        effects: "run",
+        effectCtx: {
+          env: {},
+          databases: {
+            install: (catalog) =>
+              Effect.tryPromise({
+                try: () => conn.transact(schemaTx(catalog) as never),
+                catch: (cause) =>
+                  new InternalError({
+                    message:
+                      cause instanceof Error ? cause.message : String(cause),
+                  }),
+              }),
+          },
+        },
+        q: () => Effect.succeed([]),
+        pull: () => Effect.succeed(null),
+      });
+      const prefix = await Effect.runPromise(
+        runBody(operation.body, built.op, body.input) as Effect.Effect<
+          { output: unknown; halted: boolean },
+          unknown
+        >,
+      );
+      const ops = built.ops();
+      if (ops.length === 0) {
+        return {
+          status: 200,
+          body: {
+            t: conn.t,
+            txEid: 0,
+            tempids: {},
+            datoms: [],
+            output: prefix.output,
+            clientOpId: body.clientOpId,
+            clientTxId: body.clientOpId,
+          },
+        };
+      }
+      const rep = await conn.transact(ops as never);
+      const datoms = rep.txData.map(toWireDatom);
+      queueMicrotask(() => {
+        for (const push of pushes) push({ op: "tx", t: rep.t, datoms });
+      });
+      return {
+        status: 200,
+        body: {
+          t: rep.t,
+          txEid: rep.txEid,
+          tempids: rep.tempids,
+          datoms,
+          output: prefix.output,
+          clientOpId: body.clientOpId,
+          clientTxId: body.clientOpId,
+        },
       };
     }
     if (op === "transact") {
@@ -118,9 +194,12 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   };
 
   const fetchImpl = (async (url: string, init: RequestInit) => {
-    httpPaths.push(new URL(url, "https://peer.local").pathname);
+    const path = new URL(url, "https://peer.local").pathname;
+    httpPaths.push(path);
     const body = fromJson(JSON.parse(String(init.body))) as any;
-    const reply = await answer("transact", body);
+    const reply = path.endsWith("/op")
+      ? await answer("op", body)
+      : await answer("transact", body);
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,
       headers: { "content-type": "application/json" },

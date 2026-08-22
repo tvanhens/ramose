@@ -102,6 +102,20 @@ export type {
 } from "./Pull.ts";
 export type { Entity, Tx } from "./Tx.ts";
 
+// ── operations ─────────────────────────────────────────────────────────────
+export {
+  EntityId,
+  Operation,
+  Operations,
+  type AnyOperation,
+  type AnyOperations,
+  type Op,
+  type OpPrincipal,
+  type OpReport,
+  type OperationEffectContext,
+  type OperationInvocation,
+} from "./Operation.ts";
+
 // ── errors ─────────────────────────────────────────────────────────────────
 export {
   DatabaseNotFound,
@@ -110,6 +124,7 @@ export {
   InvalidRequest,
   NetworkError,
   NotOne,
+  OperationRejected,
   ParamError,
   QueryBudgetExceeded,
   TxRejected,

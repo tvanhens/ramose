@@ -10,6 +10,7 @@ export type ClientFrame =
   /** token refresh — the only frame that is not a sub-request */
   | { id: number; op: "auth"; token: string }
   | { id: number; op: "transact"; tx: unknown[]; clientTxId?: string }
+  | { id: number; op: "operation"; name: string; entity?: unknown; input: unknown; clientOpId?: string }
   /** catch-up: walk `(from, now]` and skip empties; resync if the gap is gone or a rule view flipped */
   | { id: number; op: "sync"; from: number }
   | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
@@ -192,6 +193,13 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
       const body: Record<string, unknown> = { tx: f.tx };
       if (typeof f.clientTxId === "string" && f.clientTxId.length > 0) body.clientTxId = f.clientTxId;
       return { id, op: "transact", rest: "/transact", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify(body) };
+    }
+    case "operation": {
+      if (typeof f.name !== "string" || f.name.length === 0) return { id, error: "operation frame needs name" };
+      const body: Record<string, unknown> = { name: f.name, input: f.input };
+      if (f.entity !== undefined) body.entity = f.entity;
+      if (typeof f.clientOpId === "string" && f.clientOpId.length > 0) body.clientOpId = f.clientOpId;
+      return { id, op: "operation", rest: "/op", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify(body) };
     }
     case "q": {
       if (f.query === undefined || f.query === null) return { id, error: "q frame needs query" };
@@ -500,16 +508,22 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
     // HTTP ack paints the writer overlay. It does not move the follow cursor —
     // that moves when the replica applies this t and walks the socket.
-    if (plan.op === "transact" && res.ok) {
-      const ack = body as { t?: unknown; clientTxId?: unknown } | null;
+    if ((plan.op === "transact" || plan.op === "operation") && res.ok) {
+      const ack = body as { t?: unknown; clientTxId?: unknown; clientOpId?: unknown } | null;
       const echoT = typeof ack?.t === "number" ? ack.t : undefined;
-      let echoId = typeof ack?.clientTxId === "string" && ack.clientTxId.length > 0 ? ack.clientTxId : undefined;
+      let echoId =
+        typeof ack?.clientTxId === "string" && ack.clientTxId.length > 0
+          ? ack.clientTxId
+          : typeof ack?.clientOpId === "string" && ack.clientOpId.length > 0
+            ? ack.clientOpId
+            : undefined;
       if (echoId === undefined && plan.body !== undefined) {
         try {
-          const req = JSON.parse(plan.body) as { clientTxId?: unknown };
+          const req = JSON.parse(plan.body) as { clientTxId?: unknown; clientOpId?: unknown };
           if (typeof req.clientTxId === "string" && req.clientTxId.length > 0) echoId = req.clientTxId;
+          else if (typeof req.clientOpId === "string" && req.clientOpId.length > 0) echoId = req.clientOpId;
         } catch {
-          /* body was not JSON — no clientTxId to echo */
+          /* body was not JSON — no client id to echo */
         }
       }
       if (echoT !== undefined && echoId !== undefined) writerEcho = { t: echoT, clientTxId: echoId };

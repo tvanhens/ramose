@@ -387,6 +387,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     await this.sync();
     const dbName = this.dbName as string;
     if (!this.root) return json({ error: "database has no root yet" }, 503);
+    if (rest === "/op" && init.method === "POST") {
+      return json({ error: "operations must be POSTed to /db/:name/op" }, 400);
+    }
     if (rest === "/transact" && init.method === "POST") {
       let tx: unknown = [];
       let clientTxId: string | undefined;

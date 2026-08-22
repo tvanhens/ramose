@@ -11,6 +11,7 @@
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
  *   POST /db/:name/transact   { tx, clientTxId? }        → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
+ *   POST /db/:name/op         { name, entity?, input, clientOpId } → { t, txEid, tempids, datoms, clientOpId, output }
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
@@ -38,7 +39,9 @@ import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalOf, viewDb } from "./auth.ts";
-import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
+import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
+import { type PeerOptions, prepareOperation } from "./operations.ts";
+export type { PeerOptions } from "./operations.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
@@ -160,6 +163,7 @@ const recover = (info: RequestInfo, t0: number) => ({
       plog.error("request.error", { db: info.db, path: info.path, error: e.message });
       return respond(e);
     }),
+  OperationRejected: (e: OperationRejected) => Effect.sync(() => respond(e)),
 });
 
 /** One Analytics Engine point per request; never fails or delays the response. */
@@ -202,7 +206,7 @@ async function ingress(request: Request, env: RamoseEnv, db: string, principal: 
 }
 
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
-async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number): Promise<Response> {
+async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, peer: PeerOptions): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
   const policy = authState(env).policy;
@@ -212,8 +216,118 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   const adminOnly = () => {
     if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
   };
+  const writes =
+    peer.writes ??
+    (env.RAMOSE_WRITES === "operations" ? "operations" : "all");
+  if (
+    writes === "operations" &&
+    rest === "/transact" &&
+    request.method === "POST" &&
+    !isAdmin(principal)
+  ) {
+    throw new Unauthorized({
+      status: 403,
+      message: "raw transact is disabled; use operations",
+      code: "operations",
+    });
+  }
 
   // ---- writes → Transactor DO
+  if (rest === "/op" && request.method === "POST") {
+    let raw: { name?: unknown; entity?: unknown; input?: unknown; clientOpId?: unknown };
+    try {
+      raw = JSON.parse(await request.text()) as typeof raw;
+    } catch {
+      throw new BadRequest({ message: "body must be { name, input, clientOpId? }" });
+    }
+    const opName = typeof raw.name === "string" ? raw.name : "";
+    if (opName.length === 0) throw new BadRequest({ message: "body must be { name, input, clientOpId? }" });
+    const clientOpId =
+      typeof raw.clientOpId === "string" && raw.clientOpId.length > 0 ? raw.clientOpId : undefined;
+
+    if (clientOpId !== undefined) {
+      const replay = await transactor().fetch(txUrl("/op-ack"), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...internalHeaders(env) },
+        body: JSON.stringify({ clientOpId, principal }),
+      });
+      if (replay.ok) {
+        const hit = fromJson(await replay.json()) as { ack?: Record<string, unknown> | null };
+        if (hit?.ack !== undefined && hit.ack !== null) {
+          return json({ ...hit.ack, clientOpId }, 200, { "x-ramose-ms": String(Date.now() - t0) });
+        }
+      }
+    }
+
+    const prepared = await prepareOperation({
+      env,
+      request,
+      db,
+      principal,
+      registry: peer.operations,
+      name: opName,
+      entity: raw.entity,
+      input: raw.input,
+      clientOpId,
+    });
+
+    let tx = prepared.tx;
+    let who = prepared.principal;
+    if (policy !== undefined && tx.length > 0) {
+      const bf = await fetchBasisWithStats(env, db, request);
+      const checked = await checkWrite(env, who, segmentSource(env, db), bf.basis, tx);
+      if (checked.kind === "skip") {
+        return json(
+          { t: bf.basis.t, txEid: 0, tempids: {}, datoms: [], output: prepared.output, ...(clientOpId !== undefined ? { clientOpId } : {}) },
+          200,
+          { "x-ramose-ms": String(Date.now() - t0) },
+        );
+      }
+      tx = checked.tx as unknown[];
+      who = checked.principal;
+    }
+
+    if (tx.length === 0) {
+      const bf = await fetchBasisWithStats(env, db, request);
+      const emptyAck = {
+        t: bf.basis.t,
+        txEid: 0,
+        tempids: {},
+        datoms: [],
+        output: prepared.output,
+        ...(clientOpId !== undefined ? { clientTxId: clientOpId } : {}),
+      };
+      if (clientOpId !== undefined) {
+        await transactor().fetch(txUrl("/op-ack"), {
+          method: "POST",
+          headers: { "content-type": "application/json", ...internalHeaders(env) },
+          body: JSON.stringify({ clientOpId, principal: who, ack: emptyAck }),
+        });
+      }
+      return json({ ...emptyAck, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, {
+        "x-ramose-ms": String(Date.now() - t0),
+      });
+    }
+
+    const forward = JSON.stringify({
+      tx: toJson(tx),
+      principal: who,
+      ...(clientOpId !== undefined ? { clientTxId: clientOpId, opOutput: prepared.output } : { opOutput: prepared.output }),
+    });
+    const res = await transactor().fetch(txUrl("/transact"), {
+      method: "POST",
+      body: forward,
+      headers: { "content-type": "application/json", ...coloHeader(request), ...internalHeaders(env) },
+    });
+    invalidateBasis(db);
+    const ms = Date.now() - t0;
+    peerMetrics.transacts.mark(1);
+    peerMetrics.transactMs.observe(ms);
+    const headers = { "content-type": "application/json", ...CORS, "x-ramose-ms": String(ms) };
+    if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
+    const ack = fromJson(await res.json()) as Record<string, unknown>;
+    return json({ ...ack, output: ack.output ?? prepared.output, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
+  }
   if (rest === "/transact" && request.method === "POST") {
     let body = await request.text();
     if (policy !== undefined) {
@@ -344,7 +458,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
 }
 
 /** The request, as one Effect: `Response` on success, a tagged failure otherwise. */
-const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo): Effect.Effect<Response, RamoseError> =>
+const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo, peer: PeerOptions): Effect.Effect<Response, RamoseError> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
@@ -379,22 +493,36 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo)
     });
 
     return yield* Effect.tryPromise({
-      try: () => route(request, env, url, db, rest, principal, t0),
+      try: () => route(request, env, url, db, rest, principal, t0, peer),
       catch: (err) => fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }),
     });
   });
 
-export default {
-  async fetch(request: Request, env: RamoseEnv, ctx?: ExecutionContext): Promise<Response> {
-    const t0 = Date.now();
-    const info: RequestInfo = { db: "-", path: "-", route: "other" };
-    return Effect.runPromise(
-      handle(request, env, t0, info).pipe(
-        Effect.catchTags(recover(info, t0)),
-        Effect.map((res) => withCors(env, request, res)),
-        Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),
-        Effect.provideService(Analytics, fromBinding(bindingOf(env))),
-      ),
-    );
-  },
+const runFetch = (
+  request: Request,
+  env: RamoseEnv,
+  peer: PeerOptions,
+): Promise<Response> => {
+  const t0 = Date.now();
+  const info: RequestInfo = { db: "-", path: "-", route: "other" };
+  return Effect.runPromise(
+    handle(request, env, t0, info, peer).pipe(
+      Effect.catchTags(recover(info, t0)),
+      Effect.map((res) => withCors(env, request, res)),
+      Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),
+      Effect.provideService(Analytics, fromBinding(bindingOf(env))),
+    ),
+  );
 };
+
+/**
+ * Build a peer Worker over a bundled operations registry.
+ * `writes: "operations"` rejects raw `/transact` for non-admin tokens.
+ */
+export const createPeer = (options: PeerOptions = {}) => ({
+  async fetch(request: Request, env: RamoseEnv, _ctx?: ExecutionContext): Promise<Response> {
+    return runFetch(request, env, options);
+  },
+});
+
+export default createPeer();

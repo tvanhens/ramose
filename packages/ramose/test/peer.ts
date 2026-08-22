@@ -105,7 +105,13 @@ export type Http = NonNullable<PeerOptions["http"]>;
 const defaultHttp: Http = (call) => {
   const info = /^\/db\/([^/]+)\/info$/.exec(new URL(call.url).pathname);
   if (info !== null && call.method === "GET") {
-    return { body: { db: decodeURIComponent(info[1]!), t: DEFAULT_ACK.t } };
+    return {
+      body: {
+        db: decodeURIComponent(info[1]!),
+        t: DEFAULT_ACK.t,
+        principal: { eid: null, class: "admin" },
+      },
+    };
   }
   return { body: DEFAULT_ACK };
 };

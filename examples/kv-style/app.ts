@@ -143,6 +143,8 @@ export const App = Cloudflare.Worker(
           DatabaseNotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
           InternalError: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
           NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
+          OperationRejected: (e) =>
+            HttpServerResponse.json({ error: e.message, name: e.name }, { status: 409 }),
         }),
       ),
     };

@@ -16,6 +16,7 @@ import {
   Unavailable,
   TxRejected,
   Unauthorized,
+  OperationRejected,
 } from "../src/db/Errors.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
@@ -94,6 +95,20 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
 });
 
 describe("fromResponse — DO errors passed through (tagged)", () => {
+  test("409 OperationRejected keeps name / reason", () => {
+    const e = fromResponse(409, {
+      error: "OperationRejected",
+      tag: "OperationRejected",
+      message: "entity 1 does not exist",
+      name: "issue/close",
+      reason: "dangling",
+    }) as OperationRejected;
+    expect(e._tag).toBe("OperationRejected");
+    expect(e.name).toBe("issue/close");
+    expect(e.reason).toBe("dangling");
+    expect(e.message).toBe("entity 1 does not exist");
+  });
+
   test("409 TxRejected keeps the TxError code", () => {
     const e = fromResponse(409, {
       error: ":user/email is unique and already asserted",
@@ -169,6 +184,7 @@ describe("isDatabaseError", () => {
       new QueryBudgetExceeded({ message: "", code: "", clause: "", cells: 0, limit: 0 }),
       new InternalError({ message: "" }),
       new NetworkError({ message: "" }),
+      new OperationRejected({ message: "", name: "x" }),
     ];
     for (const e of all) expect(isDatabaseError(e)).toBe(true);
   });

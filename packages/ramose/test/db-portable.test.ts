@@ -160,6 +160,10 @@ describe("the `/db` barrel's public names", () => {
         // the database-name rule (issue #37)
         "DATABASE_NAME_RE",
         "isDatabaseName",
+        // operations (issue #160)
+        "EntityId",
+        "Operation",
+        "Operations",
         // errors
         "TxRejected",
         "Unavailable",
@@ -171,6 +175,7 @@ describe("the `/db` barrel's public names", () => {
         "NetworkError",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
+        "OperationRejected",
         "ParamError",
       ].sort(),
     );

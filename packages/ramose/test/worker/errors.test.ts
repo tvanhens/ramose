@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { PolicyBudgetError, QueryBudgetError } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
-import { BadRequest, Internal, NotFound, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
+import { BadRequest, Internal, NotFound, OperationRejected, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
 
 describe("tagged failure → status/body", () => {
   test("NotFound → 404 { error }", () => {
@@ -53,6 +53,21 @@ describe("tagged failure → status/body", () => {
     expect(toHttp(new Internal({ message: "kaboom" }))).toEqual({ status: 500, body: { error: "kaboom", stack: undefined } });
   });
 
+  test("OperationRejected → 409 { tag, name, step?, reason? }", () => {
+    expect(
+      toHttp(new OperationRejected({ message: "gone", name: "issue/close", reason: "dangling" })),
+    ).toEqual({
+      status: 409,
+      body: {
+        error: "OperationRejected",
+        tag: "OperationRejected",
+        message: "gone",
+        name: "issue/close",
+        reason: "dangling",
+      },
+    });
+  });
+
   test("UpstreamError passes the DO response through verbatim", () => {
     const headers = { "content-type": "application/json", "x-ramose-ms": "3" };
     expect(toHttp(new UpstreamError({ status: 409, body: '{"error":"cas failed"}', headers }))).toEqual({ status: 409, raw: '{"error":"cas failed"}', headers });
@@ -92,6 +107,7 @@ describe("Effect.catchTags dispatch", () => {
     UpstreamError: (e: UpstreamError) => Effect.succeed(toHttp(e)),
     QueryBudgetExceeded: (e: QueryBudgetExceeded) => Effect.succeed(toHttp(e)),
     Internal: (e: Internal) => Effect.succeed(toHttp(e)),
+    OperationRejected: (e: OperationRejected) => Effect.succeed(toHttp(e)),
   };
   const run = (e: RamoseError) => Effect.runPromise(Effect.fail(e).pipe(Effect.catchTags(recover)));
 
@@ -102,5 +118,6 @@ describe("Effect.catchTags dispatch", () => {
     expect((await run(new UpstreamError({ status: 503, body: "down" }))).status).toBe(503);
     expect((await run(new QueryBudgetExceeded({ message: "m", code: "query/budget-exceeded", clause: "c", cells: 2, limit: 1 }))).status).toBe(413);
     expect((await run(new Internal({ message: "m" }))).status).toBe(500);
+    expect((await run(new OperationRejected({ message: "m", name: "x" }))).status).toBe(409);
   });
 });

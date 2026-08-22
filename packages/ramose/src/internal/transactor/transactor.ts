@@ -71,6 +71,8 @@ export interface TxAck {
   /** facts that landed, already filtered for this principal */
   datoms: WireDatom[];
   clientTxId?: string;
+  /** Encoded operation output; present when this ack is an operation replay. */
+  output?: unknown;
 }
 
 export interface TransactorStats {
@@ -100,8 +102,15 @@ interface Pending {
   principal?: Principal;
   /** opaque client id; a replay of a recent id returns the original ack */
   clientTxId?: string;
+  /** Encoded operation output to persist with the ack (effects must not re-run). */
+  opOutput?: unknown;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
+}
+
+interface StoredOpAck {
+  readonly k: string;
+  readonly ack: TxAck;
 }
 
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
@@ -140,6 +149,8 @@ export class Transactor {
   private dead: string | undefined;
   /** recent `clientTxReplayKey(principal, clientTxId)` → original ack; replay must not assign a second `t` */
   private readonly recentAcks = new Map<string, TxAck>();
+  /** persisted operation acks (includes `output`); loaded from `meta.op_acks` */
+  private readonly recentOpAcks = new Map<string, TxAck>();
   readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
@@ -194,6 +205,10 @@ export class Transactor {
     const nextEid = this.getMeta<number>("next_eid") ?? rec.next_eid;
     const logDatoms = this.readLogDatoms(roots.t);
     this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, { now: () => this.host.now() });
+    for (const row of this.getMeta<StoredOpAck[]>("op_acks") ?? []) {
+      this.recentOpAcks.set(row.k, row.ack);
+      this.recentAcks.set(row.k, row.ack);
+    }
     // txs already in the log but not yet indexed count toward the next index run
     this.txSinceIndex = Math.max(0, this.conn.t - roots.t);
     const c = this.host.config;
@@ -297,14 +312,15 @@ export class Transactor {
   // ---------------------------------------------------------------------------
 
   /** Submit a transaction. Resolves once it is durably committed. */
-  transact(tx: TxData, principal?: Principal, clientTxId?: string): Promise<TxAck> {
+  transact(tx: TxData, principal?: Principal, clientTxId?: string, opOutput?: unknown): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
-      const hit = this.recentAcks.get(clientTxReplayKey(principal, clientTxId));
+      const key = clientTxReplayKey(principal, clientTxId);
+      const hit = this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
       if (hit) return Promise.resolve(hit);
     }
     return new Promise<TxAck>((resolve, reject) => {
-      this.queue.push({ tx, principal, clientTxId, resolve, reject });
+      this.queue.push({ tx, principal, clientTxId, opOutput, resolve, reject });
       if (!this.committing) {
         this.committing = true;
         void this.commitLoop();
@@ -312,13 +328,28 @@ export class Transactor {
     });
   }
 
-  private rememberAck(id: string, ack: TxAck): void {
+  private rememberAck(id: string, ack: TxAck, persist: boolean): void {
     this.recentAcks.set(id, ack);
     while (this.recentAcks.size > RECENT_CLIENT_TX_LIMIT) {
       const first = this.recentAcks.keys().next().value;
       if (first === undefined) break;
       this.recentAcks.delete(first);
     }
+    if (persist) {
+      this.recentOpAcks.set(id, ack);
+      const list = [...this.recentOpAcks.entries()].map(([k, a]) => ({ k, ack: a }));
+      const trimmed = list.length > RECENT_CLIENT_TX_LIMIT ? list.slice(-RECENT_CLIENT_TX_LIMIT) : list;
+      if (trimmed.length < list.length) {
+        this.recentOpAcks.clear();
+        for (const row of trimmed) this.recentOpAcks.set(row.k, row.ack);
+      }
+      this.setMeta("op_acks", trimmed);
+    }
+  }
+
+  lookupOpAck(principal: Principal | undefined, clientOpId: string): TxAck | undefined {
+    const key = clientTxReplayKey(principal, clientOpId);
+    return this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
   }
 
   private takeBatch(): Pending[] {
@@ -378,6 +409,7 @@ export class Transactor {
               tempids: rep.tempids,
               datoms: await this.ackDatoms(rep.txData, p.principal),
               ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
+              ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
             };
             if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
             acks.push({ p, ack });
@@ -399,6 +431,16 @@ export class Transactor {
           this.host.transactionSync(() => {
             for (const e of entries) this.appendLogRow(e);
             this.setMeta("next_eid", this.conn.nextEntityId);
+            const persist = [...batchAcks].filter(([, a]) => a.output !== undefined);
+            if (persist.length > 0) {
+              for (const [id, ack] of persist) this.recentOpAcks.set(id, ack);
+              this.setMeta(
+                "op_acks",
+                [...this.recentOpAcks.entries()]
+                  .map(([k, a]) => ({ k, ack: a }))
+                  .slice(-RECENT_CLIENT_TX_LIMIT),
+              );
+            }
           });
         } catch (err) {
           // Memory and durable state diverged (t was assigned, nothing landed):
@@ -420,7 +462,7 @@ export class Transactor {
         this.commitLatency.observe(writeMs);
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
-        for (const [id, ack] of batchAcks) this.rememberAck(id, ack);
+        for (const [id, ack] of batchAcks) this.rememberAck(id, ack, ack.output !== undefined);
         for (const a of acks) a.p.resolve(a.ack);
         // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
         const loopMs = performance.now() - tLoop;
@@ -631,11 +673,33 @@ export class Transactor {
 
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
+    if (path === "/op-ack" && request.method === "POST") {
+      const body = fromJson(await request.json()) as {
+        clientOpId?: unknown;
+        principal?: unknown;
+        ack?: TxAck;
+      };
+      if (typeof body.clientOpId !== "string" || body.clientOpId.length === 0) {
+        throw new BadRequest({ message: "body must be { clientOpId }" });
+      }
+      const principal = asPrincipal(body.principal);
+      if (body.ack !== undefined && body.ack !== null) {
+        const key = clientTxReplayKey(principal, body.clientOpId);
+        this.rememberAck(key, { ...body.ack, clientTxId: body.clientOpId }, true);
+        return json({ ack: body.ack });
+      }
+      return json({ ack: this.lookupOpAck(principal, body.clientOpId) ?? null });
+    }
     if (path === "/transact" && request.method === "POST") {
-      const body = fromJson(await request.json()) as { tx?: TxData; principal?: unknown; clientTxId?: unknown };
+      const body = fromJson(await request.json()) as {
+        tx?: TxData;
+        principal?: unknown;
+        clientTxId?: unknown;
+        opOutput?: unknown;
+      };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
-      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId);
+      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, body.opOutput);
       return json(ack);
     }
     if (path === "/info") return json(this.info());

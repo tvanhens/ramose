@@ -31,10 +31,17 @@ export class Unauthorized extends Data.TaggedError("Unauthorized")<{
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly status: number; readonly body: string; readonly headers?: Record<string, string> }> {}
 export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number }> {}
 export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string }> {}
+/** An operation was refused (dangling / foreign entity, body rejection). */
+export class OperationRejected extends Data.TaggedError("OperationRejected")<{
+  readonly message: string;
+  readonly name: string;
+  readonly step?: string;
+  readonly reason?: string;
+}> {}
 
-export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal;
+export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal | OperationRejected;
 
-const TAGS = new Set(["NotFound", "BadRequest", "Unauthorized", "UpstreamError", "QueryBudgetExceeded", "Internal"]);
+const TAGS = new Set(["NotFound", "BadRequest", "Unauthorized", "UpstreamError", "QueryBudgetExceeded", "Internal", "OperationRejected"]);
 
 /** A tagged failure that was `throw`n inside an async route body. */
 export const isRamoseError = (e: unknown): e is RamoseError => typeof e === "object" && e !== null && TAGS.has((e as { _tag?: string })._tag ?? "");
@@ -100,5 +107,17 @@ export function toHttp(err: RamoseError): HttpError {
       return { status: 413, body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit } };
     case "Internal":
       return { status: 500, body: { error: err.message, stack: err.trace } };
+    case "OperationRejected":
+      return {
+        status: 409,
+        body: {
+          error: "OperationRejected",
+          tag: "OperationRejected",
+          message: err.message,
+          name: err.name,
+          ...(err.step === undefined ? {} : { step: err.step }),
+          ...(err.reason === undefined ? {} : { reason: err.reason }),
+        },
+      };
   }
 }

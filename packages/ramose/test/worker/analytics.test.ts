@@ -42,6 +42,7 @@ describe("http data point", () => {
 
   test("route labels", () => {
     expect(routeOf("/transact", "POST")).toBe("transact");
+    expect(routeOf("/op", "POST")).toBe("op");
     expect(routeOf("/query", "POST")).toBe("query");
     expect(routeOf("/pull", "POST")).toBe("pull");
     expect(routeOf("/info", "GET")).toBe("info");
