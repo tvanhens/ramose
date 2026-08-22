@@ -205,8 +205,12 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
           : "member";
       let eid: number | null = null;
       if (sub !== undefined) {
-        const found = await conn.db().entid([":user/sub", sub] as never);
-        if (found !== undefined) eid = found;
+        try {
+          const found = await conn.db().entid([":user/sub", sub] as never);
+          if (found !== undefined) eid = found;
+        } catch {
+          // First provision hits /info (for db.run) before /op installs the catalog.
+        }
       }
       return new Response(
         JSON.stringify({ db: "coral-team", t: conn.t, principal: { eid, class: cls } }),
