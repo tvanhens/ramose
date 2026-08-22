@@ -10,27 +10,16 @@ commands, tests and CI. All documentation lives on the docs site
 ([ramose.ai](https://ramose.ai), source in `website/`) — there is no in-repo
 `docs/` folder.
 
-## Pre-launch API overhaul (read before changing public API)
+## API overhaul decisions (binding for public-surface work)
 
-A full public-API review and cleanup plan is in flight: `API-REVIEW.md` at the
-repo root, tracked by GitHub issue #205 (issues #170–#209). Four standing
-decisions govern all public-surface work — do not contradict them:
-
-1. **Operations only.** `Operation`/`db.run` is the sole write path;
-   `db.transact` is being retired from the public surface (#174).
-2. **Effect is hidden from app users** (#206). `ramose/db` client surface and
-   `ramose/react` must expose zero Effect types — promises, plain tagged
-   errors, subscription handles, async operation bodies. Effect stays internal
-   and behind an explicit escape hatch. Deploy files remain Effect-flavored.
-3. **The API adopts the docs' vocabulary** (#204). `Entity`/`Field`/`Schema`,
-   `set`/`remove`/`delete`, `ServerAuth`; see #204 for the full name map.
-4. **North star: MCP-native** (#209, deferred). Keep the projection cheap:
-   named ops only, the registry on `Server`, serializable query values,
-   `doc:` on operations.
-
-When picking up one of the tracked issues, read its body including any
-"Amendment" sections — several were re-scoped after the decisions landed.
-Check the box in #205 when an issue closes.
+Cleanup tracker: issue #205 (issues #170–#209). Four standing decisions —
+do not contradict them: (1) operations only — `db.run` is the sole write
+path, `db.transact` retires; (2) zero Effect types on the app surface
+(`ramose/db` client, `ramose/react`) — promises, plain tagged errors,
+subscriptions; (3) naming per #204's map (`Entity`/`Field`/`Schema`,
+`set`/`remove`/`delete`); (4) queries and operations stay serializable
+(future MCP projection, #209). Read your issue's "Amendment" sections —
+several were re-scoped after these decisions.
 
 ## Cursor Cloud specific instructions
 
