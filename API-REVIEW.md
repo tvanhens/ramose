@@ -27,8 +27,19 @@ claims by executing the engine or lowering real queries.
 >    `set`/`remove`/`delete`, `ServerAuth`; the translation layer leaves the
 >    docs.
 >
+> 4. **North star: MCP-native**
+>    ([#209](https://github.com/tvanhens/ramose/issues/209), deferred). Every
+>    app eventually gets an MCP endpoint as a fourth transport over the
+>    existing wire — four constant-size tools (`learn`/`query`/`pull`/`run`),
+>    agents as ordinary principals. Not part of this cleanup, but the cleanup
+>    keeps the projection cheap: named ops only, the registry on `Server`,
+>    serializable query values, `doc:` on operations. The companion
+>    "Ramose, Pruned" proposal is reconciled into the issues; its move 5 is
+>    superseded by decision 1, and its frozen-core list is overridden by
+>    decisions 2–3.
+>
 > This report is filed as issues
-> [#170](https://github.com/tvanhens/ramose/issues/170)–[#208](https://github.com/tvanhens/ramose/issues/208),
+> [#170](https://github.com/tvanhens/ramose/issues/170)–[#209](https://github.com/tvanhens/ramose/issues/209),
 > tracked by [#205](https://github.com/tvanhens/ramose/issues/205). Findings
 > below are as reviewed; the issues carry the decision-driven amendments.
 
