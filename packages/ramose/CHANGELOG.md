@@ -16,6 +16,19 @@ into a `rules` section of the policy JSON (wire version 2). Deploy-time
 validation walks rule bodies through the query validator. Installed
 policies recompile at deploy — no data migration.
 
+### Visible-set materialization (#156)
+
+On a read, a named fragment rule is evaluated **once** with the focus
+free — every `e` visible to `me` — and cached on the request's
+`PolicyMemo`. The per-datom check in `FilteredDb` is then a set-membership
+lookup. Same rule, same engine, same unfiltered basis as the per-entity
+path (#154); only the binding pattern changes.
+
+A set larger than `visibleSetMax` (default 10,000) or that blows the
+query-cell budget falls back to per-entity evaluation for that request
+and emits `policy.visible-set-fallback` (the telemetry #157 uses).
+`true` arms, admins, and write verbs never materialize a set.
+
 ### Fragment-rule evaluation (#154)
 
 A named fragment arm is one engine query over the unfiltered rule db,
