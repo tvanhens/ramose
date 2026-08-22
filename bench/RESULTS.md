@@ -511,3 +511,24 @@ narrowing stay on the existing walker; v2 is at or under v1. The selective
 own-issue miss is one engine query per unseen entity (400 candidates → 20
 visible) and is ~7× the expression walk — the cost #154 accepted, and the
 workload #156 (set materialization) is sequenced to absorb.
+
+## Policy visible-set materialization (#156)
+
+Same machine, dataset, and `bun run bench:policy` as #154. v2 per-entity is
+`visibleSetMax: 0` (the #154 path). v2 set is the request-scoped free-focus
+query plus membership lookup.
+
+| path | rows | v1 p50 | v2 per-entity p50 | v2 set p50 | v2 set p95 |
+|---|---|---|---|---|---|
+| unfiltered issue titles | 400 | — | — | 0.14 ms | 0.20 ms |
+| reef titles (`read: true`) | 400 | 0.33 ms | — | **0.24 ms** | 0.31 ms |
+| reef comments (`read: true`) | 800 | 0.49 ms | — | **0.46 ms** | 1.13 ms |
+| reef `privateNote` scrub (member) | 0 | 0.07 ms | — | **0.07 ms** | 0.14 ms |
+| own-issue titles (selective) | 20 | 0.67 ms | 4.77 ms | **0.41 ms** | 0.98 ms |
+
+**Selective scan is the win.** 400 candidates / 20 visible: one set query
+replaces 400 per-entity queries and takes the own-issue path from 4.77 ms
+to 0.41 ms (~12×), under the v1 expression walk. Reef `true` arms are
+unchanged (they never hit the engine). A set that blows `visibleSetMax`
+or the cell budget still falls back to the 4.77 ms column — that event is
+the #157 signal.
