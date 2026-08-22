@@ -532,6 +532,40 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
+  test("ramose.attrs name/email materialize on first /info and update on change", async () => {
+    const peer = makePeer("acme", { env: policyEnv() });
+    await peer.seed([
+      ...SCHEMA,
+      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const firstTok = await token("acme", "member", "user_zoe", { name: "Zoe", email: "zoe@acme.test" });
+    const first = await peer.json("/db/acme/info", { token: firstTok });
+    const eid = first.body.principal.eid as number;
+    expect(eid).toBeGreaterThan(0);
+    const pulled = await peer.json(
+      "/db/acme/pull",
+      post({ eid, pattern: [":user/sub", ":user/role", ":user/name", ":user/email"] }, firstTok),
+    );
+    expect(pulled.body.result).toMatchObject({
+      ":user/sub": "user_zoe",
+      ":user/role": "member",
+      ":user/name": "Zoe",
+      ":user/email": "zoe@acme.test",
+    });
+
+    const renamed = await token("acme", "member", "user_zoe", { name: "Zoe Ames", email: "zoe@acme.test" });
+    const again = await peer.json("/db/acme/info", { token: renamed });
+    expect(again.body.principal).toEqual({ eid, class: "member" });
+    const after = await peer.json(
+      "/db/acme/pull",
+      post({ eid, pattern: [":user/name", ":user/email"] }, renamed),
+    );
+    expect(after.body.result).toMatchObject({ ":user/name": "Zoe Ames", ":user/email": "zoe@acme.test" });
+    peer.close();
+  });
+
   test("no policy: /info still names the caller — class admin, no entity to resolve", async () => {
     const peer = makePeer("demo");
     await peer.seed(SCHEMA);

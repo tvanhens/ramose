@@ -280,11 +280,20 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
 
 /** Only *found* entities are cached: a user created moments ago must resolve now. */
 const eids = new Map<string, { eid: number; at: number }>();
-/** Isolate memo: this `(sub, db, class)` was provisioned — skip the writer round-trip. */
+/** Isolate memo: this `(sub, db, class, attrs)` was provisioned — skip the writer round-trip. */
 const provisioned = new Map<string, { eid: number; at: number }>();
 
 const eidKey = (sub: string, dbName: string): string => `${sub}|${dbName}`;
-const provisionKey = (sub: string, dbName: string, cls: string): string => `${sub}|${dbName}|${cls}`;
+
+/** Stable fingerprint so a renamed user re-provisions; skipped keys still change the key. */
+const attrsFingerprint = (attrs: Readonly<Record<string, unknown>> | undefined): string => {
+  if (attrs === undefined) return "";
+  const keys = Object.keys(attrs).sort();
+  return JSON.stringify(keys.map((k) => [k, attrs[k]]));
+};
+
+const provisionKey = (principal: Principal): string =>
+  `${principal.sub}|${principal.db}|${principal.class}|${attrsFingerprint(principal.claims.attrs)}`;
 
 /** Drop a cached `sub → eid` (and any provision memo for that pair) after a write. */
 export function forgetEid(sub: string, dbName: string): void {
@@ -300,14 +309,14 @@ export function rememberProvisioned(principal: Principal, eid: number): Principa
   if (eids.size > 256) eids.clear();
   if (provisioned.size > 256) provisioned.clear();
   eids.set(eidKey(principal.sub, principal.db), { eid, at: now });
-  provisioned.set(provisionKey(principal.sub, principal.db, principal.class), { eid, at: now });
+  provisioned.set(provisionKey(principal), { eid, at: now });
   return { ...principal, eid };
 }
 
-/** A still-fresh provision memo for this token class, if we already wrote the row. */
+/** A still-fresh provision memo for this token class + attrs, if we already wrote the row. */
 export function cachedProvision(principal: Principal): number | undefined {
   if (principal.sub === undefined) return undefined;
-  const hit = provisioned.get(provisionKey(principal.sub, principal.db, principal.class));
+  const hit = provisioned.get(provisionKey(principal));
   if (hit === undefined || Date.now() - hit.at >= PRINCIPAL_MEMO_MS) return undefined;
   return hit.eid;
 }

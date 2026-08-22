@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { parsePolicy } from "../../../src/internal/core/policy/ast.ts";
 import { anonymousPrincipal } from "../../../src/internal/core/policy/principal.ts";
-import { provisionTx, resolveProvisionedEid, roleIdentOf, shouldProvision } from "../../../src/internal/core/policy/provision.ts";
+import { provisionTx, resolveProvisionedEid, roleIdentOf, shouldProvision, siblingIdentOf } from "../../../src/internal/core/policy/provision.ts";
 import type { Principal } from "../../../src/internal/core/policy/principal.ts";
 
 const POLICY = parsePolicy({
@@ -23,16 +23,17 @@ const SCHEMA = [
   { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
 ];
 
-const user = (sub: string, cls = "member"): Principal => ({
+const user = (sub: string, cls = "member", attrs?: Record<string, unknown>): Principal => ({
   kind: "user",
   class: cls,
   sub,
-  claims: { sub },
+  claims: { sub, ...(attrs === undefined ? {} : { attrs }) },
   db: "acme",
 });
 
 describe("provisionTx", () => {
   test("roleIdentOf is the sibling :ns/role of the principal attr", () => {
+    expect(siblingIdentOf(":user/sub", "name")).toBe(":user/name");
     expect(roleIdentOf(":user/sub")).toBe(":user/role");
   });
 
@@ -74,5 +75,35 @@ describe("provisionTx", () => {
     expect(create).toEqual([{ ":user/sub": "zoe" }]);
     await conn.transact(create!);
     expect(await provisionTx(POLICY, user("zoe"), conn.db())).toBeUndefined();
+  });
+
+  test("ramose.attrs stamp sibling facts; a rename upserts; reserved keys and type mismatches are skipped", async () => {
+    const conn = await Connection.create();
+    await conn.transact([
+      ...SCHEMA,
+      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/score", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+
+    const first = await provisionTx(
+      POLICY,
+      user("ada", "member", { name: "Ada", email: "ada@acme.test", role: "viewer", score: "nope", ghost: "x" }),
+      conn.db(),
+    );
+    expect(first).toEqual([
+      { ":user/sub": "ada", ":user/role": "member", ":user/name": "Ada", ":user/email": "ada@acme.test" },
+    ]);
+    await conn.transact(first!);
+    expect(await provisionTx(POLICY, user("ada", "member", { name: "Ada", email: "ada@acme.test" }), conn.db())).toBeUndefined();
+
+    const renamed = await provisionTx(POLICY, user("ada", "member", { name: "Ada Lovelace", email: "ada@acme.test" }), conn.db());
+    expect(renamed).toEqual([
+      { ":user/sub": "ada", ":user/role": "member", ":user/name": "Ada Lovelace", ":user/email": "ada@acme.test" },
+    ]);
+    await conn.transact(renamed!);
+    const eid = await resolveProvisionedEid(POLICY, user("ada"), conn.db());
+    expect((await conn.db().entity(eid!))![":user/name"]).toBe("Ada Lovelace");
+    expect((await conn.db().entity(eid!))![":user/role"]).toBe("member");
   });
 });

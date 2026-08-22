@@ -218,10 +218,11 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
   /**
    * Who this session is — the peer resolves `sub → eid` at its end, so no
-   * query is needed to learn your own entity. `eid` is `null` while the
-   * principal's row does not exist yet; a `null` is never cached, so re-read
-   * it after transacting the row. A non-`null` answer is cached per session
-   * generation and re-read on reconnect.
+   * query is needed to learn your own entity. A signed-in user is provisioned
+   * at session establishment (`sub`, `role`, matching `ramose.attrs`). `eid`
+   * is `null` for anonymous and service callers; a `null` is never cached.
+   * A non-`null` answer is cached per session generation and re-read on
+   * reconnect.
    */
   principal(): Effect.Effect<DbPrincipal<C>, DbError>;
 

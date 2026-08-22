@@ -125,7 +125,11 @@ describe("ramoseToken", () => {
       audience: AUTH.audience,
     });
     expect(payload.sub).toBe(owner.userId);
-    expect(payload.ramose).toEqual({ db: "acme", class: "admin" });
+    expect(payload.ramose).toEqual({
+      db: "acme",
+      class: "admin",
+      attrs: { name: "owner@acme.test", email: "owner@acme.test" },
+    });
     expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
     expect(payload.exp).toBe(minted.exp);
   });
@@ -376,13 +380,21 @@ describe("JWKS secret rotation", () => {
       issuer: AUTH.issuer,
       audience: AUTH.audience,
     });
-    expect(payload.ramose).toEqual({ db: "acme", class: "admin" });
+    expect(payload.ramose).toEqual({
+      db: "acme",
+      class: "admin",
+      attrs: { name: "owner@acme.test", email: "owner@acme.test" },
+    });
     // The token minted under secret A still verifies — old public key stayed.
     const old = await jwtVerify(first.token, jwks, {
       issuer: AUTH.issuer,
       audience: AUTH.audience,
     });
-    expect(old.payload.ramose).toEqual({ db: "acme", class: "admin" });
+    expect(old.payload.ramose).toEqual({
+      db: "acme",
+      class: "admin",
+      attrs: { name: "owner@acme.test", email: "owner@acme.test" },
+    });
   });
 });
 
