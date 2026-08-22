@@ -77,6 +77,19 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     expect(e.clause).toBe("[?e :user/name ?n]");
     expect(e.cells).toBe(1_000_001);
     expect(e.limit).toBe(1_000_000);
+    expect(e.spentBy).toBeUndefined();
+  });
+
+  test("413 carries spentBy when the server attributed the budget", () => {
+    const e = fromResponse(413, {
+      error: "query budget exceeded",
+      code: "query/budget-exceeded",
+      clause: "(policy/doc/owner ?me ?e)",
+      cells: 9,
+      limit: 8,
+      spentBy: "policy",
+    }) as QueryBudgetExceeded;
+    expect(e.spentBy).toBe("policy");
   });
 
   test("500 → InternalError", () => {

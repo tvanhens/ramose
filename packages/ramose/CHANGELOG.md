@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Policy clause-level pushdown (#157)
+
+A namespace read rule is conjoined into the caller's query **before
+planning**, so visibility rides the same indexes and joins. The crux is a
+two-view join: rule-originated clauses bind against the unfiltered rule
+db (they follow `:doc/owner` even when the caller cannot read it); caller
+clauses bind against the filtered view. Provenance is carried on each
+clause (`origin: "rule" | "caller"`), never inferred.
+
+Conjunction is per entity-var whose namespace has a rule, skipped when
+the arm is `true`, the principal is admin, or the caller's `:where`
+already entails the rule. It always lives in `:where` — a `count` cannot
+include a row the caller could not see. `FilteredDb` remains the
+enforcement backstop for pull, history, raw datom access, and
+attribute-level narrowing.
+
+Rule clauses ride the caller's query budget. `QueryBudgetExceeded` now
+carries `spentBy: "caller" | "policy"` so a policy regression is not
+billed as an app bug. Equivalence (pushdown ≡ filtered-only) is the
+merge gate.
+
 ### Policy rules are query fragments (#153)
 
 The `P.*` expression language (`eq`, `ref`, `and`, `or`, `allow`, …) is

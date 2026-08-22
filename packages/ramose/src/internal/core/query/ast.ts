@@ -16,6 +16,14 @@ export interface Blank {
 }
 export type Term = Var | Const | Blank;
 
+/**
+ * Who introduced a clause into the plan. Caller clauses bind against the
+ * filtered view; rule-originated clauses (policy pushdown) bind against the
+ * unfiltered rule db. Carried on the clause — never inferred — because both
+ * failure directions are security bugs.
+ */
+export type ClauseOrigin = "caller" | "rule";
+
 export interface PatternClause {
   kind: "pattern";
   src?: string; // "$" or "$name"
@@ -24,29 +32,34 @@ export interface PatternClause {
   v: Term;
   tx?: Term;
   op?: Term;
+  origin?: ClauseOrigin;
 }
 export interface PredClause {
   kind: "pred";
   fn: string;
   args: Term[];
+  origin?: ClauseOrigin;
 }
 export interface FnClause {
   kind: "fn";
   fn: string;
   args: Term[];
   binding: Binding;
+  origin?: ClauseOrigin;
 }
 export interface NotClause {
   kind: "not";
   /** for not-join: explicit join vars */
   join?: string[];
   clauses: Clause[];
+  origin?: ClauseOrigin;
 }
 export interface OrClause {
   kind: "or";
   /** for or-join: explicit join vars */
   join?: string[];
   branches: Clause[][];
+  origin?: ClauseOrigin;
 }
 /**
  * Invocation of a named rule from `:rules`: `["memberOf", "?u", "?g"]` in a
@@ -58,6 +71,7 @@ export interface RuleCallClause {
   kind: "rule-call";
   name: string;
   args: Term[];
+  origin?: ClauseOrigin;
 }
 export type Clause =
   | PatternClause
@@ -294,6 +308,18 @@ export interface PullWildcard {
 }
 export type PullSpec = PullAttrSpec | PullWildcard;
 export type PullPattern = PullSpec[];
+
+/** Stamp `origin` through a clause tree (rule expansion inherits the call's origin). */
+export function stampOrigin(c: Clause, origin: ClauseOrigin): Clause {
+  switch (c.kind) {
+    case "not":
+      return { ...c, origin, clauses: c.clauses.map((x) => stampOrigin(x, origin)) };
+    case "or":
+      return { ...c, origin, branches: c.branches.map((b) => b.map((x) => stampOrigin(x, origin))) };
+    default:
+      return c.origin === origin ? c : { ...c, origin };
+  }
+}
 
 export function isVar(t: Term): t is Var {
   return t.kind === "var";

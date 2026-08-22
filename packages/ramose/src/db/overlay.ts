@@ -211,6 +211,7 @@ const classifyQuery = (err: unknown): DbError => {
       clause: err.clause,
       cells: err.cells,
       limit: err.limit,
+      spentBy: err.spentBy,
     });
   }
   if (err instanceof QueryParseError || err instanceof QueryError) {

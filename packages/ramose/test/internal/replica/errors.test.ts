@@ -20,6 +20,7 @@ describe("replica errors: classification", () => {
     expect(q.clause).toBe("[?e :p/friend ?f]");
     expect(q.cells).toBe(5_000_000);
     expect(q.limit).toBe(1_000_000);
+    expect(q.spentBy).toBe("caller");
     expect(q.message).toBe(src.message);
   });
 
@@ -50,6 +51,7 @@ describe("replica errors: tag → status/body", () => {
     expect(b.clause).toBe("[?e :p/friend ?f]");
     expect(b.cells).toBe(5_000_000);
     expect(b.limit).toBe(1_000_000);
+    expect(b.spentBy).toBe("caller");
     expect(b.tag).toBe("QueryBudget");
     expect(String(b.error)).toMatch(/query aborted/);
     expect(b.message).toBe(b.error);

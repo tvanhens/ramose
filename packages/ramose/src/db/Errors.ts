@@ -65,6 +65,8 @@ export class QueryBudgetExceeded extends Data.TaggedError(
   readonly clause: string;
   readonly cells: number;
   readonly limit: number;
+  /** `policy` when a conjoined rule spent the budget, else `caller`. */
+  readonly spentBy?: "caller" | "policy";
 }> {}
 
 /** Anything else the server reported (500). */
@@ -175,6 +177,7 @@ export const fromResponse = (
       clause: str(b.clause, ""),
       cells: num(b.cells, 0),
       limit: num(b.limit, 0),
+      ...(b.spentBy === "policy" || b.spentBy === "caller" ? { spentBy: b.spentBy } : {}),
     });
 
   switch (b.tag) {

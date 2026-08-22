@@ -2,7 +2,7 @@
  * Tagged errors + HTTP mapping for the QueryReplica's request boundary.
  *
  * Same contract as before the refactor: the query budget guard answers 413
- * with { error, code, clause, cells, limit }, client-shaped query errors
+ * with { error, code, clause, cells, limit, spentBy }, client-shaped query errors
  * answer 400, everything else 500. A stable `tag` is added alongside.
  */
 
@@ -10,7 +10,7 @@ import * as Data from "effect/Data";
 import { QueryBudgetError } from "../core/index.ts";
 
 /** Intermediate relation would blow the memory budget → 413. */
-export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number }> {}
+export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number; spentBy?: "caller" | "policy" }> {}
 /** Malformed query / unknown attribute / unbound variable → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}
 /** Anything else → 500. */
@@ -23,7 +23,7 @@ const CLIENT_ERROR = /unknown attribute|not bound|insufficient|parse|EDN|QueryEr
 
 export function toReplicaError(err: unknown): ReplicaHttpError {
   if (err instanceof QueryBudget || err instanceof BadRequest || err instanceof Internal) return err;
-  if (err instanceof QueryBudgetError) return new QueryBudget({ message: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit });
+  if (err instanceof QueryBudgetError) return new QueryBudget({ message: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit, spentBy: err.spentBy });
   const message = err instanceof Error ? err.message : String(err);
   return CLIENT_ERROR.test(message) ? new BadRequest({ message }) : new Internal({ message });
 }
@@ -37,6 +37,7 @@ export function replicaErrorResponse(e: ReplicaHttpError): Response {
     body.clause = e.clause;
     body.cells = e.cells;
     body.limit = e.limit;
+    body.spentBy = e.spentBy ?? "caller";
   }
   return new Response(JSON.stringify(body), { status: statusOf(e), headers: { "content-type": "application/json" } });
 }

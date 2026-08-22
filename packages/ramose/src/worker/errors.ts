@@ -11,7 +11,7 @@
  *   BadRequest          400  { error, stack? }        stack (`trace`) only off-prod
  *   Unauthorized    401/403  { error, code?, attr? }   403 = known caller, policy refused
  *   UpstreamError       as-is  raw body + headers of a Transactor/Replica DO response
- *   QueryBudgetExceeded 413  { error, code, clause, cells, limit }
+ *   QueryBudgetExceeded 413  { error, code, clause, cells, limit, spentBy? }
  *   Internal            500  { error, stack? }        stack (`trace`) only off-prod
  */
 
@@ -29,7 +29,7 @@ export class Unauthorized extends Data.TaggedError("Unauthorized")<{
 }> {}
 /** A Transactor/Replica DO answered with a non-2xx; passed through verbatim. */
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly status: number; readonly body: string; readonly headers?: Record<string, string> }> {}
-export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number }> {}
+export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number; readonly spentBy?: "caller" | "policy" }> {}
 export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string }> {}
 
 export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal;
@@ -46,7 +46,7 @@ export const CLIENT_ERROR_RE = /unknown attribute|not bound|insufficient|parse|E
 export function fromThrown(err: unknown, opts: { readonly stacks: boolean } = { stacks: false }): RamoseError {
   if (isRamoseError(err)) return err;
   if (err instanceof QueryBudgetError) {
-    return new QueryBudgetExceeded({ message: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit });
+    return new QueryBudgetExceeded({ message: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit, spentBy: err.spentBy });
   }
   const message = err instanceof Error ? err.message : String(err);
   const trace = opts.stacks && err instanceof Error ? err.stack : undefined;
@@ -97,7 +97,7 @@ export function toHttp(err: RamoseError): HttpError {
       }
       return { status: err.status, raw: err.body, headers: err.headers };
     case "QueryBudgetExceeded":
-      return { status: 413, body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit } };
+      return { status: 413, body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit, spentBy: err.spentBy ?? "caller" } };
     case "Internal":
       return { status: 500, body: { error: err.message, stack: err.trace } };
   }

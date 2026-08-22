@@ -151,7 +151,7 @@ const recover = (info: RequestInfo, t0: number) => ({
     Effect.sync(() => {
       // planner memory guardrail: clear, tagged, retryable-with-a-narrower-query — never an OOM
       peerMetrics.budgetAborts++;
-      plog.warn("query.budget-exceeded", { db: info.db, clause: e.clause, cells: e.cells, limit: e.limit, ms: Date.now() - t0 });
+      plog.warn("query.budget-exceeded", { db: info.db, clause: e.clause, cells: e.cells, limit: e.limit, spentBy: e.spentBy ?? "caller", ms: Date.now() - t0 });
       return respond(e);
     }),
   Internal: (e: Internal) =>

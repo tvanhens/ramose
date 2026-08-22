@@ -37,6 +37,7 @@ describe("tagged failure → status/body", () => {
     expect(http.body?.clause).toBe("[?e :p/friend ?f]");
     expect(http.body?.cells).toBe(900);
     expect(http.body?.limit).toBe(500);
+    expect(http.body?.spentBy).toBe("caller");
     expect(String(http.body?.error)).toContain("query aborted");
   });
 
@@ -46,6 +47,7 @@ describe("tagged failure → status/body", () => {
     const http = toHttp(err);
     expect(http.status).toBe(413);
     expect(http.body?.code).toBe("policy/budget-exceeded");
+    expect(http.body?.spentBy).toBe("policy");
     expect(String(http.body?.clause)).toContain("policy/doc/owner");
   });
 

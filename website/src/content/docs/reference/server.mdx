@@ -41,7 +41,7 @@ POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only 
 | 401 / 403 | `{ error, code: "policy" }` for a rule, plus `attr` when a field rule tripped; `{ error }` otherwise |
 | 404 | `{ error }` unknown route (a database *name* always exists) |
 | 409 | `{ error, tag, code }` write refused by the writer |
-| 413 | `{ error, clause, cells, limit }` over the query budget |
+| 413 | `{ error, clause, cells, limit, spentBy }` over the query budget |
 | 503 (+ `retry-after`) | `{ error }` writer restarting |
 
 Only errors that come from the writer or a read copy carry a `code`; the Worker's own 400/404/500 bodies are `{ error }`.
@@ -148,7 +148,7 @@ env: { STORE, TRANSACTOR, REPLICA, ...tuning("RAMOSE_QUERY_MAX_CELLS", "RAMOSE_L
 
 ## Query budget
 
-Each query runs under a memory limit — the **query budget** ([glossary](/concepts/glossary/#query-budget)), `RAMOSE_QUERY_MAX_CELLS`, about 48 MB of intermediate rows × columns by default. Going over fails the query with `QueryBudgetExceeded` (HTTP 413) naming the clause and the cell count. Narrow the query rather than raising the ceiling by reflex; a live query does not retry this one, because re-running would fail the same way.
+Each query runs under a memory limit — the **query budget** ([glossary](/concepts/glossary/#query-budget)), `RAMOSE_QUERY_MAX_CELLS`, about 48 MB of intermediate rows × columns by default. Going over fails the query with `QueryBudgetExceeded` (HTTP 413) naming the clause, the cell count, and `spentBy` (`caller` or `policy`). Narrow the query rather than raising the ceiling by reflex; a live query does not retry this one, because re-running would fail the same way.
 
 ## Retention
 

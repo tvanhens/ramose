@@ -282,7 +282,8 @@ Then in the server Worker's `env`: `...Ramose.authEnv({ policy, issuers: "https:
 
 - One policy per deployed server, over one schema; no per-database variants.
 - No cross-database rules.
-- 413 bodies (`clause`, `cells`, `limit`) and the `x-ramose-*` timing headers are not policy-filtered.
+- 413 bodies (`clause`, `cells`, `limit`, `spentBy`) and the `x-ramose-*` timing headers are not policy-filtered. `spentBy` is `policy` when a conjoined visibility rule spent the budget, `caller` otherwise.
+- Reads conjoin each namespace rule into the query before planning (a two-view join: the rule reads the unfiltered db, the caller's clauses the filtered view). `FilteredDb` remains the backstop for pull, history, raw datom access, and attribute-level narrowing.
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "Reef's policy read aloud, with a refused write" },

@@ -60,7 +60,9 @@ export class FilteredDb extends Db {
   /**
    * Is `[e a …]` readable? Bootstrap `:db/*` datoms always are.
    * Named-rule membership is a set lookup once `PolicyMemo` has materialized
-   * the request-scoped visible set; `allowsOp` remains the only enforcement.
+   * the request-scoped visible set. Query pushdown may skip the namespace
+   * check when that rule is already in the plan; `allowsOp` remains the
+   * enforcement backstop for pull, history, raw access, and attr narrowing.
    */
   async visible(d: Datom): Promise<boolean> {
     if (isSystemAttrId(d.a)) return true;

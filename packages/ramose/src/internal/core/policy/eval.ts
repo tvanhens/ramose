@@ -8,7 +8,9 @@
  * once with the focus free — "all `e` visible to `me`" — and the per-datom
  * check is a set-membership lookup. The same query with `?e` bound is the
  * per-entity fallback when the set is too large or blows the cell budget.
- * Pushdown is not required for correctness.
+ * Query pushdown (#157) conjoins the same rule into the caller's plan; this
+ * evaluator stays the enforcement backstop. Pushdown is not required for
+ * correctness.
  */
 
 import { COMPARATORS, type Datom, Index, type IndexId, type Prefix, ValueTag, comparePrefix, datom } from "../datom.ts";
@@ -53,7 +55,7 @@ export class PolicyBudgetError extends QueryBudgetError {
     readonly rule: string,
     cause: QueryBudgetError,
   ) {
-    super(`policy rule ${rule} (${cause.clause})`, cause.cells, cause.limit);
+    super(`policy rule ${rule} (${cause.clause})`, cause.cells, cause.limit, "policy");
   }
 }
 
@@ -99,6 +101,8 @@ export class PolicyMemo {
   private readonly opCache = new Map<string, boolean>();
   private readonly errs = new Map<string, PolicyError>();
   private overlayDb: Db | undefined;
+  /** Refcount of namespaces whose read rule is in the current query's plan. */
+  private readonly nsBackstopSkip = new Map<string, number>();
 
   constructor(maxCellsOrOpts: number | PolicyMemoOptions = DEFAULT_QUERY_MAX_CELLS) {
     if (typeof maxCellsOrOpts === "object" && maxCellsOrOpts !== null) {
@@ -119,6 +123,25 @@ export class PolicyMemo {
   }
   visibleSet(name: string): VisibleSetState | undefined {
     return this.visibleSets.get(name);
+  }
+
+  /**
+   * During a pushdown query, skip the namespace-level FilteredDb check for
+   * these namespaces (the rule is already in the plan). Attr-level narrowing
+   * still runs. Refcounted so nested `q` calls compose.
+   */
+  enterPushdown(namespaces: readonly string[]): void {
+    for (const ns of namespaces) this.nsBackstopSkip.set(ns, (this.nsBackstopSkip.get(ns) ?? 0) + 1);
+  }
+  exitPushdown(namespaces: readonly string[]): void {
+    for (const ns of namespaces) {
+      const n = (this.nsBackstopSkip.get(ns) ?? 1) - 1;
+      if (n <= 0) this.nsBackstopSkip.delete(ns);
+      else this.nsBackstopSkip.set(ns, n);
+    }
+  }
+  skipsNsBackstop(ns: string | undefined): boolean {
+    return ns !== undefined && this.nsBackstopSkip.has(ns);
   }
 
   /** Idents that folded to `false` because they are not in the installed schema. */
@@ -439,6 +462,13 @@ export async function allowsOp(
   const attrArms = policy.attrs[attrIdent]?.[op];
   const prefix = nsPrefix(attrIdent);
   const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
+  // Pushdown already conjoined this namespace's read rule. Skip the ns-level
+  // check (do not cache — a later raw read must still enforce) and apply
+  // only attr-level narrowing.
+  if (op === "read" && ctx.overlay === undefined && ctx.memo.skipsNsBackstop(prefix)) {
+    if (!attrArms) return true;
+    return evalArms(attrArms, ctx, policy.rules, false);
+  }
   // Reads: one set query per named rule, then membership. Writes keep the
   // per-entity path — they touch few entities and create arms need the overlay.
   const useVisibleSet =

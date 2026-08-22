@@ -1,7 +1,9 @@
 /**
- * Policy eval bench (#154 / #156): reef-shaped public reads (`true` arms)
- * and a selective own-issue fragment. v1 is the expression walker; v2
- * per-entity is #154 (`visibleSetMax: 0`); v2 set is #156.
+ * Policy eval bench (#154 / #156 / #157): reef-shaped public reads (`true`
+ * arms), a selective own-issue fragment, and the #156 fallback workload
+ * (visible set too large to materialize). v1 is the expression walker; v2
+ * per-entity is #154 (`visibleSetMax: 0`); v2 set is #156
+ * (`pushdown: false`); v2 pushdown is #157.
  *
  *   bun run bench/policy.bench.ts [issues=400]
  */
@@ -139,8 +141,30 @@ results["reef v1 privateNote scrub"] = await bench("reef v1 privateNote scrub", 
 results["reef v2 privateNote scrub"] = await bench("reef v2 privateNote scrub", () => query(filterDb(db, db, reefV2, alice), NOTES));
 results["own v1 titles"] = await bench("own v1 titles (eq creator)", () => query(filterDb(db, db, ownV1, alice), TITLES));
 results["own v2 titles (per-entity)"] = await bench("own v2 titles (per-entity)", () =>
-  query(filterDb(db, db, ownV2, alice, { visibleSetMax: 0 }), TITLES),
+  query(filterDb(db, db, ownV2, alice, { visibleSetMax: 0 }), TITLES, [], { pushdown: false }),
 );
-results["own v2 titles (set)"] = await bench("own v2 titles (set)", () => query(filterDb(db, db, ownV2, alice), TITLES));
+results["own v2 titles (set)"] = await bench("own v2 titles (set)", () =>
+  query(filterDb(db, db, ownV2, alice), TITLES, [], { pushdown: false }),
+);
+results["own v2 titles (pushdown)"] = await bench("own v2 titles (pushdown)", () =>
+  query(filterDb(db, db, ownV2, alice), TITLES),
+);
+
+const allV2 = parsePolicy({
+  version: 2,
+  principal: ":user/sub",
+  classes: ["member", "admin"],
+  attrs: {},
+  ns: { issue: { read: [{ _tag: "allow", rule: "policy/issue/all" }] } },
+  preset: {},
+  rules: [[["policy/issue/all", "?me", "?e"], ["?e", ":issue/title", "_"]]],
+});
+const fallbackMax = Math.max(8, Math.floor(nIssues / 8));
+results["all-visible fallback (set)"] = await bench("all-visible fallback (set)", () =>
+  query(filterDb(db, db, allV2, alice, { visibleSetMax: fallbackMax }), TITLES, [], { pushdown: false }),
+);
+results["all-visible fallback (pushdown)"] = await bench("all-visible fallback (pushdown)", () =>
+  query(filterDb(db, db, allV2, alice, { visibleSetMax: fallbackMax }), TITLES),
+);
 
 console.log(JSON.stringify({ nUsers, nIssues, results }, null, 2));

@@ -697,7 +697,9 @@ describe("visible-set materialization", () => {
     });
     const setView = filterDb(db, db, p, alice());
     const boundView = filterDb(db, db, p, alice(), { visibleSetMax: 0 });
-    expect(await query(setView, TITLES)).toEqual(await query(boundView, TITLES));
+    expect(await query(setView, TITLES, [], { pushdown: false })).toEqual(
+      await query(boundView, TITLES, [], { pushdown: false }),
+    );
     const memo = policyView(setView)!.memo;
     expect(memo.visibleSetFallbackCount).toBe(0);
     const vis = memo.visibleSet("policy/doc/owner");
@@ -762,12 +764,12 @@ describe("visible-set materialization", () => {
         ...FRAGMENT_POLICY_JSON,
         ns: { ...FRAGMENT_POLICY_JSON.ns, doc: { ...FRAGMENT_POLICY_JSON.ns.doc, read } },
       });
-      const setRows = await query(filterDb(d, d, p, me), TITLES);
-      const boundRows = await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), TITLES);
+      const setRows = await query(filterDb(d, d, p, me), TITLES, [], { pushdown: false });
+      const boundRows = await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), TITLES, [], { pushdown: false });
       expect(setRows, `seed=${seed} kind=${kind}`).toEqual(boundRows);
       const audit = { find: ["?e", "?a"], where: [["?e", ":doc/audit", "?a"]] };
-      expect(await query(filterDb(d, d, p, me), audit), `seed=${seed} audit`).toEqual(
-        await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), audit),
+      expect(await query(filterDb(d, d, p, me), audit, [], { pushdown: false }), `seed=${seed} audit`).toEqual(
+        await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), audit, [], { pushdown: false }),
       );
     }
   });
@@ -789,7 +791,9 @@ describe("visible-set materialization", () => {
       });
       const setView = filterDb(d, d, p, alice(), { visibleSetMax: 2 });
       const boundView = filterDb(d, d, p, alice(), { visibleSetMax: 0 });
-      expect(await query(setView, TITLES)).toEqual(await query(boundView, TITLES));
+      expect(await query(setView, TITLES, [], { pushdown: false })).toEqual(
+        await query(boundView, TITLES, [], { pushdown: false }),
+      );
       const memo = policyView(setView)!.memo;
       expect(memo.visibleSetFallbackCount).toBe(1);
       expect(memo.visibleSetFallbacks).toEqual([{ rule: "policy/doc/owner", reason: "size", size: 3 }]);
@@ -864,7 +868,7 @@ describe("visible-set materialization", () => {
       ],
     });
     const v = filterDb(d, d, p, alice(), { maxCells: 2_000 });
-    const rows = await query(v, TITLES);
+    const rows = await query(v, TITLES, [], { pushdown: false });
     expect(rows.length).toBeGreaterThan(0);
     const memo = policyView(v)!.memo;
     expect(memo.visibleSetFallbacks.some((f) => f.rule === "policy/wide" && f.reason === "budget")).toBe(true);

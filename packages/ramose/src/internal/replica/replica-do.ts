@@ -508,7 +508,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
           QueryBudget: (e) =>
             Effect.sync(() => {
               this.stats.budgetAborts++;
-              this.log.warn("query.budget-exceeded", { db: this.dbName, clause: e.clause, cells: e.cells, limit: e.limit });
+              this.log.warn("query.budget-exceeded", { db: this.dbName, clause: e.clause, cells: e.cells, limit: e.limit, spentBy: e.spentBy ?? "caller" });
               return replicaErrorResponse(e);
             }),
           BadRequest: (e) => Effect.sync(() => replicaErrorResponse(e)),

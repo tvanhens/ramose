@@ -17,6 +17,7 @@ import { TX_BASE, txEid } from "../schema.ts";
 import {
   type Binding,
   type Clause,
+  type ClauseOrigin,
   type FindElem,
   type NotClause,
   type OrClause,
@@ -26,10 +27,12 @@ import {
   type RuleCallClause,
   type RuleDef,
   type Term,
+  stampOrigin,
 } from "./ast.ts";
 import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, type SortKey, compareCells, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
+import { conjoinPolicy, type PushdownView } from "../policy/pushdown.ts";
 
 export class QueryError extends Error {
   readonly code: string = "query/error";
@@ -40,14 +43,23 @@ export class QueryError extends Error {
  * budget allows. Tagged (`code`) so peers can map it to a clear 4xx instead
  * of dying with an OOM inside the 128 MB Worker limit.
  */
+/** Who spent the cells that tripped the budget — the caller's clauses or policy's. */
+export type BudgetSpentBy = "caller" | "policy";
+
 export class QueryBudgetError extends QueryError {
   override readonly code: string = "query/budget-exceeded";
+  readonly spentBy: BudgetSpentBy;
   constructor(
     readonly clause: string,
     readonly cells: number,
     readonly limit: number,
+    spentBy: BudgetSpentBy = "caller",
   ) {
-    super(`query aborted: intermediate relation for ${clause} would exceed the memory budget (${cells.toLocaleString()} cells > ${limit.toLocaleString()} cells; ~${Math.round(limit / CELLS_PER_MB)} MB)`);
+    super(
+      `query aborted: intermediate relation for ${clause} would exceed the memory budget (${cells.toLocaleString()} cells > ${limit.toLocaleString()} cells; ~${Math.round(limit / CELLS_PER_MB)} MB)` +
+        (spentBy === "policy" ? "; spent by policy clauses" : ""),
+    );
+    this.spentBy = spentBy;
   }
 }
 
@@ -69,6 +81,8 @@ export const DEFAULT_QUERY_MAX_CELLS = 48 * CELLS_PER_MB; // 1,572,864 cells
  */
 export class QueryBudget {
   peakCells = 0;
+  /** Attribution for the next charge — the executor sets this from clause origin. */
+  spentBy: BudgetSpentBy = "caller";
   constructor(readonly maxCells: number) {}
   /** Rows a relation of `width` columns may hold. */
   rowLimit(width: number): number {
@@ -78,10 +92,10 @@ export class QueryBudget {
   charge(clause: string, rows: number, width: number): void {
     const cells = rows * Math.max(1, width);
     if (cells > this.peakCells) this.peakCells = cells;
-    if (cells > this.maxCells) throw new QueryBudgetError(clause, cells, this.maxCells);
+    if (cells > this.maxCells) throw new QueryBudgetError(clause, cells, this.maxCells, this.spentBy);
   }
   exceeded(clause: string, rows: number, width: number): QueryBudgetError {
-    return new QueryBudgetError(clause, rows * Math.max(1, width), this.maxCells);
+    return new QueryBudgetError(clause, rows * Math.max(1, width), this.maxCells, this.spentBy);
   }
 }
 
@@ -97,10 +111,16 @@ export interface QueryOptions {
   maxRows?: number;
   /** collect planner/executor statistics */
   stats?: QueryStats;
+  /**
+   * Conjoin namespace read rules into the plan before execution (clause-level
+   * pushdown). Default true when `db` is a filtered policy view. `false` is
+   * the filtered-only path (#154 / #156) — used to prove equivalence.
+   */
+  pushdown?: boolean;
 }
 
 export interface QueryStats {
-  clauses: { clause: string; strategy: string; index?: string; rowsIn: number; rowsOut: number; seeks: number; scanned: number; ms: number }[];
+  clauses: { clause: string; strategy: string; origin?: ClauseOrigin; index?: string; rowsIn: number; rowsOut: number; seeks: number; scanned: number; ms: number }[];
   /** budget usage: peak intermediate cells vs the limit */
   budget?: { maxCells: number; peakCells: number };
 }
@@ -395,20 +415,21 @@ function substClause(c: Clause, sub: (name: string) => Term): Clause {
       const out: PatternClause = { kind: "pattern", src: c.src, e: t(c.e), a: t(c.a), v: t(c.v) };
       if (c.tx) out.tx = t(c.tx);
       if (c.op) out.op = t(c.op);
+      if (c.origin) out.origin = c.origin;
       return out;
     }
     case "pred":
-      return { kind: "pred", fn: c.fn, args: c.args.map(t) };
+      return { kind: "pred", fn: c.fn, args: c.args.map(t), origin: c.origin };
     case "fn": {
       const binding = substBinding(c.binding, sub);
-      return { kind: "fn", fn: c.fn, args: c.args.map(t), binding };
+      return { kind: "fn", fn: c.fn, args: c.args.map(t), binding, origin: c.origin };
     }
     case "not":
-      return { kind: "not", join: c.join?.map(joinName).filter((v): v is string => v !== null), clauses: c.clauses.map((x) => substClause(x, sub)) };
+      return { kind: "not", join: c.join?.map(joinName).filter((v): v is string => v !== null), clauses: c.clauses.map((x) => substClause(x, sub)), origin: c.origin };
     case "or":
-      return { kind: "or", join: c.join?.map(joinName).filter((v): v is string => v !== null), branches: c.branches.map((b) => b.map((x) => substClause(x, sub))) };
+      return { kind: "or", join: c.join?.map(joinName).filter((v): v is string => v !== null), branches: c.branches.map((b) => b.map((x) => substClause(x, sub))), origin: c.origin };
     case "rule-call":
-      return { kind: "rule-call", name: c.name, args: c.args.map(t) };
+      return { kind: "rule-call", name: c.name, args: c.args.map(t), origin: c.origin };
   }
 }
 
@@ -437,6 +458,8 @@ class Executor {
   private readonly maxRows: number;
   private readonly stats: QueryStats | undefined;
   readonly budget: QueryBudget;
+  /** Unfiltered rule db; equals `db` when there is no policy view. */
+  readonly ruleDb: Db;
   /** Named rules callable from :where; set once per query. */
   rules: Map<string, CompiledRule> = new Map();
   /** Memoized full extensions of recursive rules (rows over head args). */
@@ -446,12 +469,18 @@ class Executor {
   /** Fresh-name counter for hygienic inline rule expansion. */
   private expansions = 0;
 
-  constructor(readonly db: Db, opts: QueryOptions) {
+  constructor(readonly db: Db, opts: QueryOptions, ruleDb?: Db) {
     this.fns = { ...opts.functions };
     this.maxRows = opts.maxRows ?? Infinity;
     this.budget = new QueryBudget(opts.maxCells ?? DEFAULT_QUERY_MAX_CELLS);
     this.stats = opts.stats;
+    this.ruleDb = ruleDb ?? db;
     if (this.stats) this.stats.budget = { maxCells: this.budget.maxCells, peakCells: 0 };
+  }
+
+  /** Rule-originated clauses bind unfiltered; caller clauses bind the filtered view. */
+  private view(c: { origin?: ClauseOrigin }): Db {
+    return c.origin === "rule" ? this.ruleDb : this.db;
   }
 
   /** Account a materialised relation against the budget (throws QueryBudgetError). */
@@ -509,6 +538,7 @@ class Executor {
         return 1e9;
       }
       case "pattern": {
+        const db = this.view(c);
         const has = (t: Term | undefined) => !!t && (t.kind === "const" || (t.kind === "var" && bound.has(t.name)));
         const eB = has(c.e), aB = has(c.a), vB = has(c.v);
         if (eB) return aB ? 1 : 8;
@@ -520,13 +550,13 @@ class Executor {
           } catch {
             return 0; // unknown attribute → empty
           }
-          const attr = this.db.attr(aid);
+          const attr = db.attr(aid);
           if (vB) {
             if (attr && (attr.unique || attr.index)) {
               if (c.v.kind === "const") {
                 try {
                   const tv = coerceValue(attr.valueType, c.v.value);
-                  return await this.db.estimate(Index.AVET, { a: aid, vt: tv.vt, v: tv.v });
+                  return await db.estimate(Index.AVET, { a: aid, vt: tv.vt, v: tv.v });
                 } catch {
                   return 0;
                 }
@@ -537,17 +567,17 @@ class Executor {
               if (c.v.kind === "const") {
                 const e = typeof c.v.value === "number" ? c.v.value : await this.resolveEntityConst(c.v.value).catch(() => undefined);
                 if (e === undefined) return 0;
-                return await this.db.estimate(Index.VAET, { vt: ValueTag.Ref, v: e, a: aid });
+                return await db.estimate(Index.VAET, { vt: ValueTag.Ref, v: e, a: aid });
               }
               return 4;
             }
             // unindexed attribute with bound value: scan the attribute
-            return await this.db.estimate(Index.AEVT, { a: aid });
+            return await db.estimate(Index.AEVT, { a: aid });
           }
-          return await this.db.estimate(Index.AEVT, { a: aid });
+          return await db.estimate(Index.AEVT, { a: aid });
         }
         // nothing bound: full scan
-        return (await this.db.estimate(Index.EAVT, {})) + 1e9;
+        return (await this.view(c).estimate(Index.EAVT, {})) + 1e9;
       }
     }
   }
@@ -587,19 +617,26 @@ class Executor {
   }
 
   async exec(rel: Rel, c: Clause): Promise<Rel> {
-    switch (c.kind) {
-      case "pattern":
-        return this.execPattern(rel, c);
-      case "pred":
-        return this.execPred(rel, c.fn, c.args);
-      case "fn":
-        return this.execFn(rel, c.fn, c.args, c.binding);
-      case "not":
-        return this.execNot(rel, c);
-      case "or":
-        return this.execOr(rel, c);
-      case "rule-call":
-        return this.execRuleCall(rel, c);
+    const prev = this.budget.spentBy;
+    if (c.origin === "rule") this.budget.spentBy = "policy";
+    else if (c.origin === "caller") this.budget.spentBy = "caller";
+    try {
+      switch (c.kind) {
+        case "pattern":
+          return this.execPattern(rel, c);
+        case "pred":
+          return this.execPred(rel, c);
+        case "fn":
+          return this.execFn(rel, c);
+        case "not":
+          return this.execNot(rel, c);
+        case "or":
+          return this.execOr(rel, c);
+        case "rule-call":
+          return this.execRuleCall(rel, c);
+      }
+    } finally {
+      this.budget.spentBy = prev;
     }
   }
 
@@ -616,15 +653,16 @@ class Executor {
     if (c.args.length !== rule.args.length) {
       throw new QueryError(`rule ${c.name} takes ${rule.args.length} arguments, got ${c.args.length}`);
     }
+    const origin: ClauseOrigin = c.origin ?? "caller";
     // inside this rule's own fixpoint: answer from the growing relation —
     // that is what makes the recursion productive instead of infinite
     if (this.fix !== null && this.fix.scc.has(c.name)) {
       return this.applyExtension(rel, this.fix.current.get(c.name)!, c, rule);
     }
     if (rule.recursive) {
-      return this.applyExtension(rel, await this.ruleExtension(rule), c, rule);
+      return this.applyExtension(rel, await this.ruleExtension(rule, origin), c, rule);
     }
-    return this.execRuleInline(rel, c, rule);
+    return this.execRuleInline(rel, c, rule, origin);
   }
 
   /**
@@ -632,7 +670,7 @@ class Executor {
    * substituted by the call's arguments and body-locals renamed fresh —
    * the same seek-driven planning the inlined clauses would get by hand.
    */
-  private async execRuleInline(rel: Rel, c: RuleCallClause, rule: CompiledRule): Promise<Rel> {
+  private async execRuleInline(rel: Rel, c: RuleCallClause, rule: CompiledRule, origin: ClauseOrigin): Promise<Rel> {
     const n = this.expansions++;
     const head = new Map<string, Term>();
     rule.args.forEach((v, i) => {
@@ -642,9 +680,9 @@ class Executor {
       head.set(v, arg.kind === "blank" ? { kind: "var", name: `${v}%${n}` } : arg);
     });
     const sub = (name: string): Term => head.get(name) ?? { kind: "var", name: `${name}%${n}` };
-    const branches = rule.branches.map((b) => b.map((cl) => substClause(cl, sub)));
+    const branches = rule.branches.map((b) => b.map((cl) => stampOrigin(substClause(cl, sub), origin)));
     const join = [...new Set(c.args.filter((a): a is { kind: "var"; name: string } => a.kind === "var").map((a) => a.name))];
-    return this.execOr(rel, { kind: "or", join, branches });
+    return this.execOr(rel, { kind: "or", join, branches, origin });
   }
 
   /**
@@ -653,8 +691,9 @@ class Executor {
    * runaway recursion fails with {@link QueryBudgetError} instead of looping.
    * Memoized per query — the joins pay per call, the derivation once.
    */
-  private async ruleExtension(rule: CompiledRule): Promise<Rel> {
-    const cached = this.extensions.get(rule.name);
+  private async ruleExtension(rule: CompiledRule, origin: ClauseOrigin): Promise<Rel> {
+    const cacheKey = `${rule.name}:${origin}`;
+    const cached = this.extensions.get(cacheKey);
     if (cached) return cached;
     const scc = rule.scc;
     const current = new Map<string, Rel>();
@@ -679,7 +718,7 @@ class Executor {
           const set = sets.get(n)!;
           const cur = current.get(n)!;
           for (const branch of r.branches) {
-            const sub = await this.execClauses({ vars: [], rows: [[]] }, branch);
+            const sub = await this.execClauses({ vars: [], rows: [[]] }, branch.map((cl) => stampOrigin(cl, origin)));
             work += Math.max(1, sub.rows.length);
             this.budget.charge(`rule ${n} (expansion)`, work, r.args.length);
             const six = idx(sub);
@@ -704,7 +743,7 @@ class Executor {
     } finally {
       this.fix = prev;
     }
-    for (const n of scc) this.extensions.set(n, current.get(n)!);
+    for (const n of scc) this.extensions.set(`${n}:${origin}`, current.get(n)!);
     return current.get(rule.name)!;
   }
 
@@ -766,7 +805,10 @@ class Executor {
     return (row) => getters.map((g) => g(row));
   }
 
-  private async execPred(rel: Rel, name: string, args: Term[]): Promise<Rel> {
+  private async execPred(rel: Rel, c: Extract<Clause, { kind: "pred" }>): Promise<Rel> {
+    const name = c.fn;
+    const args = c.args;
+    const db = this.view(c);
     // special-cased predicates that need the db
     if (name === "missing?") {
       const [src, eT, aT] = args[0]?.kind === "const" && typeof args[0].value === "string" && (args[0].value as string).startsWith("$") ? args : [null, ...args];
@@ -776,7 +818,7 @@ class Executor {
       for (const r of rel.rows) {
         const [e, a] = get(r);
         const aid = this.resolveAttrConst(a);
-        const d = await this.db.first(Index.EAVT, { e: e as number, a: aid });
+        const d = await db.first(Index.EAVT, { e: e as number, a: aid });
         if (!d) rows.push(r);
       }
       return { vars: rel.vars, rows };
@@ -788,7 +830,11 @@ class Executor {
     return { vars: rel.vars, rows };
   }
 
-  private async execFn(rel: Rel, name: string, args: Term[], binding: Binding): Promise<Rel> {
+  private async execFn(rel: Rel, c: Extract<Clause, { kind: "fn" }>): Promise<Rel> {
+    const name = c.fn;
+    const args = c.args;
+    const binding = c.binding;
+    const db = this.view(c);
     let compute: (row: unknown[]) => unknown | Promise<unknown>;
     if (name === "get-else") {
       const [, eT, aT, dT] = args.length === 4 ? args : [null, ...args];
@@ -796,7 +842,7 @@ class Executor {
       compute = async (r) => {
         const [e, a, dflt] = get(r);
         const aid = this.resolveAttrConst(a);
-        const d = await this.db.first(Index.EAVT, { e: e as number, a: aid });
+        const d = await db.first(Index.EAVT, { e: e as number, a: aid });
         return d ? datomJsValue(d) : dflt;
       };
     } else if (name === "get-some") {
@@ -806,7 +852,7 @@ class Executor {
         const [e, ...as] = get(r);
         for (const a of as) {
           const aid = this.resolveAttrConst(a);
-          const d = await this.db.first(Index.EAVT, { e: e as number, a: aid });
+          const d = await db.first(Index.EAVT, { e: e as number, a: aid });
           if (d) return [aid, datomJsValue(d)];
         }
         return null;
@@ -817,13 +863,13 @@ class Executor {
       const qform = args[0].kind === "const" ? (args[0].value as Query | string | object) : undefined;
       if (qform === undefined) throw new QueryError("q: first argument must be a constant query");
       compute = async (r) => {
-        const ins = get(r).map((x) => (typeof x === "string" && x === "$" ? this.db : x));
-        return query(this.db, qform, ins);
+        const ins = get(r).map((x) => (typeof x === "string" && x === "$" ? db : x));
+        return query(db, qform, ins);
       };
     } else {
       const f = this.fn(name, false);
       const get = this.argGetter(rel, args);
-      compute = (r) => f(...get(r).map((x) => (x === "$" ? this.db : x)));
+      compute = (r) => f(...get(r).map((x) => (x === "$" ? db : x)));
     }
     const ix = idx(rel);
     const bvars = bindingVars(binding);
@@ -938,8 +984,9 @@ class Executor {
 
   private async execPattern(rel: Rel, c: PatternClause): Promise<Rel> {
     const t0 = performance.now();
+    const db = this.view(c);
     const ix = idx(rel);
-    const stat = { clause: describe(c), strategy: "", index: undefined as string | undefined, rowsIn: rel.rows.length, rowsOut: 0, seeks: 0, scanned: 0, ms: 0 };
+    const stat = { clause: describe(c), strategy: "", origin: c.origin ?? "caller", index: undefined as string | undefined, rowsIn: rel.rows.length, rowsOut: 0, seeks: 0, scanned: 0, ms: 0 };
     const finish = (r: Rel): Rel => {
       stat.rowsOut = r.rows.length;
       stat.ms = performance.now() - t0;
@@ -992,7 +1039,7 @@ class Executor {
     for (const cm of [E, A, V, TX, OP]) if (cm.kind === "bound" && !joinCols.includes(cm.col)) joinCols.push(cm.col);
 
     // Residual check for a datom given the concrete bound values
-    const isHistory = this.db.isHistory;
+    const isHistory = db.isHistory;
     const rowMatches = (d: Datom, e: number | undefined, a: number | undefined, vk: string | undefined, tx: number | undefined, op: boolean | undefined): boolean => {
       if (e !== undefined && d.e !== e) return false;
       if (a !== undefined && d.a !== a) return false;
@@ -1069,7 +1116,7 @@ class Executor {
         if (a !== undefined) {
           (p as any).a = a;
           if (hasV) {
-            const attr = this.db.attr(a);
+            const attr = db.attr(a);
             const tv = attr ? tryCoerce(attr.valueType, v) : tryInfer(v);
             if (tv === null) return null;
             (p as any).vt = tv.vt;
@@ -1080,7 +1127,7 @@ class Executor {
         return { index: Index.EAVT, prefix: p, vFilter: hasV };
       }
       if (a !== undefined) {
-        const attr = this.db.attr(a);
+        const attr = db.attr(a);
         if (hasV) {
           if (attr && (attr.index || attr.unique)) {
             const tv = tryCoerce(attr.valueType, v);
@@ -1126,7 +1173,7 @@ class Executor {
           }
         }
       };
-      for await (const arr of this.db.datoms(ch.index, ch.prefix)) {
+      for await (const arr of db.datoms(ch.index, ch.prefix)) {
         stat.scanned += arr.length;
         consume(arr);
       }
@@ -1170,10 +1217,10 @@ class Executor {
     const constChoice = choose(eConst, aConst, vConst, hasVConst);
     let scanEstimate = Infinity;
     if (constChoice !== null && (eConst !== undefined || aConst !== undefined)) {
-      scanEstimate = await this.db.estimate(constChoice.index, constChoice.prefix);
+      scanEstimate = await db.estimate(constChoice.index, constChoice.prefix);
     } else if (constChoice !== null && E.kind !== "bound" && A.kind !== "bound") {
       // no e/a available at all, even from bound vars: must scan
-      scanEstimate = await this.db.estimate(Index.EAVT, {});
+      scanEstimate = await db.estimate(Index.EAVT, {});
     }
     const SEEK_COST = 16; // one seek ≈ scanning this many datoms
     const useHash = scanEstimate < nDistinct * SEEK_COST;
@@ -1233,7 +1280,7 @@ class Executor {
           emit(g.rows, d);
         }
       };
-      for await (const arr of this.db.datoms(constChoice.index, constChoice.prefix)) {
+      for await (const arr of db.datoms(constChoice.index, constChoice.prefix)) {
         stat.scanned += arr.length;
         consume(arr);
       }
@@ -1293,7 +1340,7 @@ class Executor {
     };
     for (const [shape, b] of batches) {
       const index = (shape >> 4) as IndexId;
-      consume(b, await this.db.seekMany(index, b.prefixes));
+      consume(b, await db.seekMany(index, b.prefixes));
     }
     return finish({ vars, rows });
   }
@@ -1378,8 +1425,14 @@ function termStr(t: Term | undefined): string {
  * Run a query. `inputs` correspond to the `:in` spec (default `$`). The db is
  * either the first `$` input or the `db` argument (used when :in has no `$`).
  */
+function asPushdownView(db: Db): PushdownView | undefined {
+  const v = (db as Db & { view?: PushdownView }).view;
+  if (!v || !v.policy || !v.principal || !v.ruleDb || !v.memo) return undefined;
+  return v;
+}
+
 export async function query(db: Db, q: Query | string | object, inputs: unknown[] = [], opts: QueryOptions = {}): Promise<any> {
-  const ast = isQueryAst(q) ? (q as Query) : parseQuery(q);
+  let ast = isQueryAst(q) ? (q as Query) : parseQuery(q);
   // bind inputs
   let dbIn: Db = db;
   let rel: Rel = { vars: [], rows: [[]] };
@@ -1424,10 +1477,27 @@ export async function query(db: Db, q: Query | string | object, inputs: unknown[
   if (scalarInputs.length) {
     rel = hashJoin(rel, { vars: scalarInputs.map((s) => s.var), rows: [scalarInputs.map((s) => s.value)] }, inputBudget, "inputs");
   }
-  const ex = new Executor(dbIn, opts);
+  // Conjunction before planning — and before aggregation in shapeResult — so
+  // a count cannot include rows the caller could not see.
+  const view = opts.pushdown === false ? undefined : asPushdownView(dbIn);
+  let covered: readonly string[] = [];
+  if (view) {
+    const pd = conjoinPolicy(ast, view);
+    ast = pd.query;
+    covered = pd.covered;
+    if (pd.meVar !== undefined && pd.meValue !== undefined) {
+      rel = hashJoin(rel, { vars: [pd.meVar], rows: [[pd.meValue]] }, inputBudget, "policy-me");
+    }
+  }
+  const ex = new Executor(dbIn, opts, view?.ruleDb);
   ex.rules = compileRules(ast.rules);
-  rel = await ex.execClauses(rel, ast.where);
-  return shapeResult(dbIn, ast, rel);
+  if (covered.length > 0) view!.memo.enterPushdown(covered);
+  try {
+    rel = await ex.execClauses(rel, ast.where);
+    return shapeResult(dbIn, ast, rel);
+  } finally {
+    if (covered.length > 0) view!.memo.exitPushdown(covered);
+  }
 }
 
 function isQueryAst(q: unknown): boolean {
