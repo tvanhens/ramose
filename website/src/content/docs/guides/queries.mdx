@@ -115,18 +115,21 @@ The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Ro
 
 When the same card repeats under itself — a comment thread, an org chart — write `ref.select(Ramose.again(n))` on that edge. `n` is a hop bound you name (`1` through `16`): the same shape, again, that many full hops, then a stub `{ id }`. A many-valued again edge needs an explicit `.limit(n)` (the server will not pick a default width for you). The shape must include `N.id`; a cycle or a hop that runs out of budget comes back as that id, still in the array, not dropped.
 
-A many-valued reference in a shape can order and page its own collection *inside* the pull — `.orderBy(key, dir)` / `.limit(n)` / `.offset(n)` before its `.select` — without changing which rows you get:
+A many-valued reference in a shape can filter, order, and page its own collection *inside* the pull — `.where(…)` / `.orderBy(key, dir)` / `.limit(n)` / `.offset(n)` before its `.select` — without changing which rows you get:
 
 ```ts
 .select({
   id: Comment.id,
   body: Comment.body,
   replies: Comment.replies
+    .where(Query.is(Comment.deleted, false))
     .orderBy(Comment.createdAt, "asc")
     .limit(50)
     .select(Ramose.again(4)),
 })
 ```
+
+`.where` takes the same filter fragments the query itself uses — `Query.is`, `Query.has`, `Q.not`, a generator over the element, any userland combinator built from the kernel — evaluated per element: a collection that filters to nothing is `[]`, never a dropped row. A many-valued **scalar** is filtered the same way, with the fragment handed the value itself: `tags: User.tags.where((v) => Q.startsWith(v, "a"))`. A nested filter cannot close over the enclosing query's handles (it runs per element, after the rows are fixed — that is a lowering error); params are fine.
 
 ## A tree is a window
 
@@ -269,6 +272,20 @@ const perOwner = Query.q(function* () {
 ```
 
 The work runs on the server. An aggregate-only record answers exactly one row even over an empty match set — `count` / `countDistinct` / `sum` read `0`, `avg` / `min` / `max` read `null` — while a grouped record is `[]` (no rows, no groups). Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
+
+To keep only some groups, compare the aggregate cell itself — the comparison lowers into the server's post-group filter (`:having`), because the aggregate does not exist until after grouping:
+
+```ts
+const busy = Query.q(function* () {
+  const todo = yield* Query.entities(Todo);
+  const owner = yield* Query.follow(Todo.owner)(todo);
+  const n = Q.count(todo);
+  yield* Q.gt(n, 5); // groups with more than five todos
+  return { owner, n };
+});
+```
+
+The compared cell must reach the projection (that is what names it on the row), and the comparison sits at the query's top level — inside `Q.or` / `Q.not` there is no group yet, so that is a lowering error. Filtering groups by a group *key* needs none of this: an ordinary comparison on the bound var already says it, row by row.
 
 ## Read one record
 

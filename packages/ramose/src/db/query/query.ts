@@ -20,6 +20,7 @@
  * hook dependency — and computation starts at `db.q`.
  */
 
+import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid } from "../Eid.ts";
 import { NotOne } from "../Errors.ts";
@@ -48,7 +49,7 @@ import {
   type ParamsOf,
   type ParamsSpec,
 } from "../Params.ts";
-import { lowerPullPattern, reshapePullResult } from "../Pull.ts";
+import { bindPullParams, lowerPullPattern, reshapePullResult } from "../Pull.ts";
 import {
   Q,
   isPullSpec,
@@ -64,6 +65,7 @@ import {
   type BuildCtx,
   type CallClause,
   type Cell,
+  type CmpCommand,
   type EidCell,
   type CellRecord,
   type FactCommand,
@@ -834,6 +836,11 @@ export const lowerQueryObject = (
   const lowerPos = (v: unknown, use: string): unknown => {
     if (v === undefined || isBlank(v)) return "_";
     if (isVar(v)) return nameOf(v);
+    if (isAggSpec(v)) {
+      throw new Error(
+        `ramose/query: an aggregate cell is not a value for ${use} — an aggregate exists only after grouping, as a projected cell or a top-level comparison operand`,
+      );
+    }
     return lowerConst(v, use);
   };
 
@@ -986,6 +993,13 @@ export const lowerQueryObject = (
     // numeric operand converts by the stable tx partition base
     const tSided = args.some((a) => isVar(a) && a.kind === "t");
     const operand = (a: Position): unknown => {
+      if (isAggSpec(a)) {
+        // top-level aggregate comparisons were routed to :having before this
+        // walk; one that reaches here sits inside Q.or / Q.not or a rule body
+        throw new Error(
+          "ramose/query: a comparison over an aggregate cell cannot appear inside Q.or / Q.not or a rule body — :having filters whole groups, and there is no group where those lower; write it at the query's top level",
+        );
+      }
       if (isVar(a)) return nameOf(a);
       let v: unknown = a;
       if (isParam(a)) v = binder.resolve(a, `${op}(...)`);
@@ -1012,6 +1026,36 @@ export const lowerQueryObject = (
     return [[[op, ...args.map(operand)]]];
   };
 
+  // ── :having partition ────────────────────────────────────────────────────
+  // A comparison that mentions an aggregate cell is a post-group filter: it
+  // routes into the wire's `:having` section, never `:where` — the aggregate
+  // is not bound until after grouping, so the placement is the semantics.
+  // Everything else (group-*key* filters included: filtering groups by a key
+  // equals filtering rows by that value) stays an ordinary clause. Resolved
+  // before the projection lowers, because a referenced aggregate cell needs
+  // an `(as … ?alias)` name in `:find`.
+  const clauses = resolveWhens(built.clauses, binder);
+  const havingCmps: CmpCommand[] = [];
+  const rowClauses: BClause[] = [];
+  for (const c of clauses) {
+    if (c._tag === "cmp" && c.args.some(isAggSpec)) havingCmps.push(c);
+    else rowClauses.push(c);
+  }
+  const nameCells = havingCmps.length > 0;
+  /** Two `AggSpec` values with one fn over one var are the same cell —
+   * `Q.gt(Q.count(e), 5)` names the projected `Q.count(e)` without having
+   * to be the same object. */
+  const aggKey = (a: AggSpec): string => `${a.fn}:${a.v.id}`;
+  /** The `:find` alias of each projected aggregate cell (set while the
+   * projection flattens; every aggregate is aliased when `:having` names
+   * any, so summarized-var name collisions cannot arise). */
+  const aggAlias = new Map<string, string>();
+  /** What each aliased cell answers over the empty set — for re-checking
+   * `:having` on the client-synthesized all-aggregate row. */
+  const emptyCells = new Map<string, unknown>();
+  /** Vars projected as their own plain cell — the ones `:having` may name. */
+  const plainCellVars = new Set<number>();
+
   // ── projection ───────────────────────────────────────────────────────────
   const where: unknown[] = [];
   const flats: FlatCell[] = [];
@@ -1031,6 +1075,7 @@ export const lowerQueryObject = (
 
   const flattenCell = (path: readonly string[], cell: Cell): void => {
     if (isVar(cell)) {
+      plainCellVars.add(cell.id);
       flats.push({ path, elem: nameOf(cell), read: readVar(cell) });
       return;
     }
@@ -1039,16 +1084,30 @@ export const lowerQueryObject = (
         cell.v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
           ? (x: unknown) => (typeof x === "number" ? x - TX_BASE : x)
           : (x: unknown) => x;
-      flats.push({ path, elem: [cell.fn, nameOf(cell.v)], read, agg: cell.fn });
+      let elem: unknown = [cell.fn, nameOf(cell.v)];
+      // `:having` names an aggregate by its `(as … ?alias)` name; aliasing
+      // every aggregate keeps summarized-var names from colliding
+      if (nameCells) {
+        const alias = aggAlias.get(aggKey(cell)) ?? freshName("h");
+        aggAlias.set(aggKey(cell), alias);
+        emptyCells.set(alias, EMPTY_AGG[cell.fn]);
+        elem = ["as", elem, alias];
+      }
+      flats.push({ path, elem, read, agg: cell.fn });
       return;
     }
     if (isPullSpec(cell)) {
+      if (nameCells) {
+        throw new Error(
+          "ramose/query: an aggregate-cell comparison and Q.pull cannot share a projection — the peer's :having names find cells and a pull is not one; project bound vars beside the aggregate instead",
+        );
+      }
       const map = shapeToPullMap(cell.shape);
       const focus = nameOf(cell.focus);
       where.push(...requiredClauses(focus, map));
       flats.push({
         path,
-        elem: ["pull", focus, lowerPullPattern(map)],
+        elem: ["pull", focus, bindPullParams(lowerPullPattern(map), binder.resolve)],
         read: (c) => reshapePullResult(map, c),
       });
       return;
@@ -1072,7 +1131,7 @@ export const lowerQueryObject = (
     const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
-    find.push(["pull", focus, lowerPullPattern(map)]);
+    find.push(["pull", focus, bindPullParams(lowerPullPattern(map), binder.resolve)]);
     finalizeRows = (tuples) => tuples.map((t) => reshapePullResult(map, t[0]));
   } else {
     const cells = isRowsSpec(proj) ? proj.cells : proj;
@@ -1085,7 +1144,7 @@ export const lowerQueryObject = (
     // group key correctly stays []: no rows, no groups.
     const aggOnly = flats.length > 0 && flats.every((f) => f.agg !== undefined);
     finalizeRows = (raw) =>
-      (raw.length === 0 && aggOnly ? [flats.map((f) => EMPTY_AGG[f.agg!])] : raw).map((t) => {
+      (raw.length === 0 && aggOnly && emptyRowPasses() ? [flats.map((f) => EMPTY_AGG[f.agg!])] : raw).map((t) => {
         const row: Record<string, unknown> = {};
         flats.forEach((f, i) => {
           const value = f.read(t[i]);
@@ -1125,8 +1184,69 @@ export const lowerQueryObject = (
   else if (isPullSpec(proj)) projVars.add(proj.focus.id);
   else collectProjVars(isRowsSpec(proj) ? proj.cells : (proj as CellRecord));
 
-  const clauses = resolveWhens(built.clauses, binder);
-  where.unshift(...lowerClauses(clauses, projVars));
+  where.unshift(...lowerClauses(rowClauses, projVars));
+
+  // ── :having lowering ─────────────────────────────────────────────────────
+  const havingCellName = (a: AggSpec): string => {
+    const alias = aggAlias.get(aggKey(a));
+    if (alias === undefined) {
+      throw new Error(
+        `ramose/query: Q.${a.fn === "count-distinct" ? "countDistinct" : a.fn}(...) is compared but never projected — a post-group filter names an aggregate cell of the row, so the same cell value must reach the projection`,
+      );
+    }
+    return alias;
+  };
+  const lowerHavingCmp = (c: CmpCommand): unknown => {
+    // same t-conversion rule as lowerCmp: a min/max over `f.t` cells binds
+    // the tx eid, so a numeric operand converts by the tx partition base
+    const tSided = c.args.some(
+      (a) =>
+        (isVar(a) && a.kind === "t") ||
+        (isAggSpec(a) && a.v.kind === "t" && (a.fn === "min" || a.fn === "max")),
+    );
+    const operand = (a: Position): unknown => {
+      if (isAggSpec(a)) return havingCellName(a);
+      if (isVar(a)) {
+        if (!plainCellVars.has(a.id)) {
+          throw new Error(
+            "ramose/query: a post-group comparison sees the group's row, so a var beside the aggregate cell must be a projected cell of it — project the var, or compare against a literal or param",
+          );
+        }
+        return nameOf(a);
+      }
+      let v: unknown = a;
+      if (isParam(a)) v = binder.resolve(a, `${c.op}(...)`);
+      if (c.op === "re-find?") return regexSource(v as RegExp | string);
+      if (c.op === "in") {
+        if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
+        return v.map(unwrapEidLike);
+      }
+      v = unwrapEidLike(v);
+      if (tSided && typeof v === "number") return TX_BASE + v;
+      return v;
+    };
+    return [[c.op, ...c.args.map(operand)]];
+  };
+  const having = havingCmps.map(lowerHavingCmp);
+
+  /**
+   * The synthesized empty-set row of an all-aggregate projection must still
+   * pass `:having` — the peer never saw a group to filter. Same predicate
+   * semantics as the engine's `evalHaving`, over the aliased cells' empty
+   * values (every non-cell arg is already a resolved constant here: a var
+   * beside an aggregate would make the projection not all-aggregate).
+   */
+  const emptyRowPasses = (): boolean =>
+    having.every((clause) => {
+      const [op, ...args] = (clause as unknown[][])[0]!;
+      const vals = args.map((a) => (typeof a === "string" && emptyCells.has(a) ? emptyCells.get(a) : a));
+      if (op === "in") {
+        const [v, list] = vals;
+        return Array.isArray(list) && list.some((x) => vkey(x) === vkey(v));
+      }
+      const f = PREDICATES[op as string];
+      return f !== undefined && Boolean(f(...vals));
+    });
 
   // Aggregating over a *value* var must not collapse rows that agree on the
   // value: two entities with the same rank are two rows to a sum. The entity
@@ -1219,6 +1339,7 @@ export const lowerQueryObject = (
     find,
     where,
     ...(withVars.length > 0 ? { with: withVars } : {}),
+    ...(having.length > 0 ? { having } : {}),
     ...(ruleDefs.length > 0 ? { rules: ruleDefs } : {}),
     ...(order.length > 0 ? { order } : {}),
     ...(seek !== undefined && seek !== null ? { after: [...seek.keys] } : {}),

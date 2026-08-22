@@ -37,6 +37,7 @@ import {
   layer,
   lowerQueryObject,
   optional,
+  params,
   type Db,
 } from "../../src/db/internal.ts";
 
@@ -152,6 +153,7 @@ const inProcessPeer = async () => {
 const User = Namespace("user", {
   name: Attr(Schema.String, { unique: "identity" }),
   age: Attr(Long),
+  tags: Attr(Schema.String, { cardinality: "many" }),
 });
 
 const Issue = Namespace("issue", {
@@ -184,9 +186,13 @@ const seed = async (db: Db<typeof Tracker>) => {
       const ada = yield* tx.entity();
       yield* ada.add(User.name, "Ada");
       yield* ada.add(User.age, 36);
+      yield* ada.add(User.tags, "alpha");
+      yield* ada.add(User.tags, "beta");
+      yield* ada.add(User.tags, "azure");
       const grace = yield* tx.entity();
       yield* grace.add(User.name, "Grace");
       yield* grace.add(User.age, 45);
+      yield* grace.add(User.tags, "gamma");
 
       const ship = yield* tx.entity();
       yield* ship.add(Issue.title, "ship the release");
@@ -897,6 +903,392 @@ describe("db.q end to end", () => {
     const rows = await run(db.q(recent));
     expect(rows.map((r) => r.title)).toEqual(["the late arrival"]);
 
+    await peer.dispose();
+  });
+});
+
+// ── post-group filters: aggregate cells as comparison operands ─────────────
+
+describe("post-group filters (:having)", () => {
+  const busyOwners = Query.q(function* () {
+    const issue = yield* Query.entities(Issue);
+    const owner = yield* Query.follow(Issue.owner)(issue);
+    const n = Q.count(issue);
+    yield* Q.gt(n, 1);
+    return { owner, n };
+  });
+
+  test("lowering: an aggregate comparison routes to :having, named by (as …)", () => {
+    const { query } = lowerQueryObject(busyOwners);
+    expect(query.find).toEqual(["?q0", ["as", ["count", "?q1"], "?qh0"]]);
+    expect(query.where).toEqual([["?q1", ":issue/owner", "?q0"]]);
+    expect(query.having).toEqual([[[">", "?qh0", 1]]]);
+
+    // one fn over one var is one cell — the compared spec need not be the
+    // same object as the projected one
+    const inline = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      yield* Q.gt(Q.count(issue), 1);
+      return { owner, n: Q.count(issue) };
+    });
+    expect(lowerQueryObject(inline).query.having).toEqual(query.having);
+  });
+
+  test("lowering: group-key filters stay ordinary clauses in :where", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const r = yield* Q.fact(issue, Issue.rank);
+      yield* Q.gt(r.v, 0); // a row filter: no :having needed for a group key
+      const n = Q.count(issue);
+      yield* Q.lte(n, 10);
+      return { rank: r.v, n };
+    });
+    const { query } = lowerQueryObject(q);
+    expect(query.having).toEqual([[["<=", expect.stringMatching(/^\?qh/), 10]]]);
+    expect(JSON.stringify(query.where)).toContain('[[">","?q0",0]]');
+    expect(JSON.stringify(query.having)).not.toContain('">"');
+  });
+
+  test("e2e: owners with more than one issue", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const rows = await run(db.q(busyOwners));
+    expect(rows).toEqual([{ owner: ids.ada, n: 2 }] as never);
+
+    // the same filter over a value group key
+    const byName = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      const n = Q.count(issue);
+      yield* Q.gt(n, 1);
+      return { owner: name.v, n };
+    });
+    expect(await run(db.q(byName))).toEqual([{ owner: "Ada", n: 2 }] as never);
+
+    await peer.dispose();
+  });
+
+  test("e2e: params substitute into the post-group comparison", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const atLeast = Query.q({ min: Long }, function* (p) {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const n = Q.count(issue);
+      yield* Q.gte(n, p.min);
+      return { owner, n };
+    });
+    expect(await run(db.q(atLeast, { min: 2 }))).toEqual([{ owner: ids.ada, n: 2 }] as never);
+    expect((await run(db.q(atLeast, { min: 1 }))).length).toBe(2);
+
+    await peer.dispose();
+  });
+
+  test("e2e: the synthesized empty-set row still passes through :having", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+
+    const none = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      const n = Q.count(issue);
+      yield* Q.lt(n, 5);
+      return { n };
+    });
+    // count over the empty set is 0, and 0 < 5 keeps the one row
+    expect(await run(db.q(none))).toEqual([{ n: 0 }] as never);
+
+    const some = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      const n = Q.count(issue);
+      yield* Q.gt(n, 0);
+      return { n };
+    });
+    // …and 0 > 0 drops it, exactly as the peer would have
+    expect(await run(db.q(some))).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("misplaced aggregate comparisons are lowering errors", () => {
+    // inside Q.or there is no group to filter
+    const inOr = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const n = Q.count(issue);
+      yield* Q.or(Q.gt(n, 1), Q.lt(n, 0));
+      return { n };
+    });
+    expect(() => lowerQueryObject(inOr)).toThrow(/cannot appear inside Q\.or/);
+
+    // a compared cell that never reaches the projection has no name on the row
+    const unprojected = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      yield* Q.gt(Q.count(issue), 1);
+      return { title: t.v };
+    });
+    expect(() => lowerQueryObject(unprojected)).toThrow(/never projected/);
+
+    // a var beside the aggregate must itself be a projected cell
+    const looseVar = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const r = yield* Q.fact(issue, Issue.rank);
+      const n = Q.count(issue);
+      yield* Q.gt(n, r.v);
+      return { n };
+    });
+    expect(() => lowerQueryObject(looseVar)).toThrow(/projected cell/);
+
+    // :having names find cells, and a pull has none
+    const withPull = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const n = Q.count(issue);
+      yield* Q.gt(n, 1);
+      return { owner: Q.pull(owner, { name: User.name }), n };
+    });
+    expect(() => lowerQueryObject(withPull)).toThrow(/cannot share a projection/);
+  });
+});
+
+// ── per-element pull filters: `.where(fragment)` on a collection ───────────
+
+describe("per-element pull filters (.where)", () => {
+  test("lowering: fragments compile into the collection's :where", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      return Q.pull(issue, {
+        title: Issue.title,
+        fresh: Comment.issue.reverse
+          .where(function* (c) {
+            const author = yield* Query.follow(Comment.author)(c);
+            yield* Q.fact(author, User.name, "Grace");
+            yield* Q.not(Query.is(Comment.text, "old take")(c));
+          })
+          .orderBy(Comment.text, "asc")
+          .limit(5)
+          .select({ text: Comment.text }),
+      });
+    });
+    const { query } = lowerQueryObject(q);
+    const pattern = (query.find as unknown[][])[0]![2] as Record<string, unknown>[];
+    const fresh = pattern.find((s) => s.as === "fresh")!;
+    expect(fresh.reverse).toBe(true);
+    // facts chain into paths; Q.not maps to not
+    expect(fresh.where).toEqual([
+      { path: [":comment/author", ":user/name"], op: "=", value: "Grace" },
+      { not: { path: [":comment/text"], op: "=", value: "old take" } },
+    ]);
+    expect(fresh.order).toEqual([{ path: [":comment/text"], dir: "asc" }]);
+    expect(fresh.limit).toBe(5);
+  });
+
+  test("lowering: Q.or, has, and eid literals", () => {
+    const q = Query.q(function* () {
+      const team = yield* Query.entities(Team);
+      return Q.pull(team, {
+        members: Team.members
+          .where(
+            (u) => Q.or(Query.is(User.name, "Ada")(u), Query.has(User.age)(u)),
+          )
+          .select({ name: User.name }),
+      });
+    });
+    const { query } = lowerQueryObject(q);
+    const pattern = (query.find as unknown[][])[0]![2] as Record<string, unknown>[];
+    const members = pattern.find((s) => s.as === "members")!;
+    expect(members.where).toEqual([
+      {
+        or: [
+          { path: [":user/name"], op: "=", value: "Ada" },
+          { path: [":user/age"], op: "exists" },
+        ],
+      },
+    ]);
+  });
+
+  test("e2e: a backlink collection filters per element; rows are untouched", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    // a second comment, so the filter has something to drop
+    await run(
+      db.transact(function* (tx) {
+        const c = yield* tx.entity();
+        yield* c.add(Comment.issue, ids.fix!.id as never);
+        yield* c.add(Comment.author, ids.grace!.id as never);
+        yield* c.add(Comment.text, "second take");
+      }),
+    );
+
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      return Q.pull(issue, {
+        title: Issue.title,
+        adaSays: Comment.issue.reverse
+          .where(function* (c) {
+            const author = yield* Query.follow(Comment.author)(c);
+            yield* Q.fact(author, User.name, "Ada");
+          })
+          .select({ text: Comment.text }),
+      });
+    });
+    const rows = await run(db.q(q));
+    const byTitle = new Map(rows.map((r) => [r.title, r.adaSays.map((c) => c.text)]));
+    // the Grace comment is dropped from the collection, never the row
+    expect(byTitle.get("fix the flake")).toEqual(["on it"]);
+    expect(byTitle.get("ship the release")).toEqual([]);
+    expect(byTitle.get("archive the docs")).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("e2e: a forward many-ref collection, filtered by a comparison fragment", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const q = Query.q(function* () {
+      const team = yield* Query.entities(Team);
+      return Q.pull(team, {
+        name: Team.name,
+        seniors: Team.members
+          .where(Query.where(User.age, (a) => Q.gt(a, 40)))
+          .select({ name: User.name }),
+      });
+    });
+    const rows = await run(db.q(q));
+    const byName = new Map(rows.map((r) => [r.name, r.seniors.map((m) => m.name)]));
+    expect(byName.get("root")).toEqual([]); // Ada is 36
+    expect(byName.get("eng")).toEqual(["Grace"]); // Grace is 45
+
+    await peer.dispose();
+  });
+
+  test("e2e: a card-many scalar hands the fragment the value itself", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const q = Query.q(function* () {
+      const user = yield* Query.entities(User);
+      return Q.pull(user, {
+        name: User.name,
+        aTags: User.tags.where((v) => Q.startsWith(v, "a")),
+      });
+    });
+    const rows = await run(db.q(q));
+    const byName = new Map(rows.map((r) => [r.name, [...r.aTags].sort()]));
+    expect(byName.get("Ada")).toEqual(["alpha", "azure"]);
+    expect(byName.get("Grace")).toEqual([]);
+    expect(byName.get("Lin")).toEqual([]);
+
+    // comparisons on the element lower with an empty path
+    const { query } = lowerQueryObject(q);
+    const pattern = (query.find as unknown[][])[0]![2] as Record<string, unknown>[];
+    const tags = pattern.find((s) => s.as === "aTags")!;
+    expect(tags.where).toEqual([{ path: [], op: "starts-with?", value: "a" }]);
+
+    await peer.dispose();
+  });
+
+  test("e2e: params substitute into nested filter values at query lowering", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const q = Query.q({ who: EidOf(User) }, function* (p) {
+      const issue = yield* Query.entities(Issue);
+      return Q.pull(issue, {
+        title: Issue.title,
+        theirs: Comment.issue.reverse
+          .where(Query.is(Comment.author, p.who))
+          .select({ text: Comment.text }),
+      });
+    });
+    const rows = await run(db.q(q, { who: ids.ada as never }));
+    const fix = rows.find((r) => r.title === "fix the flake")!;
+    expect(fix.theirs).toEqual([{ text: "on it" }] as never);
+    const grace = await run(db.q(q, { who: ids.grace as never }));
+    expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("what cannot translate is rejected, never approximated", async () => {
+    // closing over an enclosing var: a pull filter cannot correlate
+    const correlated = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      return Q.pull(issue, {
+        c: Comment.issue.reverse
+          .where(Query.is(Comment.author, owner as never))
+          .select({ text: Comment.text }),
+      });
+    });
+    expect(() => lowerQueryObject(correlated)).toThrow(/closes over a var from the enclosing query/);
+
+    // entities(...) joins, and a pull filter cannot
+    expect(() =>
+      Comment.issue.reverse.where(function* () {
+        yield* Query.entities(User);
+      }),
+    ).toThrow(/entities\(\.\.\.\) does not lower/);
+
+    // Q.when gates on params, which bind after shapes are built
+    expect(() =>
+      User.tags.where(function* (v) {
+        yield* Q.when(params({ on: optional(Schema.Boolean) }).on, Q.startsWith(v as never, "a"));
+      }),
+    ).toThrow(/Q\.when\(\.\.\.\) does not lower/);
+
+    // two values bound by different clauses cannot be compared per element
+    expect(() =>
+      Comment.issue.reverse.where(function* (c) {
+        const a = yield* Q.fact(c, Comment.text);
+        const b = yield* Q.fact(c, Comment.text);
+        yield* Q.eq(a.v, b.v);
+      }),
+    ).toThrow(/compares two bound values/);
+
+    // time positions have no pull-phase meaning
+    expect(() =>
+      Comment.issue.reverse.where(function* (c) {
+        const f = yield* Q.fact(c, Comment.text);
+        yield* Q.gte(f.t, 1);
+      }),
+    ).toThrow(/time position/);
+
+    // .where needs a collection: a card-one ref has one element, the row's
+    expect(() => (Issue.owner as never as { where: (...a: unknown[]) => unknown }).where()).toThrow(
+      /cardinality-many/,
+    );
+
+    // db.pull has no params to bind into a nested filter
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const hole = params({ who: EidOf(User) }).who;
+    let threw: unknown;
+    try {
+      await run(
+        db.pull(ids.fix!.id as never, {
+          c: Comment.issue.reverse.where(Query.is(Comment.author, hole)).select({ text: Comment.text }),
+        } as never),
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect(String(threw)).toContain("reached db.pull");
     await peer.dispose();
   });
 });

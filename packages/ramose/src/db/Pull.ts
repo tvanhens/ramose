@@ -3,7 +3,7 @@
 import type { PullElemOrder, PullElemPred } from "../internal/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
-import type { AnyParam } from "./Params.ts";
+import { isParam, type AnyParam } from "./Params.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
@@ -393,9 +393,14 @@ type FieldResult<F, Enclosing = unknown> = F extends {
             readonly shape: infer P;
           }
         ? NestedResult<A, P, Enclosing>
-        : F extends { readonly ident: ":db/id" }
-          ? IdCell<F>
-          : ScalarResult<F>;
+        : // a filtered scalar collection reads as the attribute's own array
+          F extends { readonly _tag: "collection"; readonly attr: infer A }
+          ? A extends { readonly schema: infer S }
+            ? readonly SchemaType<S>[]
+            : never
+          : F extends { readonly ident: ":db/id" }
+            ? IdCell<F>
+            : ScalarResult<F>;
 
 /** Result shape of a fields object. */
 export type StructPullResult<P> = FieldsResult<P>;
@@ -1131,6 +1136,108 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
   if (isAllShape(pattern)) return ["*"];
   if (Array.isArray(pattern)) return lowerIdentPull(pattern);
   return lowerLiterateMap(pattern);
+};
+
+// ── param holes in nested constraints ──────────────────────────────────────
+
+const unwrapEidValue = (v: unknown): unknown =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as { id?: unknown }).id === "number" &&
+  Object.keys(v).length === 1
+    ? (v as { id: number }).id
+    : v;
+
+const hasParamDeep = (x: unknown): boolean => {
+  if (isParam(x)) return true;
+  if (typeof x !== "object" || x === null) return false;
+  return Object.values(x as Record<string, unknown>).some(hasParamDeep);
+};
+
+const bindElemValue = (
+  value: unknown,
+  op: unknown,
+  resolve: (p: AnyParam, use: string) => unknown,
+): unknown => {
+  if (!isParam(value)) return value;
+  const v = resolve(value, `${String(op)} in a nested filter`);
+  if (op === "in") {
+    if (!Array.isArray(v)) {
+      throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
+    }
+    return v.map(unwrapEidValue);
+  }
+  if (op === "re-find?" || op === "re-matches?") {
+    if (v instanceof RegExp) {
+      if (v.flags !== "") {
+        throw new Error(
+          `ramose/query: matches(/${v.source}/${v.flags}) — the peer compiles the pattern with no flags; express it in the pattern instead`,
+        );
+      }
+      return v.source;
+    }
+    return v;
+  }
+  return unwrapEidValue(v);
+};
+
+const bindElemPred = (
+  p: PullElemPred,
+  resolve: (p: AnyParam, use: string) => unknown,
+): PullElemPred => {
+  if ("and" in p) return { and: p.and.map((q) => bindElemPred(q, resolve)) };
+  if ("or" in p) return { or: p.or.map((q) => bindElemPred(q, resolve)) };
+  if ("not" in p) return { not: bindElemPred(p.not, resolve) };
+  if ("every" in p) return { every: { ...p.every, pred: bindElemPred(p.every.pred, resolve) } };
+  if ("some" in p) return { some: { ...p.some, pred: bindElemPred(p.some.pred, resolve) } };
+  if (!("value" in p) || !isParam(p.value)) return p;
+  return { ...p, value: bindElemValue(p.value, p.op, resolve) };
+};
+
+const bindCount = (
+  n: unknown,
+  what: string,
+  resolve: (p: AnyParam, use: string) => unknown,
+): unknown => {
+  if (!isParam(n)) return n;
+  const v = resolve(n, `nested ${what}`);
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+    throw new Error(`ramose/query: nested ${what} takes a non-negative integer, got ${String(v)}`);
+  }
+  return v;
+};
+
+/**
+ * Substitute the param holes a shape's nested constraints carried into the
+ * lowered pull pattern — filter values (`.where`), nested `:limit` /
+ * `:offset`. Query lowering calls this with its binder; `db.pull` calls it
+ * with a resolver that rejects, because a pull has no params to bind. The
+ * walk is identity when the pattern holds no params.
+ */
+export const bindPullParams = (
+  pattern: unknown[],
+  resolve: (p: AnyParam, use: string) => unknown,
+): unknown[] => {
+  if (!hasParamDeep(pattern)) return pattern;
+  return pattern.map((spec) => {
+    if (typeof spec !== "object" || spec === null) return spec;
+    const s = spec as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...s };
+    if (Array.isArray(s.where)) {
+      out.where = (s.where as PullElemPred[]).map((p) => bindElemPred(p, resolve));
+    }
+    if (s.limit !== undefined) out.limit = bindCount(s.limit, "limit", resolve);
+    if (s.offset !== undefined) out.offset = bindCount(s.offset, "offset", resolve);
+    if (Array.isArray(s.sub)) out.sub = bindPullParams(s.sub, resolve);
+    return out;
+  });
+};
+
+/** The resolver `db.pull` binds with: there are no params to bind. */
+export const rejectPullParams = (p: AnyParam, use: string): never => {
+  throw new Error(
+    `ramose/query: the param "${p.key}" (${use}) reached db.pull — a pull has no params to bind; bind the value before building the shape, or run it as a query`,
+  );
 };
 
 /**

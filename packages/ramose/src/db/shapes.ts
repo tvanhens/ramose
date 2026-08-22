@@ -17,6 +17,8 @@
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import type { AnyNamespace } from "./Namespace.ts";
+import { lowerElemFilter, type ElemFilterFragment } from "./query/elemFilter.ts";
+import type { EidCell, Var } from "./query/kernel.ts";
 import {
   type Again,
   type AgainAsField,
@@ -139,7 +141,10 @@ export type ShapeField =
       readonly _tag: "select";
       readonly attr: unknown;
       readonly shape: Shape | AllShape | Again;
-    };
+    }
+  // a filtered card-many *scalar* is the field itself — its elements are
+  // values, so there is no shape to select through it
+  | { readonly _tag: "collection"; readonly attr: unknown };
 
 export type Shape = { readonly [key: string]: ShapeField };
 
@@ -180,6 +185,18 @@ export type NestedOrderKey = PathCarrier & {
 };
 
 /**
+ * One `.where` predicate for a nested collection: a filter fragment over the
+ * element. A ref collection's element is an entity var — the same fragments
+ * the pipe uses (`is`, `has`, `Q.not(…)`, any userland combinator built from
+ * the kernel) apply verbatim. A card-many **scalar**'s element is the value
+ * itself, so the fragment is handed the value var directly:
+ * `User.tags.where((v) => Q.startsWith(v, "a"))`.
+ */
+export type NestedElemPred<A> = A extends { readonly valueType: ":db.type/ref" }
+  ? (focus: Var<EidCell>) => Iterable<unknown>
+  : (v: Var<AttrValue<A>>) => Iterable<unknown>;
+
+/**
  * Predicate-free stamp on every attribute reference: the pull-shaping
  * methods. `.optional` / `.orDefault` wrap the receiver; `.select` opens a
  * nested shape on a ref; a card-many ref also orders and pages its
@@ -213,6 +230,15 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly limit: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
   /** Card-many ref only: drop `n` elements from the front. */
   readonly offset: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
+  /**
+   * Card-many only: keep the elements that satisfy every per-element filter,
+   * evaluated *inside* the pull — it pages the collection, never the rows (a
+   * collection that filters to nothing is `[]`, not a dropped parent). Takes
+   * the same filter fragments the pipe uses; see {@link NestedElemPred}.
+   */
+  readonly where: IsMany<A> extends true
+    ? (...preds: readonly NestedElemPred<A>[]) => CollectionNav<A>
+    : never;
 };
 
 /**
@@ -241,6 +267,7 @@ export interface CollectionNav<A extends PathCarrier = PathCarrier> {
   ): CollectionNav<A>;
   limit(n: number): CollectionNav<A>;
   offset(n: number): CollectionNav<A>;
+  where(...preds: readonly NestedElemPred<A>[]): CollectionNav<A>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? RefSelect<A>
     : never;
@@ -281,15 +308,35 @@ const collectionNav = <A extends PathCarrier>(
     _tag: "collection",
     attr,
     constraints,
-    orderBy: (key, dir = "asc", opts) =>
-      collectionNav(attr, {
+    orderBy: (key, dir = "asc", opts) => {
+      if (!isRefNav(attr)) {
+        throw new Error(
+          `ramose/query: nested orderBy on ${pathOf(attr).join(" → ")} — a scalar collection's elements are its values; only a reference collection has attributes to sort by`,
+        );
+      }
+      return collectionNav(attr, {
         ...constraints,
         order: [...(constraints.order ?? []), lowerElemOrder(key, dir, opts?.empty)],
-      }),
+      });
+    },
     limit: (n) => collectionNav(attr, { ...constraints, limit: nestedCount(n, "limit") }),
     offset: (n) => collectionNav(attr, { ...constraints, offset: nestedCount(n, "offset") }),
-    select: ((shape: Shape | AllShape | Again) =>
-      makeSelectNested(attr, shape, constraints)) as CollectionNav<A>["select"],
+    where: (...preds) =>
+      collectionNav(attr, {
+        ...constraints,
+        where: [
+          ...(constraints.where ?? []),
+          ...lowerElemFilter(preds as readonly ElemFilterFragment[], attr),
+        ],
+      }),
+    select: ((shape: Shape | AllShape | Again) => {
+      if (!isRefNav(attr)) {
+        throw new Error(
+          `ramose/query: ${pathOf(attr).join(" → ")}.select(...) — only a reference has a nested shape to select; a filtered scalar collection is the field itself`,
+        );
+      }
+      return makeSelectNested(attr, shape, constraints);
+    }) as CollectionNav<A>["select"],
   };
   return self;
 };
@@ -301,6 +348,18 @@ const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
   if (cards[cards.length - 1] !== "many" || !isRefNav(attr)) {
     throw new Error(
       `ramose/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested orderBy / limit / offset page a cardinality-many reference collection; constrain rows in the query itself`,
+    );
+  }
+  return collectionNav(attr, {});
+};
+
+/** Start filtering a collection: any cardinality-many attribute — ref or
+ * scalar — has elements to keep or drop inside the pull. */
+const filterableCollectionOf = (attr: PathCarrier): CollectionNav => {
+  const cards = cardsOf(attr);
+  if (cards[cards.length - 1] !== "many") {
+    throw new Error(
+      `ramose/query: where(...) on ${pathOf(attr).join(" → ")} — a nested where filters the elements of a cardinality-many collection; constrain rows in the query itself`,
     );
   }
   return collectionNav(attr, {});
@@ -377,6 +436,9 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     },
     offset(this: PathCarrier, n: number) {
       return collectionOf(this, "offset").offset(n);
+    },
+    where(this: PathCarrier, ...preds: readonly ElemFilterFragment[]) {
+      return filterableCollectionOf(this).where(...(preds as never[]));
     },
   };
 
@@ -504,7 +566,13 @@ type SelectFieldResult<F, Enclosing = unknown> = F extends {
           readonly pattern: infer P;
         }
       ? NestedSelectResult<A, P, Enclosing>
-      : F extends {
+      : // a filtered scalar collection reads as the attribute's own array
+        F extends {
+            readonly _tag: "collection";
+            readonly attr: infer A;
+          }
+        ? readonly SchemaType<A>[]
+        : F extends {
             readonly schema: infer S;
             readonly cardinality: infer Card;
           }

@@ -484,8 +484,16 @@ const fact = <A extends AttrLike>(
   return cmd as FactCommand<AttrValue<A>>;
 };
 
-/** A comparison operand: a bound var, a literal, or a param hole. */
-export type Operand<T = unknown> = Var<T> | AnyParam | T;
+/**
+ * A comparison operand: a bound var, a literal, a param hole, or an
+ * aggregate cell. A comparison that mentions an aggregate cell lowers into
+ * the wire's `:having` section — aggregates are not bound until after
+ * grouping, so the placement *is* the semantics: it filters whole groups,
+ * after they are computed. The cell must reach the projection (that is
+ * what names it on the row), and such a comparison cannot sit inside
+ * `Q.or` / `Q.not` — there is no group yet where those lower.
+ */
+export type Operand<T = unknown> = Var<T> | AnyParam | AggSpec<T> | T;
 
 /**
  * The error `Q.when` resolves an ungateable param to: a gate is a
