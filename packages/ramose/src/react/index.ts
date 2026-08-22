@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `ramose/react` — React bindings for Ramose. Named hooks, not a namespace:
  *
@@ -13,6 +15,11 @@
  * `useBasis` (where the basis is) — plus `useTransact()` for writes from
  * event handlers (works with or without the provider) and `errorMessage`
  * for toast text.
+ *
+ * This entry and every hook module it re-exports open with `"use client"`
+ * so a Next App Router / React Router server-component import compiles.
+ * Keep the directive as the first statement — bundlers and `tsc` emit
+ * look for that, and `test/react/use-client.test.ts` pins it.
  */
 
 export { RamoseProvider, type RamoseProviderProps } from "./RamoseProvider.tsx";

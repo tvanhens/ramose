@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useLive` — a standing read as React state: `{ rows, error, ticks }`,
  * reset when the inputs change.

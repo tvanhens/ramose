@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `RamoseProvider` — one `Client`, owned by the tree: `Ramose.connect` in a
  * `useMemo` keyed on `url` and the identity of `token` / `fetch` /

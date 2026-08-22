@@ -1,3 +1,5 @@
+"use client";
+
 /** `useRamose` and `useDb` — the two hooks every other hook here builds on. */
 
 import type { Catalog, Client, Db } from "../db/index.ts";

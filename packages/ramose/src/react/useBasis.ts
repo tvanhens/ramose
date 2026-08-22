@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useBasis` — where the database's basis is: `db.basis()` on mount, then
  * again on every wake of the db's session (a `{ op: "tx" }` / resync, a

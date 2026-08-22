@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useTransact` — run an Effect from an event handler, and know whether it
  * is running and whether it failed.
