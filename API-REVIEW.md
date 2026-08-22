@@ -10,11 +10,17 @@ that matter most, ranked by user impact, security consequence, and the cost of
 fixing after 1.0. Type-level claims were reproduced with `tsc --strict`; runtime
 claims by executing the engine or lowering real queries.
 
+> **Decision (2026-08-22):** the Operation API (`Ramose.Operation` / `db.run`) is
+> the **only** write path going forward; `db.transact` retires from the public
+> surface. Item 1 is therefore framed as the workstream list to make operations
+> launch-ready (one issue per bold lead-in), and items 3, 5, and 7 carry the
+> follow-on changes.
+
 ## The ten
 
 | # | Problem | Severity |
 |---|---------|----------|
-| 1 | The write API is two half-finished APIs | critical |
+| 1 | Operations become the only write path — and they aren't ready | critical |
 | 2 | Type safety stops at every boundary crossing | critical |
 | 3 | Auth & permissions: a hardcoded superuser and fail-open seams | critical |
 | 4 | Schema definition can silently corrupt data, and can never evolve | critical |
@@ -27,42 +33,83 @@ claims by executing the engine or lowering real queries.
 
 ---
 
-### 1. The write API is two half-finished APIs — critical
+### 1. Operations become the only write path — and they aren't ready — critical
 
-There are two ways to write: `db.transact` (documented everywhere, datom-level) and
-`Operation`/`db.run` (exported, used for half of Reef's mutations, and appearing
-zero times in the docs — while "Operations" in the docs already means the policy
-verbs). The peer even has a `writes: "operations"` production mode that rejects raw
-`/transact` outright. Reef shows no rule for choosing: `setStatus` is an operation
-but `setPriority` is a transact; `deleteIssue` is an operation but `deleteComment`
-is a transact. Both halves are missing their most important pieces:
+**Decided:** `Operation`/`db.run` is the sole write API; `db.transact` retires
+from the public surface. The decision is right — `db.run` already resolves the ids
+of created entities (the thing `transact` never could), the peer already has the
+`writes: "operations"` enforcement mode, and a named-operation contract is the
+natural policy and audit boundary. But today operations are the *least* finished
+corner of the write surface: undocumented, untyped, and datom-level verbose. The
+workstream list to make the decision true, one issue per bold lead-in:
 
-- **You cannot learn the id of what you just created.** The wire returns `tempids`,
-  the overlay parses them, and `submit` drops them (`db/Db.ts:789-808`); the
-  generator's return value is discarded too. The docs turn the omission into
-  doctrine ("to learn a new record's id, query for it",
-  `reference/client-api.mdx:285`), and Reef consequently re-finds its own new issue
-  by fuzzy-matching title + status + rank + creator
-  (`examples/reef/src/app/screens/BoardScreen.tsx:286-301`). `db.run` resolves ids
-  correctly — `transact` is the odd one out.
-- **No entity-level write.** Creating one 8-field issue is 17 lines of
-  `yield* tx.add(...)` with hand-rolled optionality and loops
-  (`examples/reef/src/app/mutations.ts:174-191`). The engine already accepts map
-  form — `install()` itself submits maps — and `WriteAtIdent`, the exact type
-  needed for a typed `tx.put`, sits as an unused import in `db/Tx.ts:10`.
-- **Operation bodies throw away all type safety.**
-  `op.add(e: unknown, attr: unknown, value: unknown)` (`db/Operation.ts:76,99`) —
-  `op.add(op.self, Issue.status, 42)` compiles. The write path recommended for
-  production is the untyped one. `db.run`'s entity argument is `unknown` too.
-- **Upsert exists in the engine but not in the API.** A lookup ref that misses is a
-  hard rejection (`internal/core/tx.ts:271-272`); tempid-unification upsert
-  (`internal/core/tx.ts:293-330`) is reachable only by folklore.
+- **Type the operation surface.** Op bodies are untyped on every position —
+  `op.add(e: unknown, attr: unknown, value: unknown)`,
+  `OpEntity.add(attr: unknown, value: unknown)` (`db/Operation.ts:76,99`), so
+  `op.add(op.self, Issue.status, 42)` compiles; `db.run`'s entity argument is
+  `unknown` too (`db/Db.ts:288`), so running an `on: Issue` operation against a
+  comment id typechecks. Parameterize `Op` over the catalog and correlate
+  `op.self`/the `db.run` entity argument with `on`. The type machinery already
+  exists in `Tx` (`db/Tx.ts:110-114`) — it was never threaded through.
+- **Entity-level writes on the op handle.** With operations the only path,
+  `transact`'s datom-level verbosity moves into every op body: Reef's
+  `createIssue` would still be 17 lines of `yield* add(...)` with hand-rolled
+  optionality (`examples/reef/src/app/mutations.ts:174-191`). Ship
+  `op.put(Issue, {…})` (and `op.put(Issue, id, {…})` for updates) lowering to the
+  map form the engine already accepts — `WriteAtIdent`, the exact type needed,
+  sits as an unused import in `db/Tx.ts:10`. Add `op.upsert(User.sub, "…")` on
+  unique-identity attrs while there: the engine implements upsert
+  (`internal/core/tx.ts:293-330`), the API leaves it reachable only by folklore.
+- **A low-ceremony path for simple writes.** Every mutation now requires a named
+  operation registered with the peer (`createPeer({ operations })`) — a
+  client/server contract keyed on string ids like `"issue/move"`, where a client
+  running an op the peer build didn't register is a runtime failure. Bless Reef's
+  pattern (a shared domain module imported by both the app and `infra/peer.ts`)
+  as *the* pattern: a `defineOperations(catalog, {…})` registry both sides
+  import, a deploy-time check that the peer's registry covers the client's, and
+  an answer for what used to be a three-line `transact` so the floor stays low.
+- **Flip the peer default and wire the resource prop.** `writes: "operations"`
+  stops being a mode and becomes the default; raw `/transact` becomes the opt-in
+  (admin/seed tooling). Which makes the silently-ignored
+  `Server({ writes, operations })` props (see 3) a blocker rather than a cleanup:
+  the prop must actually lower to `RAMOSE_WRITES`, and `RAMOSE_WRITES` must
+  appear in the server reference.
+- **Retire `db.transact` cleanly.** Remove it (and `useTransact`'s framing around
+  it) from the public surface; keep `Tx` as the internal primitive the op handle
+  wraps. Take the dead surface with it: `tx.spec`/`tx.catalog` leaking on the
+  builder, unused `TxGenBody`/`TxEffectBody`, and the untyped Effect-callback
+  branch (`db/Tx.ts:98-99,145-159`, `db/Db.ts:830-832`).
+- **Document `OpReport` and the operation errors.** Keep and document `db.run`'s
+  id materialization (`db/Operation.ts:238-261`) — the reason Reef fuzzy-matches
+  its own new issue back out of a query
+  (`examples/reef/src/app/screens/BoardScreen.tsx:286-301`) disappears with
+  `transact`. `OperationRejected` — the primary failure of the primary write
+  path — is missing from every error table (`reference/errors.mdx`,
+  `client-api.mdx`).
+- **Rewrite the teaching layer around operations.** Operations appear *zero*
+  times in the docs today, and "Operations" already names the policy verbs in
+  `reference/policy.mdx` — rename one of the two before writing the guide. The
+  quickstart, the transactions guide ("the four verbs, and that there is no
+  fifth"), the client-api reference, the README hero, and Reef's six remaining
+  `transact` mutations (`setTitle`, `setPriority`, `setAssignee`, `toggleLabel`,
+  `deleteComment`, `createIssue`) all move to operations. Overlaps with 5's
+  snippet-extraction fix — do the rewrite on extracted snippets so it can't
+  drift again.
 
-**Direction:** one write story. Add `tempids` + the generator's resolved return
-value to `TxReport`; ship a namespace-typed `tx.put(Issue, {…})` lowering to map
-form; parameterize `Op` over the catalog; surface `tx.upsert(User.sub, "…")`; write
-down the seam — *transact for blind writes, operations for writes that must read or
-run server-side* — and make Reef follow it.
+**Target shape:**
+
+```ts
+const createIssue = Ops.op("issue/create", { input: Draft, output: EntityId }, (op, draft) =>
+  op.put(Issue, {                      // typed against the catalog; undefined → omitted
+    title: draft.title,
+    status: draft.status,
+    rank: draft.rank,
+    creator: op.principal,
+    labels: draft.labelIds ?? [],
+  }));
+
+const { id } = yield* db.run(createIssue, draft);   // real eid, no re-query
+```
 
 ### 2. Type safety stops at every boundary crossing — critical
 
@@ -114,6 +161,8 @@ branded number everywhere. Much cheaper before 1.0 than after.
   (`Server.ts:180-187` vs `attributes()` at `:470-493`).
   `Server("R", { writes: "operations" })` deploys green and leaves raw `/transact`
   open — the real knob is `RAMOSE_WRITES`, undocumented in the server reference.
+  With operations now the only write path (1), this graduates from cleanup to
+  launch blocker: the prop must be wired and the mode made the default.
 - **Auth is configured in two places with no cross-check.** Passing `auth` only to
   `Ramose.Server` (not `authEnv` into the Worker) passes the deploy check while the
   worker ships without `RAMOSE_POLICY` — open to everyone. Reef never passes `auth`
@@ -174,7 +223,9 @@ attribute set and fail on incompatible changes with an explicit
   "filter a query by entity id," and zero test coverage of the documented one.
 - The quickstart's central snippet uses `pipe(...)` without importing it.
 - `guides/transactions.mdx` teaches code that no longer exists: `moveIssue` and
-  `deleteIssue` shown as transacts are now operations. `reference/policy.mdx:43-46`
+  `deleteIssue` shown as transacts are now operations — and the operations
+  decision (1) turns this from an anchor fix into a full rewrite of the write
+  documentation. `reference/policy.mdx:43-46`
   shows a `user: { add: self }` arm that Reef's own tests assert must not exist.
 - Virtually every `title="path:N-M"` anchor across ~20 doc files is stale (all six
   review passes verified their slices); error counts are wrong in three places
@@ -230,7 +281,9 @@ resolving to `{ ok, value } | { ok, error }` with `runExit` for Effect users.
 
 **Direction:** one `Read` contract for all read hooks (`data`, typed `error`,
 `status`, basis `t`, `refetch`/`retry`); names that say liveness; add
-`useConnectionStatus()` and `usePrincipal(db)`; `"use client"` now, `initialData`
+`useConnectionStatus()`, `usePrincipal(db)`, and a first-class write hook for
+`db.run` (`useOperation`) — with operations the only write path (1), the primary
+write hook shouldn't be a generic Effect runner; `"use client"` now, `initialData`
 and a Suspense variant next; client-level subscription cache with structural
 sharing.
 
