@@ -520,11 +520,11 @@ describe("ensure and privileged surfaces", () => {
     expect(first.body.principal.class).toBe("member");
     const eid = first.body.principal.eid as number;
     expect(eid).toBeGreaterThan(0);
-    const asAdmin = await token("acme", "admin", "user_ida");
-    const pulled = await peer.json("/db/acme/pull", post({ eid, pattern: [":user/sub", ":user/role"] }, asAdmin));
+    const pulled = await peer.json("/db/acme/pull", post({ eid, pattern: [":user/sub", ":user/role"] }, member));
     expect(pulled.body.result).toMatchObject({ ":user/sub": "user_ida", ":user/role": "member" });
 
     // a new class is the same upsert — one entity, new role fact
+    const asAdmin = await token("acme", "admin", "user_ida");
     const promoted = await peer.json("/db/acme/info", { token: asAdmin });
     expect(promoted.body.principal).toEqual({ eid, class: "admin" });
     const after = await peer.json("/db/acme/pull", post({ eid, pattern: [":user/sub", ":user/role"] }, asAdmin));

@@ -498,6 +498,7 @@ export class Transactor {
   private async authorize(p: Pending): Promise<TxData> {
     const policy = this.host.policy;
     if (!policy) return p.tx;
+    if (p.system) return p.tx;
     if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
     if (isAdmin(p.principal)) return p.tx;
     const db = this.conn.db();
