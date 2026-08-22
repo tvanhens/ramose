@@ -23,8 +23,10 @@ The kernel surface gained the three spellings the migration needed first:
 
 Aggregates keep one spelling: an aggregate cell in a record projection
 (`Q.count`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max`); there
-are no pipe aggregate terminals. Note the record form answers **no rows**
-over an empty match set (the old scalar `.count()` answered `0`).
+are no pipe aggregate terminals. An aggregate-only record keeps the old
+scalar semantics: exactly one row even over an empty match set (`count` /
+`countDistinct` / `sum` are `0`, `avg` / `min` / `max` are `null`); a
+grouped record is `[]` over no rows.
 
 #### Old → new spellings
 
@@ -44,7 +46,7 @@ over an empty match set (the old scalar `.count()` answered `0`).
 | `.select(shape)` / `.orderBy` / `.limit` / `.offset`    | `Query.select/orderBy/limit/offset` stages (same shapes)           |
 | `.one()` / `.oneOrFail()`                               | `q.one()` / `q.oneOrFail()` on the built value                     |
 | `.after(cursor)` → `Page`                               | `q.after(cursor)` → `Page` (same `Page`/`Cursor` values)           |
-| `.count()` / `.sum(a)` / …                              | a record cell: `{ n: Q.count(e) }` (empty set → no rows, not `0`)  |
+| `.count()` / `.sum(a)` / …                              | a record cell: `{ n: Q.count(e) }` — ungrouped, still one row over the empty set |
 | `.aggregate({ … })` / `.groupBy({ … }).aggregate({ … })`| a record projection: non-aggregate cells are the group keys        |
 | `.having((g) => …)`                                     | removed — filter the grouped rows client-side (post-group filters may return in kernel terms) |
 | nested collection `.where(pred)` in a shape             | removed — per-element pull filters may return in kernel terms      |

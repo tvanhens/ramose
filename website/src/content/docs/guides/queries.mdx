@@ -257,7 +257,7 @@ const openCount = Query.q(function* () {
   return { n: Q.count(todo) };
 });
 const rows = yield* db.q(openCount);
-const open = rows[0]?.n ?? 0; // no matches → no rows
+const open = rows[0]!.n; // an ungrouped aggregate always answers one row — 0 over no matches
 
 const perOwner = Query.q(function* () {
   const todo = yield* Query.entities(Todo);
@@ -268,7 +268,7 @@ const perOwner = Query.q(function* () {
 // one row per owner: { owner: string, n: number }
 ```
 
-The work runs on the server. `avg` / `min` / `max` are `| null` over no rows. Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
+The work runs on the server. An aggregate-only record answers exactly one row even over an empty match set — `count` / `countDistinct` / `sum` read `0`, `avg` / `min` / `max` read `null` — while a grouped record is `[]` (no rows, no groups). Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
 
 ## Read one record
 

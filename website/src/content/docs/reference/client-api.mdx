@@ -393,7 +393,7 @@ const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
 );
 ```
 
-**Aggregates.** When the answer is a number, project an aggregate cell in a record — the generator spelling. `Q.count(handle)`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max` are cells; the record's other cells are the group keys, and a record of only aggregates is one row for the whole match set — over an *empty* match set the query answers no rows at all.
+**Aggregates.** When the answer is a number, project an aggregate cell in a record — the generator spelling. `Q.count(handle)`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max` are cells; the record's other cells are the group keys, and a record of only aggregates is **exactly one row** for the whole match set — over an empty match set each fn answers for the empty set (`count` / `countDistinct` / `sum` are `0`, `avg` / `min` / `max` are `null`), the same rule SQL's ungrouped aggregates follow. A grouped record is `[]` over no rows: no rows, no groups.
 
 ```ts
 const perStatus = Query.q(function* () {
@@ -404,7 +404,7 @@ const perStatus = Query.q(function* () {
 // readonly { status: string; n: number }[] — one row per status
 ```
 
-`avg` / `min` / `max` are `| null` over an empty group. Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
+Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
 
 **Keyset paging.** `q.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
 

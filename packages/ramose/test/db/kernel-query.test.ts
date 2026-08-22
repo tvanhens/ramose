@@ -606,6 +606,50 @@ describe("db.q end to end", () => {
     await peer.dispose();
   });
 
+  test("an ungrouped aggregate answers one row over the empty set", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    // no non-aggregate cell: the whole (empty) match set is the one group
+    const stats = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      const r = yield* Q.fact(issue, Issue.rank);
+      return { n: Q.count(issue), total: Q.sum(r.v), top: Q.max(r.v), mean: Q.avg(r.v) };
+    });
+    expect(await run(db.q(stats))).toEqual([
+      { n: 0, total: 0, top: null, mean: null },
+    ] as never);
+
+    // …so one() always has its row, and rows[0].n needs no ?? 0
+    const count = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      return { n: Q.count(issue) };
+    });
+    expect(await run(db.q(count.one()))).toEqual({ n: 0 } as never);
+
+    // a projection with a group key correctly stays []: no rows, no groups
+    const grouped = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v, n: Q.count(issue) };
+    });
+    expect(await run(db.q(grouped))).toEqual([]);
+
+    // a non-empty match set is untouched by the synthesis
+    const open = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.done, false)(issue);
+      return { n: Q.count(issue) };
+    });
+    expect(await run(db.q(open))).toEqual([{ n: 2 }] as never);
+
+    await peer.dispose();
+  });
+
   test("where, missing, every, and Q.in", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);

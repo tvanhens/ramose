@@ -58,6 +58,7 @@ import {
   isBlank,
   mkVar,
   runBody,
+  type AggSpec,
   type AnyVar,
   type BClause,
   type BuildCtx,
@@ -678,12 +679,25 @@ export interface LoweredKernelQuery {
 }
 
 /** One projected column, flattened: where it lives in the row, how it
- * lowers into `:find`, and how its cell reads back. */
+ * lowers into `:find`, and how its cell reads back. `agg` names the
+ * aggregate fn when the cell is one — an all-agg projection synthesizes
+ * the empty-set row from it. */
 interface FlatCell {
   readonly path: readonly string[];
   readonly elem: unknown;
   readonly read: (cell: unknown) => unknown;
+  readonly agg?: AggSpec["fn"];
 }
+
+/** Each aggregate's answer over no rows at all: the fn over the empty set. */
+const EMPTY_AGG: Record<AggSpec["fn"], unknown> = {
+  count: 0,
+  "count-distinct": 0,
+  sum: 0,
+  avg: null,
+  min: null,
+  max: null,
+};
 
 const unwrapEidLike = (v: unknown): unknown =>
   typeof v === "object" &&
@@ -1025,7 +1039,7 @@ export const lowerQueryObject = (
         cell.v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
           ? (x: unknown) => (typeof x === "number" ? x - TX_BASE : x)
           : (x: unknown) => x;
-      flats.push({ path, elem: [cell.fn, nameOf(cell.v)], read });
+      flats.push({ path, elem: [cell.fn, nameOf(cell.v)], read, agg: cell.fn });
       return;
     }
     if (isPullSpec(cell)) {
@@ -1064,8 +1078,14 @@ export const lowerQueryObject = (
     const cells = isRowsSpec(proj) ? proj.cells : proj;
     for (const [k, cell] of Object.entries(cells)) flattenCell([k], cell as Cell);
     find.push(...flats.map((f) => f.elem));
-    finalizeRows = (tuples) =>
-      tuples.map((t) => {
+    // an ungrouped aggregate always answers one row: with no non-aggregate
+    // cell there is nothing to group by, so the whole (possibly empty) match
+    // set is the one group, and each fn answers for the empty set — the same
+    // rule SQL's aggregate-without-GROUP-BY follows. A projection with a
+    // group key correctly stays []: no rows, no groups.
+    const aggOnly = flats.length > 0 && flats.every((f) => f.agg !== undefined);
+    finalizeRows = (raw) =>
+      (raw.length === 0 && aggOnly ? [flats.map((f) => EMPTY_AGG[f.agg!])] : raw).map((t) => {
         const row: Record<string, unknown> = {};
         flats.forEach((f, i) => {
           const value = f.read(t[i]);
