@@ -126,6 +126,9 @@ export async function checkTx(
         continue;
       }
     }
+    // create arms see in-tx refs (overlay); every other verb is db-before only.
+    // Fragment rules run through the engine against that view — they cannot
+    // name the proposed value (that is operations territory).
     const ctx = {
       db,
       principal,

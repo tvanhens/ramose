@@ -14,9 +14,21 @@ config, checked before the rule runs.
 Compile promotes each fragment to a named `Query.rule` and serializes it
 into a `rules` section of the policy JSON (wire version 2). Deploy-time
 validation walks rule bodies through the query validator. Installed
-policies recompile at deploy — no data migration. Evaluation of named
-fragment rules is the next issue; `true` and class-only arms still
-enforce.
+policies recompile at deploy — no data migration.
+
+### Fragment-rule evaluation (#154)
+
+A named fragment arm is one engine query over the unfiltered rule db,
+with the focus bound to the entity and `?me` bound to `Principal.eid`.
+Non-empty result = allow. Results are memoized per `(rule, e)` on the
+existing `PolicyMemo`. Create arms keep the in-tx ref overlay so a
+parent asserted in the same transaction is visible to the rule; add /
+retract / retractEntity evaluate against db-before only.
+
+Unresolved principals fail closed (relational rules cannot match; only
+`true` arms apply). A rule that blows the query memory budget throws
+`PolicyBudgetError` (`policy/budget-exceeded`) — a deploy-time smell,
+not a silent deny. v1 expression policies still evaluate as before.
 
 #### Old → new spellings
 

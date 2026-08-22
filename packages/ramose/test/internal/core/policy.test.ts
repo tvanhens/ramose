@@ -6,7 +6,10 @@ import {
   type CompiledPolicy,
   type Principal,
   PolicyAst as A,
+  PolicyBudgetError,
+  PolicyMemo,
   PolicyParseError,
+  allowsOp,
   checkTx,
   filterDb,
   isAdmin,
@@ -467,5 +470,201 @@ describe("checkTx", () => {
     expect(Object.keys(r).sort()).toEqual(["attr", "code", "ok", "op"]);
     expect(JSON.stringify(r)).not.toContain(String(ids.d2));
     expect(JSON.stringify(r)).not.toContain("leak");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 fragment rules — evaluate through the query engine (#154)
+// ---------------------------------------------------------------------------
+
+/** Same grants as POLICY_JSON, compiled as named fragment rules. */
+const FRAGMENT_POLICY_JSON = {
+  version: 2,
+  principal: ":user/sub",
+  classes: ["anonymous", "member", "admin"],
+  attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
+  ns: {
+    doc: {
+      read: [
+        { _tag: "allow", rule: "policy/doc/owner" },
+        { _tag: "allow", rule: "policy/doc/inOrg" },
+      ],
+      create: [{ _tag: "allow", rule: "policy/doc/inOrg" }],
+      add: [{ _tag: "allow", rule: "policy/doc/owner" }],
+      retract: [{ _tag: "allow", rule: "policy/doc/owner" }],
+      retractEntity: [{ _tag: "allow", rule: "policy/doc/owner" }],
+    },
+    project: { read: [{ _tag: "allow", rule: "policy/project/inOrg" }] },
+    org: { read: [{ _tag: "allow", rule: "policy/org/members" }] },
+    user: { read: [{ _tag: "allow", rule: "policy/user/self" }] },
+  },
+  preset: { ":doc/owner": { _tag: "principal" } },
+  rules: [
+    [["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]],
+    [
+      ["policy/doc/inOrg", "?me", "?e"],
+      ["?e", ":doc/project", "?p"],
+      ["?p", ":project/org", "?o"],
+      ["?o", ":org/members", "?me"],
+    ],
+    [
+      ["policy/project/inOrg", "?me", "?e"],
+      ["?e", ":project/org", "?o"],
+      ["?o", ":org/members", "?me"],
+    ],
+    [["policy/org/members", "?me", "?e"], ["?e", ":org/members", "?me"]],
+    [["policy/user/self", "?me", "?e"], [["=", "?e", "?me"]]],
+  ],
+};
+
+describe("fragment-rule evaluation", () => {
+  let frag: CompiledPolicy;
+  const view = (p: Principal, base: Db = db, policy = frag) => filterDb(base, db, policy, p);
+
+  beforeEach(() => {
+    frag = parsePolicy(FRAGMENT_POLICY_JSON);
+  });
+
+  test("a rule follows an attribute the caller cannot read", async () => {
+    // :doc/owner is denied at the attribute; the namespace rule still walks it.
+    const p = parsePolicy({
+      ...FRAGMENT_POLICY_JSON,
+      attrs: {
+        ":doc/owner": { read: [] },
+        ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] },
+      },
+    });
+    const v = filterDb(db, db, p, alice());
+    expect(await identsOf(v, ids.d1)).toEqual([":doc/project", ":doc/title"]);
+    expect(await v.first(Index.EAVT, { e: ids.d1, a: db.attr(":doc/owner")!.id })).toBeUndefined();
+    // if the rule had run over the filtered view, alice could not see her own title
+    expect(await identsOf(v, ids.d2)).toEqual([]);
+  });
+
+  test("deny by default: a schema attribute the policy never mentions", async () => {
+    expect(await identsOf(view(alice()), ids.s1)).toEqual([]);
+    expect(await identsOf(view(admin()), ids.s1)).toEqual([":secret/code"]);
+  });
+
+  test("scrub and attr narrowing: audit stays hidden unless the class gate holds", async () => {
+    expect(await identsOf(view(alice()), ids.d1)).toEqual([":doc/owner", ":doc/project", ":doc/title"]);
+    const rows = await query(view(alice()), `[:find (pull ?e [:doc/title :doc/audit]) :where [?e :doc/title]]`);
+    expect(rows.map((r: unknown[]) => (r[0] as Record<string, unknown>)[":doc/title"])).toEqual(["D1"]);
+    expect((rows[0] as unknown[])[0]).toEqual({ ":doc/title": "D1" });
+    expect((await pull(view(alice()), ids.d1, [":doc/title", ":doc/audit"]))![":doc/audit"]).toBeUndefined();
+    expect((await pull(view(admin()), ids.d1, [":doc/audit"]))![":doc/audit"]).toBe("who");
+    // attr narrowing still ANDs with the namespace rule
+    const memberAudit = parsePolicy({
+      ...FRAGMENT_POLICY_JSON,
+      attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["member"], rule: true }] } },
+    });
+    expect(await identsOf(filterDb(db, db, memberAudit, alice()), ids.d1)).toContain(":doc/audit");
+    expect(await identsOf(filterDb(db, db, memberAudit, bob()), ids.d1)).toEqual([]);
+  });
+
+  test("asOf and history stay judged by the current rule basis", async () => {
+    const before = conn.t;
+    await conn.transact([[":db/retract", ids.org1, ":org/members", ids.alice]]);
+    const cur = conn.db();
+    const v = filterDb(cur, cur, frag, alice());
+    expect(await identsOf(v, ids.p1)).toEqual([]);
+    expect(await identsOf(v.asOf(before), ids.p1)).toEqual([]);
+    expect(await identsOf(v.history(), ids.p1)).toEqual([]);
+    expect(await identsOf(v.asOf(before), ids.d1)).toContain(":doc/title");
+    expect((await v.history().datomsArray(Index.EAVT, { e: ids.d1, a: db.attr(":doc/audit")!.id }))).toEqual([]);
+  });
+
+  test("unresolved principal fails closed; only true arms apply", async () => {
+    const noEid = user("u_alice", undefined);
+    expect(await identsOf(view(noEid), ids.d1)).toEqual([]);
+    const publicRead = parsePolicy({
+      version: 2,
+      principal: ":user/sub",
+      classes: ["anonymous", "member", "admin"],
+      attrs: {},
+      ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
+      preset: {},
+    });
+    expect(await identsOf(filterDb(db, db, publicRead, noEid), ids.d1)).toContain(":doc/title");
+    expect(await identsOf(filterDb(db, db, publicRead, anon()), ids.d1)).toContain(":doc/title");
+  });
+
+  test("create follows a ref asserted in the same tx (overlay)", async () => {
+    const r = await checkTx(
+      [{ ":db/id": "nd", ":doc/title": "New", ":doc/project": ids.p1 }],
+      db,
+      frag,
+      alice(),
+    );
+    expect(r.ok).toBe(true);
+    expect((r as { ops: unknown[] }).ops.slice(-1)[0]).toEqual([":db/add", "nd", ":doc/owner", ids.alice]);
+    expect(
+      await checkTx([{ ":doc/title": "Nope", ":doc/project": ids.p1 }], db, frag, bob()),
+    ).toMatchObject({ ok: false, code: "policy", attr: ":doc/title", op: "create" });
+  });
+
+  test("add/retract/retractEntity evaluate against db-before, not the overlay", async () => {
+    expect((await checkTx([[":db/add", ids.d1, ":doc/title", "D1b"]], db, frag, alice())).ok).toBe(true);
+    // d2 has no :doc/audit yet, so this is a pure `add` (no implicit retract)
+    expect(await checkTx([[":db/add", ids.d2, ":doc/audit", "x"]], db, frag, alice())).toMatchObject({
+      ok: false,
+      code: "policy",
+      op: "add",
+    });
+    expect((await checkTx([[":db/retractEntity", ids.d1]], db, frag, alice())).ok).toBe(true);
+    expect(await checkTx([[":db/retractEntity", ids.d2]], db, frag, alice())).toMatchObject({
+      ok: false,
+      code: "policy",
+      op: "retractEntity",
+    });
+  });
+
+  test("a rule that blows the query budget is a typed error, not a deny", async () => {
+    const blow = parsePolicy({
+      version: 2,
+      principal: ":user/sub",
+      classes: ["member"],
+      attrs: {},
+      ns: { doc: { read: [{ _tag: "allow", rule: "policy/blow" }] } },
+      preset: {},
+      rules: [
+        [["policy/counts", "?x"], [["ground", 0], "?x"]],
+        [["policy/counts", "?x"], ["policy/counts", "?y"], [["+", "?y", 1], "?x"]],
+        [["policy/blow", "?me", "?e"], ["policy/counts", "?n"], ["?e", ":doc/title", "_"]],
+      ],
+    });
+    let err: unknown;
+    try {
+      await allowsOp(blow, "read", ":doc/title", {
+        db,
+        principal: alice(),
+        e: ids.d1,
+        memo: new PolicyMemo(10_000),
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(PolicyBudgetError);
+    expect(err).toMatchObject({ code: "policy/budget-exceeded", rule: "policy/blow" });
+    const v = filterDb(db, db, blow, alice(), { maxCells: 10_000 });
+    await expect(identsOf(v, ids.d1)).rejects.toBeInstanceOf(PolicyBudgetError);
+  });
+
+  test("compiled head vars bind positionally to principal and focus", async () => {
+    const p = parsePolicy({
+      ...FRAGMENT_POLICY_JSON,
+      ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
+      rules: [[["policy/doc/owner", "?q1", "?q2"], ["?q2", ":doc/owner", "?q1"]]],
+    });
+    expect(await identsOf(filterDb(db, db, p, alice()), ids.d1)).toContain(":doc/title");
+    expect(await identsOf(filterDb(db, db, p, bob()), ids.d1)).toEqual([]);
+  });
+
+  test("PolicyMemo caches a (rule, e) hit", async () => {
+    const memo = new PolicyMemo();
+    const ctx = { db, principal: alice(), e: ids.d1, memo };
+    expect(await allowsOp(frag, "read", ":doc/title", ctx)).toBe(true);
+    expect(memo.getRule("policy/doc/owner|" + ids.d1)).toBe(true);
+    expect(await allowsOp(frag, "read", ":doc/title", ctx)).toBe(true);
   });
 });

@@ -90,10 +90,21 @@ export class FilteredDb extends Db {
  * basis: an as-of or history data view is still judged by current grants, so a
  * retracted grant cannot re-grant through history.
  */
-export function filterDb(db: Db, ruleDb: Db, policy: CompiledPolicy, principal: Principal): Db {
+export function filterDb(
+  db: Db,
+  ruleDb: Db,
+  policy: CompiledPolicy,
+  principal: Principal,
+  opts?: { readonly maxCells?: number },
+): Db {
   if (isAdmin(principal)) return db;
   const rules = ruleDb instanceof FilteredDb ? ruleDb.view.ruleDb : ruleDb;
-  const view: PolicyView = { policy, principal, ruleDb: rules, memo: new PolicyMemo() };
+  const view: PolicyView = {
+    policy,
+    principal,
+    ruleDb: rules,
+    memo: new PolicyMemo(opts?.maxCells),
+  };
   return new FilteredDb(optionsOf(db), view);
 }
 

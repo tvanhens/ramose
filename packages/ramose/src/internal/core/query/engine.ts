@@ -41,7 +41,7 @@ export class QueryError extends Error {
  * of dying with an OOM inside the 128 MB Worker limit.
  */
 export class QueryBudgetError extends QueryError {
-  override readonly code = "query/budget-exceeded";
+  override readonly code: string = "query/budget-exceeded";
   constructor(
     readonly clause: string,
     readonly cells: number,

@@ -1,12 +1,20 @@
 /**
  * Rule evaluation. Rules read the *unfiltered* db at the rule basis — a rule
  * must follow `:doc/owner` even when the caller cannot read it. Results are
- * memoized per (expr, e) and per (op, attr, e) for one request.
+ * memoized per (expr, e), per (rule, e), and per (op, attr, e) for one request.
+ *
+ * v2 fragment arms run as one engine query per `(rule, e, principal)` against
+ * that unfiltered rule db (never the filtered view). Pushdown is not required
+ * for correctness.
  */
 
-import { Index, ValueTag } from "../datom.ts";
-import type { Db } from "../db.ts";
+import { COMPARATORS, type Datom, Index, type IndexId, type Prefix, ValueTag, comparePrefix, datom } from "../datom.ts";
+import { Db, type DbOptions } from "../db.ts";
+import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, query } from "../query/engine.ts";
+import { parseQuery } from "../query/parse.ts";
+import type { Query } from "../query/ast.ts";
 import { FIRST_USER_EID } from "../schema.ts";
+import { sortedUnion } from "../tree.ts";
 import {
   type CompiledPolicy,
   type PolicyArm,
@@ -30,6 +38,21 @@ export interface PolicyError {
   readonly message: string;
 }
 
+/**
+ * A fragment rule blew the query memory budget. This is a deploy-time smell
+ * (the rule is too expensive), not a deny — the read/write fails as an
+ * error so it cannot be mistaken for "not visible".
+ */
+export class PolicyBudgetError extends QueryBudgetError {
+  override readonly code = "policy/budget-exceeded";
+  constructor(
+    readonly rule: string,
+    cause: QueryBudgetError,
+  ) {
+    super(`policy rule ${rule} (${cause.clause})`, cause.cells, cause.limit);
+  }
+}
+
 /** Refs asserted by the tx under check: `${e}|${attrId}` → target eids. */
 export type RefOverlay = ReadonlyMap<string, readonly number[]>;
 
@@ -37,8 +60,13 @@ export class PolicyMemo {
   private readonly exprIds = new WeakMap<object, number>();
   private nextExprId = 1;
   private readonly exprCache = new Map<string, boolean>();
+  private readonly ruleCache = new Map<string, boolean>();
+  private readonly ruleQueries = new Map<string, Query>();
   private readonly opCache = new Map<string, boolean>();
   private readonly errs = new Map<string, PolicyError>();
+  private overlayDb: Db | undefined;
+
+  constructor(readonly maxCells: number = DEFAULT_QUERY_MAX_CELLS) {}
 
   /** Idents that folded to `false` because they are not in the installed schema. */
   get errors(): readonly PolicyError[] {
@@ -69,6 +97,34 @@ export class PolicyMemo {
     this.opCache.set(key, v);
     return v;
   }
+  getRule(key: string): boolean | undefined {
+    return this.ruleCache.get(key);
+  }
+  setRule(key: string, v: boolean): boolean {
+    this.ruleCache.set(key, v);
+    return v;
+  }
+
+  /** Parsed existence query for `name`, shared across (e) evaluations. */
+  ruleQuery(name: string, rules: readonly unknown[]): Query {
+    let q = this.ruleQueries.get(name);
+    if (q === undefined) {
+      q = parseQuery({
+        find: ["?e"],
+        in: ["$", "?me", "?e"],
+        where: [[name, "?me", "?e"]],
+        rules,
+        limit: 1,
+      });
+      this.ruleQueries.set(name, q);
+    }
+    return q;
+  }
+
+  /** One overlay view per memo — create arms share the same in-tx refs. */
+  overlayView(db: Db, overlay: RefOverlay): Db {
+    return (this.overlayDb ??= withRefOverlay(db, overlay));
+  }
 }
 
 export interface EvalCtx {
@@ -80,6 +136,8 @@ export interface EvalCtx {
   readonly memo: PolicyMemo;
   /** only set while checking `create` arms */
   readonly overlay?: RefOverlay;
+  /** override the memo's query-cell budget for this evaluation */
+  readonly maxCells?: number;
 }
 
 function resolveOperand(op: PolicyOperand, p: Principal): unknown {
@@ -157,19 +215,55 @@ export async function evalExpr(expr: PolicyExpr, ctx: EvalCtx): Promise<boolean>
   return ctx.memo.setExpr(key, false);
 }
 
-/** v2 fragment arm: class gate, then `true` (public) or a named rule. Named
- * rules fail closed here — evaluation through the query engine is next. */
-function evalRuleArm(arm: Extract<PolicyArm, { rule: unknown }>, ctx: EvalCtx): boolean {
+/** v2 fragment arm: class gate, then `true` (public) or a named rule. */
+async function evalRuleArm(
+  arm: Extract<PolicyArm, { rule: unknown }>,
+  ctx: EvalCtx,
+  rules: readonly unknown[] | undefined,
+): Promise<boolean> {
   if (arm.class !== undefined && !arm.class.includes(ctx.principal.class)) return false;
-  return arm.rule === true;
+  if (arm.rule === true) return true;
+  return evalNamedRule(arm.rule, ctx, rules);
+}
+
+/**
+ * Run `name` over the unfiltered rule db with `?me` = `Principal.eid` and
+ * `?e` = the focus. Non-empty result = allow. No resolved principal → deny
+ * (only `true` arms apply). A budget miss is {@link PolicyBudgetError}.
+ */
+async function evalNamedRule(
+  name: string,
+  ctx: EvalCtx,
+  rules: readonly unknown[] | undefined,
+): Promise<boolean> {
+  const key = name + "|" + ctx.e;
+  const hit = ctx.memo.getRule(key);
+  if (hit !== undefined) return hit;
+  if (ctx.principal.eid === undefined || rules === undefined || rules.length === 0) {
+    return ctx.memo.setRule(key, false);
+  }
+  const db = ctx.overlay !== undefined && ctx.overlay.size > 0 ? ctx.memo.overlayView(ctx.db, ctx.overlay) : ctx.db;
+  try {
+    const rows = await query(db, ctx.memo.ruleQuery(name, rules), [ctx.principal.eid, ctx.e], {
+      maxCells: ctx.maxCells ?? ctx.memo.maxCells,
+    });
+    return ctx.memo.setRule(key, Array.isArray(rows) && rows.length > 0);
+  } catch (err) {
+    if (err instanceof QueryBudgetError) throw new PolicyBudgetError(name, err);
+    throw err;
+  }
 }
 
 /** allow arms OR; any true deny wins; no arms → deny. */
-async function evalArms(arms: readonly PolicyArm[], ctx: EvalCtx): Promise<boolean> {
+async function evalArms(
+  arms: readonly PolicyArm[],
+  ctx: EvalCtx,
+  rules: readonly unknown[] | undefined,
+): Promise<boolean> {
   let allowed = false;
   for (const arm of arms) {
     if (isRuleArm(arm)) {
-      if (evalRuleArm(arm, ctx)) allowed = true;
+      if (await evalRuleArm(arm, ctx, rules)) allowed = true;
       continue;
     }
     const v = await evalExpr(arm.expr, ctx);
@@ -198,12 +292,111 @@ export async function allowsOp(
   const prefix = nsPrefix(attrIdent);
   const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
   let res: boolean;
-  if (attrArms && nsArms) res = (await evalArms(nsArms, ctx)) && (await evalArms(attrArms, ctx));
-  else if (attrArms || nsArms) res = await evalArms((attrArms ?? nsArms)!, ctx);
+  if (attrArms && nsArms) res = (await evalArms(nsArms, ctx, policy.rules)) && (await evalArms(attrArms, ctx, policy.rules));
+  else if (attrArms || nsArms) res = await evalArms((attrArms ?? nsArms)!, ctx, policy.rules);
   else res = false;
   return ctx.memo.setOp(key, res);
 }
 
 export function canRead(policy: CompiledPolicy, attrIdent: string, ctx: EvalCtx): Promise<boolean> {
   return allowsOp(policy, "read", attrIdent, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Create-arm ref overlay — the engine sees in-tx parent refs
+// ---------------------------------------------------------------------------
+
+function optionsOf(db: Db): DbOptions {
+  return {
+    store: db.store,
+    roots: db.roots,
+    novelty: db.novelty,
+    basisT: db.basisT,
+    schema: db.schema,
+    nextEid: db.nextEid,
+    asOfT: db.asOfT,
+    history: db.isHistory,
+  };
+}
+
+function overlayDatoms(overlay: RefOverlay, t: number): Datom[] {
+  const out: Datom[] = [];
+  for (const [key, targets] of overlay) {
+    const sep = key.lastIndexOf("|");
+    const e = Number(key.slice(0, sep));
+    const a = Number(key.slice(sep + 1));
+    for (const v of targets) out.push(datom(e, a, ValueTag.Ref, v, t));
+  }
+  return out;
+}
+
+function matchOverlay(extras: readonly Datom[], index: IndexId, prefix: Prefix): Datom[] {
+  const matched = extras.filter((d) => comparePrefix(index, d, prefix) === 0);
+  if (matched.length > 1) matched.sort(COMPARATORS[index]);
+  return matched;
+}
+
+/**
+ * Unfiltered db plus the refs this tx asserts. Create arms follow a parent
+ * that exists only in the proposed datoms; add/retract/read never see this.
+ */
+export function withRefOverlay(db: Db, overlay: RefOverlay): Db {
+  if (overlay.size === 0) return db;
+  return new OverlayDb(db, overlay);
+}
+
+class OverlayDb extends Db {
+  private readonly extras: readonly Datom[];
+
+  constructor(base: Db, overlay: RefOverlay) {
+    super(optionsOf(base));
+    // t ≤ basisT so current-view collapse keeps the asserted refs.
+    this.extras = overlayDatoms(overlay, base.basisT);
+  }
+
+  override datoms(index: IndexId, prefix: Prefix): AsyncGenerator<Datom[], void, undefined> {
+    return this.union(super.datoms(index, prefix), matchOverlay(this.extras, index, prefix), index);
+  }
+
+  override async seekMany(index: IndexId, prefixes: readonly Prefix[]): Promise<Datom[][]> {
+    const res = await super.seekMany(index, prefixes);
+    const cmp = COMPARATORS[index];
+    for (let i = 0; i < res.length; i++) {
+      const extra = matchOverlay(this.extras, index, prefixes[i]);
+      if (extra.length > 0) res[i] = sortedUnion(cmp, res[i], extra);
+    }
+    return res;
+  }
+
+  override async estimate(index: IndexId, prefix: Prefix): Promise<number> {
+    return (await super.estimate(index, prefix)) + matchOverlay(this.extras, index, prefix).length;
+  }
+
+  private async *union(
+    src: AsyncGenerator<Datom[], void, undefined>,
+    extra: Datom[],
+    index: IndexId,
+  ): AsyncGenerator<Datom[], void, undefined> {
+    if (extra.length === 0) {
+      yield* src;
+      return;
+    }
+    const cmp = COMPARATORS[index];
+    let i = 0;
+    for await (const arr of src) {
+      if (i >= extra.length) {
+        yield arr;
+        continue;
+      }
+      const out: Datom[] = [];
+      let j = 0;
+      while (j < arr.length && i < extra.length) {
+        if (cmp(extra[i], arr[j]) <= 0) out.push(extra[i++]);
+        else out.push(arr[j++]);
+      }
+      while (j < arr.length) out.push(arr[j++]);
+      if (out.length > 0) yield out;
+    }
+    if (i < extra.length) yield extra.slice(i);
+  }
 }

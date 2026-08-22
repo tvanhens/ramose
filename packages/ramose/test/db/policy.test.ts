@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
-import { parsePolicy, type CompiledPolicy } from "../../src/internal/core/index.ts";
+import { Connection, Index, filterDb, parsePolicy, type CompiledPolicy, type Principal } from "../../src/internal/core/index.ts";
 import {
   Attr,
   Catalog,
@@ -292,5 +292,47 @@ describe("masked attributes in pull patterns", () => {
   test("an unmasked attribute is fine required", () => {
     expect(() => P.compile(specPolicy, { pulls: [{ title: Doc.title }] })).not.toThrow();
     expect(() => P.checkPulls(specPolicy, [{ title: Doc.title }])).not.toThrow();
+  });
+});
+
+describe("compiled fragments evaluate through the engine", () => {
+  test("P.compile output grants the owner and hides audit", async () => {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact([
+      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+      { ":db/ident": ":org/members", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
+      { ":db/ident": ":project/org", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":doc/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":doc/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":doc/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":user/sub": "u_alice" },
+      { ":db/id": "bob", ":user/sub": "u_bob" },
+      { ":db/id": "org1", ":org/members": ["alice"] },
+      { ":db/id": "p1", ":project/org": "org1" },
+      { ":db/id": "d1", ":doc/title": "D1", ":doc/owner": "alice", ":doc/project": "p1", ":doc/audit": "who" },
+      { ":db/id": "d2", ":doc/title": "D2", ":doc/owner": "bob" },
+    ]);
+    const db = conn.db();
+    const policy = compiled();
+    const who = (sub: string, eid: number): Principal => ({
+      kind: "user",
+      class: "member",
+      sub,
+      eid,
+      claims: { sub },
+      db: "acme",
+    });
+    const idents = async (p: Principal, e: number) =>
+      (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident).sort();
+    expect(await idents(who("u_alice", tempids.alice), tempids.d1)).toEqual([
+      ":doc/owner",
+      ":doc/project",
+      ":doc/title",
+    ]);
+    expect(await idents(who("u_alice", tempids.alice), tempids.d2)).toEqual([]);
+    expect(await idents(who("u_bob", tempids.bob), tempids.d2)).toEqual([":doc/owner", ":doc/title"]);
   });
 });
