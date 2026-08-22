@@ -34,21 +34,15 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
 
 /**
  * Workspace provisioning, from the browser, under the creator's admin-class
- * JWT: install the catalog on the fresh name, then seed labels and the
- * creator's own `user` row. This *is* the multi-tenancy demo — no resource,
- * no deploy, one `install()` and one transaction.
+ * JWT: install the catalog on the fresh name, then seed labels. The peer
+ * upserts the creator's `user` row (`sub` + `role`) at session establishment.
+ * This *is* the multi-tenancy demo — no resource, no deploy, one `install()`
+ * and one transaction.
  */
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
+export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
     yield* db.install();
     yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
       for (const seed of SEED_LABELS) {
         const label = yield* tx.entity();
         yield* label.add(Label.name, seed.name);
@@ -58,30 +52,26 @@ export const provisionWorkspace = (
   });
 
 /**
- * First entry by a member: write your own `user` row if it is not there.
- * `:user/sub` is a preset attribute, so supplying your own sub is a no-op
- * check and supplying anyone else's is `Unauthorized`. Viewers skip the
- * write — they never need an entity (reads are class-scoped).
+ * Stamp name/email on the peer-owned `user` row. The row itself is written
+ * by the auth layer (`sub` + `role`); this never creates one.
  *
- * Returns the caller's user eid, or `undefined` for a viewer who has none.
+ * Returns the caller's user eid, or `undefined` when the peer left them
+ * unresolved (anonymous / no principal attr yet).
  */
 export const ensureSelf = (
   db: ReefDb,
   me: { id: string; name: string; email: string },
-  canWrite: boolean,
 ) =>
   Effect.gen(function* () {
+    const who = yield* db.principal();
     const existing = yield* db.q(mineQuery, { sub: me.id });
-    if (existing.length > 0) return existing[0]!.id;
-    if (!canWrite) return undefined;
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
+    const eid = who.eid?.id ?? existing[0]?.id;
+    if (eid === undefined) return undefined;
+    yield* db.transact(function* (tx) {
+      yield* tx.add(eid, User.name, me.name);
+      yield* tx.add(eid, User.email, me.email);
     });
-    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
-    return after[0]?.id;
+    return eid;
   });
 
 export interface NewIssue {

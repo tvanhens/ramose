@@ -4,8 +4,9 @@
  * `exp`; `cls` is the decoded, unverified claim — UI hints only. The client
  * that lives with the board is owned by `<RamoseProvider key={slug}>` in
  * App.tsx. This module mints `{ slug, cls, token }` and, on create only,
- * runs `install()` + seeds over a short-lived client. `ensureSelf` (the
- * caller's `user` row) runs on the Provider client — see `bindSelf`.
+ * runs `install()` + seeds labels over a short-lived client. `ensureSelf`
+ * (profile fields on the peer-owned `user` row) runs on the Provider
+ * client — see `bindSelf`.
  */
 import * as Ramose from "ramose/db";
 import * as Effect from "effect/Effect";
@@ -40,8 +41,8 @@ export type OpenWorkspaceOptions = Pick<
 /**
  * Mint the source and decode `cls`. A refresh / shared-URL open
  * (`provision: false`) stops there — no `Ramose.connect`. Create still
- * `install()`s and seeds over a client that is closed before the board
- * mounts; the caller's `user` row is `bindSelf` on the live client.
+ * `install()`s and seeds labels over a client that is closed before the
+ * board mounts; profile fields land via `bindSelf` on the live client.
  */
 export const openWorkspace = async (
   slug: string,
@@ -66,7 +67,7 @@ export const openWorkspace = async (
     });
     try {
       await Effect.runPromise(
-        provisionWorkspace(ramose.db(slug, Reef), user),
+        provisionWorkspace(ramose.db(slug, Reef)),
       );
     } finally {
       await ramose.close();
@@ -76,11 +77,12 @@ export const openWorkspace = async (
 };
 
 /**
- * The caller's `user` row on the client that stays mounted with the board.
- * Viewers skip the write (`cls !== "viewer"`) and stay `undefined`.
+ * Profile fields on the peer-owned `user` row, on the client that stays
+ * mounted with the board. The peer guarantees the row; this only stamps
+ * name/email.
  */
 export const bindSelf = (
   db: ReefDb,
   user: { id: string; name: string; email: string },
-  cls: RamoseClass,
-) => ensureSelf(db, user, cls !== "viewer");
+  _cls?: RamoseClass,
+) => ensureSelf(db, user);

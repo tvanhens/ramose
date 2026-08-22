@@ -118,7 +118,14 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   };
 
   const fetchImpl = (async (url: string, init: RequestInit) => {
-    httpPaths.push(new URL(url, "https://peer.local").pathname);
+    const path = new URL(url, "https://peer.local").pathname;
+    httpPaths.push(path);
+    if (path.endsWith("/info") && (init.method ?? "GET") === "GET") {
+      return new Response(
+        JSON.stringify({ db: "coral-team", t: conn.t, principal: { eid: null, class: "member" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     const body = fromJson(JSON.parse(String(init.body))) as any;
     const reply = await answer("transact", body);
     return new Response(JSON.stringify(toJson(reply.body)), {
@@ -717,6 +724,10 @@ describe("refresh open is one session, not two", () => {
     expect(peer.sockets()).toBe(1);
     expect(peer.resyncDumps().length).toBeGreaterThanOrEqual(1);
     expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+    // in-process peer has no auth layer; seed the row the real peer writes
+    await peer.conn.transact([
+      { ":user/sub": "ada", ":user/name": "Ada", ":user/email": "ada@reef.test" },
+    ]);
 
     peer.resetTraffic();
     const afterProvision = counted.connects;

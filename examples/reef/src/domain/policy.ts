@@ -23,11 +23,16 @@ import { Comment, Issue, Reef, User } from "./schema.ts";
 import { CLASSES } from "./shared.ts";
 
 const P = Ramose.Policy;
-const { Query } = Ramose;
+const { Query, Q } = Ramose;
 
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
+/** Profile fields on the peer-owned row — the focus entity *is* `me`. */
+const self = ((me: Ramose.Policy.Me<typeof User>) =>
+  function* (e: Ramose.Policy.Me<typeof User>) {
+    yield* Q.eq(e, me);
+  }) as Ramose.Policy.FragFn<Ramose.Policy.Me<typeof User>>;
 
 export const policy = Ramose.policy(
   {
@@ -38,10 +43,9 @@ export const policy = Ramose.policy(
   {
     user: {
       read: true,
-      // First entry into a workspace writes your own row; `sub` is preset from
-      // the token, so you cannot register as someone else.
-      create: P.class("member"),
-      preset: [P.preset(User.sub, P.claims.sub)],
+      // The peer upserts `sub` + `role` at session establishment. Clients
+      // only stamp profile fields on their own row.
+      add: self,
     },
     label: {
       read: true,

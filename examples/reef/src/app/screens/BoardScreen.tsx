@@ -317,7 +317,7 @@ export const BoardScreen = ({
       setSelected(null);
     }
   }, [selected, selectedRow, liveRows, setSelected]);
-  const canWrite = myEid !== undefined;
+  const canWrite = cls !== "viewer";
 
   if (board.error !== undefined) {
     return (
@@ -428,11 +428,12 @@ export const BoardScreen = ({
                         <>
                           <Button
                             variant="primary"
-                            onClick={() =>
+                            onClick={() => {
+                              if (myEid === undefined) return;
                               void run(
                                 seedSampleIssues(db, myEid, labels.rows ?? []),
-                              )
-                            }
+                              );
+                            }}
                           >
                             <Icon name="sparkles" size={14} /> Add sample issues
                           </Button>
