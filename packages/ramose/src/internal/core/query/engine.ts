@@ -23,6 +23,8 @@ import {
   type PatternClause,
   type PullPattern,
   type Query,
+  type RuleCallClause,
+  type RuleDef,
   type Term,
 } from "./ast.ts";
 import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, type SortKey, compareCells, sortKeys, sortRows, vkey } from "./builtins.ts";
@@ -270,6 +272,9 @@ function clauseVars(c: Clause, into = new Set<string>()): Set<string> {
     case "or":
       c.branches.forEach((b) => b.forEach((x) => clauseVars(x, into)));
       break;
+    case "rule-call":
+      c.args.forEach(t);
+      break;
   }
   return into;
 }
@@ -288,11 +293,158 @@ function bindingVars(b: Binding): string[] {
 // Executor
 // ---------------------------------------------------------------------------
 
+/** One named rule, compiled: branches grouped, recursion analyzed. */
+interface CompiledRule {
+  name: string;
+  args: string[];
+  branches: Clause[][];
+  /** Part of a call cycle (self- or mutual recursion). */
+  recursive: boolean;
+  /** The rule names mutually recursive with this one (itself included). */
+  scc: Set<string>;
+}
+
+/** Rule names a clause list invokes (nested or/not included). */
+function calledRules(clauses: Clause[], into = new Set<string>()): Set<string> {
+  for (const c of clauses) {
+    switch (c.kind) {
+      case "rule-call":
+        into.add(c.name);
+        break;
+      case "not":
+        calledRules(c.clauses, into);
+        break;
+      case "or":
+        c.branches.forEach((b) => calledRules(b, into));
+        break;
+      default:
+        break;
+    }
+  }
+  return into;
+}
+
+/** Group defs by name, then mark call cycles by reachability. */
+function compileRules(defs: readonly RuleDef[] | undefined): Map<string, CompiledRule> {
+  const rules = new Map<string, CompiledRule>();
+  if (!defs || defs.length === 0) return rules;
+  for (const d of defs) {
+    const r = rules.get(d.name);
+    if (r) {
+      if (r.args.length !== d.args.length) throw new QueryError(`rule ${d.name} branches disagree on arity`);
+      // branches may name their head vars differently; rewrite onto the first head
+      r.branches.push(renameHead(d, r.args));
+    } else {
+      rules.set(d.name, { name: d.name, args: d.args, branches: [d.clauses], recursive: false, scc: new Set([d.name]) });
+    }
+  }
+  // reachability: name → the rule names its branches can reach
+  const direct = new Map<string, Set<string>>();
+  for (const [name, r] of rules) direct.set(name, calledRules(r.branches.flat()));
+  const reach = new Map<string, Set<string>>();
+  const reachable = (name: string): Set<string> => {
+    const done = reach.get(name);
+    if (done) return done;
+    const out = new Set<string>();
+    reach.set(name, out); // provisional; cycles fill in below
+    const stack = [...(direct.get(name) ?? [])];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (out.has(n)) continue;
+      out.add(n);
+      for (const m of direct.get(n) ?? []) if (!out.has(m)) stack.push(m);
+    }
+    return out;
+  };
+  for (const [name, r] of rules) {
+    const from = reachable(name);
+    if (from.has(name)) {
+      r.recursive = true;
+      for (const other of from) {
+        if (other !== name && rules.has(other) && reachable(other).has(name)) r.scc.add(other);
+      }
+    }
+  }
+  return rules;
+}
+
+/** Rewrite one def's body onto the canonical head var names of its rule. */
+function renameHead(d: RuleDef, canonical: string[]): Clause[] {
+  const map = new Map<string, Term>();
+  let same = true;
+  d.args.forEach((v, i) => {
+    if (v !== canonical[i]) same = false;
+    map.set(v, { kind: "var", name: canonical[i] });
+  });
+  if (same) return d.clauses;
+  // body-locals keep their names: two branches never share local scope
+  const sub = (name: string): Term => map.get(name) ?? { kind: "var", name };
+  return d.clauses.map((c) => substClause(c, sub));
+}
+
+/** Apply a var substitution through a clause (join lists and bindings too). */
+function substClause(c: Clause, sub: (name: string) => Term): Clause {
+  const t = (x: Term): Term => (x.kind === "var" ? sub(x.name) : x);
+  const joinName = (v: string): string | null => {
+    const s = sub(v);
+    // a head var that became a constant needs no join; a blank exports nothing
+    return s.kind === "var" ? s.name : null;
+  };
+  switch (c.kind) {
+    case "pattern": {
+      const out: PatternClause = { kind: "pattern", src: c.src, e: t(c.e), a: t(c.a), v: t(c.v) };
+      if (c.tx) out.tx = t(c.tx);
+      if (c.op) out.op = t(c.op);
+      return out;
+    }
+    case "pred":
+      return { kind: "pred", fn: c.fn, args: c.args.map(t) };
+    case "fn": {
+      const binding = substBinding(c.binding, sub);
+      return { kind: "fn", fn: c.fn, args: c.args.map(t), binding };
+    }
+    case "not":
+      return { kind: "not", join: c.join?.map(joinName).filter((v): v is string => v !== null), clauses: c.clauses.map((x) => substClause(x, sub)) };
+    case "or":
+      return { kind: "or", join: c.join?.map(joinName).filter((v): v is string => v !== null), branches: c.branches.map((b) => b.map((x) => substClause(x, sub))) };
+    case "rule-call":
+      return { kind: "rule-call", name: c.name, args: c.args.map(t) };
+  }
+}
+
+function substBinding(b: Binding, sub: (name: string) => Term): Binding {
+  const rename = (v: string): string => {
+    const s = sub(v);
+    if (s.kind !== "var") {
+      throw new QueryError(`rule head variable ${v} is bound by a function clause — call it with a variable, not a constant`);
+    }
+    return s.name;
+  };
+  switch (b.kind) {
+    case "scalar":
+      return { kind: "scalar", var: rename(b.var) };
+    case "coll":
+      return { kind: "coll", var: rename(b.var) };
+    case "tuple":
+      return { kind: "tuple", vars: b.vars.map((v) => (v === null ? null : rename(v))) };
+    case "rel":
+      return { kind: "rel", vars: b.vars.map((v) => (v === null ? null : rename(v))) };
+  }
+}
+
 class Executor {
   private readonly fns: Record<string, QueryFn>;
   private readonly maxRows: number;
   private readonly stats: QueryStats | undefined;
   readonly budget: QueryBudget;
+  /** Named rules callable from :where; set once per query. */
+  rules: Map<string, CompiledRule> = new Map();
+  /** Memoized full extensions of recursive rules (rows over head args). */
+  private extensions = new Map<string, Rel>();
+  /** Active fixpoint: calls into `scc` answer from the growing relations. */
+  private fix: { scc: Set<string>; current: Map<string, Rel> } | null = null;
+  /** Fresh-name counter for hygienic inline rule expansion. */
+  private expansions = 0;
 
   constructor(readonly db: Db, opts: QueryOptions) {
     this.fns = { ...opts.functions };
@@ -348,6 +500,13 @@ class Executor {
       case "or": {
         const vs = c.join ?? [...clauseVars(c)];
         return vs.some((v) => bound.has(v)) ? 100 : 1e12;
+      }
+      case "rule-call": {
+        // runnable cold (a membership rule is a generator), but prefer
+        // anything that binds an argument first
+        const vs = c.args.filter((a): a is { kind: "var"; name: string } => a.kind === "var").map((a) => a.name);
+        if (vs.length === 0 || c.args.some((a) => a.kind === "const") || vs.some((v) => bound.has(v))) return 100;
+        return 1e9;
       }
       case "pattern": {
         const has = (t: Term | undefined) => !!t && (t.kind === "const" || (t.kind === "var" && bound.has(t.name)));
@@ -439,7 +598,148 @@ class Executor {
         return this.execNot(rel, c);
       case "or":
         return this.execOr(rel, c);
+      case "rule-call":
+        return this.execRuleCall(rel, c);
     }
+  }
+
+  // ---- rules ---------------------------------------------------------------
+
+  private ruleOf(name: string): CompiledRule {
+    const r = this.rules.get(name);
+    if (!r) throw new QueryError(`unknown rule ${name} — declare it in :rules`);
+    return r;
+  }
+
+  private async execRuleCall(rel: Rel, c: RuleCallClause): Promise<Rel> {
+    const rule = this.ruleOf(c.name);
+    if (c.args.length !== rule.args.length) {
+      throw new QueryError(`rule ${c.name} takes ${rule.args.length} arguments, got ${c.args.length}`);
+    }
+    // inside this rule's own fixpoint: answer from the growing relation —
+    // that is what makes the recursion productive instead of infinite
+    if (this.fix !== null && this.fix.scc.has(c.name)) {
+      return this.applyExtension(rel, this.fix.current.get(c.name)!, c, rule);
+    }
+    if (rule.recursive) {
+      return this.applyExtension(rel, await this.ruleExtension(rule), c, rule);
+    }
+    return this.execRuleInline(rel, c, rule);
+  }
+
+  /**
+   * Non-recursive call: expand to an `or` over the branches, head vars
+   * substituted by the call's arguments and body-locals renamed fresh —
+   * the same seek-driven planning the inlined clauses would get by hand.
+   */
+  private async execRuleInline(rel: Rel, c: RuleCallClause, rule: CompiledRule): Promise<Rel> {
+    const n = this.expansions++;
+    const head = new Map<string, Term>();
+    rule.args.forEach((v, i) => {
+      const arg = c.args[i];
+      // a blank argument leaves the head position free but still joined
+      // *inside* the branch, so it becomes a fresh var, not a blank
+      head.set(v, arg.kind === "blank" ? { kind: "var", name: `${v}%${n}` } : arg);
+    });
+    const sub = (name: string): Term => head.get(name) ?? { kind: "var", name: `${name}%${n}` };
+    const branches = rule.branches.map((b) => b.map((cl) => substClause(cl, sub)));
+    const join = [...new Set(c.args.filter((a): a is { kind: "var"; name: string } => a.kind === "var").map((a) => a.name))];
+    return this.execOr(rel, { kind: "or", join, branches });
+  }
+
+  /**
+   * Full extension of a recursive rule (and everything mutually recursive
+   * with it): naive bottom-up fixpoint, every round budget-charged, so a
+   * runaway recursion fails with {@link QueryBudgetError} instead of looping.
+   * Memoized per query — the joins pay per call, the derivation once.
+   */
+  private async ruleExtension(rule: CompiledRule): Promise<Rel> {
+    const cached = this.extensions.get(rule.name);
+    if (cached) return cached;
+    const scc = rule.scc;
+    const current = new Map<string, Rel>();
+    const sets = new Map<string, TupleSet>();
+    for (const n of scc) {
+      const r = this.ruleOf(n);
+      current.set(n, { vars: r.args, rows: [] });
+      sets.set(n, new TupleSet(r.args.length));
+    }
+    const prev = this.fix;
+    this.fix = { scc, current };
+    // naive evaluation re-derives per round, so expansion cost is charged
+    // cumulatively: a recursion that keeps producing is a budget error, not
+    // a hang (semi-naive evaluation is a later optimization, not semantics)
+    let work = 0;
+    try {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const n of scc) {
+          const r = this.ruleOf(n);
+          const set = sets.get(n)!;
+          const cur = current.get(n)!;
+          for (const branch of r.branches) {
+            const sub = await this.execClauses({ vars: [], rows: [[]] }, branch);
+            work += Math.max(1, sub.rows.length);
+            this.budget.charge(`rule ${n} (expansion)`, work, r.args.length);
+            const six = idx(sub);
+            const cols = r.args.map((v) => {
+              const i = six.get(v);
+              if (i === undefined) throw new QueryError(`rule ${n} branch does not bind ${v}`);
+              return i;
+            });
+            for (const row of sub.rows) {
+              const tuple = cols.map((ci) => row[ci]);
+              if (set.add(tuple)) {
+                cur.rows.push(tuple);
+                changed = true;
+              }
+            }
+          }
+          // monotone: every productive round grows a budget-charged relation,
+          // so the loop terminates — with an answer or with the budget error
+          this.guard(cur, `rule ${n}`);
+        }
+      }
+    } finally {
+      this.fix = prev;
+    }
+    for (const n of scc) this.extensions.set(n, current.get(n)!);
+    return current.get(rule.name)!;
+  }
+
+  /** Join a computed extension into the relation along the call's args. */
+  private applyExtension(rel: Rel, ext: Rel, c: RuleCallClause, rule: CompiledRule): Rel {
+    const vars: string[] = [];
+    const varCols: number[] = [];
+    const varSeen = new Map<string, number>();
+    const eqPairs: [number, number][] = [];
+    const constKeys: [number, string][] = [];
+    c.args.forEach((arg, i) => {
+      if (arg.kind === "blank") return;
+      if (arg.kind === "const") {
+        constKeys.push([i, vkey(arg.value)]);
+        return;
+      }
+      const seen = varSeen.get(arg.name);
+      if (seen !== undefined) {
+        eqPairs.push([seen, i]);
+        return;
+      }
+      varSeen.set(arg.name, i);
+      vars.push(arg.name);
+      varCols.push(i);
+    });
+    const seen = new TupleSet(vars.length);
+    const rows: unknown[][] = [];
+    for (const r of ext.rows) {
+      if (!constKeys.every(([i, k]) => vkey(r[i]) === k)) continue;
+      if (!eqPairs.every(([a, b]) => sameValue(r[a], r[b]))) continue;
+      const out = varCols.map((ci) => r[ci]);
+      if (seen.add(out)) rows.push(out);
+    }
+    const clause = `(${c.name} ...)`;
+    return this.guard(hashJoin(rel, { vars, rows }, this.budget, clause), clause);
   }
 
   private fn(name: string, pred: boolean): QueryFn {
@@ -1059,6 +1359,8 @@ function describe(c: Clause): string {
       return `(not ...)`;
     case "or":
       return `(or ...)`;
+    case "rule-call":
+      return `(${c.name} ${c.args.map(termStr).join(" ")})`;
   }
 }
 function termStr(t: Term | undefined): string {
@@ -1123,6 +1425,7 @@ export async function query(db: Db, q: Query | string | object, inputs: unknown[
     rel = hashJoin(rel, { vars: scalarInputs.map((s) => s.var), rows: [scalarInputs.map((s) => s.value)] }, inputBudget, "inputs");
   }
   const ex = new Executor(dbIn, opts);
+  ex.rules = compileRules(ast.rules);
   rel = await ex.execClauses(rel, ast.where);
   return shapeResult(dbIn, ast, rel);
 }

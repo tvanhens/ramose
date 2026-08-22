@@ -24,6 +24,7 @@ import {
   type PullElemQuant,
   type PullPattern,
   type Query,
+  type RuleDef,
   type Term,
   blank,
 } from "./ast.ts";
@@ -150,8 +151,12 @@ function listClause(items: unknown[], form: unknown): Clause {
     }
     case "and":
       return fail("(and ...) is only valid inside (or ...)", form);
-    default:
-      return fail(`unknown clause form '${String(head)}' (rules are not supported)`, form);
+    default: {
+      // any other symbol head is a rule invocation; parseQuery checks the
+      // name against :rules afterwards, so a typo'd combinator still fails
+      if (!isFnName(head)) return fail(`bad clause head '${String(head)}'`, form);
+      return { kind: "rule-call", name: head as string, args: items.slice(1).map(toTerm) };
+    }
   }
 }
 
@@ -284,9 +289,9 @@ function toAfter(form: unknown, order: OrderSpec[] | undefined, find: FindSpec):
 // query
 // ---------------------------------------------------------------------------
 
-const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":having", ":order", ":after", ":limit", ":offset"];
+const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":rules", ":having", ":order", ":after", ":limit", ":offset"];
 /** Sections that take a single value rather than a sequence of forms. */
-const SCALAR_SECTIONS = ["after", "limit", "offset"];
+const SCALAR_SECTIONS = ["after", "limit", "offset", "rules"];
 const QUERY_KEYS = new Set(SECTIONS.map((s) => s.slice(1)));
 
 function normalizeMap(form: unknown): Record<string, unknown> {
@@ -332,12 +337,80 @@ export function parseQuery(form: unknown): Query {
   const keys = keysForm === undefined ? undefined : (keysForm as unknown[]).map(String);
   if (keys && find.kind !== "rel") fail(":keys requires a relation find spec");
   if (keys && find.kind === "rel" && keys.length !== find.elems.length) fail(":keys length must match :find");
+  const rules = toRules(m.rules);
+  checkRuleCalls(where, rules);
   const having = toHaving(m.having, find);
   const order = toOrder(m.order);
   const after = toAfter(m.after, order, find);
   const limit = toCount(m.limit, "limit");
   const offset = toCount(m.offset, "offset");
-  return { find, keys, with: withVars, in: inputs, where, having, order, after, limit, offset };
+  return { find, keys, with: withVars, in: inputs, where, rules, having, order, after, limit, offset };
+}
+
+// ---------------------------------------------------------------------------
+// rules
+// ---------------------------------------------------------------------------
+
+/**
+ * `:rules [[[name ?a ?b] clause…] …]` — each definition is a head vector
+ * followed by body clauses; same-named definitions are disjunctive branches
+ * and must agree on arity.
+ */
+function toRules(form: unknown): RuleDef[] | undefined {
+  if (form === undefined) return undefined;
+  if (!Array.isArray(form)) fail(":rules must be a vector of rule definitions", form);
+  const defs = (form as unknown[]).map(toRuleDef);
+  if (defs.length === 0) return undefined;
+  const arity = new Map<string, number>();
+  for (const d of defs) {
+    const seen = arity.get(d.name);
+    if (seen !== undefined && seen !== d.args.length) {
+      fail(`rule ${d.name} is defined with ${seen} and ${d.args.length} head variables — branches of one rule share a head`);
+    }
+    arity.set(d.name, d.args.length);
+  }
+  for (const d of defs) checkRuleCalls(d.clauses, defs);
+  return defs;
+}
+
+function toRuleDef(form: unknown): RuleDef {
+  const items = form instanceof EdnList ? form.items : Array.isArray(form) ? (form as unknown[]) : fail("rule definition must be [[name ?arg…] clause…]", form);
+  if (items.length < 2) fail("rule definition needs a head and at least one clause", form);
+  const head = items[0] instanceof EdnList ? (items[0] as EdnList).items : Array.isArray(items[0]) ? (items[0] as unknown[]) : fail("rule head must be [name ?arg…]", form);
+  const name = head[0];
+  if (!isFnName(name)) fail("rule name must be a plain symbol", form);
+  const args = head.slice(1);
+  if (args.length === 0) fail(`rule ${String(name)} needs at least one head variable`, form);
+  if (!args.every(isVarName)) fail(`rule ${String(name)} head takes variables only`, form);
+  if (new Set(args).size !== args.length) fail(`rule ${String(name)} repeats a head variable`, form);
+  return { name: name as string, args: args as string[], clauses: items.slice(1).map(toClause) };
+}
+
+/** Every rule-call must name a declared rule with the declared arity. */
+function checkRuleCalls(clauses: Clause[], rules: RuleDef[] | undefined): void {
+  const arity = new Map<string, number>();
+  for (const d of rules ?? []) arity.set(d.name, d.args.length);
+  const walk = (c: Clause): void => {
+    switch (c.kind) {
+      case "rule-call": {
+        const n = arity.get(c.name);
+        if (n === undefined) {
+          fail(`unknown clause form '${c.name}' — not a builtin and not a rule declared in :rules`);
+        }
+        if (c.args.length !== n) fail(`rule ${c.name} takes ${n} arguments, got ${c.args.length}`);
+        break;
+      }
+      case "not":
+        c.clauses.forEach(walk);
+        break;
+      case "or":
+        c.branches.forEach((b) => b.forEach(walk));
+        break;
+      default:
+        break;
+    }
+  };
+  clauses.forEach(walk);
 }
 
 /** `:having` — post-group predicates over `:find` cells, never datoms. */

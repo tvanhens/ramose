@@ -48,7 +48,24 @@ export interface OrClause {
   join?: string[];
   branches: Clause[][];
 }
-export type Clause = PatternClause | PredClause | FnClause | NotClause | OrClause;
+/**
+ * Invocation of a named rule from `:rules`: `["memberOf", "?u", "?g"]` in a
+ * `:where` (or inside another rule's body). Args line up positionally with
+ * the rule head's variables; a constant arg constrains that head position, a
+ * blank leaves it free and unexported.
+ */
+export interface RuleCallClause {
+  kind: "rule-call";
+  name: string;
+  args: Term[];
+}
+export type Clause =
+  | PatternClause
+  | PredClause
+  | FnClause
+  | NotClause
+  | OrClause
+  | RuleCallClause;
 
 export type Binding =
   | { kind: "scalar"; var: string }
@@ -99,12 +116,28 @@ export interface OrderSpec {
   empty?: "first" | "last";
 }
 
+/**
+ * One definition of a named rule: `[[name ?a ?b] clause…]`. Several
+ * definitions under the same name are disjunctive branches (Datomic rule
+ * semantics) and must agree on arity. A rule body may invoke rules —
+ * including its own name — so recursion (and mutual recursion) is expressed
+ * directly; the engine expands it under the query's memory budget.
+ */
+export interface RuleDef {
+  name: string;
+  /** Head variables, in call-argument order (leading '?' included). */
+  args: string[];
+  clauses: Clause[];
+}
+
 export interface Query {
   find: FindSpec;
   keys?: string[];
   with: string[];
   in: InputSpec[];
   where: Clause[];
+  /** Named rules callable from :where (and from each other). */
+  rules?: RuleDef[];
   /**
    * Post-group filter. After aggregates are computed, each group is one
    * `:find` tuple. `:having` keeps the groups whose cells satisfy every
