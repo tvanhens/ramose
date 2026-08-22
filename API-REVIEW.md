@@ -10,15 +10,27 @@ that matter most, ranked by user impact, security consequence, and the cost of
 fixing after 1.0. Type-level claims were reproduced with `tsc --strict`; runtime
 claims by executing the engine or lowering real queries.
 
-> **Decision (2026-08-22):** the Operation API (`Ramose.Operation` / `db.run`) is
-> the **only** write path going forward; `db.transact` retires from the public
-> surface. Item 1 is therefore framed as the workstream list to make operations
-> launch-ready (one issue per bold lead-in), and items 3, 5, and 7 carry the
-> follow-on changes.
+> **Decisions (2026-08-22):**
+>
+> 1. **Operations only.** The Operation API (`Ramose.Operation` / `db.run`) is
+>    the **only** write path going forward; `db.transact` retires from the
+>    public surface. Item 1 is the workstream list to make that true.
+> 2. **Effect hidden from app users**
+>    ([#206](https://github.com/tvanhens/ramose/issues/206)). The app-facing
+>    surface (`ramose/db` client, `ramose/react`) exposes zero Effect types:
+>    promises, plain tagged errors, subscription handles, async op bodies —
+>    with an explicit escape hatch for Effect users. Deploy files stay
+>    Effect-flavored (Alchemy's own API).
+> 3. **The API adopts the docs' vocabulary**
+>    ([#204](https://github.com/tvanhens/ramose/issues/204)). Audience:
+>    mainstream app developers. `Entity`/`Field`/`Schema`,
+>    `set`/`remove`/`delete`, `ServerAuth`; the translation layer leaves the
+>    docs.
 >
 > This report is filed as issues
-> [#170](https://github.com/tvanhens/ramose/issues/170)–[#204](https://github.com/tvanhens/ramose/issues/204),
-> tracked by [#205](https://github.com/tvanhens/ramose/issues/205).
+> [#170](https://github.com/tvanhens/ramose/issues/170)–[#208](https://github.com/tvanhens/ramose/issues/208),
+> tracked by [#205](https://github.com/tvanhens/ramose/issues/205). Findings
+> below are as reviewed; the issues carry the decision-driven amendments.
 
 ## The ten
 
