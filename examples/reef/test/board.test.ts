@@ -625,7 +625,7 @@ const jwtPayloadOf = (init: RequestInit): Record<string, unknown> | undefined =>
         ? undefined
         : ((raw as Record<string, string>).authorization ??
           (raw as Record<string, string>).Authorization);
-  if (auth === undefined) return undefined;
+  if (auth == null) return undefined;
   const part = auth.replace(/^Bearer\s+/i, "").split(".")[1];
   if (part === undefined) return undefined;
   try {
