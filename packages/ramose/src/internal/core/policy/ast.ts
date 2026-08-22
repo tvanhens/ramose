@@ -1,7 +1,10 @@
 /** The compiled policy AST: plain, versioned JSON. Rules attach to attributes, a namespace entry is the fallback for its prefix, nothing matching = deny. */
 
-export const POLICY_VERSION = 1;
-/** Max nesting of `ref` arrows in one expression. */
+/** Current wire version: fragment arms + a query `rules` section. */
+export const POLICY_VERSION = 2;
+/** Expression-arm policies compiled before fragment rules. Still parsed. */
+export const POLICY_LEGACY_VERSION = 1;
+/** Max nesting of `ref` arrows in one v1 expression. */
 export const MAX_REF_DEPTH = 3;
 
 export type PolicyOp = "read" | "add" | "retract" | "retractEntity" | "create";
@@ -28,17 +31,32 @@ export type PolicyExpr =
   | { readonly _tag: "or"; readonly exprs: readonly PolicyExpr[] }
   | { readonly _tag: "not"; readonly expr: PolicyExpr };
 
-export interface PolicyArm {
+/** v1 expression arm. */
+export interface PolicyExprArm {
   readonly _tag: "allow" | "deny";
   readonly expr: PolicyExpr;
 }
+
+/**
+ * v2 fragment arm. `class` is a JWT claims gate (checked before the rule).
+ * `rule: true` is the empty/public fragment; a string names a rule in `rules`.
+ */
+export interface PolicyRuleArm {
+  readonly _tag: "allow";
+  readonly class?: readonly string[];
+  readonly rule: true | string;
+}
+
+export type PolicyArm = PolicyExprArm | PolicyRuleArm;
+
+export const isRuleArm = (arm: PolicyArm): arm is PolicyRuleArm => "rule" in arm;
 
 /** Arms per op. Allow arms OR; any true deny wins; no arms → deny. */
 export type PolicyRules = { readonly [K in PolicyOp]?: readonly PolicyArm[] };
 export type AttrRules = PolicyRules;
 
 export interface CompiledPolicy {
-  readonly version: 1;
+  readonly version: 1 | 2;
   /** attribute ident whose value is the JWT `sub`, e.g. ":user/sub" */
   readonly principal: string;
   readonly classes: readonly string[];
@@ -49,6 +67,11 @@ export interface CompiledPolicy {
   readonly ns?: Readonly<Record<string, PolicyRules>>;
   /** attribute ident → value the peer injects on create */
   readonly preset: Readonly<Record<string, PolicyOperand>>;
+  /**
+   * Query-engine rule definitions (`[[name, ?me, ?e], clause…]`), present
+   * on version 2 when any arm names a fragment rule.
+   */
+  readonly rules?: readonly unknown[];
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +86,8 @@ export const PolicyAst = {
   and: (...exprs: PolicyExpr[]): PolicyExpr => ({ _tag: "and", exprs }),
   or: (...exprs: PolicyExpr[]): PolicyExpr => ({ _tag: "or", exprs }),
   not: (expr: PolicyExpr): PolicyExpr => ({ _tag: "not", expr }),
-  allow: (expr: PolicyExpr): PolicyArm => ({ _tag: "allow", expr }),
-  deny: (expr: PolicyExpr): PolicyArm => ({ _tag: "deny", expr }),
+  allow: (expr: PolicyExpr): PolicyExprArm => ({ _tag: "allow", expr }),
+  deny: (expr: PolicyExpr): PolicyExprArm => ({ _tag: "deny", expr }),
   principal: { _tag: "principal" } as PolicyOperand,
   claim: (...path: string[]): PolicyOperand => ({ _tag: "claim", path }),
   lit: (value: unknown): PolicyOperand => ({ _tag: "lit", value }),
@@ -161,7 +184,53 @@ function parseExpr(x: unknown, path: string, classes: ReadonlySet<string>, refDe
   }
 }
 
-function parseRules(x: unknown, path: string, classes: ReadonlySet<string>): PolicyRules {
+function parseExprArm(x: unknown, path: string, classes: ReadonlySet<string>): PolicyExprArm {
+  const a = obj(x, path);
+  if (a._tag !== "allow" && a._tag !== "deny") {
+    fail(`${path}._tag`, `expected "allow" or "deny", got ${JSON.stringify(a._tag)}`);
+  }
+  return { _tag: a._tag as "allow" | "deny", expr: parseExpr(a.expr, `${path}.expr`, classes, 0) };
+}
+
+function parseRuleArm(
+  x: unknown,
+  path: string,
+  classes: ReadonlySet<string>,
+  ruleNames: ReadonlySet<string>,
+): PolicyRuleArm {
+  const a = obj(x, path);
+  if (a._tag !== "allow") {
+    fail(`${path}._tag`, `expected "allow", got ${JSON.stringify(a._tag)}`);
+  }
+  if (a.rule !== true && typeof a.rule !== "string") {
+    fail(`${path}.rule`, `expected true or a rule name, got ${JSON.stringify(a.rule)}`);
+  }
+  if (typeof a.rule === "string") {
+    if (a.rule.length === 0) fail(`${path}.rule`, "rule name must not be empty");
+    if (!ruleNames.has(a.rule)) fail(`${path}.rule`, `${JSON.stringify(a.rule)} is not in rules`);
+  }
+  let gate: string[] | undefined;
+  if (a.class !== undefined) {
+    if (!Array.isArray(a.class) || a.class.length === 0 || a.class.some((c) => typeof c !== "string")) {
+      fail(`${path}.class`, "expected a non-empty array of class names");
+    }
+    gate = (a.class as string[]).slice();
+    for (const c of gate) {
+      if (!classes.has(c)) fail(`${path}.class`, `${JSON.stringify(c)} is not a declared class`);
+    }
+  }
+  return gate === undefined
+    ? { _tag: "allow", rule: a.rule as true | string }
+    : { _tag: "allow", class: gate, rule: a.rule as true | string };
+}
+
+function parseRules(
+  x: unknown,
+  path: string,
+  classes: ReadonlySet<string>,
+  version: 1 | 2,
+  ruleNames: ReadonlySet<string>,
+): PolicyRules {
   const o = obj(x, path);
   const out: Record<string, PolicyArm[]> = {};
   for (const [op, arms] of Object.entries(o)) {
@@ -169,23 +238,38 @@ function parseRules(x: unknown, path: string, classes: ReadonlySet<string>): Pol
       fail(`${path}.${op}`, `unknown op (${POLICY_OPS.join(" | ")})`);
     }
     if (!Array.isArray(arms)) fail(`${path}.${op}`, "expected an array of arms");
-    out[op] = (arms as unknown[]).map((arm, i) => {
-      const a = obj(arm, `${path}.${op}[${i}]`);
-      if (a._tag !== "allow" && a._tag !== "deny") {
-        fail(`${path}.${op}[${i}]._tag`, `expected "allow" or "deny", got ${JSON.stringify(a._tag)}`);
-      }
-      return { _tag: a._tag as "allow" | "deny", expr: parseExpr(a.expr, `${path}.${op}[${i}].expr`, classes, 0) };
-    });
+    out[op] = (arms as unknown[]).map((arm, i) =>
+      version === 1
+        ? parseExprArm(arm, `${path}.${op}[${i}]`, classes)
+        : parseRuleArm(arm, `${path}.${op}[${i}]`, classes, ruleNames),
+    );
   }
   return out as PolicyRules;
+}
+
+function parseRuleNames(rules: readonly unknown[], path: string): Set<string> {
+  const names = new Set<string>();
+  for (let i = 0; i < rules.length; i++) {
+    const def = rules[i];
+    if (!Array.isArray(def) || def.length === 0 || !Array.isArray(def[0])) {
+      fail(`${path}[${i}]`, "expected a rule definition [[name, ?arg…], clause…]");
+    }
+    const name = (def[0] as unknown[])[0];
+    if (typeof name !== "string" || name.length === 0) {
+      fail(`${path}[${i}][0][0]`, "expected a rule name");
+    }
+    names.add(name);
+  }
+  return names;
 }
 
 /** Decode + validate a compiled policy. Throws `PolicyParseError` when bad. */
 export function parsePolicy(json: unknown): CompiledPolicy {
   const o = obj(json, "");
-  if (o.version !== POLICY_VERSION) {
-    fail(".version", `expected ${POLICY_VERSION}, got ${JSON.stringify(o.version)}`);
+  if (o.version !== POLICY_VERSION && o.version !== POLICY_LEGACY_VERSION) {
+    fail(".version", `expected ${POLICY_LEGACY_VERSION} or ${POLICY_VERSION}, got ${JSON.stringify(o.version)}`);
   }
+  const version = o.version as 1 | 2;
   const principal = attrIdent(o.principal, ".principal");
   if (!Array.isArray(o.classes) || o.classes.length === 0 || o.classes.some((c) => typeof c !== "string")) {
     fail(".classes", "expected a non-empty array of strings");
@@ -194,10 +278,25 @@ export function parsePolicy(json: unknown): CompiledPolicy {
   if (new Set(classes).size !== classes.length) fail(".classes", "duplicate class");
   const classSet = new Set(classes);
 
+  let ruleDefs: unknown[] | undefined;
+  let ruleNames = new Set<string>();
+  if (o.rules !== undefined) {
+    if (version === 1) fail(".rules", "rules are a version-2 field");
+    if (!Array.isArray(o.rules)) fail(".rules", "expected an array of rule definitions");
+    ruleDefs = o.rules as unknown[];
+    ruleNames = parseRuleNames(ruleDefs, ".rules");
+  }
+
   const attrsIn = obj(o.attrs ?? {}, ".attrs");
   const attrs: Record<string, AttrRules> = {};
   for (const [ident, rules] of Object.entries(attrsIn)) {
-    attrs[attrIdent(ident, `.attrs["${ident}"]`)] = parseRules(rules, `.attrs["${ident}"]`, classSet);
+    attrs[attrIdent(ident, `.attrs["${ident}"]`)] = parseRules(
+      rules,
+      `.attrs["${ident}"]`,
+      classSet,
+      version,
+      ruleNames,
+    );
   }
 
   let ns: Record<string, PolicyRules> | undefined;
@@ -207,7 +306,7 @@ export function parsePolicy(json: unknown): CompiledPolicy {
       if (prefix.length === 0 || prefix.includes(":") || prefix.includes("/")) {
         fail(`.ns["${prefix}"]`, "expected a bare namespace prefix like \"doc\"");
       }
-      ns[prefix] = parseRules(rules, `.ns["${prefix}"]`, classSet);
+      ns[prefix] = parseRules(rules, `.ns["${prefix}"]`, classSet, version, ruleNames);
     }
   }
 
@@ -221,5 +320,14 @@ export function parsePolicy(json: unknown): CompiledPolicy {
       : parseOperand(value, path);
   }
 
-  return { version: POLICY_VERSION, principal, classes, claims: o.claims, attrs, ns, preset };
+  return {
+    version,
+    principal,
+    classes,
+    claims: o.claims,
+    attrs,
+    ns,
+    preset,
+    ...(ruleDefs !== undefined ? { rules: ruleDefs } : {}),
+  };
 }

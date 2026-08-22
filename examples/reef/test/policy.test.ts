@@ -45,13 +45,28 @@ describe("reef policy", () => {
     const parsed = parsePolicy(JSON.parse(compiledPolicy()));
     const arms = parsed.attrs[":issue/privateNote"]?.read;
     expect(arms).toBeDefined();
-    expect(arms).toEqual([
-      { _tag: "allow", expr: { _tag: "class", class: "admin" } },
-    ]);
+    expect(arms).toEqual([{ _tag: "allow", class: ["admin"], rule: true }]);
     // …and it is the only narrowing: every other issue attribute is unnamed
     // and inherits the broad namespace read at eval time.
     expect(Object.keys(parsed.attrs)).toEqual([":issue/privateNote"]);
-    expect(parsed.ns?.issue?.read).toBeDefined();
+    expect(parsed.ns?.issue?.read).toEqual([{ _tag: "allow", rule: true }]);
+  });
+
+  test("own-issue / own-comment fragments compile to named rules", () => {
+    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
+    const add = parsed.ns?.issue?.add;
+    expect(add).toHaveLength(1);
+    expect(add![0]).toEqual({
+      _tag: "allow",
+      class: ["member"],
+      rule: expect.any(String),
+    });
+    const name = (add![0] as { rule: string }).rule;
+    expect(parsed.ns?.issue?.retract![0]).toEqual(add![0]);
+    expect(parsed.rules).toBeDefined();
+    const def = (parsed.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === name);
+    expect(def).toBeDefined();
+    expect(JSON.stringify(def)).toContain(":issue/creator");
   });
 
   // `RAMOSE_POLICY` is a Cloudflare plain-text binding, capped at 5.1 kB —

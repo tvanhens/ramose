@@ -114,7 +114,7 @@ describe("parsePolicy", () => {
     };
     expect(() => parsePolicy(null)).toThrow(/expected an object/);
     expect(() => parsePolicy([])).toThrow(/expected an object/);
-    bad({ version: 2 }, /version: expected 1, got 2/);
+    bad({ version: 3 }, /version: expected 1 or 2, got 3/);
     bad({ version: undefined }, /version/);
     bad({ principal: "user/sub" }, /principal: expected an attribute ident/);
     bad({ classes: [] }, /classes/);
@@ -126,6 +126,39 @@ describe("parsePolicy", () => {
     bad({ attrs: { ":doc/audit": { read: [A.allow(A.class("ghost"))] } } }, /not a declared class/);
     bad({ ns: { ":doc": {} } }, /bare namespace prefix/);
     bad({ preset: { ":doc/owner": { _tag: "wat" } } }, /unknown operand _tag/);
+  });
+
+  test("accepts a version-2 fragment policy", () => {
+    const p = parsePolicy({
+      version: 2,
+      principal: ":user/sub",
+      classes: ["member", "admin"],
+      attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
+      ns: {
+        doc: {
+          read: [{ _tag: "allow", rule: true }],
+          add: [{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }],
+        },
+      },
+      preset: { ":doc/owner": { _tag: "principal" } },
+      rules: [[["policy/doc/add/0", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
+    });
+    expect(p.version).toBe(2);
+    expect(p.ns!.doc.add).toEqual([{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }]);
+    expect(p.rules).toHaveLength(1);
+  });
+
+  test("rejects a version-2 arm that names a missing rule", () => {
+    expect(() =>
+      parsePolicy({
+        version: 2,
+        principal: ":user/sub",
+        classes: ["member"],
+        attrs: {},
+        ns: { doc: { read: [{ _tag: "allow", rule: "missing" }] } },
+        preset: {},
+      }),
+    ).toThrow(/not in rules/);
   });
 
   test("rejects ref nesting past depth 3", () => {

@@ -4,8 +4,9 @@ import * as Data from "effect/Data";
 
 /**
  * A policy did not compile against its catalog — an ident the schema does not
- * declare, a rule past the depth bound, a read-masked attribute a pull pattern
- * requires. Deploy/compile time only; a policy never throws into a query.
+ * declare, a rule body the query validator rejects, a read-masked attribute a
+ * pull pattern requires. Deploy/compile time only; a policy never throws into a
+ * query.
  *
  * Provisioning mistakes elsewhere are defects, not failures: a malformed URL,
  * a missing binding, a `db.install()` that cannot reach the peer all surface

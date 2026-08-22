@@ -30,58 +30,57 @@ Reef maps the invite's role onto the token at sign-in — [What the token carrie
 
 ## Reef's policy, read aloud
 
-Helper expressions first, then one rule block per record type:
+Helper fragments first, then one rule block per record type:
 
-```ts title="examples/reef/src/domain/policy.ts:26-32"
-const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
-const editor = P.or(P.class("admin"), P.class("member"));
-const admin = P.class("admin");
-
+```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
-const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:34-48"
-export const policy = P.policy(Reef, {
-  principal: User.sub,
-  classes: CLASSES,
-  ns: {
+```ts title="examples/reef/src/domain/policy.ts:32-49"
+export const policy = Ramose.policy(
+  {
+    catalog: Reef,
+    principal: User.sub,
+    classes: CLASSES,
+  },
+  {
     user: {
-      read: P.allow(anyone),
+      read: true,
       // First entry into a workspace writes your own row; `sub` is preset from
       // the token, so you cannot register as someone else.
-      create: P.allow(editor),
+      create: P.class("member"),
       preset: [P.preset(User.sub, P.claims.sub)],
     },
     label: {
-      read: P.allow(anyone),
-      create: P.allow(editor),
+      read: true,
+      create: P.class("member"),
     },
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:49-70"
+```ts title="examples/reef/src/domain/policy.ts:50-70"
     issue: {
-      read: P.allow(anyone),
-      create: P.allow(editor),
-      add: P.allow(ownIssue),
-      retract: P.allow(ownIssue),
-      retractEntity: P.allow(ownIssue),
+      read: true,
+      create: P.class("member"),
+      add: { class: "member", rule: ownIssue },
+      retract: { class: "member", rule: ownIssue },
+      retractEntity: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+        P.attr(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
     comment: {
-      read: P.allow(anyone),
-      create: P.allow(editor),
-      retract: P.allow(ownComment),
-      retractEntity: P.allow(ownComment),
+      read: true,
+      create: P.class("member"),
+      retract: { class: "member", rule: ownComment },
+      retractEntity: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },
-});
+);
 ```
 
 Read it as:
@@ -89,8 +88,8 @@ Read it as:
 | rule | plain English |
 | --- | --- |
 | `principal: User.sub` · `classes: CLASSES` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
-| `ownIssue` | I am a member **and** this issue's `creator` is me. Admins never reach the rules. |
-| `issue.read: anyone` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
+| `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; admins never reach the rules. |
+| `issue.read: true` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
 | `issue.add / retract / retractEntity: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `retract denied on :issue/status`. |
 | `preset: creator = principal` | The server stamps `creator` to the caller on create. |
 | (nothing) | Anything not mentioned is denied: no `add` arm on `label`, so members cannot recolour labels. |
@@ -114,13 +113,13 @@ What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":
 
 Open the same issue as an admin and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
 
-<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts:56-60" />
+<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts:57-61" />
 
 Reads do not fail. They shrink. A fact you may not read is absent — which is why Reef's panel shape asks for it as `privateNote: Issue.privateNote.optional` (`queries.ts:40-46`). Had it been required, the whole row would disappear: `pull` resolves to `null` and a list query drops that record. That is deliberate — an error message that distinguishes "forbidden" from "does not exist" is itself a leak.
 
 ## Who is the caller?
 
-`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). Reef writes that record the first time an admin or member enters a workspace; viewers never need one, and until the record exists `P.principal` matches nothing.
+`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). That attr derives `me` in every arm. Reef writes that record the first time an admin or member enters a workspace; viewers never need one, and until the record exists a fragment that mentions `me` matches nothing.
 
 `P.preset(Issue.creator, P.principal)` makes `creator` a **server-filled field** ([glossary](/concepts/glossary/#preset)): on create the server stamps it to the caller. A client value identical to the preset is a no-op; a different one is refused. You cannot forge who created an issue.
 
@@ -128,7 +127,7 @@ Reads do not fail. They shrink. A fact you may not read is absent — which is w
 
 *Because the policy and the shapes your screens read are both values, `Ramose.Policy.compile(policy, { pulls })` checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.*
 
-```ts title="examples/reef/src/domain/policy.ts:76-77"
+```ts title="examples/reef/src/domain/policy.ts:77-78"
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```

@@ -1,70 +1,73 @@
 ---
 title: Policy
-description: The exact rules language — operations, expressions, how rules combine, where checks run — and the token the server verifies.
+description: Policy rules are query fragments — the head, the arms, how they compile, and the token the server verifies.
 ---
 import Next from "../../../components/Next.astro";
 
-The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every operation, expression and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every operation, arm and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ## Shape of a policy
 
-`Ramose.Policy` is deploy-side: import it from `ramose`, not `ramose/db`. The **policy** ([glossary](/concepts/glossary/#policy)) is one value built over your schema.
+`Ramose.policy` is deploy-side: import it from `ramose`, not `ramose/db`. The **policy** ([glossary](/concepts/glossary/#policy)) is one value, head/body shaped like `Query.q`. The head's `principal` attr derives `me`; every arm is a fragment (or `true`, or an OR of fragments) contextually checked against that token.
 
 ```ts
-const P = Ramose.Policy;
-const policy = P.policy(Catalog, {
-  principal: User.sub,          // the field whose value is the token's `sub`
-  classes: ["admin", "member", "viewer"],
-  claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
-  ns: { issue: { read, create, add, retract, retractEntity, preset?, attrs? } },
-});
+const policy = Ramose.policy(
+  {
+    catalog: Catalog,
+    principal: User.sub,          // the field whose value is the token's `sub`
+    classes: ["admin", "member", "viewer"],
+    claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
+  },
+  {
+    issue: { read, create, add, retract, retractEntity, preset?, attrs? },
+  },
+);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:24-32"
-const P = Ramose.Policy;
-
-const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
-const editor = P.or(P.class("admin"), P.class("member"));
-const admin = P.class("admin");
-
+```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
-const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:34-61"
-export const policy = P.policy(Reef, {
-  principal: User.sub,
-  classes: CLASSES,
-  ns: {
+```ts title="examples/reef/src/domain/policy.ts:32-61"
+export const policy = Ramose.policy(
+  {
+    catalog: Reef,
+    principal: User.sub,
+    classes: CLASSES,
+  },
+  {
     user: {
-      read: P.allow(anyone),
+      read: true,
       // …
-      create: P.allow(editor),
+      create: P.class("member"),
       preset: [P.preset(User.sub, P.claims.sub)],
     },
     // …
     issue: {
-      read: P.allow(anyone),
-      create: P.allow(editor),
-      add: P.allow(ownIssue),
-      retract: P.allow(ownIssue),
-      retractEntity: P.allow(ownIssue),
+      read: true,
+      create: P.class("member"),
+      add: { class: "member", rule: ownIssue },
+      retract: { class: "member", rule: ownIssue },
+      retractEntity: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+        P.attr(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
 ```
 
-- `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). `P.principal` in a rule means that record.
-- `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); each rule names them with `P.class`.
-- `ns` — one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
+- `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
+- `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
+- The second argument is one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
 
-`P.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, or a reference chain deeper than 3.
+`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, or a rule body the query validator rejects.
+
+Standalone rules annotate `me` once (`(me: P.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
 ## Operations
 
@@ -77,61 +80,66 @@ export const policy = P.policy(Reef, {
 | `retractEntity` | deleting a whole record |
 
 ```ts
-issue: { read: P.allow(anyone), create: P.allow(editor), add: P.allow(ownIssue) }
+issue: { read: true, create: P.class("member"), add: { class: "member", rule: ownIssue } }
 ```
 
-Each takes one arm or a list: `P.allow(expr)`, `P.deny(expr)`.
+Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate.
 
-## Expressions
+## Arms are fragments
 
-| expression | true when |
+| arm | true when |
 | --- | --- |
+| `true` | always — the empty fragment, public |
+| `(me) => Query.is(attr, me)` | the record's `attr` equals the caller; on a many-valued field, contains them |
+| `(me) => function* (e) { … }` | the fragment matches with focus `e` and principal `me` |
+| `[(me) => a, (me) => b]` | any one fragment matches |
 | `P.class("member")` | the caller's role is `member` (must be in `classes`) |
-| `P.eq(attr, operand)` | the record's `attr` equals the operand; on a many-valued field, contains it |
-| `P.ref(refAttr, expr \| attr)` | follow the reference and evaluate there (depth ≤ 3) |
-| `P.and(…)` `P.or(…)` `P.not(e)` | boolean composition |
-| `P.constant(true \| false)` | a fixed verdict |
-| `P.principal` | operand: the caller's record |
-| `P.claims.sub` `.iss` `.aud` `.exp` `.attrs.<key>` | operand: a claim from the token |
-| `P.claimsOf(struct).attrs.<key>` | the same, typed by your `claims` struct |
-| `P.lit(value)` | operand: an explicit literal (bare values are wrapped for you) |
+| `{ class: "member", rule: frag }` | the class gate holds **and** the fragment matches |
 
 ```ts
 // doc → project → org → members contains the caller
-const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
-const mine = P.eq(Doc.owner, P.principal);
-const sameOrg = P.eq(Doc.orgId, P.claims.attrs.org);
+const inOrg = (me: P.Me<typeof User>) =>
+  function* (doc) {
+    const project = yield* Query.follow(Doc.project)(doc);
+    const org = yield* Query.follow(Project.org)(project);
+    yield* Query.is(Org.members, me)(org);
+  };
+
+const mine = (me: P.Me<typeof User>) => Query.is(Doc.owner, me);
 ```
 
-Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version.
+The same `inOrg` value pipes in the app (`pipe(entities(Doc), Query.refine(inOrg(me)))`) and installs as the policy arm — UI filtering and enforcement cannot drift.
+
+Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version. Relation-based visibility ("issues in a project whose team I belong to") is an ordinary fragment: there is no depth cap and no second language.
+
+`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Roles become facts later; until then the gate stays in config.
 
 ## How rules combine
 
 | situation | verdict |
 | --- | --- |
 | no rule for this record type and operation | **denied** |
-| one `allow` arm holds | allowed |
-| several `allow` arms, any one holds | allowed |
-| a `deny` arm holds | **denied**, whatever the allow arms say |
+| one allow arm holds | allowed |
+| several allow arms, any one holds | allowed |
 | a field rule and its record-type rule | both must allow — the field rule only narrows |
 
 ```ts
 // 1. no rule at all for doc → nothing about a document is readable
-ns: { }
+{}
 // 2. one arm: the owner may read their own documents
-ns: { doc: { read: P.allow(P.eq(Doc.owner, P.principal)) } }
+{ doc: { read: (me) => Query.is(Doc.owner, me) } }
 // 3. two arms: the owner *or* anyone in the document's org may read it
-ns: { doc: { read: [P.allow(P.eq(Doc.owner, P.principal)), P.allow(inOrg)] } }
+{ doc: { read: [mine, inOrg] } }
 // 4. narrowed: everything above, except doc.audit, which is admins only
-ns: { doc: { read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
-             attrs: [P.attr(Doc.audit, { read: P.allow(P.class("admin")) })] } }
+{ doc: { read: [mine, inOrg],
+         attrs: [P.attr(Doc.audit, { read: P.class("admin") })] } }
 ```
 
 ## preset
 
 `P.preset(attr, P.principal | P.claims.x)` — a **server-filled field** ([glossary](/concepts/glossary/#preset)): on `create` the server sets it from the caller. A client value identical to the preset is a no-op; a different one is refused with `Unauthorized`. The operand is `P.principal` or a claim, never a literal.
 
-```ts title="examples/reef/src/domain/policy.ts:55"
+```ts title="examples/reef/src/domain/policy.ts:56"
       preset: [P.preset(Issue.creator, P.principal)],
 ```
 
@@ -139,10 +147,10 @@ ns: { doc: { read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
 
 `P.attr(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
 
-```ts title="examples/reef/src/domain/policy.ts:56-60"
+```ts title="examples/reef/src/domain/policy.ts:57-61"
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.allow(admin) }),
+        P.attr(Issue.privateNote, { read: P.class("admin") }),
       ],
 ```
 
@@ -168,9 +176,11 @@ ns: { doc: { read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
 
 ## compile and the pulls check
 
-`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
+`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up). The wire version is 2; installed policies recompile at deploy.
 
-```ts title="examples/reef/src/domain/policy.ts:76-77"
+Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
+
+```ts title="examples/reef/src/domain/policy.ts:77-78"
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```
@@ -196,7 +206,7 @@ export const compiledPolicy = (): string =>
 | `sub` | non-empty; matched to the `principal` field |
 | `ramose.db` | equals the database in the URL — else `Unauthorized` "token is not valid for this database" |
 | `ramose.class` | a class the policy declares |
-| `ramose.attrs` | optional; your own claims, readable as `P.claims.attrs.<key>` |
+| `ramose.attrs` | optional; your own claims, readable as `P.claims.attrs.<key>` on a preset |
 
 Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `ramose/better-auth`.
 
@@ -272,11 +282,11 @@ Then in the server Worker's `env`: `...Ramose.authEnv({ policy, issuers: "https:
 
 - One policy per deployed server, over one schema; no per-database variants.
 - No cross-database rules.
-- Reference chains in rules are capped at depth 3.
 - 413 bodies (`clause`, `cells`, `limit`) and the `x-ramose-*` timing headers are not policy-filtered.
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "Reef's policy read aloud, with a refused write" },
   { href: "/guides/sign-in/", label: "Sign in and roles", why: "minting tokens with Better Auth or your own signer" },
   { href: "/reference/errors/", label: "Errors", why: "Unauthorized vs TxRejected" },
+  { href: "/reference/query-language/", label: "The query language", why: "fragments, Query.rule, promotion" },
 ]} />

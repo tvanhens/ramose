@@ -11,18 +11,20 @@ import * as Schema from "effect/Schema";
 import {
   Attr,
   Catalog,
+  type Eid,
   type Equal,
   type Expect,
   type Extends,
-  Long,
   Namespace,
   Policy as P,
+  Query,
   Ref,
+  type Var,
 } from "../../src/db/internal.ts";
 
 const User = Namespace("user", {
   sub: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
+  age: Attr(Schema.Number),
 });
 const Org = Namespace("org", { members: Attr(Ref, { cardinality: "many" }) });
 const Doc = Namespace("doc", { title: Attr(Schema.String), owner: Attr(Ref) });
@@ -53,51 +55,42 @@ type _typedAttrKeys = Expect<Equal<keyof (typeof typedClaims)["attrs"], "org">>;
 
 type _compileReturnsJson = Expect<Equal<ReturnType<typeof P.compile>, string>>;
 
-const _fixtures = () => {
-  // eq: a literal must match the attribute's value type
-  P.eq(User.age, 41);
-  P.eq(User.sub, "user_01HQ8ZK");
-  P.eq(User.sub, P.claims.sub);
-  P.eq(Doc.owner, P.principal);
-  // @ts-expect-error — :user/age is a number, not a string
-  P.eq(User.age, "old");
-  // @ts-expect-error — :user/sub is a string, not a number
-  P.eq(User.sub, 41);
+type _me = Expect<Equal<P.PrincipalMe<typeof App, ":user/sub">, P.Me<typeof User>>>;
+type _meIsVar = Expect<Extends<P.Me<typeof User>, Var<Eid<typeof User>>>>;
 
+const _fixtures = () => {
   // typed claim keys
   typedClaims.attrs.org;
   // @ts-expect-error — `team` is not a declared claim
   typedClaims.attrs.team;
 
-  // ref: the first argument must be a :db.type/ref attribute
-  P.ref(Doc.owner, Org.members);
-  // @ts-expect-error — :user/age is not :db.type/ref
-  P.ref(User.age, Org.members);
-
-  P.policy(App, {
-    principal: User.sub,
-    classes: ["anonymous", "member"],
-    ns: { doc: { read: P.allow(P.eq(Doc.owner, P.principal)) } },
+  // inline arm: `me` is the principal token, no annotation
+  P.policy({ catalog: App, principal: User.sub, classes: ["anonymous", "member"] }, {
+    doc: { read: (me) => Query.is(Doc.owner, me) },
   });
 
-  P.policy(App, {
-    principal: User.sub,
-    classes: ["member"],
+  // record-form class gate: `me` is still contextually typed
+  P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: { class: "member", rule: (me) => Query.is(Doc.owner, me) } },
+  });
+
+  P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
     // @ts-expect-error — "nope" is not a catalog namespace key
-    ns: { nope: { read: P.allow(P.class("member")) } },
+    nope: { read: P.class("member") },
   });
 
-  P.policy(App, {
-    // @ts-expect-error — :other/sub is not a catalog ident
-    principal: Other.sub,
-    classes: ["member"],
-    ns: {},
-  });
+  P.policy(
+    {
+      catalog: App,
+      // @ts-expect-error — :other/sub is not a catalog ident
+      principal: Other.sub,
+      classes: ["member"],
+    },
+    {},
+  );
 
-  const pol = P.policy(App, {
-    principal: User.sub,
-    classes: ["member"],
-    ns: { doc: { read: P.allow(P.class("member")) } },
+  const pol = P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: P.class("member") },
   });
   type _catalog = Expect<Equal<(typeof pol)["catalog"], typeof App>>;
   const json: string = P.compile(pol, { pulls: [{ title: Doc.title }] });

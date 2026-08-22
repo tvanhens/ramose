@@ -1,42 +1,40 @@
 /**
- * Typed policy authoring. Combinators over catalog attributes and JWT claims
- * lower to the engine's compiled AST; every check is deploy-time.
+ * Typed policy authoring. The document is head/body shaped like `Query.q`:
+ * the head's `principal` attr derives `me`, and every arm is a fragment
+ * (or `true`, or an OR of fragments) contextually checked against that
+ * token. Combinators lower to named query rules at compile; every check
+ * is deploy-time.
  */
 
 import * as Schema from "effect/Schema";
-import {
-  MAX_REF_DEPTH,
-  POLICY_OPS,
-  POLICY_VERSION,
-  PolicyAst,
-  parsePolicy,
-} from "../internal/core/policy/ast.ts";
+import { parseQuery } from "../internal/core/query/parse.ts";
+import { POLICY_VERSION, parsePolicy } from "../internal/core/policy/ast.ts";
 import type {
   AttrRules,
   CompiledPolicy,
-  PolicyArm,
-  PolicyExpr,
-  PolicyOp,
   PolicyOperand,
+  PolicyOp,
+  PolicyRuleArm,
   PolicyRules,
 } from "../internal/core/policy/ast.ts";
-import type { AnyAttribute, ValueOf } from "./Attribute.ts";
+import { POLICY_OPS } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
+import type { AnyAttribute } from "./Attribute.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import { PolicyError } from "./SchemaErrors.ts";
+import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
+import type { AnyNamespace } from "./Namespace.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
+import { Q, lowerQueryObject, q, rule, type Fragment, type QueryGen, type Var } from "./query/index.ts";
+import { PolicyError } from "./SchemaErrors.ts";
 
 // ── shapes ─────────────────────────────────────────────────────────────────
 
 export type Operand = PolicyOperand;
-export type Expr = PolicyExpr;
-export type Arm = PolicyArm;
 export type Op = PolicyOp;
 
 /** A stamped attribute (`User.sub`) — anything carrying `ident` + attr shape. */
 export type AttrRef = AnyAttribute & { readonly ident: string };
-export type RefAttrRef = AttrRef & { readonly valueType: ":db.type/ref" };
 
 export interface Preset {
   readonly _tag: "Preset";
@@ -44,38 +42,94 @@ export interface Preset {
   readonly operand: Operand;
 }
 
-/** Arms per op; a single arm is shorthand for a one-element array. */
-export type RuleSpec = {
-  readonly [K in Op]?: Arm | readonly Arm[];
-};
+/**
+ * The namespace the principal mapping names. `User.sub` under catalog `C`
+ * yields `typeof User`, which is what brands `me`.
+ */
+export type NsOfPrincipal<C extends AnyCatalog, I extends string> = {
+  [K in keyof C["namespaces"]]: I extends `:${C["namespaces"][K]["ns"]}/${string}`
+    ? C["namespaces"][K]
+    : never;
+}[keyof C["namespaces"]];
 
-export interface AttrRule {
-  readonly _tag: "AttrRule";
-  readonly attr: string;
-  readonly rules: RuleSpec;
+/** `me` in every arm: a var branded with the principal's namespace. */
+export type Me<N extends AnyNamespace = AnyNamespace> = Var<Eid<N>>;
+
+export type PrincipalMe<C extends AnyCatalog, I extends string> = Me<NsOfPrincipal<C, I>>;
+
+/** `(me) => fragment` — the arm closes over the typed principal token. */
+export type FragFn<M> = (me: M) => Fragment<Var<unknown>, unknown>;
+
+/**
+ * JWT claims gate. `class` is checked before the rule runs; it never
+ * grows an expression tree. `rule` defaults to `true` (public).
+ */
+export interface ClassGate<A = true> {
+  readonly _tag: "ClassGate";
+  readonly classes: readonly string[];
+  readonly arm: A;
 }
 
-export type NsRuleSpec = RuleSpec & {
-  readonly preset?: readonly Preset[];
-  readonly attrs?: readonly AttrRule[];
+export interface ClassFn {
+  readonly _tag: "ClassGate";
+  readonly classes: readonly string[];
+  readonly arm: true;
+  <A>(arm: A): ClassGate<A>;
+}
+
+/**
+ * JWT class gate as a config record — `rule` is contextually typed, so
+ * inline `(me) => …` needs no annotation. `rule` defaults to `true`.
+ */
+export type ClassConfig<M> = {
+  readonly class: string | readonly string[];
+  readonly rule?: true | FragFn<M>;
 };
 
-export interface PolicySpec<
-  C extends AnyCatalog,
+/** One allow arm: a fragment, `true` (empty / public), or a class gate. */
+export type ArmValue<M> = true | FragFn<M> | ClassGate<true | FragFn<M>> | ClassFn | ClassConfig<M>;
+
+/** Arms per op; an array is OR. */
+export type RuleSpec<M> = {
+  readonly [K in Op]?: ArmValue<M> | readonly ArmValue<M>[];
+};
+
+export interface AttrRule<M = unknown> {
+  readonly _tag: "AttrRule";
+  readonly attr: string;
+  readonly rules: RuleSpec<M>;
+}
+
+export type NsRuleSpec<M> = RuleSpec<M> & {
+  readonly preset?: readonly Preset[];
+  readonly attrs?: readonly AttrRule<M>[];
+};
+
+export interface PolicyHead<
+  C extends AnyCatalog = AnyCatalog,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 > {
-  /** attribute whose value is the JWT `sub` */
+  readonly catalog: C;
+  /** attribute whose value is the JWT `sub` — derives `me`'s type */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
   readonly classes: readonly string[];
   /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
-  readonly ns: { readonly [K in keyof C["namespaces"]]?: NsRuleSpec };
+}
+
+export type PolicyArms<C extends AnyCatalog, M> = {
+  readonly [K in keyof C["namespaces"]]?: NsRuleSpec<M>;
+};
+
+interface CompiledArm {
+  readonly classes?: readonly string[];
+  readonly rule: true | string;
 }
 
 interface NsRules {
   readonly prefix: string;
-  readonly rules: PolicyRules;
-  readonly attrs: Readonly<Record<string, AttrRules>>;
+  readonly rules: Readonly<Record<string, readonly CompiledArm[]>>;
+  readonly attrs: Readonly<Record<string, Readonly<Record<string, readonly CompiledArm[]>>>>;
   readonly preset: Readonly<Record<string, Operand>>;
 }
 
@@ -88,6 +142,8 @@ export interface Policy<C extends AnyCatalog = AnyCatalog> {
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
   /** catalog namespace key → normalised rules */
   readonly ns: Readonly<Record<string, NsRules>>;
+  /** lowered query-engine rule definitions */
+  readonly ruleDefs: readonly unknown[];
   /** idents whose attribute rule narrows their namespace's `read` */
   readonly maskedReads: ReadonlySet<string>;
 }
@@ -152,75 +208,47 @@ export const claimsOf = <CF extends Schema.Struct.Fields>(
 ): ClaimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }> =>
   claimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }>();
 
-/** The principal's resolved entity id. */
-export const principal: Operand = PolicyAst.principal;
-
-/** An explicit literal operand; `eq` wraps bare values in this for you. */
-export const lit = (value: unknown): Operand => PolicyAst.lit(value);
-
-const isOperand = (v: unknown): v is Operand =>
-  typeof v === "object" &&
-  v !== null &&
-  ((v as { _tag?: unknown })._tag === "principal" ||
-    (v as { _tag?: unknown })._tag === "claim" ||
-    (v as { _tag?: unknown })._tag === "lit");
-
-// ── expressions ────────────────────────────────────────────────────────────
+/** The principal's resolved entity id — a preset operand, not a rule. */
+export const principal: Operand = { _tag: "principal" };
 
 const identOf = (a: AttrRef): string => {
   if (!isAttrRef(a)) fail(`expected an attribute ref, got ${String(a)}`);
   return a.ident;
 };
 
-/** A datom `[e attr v]` exists; on a cardinality-many attribute, membership. */
-export const eq = <A extends AttrRef>(attr: A, value: Operand | ValueOf<A>): Expr =>
-  PolicyAst.eq(identOf(attr), isOperand(value) ? value : PolicyAst.lit(value));
+const isClassGate = (v: unknown): v is ClassGate<unknown> =>
+  (typeof v === "object" || typeof v === "function") &&
+  v !== null &&
+  (v as { _tag?: unknown })._tag === "ClassGate";
 
-const refDepthOf = (e: Expr): number => {
-  switch (e._tag) {
-    case "ref":
-      return 1 + refDepthOf(e.target);
-    case "and":
-    case "or":
-      return e.exprs.reduce((m, x) => Math.max(m, refDepthOf(x)), 0);
-    case "not":
-      return refDepthOf(e.expr);
-    default:
-      return 0;
-  }
-};
-
-const isExpr = (v: unknown): v is Expr =>
-  typeof v === "object" && v !== null && typeof (v as { _tag?: unknown })._tag === "string" && !isAttrRef(v);
+const isClassConfig = (v: unknown): v is ClassConfig<unknown> =>
+  typeof v === "object" &&
+  v !== null &&
+  !Array.isArray(v) &&
+  !isClassGate(v) &&
+  "class" in v &&
+  (v as { _tag?: unknown })._tag !== "AttrRule" &&
+  (v as { _tag?: unknown })._tag !== "Preset";
 
 /**
- * Follow `[e attr ?x]` and evaluate `target` at each `?x`. A bare attribute
- * target means "contains the principal". Depth ≤ `MAX_REF_DEPTH`.
+ * JWT class gate. `P.class("member")` is a public arm for that class;
+ * `P.class("member")(frag)` / `{ class: "member", rule: frag }` compose
+ * the gate with a fragment. Checked before the rule runs; never an
+ * expression.
  */
-export const ref = (attr: RefAttrRef, target: Expr | AttrRef): Expr => {
-  const ident = identOf(attr);
-  if (attr.valueType !== undefined && attr.valueType !== ":db.type/ref") {
-    fail(`ref() needs a :db.type/ref attribute; ${ident} is ${attr.valueType}`, ident);
+export const classFn = (...classes: string[]): ClassFn => {
+  if (classes.length === 0) fail("P.class needs at least one class name");
+  for (const c of classes) {
+    if (typeof c !== "string" || c.length === 0) fail("P.class names must be non-empty strings");
   }
-  const inner = isExpr(target) ? target : eq(target as AttrRef, principal);
-  const expr = PolicyAst.ref(ident, inner);
-  if (refDepthOf(expr) > MAX_REF_DEPTH) {
-    fail(`ref nesting exceeds depth ${MAX_REF_DEPTH}`, ident);
-  }
-  return expr;
+  const apply = ((arm: unknown) => ({
+    _tag: "ClassGate" as const,
+    classes,
+    arm,
+  })) as ClassFn;
+  return Object.assign(apply, { _tag: "ClassGate" as const, classes, arm: true as const });
 };
-
-/** `c === ramose.class`. Validated against the policy's `classes` at `policy()`. */
-const classExpr = (c: string): Expr => PolicyAst.class(c);
-export { classExpr as class };
-
-export const and = (...exprs: readonly Expr[]): Expr => PolicyAst.and(...exprs);
-export const or = (...exprs: readonly Expr[]): Expr => PolicyAst.or(...exprs);
-export const not = (expr: Expr): Expr => PolicyAst.not(expr);
-export const constant = (value: boolean): Expr => PolicyAst.const(value);
-
-export const allow = (expr: Expr): Arm => PolicyAst.allow(expr);
-export const deny = (expr: Expr): Arm => PolicyAst.deny(expr);
+export { classFn as class };
 
 /** The peer sets `attr` on `create`. Client-supplied values are `Unauthorized`. */
 export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => {
@@ -229,35 +257,13 @@ export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => 
 };
 
 /** Attribute rule; narrows (ANDs with) its namespace rule. */
-export const attr = <A extends AttrRef>(a: A, rules: RuleSpec): AttrRule => ({
+export const attr = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<M> => ({
   _tag: "AttrRule",
   attr: identOf(a),
   rules,
 });
 
-// ── lowering ───────────────────────────────────────────────────────────────
-
-const armsOf = (v: Arm | readonly Arm[] | undefined): readonly Arm[] | undefined => {
-  if (v === undefined) return undefined;
-  const arms = Array.isArray(v) ? (v as readonly Arm[]) : [v as Arm];
-  return arms.length === 0 ? undefined : arms;
-};
-
-const rulesOf = (spec: RuleSpec, where: string): PolicyRules => {
-  const out: Record<string, readonly Arm[]> = {};
-  for (const op of POLICY_OPS) {
-    const arms = armsOf(spec[op]);
-    if (arms) {
-      for (const arm of arms) {
-        if (arm?._tag !== "allow" && arm?._tag !== "deny") {
-          fail(`${where}.${op} expects P.allow(...) / P.deny(...)`);
-        }
-      }
-      out[op] = arms;
-    }
-  }
-  return out as PolicyRules;
-};
+// ── compile fragments → named rules ────────────────────────────────────────
 
 const catalogIdents = (catalog: AnyCatalog): ReadonlySet<string> => {
   const out = new Set<string>();
@@ -267,121 +273,239 @@ const catalogIdents = (catalog: AnyCatalog): ReadonlySet<string> => {
   return out;
 };
 
-const walkExpr = (
-  e: Expr,
-  visit: (attrIdent: string) => void,
-  visitClass: (c: string) => void,
-): void => {
-  switch (e._tag) {
-    case "eq":
-      visit(e.attr);
-      return;
-    case "ref":
-      visit(e.attr);
-      walkExpr(e.target, visit, visitClass);
-      return;
-    case "and":
-    case "or":
-      for (const x of e.exprs) walkExpr(x, visit, visitClass);
-      return;
-    case "not":
-      walkExpr(e.expr, visit, visitClass);
-      return;
-    case "class":
-      visitClass(e.class);
-      return;
-    default:
+const IDENT_RE = /^:[^/]+\/[^/]+$/;
+
+const walkIdents = (x: unknown, visit: (ident: string) => void): void => {
+  if (typeof x === "string") {
+    if (IDENT_RE.test(x)) visit(x);
+    return;
+  }
+  if (Array.isArray(x)) {
+    for (const y of x) walkIdents(y, visit);
   }
 };
 
+const isFragFn = (v: unknown): v is FragFn<Var<unknown>> => typeof v === "function" && !isClassGate(v);
+
+const asClassList = (c: string | readonly string[], where: string): readonly string[] => {
+  const list = typeof c === "string" ? [c] : [...c];
+  if (list.length === 0) fail(`${where}: class gate needs at least one class`);
+  return list;
+};
+
+const unwrapGate = (
+  v: ArmValue<unknown>,
+): { readonly classes?: readonly string[]; readonly body: true | FragFn<Var<unknown>> } => {
+  if (v === true) return { body: true };
+  if (isClassGate(v)) {
+    const inner = v.arm === undefined ? true : v.arm;
+    if (inner !== true && !isFragFn(inner)) {
+      fail("P.class(...) wraps a fragment or true");
+    }
+    return { classes: v.classes, body: inner as true | FragFn<Var<unknown>> };
+  }
+  if (isClassConfig(v)) {
+    const inner = v.rule === undefined ? true : v.rule;
+    if (inner !== true && !isFragFn(inner)) {
+      fail("a class gate's rule is a fragment or true");
+    }
+    return { classes: asClassList(v.class, "class"), body: inner as true | FragFn<Var<unknown>> };
+  }
+  if (isFragFn(v)) return { body: v };
+  fail("an arm is a fragment, true, or a class gate");
+};
+
+const promote = (
+  name: string,
+  frag: FragFn<Var<unknown>>,
+  where: string,
+): ReturnType<typeof rule> => {
+  const body = function* (me: Var<unknown>, e: Var<unknown>): QueryGen<void> {
+    const produced = frag(me);
+    if (typeof produced !== "function") {
+      fail(`${where}: a fragment is (me) => (focus) => … — got ${typeof produced}`);
+    }
+    yield* produced(e);
+  };
+  const named = rule(name, body as never);
+  try {
+    const built = named.ensureBuilt();
+    if (built.clauses.length === 0) {
+      fail(`${where}: empty fragment — use true for a public arm`);
+    }
+  } catch (cause) {
+    if (cause instanceof PolicyError) throw cause;
+    fail(`${where}: ${cause instanceof Error ? cause.message : String(cause)}`, undefined, cause);
+  }
+  return named;
+};
+
+const lowerNamedRules = (named: readonly ReturnType<typeof rule>[]): unknown[] => {
+  if (named.length === 0) return [];
+  const dummy = q(function* () {
+    const me = Q.var();
+    const e = Q.var();
+    for (const r of named) yield* r(me, e);
+    return e;
+  });
+  try {
+    const { query } = lowerQueryObject(dummy);
+    return Array.isArray(query.rules) ? (query.rules as unknown[]) : [];
+  } catch (cause) {
+    fail(`rule lowering failed: ${cause instanceof Error ? cause.message : String(cause)}`, undefined, cause);
+  }
+};
+
+const validateRuleBodies = (
+  defs: readonly unknown[],
+  idents: ReadonlySet<string>,
+  where: string,
+): void => {
+  if (defs.length === 0) return;
+  try {
+    parseQuery({ find: ["?e"], where: [], rules: defs });
+  } catch (cause) {
+    fail(
+      `${where}: rule body failed query validation: ${cause instanceof Error ? cause.message : String(cause)}`,
+      undefined,
+      cause,
+    );
+  }
+  walkIdents(defs, (ident) => {
+    if (ident.startsWith(":db/")) return;
+    if (!idents.has(ident)) fail(`${where}: ${ident} is not in the catalog`, ident);
+  });
+};
+
+// ── authoring ──────────────────────────────────────────────────────────────
+
 /**
- * Build a policy against its catalog. Unknown idents, undeclared classes,
- * unknown namespace keys and over-deep refs all fail here.
+ * Build a policy. `policy(head, arms)` is head/body shaped like `Query.q`:
+ * `principal: User.sub` derives `me`, and every inline arm is checked as
+ * `(me) => fragment` with `me` fully typed. Unknown idents, undeclared
+ * classes and unknown namespace keys fail here.
  */
-export const policy = <
+export function policy<
   const C extends AnyCatalog,
+  const H extends PolicyHead<C>,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
-  catalog: C,
-  spec: PolicySpec<C, CF>,
-): Policy<C> => {
+  head: H & PolicyHead<C, CF>,
+  arms: PolicyArms<C, PrincipalMe<C, H["principal"]["ident"]>>,
+): Policy<C> {
+  if (head == null || typeof head !== "object" || head.catalog == null) {
+    fail("policy(head, arms) takes a head { catalog, principal, classes }");
+  }
+  const catalog = head.catalog;
+  if ((catalog as { _tag?: unknown })._tag !== "Catalog") {
+    fail("head.catalog must be a Ramose.Catalog");
+  }
+  if (arms == null || typeof arms !== "object") {
+    fail("policy(head, arms) takes the namespace arms as its second argument");
+  }
+
   const idents = catalogIdents(catalog);
-  const principalIdent = identOf(spec.principal as AttrRef);
+  const principalIdent = identOf(head.principal as AttrRef);
   if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the catalog`, principalIdent);
 
-  const classes = [...spec.classes];
+  const classes = [...head.classes];
   if (classes.length === 0) fail("classes must not be empty");
   if (new Set(classes).size !== classes.length) fail("duplicate class");
   const classSet = new Set(classes);
 
-  const checkExpr = (e: Expr, where: string): void => {
-    if (refDepthOf(e) > MAX_REF_DEPTH) fail(`${where}: ref nesting exceeds depth ${MAX_REF_DEPTH}`);
-    walkExpr(
-      e,
-      (a) => {
-        if (!idents.has(a)) fail(`${where}: ${a} is not in the catalog`, a);
-      },
-      (c) => {
-        if (!classSet.has(c)) fail(`${where}: ${JSON.stringify(c)} is not a declared class`);
-      },
-    );
+  const checkClasses = (gate: readonly string[] | undefined, where: string): void => {
+    if (gate === undefined) return;
+    for (const c of gate) {
+      if (!classSet.has(c)) fail(`${where}: ${JSON.stringify(c)} is not a declared class`);
+    }
   };
 
-  const checkRules = (rules: PolicyRules, where: string): void => {
-    for (const op of POLICY_OPS) {
-      for (const arm of rules[op] ?? []) checkExpr(arm.expr, `${where}.${op}`);
+  const pending: ReturnType<typeof rule>[] = [];
+  const seenFrags = new Map<FragFn<Var<unknown>>, string>();
+  let nextRule = 0;
+
+  const compileArm = (raw: ArmValue<unknown>, where: string, prefix: string, op: string): CompiledArm => {
+    const { classes: gate, body } = unwrapGate(raw);
+    checkClasses(gate, where);
+    if (body === true) {
+      return gate === undefined ? { rule: true } : { classes: gate, rule: true };
     }
+    const existing = seenFrags.get(body);
+    const name = existing ?? `policy/${prefix}/${op}/${nextRule++}`;
+    if (existing === undefined) {
+      pending.push(promote(name, body, where));
+      seenFrags.set(body, name);
+    }
+    return gate === undefined ? { rule: name } : { classes: gate, rule: name };
+  };
+
+  const compileSpec = (
+    spec: RuleSpec<unknown>,
+    where: string,
+    prefix: string,
+  ): Record<string, readonly CompiledArm[]> => {
+    const out: Record<string, CompiledArm[]> = {};
+    for (const op of POLICY_OPS) {
+      const v = spec[op];
+      if (v === undefined) continue;
+      const list = Array.isArray(v) ? (v as readonly ArmValue<unknown>[]) : [v as ArmValue<unknown>];
+      if (list.length === 0) continue;
+      out[op] = list.map((arm, i) => compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, op));
+    }
+    return out;
   };
 
   const ns: Record<string, NsRules> = {};
   const maskedReads = new Set<string>();
 
-  for (const [nsKey, nsSpec] of Object.entries(spec.ns as Record<string, NsRuleSpec | undefined>)) {
+  for (const [nsKey, nsSpec] of Object.entries(arms as Record<string, NsRuleSpec<unknown> | undefined>)) {
     if (nsSpec === undefined) continue;
     const declared = (catalog.namespaces as Record<string, { ns: string } | undefined>)[nsKey];
     if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the catalog`);
-    const prefix = declared!.ns;
+    const prefix = declared.ns;
     const where = `ns.${nsKey}`;
 
-    const rules = rulesOf(nsSpec, where);
-    checkRules(rules, where);
+    const rules = compileSpec(nsSpec, where, prefix);
 
-    const attrs: Record<string, AttrRules> = {};
-    for (const rule of nsSpec.attrs ?? []) {
-      if (rule?._tag !== "AttrRule") fail(`${where}.attrs expects P.attr(...)`);
-      if (!idents.has(rule.attr)) fail(`${where}.attrs: ${rule.attr} is not in the catalog`, rule.attr);
-      if (!rule.attr.startsWith(`:${prefix}/`)) {
-        fail(`${where}.attrs: ${rule.attr} is not under the ${prefix} namespace`, rule.attr);
+    const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
+    for (const a of nsSpec.attrs ?? []) {
+      if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.attr(...)`);
+      if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the catalog`, a.attr);
+      if (!a.attr.startsWith(`:${prefix}/`)) {
+        fail(`${where}.attrs: ${a.attr} is not under the ${prefix} namespace`, a.attr);
       }
-      const r = rulesOf(rule.rules, `${where}.attrs["${rule.attr}"]`);
-      checkRules(r, `${where}.attrs["${rule.attr}"]`);
-      attrs[rule.attr] = { ...attrs[rule.attr], ...r };
-      if (r.read !== undefined) maskedReads.add(rule.attr);
+      const r = compileSpec(a.rules, `${where}.attrs["${a.attr}"]`, `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`);
+      attrs[a.attr] = r;
+      if (r.read !== undefined) maskedReads.add(a.attr);
     }
 
-    const preset: Record<string, Operand> = {};
+    const presetMap: Record<string, Operand> = {};
     for (const p of nsSpec.preset ?? []) {
       if (p?._tag !== "Preset") fail(`${where}.preset expects P.preset(...)`);
       if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the catalog`, p.attr);
       if (!p.attr.startsWith(`:${prefix}/`)) {
         fail(`${where}.preset: ${p.attr} is not under the ${prefix} namespace`, p.attr);
       }
-      preset[p.attr] = p.operand;
+      presetMap[p.attr] = p.operand;
     }
 
-    ns[nsKey] = { prefix, rules, attrs, preset };
+    ns[nsKey] = { prefix, rules, attrs, preset: presetMap };
   }
+
+  const ruleDefs = lowerNamedRules(pending);
+  validateRuleBodies(ruleDefs, idents, "rules");
 
   return {
     _tag: "Policy",
     catalog,
     principal: principalIdent,
     classes,
-    claims: spec.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
+    claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
     ns,
+    ruleDefs,
     maskedReads,
   };
-};
+}
 
 const claimsJson = (struct: Schema.Struct<Schema.Struct.Fields> | undefined): unknown => {
   if (struct === undefined) return undefined;
@@ -392,6 +516,18 @@ const claimsJson = (struct: Schema.Struct<Schema.Struct.Fields> | undefined): un
   }
 };
 
+const toWireArm = (a: CompiledArm): PolicyRuleArm =>
+  a.classes === undefined ? { _tag: "allow", rule: a.rule } : { _tag: "allow", class: a.classes, rule: a.rule };
+
+const toWireRules = (rules: Readonly<Record<string, readonly CompiledArm[]>>): PolicyRules => {
+  const out: Record<string, readonly PolicyRuleArm[]> = {};
+  for (const op of POLICY_OPS) {
+    const arms = rules[op];
+    if (arms) out[op] = arms.map(toWireArm);
+  }
+  return out as PolicyRules;
+};
+
 /**
  * Lower to the compiled AST. Namespace rules are emitted once, under `ns`;
  * `attrs` carries only the attributes that narrow their namespace. Core ANDs
@@ -400,12 +536,10 @@ const claimsJson = (struct: Schema.Struct<Schema.Struct.Fields> | undefined): un
  * namespace without being named and an attribute rule is emitted alone — core
  * supplies the narrowing.
  *
- * Materialising the namespace arms onto every declared attribute instead (what
- * this did until the wire form grew past what a deploy could carry) is the same
- * policy — AND is idempotent — but sizes the JSON by catalog × ops rather than
- * by the rules actually written, and `RAMOSE_POLICY` is a Cloudflare plain-text
- * binding capped at 5.1 kB. Reef's four namespaces compiled to 14 kB that way
- * and could not deploy at all.
+ * Fragment arms compile to named query rules in `rules`; `true` is the empty
+ * fragment (public) and does not emit a rule. `RAMOSE_POLICY` is a Cloudflare
+ * plain-text binding capped at 5.1 kB, so only written arms and the rules
+ * they need are serialised.
  */
 const lower = (p: Policy): CompiledPolicy => {
   const attrs: Record<string, AttrRules> = {};
@@ -414,18 +548,13 @@ const lower = (p: Policy): CompiledPolicy => {
 
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     const declared = (p.catalog.namespaces as Record<string, { attributes: Record<string, unknown> }>)[nsKey]!;
-    if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = entry.rules;
+    if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
     const declaredIdents = new Set(Object.keys(declared.attributes).map((key) => `:${entry.prefix}/${key}`));
     for (const [ident, own] of Object.entries(entry.attrs)) {
-      // an attribute rule on an ident the catalog no longer declares is a bug
       if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the catalog`, ident);
-      const narrowed: Record<string, readonly Arm[]> = {};
-      for (const op of POLICY_OPS) {
-        const arms = own[op];
-        if (arms) narrowed[op] = arms;
-      }
-      if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed as AttrRules;
+      const narrowed = toWireRules(own);
+      if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed;
     }
     Object.assign(preset, entry.preset);
   }
@@ -438,6 +567,7 @@ const lower = (p: Policy): CompiledPolicy => {
     attrs,
     ns,
     preset,
+    ...(p.ruleDefs.length > 0 ? { rules: p.ruleDefs } : {}),
   };
 };
 
@@ -493,7 +623,7 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
 
 /** Compile to the wire JSON. Round-tripped through core's `parsePolicy`. */
 export const compile = (p: Policy, options?: CompileOptions): string => {
-  if (p?._tag !== "Policy") fail("compile() expects a P.policy(...) value");
+  if (p?._tag !== "Policy") fail("compile() expects a policy(...) value");
   if (options?.pulls) checkPulls(p, options.pulls);
   const compiled = lower(p);
   const json = JSON.stringify(compiled);

@@ -3,7 +3,16 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { parsePolicy, type CompiledPolicy } from "../../src/internal/core/index.ts";
-import { Attr, Catalog, Namespace, Policy as P, PolicyError, Ref } from "../../src/db/internal.ts";
+import {
+  Attr,
+  Catalog,
+  Namespace,
+  Policy as P,
+  PolicyError,
+  Q,
+  Query,
+  Ref,
+} from "../../src/db/internal.ts";
 
 const User = Namespace("user", { sub: Attr(Schema.String, { unique: "identity" }) });
 const Org = Namespace("org", { members: Attr(Ref, { cardinality: "many" }) });
@@ -16,48 +25,72 @@ const Doc = Namespace("doc", {
 });
 const App = Catalog({ user: User, org: Org, project: Project, doc: Doc });
 
-const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
+/** doc → project → org → members contains the caller. */
+const inOrg = (me: P.Me<typeof User>) =>
+  function* (doc: Query.Var) {
+    const project = yield* Query.follow(Doc.project)(doc);
+    const org = yield* Query.follow(Project.org)(project);
+    yield* Query.is(Org.members, me)(org);
+  };
 
-/** The policy reference's example, verbatim (https://ramose.ai/reference/policy/). */
-const specPolicy = P.policy(App, {
-  principal: User.sub,
-  classes: ["anonymous", "member", "admin"],
-  claims: Schema.Struct({ org: Schema.String }),
-  ns: {
-    doc: {
-      read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
-      create: P.allow(inOrg),
-      add: P.allow(P.eq(Doc.owner, P.principal)),
-      retract: P.allow(P.eq(Doc.owner, P.principal)),
-      retractEntity: P.allow(P.eq(Doc.owner, P.principal)),
-      preset: [P.preset(Doc.owner, P.principal)],
-      attrs: [P.attr(Doc.audit, { read: P.allow(P.class("admin")) })],
-    },
-    project: { read: P.allow(P.ref(Project.org, Org.members)) },
-    org: { read: P.allow(P.eq(Org.members, P.principal)) },
-    user: { read: P.allow(P.eq(User.sub, P.claims.sub)) },
+const ownDoc = (me: P.Me<typeof User>) => Query.is(Doc.owner, me);
+
+const myself = (me: P.Me<typeof User>) =>
+  function* (e: Query.Var) {
+    yield* Q.eq(e, me);
+  };
+
+const inProjectOrg = (me: P.Me<typeof User>) =>
+  function* (project: Query.Var) {
+    const org = yield* Query.follow(Project.org)(project);
+    yield* Query.is(Org.members, me)(org);
+  };
+
+/** The policy reference's example, rewritten as fragments. */
+const specPolicy = P.policy(
+  {
+    catalog: App,
+    principal: User.sub,
+    classes: ["anonymous", "member", "admin"],
+    claims: Schema.Struct({ org: Schema.String }),
   },
-});
+  {
+    doc: {
+      read: [ownDoc, inOrg],
+      create: inOrg,
+      add: ownDoc,
+      retract: ownDoc,
+      retractEntity: ownDoc,
+      preset: [P.preset(Doc.owner, P.principal)],
+      attrs: [P.attr(Doc.audit, { read: P.class("admin") })],
+    },
+    project: { read: inProjectOrg },
+    org: { read: (me) => Query.is(Org.members, me) },
+    user: { read: myself },
+  },
+);
 
 const compiled = (p: P.Policy = specPolicy, opts?: P.CompileOptions): CompiledPolicy =>
   parsePolicy(JSON.parse(P.compile(p, opts)));
 
+const ruleNamed = (c: CompiledPolicy, name: string): unknown[] | undefined =>
+  (c.rules as unknown[][] | undefined)?.find((r) => (r[0] as unknown[])[0] === name);
+
 describe("compile", () => {
   test("the spec example round-trips through core's parsePolicy", () => {
     const c = compiled();
-    expect(c.version).toBe(1);
+    expect(c.version).toBe(2);
     expect(c.principal).toBe(":user/sub");
     expect(c.classes).toEqual(["anonymous", "member", "admin"]);
     expect(c.claims).toBeDefined();
+    expect(c.rules).toBeDefined();
+    expect((c.rules as unknown[]).length).toBeGreaterThan(0);
   });
 
   test("namespace rules are emitted once, under `ns`", () => {
     const c = compiled();
     expect(Object.keys(c.ns!).sort()).toEqual(["doc", "org", "project", "user"]);
     expect(c.ns!.doc!.read).toBeDefined();
-    // An attribute with no rule of its own is not named at all: `allowsOp`
-    // falls back to `ns[prefix]`, so it inherits — and a later `:doc/ssn`
-    // inherits by the same path rather than leaking.
     for (const ident of [":doc/title", ":doc/owner", ":doc/project"]) {
       expect(c.attrs[ident]).toBeUndefined();
     }
@@ -65,36 +98,46 @@ describe("compile", () => {
 
   test("an attribute rule is emitted alone; core ANDs it with the namespace rule", () => {
     const c = compiled();
-    expect(c.attrs[":doc/audit"]!.read).toEqual([
-      { _tag: "allow", expr: { _tag: "class", class: "admin" } },
-    ]);
-    // Only the narrowed op is carried; the rest of `:doc/audit` is the
-    // namespace rule, reached through `ns` at eval time.
+    expect(c.attrs[":doc/audit"]!.read).toEqual([{ _tag: "allow", class: ["admin"], rule: true }]);
     expect(Object.keys(c.attrs[":doc/audit"]!)).toEqual(["read"]);
-    // the namespace read is still on `ns`, so the AND in `allowsOp` narrows
     expect(c.ns!.doc!.read).not.toEqual(c.attrs[":doc/audit"]!.read);
-    // `attrs` carries narrowings and nothing else
     expect(Object.keys(c.attrs)).toEqual([":doc/audit"]);
   });
 
-  test("nested ref lowers to nested ref exprs; a bare attr target means the principal", () => {
+  test("fragment arms promote to named rules with ?me and ?e in the head", () => {
     const c = compiled();
     const read = c.ns!.doc!.read!;
-    expect(read[0]!.expr).toEqual({
-      _tag: "or",
-      exprs: [
-        { _tag: "eq", attr: ":doc/owner", operand: { _tag: "principal" } },
-        {
-          _tag: "ref",
-          attr: ":doc/project",
-          target: {
-            _tag: "ref",
-            attr: ":project/org",
-            target: { _tag: "eq", attr: ":org/members", operand: { _tag: "principal" } },
-          },
-        },
-      ],
-    });
+    expect(read).toHaveLength(2);
+    expect(read[0]).toEqual({ _tag: "allow", rule: expect.any(String) });
+    expect(read[1]).toEqual({ _tag: "allow", rule: expect.any(String) });
+    const name = (read[0] as { rule: string }).rule;
+    const def = ruleNamed(c, name);
+    expect(def).toBeDefined();
+    const head = def![0] as unknown[];
+    expect(head[0]).toBe(name);
+    expect(head).toHaveLength(3);
+    expect(typeof head[1]).toBe("string");
+    expect(typeof head[2]).toBe("string");
+  });
+
+  test("the same fragment is compiled once and reused across verbs", () => {
+    const c = compiled();
+    const add = (c.ns!.doc!.add![0] as { rule: string }).rule;
+    expect(c.ns!.doc!.retract![0]).toEqual({ _tag: "allow", rule: add });
+    expect(c.ns!.doc!.retractEntity![0]).toEqual({ _tag: "allow", rule: add });
+    expect(c.ns!.doc!.read![0]).toEqual({ _tag: "allow", rule: add });
+    const hits = (c.rules as unknown[][]).filter((r) => (r[0] as unknown[])[0] === add);
+    expect(hits).toHaveLength(1);
+  });
+
+  test("a follow-chain fragment lowers to joined facts, not a depth-capped ref", () => {
+    const c = compiled();
+    const name = (c.ns!.doc!.read![1] as { rule: string }).rule;
+    const def = ruleNamed(c, name)!;
+    const body = JSON.stringify(def.slice(1));
+    expect(body).toContain(":doc/project");
+    expect(body).toContain(":project/org");
+    expect(body).toContain(":org/members");
   });
 
   test("preset compiles to a principal operand keyed by ident", () => {
@@ -106,15 +149,6 @@ describe("compile", () => {
     expect(JSON.stringify(c.claims)).toContain("org");
   });
 
-  test("a claim operand keeps its path", () => {
-    const c = compiled();
-    expect(c.ns!.user!.read![0]!.expr).toEqual({
-      _tag: "eq",
-      attr: ":user/sub",
-      operand: { _tag: "claim", path: ["sub"] },
-    });
-  });
-
   test("P.claims.attrs.<key> is a claim under attrs", () => {
     expect(P.claims.attrs.org).toEqual({ _tag: "claim", path: ["attrs", "org"] });
     expect(P.claimsOf(Schema.Struct({ org: Schema.String })).attrs.org).toEqual({
@@ -123,12 +157,21 @@ describe("compile", () => {
     });
   });
 
+  test("true is the empty fragment — public, no rule emitted", () => {
+    const only = P.policy(
+      { catalog: App, principal: User.sub, classes: ["member"] },
+      { doc: { read: true } },
+    );
+    const c = compiled(only);
+    expect(c.ns!.doc!.read).toEqual([{ _tag: "allow", rule: true }]);
+    expect(c.rules).toBeUndefined();
+  });
+
   test("a namespace with no rule is absent — deny by default", () => {
-    const only = P.policy(App, {
-      principal: User.sub,
-      classes: ["member"],
-      ns: { doc: { read: P.allow(P.eq(Doc.owner, P.principal)) } },
-    });
+    const only = P.policy(
+      { catalog: App, principal: User.sub, classes: ["member"] },
+      { doc: { read: ownDoc } },
+    );
     const c = compiled(only);
     expect(c.attrs[":org/members"]).toBeUndefined();
     expect(c.ns!.org).toBeUndefined();
@@ -137,73 +180,78 @@ describe("compile", () => {
 });
 
 describe("deploy-time errors", () => {
-  test("ref depth 4 is a PolicyError", () => {
-    const A = Namespace("a", { b: Attr(Ref) });
-    const B = Namespace("b", { c: Attr(Ref) });
-    const C = Namespace("c", { d: Attr(Ref) });
-    const D = Namespace("d", { e: Attr(Ref, { cardinality: "many" }) });
-    expect(() => P.ref(A.b, P.ref(B.c, P.ref(C.d, P.ref(D.e, D.e))))).toThrow(PolicyError);
-    // depth 3 is fine
-    expect(() => P.ref(B.c, P.ref(C.d, P.ref(D.e, D.e)))).not.toThrow();
-  });
-
   test("an undeclared class is a PolicyError", () => {
     expect(() =>
-      P.policy(App, {
-        principal: User.sub,
-        classes: ["member"],
-        ns: { doc: { read: P.allow(P.class("admin")) } },
-      }),
+      P.policy(
+        { catalog: App, principal: User.sub, classes: ["member"] },
+        { doc: { read: P.class("admin") } },
+      ),
     ).toThrow(/not a declared class/);
   });
 
   test("an attribute outside the catalog is a PolicyError", () => {
     const Other = Namespace("other", { thing: Attr(Schema.String) });
     expect(() =>
-      P.policy(App, {
-        principal: User.sub,
-        classes: ["member"],
-        ns: { doc: { read: P.allow(P.eq(Other.thing, "x")) } },
-      }),
+      P.policy(
+        { catalog: App, principal: User.sub, classes: ["member"] },
+        { doc: { read: () => Query.is(Other.thing, "x") } },
+      ),
     ).toThrow(/not in the catalog/);
   });
 
   test("a namespace key outside the catalog is a PolicyError", () => {
     expect(() =>
-      P.policy(App, {
-        principal: User.sub,
-        classes: ["member"],
+      P.policy(
+        { catalog: App, principal: User.sub, classes: ["member"] },
         // @ts-expect-error — "nope" is not a catalog namespace key
-        ns: { nope: { read: P.allow(P.class("member")) } },
-      }),
+        { nope: { read: P.class("member") } },
+      ),
     ).toThrow(/is not in the catalog/);
   });
 
   test("an attribute rule outside its namespace is a PolicyError", () => {
     expect(() =>
-      P.policy(App, {
-        principal: User.sub,
-        classes: ["member"],
-        ns: { doc: { read: P.allow(P.class("member")), attrs: [P.attr(Org.members, { read: P.allow(P.class("member")) })] } },
-      }),
+      P.policy(
+        { catalog: App, principal: User.sub, classes: ["member"] },
+        {
+          doc: {
+            read: P.class("member"),
+            attrs: [P.attr(Org.members, { read: P.class("member") })],
+          },
+        },
+      ),
     ).toThrow(/not under the doc namespace/);
   });
 
   test("a principal outside the catalog is a PolicyError", () => {
     const Other = Namespace("other", { sub: Attr(Schema.String) });
     expect(() =>
-      P.policy(App, {
-        // @ts-expect-error — :other/sub is not a catalog ident
-        principal: Other.sub,
-        classes: ["member"],
-        ns: {},
-      }),
+      P.policy(
+        {
+          catalog: App,
+          // @ts-expect-error — :other/sub is not a catalog ident
+          principal: Other.sub,
+          classes: ["member"],
+        },
+        {},
+      ),
     ).toThrow(/principal :other\/sub is not in the catalog/);
   });
 
-  test("ref() on a non-ref attribute is a PolicyError", () => {
-    // @ts-expect-error — :doc/title is not :db.type/ref
-    expect(() => P.ref(Doc.title, Org.members)).toThrow(/db.type\/ref/);
+  test("an empty fragment is a PolicyError — public is `true`", () => {
+    expect(() =>
+      P.policy(
+        { catalog: App, principal: User.sub, classes: ["member"] },
+        {
+          doc: {
+            read: () =>
+              function* () {
+                /* no clauses */
+              },
+          },
+        },
+      ),
+    ).toThrow(/empty fragment/);
   });
 });
 
@@ -236,7 +284,6 @@ describe("masked attributes in pull patterns", () => {
     expect(() => P.compile(specPolicy, { pulls: [defaulted] })).toThrow(
       /must be pulled as `\.optional` — `\.orDefault` does not qualify/,
     );
-    // …and the unmasked field next to it is still fine defaulted
     expect(() =>
       P.compile(specPolicy, { pulls: [{ title: Doc.title.orDefault("untitled") }] }),
     ).not.toThrow();

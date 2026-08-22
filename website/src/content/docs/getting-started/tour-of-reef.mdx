@@ -28,7 +28,7 @@ To build your own app instead, nothing is cloned: [Getting started](/getting-sta
 | File | Lines | What it is |
 | --- | --- | --- |
 | `src/domain/schema.ts` | 76 | what exists — the schema |
-| `src/domain/policy.ts` | 77 | who may — the permissions |
+| `src/domain/policy.ts` | 78 | who may — the permissions |
 | `src/domain/queries.ts` | 95 | what screens read |
 | `src/infra/resources.ts` | 74 | the Ramose server, declared |
 | `src/infra/api.ts` | 139 | the sign-in Worker (Better Auth) |
@@ -199,18 +199,14 @@ export const boardShape = {
 
 ## Invite a viewer
 
-<Shot src="/reef/invite.png" alt="The Invite dialog with an email field and the role select open on viewer" caption="Roles live in Better Auth; the token carries one; the policy enforces it." code="examples/reef/src/domain/policy.ts:26-32" />
+<Shot src="/reef/invite.png" alt="The Invite dialog with an email field and the role select open on viewer" caption="Roles live in Better Auth; the token carries one; the policy enforces it." code="examples/reef/src/domain/policy.ts:28-30" />
 
 A **role** is admin, member or viewer — a name carried in the token that the rules refer to ([glossary](/concepts/glossary/#role)). The policy names them once:
 
-```ts title="examples/reef/src/domain/policy.ts:26-32"
-const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
-const editor = P.or(P.class("admin"), P.class("member"));
-const admin = P.class("admin");
-
+```ts title="examples/reef/src/domain/policy.ts:28-30"
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
-const ownIssue = P.and(P.class("member"), P.eq(Issue.creator, P.principal));
-const ownComment = P.and(P.class("member"), P.eq(Comment.author, P.principal));
+const ownIssue = (me: P.Me<typeof User>) => Query.is(Issue.creator, me);
+const ownComment = (me: P.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
 <Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
@@ -229,7 +225,7 @@ Authorization middleware, per-endpoint role checks, an "is this my issue?" query
 
 ## The admin note
 
-<Shot src="/reef/masked-note.png" alt="The issue panel as a member: the Admin note field shows a masked-for-member tag and an empty box" caption="Members never receive the note. The server drops the field itself." code="examples/reef/src/domain/policy.ts:56-60" />
+<Shot src="/reef/masked-note.png" alt="The issue panel as a member: the Admin note field shows a masked-for-member tag and an empty box" caption="Members never receive the note. The server drops the field itself." code="examples/reef/src/domain/policy.ts:57-61" />
 
 One field has a narrower read rule, so shapes ask for it as optional — asking for it as required fails at deploy time:
 

@@ -25,6 +25,7 @@ const ADDS = [
   "Providers",
   // deploy-time policy
   "Policy",
+  "policy",
   // the server Worker's auth env
   "authEnv",
   "internalSecret",

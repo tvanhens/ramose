@@ -116,17 +116,17 @@ const board = useLive(db, boardQuery);
   </div>
   <div class="rg-moment-code">
 
-```ts title="examples/reef/src/domain/policy.ts:49-61 (comment simplified)"
+```ts title="examples/reef/src/domain/policy.ts:50-61 (comment simplified)"
 issue: {
-  read: P.allow(anyone),
-  create: P.allow(editor),
-  add: P.allow(ownIssue),
-  retract: P.allow(ownIssue),
-  retractEntity: P.allow(ownIssue),
+  read: true,
+  create: P.class("member"),
+  add: { class: "member", rule: ownIssue },
+  retract: { class: "member", rule: ownIssue },
+  retractEntity: { class: "member", rule: ownIssue },
   preset: [P.preset(Issue.creator, P.principal)],
   attrs: [
     // Only admins receive this field; the server strips it for others.
-    P.attr(Issue.privateNote, { read: P.allow(admin) }),
+    P.attr(Issue.privateNote, { read: P.class("admin") }),
   ],
 },
 ```

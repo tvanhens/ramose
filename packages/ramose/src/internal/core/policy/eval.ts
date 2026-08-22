@@ -13,6 +13,7 @@ import {
   type PolicyExpr,
   type PolicyOp,
   type PolicyOperand,
+  isRuleArm,
   nsPrefix,
 } from "./ast.ts";
 import { type Principal, claimValue } from "./principal.ts";
@@ -156,10 +157,21 @@ export async function evalExpr(expr: PolicyExpr, ctx: EvalCtx): Promise<boolean>
   return ctx.memo.setExpr(key, false);
 }
 
+/** v2 fragment arm: class gate, then `true` (public) or a named rule. Named
+ * rules fail closed here — evaluation through the query engine is next. */
+function evalRuleArm(arm: Extract<PolicyArm, { rule: unknown }>, ctx: EvalCtx): boolean {
+  if (arm.class !== undefined && !arm.class.includes(ctx.principal.class)) return false;
+  return arm.rule === true;
+}
+
 /** allow arms OR; any true deny wins; no arms → deny. */
 async function evalArms(arms: readonly PolicyArm[], ctx: EvalCtx): Promise<boolean> {
   let allowed = false;
   for (const arm of arms) {
+    if (isRuleArm(arm)) {
+      if (evalRuleArm(arm, ctx)) allowed = true;
+      continue;
+    }
     const v = await evalExpr(arm.expr, ctx);
     if (arm._tag === "deny") {
       if (v) return false;

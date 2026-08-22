@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Policy rules are query fragments (#153)
+
+The `P.*` expression language (`eq`, `ref`, `and`, `or`, `allow`, …) is
+gone. A policy is head/body shaped like `Query.q`: `Ramose.policy(head,
+arms)` takes `principal: User.sub` in the head (that attr derives `me`)
+and every arm is a fragment, an array of fragments (OR), or `true` (the
+empty fragment — public). `P.class` survives as a JWT claims gate in
+config, checked before the rule runs.
+
+Compile promotes each fragment to a named `Query.rule` and serializes it
+into a `rules` section of the policy JSON (wire version 2). Deploy-time
+validation walks rule bodies through the query validator. Installed
+policies recompile at deploy — no data migration. Evaluation of named
+fragment rules is the next issue; `true` and class-only arms still
+enforce.
+
+#### Old → new spellings
+
+| old                                              | new                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------ |
+| `P.policy(Catalog, { principal, classes, ns })`  | `Ramose.policy({ catalog, principal, classes }, arms)`       |
+| `P.eq(Doc.owner, P.principal)`                   | `(me) => Query.is(Doc.owner, me)`                            |
+| `P.ref(Doc.project, P.ref(Project.org, Org.members))` | `(me) => { const p = yield* follow(Doc.project)(e); … }` |
+| `P.allow(expr)` / `P.deny(expr)`                 | the fragment itself, or omit the arm (deny by default)       |
+| `P.or(a, b)`                                     | `[fragA, fragB]`                                             |
+| `P.class("admin")` as an expression              | `P.class("admin")` as a claims gate, or `{ class, rule }`    |
+| `P.and(P.class("member"), own)`                  | `{ class: "member", rule: own }`                             |
+
+`P.preset`, `P.attr`, `P.claims` / `P.principal` (preset operands),
+`P.compile` and `P.checkPulls` are unchanged.
+
 ### One query language (#149)
 
 The navigational query surface is gone; the kernel query language that
