@@ -37,7 +37,7 @@ import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalOf, viewDb } from "./auth.ts";
+import { allowedOrigin, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { PRINCIPAL_HEADER } from "./session.ts";
@@ -201,6 +201,37 @@ async function ingress(request: Request, env: RamoseEnv, db: string, principal: 
   }
 }
 
+/**
+ * Session-establishment write: upsert the caller's principal row on the
+ * writer before any client op. Cached per isolate per `(sub, db, class)`.
+ */
+async function withProvisioned(
+  env: RamoseEnv,
+  principal: Principal,
+  db: string,
+  transactor: () => { fetch: (url: string, init?: RequestInit) => Promise<Response> },
+  txUrl: (path: string) => string,
+  request: Request,
+): Promise<Principal> {
+  if (authState(env).policy === undefined || !shouldProvision(principal)) return principal;
+  const hit = cachedProvision(principal);
+  if (hit !== undefined) return { ...principal, eid: hit };
+  try {
+    const res = await transactor().fetch(txUrl("/provision"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...coloHeader(request), ...internalHeaders(env) },
+      body: JSON.stringify({ principal }),
+    });
+    if (!res.ok) return principal;
+    const body = (await res.json()) as { eid?: unknown };
+    if (typeof body.eid !== "number") return principal;
+    invalidateBasis(db);
+    return rememberProvisioned(principal, body.eid);
+  } catch {
+    return principal;
+  }
+}
+
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
 async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
@@ -209,6 +240,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   // re-asserted here, so a session frame is judged on the name it actually opened
   if (!allows(principal, db)) throw new Unauthorized({ message: "token is not valid for this database" });
   if (isTokenOnly(principal) && !(rest === "/transact" && request.method === "POST")) throw new Unauthorized({});
+  principal = await withProvisioned(env, principal, db, transactor, txUrl, request);
   const adminOnly = () => {
     if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
   };
@@ -295,8 +327,9 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   if (rest === "/info" && request.method === "GET") {
     // every principal may ask where the basis is; only admin sees the peer's internals.
     // top-level `t` is the one shape both answers share — it is what `db.basis()` reads.
-    // `principal` is on both too: it is what `db.principal()` reads (`eid: null`
-    // until the principal attribute has a row for this `sub`).
+    // `principal` is on both too: it is what `db.principal()` reads. The peer
+    // provisions the row at session establishment, so `eid` is set for any
+    // signed-in user once the principal attr is deployed.
     const basis = (await fetchBasisWithStats(env, db, request)).basis;
     const basisT = basis.t;
     const who = await describePrincipal(env, principal, segmentSource(env, db), basis);

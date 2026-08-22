@@ -40,7 +40,7 @@ import {
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
 import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
-import { authState, describePrincipal, principalForToken, viewDb, withEid } from "../../worker/auth.ts";
+import { authState, describePrincipal, principalForToken, rememberProvisioned, shouldProvision, viewDb, withEid } from "../../worker/auth.ts";
 import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER } from "../../worker/session.ts";
 import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
@@ -319,6 +319,26 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     return { t: basis.t, datoms: await currentViewDatoms(dbv) };
   }
 
+  /** Upsert the caller's row on the writer and attach the eid. */
+  private async provisionPrincipal(p: Principal): Promise<Principal> {
+    if (!shouldProvision(p) || this.dbName === undefined) return p;
+    const dbName = this.dbName;
+    try {
+      const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));
+      const res = await stub.fetch(`https://transactor/provision?db=${encodeURIComponent(dbName)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...internalHeaders(this.env) },
+        body: JSON.stringify({ principal: p }),
+      });
+      if (!res.ok) return p;
+      const body = (await res.json()) as { eid?: unknown };
+      if (typeof body.eid !== "number") return p;
+      return rememberProvisioned(p, body.eid);
+    } catch {
+      return p;
+    }
+  }
+
   private createSession(ws: WebSocket, seed: SessionState): Session {
     const dbName = this.dbName as string;
     return openSession(ws as unknown as SocketLike, {
@@ -327,7 +347,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       principal: seed.principal,
       dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p),
       authenticate: (token) => principalForToken(this.env, token.length === 0 ? undefined : token, dbName),
+      provision: (p) => this.provisionPrincipal(p),
       describe: async (p) => {
+        if (p.eid !== undefined) return { eid: p.eid, class: p.class };
         await this.sync();
         if (!this.root) return { eid: null, class: p.class };
         return describePrincipal(this.env, p, this.store, makeBasis(dbName, this.root, this.entries));
@@ -454,7 +476,8 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
-    const principal = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
+    const raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
+    const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
     const seed: SessionState = { ...(principal !== undefined ? { principal } : {}), lastT: 0, watermark: 0 };
     const session = this.createSession(server, seed);
     this.live.set(server, session);
