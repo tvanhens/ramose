@@ -4,3 +4,4 @@ export * from "./principal.ts";
 export * from "./eval.ts";
 export * from "./filter.ts";
 export * from "./check.ts";
+export * from "./provision.ts";

@@ -18,6 +18,7 @@
  * HTTP surface (the DO shell forwards `fetch` here; `/subscribe` upgrades are
  * done by the shell, which then calls `onSubscribe`):
  *   POST /transact   { tx: TxData, clientTxId? }   → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
+ *   POST /provision  { principal }                 → { eid, class }  (peer-owned upsert)
  *   GET  /info                        → { t, root, novelty, logWatermark, ... }
  *   GET  /log?from=&to=               → { entries: NoveltyFrameV1[] }
  *   POST /admin/index                 → run the indexer now
@@ -51,6 +52,9 @@ import {
   componentLogger,
   filterDb,
   isAdmin,
+  provisionTx,
+  resolveProvisionedEid,
+  shouldProvision,
   toWireDatom,
 } from "../core/index.ts";
 import { FilteredDb } from "../core/policy/filter.ts";
@@ -104,6 +108,11 @@ interface Pending {
   clientTxId?: string;
   /** Encoded operation output to persist with the ack (effects must not re-run). */
   opOutput?: unknown;
+  /**
+   * Peer-owned write (principal provisioning). Skips `checkTx` and the
+   * pre-write provision hook — the ops *are* the provision.
+   */
+  system?: boolean;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
 }
@@ -312,7 +321,12 @@ export class Transactor {
   // ---------------------------------------------------------------------------
 
   /** Submit a transaction. Resolves once it is durably committed. */
-  transact(tx: TxData, principal?: Principal, clientTxId?: string, opOutput?: unknown): Promise<TxAck> {
+  transact(
+    tx: TxData,
+    principal?: Principal,
+    clientTxId?: string,
+    extras?: { readonly opOutput?: unknown; readonly system?: boolean },
+  ): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
       const key = clientTxReplayKey(principal, clientTxId);
@@ -320,12 +334,35 @@ export class Transactor {
       if (hit) return Promise.resolve(hit);
     }
     return new Promise<TxAck>((resolve, reject) => {
-      this.queue.push({ tx, principal, clientTxId, opOutput, resolve, reject });
+      this.queue.push({
+        tx,
+        principal,
+        clientTxId,
+        opOutput: extras?.opOutput,
+        system: extras?.system || undefined,
+        resolve,
+        reject,
+      });
       if (!this.committing) {
         this.committing = true;
         void this.commitLoop();
       }
     });
+  }
+
+  /**
+   * Upsert the caller's principal row (and role fact) and return the resolved
+   * eid. Idempotent. Anonymous / service principals stay `{ eid: null }`.
+   */
+  async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
+    await this.init();
+    if (!principal) return { eid: null, class: "anonymous" };
+    const policy = this.host.policy;
+    if (!policy || !shouldProvision(principal)) return { eid: principal.eid ?? null, class: principal.class };
+    const ops = await provisionTx(policy, principal, this.conn.db());
+    if (ops !== undefined) await this.transact(ops, principal, undefined, { system: true });
+    const eid = await resolveProvisionedEid(policy, principal, this.conn.db());
+    return { eid: eid ?? null, class: principal.class };
   }
 
   private rememberAck(id: string, ack: TxAck, persist: boolean): void {
@@ -399,6 +436,7 @@ export class Transactor {
             }
           }
           try {
+            if (!p.system) await this.applyProvision(p, entries);
             const tx = await this.authorize(p);
             const rep = await this.conn.transact(tx);
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
@@ -494,10 +532,28 @@ export class Transactor {
     }
   }
 
+  /**
+   * Peer-owned upsert of the caller's row, committed on this writer *before*
+   * the client tx is authorized. Same group-commit batch; earlier `t`.
+   */
+  private async applyProvision(p: Pending, entries: LogEntry[]): Promise<void> {
+    const policy = this.host.policy;
+    const who = p.principal;
+    if (!policy || !who || !shouldProvision(who)) return;
+    const ops = await provisionTx(policy, who, this.conn.db());
+    if (ops !== undefined) {
+      const rep = await this.conn.transact(ops);
+      entries.push({ t: rep.t, txInstant: rep.txData[0]?.v as number, datoms: rep.txData });
+    }
+    const eid = await resolveProvisionedEid(policy, who, this.conn.db());
+    if (eid !== undefined) p.principal = { ...who, eid };
+  }
+
   /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact, preset injections included. */
   private async authorize(p: Pending): Promise<TxData> {
     const policy = this.host.policy;
     if (!policy) return p.tx;
+    if (p.system) return p.tx;
     if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
     if (isAdmin(p.principal)) return p.tx;
     const db = this.conn.db();
@@ -699,8 +755,14 @@ export class Transactor {
       };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
-      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, body.opOutput);
+      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, {
+        opOutput: body.opOutput,
+      });
       return json(ack);
+    }
+    if (path === "/provision" && request.method === "POST") {
+      const body = fromJson(await request.json()) as { principal?: unknown };
+      return json(await this.provision(asPrincipal(body?.principal)));
     }
     if (path === "/info") return json(this.info());
     if (path === "/log") {

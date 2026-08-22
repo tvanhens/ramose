@@ -26,7 +26,7 @@ export interface ReplyFrame {
   headers?: Record<string, string>;
 }
 
-/** Who a session is, as the wire tells it: `eid` is `null` when the policy's principal attribute has no row yet. */
+/** Who a session is, as the wire tells it: `eid` is `null` only when the peer does not provision this principal. */
 export interface WirePrincipal {
   eid: number | null;
   class: string;
@@ -100,8 +100,10 @@ export interface SessionOptions {
   principal?: Principal;
   /** re-verify a token for this same database; rejects when it is refused */
   authenticate?: (token: string) => Promise<Principal>;
-  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when its row does not exist yet */
+  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when the peer does not provision this principal */
   describe?: (principal: Principal) => Promise<WirePrincipal>;
+  /** peer-owned upsert before the `auth` ack, so the swapped principal has an eid */
+  provision?: (principal: Principal) => Promise<Principal>;
   /**
    * Novelty since the current root — used by `{ op: "sync" }` only.
    * Follow is apply-then-push ({@link Session.applyEntry}), not a poller.
@@ -417,6 +419,13 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     try {
       principal = await options.authenticate(typeof f.token === "string" ? f.token : "");
+      if (options.provision !== undefined) {
+        try {
+          principal = await options.provision(principal);
+        } catch {
+          // a transient writer error must not fail the swap; describe may still resolve
+        }
+      }
       let who: WirePrincipal | undefined;
       if (options.describe !== undefined) {
         try {

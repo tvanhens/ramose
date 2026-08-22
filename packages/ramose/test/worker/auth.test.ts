@@ -464,15 +464,105 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
-  test("a session with no row yet is { eid: null } — and resolves once the row is written", async () => {
+  test("the peer provisions the principal row on first /info — and re-entry is the same eid", async () => {
     const { peer } = await fixture();
     const zoe = await token("acme", "member", "user_zoe");
-    const before = await peer.json("/db/acme/info", { token: zoe });
-    expect(before.body.principal).toEqual({ eid: null, class: "member" });
-    // the row lands (say, an ensureSelf-style transact); a missing eid is never memoized
-    const ack = await peer.seed([{ ":db/id": "zoe", ":user/sub": "user_zoe" }]);
-    const after = await peer.json("/db/acme/info", { token: zoe });
-    expect(after.body.principal).toEqual({ eid: ack.tempids.zoe, class: "member" });
+    const first = await peer.json("/db/acme/info", { token: zoe });
+    expect(first.body.principal.class).toBe("member");
+    expect(first.body.principal.eid).toBeGreaterThan(0);
+    const again = await peer.json("/db/acme/info", { token: zoe });
+    expect(again.body.principal).toEqual(first.body.principal);
+    // one entity for that sub — unique-identity upsert, not a second create
+    const { body } = await peer.json(
+      "/db/acme/query",
+      post({ query: { find: ["?e"], where: [["?e", ":user/sub", "user_zoe"]] } }, await token("acme", "admin")),
+    );
+    expect(body.result).toEqual([[first.body.principal.eid]]);
+    peer.close();
+  });
+
+  test("a first-session write provisions before the client tx is authorized", async () => {
+    const { peer } = await fixture();
+    const zoeTok = await token("acme", "admin", "user_zoe");
+    const write = await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Zoe's first" }] }, zoeTok));
+    expect(write.status).toBe(200);
+    const info = await peer.json("/db/acme/info", { token: zoeTok });
+    expect(info.body.principal.eid).toBeGreaterThan(0);
+    const { body } = await peer.json(
+      "/db/acme/query",
+      post({ query: { find: ["?e"], where: [["?e", ":user/sub", "user_zoe"]] } }, zoeTok),
+    );
+    expect(body.result).toEqual([[info.body.principal.eid]]);
+    peer.close();
+  });
+
+  test("anonymous and service principals stay unresolved", async () => {
+    const { peer } = await fixture({ RAMOSE_TOKEN: "s3cret" });
+    const anon = await peer.json("/db/acme/info");
+    expect(anon.body.principal).toEqual({ eid: null, class: "anonymous" });
+    expect((await peer.json("/db/acme/info", { token: "s3cret" })).status).toBe(401);
+    const { body } = await peer.json(
+      "/db/acme/query",
+      post({ query: { find: ["?e"], where: [["?e", ":user/sub", "s3cret"]] } }, await token("acme", "admin")),
+    );
+    expect(body.result).toEqual([]);
+    peer.close();
+  });
+
+  test("User.role is materialized from the token class and updates on re-entry", async () => {
+    const peer = makePeer("acme", { env: policyEnv() });
+    await peer.seed([
+      ...SCHEMA,
+      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const member = await token("acme", "member", "user_ida");
+    const first = await peer.json("/db/acme/info", { token: member });
+    expect(first.body.principal.class).toBe("member");
+    const eid = first.body.principal.eid as number;
+    expect(eid).toBeGreaterThan(0);
+    const pulled = await peer.json("/db/acme/pull", post({ eid, pattern: [":user/sub", ":user/role"] }, member));
+    expect(pulled.body.result).toMatchObject({ ":user/sub": "user_ida", ":user/role": "member" });
+
+    // a new class is the same upsert — one entity, new role fact
+    const asAdmin = await token("acme", "admin", "user_ida");
+    const promoted = await peer.json("/db/acme/info", { token: asAdmin });
+    expect(promoted.body.principal).toEqual({ eid, class: "admin" });
+    const after = await peer.json("/db/acme/pull", post({ eid, pattern: [":user/sub", ":user/role"] }, asAdmin));
+    expect(after.body.result).toMatchObject({ ":user/sub": "user_ida", ":user/role": "admin" });
+    peer.close();
+  });
+
+  test("ramose.attrs name/email materialize on first /info and update on change", async () => {
+    const peer = makePeer("acme", { env: policyEnv() });
+    await peer.seed([
+      ...SCHEMA,
+      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const firstTok = await token("acme", "member", "user_zoe", { name: "Zoe", email: "zoe@acme.test" });
+    const first = await peer.json("/db/acme/info", { token: firstTok });
+    const eid = first.body.principal.eid as number;
+    expect(eid).toBeGreaterThan(0);
+    const pulled = await peer.json(
+      "/db/acme/pull",
+      post({ eid, pattern: [":user/sub", ":user/role", ":user/name", ":user/email"] }, firstTok),
+    );
+    expect(pulled.body.result).toMatchObject({
+      ":user/sub": "user_zoe",
+      ":user/role": "member",
+      ":user/name": "Zoe",
+      ":user/email": "zoe@acme.test",
+    });
+
+    const renamed = await token("acme", "member", "user_zoe", { name: "Zoe Ames", email: "zoe@acme.test" });
+    const again = await peer.json("/db/acme/info", { token: renamed });
+    expect(again.body.principal).toEqual({ eid, class: "member" });
+    const after = await peer.json(
+      "/db/acme/pull",
+      post({ eid, pattern: [":user/name", ":user/email"] }, renamed),
+    );
+    expect(after.body.result).toMatchObject({ ":user/name": "Zoe Ames", ":user/email": "zoe@acme.test" });
     peer.close();
   });
 

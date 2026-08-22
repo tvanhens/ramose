@@ -3,9 +3,12 @@
  * must follow `:doc/owner` even when the caller cannot read it. Results are
  * memoized per (expr, e), per (rule, e), and per (op, attr, e) for one request.
  *
- * v2 fragment arms run as one engine query per `(rule, e, principal)` against
- * that unfiltered rule db (never the filtered view). Pushdown is not required
- * for correctness.
+ * v2 fragment arms run as one engine query against that unfiltered rule db
+ * (never the filtered view). On the read path, a named rule is evaluated
+ * once with the focus free — "all `e` visible to `me`" — and the per-datom
+ * check is a set-membership lookup. The same query with `?e` bound is the
+ * per-entity fallback when the set is too large or blows the cell budget.
+ * Pushdown is not required for correctness.
  */
 
 import { COMPARATORS, type Datom, Index, type IndexId, type Prefix, ValueTag, comparePrefix, datom } from "../datom.ts";
@@ -14,6 +17,7 @@ import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, query } from "../query/engin
 import { parseQuery } from "../query/parse.ts";
 import type { Query } from "../query/ast.ts";
 import { FIRST_USER_EID } from "../schema.ts";
+import { logEvent } from "../telemetry.ts";
 import { sortedUnion } from "../tree.ts";
 import {
   type CompiledPolicy,
@@ -56,17 +60,66 @@ export class PolicyBudgetError extends QueryBudgetError {
 /** Refs asserted by the tx under check: `${e}|${attrId}` → target eids. */
 export type RefOverlay = ReadonlyMap<string, readonly number[]>;
 
+/**
+ * Cap on eids a request-scoped visible set may hold. Above this, that rule
+ * falls back to per-entity evaluation for the rest of the request — the
+ * signal that clause-level pushdown has a workload.
+ */
+export const DEFAULT_VISIBLE_SET_MAX = 10_000;
+
+export interface PolicyMemoOptions {
+  readonly maxCells?: number;
+  /** `0` disables set materialization (the #154 per-entity path). */
+  readonly visibleSetMax?: number;
+}
+
+export type VisibleSetFallbackReason = "size" | "budget";
+
+export interface VisibleSetFallback {
+  readonly rule: string;
+  readonly reason: VisibleSetFallbackReason;
+  readonly size?: number;
+}
+
+export type VisibleSetState =
+  | { readonly _tag: "set"; readonly eids: ReadonlySet<number> }
+  | { readonly _tag: "fallback" };
+
 export class PolicyMemo {
+  readonly maxCells: number;
+  readonly visibleSetMax: number;
   private readonly exprIds = new WeakMap<object, number>();
   private nextExprId = 1;
   private readonly exprCache = new Map<string, boolean>();
   private readonly ruleCache = new Map<string, boolean>();
   private readonly ruleQueries = new Map<string, Query>();
+  private readonly setQueries = new Map<string, Query>();
+  private readonly visibleSets = new Map<string, VisibleSetState>();
+  private readonly fallbacks: VisibleSetFallback[] = [];
   private readonly opCache = new Map<string, boolean>();
   private readonly errs = new Map<string, PolicyError>();
   private overlayDb: Db | undefined;
 
-  constructor(readonly maxCells: number = DEFAULT_QUERY_MAX_CELLS) {}
+  constructor(maxCellsOrOpts: number | PolicyMemoOptions = DEFAULT_QUERY_MAX_CELLS) {
+    if (typeof maxCellsOrOpts === "object" && maxCellsOrOpts !== null) {
+      this.maxCells = maxCellsOrOpts.maxCells ?? DEFAULT_QUERY_MAX_CELLS;
+      this.visibleSetMax = maxCellsOrOpts.visibleSetMax ?? DEFAULT_VISIBLE_SET_MAX;
+    } else {
+      this.maxCells = maxCellsOrOpts ?? DEFAULT_QUERY_MAX_CELLS;
+      this.visibleSetMax = DEFAULT_VISIBLE_SET_MAX;
+    }
+  }
+
+  /** Times this request fell back to per-entity evaluation for a named rule. */
+  get visibleSetFallbackCount(): number {
+    return this.fallbacks.length;
+  }
+  get visibleSetFallbacks(): readonly VisibleSetFallback[] {
+    return this.fallbacks;
+  }
+  visibleSet(name: string): VisibleSetState | undefined {
+    return this.visibleSets.get(name);
+  }
 
   /** Idents that folded to `false` because they are not in the installed schema. */
   get errors(): readonly PolicyError[] {
@@ -119,6 +172,46 @@ export class PolicyMemo {
       this.ruleQueries.set(name, q);
     }
     return q;
+  }
+
+  /**
+   * Same rule as {@link ruleQuery}, with `?e` free. `limit` is the size
+   * threshold plus one so a blow is visible without holding an unbounded set.
+   */
+  setQuery(name: string, rules: readonly unknown[]): Query {
+    let q = this.setQueries.get(name);
+    if (q === undefined) {
+      q = parseQuery({
+        find: ["?e"],
+        in: ["$", "?me"],
+        where: [[name, "?me", "?e"]],
+        rules,
+        limit: this.visibleSetMax + 1,
+      });
+      this.setQueries.set(name, q);
+    }
+    return q;
+  }
+
+  recordVisibleSet(name: string, eids: ReadonlySet<number>): void {
+    this.visibleSets.set(name, { _tag: "set", eids });
+  }
+
+  recordVisibleSetFallback(name: string, reason: VisibleSetFallbackReason, size?: number): void {
+    this.visibleSets.set(name, { _tag: "fallback" });
+    this.fallbacks.push(size === undefined ? { rule: name, reason } : { rule: name, reason, size });
+    logEvent(
+      "core",
+      "policy.visible-set-fallback",
+      {
+        rule: name,
+        reason,
+        ...(size !== undefined ? { size } : {}),
+        threshold: this.visibleSetMax,
+        count: this.fallbacks.length,
+      },
+      "info",
+    );
   }
 
   /** One overlay view per memo — create arms share the same in-tx refs. */
@@ -220,21 +313,25 @@ async function evalRuleArm(
   arm: Extract<PolicyArm, { rule: unknown }>,
   ctx: EvalCtx,
   rules: readonly unknown[] | undefined,
+  useVisibleSet: boolean,
 ): Promise<boolean> {
   if (arm.class !== undefined && !arm.class.includes(ctx.principal.class)) return false;
   if (arm.rule === true) return true;
-  return evalNamedRule(arm.rule, ctx, rules);
+  return evalNamedRule(arm.rule, ctx, rules, useVisibleSet);
 }
 
 /**
- * Run `name` over the unfiltered rule db with `?me` = `Principal.eid` and
- * `?e` = the focus. Non-empty result = allow. No resolved principal → deny
- * (only `true` arms apply). A budget miss is {@link PolicyBudgetError}.
+ * Run `name` over the unfiltered rule db with `?me` = `Principal.eid`.
+ * Reads materialize the visible set once (focus free) and look `e` up;
+ * writes and the over-size / over-budget fallback bind `?e`. Non-empty
+ * result = allow. No resolved principal → deny (only `true` arms apply).
+ * A per-entity budget miss is {@link PolicyBudgetError}.
  */
 async function evalNamedRule(
   name: string,
   ctx: EvalCtx,
   rules: readonly unknown[] | undefined,
+  useVisibleSet: boolean,
 ): Promise<boolean> {
   const key = name + "|" + ctx.e;
   const hit = ctx.memo.getRule(key);
@@ -242,6 +339,56 @@ async function evalNamedRule(
   if (ctx.principal.eid === undefined || rules === undefined || rules.length === 0) {
     return ctx.memo.setRule(key, false);
   }
+  if (useVisibleSet) {
+    const fromSet = await evalNamedRuleSet(name, ctx, rules);
+    if (fromSet !== undefined) return ctx.memo.setRule(key, fromSet);
+  }
+  return evalNamedRuleBound(name, ctx, rules, key);
+}
+
+/** `true`/`false` from the cached or freshly materialized set; `undefined` → fallback. */
+async function evalNamedRuleSet(
+  name: string,
+  ctx: EvalCtx,
+  rules: readonly unknown[],
+): Promise<boolean | undefined> {
+  const cached = ctx.memo.visibleSet(name);
+  if (cached?._tag === "fallback") return undefined;
+  if (cached?._tag === "set") return cached.eids.has(ctx.e);
+  try {
+    const rows = await query(ctx.db, ctx.memo.setQuery(name, rules), [ctx.principal.eid], {
+      maxCells: ctx.maxCells ?? ctx.memo.maxCells,
+    });
+    if (!Array.isArray(rows)) {
+      ctx.memo.recordVisibleSet(name, new Set());
+      return false;
+    }
+    if (rows.length > ctx.memo.visibleSetMax) {
+      ctx.memo.recordVisibleSetFallback(name, "size", rows.length);
+      return undefined;
+    }
+    const eids = new Set<number>();
+    for (const row of rows) {
+      const e = Array.isArray(row) ? row[0] : row;
+      if (typeof e === "number") eids.add(e);
+    }
+    ctx.memo.recordVisibleSet(name, eids);
+    return eids.has(ctx.e);
+  } catch (err) {
+    if (err instanceof QueryBudgetError) {
+      ctx.memo.recordVisibleSetFallback(name, "budget");
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+async function evalNamedRuleBound(
+  name: string,
+  ctx: EvalCtx,
+  rules: readonly unknown[],
+  key: string,
+): Promise<boolean> {
   const db = ctx.overlay !== undefined && ctx.overlay.size > 0 ? ctx.memo.overlayView(ctx.db, ctx.overlay) : ctx.db;
   try {
     const rows = await query(db, ctx.memo.ruleQuery(name, rules), [ctx.principal.eid, ctx.e], {
@@ -259,11 +406,12 @@ async function evalArms(
   arms: readonly PolicyArm[],
   ctx: EvalCtx,
   rules: readonly unknown[] | undefined,
+  useVisibleSet: boolean,
 ): Promise<boolean> {
   let allowed = false;
   for (const arm of arms) {
     if (isRuleArm(arm)) {
-      if (await evalRuleArm(arm, ctx, rules)) allowed = true;
+      if (await evalRuleArm(arm, ctx, rules, useVisibleSet)) allowed = true;
       continue;
     }
     const v = await evalExpr(arm.expr, ctx);
@@ -291,9 +439,16 @@ export async function allowsOp(
   const attrArms = policy.attrs[attrIdent]?.[op];
   const prefix = nsPrefix(attrIdent);
   const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
+  // Reads: one set query per named rule, then membership. Writes keep the
+  // per-entity path — they touch few entities and create arms need the overlay.
+  const useVisibleSet =
+    op === "read" && ctx.overlay === undefined && ctx.memo.visibleSetMax > 0;
   let res: boolean;
-  if (attrArms && nsArms) res = (await evalArms(nsArms, ctx, policy.rules)) && (await evalArms(attrArms, ctx, policy.rules));
-  else if (attrArms || nsArms) res = await evalArms((attrArms ?? nsArms)!, ctx, policy.rules);
+  if (attrArms && nsArms) {
+    res =
+      (await evalArms(nsArms, ctx, policy.rules, useVisibleSet)) &&
+      (await evalArms(attrArms, ctx, policy.rules, useVisibleSet));
+  } else if (attrArms || nsArms) res = await evalArms((attrArms ?? nsArms)!, ctx, policy.rules, useVisibleSet);
   else res = false;
   return ctx.memo.setOp(key, res);
 }

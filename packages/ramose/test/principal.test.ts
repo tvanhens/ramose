@@ -87,7 +87,7 @@ describe("db.principal()", () => {
     expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
     expect(infoCalls(peer)).toBe(2); // no row yet: every ask goes to the peer
 
-    // the row lands (an ensureSelf-style transact); the very next ask resolves
+    // the row lands (the peer provisioned it); the very next ask resolves
     state.principal = { eid: 9, class: "member" };
     expect(await run(db.principal())).toEqual({
       eid: { id: 9 },

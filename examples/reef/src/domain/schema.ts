@@ -17,8 +17,15 @@ export const User = Ramose.Namespace("user", {
     unique: "identity",
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
-  name: Ramose.Attr(Schema.String),
-  email: Ramose.Attr(Schema.String),
+  role: Ramose.Attr(Schema.String, {
+    doc: "Policy class, materialized by the peer from the JWT at session establishment",
+  }),
+  name: Ramose.Attr(Schema.String, {
+    doc: "Display name, stamped by the peer from ramose.attrs.name",
+  }),
+  email: Ramose.Attr(Schema.String, {
+    doc: "Email, stamped by the peer from ramose.attrs.email",
+  }),
 });
 
 export const Label = Ramose.Namespace("label", {

@@ -324,11 +324,21 @@ export interface OrgClassOfOptions {
   readonly map?: (role: string) => string | null;
 }
 
+/** Display fields the peer stamps onto the principal row from `ramose.attrs`. */
+const profileAttrs = (user: { name?: unknown; email?: unknown }): Record<string, string> | undefined => {
+  const attrs: Record<string, string> = {};
+  if (typeof user.name === "string") attrs.name = user.name;
+  if (typeof user.email === "string") attrs.email = user.email;
+  return Object.keys(attrs).length === 0 ? undefined : attrs;
+};
+
 /**
  * A {@link ClassOf} for the `organization` plugin's tables, for apps where
  * an organization's slug *is* the Ramose database name: the caller's member
  * row in the org whose slug is `db` decides the class ({@link classOfRole}
- * by default); no such org or no membership is `null` → 403.
+ * by default); no such org or no membership is `null` → 403. Name and email
+ * from the Better Auth user ride under `ramose.attrs` so the peer can stamp
+ * them on the principal row — the app never writes that row.
  */
 export const orgClassOf = (options?: OrgClassOfOptions): ClassOf => {
   const map = options?.map ?? classOfRole;
@@ -345,6 +355,9 @@ export const orgClassOf = (options?: OrgClassOfOptions): ClassOf => {
         { field: "userId", value: session.user.id },
       ],
     });
-    return member === null ? null : map(member.role);
+    if (member === null) return null;
+    const cls = map(member.role);
+    if (cls === null) return null;
+    return { class: cls, attrs: profileAttrs(session.user) };
   };
 };

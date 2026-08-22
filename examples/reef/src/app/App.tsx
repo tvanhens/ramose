@@ -143,7 +143,6 @@ const Root = () => {
       return;
     }
     if (loadedSlug === wantedSlug) return;
-    const self: SessionUser = { id: userId, name: userName, email: userEmail };
     let cancelled = false;
     setOpening(wantedSlug);
     void (async () => {
@@ -151,7 +150,7 @@ const Root = () => {
         const orgs = await listWorkspaces().catch(() => []);
         if (cancelled) return;
         const org = orgs.find((o) => o.slug === wantedSlug);
-        const workspace = await openWorkspace(wantedSlug, self, false);
+        const workspace = await openWorkspace(wantedSlug, false);
         if (cancelled) return;
         setOpen({ workspace, name: org?.name ?? wantedSlug });
       } catch (err) {
@@ -169,9 +168,9 @@ const Root = () => {
   }, [wantedSlug, loadedSlug, userId, userName, userEmail, toast, navigate]);
 
   const createAndOpen = useCallback(
-    async (slug: string, user: SessionUser) => {
+    async (slug: string) => {
       try {
-        await openWorkspace(slug, user, true);
+        await openWorkspace(slug, true);
         navigate({ kind: "board", slug });
       } catch (err) {
         toast("error", errorMessage(err));
@@ -210,7 +209,7 @@ const Root = () => {
       user={me}
       opening={opening}
       onOpen={(slug) => navigate({ kind: "board", slug })}
-      onCreate={(slug) => createAndOpen(slug, me)}
+      onCreate={(slug) => createAndOpen(slug)}
     />
   );
 };

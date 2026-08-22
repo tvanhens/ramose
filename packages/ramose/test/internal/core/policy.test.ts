@@ -19,6 +19,7 @@ import {
 } from "../../../src/internal/core/policy/index.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
+import { type TelemetryEvent, setTelemetrySink } from "../../../src/internal/core/telemetry.ts";
 
 const SCHEMA = [
   { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
@@ -665,6 +666,207 @@ describe("fragment-rule evaluation", () => {
     const ctx = { db, principal: alice(), e: ids.d1, memo };
     expect(await allowsOp(frag, "read", ":doc/title", ctx)).toBe(true);
     expect(memo.getRule("policy/doc/owner|" + ids.d1)).toBe(true);
+    const owned = memo.visibleSet("policy/doc/owner");
+    expect(owned?._tag).toBe("set");
+    if (owned?._tag === "set") expect(owned.eids.has(ids.d1)).toBe(true);
     expect(await allowsOp(frag, "read", ":doc/title", ctx)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Visible-set materialization (#156)
+// ---------------------------------------------------------------------------
+
+const TITLES = { find: ["?e", "?t"], where: [["?e", ":doc/title", "?t"]] };
+
+function mulberry32(seed: number): () => number {
+  return () => {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe("visible-set materialization", () => {
+  test("set path ≡ per-entity path on a selective scan", async () => {
+    const p = parsePolicy({
+      ...FRAGMENT_POLICY_JSON,
+      ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
+      rules: [[["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
+    });
+    const setView = filterDb(db, db, p, alice());
+    const boundView = filterDb(db, db, p, alice(), { visibleSetMax: 0 });
+    expect(await query(setView, TITLES)).toEqual(await query(boundView, TITLES));
+    const memo = policyView(setView)!.memo;
+    expect(memo.visibleSetFallbackCount).toBe(0);
+    const vis = memo.visibleSet("policy/doc/owner");
+    expect(vis?._tag).toBe("set");
+    if (vis?._tag === "set") {
+      expect(vis.eids.has(ids.d1)).toBe(true);
+      expect(vis.eids.has(ids.d2)).toBe(false);
+    }
+    expect(policyView(boundView)!.memo.visibleSet("policy/doc/owner")).toBeUndefined();
+  });
+
+  test("set path ≡ per-entity path on randomized policies and data", async () => {
+    const kinds = ["owner", "org", "or"] as const;
+    for (const seed of [1, 7, 13, 42, 99, 123, 256, 1024]) {
+      const rand = mulberry32(seed);
+      const kind = kinds[Math.floor(rand() * kinds.length)]!;
+      const nUsers = 6;
+      const nOrgs = 3;
+      const nDocs = 24;
+      const c = await Connection.create({ now: () => 1_700_000_000_000 });
+      await c.transact(SCHEMA);
+      const users = Array.from({ length: nUsers }, (_, i) => ({
+        ":db/id": `u${i}`,
+        ":user/sub": `u_${i}`,
+        ":user/name": `U${i}`,
+      }));
+      const orgs = Array.from({ length: nOrgs }, (_, i) => ({
+        ":db/id": `o${i}`,
+        ":org/name": `O${i}`,
+        ":org/members": Array.from({ length: nUsers }, (_, u) => `u${u}`).filter(() => rand() < 0.45),
+      }));
+      // every org keeps at least user 0 so the caller is sometimes in, sometimes not
+      if ((orgs[0][":org/members"] as string[]).length === 0) (orgs[0][":org/members"] as string[]).push("u0");
+      const projects = orgs.map((_, i) => ({ ":db/id": `p${i}`, ":project/name": `P${i}`, ":project/org": `o${i}` }));
+      const docs = Array.from({ length: nDocs }, (_, i) => ({
+        ":db/id": `d${i}`,
+        ":doc/title": `T${i}`,
+        ":doc/owner": `u${Math.floor(rand() * nUsers)}`,
+        ":doc/project": `p${Math.floor(rand() * nOrgs)}`,
+        ...(rand() < 0.3 ? { ":doc/audit": "a" } : {}),
+      }));
+      const { tempids } = await c.transact([...users, ...orgs, ...projects, ...docs]);
+      const d = c.db();
+      const me: Principal = {
+        kind: "user",
+        class: "member",
+        sub: "u_0",
+        eid: tempids.u0,
+        claims: { sub: "u_0" },
+        db: "acme",
+      };
+      const read =
+        kind === "owner"
+          ? [{ _tag: "allow" as const, rule: "policy/doc/owner" }]
+          : kind === "org"
+            ? [{ _tag: "allow" as const, rule: "policy/doc/inOrg" }]
+            : [
+                { _tag: "allow" as const, rule: "policy/doc/owner" },
+                { _tag: "allow" as const, rule: "policy/doc/inOrg" },
+              ];
+      const p = parsePolicy({
+        ...FRAGMENT_POLICY_JSON,
+        ns: { ...FRAGMENT_POLICY_JSON.ns, doc: { ...FRAGMENT_POLICY_JSON.ns.doc, read } },
+      });
+      const setRows = await query(filterDb(d, d, p, me), TITLES);
+      const boundRows = await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), TITLES);
+      expect(setRows, `seed=${seed} kind=${kind}`).toEqual(boundRows);
+      const audit = { find: ["?e", "?a"], where: [["?e", ":doc/audit", "?a"]] };
+      expect(await query(filterDb(d, d, p, me), audit), `seed=${seed} audit`).toEqual(
+        await query(filterDb(d, d, p, me, { visibleSetMax: 0 }), audit),
+      );
+    }
+  });
+
+  test("an over-threshold set falls back to per-entity and is recorded", async () => {
+    const events: TelemetryEvent[] = [];
+    setTelemetrySink((e) => events.push(e));
+    try {
+      await conn.transact([
+        { ":doc/title": "D3", ":doc/owner": ids.alice, ":doc/project": ids.p1 },
+        { ":doc/title": "D4", ":doc/owner": ids.alice, ":doc/project": ids.p1 },
+        { ":doc/title": "D5", ":doc/owner": ids.alice, ":doc/project": ids.p1 },
+      ]);
+      const d = conn.db();
+      const p = parsePolicy({
+        ...FRAGMENT_POLICY_JSON,
+        ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
+        rules: [[["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
+      });
+      const setView = filterDb(d, d, p, alice(), { visibleSetMax: 2 });
+      const boundView = filterDb(d, d, p, alice(), { visibleSetMax: 0 });
+      expect(await query(setView, TITLES)).toEqual(await query(boundView, TITLES));
+      const memo = policyView(setView)!.memo;
+      expect(memo.visibleSetFallbackCount).toBe(1);
+      expect(memo.visibleSetFallbacks).toEqual([{ rule: "policy/doc/owner", reason: "size", size: 3 }]);
+      expect(memo.visibleSet("policy/doc/owner")).toEqual({ _tag: "fallback" });
+      const ev = events.find((e) => e.event === "policy.visible-set-fallback");
+      expect(ev).toMatchObject({
+        component: "core",
+        level: "info",
+        rule: "policy/doc/owner",
+        reason: "size",
+        size: 3,
+        threshold: 2,
+        count: 1,
+      });
+    } finally {
+      setTelemetrySink(undefined);
+    }
+  });
+
+  test("true arms and admin never materialize a set", async () => {
+    const publicRead = parsePolicy({
+      version: 2,
+      principal: ":user/sub",
+      classes: ["anonymous", "member", "admin"],
+      attrs: {},
+      ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
+      preset: {},
+    });
+    const v = filterDb(db, db, publicRead, alice());
+    expect(await query(v, TITLES)).toHaveLength(2);
+    expect(policyView(v)!.memo.visibleSetFallbackCount).toBe(0);
+    expect([...policyView(v)!.memo.visibleSetFallbacks]).toEqual([]);
+    expect(policyView(v)!.memo.visibleSet("policy/doc/owner")).toBeUndefined();
+    const frag = parsePolicy(FRAGMENT_POLICY_JSON);
+    expect(filterDb(db, db, frag, admin())).toBe(db);
+    expect(policyView(filterDb(db, db, frag, admin()))).toBeUndefined();
+  });
+
+  test("write arms stay on the per-entity path", async () => {
+    const frag = parsePolicy(FRAGMENT_POLICY_JSON);
+    const memo = new PolicyMemo();
+    expect(
+      await allowsOp(frag, "add", ":doc/title", { db, principal: alice(), e: ids.d1, memo }),
+    ).toBe(true);
+    expect(memo.visibleSet("policy/doc/owner")).toBeUndefined();
+    expect(memo.getRule("policy/doc/owner|" + ids.d1)).toBe(true);
+  });
+
+  test("a set-query budget miss falls back; the bound path may still allow", async () => {
+    const extra = Array.from({ length: 16 }, (_, i) => ({
+      ":doc/title": `W${i}`,
+      ":doc/owner": ids.alice,
+      ":doc/project": ids.p1,
+    }));
+    await conn.transact(extra);
+    const d = conn.db();
+    const p = parsePolicy({
+      version: 2,
+      principal: ":user/sub",
+      classes: ["member"],
+      attrs: {},
+      ns: { doc: { read: [{ _tag: "allow", rule: "policy/wide" }] } },
+      preset: {},
+      rules: [
+        [
+          ["policy/wide", "?me", "?e"],
+          ["?e", ":doc/title", "_"],
+          ["?x", ":doc/title", "_"],
+          ["?y", ":doc/title", "_"],
+          ["?e", ":doc/owner", "?me"],
+        ],
+      ],
+    });
+    const v = filterDb(d, d, p, alice(), { maxCells: 2_000 });
+    const rows = await query(v, TITLES);
+    expect(rows.length).toBeGreaterThan(0);
+    const memo = policyView(v)!.memo;
+    expect(memo.visibleSetFallbacks.some((f) => f.rule === "policy/wide" && f.reason === "budget")).toBe(true);
   });
 });

@@ -7,23 +7,11 @@
  */
 
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
-import { Comment, Issue, Label, Reef, User, type Status } from "../domain/schema.ts";
-
-const { Query } = Ramose;
-
-/** The caller's own `user` row, by the sub their JWT carries. */
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
+import { Comment, Issue, Label, Reef, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -50,35 +38,35 @@ const authFetch = (
   return (input, init) => fetchFn.call(auth, input, init);
 };
 
-const Person = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  email: Schema.String,
-});
-
 /**
- * Workspace provisioning: install + optional org registration as effects,
- * then seed the creator and labels as one transaction. Effects come first,
- * so there is no optimistic prefix — the creating tab has no session yet.
+ * Workspace provisioning as an operation: install + optional org registration
+ * as effects, then seed labels. The peer upserts the creator's `user` row
+ * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
+ * must not write that row. Effects come first, so there is no optimistic
+ * prefix; the creating tab has no session yet.
  */
 export const provisionWorkspaceOp = Ramose.Operation(
   "workspace/provision",
   {
-    input: Person,
+    input: Schema.Struct({}),
     output: Schema.Struct({ ready: Schema.Boolean }),
   },
-  (op, input) =>
+  (op) =>
     Effect.gen(function* () {
       yield* op.effect("db/install", ({ databases }) => databases.install(Reef, op.db));
-      yield* op.effect("org/register", ({ env }) => {
+      yield* op.effect("org/register", ({ env, principal }) => {
         const register = authFetch(env);
         if (register === undefined) return Effect.void;
+        const name =
+          typeof principal.name === "string" && principal.name.length > 0
+            ? principal.name
+            : op.db;
         return Effect.tryPromise({
           try: () =>
             register("https://auth/api/auth/organization/create", {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ name: input.name, slug: op.db }),
+              body: JSON.stringify({ name, slug: op.db }),
             }),
           catch: (cause) =>
             new Ramose.InternalError({
@@ -86,10 +74,6 @@ export const provisionWorkspaceOp = Ramose.Operation(
             }),
         }).pipe(Effect.asVoid);
       });
-      const user = yield* op.entity();
-      yield* user.add(User.sub, input.id);
-      yield* user.add(User.name, input.name);
-      yield* user.add(User.email, input.email);
       for (const seed of SEED_LABELS) {
         const label = yield* op.entity();
         yield* label.add(Label.name, seed.name);
@@ -99,10 +83,8 @@ export const provisionWorkspaceOp = Ramose.Operation(
     }),
 );
 
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) => db.run(provisionWorkspaceOp, me).pipe(Effect.asVoid);
+export const provisionWorkspace = (db: ReefDb) =>
+  db.run(provisionWorkspaceOp, {}).pipe(Effect.asVoid);
 
 export const moveIssueOp = Ramose.Operation(
   "issue/move",
@@ -172,33 +154,6 @@ export const operations = Ramose.Operations({
   addCommentOp,
   deleteIssueOp,
 });
-
-/**
- * First entry by a member: write your own `user` row if it is not there.
- * `:user/sub` is a preset attribute, so supplying your own sub is a no-op
- * check and supplying anyone else's is `Unauthorized`. Viewers skip the
- * write — they never need an entity (reads are class-scoped).
- *
- * Returns the caller's user eid, or `undefined` for a viewer who has none.
- */
-export const ensureSelf = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-  canWrite: boolean,
-) =>
-  Effect.gen(function* () {
-    const existing = yield* db.q(mineQuery, { sub: me.id });
-    if (existing.length > 0) return existing[0]!.id;
-    if (!canWrite) return undefined;
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-    });
-    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
-    return after[0]?.id;
-  });
 
 export interface NewIssue {
   readonly title: string;

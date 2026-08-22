@@ -39,7 +39,7 @@ import {
 import { Issue, Reef, User } from "../src/domain/schema.ts";
 import { createIssue, moveIssue, operations, setTitle } from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
-import { bindSelf, openWorkspace } from "../src/app/ramose.ts";
+import { openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
 
@@ -193,13 +193,23 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const path = new URL(url, "https://peer.local").pathname;
     httpPaths.push(path);
-    if (path.endsWith("/info")) {
+    if (path.endsWith("/info") && (init.method ?? "GET") === "GET") {
+      const payload = jwtPayloadOf(init);
+      const sub = typeof payload?.sub === "string" ? payload.sub : undefined;
+      const ramose = payload?.ramose;
+      const cls =
+        ramose !== null &&
+        typeof ramose === "object" &&
+        typeof (ramose as { class?: unknown }).class === "string"
+          ? (ramose as { class: string }).class
+          : "member";
+      let eid: number | null = null;
+      if (sub !== undefined) {
+        const found = await conn.db().entid([":user/sub", sub] as never);
+        if (found !== undefined) eid = found;
+      }
       return new Response(
-        JSON.stringify({
-          db: "coral-team",
-          t: conn.t,
-          principal: { eid: myEid ?? null, class: "admin" },
-        }),
+        JSON.stringify({ db: "coral-team", t: conn.t, principal: { eid, class: cls } }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
@@ -685,6 +695,25 @@ const jwtOf = (claims: Record<string, unknown>): string => {
   return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
 };
 
+const jwtPayloadOf = (init: RequestInit): Record<string, unknown> | undefined => {
+  const raw = init.headers;
+  const auth =
+    raw instanceof Headers
+      ? (raw.get("authorization") ?? raw.get("Authorization"))
+      : raw === undefined || Array.isArray(raw)
+        ? undefined
+        : ((raw as Record<string, string>).authorization ??
+          (raw as Record<string, string>).Authorization);
+  if (auth == null) return undefined;
+  const part = auth.replace(/^Bearer\s+/i, "").split(".")[1];
+  if (part === undefined) return undefined;
+  try {
+    return JSON.parse(Buffer.from(part, "base64url").toString()) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+};
+
 const countingConnect = () => {
   let connects = 0;
   const connect: typeof Ramose.connect = (opts) => {
@@ -707,7 +736,7 @@ describe("refresh open is one session, not two", () => {
 
     const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
     const token = Ramose.token.jwt(async () =>
-      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "admin" } }),
     );
     const counted = countingConnect();
     const opts = {
@@ -718,29 +747,35 @@ describe("refresh open is one session, not two", () => {
       connect: counted.connect,
     };
 
-    const ws = await openWorkspace("coral-team", user, false, opts);
+    const ws = await openWorkspace("coral-team", false, opts);
     expect(ws.cls).toBe("admin");
     expect(counted.connects).toBe(0);
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const myEid = await Effect.runPromise(
-        bindSelf(live.db("coral-team", Reef), user, ws.cls),
-      );
-      expect(myEid as number | undefined).toBe(peer.myEid);
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
+      expect(who.eid?.id).toBe(peer.myEid);
       expect(counted.connects).toBe(1);
+      // principal() is GET /info — no replica session yet
+      expect(peer.sockets()).toBe(0);
+      expect(peer.resyncDumps()).toEqual([]);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
       expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });
@@ -752,7 +787,7 @@ describe("refresh open is one session, not two", () => {
 
     const user = { id: "vie", name: "Vie", email: "vie@reef.test" };
     const token = Ramose.token.jwt(async () =>
-      jwtOf({ ramose: { db: "coral-team", class: "viewer" } }),
+      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "viewer" } }),
     );
     const counted = countingConnect();
     const opts = {
@@ -763,26 +798,30 @@ describe("refresh open is one session, not two", () => {
       connect: counted.connect,
     };
 
-    const ws = await openWorkspace("coral-team", user, false, opts);
+    const ws = await openWorkspace("coral-team", false, opts);
     expect(ws.cls).toBe("viewer");
     expect(counted.connects).toBe(0);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const myEid = await Effect.runPromise(
-        bindSelf(live.db("coral-team", Reef), user, ws.cls),
-      );
-      expect(myEid).toBeUndefined();
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
+      expect(who.eid).toBeNull();
       expect(counted.connects).toBe(1);
+      expect(peer.sockets()).toBe(0);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });
@@ -791,7 +830,7 @@ describe("refresh open is one session, not two", () => {
     const peer = await inProcessPeer({ seed: false });
     const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
     const token = Ramose.token.jwt(async () =>
-      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "admin" } }),
     );
     const counted = countingConnect();
     const opts = {
@@ -802,37 +841,45 @@ describe("refresh open is one session, not two", () => {
       connect: counted.connect,
     };
 
-    await openWorkspace("coral-team", user, true, opts);
+    await openWorkspace("coral-team", true, opts);
     expect(counted.connects).toBe(1);
     expect(peer.sockets()).toBe(1);
     expect(peer.resyncDumps().length).toBeGreaterThanOrEqual(1);
     expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+    // in-process peer has no auth layer; seed the row the real peer writes
+    await peer.conn.transact([
+      { ":user/sub": "ada", ":user/name": "Ada", ":user/email": "ada@reef.test" },
+    ]);
 
     peer.resetTraffic();
     const afterProvision = counted.connects;
 
-    const ws = await openWorkspace("coral-team", user, false, opts);
+    const ws = await openWorkspace("coral-team", false, opts);
     expect(counted.connects).toBe(afterProvision);
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
 
-    const live = counted.connect({
+    const client = counted.connect({
       url: opts.url,
       token: ws.token,
       fetch: opts.fetch,
       webSocket: opts.webSocket,
     });
     try {
-      const myEid = await Effect.runPromise(
-        bindSelf(live.db("coral-team", Reef), user, ws.cls),
-      );
-      expect(myEid).toBeGreaterThan(0);
+      const db = client.db("coral-team", Reef);
+      const who = await Effect.runPromise(db.principal());
+      expect(who.eid?.id).toBeGreaterThan(0);
       expect(counted.connects).toBe(afterProvision + 1);
+      expect(peer.sockets()).toBe(0);
+
+      const board = live(db.live(boardQuery));
+      await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
       expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+      await board.stop();
     } finally {
-      await live.close();
+      await client.close();
       await peer.dispose();
     }
   });

@@ -17,6 +17,7 @@
  * only when identical, so a member can never forge `issue.creator`.
  */
 
+import * as Schema from "effect/Schema";
 import * as Ramose from "ramose";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
@@ -34,14 +35,16 @@ export const policy = Ramose.policy(
     catalog: Reef,
     principal: User.sub,
     classes: CLASSES,
+    claims: Schema.Struct({
+      name: Schema.optional(Schema.String),
+      email: Schema.optional(Schema.String),
+    }),
   },
   {
     user: {
       read: true,
-      // First entry into a workspace writes your own row; `sub` is preset from
-      // the token, so you cannot register as someone else.
-      create: P.class("member"),
-      preset: [P.preset(User.sub, P.claims.sub)],
+      // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
+      // Clients never write this row.
     },
     label: {
       read: true,
