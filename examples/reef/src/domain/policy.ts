@@ -17,35 +17,34 @@
  * only when identical, so a member can never forge `issue.creator`.
  */
 
+import * as Schema from "effect/Schema";
 import * as Ramose from "ramose";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
 import { CLASSES } from "./shared.ts";
 
 const P = Ramose.Policy;
-const { Query, Q } = Ramose;
+const { Query } = Ramose;
 
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
-/** Profile fields on the peer-owned row — the focus entity *is* `me`. */
-const self = ((me: Ramose.Policy.Me<typeof User>) =>
-  function* (e: Ramose.Policy.Me<typeof User>) {
-    yield* Q.eq(e, me);
-  }) as Ramose.Policy.FragFn<Ramose.Policy.Me<typeof User>>;
 
 export const policy = Ramose.policy(
   {
     catalog: Reef,
     principal: User.sub,
     classes: CLASSES,
+    claims: Schema.Struct({
+      name: Schema.optional(Schema.String),
+      email: Schema.optional(Schema.String),
+    }),
   },
   {
     user: {
       read: true,
-      // The peer upserts `sub` + `role` at session establishment. Clients
-      // only stamp profile fields on their own row.
-      add: self,
+      // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
+      // Clients never write this row.
     },
     label: {
       read: true,

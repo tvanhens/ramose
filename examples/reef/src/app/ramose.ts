@@ -4,16 +4,15 @@
  * `exp`; `cls` is the decoded, unverified claim — UI hints only. The client
  * that lives with the board is owned by `<RamoseProvider key={slug}>` in
  * App.tsx. This module mints `{ slug, cls, token }` and, on create only,
- * runs `install()` + seeds labels over a short-lived client. `ensureSelf`
- * (profile fields on the peer-owned `user` row) runs on the Provider
- * client — see `bindSelf`.
+ * runs `install()` + seeds labels over a short-lived client. The peer
+ * upserts the signed-in user row (`sub`, `role`, name, email) at session
+ * establishment; screens read it with `db.principal()`.
  */
 import * as Ramose from "ramose/db";
 import * as Effect from "effect/Effect";
-import type { ReefDb } from "../domain/queries.ts";
 import { Reef } from "../domain/schema.ts";
 import type { RamoseClass } from "../domain/shared.ts";
-import { ensureSelf, provisionWorkspace } from "./mutations.ts";
+import { provisionWorkspace } from "./mutations.ts";
 
 export const RAMOSE_URL =
   import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:1337";
@@ -42,11 +41,10 @@ export type OpenWorkspaceOptions = Pick<
  * Mint the source and decode `cls`. A refresh / shared-URL open
  * (`provision: false`) stops there — no `Ramose.connect`. Create still
  * `install()`s and seeds labels over a client that is closed before the
- * board mounts; profile fields land via `bindSelf` on the live client.
+ * board mounts; `myEid` comes from `db.principal()` on the live client.
  */
 export const openWorkspace = async (
   slug: string,
-  user: { id: string; name: string; email: string },
   provision: boolean,
   options?: OpenWorkspaceOptions,
 ): Promise<Workspace> => {
@@ -75,14 +73,3 @@ export const openWorkspace = async (
   }
   return { slug, cls, token };
 };
-
-/**
- * Profile fields on the peer-owned `user` row, on the client that stays
- * mounted with the board. The peer guarantees the row; this only stamps
- * name/email.
- */
-export const bindSelf = (
-  db: ReefDb,
-  user: { id: string; name: string; email: string },
-  _cls?: RamoseClass,
-) => ensureSelf(db, user);

@@ -7,22 +7,9 @@
  */
 
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
-import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
-import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
-
-const { Query } = Ramose;
-
-/** The caller's own `user` row, by the sub their JWT carries. */
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
+import { Comment, Issue, Label, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -35,9 +22,9 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
 /**
  * Workspace provisioning, from the browser, under the creator's admin-class
  * JWT: install the catalog on the fresh name, then seed labels. The peer
- * upserts the creator's `user` row (`sub` + `role`) at session establishment.
- * This *is* the multi-tenancy demo — no resource, no deploy, one `install()`
- * and one transaction.
+ * upserts the creator's `user` row (`sub`, `role`, and `ramose.attrs`) at
+ * session establishment. This *is* the multi-tenancy demo — no resource, no
+ * deploy, one `install()` and one transaction.
  */
 export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
@@ -49,29 +36,6 @@ export const provisionWorkspace = (db: ReefDb) =>
         yield* label.add(Label.color, seed.color);
       }
     });
-  });
-
-/**
- * Stamp name/email on the peer-owned `user` row. The row itself is written
- * by the auth layer (`sub` + `role`); this never creates one.
- *
- * Returns the caller's user eid, or `undefined` when the peer left them
- * unresolved (anonymous / no principal attr yet).
- */
-export const ensureSelf = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
-  Effect.gen(function* () {
-    const who = yield* db.principal();
-    const existing = yield* db.q(mineQuery, { sub: me.id });
-    const eid = who.eid?.id ?? existing[0]?.id;
-    if (eid === undefined) return undefined;
-    yield* db.transact(function* (tx) {
-      yield* tx.add(eid, User.name, me.name);
-      yield* tx.add(eid, User.email, me.email);
-    });
-    return eid;
   });
 
 export interface NewIssue {
