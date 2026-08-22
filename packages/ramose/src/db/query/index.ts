@@ -1,0 +1,71 @@
+/**
+ * The query language: kernel (`Q`), constructor and composition (`Query`),
+ * and the pipeable stdlib. One kind of object — every query is a rule —
+ * with two spellings (pipe, generator) and one composition mechanism
+ * (generator delegation, at three altitudes: fragment, `q.open`, rule).
+ */
+
+export {
+  Q,
+  isVar,
+  mkVar,
+  runBody,
+  type AnyCommand,
+  type AnyVar,
+  type AttrLike,
+  type BClause,
+  type BuildCtx,
+  type Cell,
+  type CellRecord,
+  type FactHandle,
+  type Fragment,
+  type Projection,
+  type PullSpec,
+  type QueryGen,
+  type RowOfProjection,
+  type RowsSpec,
+  type Var,
+} from "./kernel.ts";
+
+export {
+  enrich,
+  isPipeline,
+  isQueryObject,
+  isRuleValue,
+  lowerQueryObject,
+  q,
+  refine,
+  rule,
+  type AnyQueryObject,
+  type LoweredKernelQuery,
+  type OpenArgs,
+  type OpenResult,
+  type Pipeline,
+  type PipeStage,
+  type QueryBody,
+  type QueryObject,
+  type RuleValue,
+} from "./query.ts";
+
+export {
+  assertedBy,
+  backlink,
+  entities,
+  every,
+  follow,
+  has,
+  is,
+  limit,
+  missing,
+  none,
+  offset,
+  orderBy,
+  select,
+  some,
+  stage,
+  updatedSince,
+  where,
+  type FilterStage,
+  type IdRow,
+  type TraversalStage,
+} from "./lib.ts";

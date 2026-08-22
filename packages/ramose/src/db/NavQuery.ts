@@ -2531,7 +2531,8 @@ export const asNavQuery = <R, P = never>(
 let fresh = 0;
 const gensym = (prefix: string) => `?${prefix}${fresh++}`;
 
-const resetGensym = () => {
+/** @internal Both lowerings (nav and kernel) reset for deterministic names. */
+export const resetGensym = () => {
   fresh = 0;
 };
 
@@ -2795,6 +2796,25 @@ export const lowerNavQuery = (
 };
 
 /**
+ * @internal The kernel query surface's entry to the shape machinery: lower
+ * a select shape to the literate pull map with `binder` substituting any
+ * param holes its nested constraints carry. Restores the previous binder,
+ * so a nav lowering in progress is undisturbed.
+ */
+export const substituteShape = (
+  shape: Shape,
+  binder: ParamBinder,
+): Record<string, unknown> => {
+  const prev = currentBinder;
+  currentBinder = binder;
+  try {
+    return substituteLiterate(shapeToPullMap(shape)) as Record<string, unknown>;
+  } finally {
+    currentBinder = prev;
+  }
+};
+
+/**
  * Nested collection constraints are lowered eagerly at builder-call time,
  * so a hole lives as a leaf of the already-built `PullElemPred` tree. Walk
  * that tree (and the literate wrappers it hangs off) and substitute.
@@ -2944,7 +2964,7 @@ const hopClauses = (
  * `null`, which the engine places per the key's `empty`. (`get-else` cannot
  * stand in: a function binding of `null` drops the row.)
  */
-const lowerOrderPath = (
+export const lowerOrderPath = (
   root: string,
   path: readonly string[],
   revs: readonly boolean[],
@@ -2985,7 +3005,7 @@ const lowerOrderPath = (
  * clause here would drop exactly the rows it exists to keep, and `:limit`
  * would page a set the client never sees.
  */
-const requiredClauses = (e: string, pattern: unknown): unknown[] => {
+export const requiredClauses = (e: string, pattern: unknown): unknown[] => {
   // a wildcard has no required field: every key is optional
   if (Array.isArray(pattern) || isAllShape(pattern) || isAgain(pattern)) return [];
   const out: unknown[] = [];

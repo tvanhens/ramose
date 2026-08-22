@@ -53,6 +53,18 @@ export {
   reshapePullResult,
 } from "./Pull.ts";
 export * as Policy from "./Policy.ts";
+export * as Query from "./query/surface.ts";
+export {
+  Q,
+  isPipeline,
+  isQueryObject,
+  isRuleValue,
+  lowerQueryObject,
+  type AnyQueryObject,
+  type LoweredKernelQuery,
+  type QueryObject,
+  type RuleValue,
+} from "./query/index.ts";
 export * from "./session.ts";
 export * from "./token.ts";
 export * from "./Tx.ts";

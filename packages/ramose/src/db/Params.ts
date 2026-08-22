@@ -80,6 +80,27 @@ export type ParamDecl =
   | { readonly Type: unknown }
   | { readonly ast: unknown };
 
+/**
+ * `Ramose.EidOf(User)` — a param declared to hold an entity of one
+ * namespace: the branded cell a `select({ id: N.id })` row carries, or the
+ * catalog-branded `{ id }` a bare query yields. Both bind with no cast, and
+ * both lower to the raw id number wherever the hole stands.
+ */
+export interface EidOfDecl<N extends AnyNamespace = AnyNamespace> {
+  readonly _tag: "EidOfDecl";
+  readonly ns: N;
+  readonly schema: {
+    readonly Type: Eid<N> | { readonly id: number };
+  };
+}
+
+export const EidOf = <const N extends AnyNamespace>(ns: N): EidOfDecl<N> => {
+  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Namespace") {
+    throw new Error("ramose/params: EidOf(...) takes a namespace (Ramose.EidOf(User))");
+  }
+  return { _tag: "EidOfDecl", ns, schema: { Type: undefined as never } };
+};
+
 /** A declaration marked "may be unbound" — see {@link optional}. */
 export interface OptionalDecl<D extends ParamDecl = ParamDecl> {
   readonly _tag: "OptionalParamDecl";

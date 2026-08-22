@@ -36,6 +36,12 @@ import {
 } from "./NavQuery.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import type { ParamArgs } from "./Params.ts";
+import {
+  isQueryObject,
+  lowerQueryObject,
+  type LoweredKernelQuery,
+  type QueryObject,
+} from "./query/index.ts";
 import type { SessionPrincipal } from "./session.ts";
 import {
   type IdentPullPattern,
@@ -56,6 +62,9 @@ import {
 export type QueryInput<R, P = never> =
   | NavQuery<R, P>
   | NavQueryBuilder<AnyNamespace, R, P>;
+
+/** Any runnable read: the nav surface, or a kernel `Query.q` value. */
+type AnyReadInput = QueryInput<unknown, unknown> | QueryObject<unknown, unknown>;
 
 /**
  * The rows a query yields here. A query is scoped to a namespace, not to a
@@ -182,7 +191,12 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
   readonly catalog: C;
 
-  /** Run a {@link NavQuery} once. Bind params as the second argument. */
+  /** Run a {@link NavQuery} or a kernel {@link QueryObject} once. Bind
+   * params as the second argument. */
+  q<Row, P = never>(
+    input: QueryObject<Row, P>,
+    ...params: ParamArgs<P>
+  ): Effect.Effect<readonly Row[], QueryError<readonly Row[], P>>;
   q<R>(
     input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
   ): Effect.Effect<QueryRows<C, R>, QueryError<R, never>>;
@@ -201,6 +215,10 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * emitted again: a write this query does not see is not a re-render.
    * Bind params as the second argument.
    */
+  live<Row, P = never>(
+    input: QueryObject<Row, P>,
+    ...params: ParamArgs<P>
+  ): Stream.Stream<readonly Row[], QueryError<readonly Row[], P>>;
   live<R>(
     input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
   ): Stream.Stream<QueryRows<C, R>, QueryError<R, never>>;
@@ -447,8 +465,8 @@ const makeRead = <C extends AnyCatalog>(
         }),
       );
 
-  const runQuery = <R, P = never>(
-    input: QueryInput<R, P>,
+  const runQuery = (
+    input: AnyReadInput,
     minT: number | undefined,
     bindings: Readonly<Record<string, unknown>> | undefined,
   ): Effect.Effect<
@@ -461,6 +479,36 @@ const makeRead = <C extends AnyCatalog>(
     DbError | NotOne | ParamError
   > =>
     Effect.gen(function* () {
+      // a kernel Query.q value: its own lowering, its own reshape — the
+      // wire, budgets and view coordinates are shared with the nav path
+      if (isQueryObject(input)) {
+        let lowered: LoweredKernelQuery;
+        try {
+          lowered = lowerQueryObject(input, bindings);
+        } catch (e) {
+          if (e instanceof ParamError) return yield* Effect.fail(e);
+          throw e;
+        }
+        const reply = record(
+          yield* wire.read(
+            name,
+            "q",
+            compact({
+              query: lowered.query,
+              inputs: [],
+              asOf: view.asOf,
+              history: view.history === true ? true : undefined,
+            }),
+            minT ?? view.minT,
+          ),
+        );
+        return {
+          rows: lowered.finalize(reply.result),
+          t: typeof reply.t === "number" ? reply.t : 0,
+          raw: reply.result,
+          viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
+        };
+      }
       const nav = asNavQuery(input);
       let lowered: ReturnType<typeof lowerNavQuery>;
       try {
@@ -602,7 +650,7 @@ const makeRead = <C extends AnyCatalog>(
     catalog,
 
     q: ((
-      input: QueryInput<unknown, unknown>,
+      input: AnyReadInput,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
       fenced(
@@ -614,7 +662,7 @@ const makeRead = <C extends AnyCatalog>(
       )) as ReadDb<C>["q"],
 
     live: ((
-      input: QueryInput<unknown, unknown>,
+      input: AnyReadInput,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
       standing<unknown, DbError | NotOne | ParamError>((minT) =>

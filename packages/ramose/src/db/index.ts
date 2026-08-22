@@ -52,8 +52,24 @@ export { all } from "./Pull.ts";
 // `Ramose.again(n)` — re-apply the enclosing select on a self-ref, n hops
 export { again } from "./Pull.ts";
 // value holes: declare with `params`, mark unbound-ok with `optional`,
-// gate clauses with `when`
-export { optional, params } from "./Params.ts";
+// gate clauses with `when`; `EidOf(N)` declares an entity-valued hole
+export { EidOf, optional, params } from "./Params.ts";
+
+// ── the query language (kernel + pipe surface) ─────────────────────────────
+// `Q` is the kernel (fact, comparisons, or/not, projections); `Query` is
+// the constructor, named rules, transformers and the pipeable stdlib —
+// `Ramose.Query.q({...}, (p) => pipe(Query.entities(Issue), ...))`. The
+// same names are importable flat from `ramose/query`.
+export { Q } from "./query/index.ts";
+export * as Query from "./query/surface.ts";
+export type {
+  AnyQueryObject,
+  OpenArgs,
+  OpenResult,
+  Pipeline,
+  QueryObject,
+  RuleValue,
+} from "./query/index.ts";
 export type {
   Agg,
   AggRow,

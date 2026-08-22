@@ -152,6 +152,10 @@ describe("the `/db` barrel's public names", () => {
         "params",
         "optional",
         "when",
+        "EidOf",
+        // the query language (the redesign's kernel + pipe surface)
+        "Q",
+        "Query",
         // aggregates (issue #18)
         "count",
         "countDistinct",
