@@ -116,6 +116,45 @@ const { run, pending } = useTransact();
 run(db.run(createIssue, { title, status: "todo" })); // Effect<OpReport<typeof createIssue>>
 ```
 
+### Contextual operations
+
+An operation may optionally be bound to a namespace with `on`. A contextual
+operation receives the entity it operates on as `op.self`, typed to the
+namespace — supplied by the caller as an argument to `db.run`, not embedded
+in the input schema:
+
+```ts
+export const closeIssue = Ramose.Operation("issue/close", {
+  on: Issue,                                    // contextual: bound to a namespace
+  input: Schema.Struct({ reason: Schema.String }),
+  output: Schema.Struct({}),
+}, (op, input) =>
+  Effect.gen(function* () {
+    yield* op.add(op.self, Issue.status, "closed");
+    yield* op.add(op.self, Issue.closeReason, input.reason);
+    return {};
+  }),
+);
+
+run(db.run(closeIssue, issue.id, { reason }));  // caller supplies the entity
+```
+
+The wire invocation carries the entity as an optional field, and the server
+resolves the eid at the execution basis before running the body — a dangling
+or foreign-namespace entity rejects with `OperationRejected` before any
+effect runs. Optimistically-created entities compose: if the caller passes
+an eid that is still pending in a queued layer, the outbox remap rewrites
+the invocation's entity reference on ack, exactly as it rewrites tempids
+inside tx forms.
+
+> **Decision.** Contextual binding ships in the initial pass. It is strictly
+> additive — an optional `on` field, a `db.run` overload, an optional wire
+> field — so deferring it would break nothing; but the entity remap lives in
+> the same overlay/outbox code v1 already writes, most of Reef's migration
+> set (`moveIssue`, `setStatus`, `addComment`, `deleteIssue`) is naturally
+> contextual, and settling `db.run`'s signature now avoids churning every
+> call site in a follow-up.
+
 > **Decision.** Operation input and output are validated with `effect/Schema`
 > at runtime — decoded on client submit and again at server ingress, encoded
 > into the ack. This is the codebase's first runtime `Schema.decodeUnknown`;
@@ -185,7 +224,8 @@ app ──run(op, input)──▶ client runtime ──▶ prefix → PendingLay
 Everything downstream of the layer is today's overlay code with the key
 renamed: acks drop the layer by `clientOpId` and paint the server's
 `WireDatom[]`; `remapQueued` rewrites tempids in still-queued invocations'
-optimistic layers; failures drop the layer and surface a typed error (the
+optimistic layers — including the `entity` reference of a queued contextual
+invocation; failures drop the layer and surface a typed error (the
 "drag snaps back, toast explains why" behavior Reef already demonstrates).
 Because the server executes the *full* body against *its* state, the
 confirmed transaction is normally a superset of the optimistic prefix and
@@ -197,12 +237,12 @@ truth always replaces the layer wholesale.
 One new endpoint and one new session frame, alongside the existing ones:
 
 ```
-POST /db/:name/op            { name: "issue/create", input, clientOpId }
+POST /db/:name/op            { name: "issue/close", entity?, input, clientOpId }
                        → 200 { t, txEid, tempids, datoms, clientOpId, output }
                        → 4xx { error: "OperationRejected", step, reason }
 
 // worker/session.ts ClientFrame gains:
-{ id, op: "operation", name, input, clientOpId }
+{ id, op: "operation", name, entity?, input, clientOpId }
 ```
 
 Server execution lives where transaction interception already happens
