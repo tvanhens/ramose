@@ -7,10 +7,22 @@
  */
 
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
+
+const { Query } = Ramose;
+
+/** The caller's own `user` row, by the sub their JWT carries. */
+const mineQuery = Query.q({ sub: User.sub }, (p) =>
+  pipe(
+    Query.entities(User),
+    Query.is(User.sub, p.sub),
+    Query.select({ id: User.id }),
+  ),
+);
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -59,10 +71,7 @@ export const ensureSelf = (
   canWrite: boolean,
 ) =>
   Effect.gen(function* () {
-    const mineQuery = Ramose.query(User)
-      .where(User.sub.eq(me.id))
-      .select({ id: User.id });
-    const existing = yield* db.q(mineQuery);
+    const existing = yield* db.q(mineQuery, { sub: me.id });
     if (existing.length > 0) return existing[0]!.id;
     if (!canWrite) return undefined;
     const report = yield* db.transact(function* (tx) {
@@ -71,7 +80,7 @@ export const ensureSelf = (
       yield* user.add(User.name, me.name);
       yield* user.add(User.email, me.email);
     });
-    const after = yield* report.dbAfter.q(mineQuery);
+    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
     return after[0]?.id;
   });
 

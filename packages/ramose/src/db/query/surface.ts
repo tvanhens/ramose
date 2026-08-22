@@ -4,13 +4,17 @@
  * `Query.refine` transform closed queries. (`Ramose.Q` is the kernel.)
  */
 
-export { enrich, q, refine, rule } from "./query.ts";
+export { enrich, isCursor, q, refine, rule } from "./query.ts";
 export type {
   AnyQueryObject,
+  Cursor,
   OpenArgs,
   OpenResult,
+  Page,
   Pipeline,
   QueryObject,
+  Row,
+  Rows,
   RuleValue,
 } from "./query.ts";
 
@@ -31,6 +35,7 @@ export {
   some,
   stage,
   updatedSince,
+  when,
   where,
 } from "./lib.ts";
 export type { FilterStage, IdRow, TraversalStage } from "./lib.ts";

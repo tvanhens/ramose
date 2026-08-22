@@ -18,28 +18,16 @@ import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
-import type { Equal } from "./equal.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
 import { NotOne, ParamError } from "./Errors.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
-import {
-  asNavQuery,
-  finalizeAggResult,
-  finalizeNavPage,
-  finalizeNavResult,
-  lowerNavQuery,
-  takeNavResult,
-  type NavQuery,
-  type NavQueryBuilder,
-  type Page,
-} from "./NavQuery.ts";
-import type { AnyNamespace } from "./Namespace.ts";
 import type { ParamArgs } from "./Params.ts";
 import {
-  isQueryObject,
   lowerQueryObject,
+  type AnyQueryObject,
   type LoweredKernelQuery,
+  type Page,
   type QueryObject,
 } from "./query/index.ts";
 import type { SessionPrincipal } from "./session.ts";
@@ -57,30 +45,6 @@ import {
   type YieldContext,
   type YieldError,
 } from "./Tx.ts";
-
-/** A navigational query value, or the builder that makes one. */
-export type QueryInput<R, P = never> =
-  | NavQuery<R, P>
-  | NavQueryBuilder<AnyNamespace, R, P>;
-
-/** Any runnable read: the nav surface, or a kernel `Query.q` value. */
-type AnyReadInput = QueryInput<unknown, unknown> | QueryObject<unknown, unknown>;
-
-/**
- * The rows a query yields here. A query is scoped to a namespace, not to a
- * catalog, so a `.select`-less one types its ids against whichever catalog the
- * db that ran it carries — including after `.one()` / `.oneOrFail()`.
- */
-type QueryRows<C extends AnyCatalog, R> = Equal<
-  R,
-  readonly Eid[]
-> extends true
-  ? readonly Eid<C>[]
-  : Equal<R, Eid | null> extends true
-    ? Eid<C> | null
-    : Equal<R, Eid> extends true
-      ? Eid<C>
-      : R;
 
 /**
  * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
@@ -191,19 +155,13 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
   readonly catalog: C;
 
-  /** Run a {@link NavQuery} or a kernel {@link QueryObject} once. Bind
-   * params as the second argument. */
-  q<Row, P = never>(
-    input: QueryObject<Row, P>,
+  /** Run a {@link QueryObject} once. Bind params as the second argument.
+   * The result is the query's terminal: the rows array, one row (or `null`)
+   * after `one()` / `oneOrFail()`, a `Page` after `after(cursor)`. */
+  q<Row, P = never, Out = readonly Row[]>(
+    input: QueryObject<Row, P, Out>,
     ...params: ParamArgs<P>
-  ): Effect.Effect<readonly Row[], QueryError<readonly Row[], P>>;
-  q<R>(
-    input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
-  ): Effect.Effect<QueryRows<C, R>, QueryError<R, never>>;
-  q<R, P = never>(
-    input: QueryInput<R, P>,
-    ...params: ParamArgs<P>
-  ): Effect.Effect<QueryRows<C, R>, QueryError<R, P>>;
+  ): Effect.Effect<Out, QueryError<Out, P>>;
 
   /**
    * Stand a query up. On an overlay session, re-run when that overlay
@@ -215,17 +173,10 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * emitted again: a write this query does not see is not a re-render.
    * Bind params as the second argument.
    */
-  live<Row, P = never>(
-    input: QueryObject<Row, P>,
+  live<Row, P = never, Out = readonly Row[]>(
+    input: QueryObject<Row, P, Out>,
     ...params: ParamArgs<P>
-  ): Stream.Stream<readonly Row[], QueryError<readonly Row[], P>>;
-  live<R>(
-    input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
-  ): Stream.Stream<QueryRows<C, R>, QueryError<R, never>>;
-  live<R, P = never>(
-    input: QueryInput<R, P>,
-    ...params: ParamArgs<P>
-  ): Stream.Stream<QueryRows<C, R>, QueryError<R, P>>;
+  ): Stream.Stream<Out, QueryError<Out, P>>;
 
   /**
    * Project one entity. `null` when a required field is missing. The subject
@@ -466,7 +417,7 @@ const makeRead = <C extends AnyCatalog>(
       );
 
   const runQuery = (
-    input: AnyReadInput,
+    input: AnyQueryObject,
     minT: number | undefined,
     bindings: Readonly<Record<string, unknown>> | undefined,
   ): Effect.Effect<
@@ -479,46 +430,14 @@ const makeRead = <C extends AnyCatalog>(
     DbError | NotOne | ParamError
   > =>
     Effect.gen(function* () {
-      // a kernel Query.q value: its own lowering, its own reshape — the
-      // wire, budgets and view coordinates are shared with the nav path
-      if (isQueryObject(input)) {
-        let lowered: LoweredKernelQuery;
-        try {
-          lowered = lowerQueryObject(input, bindings);
-        } catch (e) {
-          if (e instanceof ParamError) return yield* Effect.fail(e);
-          throw e;
-        }
-        const reply = record(
-          yield* wire.read(
-            name,
-            "q",
-            compact({
-              query: lowered.query,
-              inputs: [],
-              asOf: view.asOf,
-              history: view.history === true ? true : undefined,
-            }),
-            minT ?? view.minT,
-          ),
-        );
-        return {
-          rows: lowered.finalize(reply.result),
-          t: typeof reply.t === "number" ? reply.t : 0,
-          raw: reply.result,
-          viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
-        };
-      }
-      const nav = asNavQuery(input);
-      let lowered: ReturnType<typeof lowerNavQuery>;
+      let lowered: LoweredKernelQuery;
       try {
-        lowered = lowerNavQuery(nav as NavQuery<any, any>, bindings);
+        lowered = lowerQueryObject(input, bindings);
       } catch (e) {
         if (e instanceof ParamError) return yield* Effect.fail(e);
         throw e;
       }
-      const fence = minT ?? view.minT;
-      const body = record(
+      const reply = record(
         yield* wire.read(
           name,
           "q",
@@ -528,31 +447,19 @@ const makeRead = <C extends AnyCatalog>(
             asOf: view.asOf,
             history: view.history === true ? true : undefined,
           }),
-          fence,
+          minT ?? view.minT,
         ),
       );
-      const t = typeof body.t === "number" ? body.t : 0;
-      const viewed = typeof body.epoch === "number" ? body.epoch : undefined;
-      if (nav.spec.aggregate !== undefined) {
-        return {
-          rows: finalizeAggResult(body.result, nav.spec),
-          t,
-          raw: body.result,
-          viewed,
-        };
-      }
-      const finalized = finalizeNavResult(body.result, lowered.pullMap);
-      if (nav.spec.after !== undefined) {
-        return {
-          rows: finalizeNavPage(body.result, finalized, lowered.query.limit),
-          t,
-          raw: body.result,
-          viewed,
-        };
-      }
-      const taken = takeNavResult(finalized, nav.spec.take);
-      if (taken instanceof NotOne) return yield* Effect.fail(taken);
-      return { rows: taken, t, raw: body.result, viewed };
+      // `finalize` applies the query's terminal too: a page wraps, a take
+      // unwraps — an `oneOrFail()` miss comes back as the NotOne to fail with
+      const rows = lowered.finalize(reply.result);
+      if (rows instanceof NotOne) return yield* Effect.fail(rows);
+      return {
+        rows,
+        t: typeof reply.t === "number" ? reply.t : 0,
+        raw: reply.result,
+        viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
+      };
     });
 
   /**
@@ -650,7 +557,7 @@ const makeRead = <C extends AnyCatalog>(
     catalog,
 
     q: ((
-      input: AnyReadInput,
+      input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
       fenced(
@@ -662,7 +569,7 @@ const makeRead = <C extends AnyCatalog>(
       )) as ReadDb<C>["q"],
 
     live: ((
-      input: AnyReadInput,
+      input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
       standing<unknown, DbError | NotOne | ParamError>((minT) =>

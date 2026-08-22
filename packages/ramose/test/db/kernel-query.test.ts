@@ -29,12 +29,14 @@ import {
   EidOf,
   Long,
   Namespace,
+  NotOne,
   ParamError,
   Q,
   Query,
   Ref,
   layer,
   lowerQueryObject,
+  optional,
   type Db,
 } from "../../src/db/internal.ts";
 
@@ -641,6 +643,135 @@ describe("db.q end to end", () => {
       "fix the flake",
       "ship the release",
     ]);
+
+    await peer.dispose();
+  });
+
+  test("one() / oneOrFail(): forced limit, unwrapped row, NotOne on the miss", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byTitle = Query.q({ title: Issue.title }, (p) =>
+      pipe(
+        Query.entities(Issue),
+        Query.is(Issue.title, p.title),
+        Query.select({ title: Issue.title, rank: Issue.rank }),
+      ),
+    );
+
+    // lowering forces the limit: one row for one(), two so a second match is witnessed
+    expect(lowerQueryObject(byTitle.one(), { title: "x" }).query.limit).toBe(1);
+    expect(lowerQueryObject(byTitle.oneOrFail(), { title: "x" }).query.limit).toBe(2);
+
+    const hit = await run(db.q(byTitle.one(), { title: "ship the release" }));
+    expect(hit).toEqual({ title: "ship the release", rank: 3 } as never);
+    expect(await run(db.q(byTitle.one(), { title: "nope" }))).toBeNull();
+
+    const exact = await run(db.q(byTitle.oneOrFail(), { title: "fix the flake" }));
+    expect(exact.rank).toBe(1);
+
+    const missing = await run(Effect.flip(db.q(byTitle.oneOrFail(), { title: "nope" })));
+    expect(missing).toBeInstanceOf(NotOne);
+    expect((missing as NotOne).found).toBe(0);
+
+    const openIssues = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.done, false), Query.select({ title: Issue.title })),
+    );
+    const two = await run(Effect.flip(db.q(openIssues.oneOrFail())));
+    expect((two as NotOne).found).toBe(2);
+
+    await peer.dispose();
+  });
+
+  test("after(): keyset pages walk the sort, cursor ends on the short page", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byRank = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title, rank: Issue.rank }),
+        Query.orderBy("rank"),
+        Query.limit(2),
+      ),
+    );
+
+    const p1 = await run(db.q(byRank.after(null)));
+    expect(p1.rows.map((r) => r.rank)).toEqual([1, 2]);
+    expect(p1.cursor).not.toBeNull();
+
+    const p2 = await run(db.q(byRank.after(p1.cursor)));
+    expect(p2.rows.map((r) => r.rank)).toEqual([3]);
+    // shorter than its limit: the page is over
+    expect(p2.cursor).toBeNull();
+
+    // the seek is the peer's — the wire carries `after` with the tie-breaker
+    const lowered = lowerQueryObject(byRank.after(p1.cursor));
+    expect((lowered.query.after as unknown[]).length).toBe(2);
+    expect((lowered.query.order as unknown[]).length).toBe(2);
+
+    // paging an unsorted query has no position to seek from
+    const unsorted = Query.q(() => pipe(Query.entities(Issue), Query.select({ title: Issue.title })));
+    expect(() => lowerQueryObject(unsorted.after(null))).toThrow(/sorted query/);
+
+    // a cursor only continues the query that minted it
+    const oneKey = Query.q(() =>
+      pipe(Query.entities(Issue), Query.select({ rank: Issue.rank }), Query.orderBy("rank"), Query.orderBy(Issue.title)),
+    );
+    expect(() => lowerQueryObject(oneKey.after(p1.cursor))).toThrow(/does not fit/);
+
+    await peer.dispose();
+  });
+
+  test("when: a param-gated clause group splices or drops at lowering", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    // an optional param gates on being bound; inside the body it is bound
+    const board = Query.q({ owner: optional(EidOf(User)) }, (p) =>
+      pipe(
+        Query.entities(Issue),
+        Query.when(p.owner, Query.is(Issue.owner, p.owner)),
+        Query.select({ title: Issue.title }),
+      ),
+    );
+
+    const all = await run(db.q(board, {}));
+    expect(all).toHaveLength(3);
+    const adas = await run(db.q(board, { owner: ids.ada as never }));
+    expect(adas.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
+
+    // gate off, the clause lowers to nothing
+    const off = lowerQueryObject(board, {});
+    expect(JSON.stringify(off.query.where)).not.toContain(":issue/owner");
+
+    // a required boolean param gates on its value — the generator spelling
+    const listing = Query.q({ onlyOpen: Schema.Boolean }, function* (p) {
+      const issue = yield* Query.entities(Issue);
+      yield* Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue));
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v };
+    });
+    expect(await run(db.q(listing, { onlyOpen: true }))).toHaveLength(2);
+    expect(await run(db.q(listing, { onlyOpen: false }))).toHaveLength(3);
+
+    // an unbound optional referenced outside its when is still a ParamError
+    const loose = Query.q({ owner: optional(EidOf(User)) }, (p) =>
+      pipe(Query.entities(Issue), Query.is(Issue.owner, p.owner), Query.select({ title: Issue.title })),
+    );
+    expect(() => lowerQueryObject(loose, {})).toThrow(ParamError);
+
+    // when does not nest into or/not: an off gate would blank the branch
+    const inOr = Query.q({ onlyOpen: Schema.Boolean }, function* (p) {
+      const issue = yield* Query.entities(Issue);
+      yield* Q.or(Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue)));
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v };
+    });
+    expect(() => lowerQueryObject(inOr, { onlyOpen: true })).toThrow(/cannot appear inside/);
 
     await peer.dispose();
   });

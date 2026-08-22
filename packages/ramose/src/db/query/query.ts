@@ -22,12 +22,13 @@
 
 import { TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid } from "../Eid.ts";
+import { NotOne } from "../Errors.ts";
 import type { AnyNamespace } from "../Namespace.ts";
 import {
   lowerOrderPath,
   requiredClauses,
   resetGensym,
-  substituteShape,
+  shapeToPullMap,
   type OrderDir,
   type OrderEmpty,
   type PathCarrier,
@@ -35,7 +36,7 @@ import {
   cardsOf,
   pathOf,
   revsOf,
-} from "../NavQuery.ts";
+} from "../shapes.ts";
 import {
   bindParams,
   isParam,
@@ -74,6 +75,39 @@ import {
   type SpliceCommand,
   type Var,
 } from "./kernel.ts";
+
+// ── keyset paging ───────────────────────────────────────────────────────────
+
+/**
+ * Where a page ended — feed it to `q.after` to get the next one. Opaque: the
+ * `keys` are the last row's sort-key values (the entity-id tie-breaker
+ * included), and they mean something only to the query that minted them —
+ * `.after` rejects a cursor whose shape does not fit. Keep it in memory
+ * between pages; it is not designed to survive serialization (a `Date` key
+ * that round-trips as a string would sort as one).
+ */
+export interface Cursor {
+  readonly _tag: "Cursor";
+  /** @internal One value per lowered `:order` key, the tie-breaker last. */
+  readonly keys: readonly unknown[];
+}
+
+export const isCursor = (x: unknown): x is Cursor =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Cursor" &&
+  Array.isArray((x as { keys?: unknown }).keys);
+
+/**
+ * What a cursor-paged query resolves to: the page's rows, and the cursor of
+ * its last row — `null` when there is no next page (the page came back empty,
+ * or shorter than its `limit`). Without a `limit`, a full sweep always ends
+ * on one empty page: the peer cannot know the last row is the last.
+ */
+export interface Page<Row = unknown> {
+  readonly rows: readonly Row[];
+  readonly cursor: Cursor | null;
+}
 
 // ── the pipeline value (built by `entities` + the pipe stages in lib.ts) ────
 
@@ -146,9 +180,12 @@ interface OpenCommand<Row> extends SpliceCommand {
 /**
  * A closed query value: `(params, body)`, runnable by `db.q` / `db.live`
  * and delegable into other builds via {@link QueryObject.open}. `Row` is
- * the inferred row; `PB` the declared bindings record.
+ * the inferred row; `PB` the declared bindings record; `Out` is what a
+ * terminal resolves to — the rows array by default, one row (or `null`)
+ * after {@link QueryObject.one} / {@link QueryObject.oneOrFail}, a
+ * {@link Page} after {@link QueryObject.after}.
  */
-export interface QueryObject<Row = unknown, PB = never> {
+export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
   readonly _tag: "Query";
   /** The declared head, if any. */
   readonly paramsSpec: ParamsSpec | undefined;
@@ -158,6 +195,10 @@ export interface QueryObject<Row = unknown, PB = never> {
   readonly body: (p: never) => unknown;
   /** @internal `logic()` strips cursor stages instead of failing `open` */
   readonly stripCursor: boolean;
+  /** @internal `one()` / `oneOrFail()` — forced `limit 1`/`2`, unwrapped. */
+  readonly take: "one" | "oneOrFail" | undefined;
+  /** @internal the keyset cursor `after(...)` seeks past; `null` is page one. */
+  readonly seek: Cursor | null | undefined;
 
   /**
    * Delegate this whole query into an enclosing build: its clauses inline,
@@ -171,17 +212,57 @@ export interface QueryObject<Row = unknown, PB = never> {
     ...args: [PB] extends [never] ? [] : [args: OpenArgs<PB>]
   ): OpenCommand<Row>;
 
-  /** This query without its cursor (orderBy/limit/offset) — the logic
-   * composes; the cursor was post-processing for the outermost query. */
+  /** This query without its cursor (orderBy/limit/offset/one/after) — the
+   * logic composes; the cursor was post-processing for the outermost query. */
   logic(): QueryObject<Row, PB>;
+
+  /**
+   * At most one row. Lowering forces `limit 1`; the result is that row or
+   * `null`, the same absence `db.pull` uses. Extra matches are not fetched.
+   */
+  one(): QueryObject<Row, PB, Row | null>;
+  /**
+   * Exactly one row. Lowering forces `limit 2` so a second match is
+   * witnessed without pulling a whole page, and `db.q` fails with `NotOne`
+   * when the peer answers zero or two.
+   */
+  oneOrFail(): QueryObject<Row, PB, Row>;
+  /**
+   * Keyset-page a sorted query: the result becomes a {@link Page}, whose
+   * `cursor` is where it ended — pass `null` for the first page and the
+   * previous page's cursor after that. Needs an `orderBy` (the cursor is a
+   * position in the sort); the entity id rides as a final tie-breaker, so
+   * rows that tie on every key still land on exactly one page. The seek is
+   * the peer's: `limit(n)` is n rows *past* the cursor, and unlike `offset`
+   * the walk does not shift when rows are inserted before it.
+   */
+  after(cursor: Cursor | null): QueryObject<Row, PB, Page<Row>>;
 
   /** Phantom — the inferred row. Never present at runtime. */
   readonly _row?: Row;
   /** Phantom — the declared bindings record. Never present at runtime. */
   readonly _params?: PB;
+  /** Phantom — what a terminal resolves to. Never present at runtime. */
+  readonly _out?: Out;
 }
 
-export type AnyQueryObject = QueryObject<any, any>;
+export type AnyQueryObject = QueryObject<any, any, any>;
+
+/**
+ * The row type a query yields — so an app names it once, from the query,
+ * instead of restating the shape by hand:
+ *
+ * ```ts
+ * const boardQuery = Query.q(() => pipe(entities(Issue), select({ … })));
+ * type BoardRow = Ramose.Row<typeof boardQuery>;   // one row
+ * type BoardRows = Ramose.Rows<typeof boardQuery>; // the readonly array
+ * ```
+ */
+export type Row<Q> = Q extends QueryObject<infer R, any, any> ? R : never;
+
+/** The readonly array of {@link Row} — what `db.q` resolves an unpaged,
+ * untaken query to. */
+export type Rows<Q> = readonly Row<Q>[];
 
 export const isQueryObject = (x: unknown): x is AnyQueryObject =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Query";
@@ -348,6 +429,8 @@ const makeQueryObject = <Row, PB>(
   paramSet: AnyParamSet | undefined,
   body: (p: never) => unknown,
   stripCursor: boolean,
+  take?: "one" | "oneOrFail",
+  seek?: Cursor | null,
 ): QueryObject<Row, PB> => {
   const self: QueryObject<Row, PB> = {
     _tag: "Query",
@@ -355,8 +438,39 @@ const makeQueryObject = <Row, PB>(
     paramSet,
     body,
     stripCursor,
+    take,
+    seek,
     open: ((args?: Record<string, unknown>) => openCommand(self, args)) as QueryObject<Row, PB>["open"],
     logic: () => makeQueryObject<Row, PB>(paramsSpec, paramSet, body, true),
+    one: () => {
+      if (seek !== undefined) {
+        throw new Error(
+          "ramose/query: one() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
+        );
+      }
+      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, "one") as never;
+    },
+    oneOrFail: () => {
+      if (seek !== undefined) {
+        throw new Error(
+          "ramose/query: oneOrFail() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
+        );
+      }
+      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, "oneOrFail") as never;
+    },
+    after: (cursor) => {
+      if (take !== undefined) {
+        throw new Error(
+          "ramose/query: one() / oneOrFail() answer a single row — there is no next page to cursor to",
+        );
+      }
+      if (cursor !== null && !isCursor(cursor)) {
+        throw new Error(
+          "ramose/query: after(...) takes the previous page's cursor, or null for the first page",
+        );
+      }
+      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, undefined, cursor) as never;
+    },
   };
   return self;
 };
@@ -490,9 +604,9 @@ const openCommand = <Row>(qv: AnyQueryObject, args: Record<string, unknown> | un
         p[key] = supplied;
       }
       const built = runInto(qv, p, ctx, qv.stripCursor);
-      if (built.order.length > 0 || built.limit !== undefined || built.offset !== undefined) {
+      if (built.order.length > 0 || built.limit !== undefined || built.offset !== undefined || qv.take !== undefined || qv.seek !== undefined) {
         throw new Error(
-          "ramose/query: a query with a cursor (orderBy/limit/offset) does not delegate — the cursor is post-processing for the outermost query; extend then order, or strip it explicitly with q.logic()",
+          "ramose/query: a query with a cursor (orderBy/limit/offset/one/after) does not delegate — the cursor is post-processing for the outermost query; extend then order, or strip it explicitly with q.logic()",
         );
       }
       const cols: Projection = isIdsSpec(built.proj) ? ({ id: built.proj.v } as CellRecord) : built.proj;
@@ -688,6 +802,7 @@ export const lowerQueryObject = (
           c.branches.forEach((b) => clauseListVars(b, into));
           break;
         case "notGroup":
+        case "whenGroup":
           clauseListVars(c.clauses, into);
           break;
       }
@@ -788,6 +903,12 @@ export const lowerQueryObject = (
           out.push(["not-join", join.map((id) => names.get(id) ?? nameOf(findVar(c, id))), ...lowered]);
           break;
         }
+        case "whenGroup":
+          // top-level groups were resolved before lowering; one that survives
+          // is inside a branch whose truth an off gate would corrupt
+          throw new Error(
+            "ramose/query: Q.when(...) cannot appear inside Q.or / Q.not or a rule body — an off gate lowers to no clauses, which under `or` would make the branch vacuously true. Gate at the query's top level",
+          );
       }
     }
     return out;
@@ -823,6 +944,7 @@ export const lowerQueryObject = (
             c.branches.forEach(scan);
             break;
           case "notGroup":
+          case "whenGroup":
             scan(c.clauses);
             break;
         }
@@ -907,7 +1029,7 @@ export const lowerQueryObject = (
       return;
     }
     if (isPullSpec(cell)) {
-      const map = substituteShape(cell.shape, binder);
+      const map = shapeToPullMap(cell.shape);
       const focus = nameOf(cell.focus);
       where.push(...requiredClauses(focus, map));
       flats.push({
@@ -933,7 +1055,7 @@ export const lowerQueryObject = (
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) => tuples.map((t) => (typeof t[0] === "number" ? makeEid(t[0]) : t[0]));
   } else if (isPullSpec(proj)) {
-    const map = substituteShape(proj.shape, binder);
+    const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
     find.push(["pull", focus, lowerPullPattern(map)]);
@@ -977,7 +1099,7 @@ export const lowerQueryObject = (
   else if (isPullSpec(proj)) projVars.add(proj.focus.id);
   else collectProjVars(isRowsSpec(proj) ? proj.cells : (proj as CellRecord));
 
-  where.unshift(...lowerClauses(built.clauses, projVars));
+  where.unshift(...lowerClauses(resolveWhens(built.clauses, binder), projVars));
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
   if (built.order.length > 0) {
@@ -1000,20 +1122,105 @@ export const lowerQueryObject = (
     }
     return v;
   };
-  const limit = boundCount(built.limit, "limit");
+  const take = qv.stripCursor ? undefined : qv.take;
+  const seek = qv.stripCursor ? undefined : qv.seek;
+  // `one()` asks for one row; `oneOrFail()` asks for two so a second match
+  // is witnessed. A `limit(n)` stage does not widen that — take wins.
+  const limit =
+    take === "one" ? 1 : take === "oneOrFail" ? 2 : boundCount(built.limit, "limit");
   const offset = boundCount(built.offset, "offset");
+
+  // Keyset paging: a cursor is a position in a *total* order, so the entity
+  // id rides as the final tie-breaker (unless a sort key already is it), and
+  // every sort-key variable rides in `find` after the row cells — that is
+  // what the client mints the next cursor from.
+  const pagedVars: string[] = [];
+  if (seek !== undefined) {
+    if (offset !== undefined) {
+      throw new Error(
+        "ramose/query: after(...) and offset both say where the page starts — a cursor already is the offset",
+      );
+    }
+    if (order.length === 0) {
+      throw new Error(
+        "ramose/query: after(...) pages a sorted query — add an orderBy for the cursor to be a position in",
+      );
+    }
+    const root = nameOf(built.focus!);
+    if (!order.some((o) => o.var === root)) {
+      order.push({ var: root, dir: "asc", empty: "last" });
+    }
+    pagedVars.push(...order.map((o) => o.var));
+    if (seek !== null && seek.keys.length !== order.length) {
+      throw new Error(
+        `ramose/query: this cursor does not fit — it carries ${seek.keys.length} sort-key values and the query orders by ${order.length}; a cursor only continues the query that minted it`,
+      );
+    }
+    find.push(...pagedVars);
+  }
+  const baseLen = find.length - pagedVars.length;
 
   const query: Record<string, unknown> = {
     find,
     where,
     ...(ruleDefs.length > 0 ? { rules: ruleDefs } : {}),
     ...(order.length > 0 ? { order } : {}),
+    ...(seek !== undefined && seek !== null ? { after: [...seek.keys] } : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(offset !== undefined ? { offset } : {}),
   };
 
   return {
     query,
-    finalize: (result) => finalizeRows(Array.isArray(result) ? (result as unknown[][]) : []),
+    finalize: (result) => {
+      const tuples = Array.isArray(result) ? (result as unknown[][]) : [];
+      const rows = finalizeRows(tuples) as readonly unknown[];
+      // the cursor is the last raw row's sort-key cells (everything past the
+      // projection); `null` when the page is over — it came back empty, or
+      // shorter than its limit, so there is nothing past it to ask for
+      if (seek !== undefined) {
+        const last = tuples[tuples.length - 1];
+        return {
+          rows,
+          cursor:
+            !Array.isArray(last) || (limit !== undefined && tuples.length < limit)
+              ? null
+              : { _tag: "Cursor", keys: last.slice(baseLen) },
+        } satisfies Page;
+      }
+      // `one()` picks the cell; `oneOrFail()` names the miss. The NotOne is
+      // returned (not thrown) so `db.q` fails its Effect with it.
+      if (take !== undefined) {
+        if (take === "one") return rows[0] ?? null;
+        if (rows.length === 1) return rows[0];
+        return new NotOne({
+          message:
+            rows.length === 0
+              ? "ramose/query: expected exactly one row, found none"
+              : "ramose/query: expected exactly one row, found 2",
+          found: rows.length === 0 ? 0 : 2,
+        });
+      }
+      return rows;
+    },
   };
+};
+
+/**
+ * Resolve the param-gated groups `Q.when` recorded: gate on, the clauses
+ * splice exactly as if written inline; gate off, they lower to nothing.
+ * Runs before anything reads the clause list, so join-variable analysis
+ * never sees a dropped clause.
+ */
+const resolveWhens = (list: readonly BClause[], binder: ParamBinder): BClause[] => {
+  const out: BClause[] = [];
+  for (const c of list) {
+    if (c._tag === "whenGroup") {
+      if (!binder.gateOn(c.gate)) continue;
+      out.push(...resolveWhens(c.clauses, binder));
+      continue;
+    }
+    out.push(c);
+  }
+  return out;
 };

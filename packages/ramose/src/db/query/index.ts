@@ -29,6 +29,7 @@ export {
 
 export {
   enrich,
+  isCursor,
   isPipeline,
   isQueryObject,
   isRuleValue,
@@ -37,13 +38,17 @@ export {
   refine,
   rule,
   type AnyQueryObject,
+  type Cursor,
   type LoweredKernelQuery,
   type OpenArgs,
   type OpenResult,
+  type Page,
   type Pipeline,
   type PipeStage,
   type QueryBody,
   type QueryObject,
+  type Row,
+  type Rows,
   type RuleValue,
 } from "./query.ts";
 
@@ -64,6 +69,7 @@ export {
   some,
   stage,
   updatedSince,
+  when,
   where,
   type FilterStage,
   type IdRow,

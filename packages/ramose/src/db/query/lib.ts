@@ -14,7 +14,7 @@
 
 import type { AnyNamespace } from "../Namespace.ts";
 import type { AnyParam } from "../Params.ts";
-import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../NavQuery.ts";
+import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
   Q,
   isVar,
@@ -22,6 +22,7 @@ import {
   type AttrLike,
   type EidCell,
   type QueryGen,
+  type ValidGate,
   type Var,
 } from "./kernel.ts";
 import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
@@ -182,6 +183,30 @@ export const every = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
       yield* Q.not(function* () {
         for (const p of ps) yield* p(other) as QueryGen<unknown>;
       });
+    });
+  });
+
+// ── param-gated clauses ─────────────────────────────────────────────────────
+
+/**
+ * `when(gate, ps…)`: the given filters are part of the query only while the
+ * gate is on — a `Param<boolean>` (on when bound `true`) or a
+ * `Ramose.optional` param (on when bound at all; inside the body that param
+ * is bound, so referencing it there is always legal). Gate on, the clauses
+ * lower exactly as if written inline; gate off, they lower to nothing. A
+ * gate changes which **rows**, never the row's shape.
+ *
+ * ```ts
+ * Query.when(p.assignee, Query.is(Issue.assignee, p.assignee))
+ * ```
+ */
+export const when = <G extends AnyParam>(
+  gate: G & ValidGate<G>,
+  ...ps: readonly ElemPred[]
+): FilterStage =>
+  filter(function* (e) {
+    yield* Q.when(gate as never, function* () {
+      for (const p of ps) yield* p(e) as QueryGen<unknown>;
     });
   });
 

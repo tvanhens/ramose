@@ -11,7 +11,7 @@
  *   by issue order, not by resolution order.
  */
 
-import type { Catalog, DbError, QueryError, QueryInput, ReadDb } from "../db/index.ts";
+import type { Catalog, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { paramsKey, type ParamArgs } from "../db/Params.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -29,13 +29,13 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export const useQuery = <C extends Catalog.Any, R, P = never>(
+export const useQuery = <C extends Catalog.Any, R, P = never, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryInput<R, P>,
+  query: QueryObject<R, P, Out>,
   ...params: ParamArgs<P>
-): Async<R, QueryError<R, P>> => {
+): Async<Out, QueryError<Out, P>> => {
   const bindings = params[0];
-  const [state, set] = useState<Async<R, QueryError<R, P>>>({
+  const [state, set] = useState<Async<Out, QueryError<Out, P>>>({
     data: undefined,
     error: undefined,
     loading: true,
@@ -48,7 +48,7 @@ export const useQuery = <C extends Catalog.Any, R, P = never>(
     let disposed = false;
     /** Land this run's outcome unless a later-issued run already landed. */
     const land = (
-      next: (prev: Async<R, QueryError<R, P>>) => Async<R, QueryError<R, P>>,
+      next: (prev: Async<Out, QueryError<Out, P>>) => Async<Out, QueryError<Out, P>>,
     ): void => {
       if (disposed || seq < runs.current.applied) return;
       runs.current.applied = seq;
@@ -65,7 +65,7 @@ export const useQuery = <C extends Catalog.Any, R, P = never>(
       db.q(query, ...(params as ParamArgs<P>)).pipe(
         Effect.flatMap((rows) =>
           Effect.sync(() =>
-            land(() => ({ data: rows as R, error: undefined, loading: false })),
+            land(() => ({ data: rows as Out, error: undefined, loading: false })),
           ),
         ),
         Effect.catchCause((error) =>

@@ -22,8 +22,8 @@
  */
 
 import type { AnyNamespace } from "../Namespace.ts";
-import type { AnyParam } from "../Params.ts";
-import type { Shape, ValidShape, SelectResult, AttrValue } from "../NavQuery.ts";
+import type { AnyParam, Param } from "../Params.ts";
+import type { Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
 // ── vars ────────────────────────────────────────────────────────────────────
 
@@ -179,6 +179,14 @@ export interface MemberCommand extends Yieldable<Var<EidCell>> {
   readonly ns: AnyNamespace;
 }
 
+/** `Q.when(gate, body)` — clauses that are part of the query only while the
+ * gate is on. Recorded as a {@link WhenClause}; lowering splices or drops. */
+export interface WhenCommand extends Yieldable<void> {
+  readonly _tag: "when";
+  readonly gate: AnyParam;
+  readonly body: SubBody;
+}
+
 /** A command that splices itself (rule calls, `q.open`) — it records its
  * own clauses through the collector it is handed. */
 export interface SpliceCommand extends Yieldable<any> {
@@ -192,6 +200,7 @@ export type AnyCommand =
   | OrCommand
   | NotCommand
   | MemberCommand
+  | WhenCommand
   | SpliceCommand;
 
 // ── recorded clauses (what a build accumulates) ─────────────────────────────
@@ -212,6 +221,14 @@ export interface NotClause {
   readonly clauses: readonly BClause[];
 }
 
+/** A param-gated clause group: spliced when the gate is on, dropped when it
+ * is off. Resolved by the lowering pass before anything reads the clauses. */
+export interface WhenClause {
+  readonly _tag: "whenGroup";
+  readonly gate: AnyParam;
+  readonly clauses: readonly BClause[];
+}
+
 /** An applied named rule; `query.ts` records these via a splice command. */
 export interface CallClause {
   readonly _tag: "ruleCall";
@@ -226,6 +243,7 @@ export type BClause =
   | MemberClause
   | OrClause
   | NotClause
+  | WhenClause
   | CallClause;
 
 /** The local collector one build pass accumulates into. */
@@ -284,6 +302,13 @@ const dispatch = (cmd: AnyCommand, ctx: BuildCtx): unknown => {
       ctx.clauses.push({ _tag: "memberOf", ns: cmd.ns, v });
       return v;
     }
+    case "when":
+      ctx.clauses.push({
+        _tag: "whenGroup",
+        gate: cmd.gate,
+        clauses: collectBody(cmd.body),
+      });
+      return undefined;
     case "splice":
       return cmd.splice(ctx);
   }
@@ -462,6 +487,17 @@ const fact = <A extends AttrLike>(
 /** A comparison operand: a bound var, a literal, or a param hole. */
 export type Operand<T = unknown> = Var<T> | AnyParam | T;
 
+/**
+ * The error `Q.when` resolves an ungateable param to: a gate is a
+ * `Param<boolean>` (on when bound `true`) or a `Ramose.optional` param (on
+ * when bound at all) — a required non-boolean param has no off state.
+ */
+export type ValidGate<G> = G extends Param<any, any, true>
+  ? unknown
+  : G extends Param<boolean, any, false>
+    ? unknown
+    : `Q.when's gate is a Param<boolean> or a Ramose.optional param — a required non-boolean param has no off state`;
+
 const agg = <T>(fn: AggSpec["fn"], v: AnyVar): AggSpec<T> => {
   if (!isVar(v)) {
     throw new Error(`ramose/query: Q.${fn === "count-distinct" ? "countDistinct" : fn}(...) aggregates a bound var`);
@@ -527,6 +563,31 @@ export const Q = {
       return yieldSelf<void>(this);
     },
   }),
+
+  /**
+   * Clauses that are part of the query only while the gate is on. The gate
+   * is a `Param<boolean>` (on when bound `true`) or a `Ramose.optional`
+   * param (on when bound at all — and inside the body that param is bound,
+   * so referencing it there is always legal). Never a JS predicate: the
+   * query stays one value. Gate on, the body lowers exactly as if written
+   * inline; gate off, it lowers to nothing. Top-level clauses only — inside
+   * `Q.or` / `Q.not` an off gate would make the branch vacuously true.
+   */
+  when: (<G extends AnyParam>(gate: G & ValidGate<G>, body: SubBody): WhenCommand => {
+    if (typeof gate !== "object" || gate === null || (gate as { _tag?: unknown })._tag !== "Param") {
+      throw new Error(
+        "ramose/query: Q.when's gate must be a param (a Param<boolean>, or a Ramose.optional param that gates on being bound) — a JS value or predicate would fork the query object, which is the thing `when` exists to avoid",
+      );
+    }
+    return {
+      _tag: "when",
+      gate: gate as AnyParam,
+      body,
+      [Symbol.iterator]() {
+        return yieldSelf<void>(this);
+      },
+    };
+  }) as <G extends AnyParam>(gate: G & ValidGate<G>, body: SubBody) => WhenCommand,
 
   // ── projections ──────────────────────────────────────────────────────────
 

@@ -34,18 +34,6 @@ export { Attr, type Attribute } from "./Attribute.ts";
 export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
-export {
-  avg,
-  count,
-  countDistinct,
-  max,
-  min,
-  not,
-  or,
-  query,
-  sum,
-  when,
-} from "./NavQuery.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";
@@ -64,36 +52,17 @@ export { Q } from "./query/index.ts";
 export * as Query from "./query/surface.ts";
 export type {
   AnyQueryObject,
+  Cursor,
   OpenArgs,
   OpenResult,
+  Page,
   Pipeline,
   QueryObject,
-  RuleValue,
-} from "./query/index.ts";
-export type {
-  Agg,
-  AggRow,
-  AggShape,
-  Cursor,
-  EidLike,
-  GroupedAggQuery,
-  GroupedNavQueryBuilder,
-  GroupedRow,
-  GroupShape,
-  HavingCells,
-  HavingNav,
-  NavQuery,
-  NavQueryBuilder,
-  Not,
-  Or,
-  Page,
-  Predicate,
   Row,
   Rows,
-  Shape,
-  When,
-  WhereNode,
-} from "./NavQuery.ts";
+  RuleValue,
+} from "./query/index.ts";
+export type { EidLike, Shape } from "./shapes.ts";
 export type { Param, ParamBindings, ParamsOf } from "./Params.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────
@@ -114,7 +83,6 @@ export type {
   Db,
   DbPrincipal,
   QueryError,
-  QueryInput,
   ReadDb,
   TxReport,
 } from "./Db.ts";

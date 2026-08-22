@@ -4,7 +4,7 @@
  * Not a package `exports` entry: the public surface is `./index.ts`
  * (`ramose/db`). This module exists so sibling modules and the tests
  * can reach the inferred / internal names — `AnyCatalog`, `NamespaceMap`,
- * `lowerNavQuery`, `makeDatabases`, `Expect`/`Equal` — without each of them
+ * `lowerQueryObject`, `makeDatabases`, `Expect`/`Equal` — without each of them
  * naming a dozen files.
  */
 
@@ -19,7 +19,7 @@ export * from "./SchemaErrors.ts";
 export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
-export * from "./NavQuery.ts";
+export * from "./shapes.ts";
 export * from "./Params.ts";
 export * from "./Eid.ts";
 export {

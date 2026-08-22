@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
 import { Connection, fromJson, pull, query, toJson, toWireDatom } from "ramose/internal/core";
 import * as Cause from "effect/Cause";
@@ -235,7 +236,13 @@ describe("the app's writes move the app's live stream", () => {
     // `dbAfter` is floored at the write, so this reads its own write
     const rows = await Effect.runPromise(
       report.dbAfter.q(
-        Ramose.query(Todo).where(Todo.title.eq("pull me")).select({ id: Todo.id }),
+        Ramose.Query.q(() =>
+          pipe(
+            Ramose.Query.entities(Todo),
+            Ramose.Query.is(Todo.title, "pull me"),
+            Ramose.Query.select({ id: Todo.id }),
+          ),
+        ),
       ),
     );
     const row = await Effect.runPromise(pullTodo(peer.db, { id: rows[0]!.id }));

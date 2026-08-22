@@ -4,27 +4,18 @@ import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import {
   attachAttrNav,
   cardsOf,
+  pathOf,
   revsOf,
-  withPath,
   type AttrNav,
-  type Hopped,
   type PathCarrier,
-} from "./NavQuery.ts";
-import { optional, type AttrPull } from "./Pull.ts";
-import {
-  isSelfRefSchema,
-  refTargetOf,
-  type SelfMarker,
-} from "./valueTypes.ts";
+} from "./shapes.ts";
 
 export type AttributeMap = Record<string, AnyAttribute>;
 
-type Pred = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8];
-type Dec<D extends number> = Pred[D];
-
 /**
- * Stamp an attribute with `name` / `ident`, literate pull methods, and
- * navigational query methods (`.eq`, `.select`, …).
+ * Stamp an attribute with `name` / `ident` and the pull-shaping methods
+ * (`.optional`, `.orDefault`, `.select`). Constraints live in the query
+ * language (`Q`, the pipeable stdlib) — an attr ref is data, not a builder.
  */
 export type StampedAttribute<
   Ns extends string,
@@ -34,33 +25,21 @@ export type StampedAttribute<
   A & {
     readonly attrName: Name;
     readonly ident: `:${Ns}/${Name}`;
-  } & AttrPull<
-    A & {
-      readonly attrName: Name;
-      readonly ident: `:${Ns}/${Name}`;
-    }
-  > &
-    PathCarrier
+  } & PathCarrier
 >;
 
 /**
  * The backlink `attr.reverse` denotes: from the ref's **target**, the entities
- * of the ref's *owning* namespace that point at you.
- *
- * It is a path node, not a datom: no `schema` (a backlink has no scalar value
- * — select a shape through it), and it exposes the owning namespace's attrs so
- * the path can keep walking. The depth budget makes `X.reverse.y.reverse…`
- * well-founded, exactly as it does for self-refs.
+ * of the ref's *owning* namespace that point at you. It is a shape node, not
+ * a datom: select a shape through it (`Issue.creator.reverse.select({ … })`).
  *
  * `Card` is the backlink's own cardinality — see {@link ReverseNav} and
  * {@link ComponentReverseNav}.
  */
 type BacklinkNav<
   Ns extends string,
-  Attrs extends AttributeMap,
   A extends AnyAttribute,
   Name extends string,
-  D extends number,
   Card extends "one" | "many",
 > = AttrNav<
   Omit<A, "cardinality" | "valueType" | "schema"> & {
@@ -69,54 +48,39 @@ type BacklinkNav<
     readonly cardinality: Card;
     readonly valueType: ":db.type/ref";
   } & PathCarrier
-> &
-  ([Dec<D>] extends [never]
-    ? unknown
-    : Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>);
+>;
 
 /**
  * The ordinary backlink: cardinality-many, because any number of entities may
- * point at one. It quantifies (`.some` / `.every` / `.none`), it filters
- * (`.where` / `.orderBy` / `.limit` / `.offset`), and its shape is an array.
+ * point at one. Its shape is an array.
  */
 export type ReverseNav<
   Ns extends string,
-  Attrs extends AttributeMap,
   A extends AnyAttribute,
   Name extends string,
-  D extends number,
-> = BacklinkNav<Ns, Attrs, A, Name, D, "many">;
+> = BacklinkNav<Ns, A, Name, "many">;
 
 /**
  * The backlink of a `:db/isComponent` ref: cardinality-**one**. A component is
  * owned by the entity that refers to it, so at most one entity points at it,
  * and the peer answers such a backlink with a single value rather than a
- * collection (`cardMany = !attr.isComponent` in the pull engine).
- *
- * Being card-one, it has no elements: the quantifiers and the collection
- * methods are `never` on it, and `.reverse.select({ … })` reads as one nested
- * object — `.optional` when the component may have no owner.
+ * collection (`cardMany = !attr.isComponent` in the pull engine). Its
+ * `.reverse.select({ … })` reads as one nested object — `.optional` when the
+ * component may have no owner.
  */
 export type ComponentReverseNav<
   Ns extends string,
-  Attrs extends AttributeMap,
   A extends AnyAttribute,
   Name extends string,
-  D extends number,
-> = BacklinkNav<Ns, Attrs, A, Name, D, "one">;
+> = BacklinkNav<Ns, A, Name, "one">;
 
-/**
- * One navigation hop: a targeted ref exposes its target's stamped attrs.
- * Self-refs use a depth budget so the mapped type stays well-founded.
- */
+/** One stamped attribute: a ref also exposes its backlink. */
 export type NavStamp<
   Ns extends string,
-  Attrs extends AttributeMap,
   A extends AnyAttribute,
   Name extends string,
-  D extends number = 6,
 > = A["valueType"] extends ":db.type/ref"
-  ? ForwardStamp<Ns, Attrs, A, Name, D> & {
+  ? StampedAttribute<Ns, Name, A> & {
       /**
        * A component ref's backlink is single-valued; every other one is a
        * collection. An attribute whose componenthood is not known statically
@@ -124,57 +88,13 @@ export type NavStamp<
        * many-valued reading — the one that holds for any ref.
        */
       readonly reverse: [A["isComponent"]] extends [true]
-        ? ComponentReverseNav<Ns, Attrs, A, Name, D>
-        : ReverseNav<Ns, Attrs, A, Name, D>;
+        ? ComponentReverseNav<Ns, A, Name>
+        : ReverseNav<Ns, A, Name>;
     }
   : StampedAttribute<Ns, Name, A>;
 
-type ForwardStamp<
-  Ns extends string,
-  Attrs extends AttributeMap,
-  A extends AnyAttribute,
-  Name extends string,
-  D extends number,
-> = ResolveRefTarget<A> extends infer T
-  ? [T] extends [never]
-    ? StampedAttribute<Ns, Name, A>
-    : [T] extends ["self"]
-      ? [Dec<D>] extends [never]
-        ? StampedAttribute<Ns, Name, A>
-        : StampedAttribute<Ns, Name, A> &
-            Hopped<StampedMap<Ns, Attrs, Dec<D> & number>>
-      : StampedAttribute<Ns, Name, A> & Hopped<T>
-  : StampedAttribute<Ns, Name, A>;
-
-/**
- * Pull the target attr map out of a ref attribute's schema brands: the
- * namespace `Ref(() => N)` names, or `"self"` for `Ref.self` (typed as
- * `TargetedRef<SelfMarker>`, so the marker is what its target resolves to).
- */
-type ResolveRefTarget<A> = A extends {
-  readonly schema: {
-    readonly _resolve?: () => { readonly attributes: infer T };
-  };
-}
-  ? unknown extends T
-    ? never
-    : [T] extends [SelfMarker]
-      ? "self"
-      : T
-  : never;
-
-export type StampedMap<
-  Ns extends string,
-  Attrs extends AttributeMap,
-  D extends number = 6,
-> = {
-  readonly [K in keyof Attrs]: NavStamp<
-    Ns,
-    Attrs,
-    Attrs[K],
-    K & string,
-    D
-  >;
+export type StampedMap<Ns extends string, Attrs extends AttributeMap> = {
+  readonly [K in keyof Attrs]: NavStamp<Ns, Attrs[K], K & string>;
 };
 
 /** Stamped attributes plus `ns` / `attributes`. `User.name` is the attr ref. */
@@ -186,9 +106,9 @@ export type Namespace<
   readonly ns: Name;
   readonly attributes: StampedMap<Name, Attrs>;
   /**
-   * Pseudo-attribute `:db/id`, usable in `where` / `select` / `orderBy`.
-   * Typed as a stamped attr so it is a valid {@link ShapeField}, and as a
-   * number so `Todo.id.eq(42)` / `.lt(n)` take the id they compare against.
+   * Pseudo-attribute `:db/id`, usable in `select` shapes and as an `EidOf`
+   * declaration. Typed as a stamped attr so it is a valid shape field, and
+   * as a number so comparisons over it take the id they compare against.
    * The `_ns` phantom is the namespace itself: it is what brands the
    * `select({ id: N.id })` row cell as `Eid<N>` (see `IdCell` in Pull.ts).
    */
@@ -211,73 +131,24 @@ export type AnyNamespace = {
   readonly attributes: StampedMap<string, AttributeMap>;
 };
 
-const OWN_ATTR_KEYS = new Set([
-  "attrName",
-  "ident",
-  "_tag",
-  "schema",
-  "cardinality",
-  "unique",
-  "index",
-  "isComponent",
-  "doc",
-  "valueType",
-  "optional",
-  "orDefault",
-  "select",
-  "eq",
-  "ne",
-  "lt",
-  "lte",
-  "gt",
-  "gte",
-  "in",
-  "startsWith",
-  "endsWith",
-  "includes",
-  "matches",
-  "exists",
-  "missing",
-  "is",
-  "each",
-  "some",
-  "every",
-  "none",
-  "where",
-  "orderBy",
-  "limit",
-  "offset",
-  "__path",
-  "__cards",
-  "__revs",
-  "__reverse",
-  "__each",
-]);
-
 /**
- * `attr.reverse` — the same ref hop, walked backwards. The path keeps its
- * prefix (so a reverse part-way along a path works), the last hop flips to
- * reversed, and navigation continues into the ref's *owning* namespace rather
- * than its target.
- *
- * The hop's cardinality is the backlink's: many for an ordinary ref (any
- * number of entities may point at one), **one** for a `:db/isComponent` ref —
- * the component is owned by its referrer, so at most one entity points at it,
- * and the peer answers that backlink with a single value.
+ * `attr.reverse` — the same ref hop, read backwards: a shape node for
+ * backlink selects. The hop's cardinality is the backlink's: many for an
+ * ordinary ref (any number of entities may point at one), **one** for a
+ * `:db/isComponent` ref — the component is owned by its referrer, so at most
+ * one entity points at it, and the peer answers that backlink with a single
+ * value.
  */
-const reverseNode = (
-  from: PathCarrier,
-  ownMap: Record<string, unknown>,
-): unknown => {
+const reverseNode = (from: PathCarrier): unknown => {
   const card: Cardinality =
     (from as { isComponent?: boolean }).isComponent === true ? "one" : "many";
-  const path = pathOfSafe(from);
+  const path = pathOf(from);
   const cards = [...cardsOf(from)];
   const revs = [...revsOf(from)];
   cards[cards.length - 1] = card;
   revs[revs.length - 1] = true;
 
-  const node = attachAttrNav({
+  return attachAttrNav({
     ...(from as object),
     ident: from.ident,
     cardinality: card,
@@ -286,112 +157,39 @@ const reverseNode = (
     __revs: revs,
     __reverse: true,
   } satisfies PathCarrier as PathCarrier);
-
-  return new Proxy(node, {
-    get(target, prop, receiver) {
-      if (typeof prop === "symbol" || OWN_ATTR_KEYS.has(prop)) {
-        return Reflect.get(target, prop, receiver);
-      }
-      const child = ownMap[prop] as PathCarrier | undefined;
-      if (child === undefined) return undefined;
-      return withPath(
-        child,
-        [...path, child.ident],
-        [...cards, child.cardinality ?? "one"],
-        [...revs, false],
-      );
-    },
-  });
 };
 
 const stampOne = (
   ns: string,
   key: string,
   a: AnyAttribute,
-  resolveTarget: (prop: string) => unknown,
-  ownMap: () => Record<string, unknown>,
 ): StampedAttribute<string, string, AnyAttribute> => {
   const base = {
     ...a,
     attrName: key,
     ident: `:${ns}/${key}` as const,
   };
-  const withPull = {
-    ...base,
-    optional: optional(base),
-  };
 
-  const isRef = a.valueType === ":db.type/ref";
-  if (!isRef) {
-    return attachAttrNav(withPull as PathCarrier) as StampedAttribute<
-      string,
-      string,
-      AnyAttribute
-    >;
+  const navigable = attachAttrNav(base as PathCarrier);
+  if (a.valueType !== ":db.type/ref") {
+    return navigable as StampedAttribute<string, string, AnyAttribute>;
   }
 
-  const navigable = attachAttrNav(withPull as PathCarrier);
   return new Proxy(navigable, {
     get(target, prop, receiver) {
-      if (typeof prop === "symbol") {
-        return Reflect.get(target, prop, receiver);
-      }
-      // the backlink is rooted at this ref's *owning* namespace, so it is
-      // resolved before the target-attribute lookup below
-      if (prop === "reverse") {
-        return reverseNode(receiver as PathCarrier, ownMap());
-      }
-      if (OWN_ATTR_KEYS.has(prop)) {
-        return Reflect.get(target, prop, receiver);
-      }
-      const child = resolveTarget(prop);
-      if (child === undefined) return undefined;
-      const childAttr = child as PathCarrier;
-      // Extend the *receiver's* path, not the target's: two hops in
-      // (`Todo.owner.boss`), `target` is the bare `User.boss` stamp while
-      // `receiver` is the `withPath` proxy that still remembers `:todo/owner`.
-      // The reversal flags travel with the path: a forward hop taken after a
-      // `.reverse` (`Todo.owner.reverse.owner`) must keep the earlier hop
-      // backwards, and only append its own `false`.
-      const from = receiver as PathCarrier;
-      return withPath(
-        childAttr,
-        [...pathOfSafe(from), childAttr.ident!],
-        [...cardsOf(from), childAttr.cardinality ?? "one"],
-        [...revsOf(from), false],
-      );
+      if (prop === "reverse") return reverseNode(receiver as PathCarrier);
+      return Reflect.get(target, prop, receiver);
     },
   }) as StampedAttribute<string, string, AnyAttribute>;
 };
-
-const pathOfSafe = (attr: PathCarrier): readonly string[] =>
-  attr.__path ?? (attr.ident !== undefined ? [attr.ident] : []);
 
 const stamp = <Name extends string, Attrs extends AttributeMap>(
   name: Name,
   attributes: Attrs,
 ): StampedMap<Name, Attrs> => {
   const out: Record<string, unknown> = {};
-
-  const resolveTarget = (fromKey: string, prop: string): unknown => {
-    const raw = attributes[fromKey];
-    if (!raw || raw.valueType !== ":db.type/ref") return undefined;
-    if (isSelfRefSchema(raw.schema)) return out[prop];
-    const resolve = refTargetOf(raw.schema);
-    if (!resolve) return undefined;
-    const targetNs = resolve();
-    return (targetNs.attributes as Record<string, unknown>)[prop];
-  };
-
   for (const key of Object.keys(attributes)) {
-    const a = attributes[key]!;
-    out[key] = stampOne(
-      name,
-      key,
-      a,
-      (prop) => resolveTarget(key, prop),
-      () => out,
-    );
+    out[key] = stampOne(name, key, attributes[key]!);
   }
   return out as unknown as StampedMap<Name, Attrs>;
 };

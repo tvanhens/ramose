@@ -15,10 +15,21 @@
 import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { Server } from "./resources.ts";
 import { Movies, User } from "./schema.ts";
+
+const { Query } = Ramose;
+
+/** Hoisted query values — stable, reusable across requests. */
+const namesQuery = Query.q(() =>
+  pipe(Query.entities(User), Query.select({ name: User.name })),
+);
+const idsQuery = Query.q(() =>
+  pipe(Query.entities(User), Query.select({ id: User.id })),
+);
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
 // `service` binding to the server Worker, plus the shared token); the handler
@@ -63,9 +74,7 @@ export const App = Cloudflare.Worker(
           yield* ada.add(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.q(
-          Ramose.query(User).select({ name: User.name }),
-        );
+        const names = yield* dbAfter.q(namesQuery);
         return yield* HttpServerResponse.json({
           tenant: tenantId,
           t,
@@ -100,22 +109,16 @@ export const App = Cloudflare.Worker(
         // Read your own write: `dbAfter` is the same db floored at `report.t`,
         // so a replica that has not caught up refetches its basis. No `sync`,
         // no second round trip, no public `minT`.
-        const nameRows = yield* report.dbAfter.q(
-          Ramose.query(User).select({ name: User.name }),
-        );
+        const nameRows = yield* report.dbAfter.q(namesQuery);
         const names = nameRows.map((r) => r.name);
 
         // …and the same query as of a past transaction. `asOf` is pure.
-        const beforeRows = yield* db
-          .asOf(report.t - 1)
-          .q(Ramose.query(User).select({ name: User.name }));
+        const beforeRows = yield* db.asOf(report.t - 1).q(namesQuery);
         const before = beforeRows.map((r) => r.name);
 
         // Entity ids come back from `select({ id: User.id })`; pulling one is
         // `db.pull` — a missing required field is `null`.
-        const rows = yield* report.dbAfter.q(
-          Ramose.query(User).select({ id: User.id }),
-        );
+        const rows = yield* report.dbAfter.q(idsQuery);
         const ada =
           rows.length === 0
             ? null
