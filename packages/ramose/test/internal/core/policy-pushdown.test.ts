@@ -253,11 +253,11 @@ describe("pre-aggregation conjunction", () => {
     const v = viewFor(alice());
     const q = { find: [["count", "?e"]], where: [["?e", ":doc/title", "?t"]] };
     const { push, filtered } = await both(v, q);
-    expect(push).toBe(1);
-    expect(filtered).toBe(1);
+    expect(push).toEqual([[1]]);
+    expect(filtered).toEqual([[1]]);
     const bobV = viewFor(bob());
-    expect(await query(bobV, q)).toBe(1);
-    expect(await query(bobV, q, [], { pushdown: false })).toBe(1);
+    expect(await query(bobV, q)).toEqual([[1]]);
+    expect(await query(bobV, q, [], { pushdown: false })).toEqual([[1]]);
   });
 
   test("having is not rewritten — conjunction lives in where", () => {
@@ -289,15 +289,22 @@ describe("budget attribution", () => {
       ],
     });
     const v = filterDb(db, db, blow, alice(), { maxCells: 2_000 });
+    const view = policyView(v)!;
+    const ast = parseQuery({ find: ["?t"], where: [["?e", ":doc/title", "?t"]] });
+    const pd = conjoinPolicy(ast, view);
+    expect(pd.covered).toContain("doc");
+    expect(pd.query.where.some((c) => c.origin === "rule")).toBe(true);
     let err: unknown;
     try {
-      await query(v, { find: ["?t"], where: [["?e", ":doc/title", "?t"]] }, [], { maxCells: 2_000 });
+      await query(v, ast, [], { maxCells: 2_000 });
     } catch (e) {
       err = e;
     }
     expect(err).toBeInstanceOf(QueryBudgetError);
-    expect(err).toMatchObject({ code: "query/budget-exceeded", spentBy: "policy" });
-    expect(String((err as Error).message)).toContain("spent by policy clauses");
+    const be = err as QueryBudgetError;
+    expect(be.code).toBe("query/budget-exceeded");
+    expect(be.spentBy).toBe("policy");
+    expect(be.message).toContain("spent by policy clauses");
   });
 
   test("a caller-only blow reports spentBy: caller", async () => {
@@ -437,7 +444,7 @@ describe("equivalence: pushdown ≡ filtered-only", () => {
       const titles = await both(v, { find: ["?e", "?t"], where: [["?e", ":doc/title", "?t"]] });
       expect(sortRows(titles.push), `seed=${seed} titles`).toEqual(sortRows(titles.filtered));
       const countQ = { find: [["count", "?e"]], where: [["?e", ":doc/title", "?t"]] };
-      expect(await query(v, countQ), `seed=${seed} count`).toBe(await query(v, countQ, [], { pushdown: false }));
+      expect(await query(v, countQ), `seed=${seed} count`).toEqual(await query(v, countQ, [], { pushdown: false }));
     }
   });
 

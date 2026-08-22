@@ -89,13 +89,13 @@ export class QueryBudget {
     return Math.max(1, Math.floor(this.maxCells / Math.max(1, width)));
   }
   /** Record a materialised relation; throws if it is over budget. */
-  charge(clause: string, rows: number, width: number): void {
+  charge(clause: string, rows: number, width: number, spentBy: BudgetSpentBy = this.spentBy): void {
     const cells = rows * Math.max(1, width);
     if (cells > this.peakCells) this.peakCells = cells;
-    if (cells > this.maxCells) throw new QueryBudgetError(clause, cells, this.maxCells, this.spentBy);
+    if (cells > this.maxCells) throw new QueryBudgetError(clause, cells, this.maxCells, spentBy);
   }
-  exceeded(clause: string, rows: number, width: number): QueryBudgetError {
-    return new QueryBudgetError(clause, rows * Math.max(1, width), this.maxCells, this.spentBy);
+  exceeded(clause: string, rows: number, width: number, spentBy: BudgetSpentBy = this.spentBy): QueryBudgetError {
+    return new QueryBudgetError(clause, rows * Math.max(1, width), this.maxCells, spentBy);
   }
 }
 
@@ -484,8 +484,8 @@ class Executor {
   }
 
   /** Account a materialised relation against the budget (throws QueryBudgetError). */
-  private guard(rel: Rel, clause = "relation"): Rel {
-    this.budget.charge(clause, rel.rows.length, rel.vars.length);
+  private guard(rel: Rel, clause = "relation", spentBy?: BudgetSpentBy): Rel {
+    this.budget.charge(clause, rel.rows.length, rel.vars.length, spentBy);
     if (this.stats?.budget) this.stats.budget.peakCells = this.budget.peakCells;
     if (rel.rows.length > this.maxRows) throw new QueryBudgetError(clause, rel.rows.length * Math.max(1, rel.vars.length), this.maxRows * Math.max(1, rel.vars.length));
     return rel;
@@ -695,6 +695,9 @@ class Executor {
     const cacheKey = `${rule.name}:${origin}`;
     const cached = this.extensions.get(cacheKey);
     if (cached) return cached;
+    const spentBy: BudgetSpentBy = origin === "rule" ? "policy" : "caller";
+    const prevSpent = this.budget.spentBy;
+    this.budget.spentBy = spentBy;
     const scc = rule.scc;
     const current = new Map<string, Rel>();
     const sets = new Map<string, TupleSet>();
@@ -703,7 +706,7 @@ class Executor {
       current.set(n, { vars: r.args, rows: [] });
       sets.set(n, new TupleSet(r.args.length));
     }
-    const prev = this.fix;
+    const prevFix = this.fix;
     this.fix = { scc, current };
     // naive evaluation re-derives per round, so expansion cost is charged
     // cumulatively: a recursion that keeps producing is a budget error, not
@@ -720,7 +723,7 @@ class Executor {
           for (const branch of r.branches) {
             const sub = await this.execClauses({ vars: [], rows: [[]] }, branch.map((cl) => stampOrigin(cl, origin)));
             work += Math.max(1, sub.rows.length);
-            this.budget.charge(`rule ${n} (expansion)`, work, r.args.length);
+            this.budget.charge(`rule ${n} (expansion)`, work, r.args.length, spentBy);
             const six = idx(sub);
             const cols = r.args.map((v) => {
               const i = six.get(v);
@@ -737,11 +740,12 @@ class Executor {
           }
           // monotone: every productive round grows a budget-charged relation,
           // so the loop terminates — with an answer or with the budget error
-          this.guard(cur, `rule ${n}`);
+          this.guard(cur, `rule ${n}`, spentBy);
         }
       }
     } finally {
-      this.fix = prev;
+      this.fix = prevFix;
+      this.budget.spentBy = prevSpent;
     }
     for (const n of scc) this.extensions.set(`${n}:${origin}`, current.get(n)!);
     return current.get(rule.name)!;

@@ -532,3 +532,55 @@ to 0.41 ms (~12×), under the v1 expression walk. Reef `true` arms are
 unchanged (they never hit the engine). A set that blows `visibleSetMax`
 or the cell budget still falls back to the 4.77 ms column — that event is
 the #157 signal.
+
+## Policy clause-level pushdown (#157)
+
+Same machine and `bun run bench:policy` dataset as #154 / #156 (20 users,
+400 issues, 800 comments). v2 set is `{ pushdown: false }` (the #156 path).
+v2 pushdown conjoins the namespace rule into the plan. The fallback
+workload is every issue visible (`[?e :issue/title _]`) with
+`visibleSetMax: 50`, so the set path records `policy.visible-set-fallback`
+and continues per-entity.
+
+| path | rows | v1 p50 | v2 per-entity p50 | v2 set p50 | v2 pushdown p50 | v2 pushdown p95 |
+|---|---|---|---|---|---|---|
+| unfiltered issue titles | 400 | — | — | 0.18 ms | — | 0.24 ms |
+| reef titles (`read: true`) | 400 | 0.38 ms | — | 0.31 ms | — | 0.56 ms |
+| reef comments (`read: true`) | 800 | 0.50 ms | — | 0.48 ms | — | 1.63 ms |
+| reef `privateNote` scrub (member) | 0 | 0.08 ms | — | 0.08 ms | — | 0.15 ms |
+| own-issue titles (selective) | 20 | 0.71 ms | 5.40 ms | 0.45 ms | **0.12 ms** | 0.16 ms |
+| all-visible fallback (set too large) | 400 | — | — | 5.39 ms | **0.48 ms** | 1.73 ms |
+
+**Pushdown is the fallback-workload win.** A visible set of 400 over a
+threshold of 50 takes the #156 path from a 0.45 ms set lookup to a 5.39 ms
+per-entity walk; the same query with the rule in the plan is 0.48 ms
+(~11×), and does not emit `policy.visible-set-fallback`. Selective
+own-issue is 0.12 ms — under the unfiltered scan — because the creator
+equality seeks AVET instead of scanning titles then filtering. Reef
+`true` arms are unchanged (they never conjoin).
+
+## Policy clause-level pushdown (#157)
+
+Same machine and `bun run bench:policy` dataset as #154 / #156 (20 users,
+400 issues, 800 comments). v2 set is `{ pushdown: false }` (the #156 path).
+v2 pushdown conjoins the namespace rule into the plan. The fallback
+workload is every issue visible (`[?e :issue/title _]`) with
+`visibleSetMax: 50`, so the set path records `policy.visible-set-fallback`
+and continues per-entity.
+
+| path | rows | v1 p50 | v2 per-entity p50 | v2 set p50 | v2 pushdown p50 | v2 pushdown p95 |
+|---|---|---|---|---|---|---|
+| unfiltered issue titles | 400 | — | — | 0.18 ms | — | 0.24 ms |
+| reef titles (`read: true`) | 400 | 0.38 ms | — | 0.31 ms | — | 0.56 ms |
+| reef comments (`read: true`) | 800 | 0.50 ms | — | 0.48 ms | — | 1.63 ms |
+| reef `privateNote` scrub (member) | 0 | 0.08 ms | — | 0.08 ms | — | 0.15 ms |
+| own-issue titles (selective) | 20 | 0.71 ms | 5.40 ms | 0.45 ms | **0.12 ms** | 0.16 ms |
+| all-visible fallback (set too large) | 400 | — | — | 5.39 ms | **0.48 ms** | 1.73 ms |
+
+**Pushdown is the fallback-workload win.** A visible set of 400 over a
+threshold of 50 takes the #156 path from a 0.45 ms set lookup to a 5.39 ms
+per-entity walk; the same query with the rule in the plan is 0.48 ms
+(~11×), and does not emit `policy.visible-set-fallback`. Selective
+own-issue is 0.12 ms — under the unfiltered scan — because the creator
+equality seeks AVET instead of scanning titles then filtering. Reef
+`true` arms are unchanged (they never conjoin).
