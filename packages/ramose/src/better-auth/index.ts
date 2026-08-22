@@ -29,7 +29,9 @@
  * plugin lives on `ramose/better-auth/client`.
  */
 
-import { type AuthConfig, claims } from "../index.ts";
+// Auth.ts is alchemy-free. The deploy barrel (`../index.ts`) value-exports
+// Server, which pulls `alchemy/*` into every auth Worker that adds this plugin.
+import { type AuthConfig, claims } from "../Auth.ts";
 import { isDatabaseName } from "../db/index.ts";
 import type { CompiledPolicy } from "../internal/core/policy/ast.ts";
 import {

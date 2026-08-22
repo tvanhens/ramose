@@ -1,20 +1,25 @@
 /**
- * `ramose/db` is the portable entry: a browser gets it with no bundler alias,
- * no deploy engine and no dead weight.
+ * Portable entries must not pull the deploy engine.
  *
- * Three guards, all on the *whole transitive import graph* of the barrel:
+ * `ramose/db` is the browser entry: no bundler alias, no deploy engine, no
+ * dead weight. `ramose/better-auth` (and `/client`) is the mint-plugin pair:
+ * an auth Worker that adds the plugin must not bundle Alchemy because a
+ * value import of the deploy barrel (`src/index.ts`) re-exports `Server`.
+ *
+ * Guards, all on the *whole transitive import graph* of each entry:
  *
  *   1. nothing reaches `alchemy` (the deploy engine — `alchemy`,
  *      `alchemy/RuntimeContext`, `alchemy/Binding`, …). Such an import would
- *      force every browser build to carry a bundler alias.
+ *      force every consumer bundle to carry a bundler alias (or the whole
+ *      deploy engine, in a Worker).
  *   2. nothing reaches the engine barrel (`src/internal/core/index.ts`). Deep
  *      imports (`internal/core/json.ts`) are how the codec is taken; the barrel
  *      drags the engine — segment trees, the query planner, the store — into a
  *      browser bundle.
- *   3. every file in the graph is under `src/db/` or `src/internal/core/`.
- *      The server, the React hooks and the Better Auth plugins are folders in
- *      this same package, so nothing but this assertion stops a stray relative
- *      import from pulling the peer Worker into a browser bundle.
+ *   3. every file in the graph is under the entry's allowlist. The server,
+ *      the React hooks and the Better Auth plugins are folders in this same
+ *      package, so nothing but this assertion stops a stray relative import
+ *      from pulling the peer Worker / deploy barrel into a consumer bundle.
  *
  * The walk is static and includes `import type`: a type-only edge to `alchemy`
  * is still a coupling this entry is not allowed to have.
@@ -30,10 +35,26 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 const SRC = resolve(here, "../src");
 const BARREL = resolve(SRC, "db/index.ts");
+const BETTER_AUTH = resolve(SRC, "better-auth/index.ts");
+const BETTER_AUTH_CLIENT = resolve(SRC, "better-auth/client.ts");
 const CORE_BARREL = resolve(SRC, "internal/core/index.ts");
+const DEPLOY_BARREL = resolve(SRC, "index.ts");
 
-/** The only two directories the portable entry is allowed to reach into. */
+/** The only two directories the portable `/db` entry is allowed to reach into. */
 const ALLOWED = ["packages/ramose/src/db/", "packages/ramose/src/internal/core/"];
+
+/**
+ * Mint plugin + client: Auth.ts is the alchemy-free contract; `/db` is
+ * already portable; deep `internal/core` is how policy types are taken.
+ * The deploy barrel and `Server` / `Database` / … sit next to Auth.ts and
+ * are excluded by not listing `src/` itself.
+ */
+const BETTER_AUTH_ALLOWED = [
+  "packages/ramose/src/better-auth/",
+  "packages/ramose/src/Auth.ts",
+  "packages/ramose/src/db/",
+  "packages/ramose/src/internal/core/",
+];
 
 /** `import … from "x"`, `export … from "x"`, `import("x")` — one regex each. */
 const SPECIFIERS = [
@@ -87,6 +108,38 @@ const walk = (entry: string): Graph => {
   }
   return { files, bare };
 };
+
+const alchemyOf = (graph: Graph): string[] =>
+  [...graph.bare.keys()].filter(
+    (spec) => spec === "alchemy" || spec.startsWith("alchemy/"),
+  );
+
+const straysOf = (graph: Graph, allowed: readonly string[]): string[] =>
+  [...graph.files]
+    .map((file) => relative(repo, file))
+    .filter((rel) => !allowed.some((dir) => rel.startsWith(dir)));
+
+const assertPortable = (
+  graph: Graph,
+  allowed: readonly string[],
+  bareOk: (spec: string) => boolean,
+) => {
+  const blame = (spec: string) =>
+    `${spec} (imported by ${relative(repo, graph.bare.get(spec) ?? "?")})`;
+  expect(alchemyOf(graph).map(blame)).toEqual([]);
+  expect(graph.files.has(CORE_BARREL)).toBe(false);
+  expect(graph.files.has(DEPLOY_BARREL)).toBe(false);
+  expect(straysOf(graph, allowed)).toEqual([]);
+  expect([...graph.bare.keys()].filter((spec) => !bareOk(spec)).map(blame)).toEqual(
+    [],
+  );
+};
+
+const effectBare = (spec: string): boolean =>
+  spec === "effect" || spec.startsWith("effect/");
+
+const betterAuthBare = (spec: string): boolean =>
+  spec === "better-auth" || spec.startsWith("better-auth/");
 
 describe("ramose/db is portable", () => {
   const graph = walk(BARREL);
@@ -180,5 +233,72 @@ describe("the `/db` barrel's public names", () => {
         "ParamError",
       ].sort(),
     );
+  });
+});
+
+describe("ramose/better-auth is portable", () => {
+  const graph = walk(BETTER_AUTH);
+
+  test("no module in the graph imports `alchemy` or the deploy barrel", () => {
+    assertPortable(
+      graph,
+      BETTER_AUTH_ALLOWED,
+      (spec) => effectBare(spec) || betterAuthBare(spec) || spec === "zod",
+    );
+  });
+
+  test("the public names are unchanged", async () => {
+    const plugin = await import("../src/better-auth/index.ts");
+    expect(Object.keys(plugin).sort()).toEqual(
+      [
+        "classOfRole",
+        "ensureDecryptableJwks",
+        "orgClassOf",
+        "ramoseToken",
+      ].sort(),
+    );
+  });
+
+  test("it bundles without alchemy", async () => {
+    const built = await Bun.build({
+      entrypoints: [BETTER_AUTH],
+      target: "browser",
+      external: ["effect", "effect/*", "better-auth", "better-auth/*", "zod"],
+    });
+    expect(built.logs.filter((l) => l.level === "error")).toEqual([]);
+    expect(built.success).toBe(true);
+    const bundle = await built.outputs[0]!.text();
+    expect(bundle).not.toContain('from "alchemy');
+    expect(bundle).not.toContain('require("alchemy');
+  });
+});
+
+describe("ramose/better-auth/client is portable", () => {
+  const graph = walk(BETTER_AUTH_CLIENT);
+
+  test("no module in the graph imports `alchemy` or the deploy barrel", () => {
+    assertPortable(
+      graph,
+      BETTER_AUTH_ALLOWED,
+      (spec) => effectBare(spec) || betterAuthBare(spec),
+    );
+  });
+
+  test("the public names are unchanged", async () => {
+    const client = await import("../src/better-auth/client.ts");
+    expect(Object.keys(client).sort()).toEqual(["ramoseTokenClient"]);
+  });
+
+  test("it bundles for the browser", async () => {
+    const built = await Bun.build({
+      entrypoints: [BETTER_AUTH_CLIENT],
+      target: "browser",
+      external: ["effect", "effect/*", "better-auth", "better-auth/*"],
+    });
+    expect(built.logs.filter((l) => l.level === "error")).toEqual([]);
+    expect(built.success).toBe(true);
+    const bundle = await built.outputs[0]!.text();
+    expect(bundle).not.toContain('from "alchemy');
+    expect(bundle).not.toContain('require("alchemy');
   });
 });
