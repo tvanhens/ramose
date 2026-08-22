@@ -47,7 +47,7 @@ const TodoList = () => {
 Anywhere else — a script, a Worker, a test — `Effect.runPromise(effect)` runs one Effect and gives you a Promise. Reef opens a workspace this way:
 
 ```ts title="examples/reef/src/app/ramose.ts:43"
-    if (provision) await Effect.runPromise(provisionWorkspace(db, user));
+    if (provision) await Effect.runPromise(provisionWorkspace(db));
 ```
 
 Every `db` method can be run this way directly; nothing else needs to be set up.

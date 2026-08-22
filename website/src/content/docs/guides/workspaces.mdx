@@ -24,24 +24,21 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
   const ramose = Ramose.connect({ url: RAMOSE_URL, token });
   try {
     const db = ramose.db(slug, Reef);
-    if (provision) await Effect.runPromise(provisionWorkspace(db, user));
+    if (provision) await Effect.runPromise(provisionWorkspace(db));
 ```
 
-`ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels and your own user record:
+`ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub` + `role`) at session establishment:
 
-```ts title="examples/reef/src/app/mutations.ts:28-45"
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
+```ts title="examples/reef/src/app/mutations.ts:42-52"
+export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
     yield* db.install();
     yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-      // …
+      for (const seed of SEED_LABELS) {
+        const label = yield* tx.entity();
+        yield* label.add(Label.name, seed.name);
+        yield* label.add(Label.color, seed.color);
+      }
     });
   });
 ```

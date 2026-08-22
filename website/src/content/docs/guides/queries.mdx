@@ -28,9 +28,9 @@ export const boardQuery = Query.q(() =>
 
 ## Run it
 
-`db.q(query)` runs it once. Reef looks up your own user row this way when you enter a workspace — the changing value (`sub`) is a declared **param**, bound at the call:
+`db.q(query)` runs it once. `db.principal()` is who the peer says you are (the row it upserts at session establishment). A lookup by `sub` is an ordinary query — the changing value is a declared **param**, bound at the call:
 
-```ts title="examples/reef/src/app/mutations.ts:18-25"
+```ts title="examples/reef/src/app/mutations.ts:19-25"
 const mineQuery = Query.q({ sub: User.sub }, (p) =>
   pipe(
     Query.entities(User),
