@@ -67,30 +67,44 @@ Three consequences motivate this design:
 
 An operation is a named value built from `ramose/db` (so definitions stay
 portable — they must pass `test/db-portable.test.ts` and import no Worker or
-engine internals). The body is a generator, matching the house `db.transact`
-idiom; `op` exposes the four transaction verbs plus reads and an effect step:
+engine internals). The body is an Effect: the definition takes
+`(op, input) => Effect<Output, E>`, written with `Effect.gen` (or
+`Effect.fn`) per house style. `op` exposes the four transaction verbs plus
+reads and an effect step, each itself an Effect, so bodies compose like any
+other Effect — helpers are plain functions returning Effects, and failures
+ride the typed error channel:
 
 ```ts
 import * as Ramose from "ramose/db";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 export const createIssue = Ramose.Operation("issue/create", {
   input: Schema.Struct({ title: Schema.String, status: IssueStatus }),
   output: Schema.Struct({ id: Ramose.EntityId }),
-})(function* (op, input) {
-  const id = yield* op.entity();
-  yield* op.add(id, Issue.title, input.title);
-  yield* op.add(id, Issue.status, input.status);
-  yield* op.add(id, Issue.creator, op.principal.eid); // server-authored identity
+})((op, input) =>
+  Effect.gen(function* () {
+    const id = yield* op.entity();
+    yield* op.add(id, Issue.title, input.title);
+    yield* op.add(id, Issue.status, input.status);
+    yield* op.add(id, Issue.creator, op.principal.eid); // server-authored identity
 
-  // side-effect step: runs on the server; client execution stops here
-  yield* op.effect("notify", ({ env }) => postToSlack(env, input.title));
+    // side-effect step: runs on the server; client execution stops here
+    yield* op.effect("notify", ({ env }) => postToSlack(env, input.title));
 
-  return { id };
-});
+    return { id };
+  }),
+);
 
 export const operations = Ramose.Operations({ createIssue, moveIssue, deleteIssue });
 ```
+
+> **Decision.** The body is `(op, input) => Effect`, not a raw generator
+> callback like `db.transact`. An operation returns an output and fails with
+> typed errors — exactly the Effect contract — and running the body as a
+> fiber is what makes the client-side prefix halt (§5) lawful: `op.effect`
+> can end optimistic execution by interruption, with no lexical analysis of
+> the body.
 
 The registry is handed to both sides of the wire: `Ramose.Server({ …,
 operations })` at deploy time and `ramose.db(name, catalog, { operations })`
@@ -114,7 +128,7 @@ run(db.run(createIssue, { title, status: "todo" })); // Effect<OpReport<typeof c
 | ---------------- | ----------------- | ----------------- |
 | **Verbs**        | `op.entity`, `op.add`, `op.retract`, `op.retractEntity`; reads via `op.q` / `op.pull` against the speculative view | `op.effect(name, run)` |
 | **Server**       | Accumulate into *one* transaction, committed atomically at the end via the existing Transactor group commit | Run in step order, immediately, with server context (`env`, bindings, `principal`); results flow to later steps |
-| **Client**       | Applied optimistically as a pending layer *if they precede the first effect step*; steps after it are server-only | Never run — client execution of the body ends at the first effect step |
+| **Client**       | Applied optimistically as a pending layer *if they precede the first effect step*; steps after it are server-only | Never run — client-side `op.effect` interrupts the body fiber, ending execution there |
 | **On rejection** | Nothing committed; optimistic layer revoked | Already ran; must be idempotent or compensated |
 
 Interleaving is real, not cosmetic: an effect can produce a value a later
@@ -136,13 +150,16 @@ ordering effect-independent writes first.
 
 ## 5. Client: optimistic execution and revocation
 
-Client-side, `db.run(operation, input)` decodes the input, then executes the
-*same body* against the overlay's speculative view — but only up to the
-first `op.effect` step. Transaction verbs in that prefix collect ops exactly
-as `txBuilder` does today; at the first effect, client execution stops. The
-prefix ops become a `PendingLayer` keyed by a fresh `clientOpId`, visible
-to live queries in the same tick, and the invocation — `{ name, input,
-clientOpId }`, not raw ops — is queued on the existing FIFO outbox.
+Client-side, `db.run(operation, input)` decodes the input, then runs the
+*same body Effect* as a fiber against the overlay's speculative view — but
+only up to the first `op.effect` step. Transaction verbs in that prefix
+collect ops exactly as `txBuilder` does today. The halt needs no inspection
+of the body: on the client, `op.effect` resolves to an Effect that
+interrupts the fiber with an internal halt signal, which `db.run` catches,
+keeping the ops collected so far as the prefix. Those ops become a
+`PendingLayer` keyed by a fresh `clientOpId`, visible to live queries in the
+same tick, and the invocation — `{ name, input, clientOpId }`, not raw ops —
+is queued on the existing FIFO outbox.
 
 > **Decision.** Optimistic execution stops at the first side-effect step.
 > Transaction steps after an effect may depend on the effect's response, so
@@ -242,17 +259,19 @@ kinds:
 export const provisionWorkspace = Ramose.Operation("workspace/provision", {
   input: Schema.Struct({ slug: Schema.String, name: Schema.String }),
   output: Schema.Struct({ ready: Schema.Boolean }),
-})(function* (op, input) {
-  // side effects: schema install + org registration — server only, idempotent
-  yield* op.effect("db/install", ({ databases }) => databases.install(input.slug, Reef));
-  yield* op.effect("org/register", ({ env, principal }) => registerOrg(env, input, principal));
+})((op, input) =>
+  Effect.gen(function* () {
+    // side effects: schema install + org registration — server only, idempotent
+    yield* op.effect("db/install", ({ databases }) => databases.install(input.slug, Reef));
+    yield* op.effect("org/register", ({ env, principal }) => registerOrg(env, input, principal));
 
-  // transaction steps: follow the effects, so no optimistic prefix — commit server-side only
-  const self = yield* op.entity();
-  yield* op.add(self, User.name, op.principal.name);
-  yield* seedLabels(op);
-  return { ready: true };
-});
+    // transaction steps: follow the effects, so no optimistic prefix — commit server-side only
+    const self = yield* op.entity();
+    yield* op.add(self, User.name, op.principal.name);
+    yield* seedLabels(op);
+    return { ready: true };
+  }),
+);
 ```
 
 What is today two browser-run transactions under an admin JWT plus an
