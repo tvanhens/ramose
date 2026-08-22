@@ -143,26 +143,15 @@ describe("the `/db` barrel's public names", () => {
         "Ref",
         "Long",
         "Bytes",
-        // navigational query (issue #18)
-        "query",
-        "or",
-        "not",
+        // shapes and params
         "all",
         "again",
         "params",
         "optional",
-        "when",
         "EidOf",
-        // the query language (the redesign's kernel + pipe surface)
+        // the query language (kernel + pipe surface; issue #149)
         "Q",
         "Query",
-        // aggregates (issue #18)
-        "count",
-        "countDistinct",
-        "sum",
-        "avg",
-        "min",
-        "max",
         // connecting
         "connect",
         "layer",

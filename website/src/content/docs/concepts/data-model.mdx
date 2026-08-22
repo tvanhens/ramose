@@ -69,7 +69,7 @@ These ideas — facts instead of rows, a database you can read at any earlier ve
 | `:db.unique/identity`, lookup refs | `{ unique: "identity" }`, `[User.sub, "…"]` |
 | `:db.cardinality/many` | `{ cardinality: "many" }` |
 | `d/pull` | `db.pull({ id }, shape)`, same nesting; `.optional` for absence, `.orDefault(v)` for a pull `:default` |
-| Datalog query | a typed builder — `Ramose.query(Issue).where(…).orderBy(…).limit(n).offset(n).one().select(…)`, run by `db.q` / `db.live`; the predicates are listed under [Filter](/guides/queries/#filter). Aggregates / `groupBy` / `.after` on the builder; no rules, no string escape hatch |
+| Datalog query | a typed value — `Query.q(() => pipe(entities(Issue), is(…), select(…), orderBy(…), limit(n)))`, run by `db.q` / `db.live`; the combinators are listed under [Filter](/guides/queries/#filter). Single-row terminals and keyset paging ride the value (`q.one()`, `q.after(cursor)`); named rules give recursion ([the query language](/reference/query-language/)) |
 | `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only view |
 | transaction entity | `report.txEid` |
 | `d/filter` | a compiled **policy**, evaluated per request against the token's claims |

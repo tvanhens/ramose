@@ -18,7 +18,7 @@ import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
  * engine's IR (`PullAttrSpec`'s `:where` / `:order` / `:offset` / `:limit`).
  *
  * The client builds them with `.where` / `.orderBy` / `.limit` / `.offset` on
- * a card-many ref or backlink nav (see `CollectionNav` in NavQuery.ts) and
+ * a card-many ref or backlink nav (see `CollectionNav` in shapes.ts) and
  * lowers them there, eagerly — this module only carries them onto the spec.
  * They are evaluated *inside* the pull, after the outer `:order` / `:offset` /
  * `:limit` slice, so they never change the row set.
@@ -74,8 +74,8 @@ export interface PullNested<A = unknown, P = unknown> {
 
 /**
  * Literate pull methods stamped onto every attr ref (`User.name`).
- * Nested shapes use {@link AttrNav.select} from NavQuery (same grammar as
- * `Ramose.query(…).select`); this type only carries `.optional`.
+ * Nested shapes use {@link AttrNav.select} from shapes.ts (same grammar as
+ * `Query.select` / `Q.pull`); this type only carries `.optional`.
  */
 export type AttrPull<A> = {
   readonly optional: PullOptional<A>;
@@ -816,7 +816,7 @@ const cardinalityOf = (field: unknown): "one" | "many" => {
 
 /**
  * A backlink node (`Todo.owner.reverse`). The marker is a plain property so
- * this module stays free of a NavQuery import — pull is the lower layer.
+ * this module stays free of a shapes.ts import — pull is the lower layer.
  */
 const isReverseCarrier = (value: unknown): boolean =>
   typeof value === "object" &&
@@ -841,7 +841,7 @@ const isSelectNestedField = (
  * The hop chain a nav carries: `Todo.owner.name` is `[":todo/owner",
  * ":user/name"]`, a bare `User.name` is one ident (or none, for an ident
  * string). Structural, like {@link isReverseCarrier} — pull stays free of
- * NavQuery.
+ * shapes.ts.
  */
 const hopsOf = (
   attr: unknown,
@@ -923,7 +923,7 @@ export const assertDirectField = (
 /**
  * A constrained collection nav (`Todo.owner.reverse.where(…)`, or
  * `User.tags.where(…)`). Structural, like {@link isReverseCarrier} — pull
- * stays free of NavQuery.
+ * stays free of shapes.ts.
  */
 const isCollectionCarrier = (
   value: unknown,
@@ -1184,7 +1184,7 @@ const remapStub = (
 /**
  * `undefined` means this entity failed a required field and should be dropped.
  *
- * For a query, `lowerNavQuery` lowers every top-level required field into a
+ * For a query, `requiredClauses` lowers every top-level required field into a
  * `where` clause, so the drop is the peer's and the top-level `undefined` is
  * unreachable; what stays here is per-element work that cannot change the row
  * count — filtering a cardinality-many array, and `db.pull` of one subject.

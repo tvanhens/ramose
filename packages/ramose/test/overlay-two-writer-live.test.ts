@@ -24,7 +24,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Attr, Catalog, type Db, Namespace, query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Attr, Catalog, type Db, Namespace, Query } from "../src/db/internal.ts";
 import { toWireDatom, type LogEntry, type RootRecord } from "../src/internal/core/index.ts";
 import { MemoryBucket } from "../src/internal/storage/memory.ts";
 import type { RamoseEnv } from "../src/internal/transactor/index.ts";
@@ -133,13 +134,17 @@ const Issue = Namespace("issue", {
   rank: Attr(Schema.Number),
 });
 const Board = Catalog({ issue: Issue });
-const boardQuery = query(Issue)
-  .orderBy(Issue.rank, "asc")
-  .select({
-    title: Issue.title,
-    status: Issue.status,
-    rank: Issue.rank,
-  });
+const boardQuery = Query.q(() =>
+  pipe(
+    Query.entities(Issue),
+    Query.select({
+      title: Issue.title,
+      status: Issue.status,
+      rank: Issue.rank,
+    }),
+    Query.orderBy("rank", "asc"),
+  ),
+);
 
 type BoardRow = { title: string; status: string; rank: number };
 

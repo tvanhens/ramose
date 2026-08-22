@@ -7,6 +7,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import type { ReactNode } from "react";
 import { RamoseProvider } from "../../src/react/index.ts";
 import type { FakePeer } from "./peer.ts";
@@ -26,7 +27,9 @@ export const Todo = Ramose.Namespace("todo", {
   slug: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
 export const Todos = Ramose.Catalog({ todo: Todo });
-export const titles = Ramose.query(Todo).select({ title: Todo.title });
+export const titles = Ramose.Query.q(() =>
+  pipe(Ramose.Query.entities(Todo), Ramose.Query.select({ title: Todo.title })),
+);
 
 /** A provider over the fake peer, as a `renderHook` / `render` wrapper. */
 export const wrapperFor =

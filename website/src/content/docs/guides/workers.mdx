@@ -35,7 +35,7 @@ Inside, a request handler names a database, writes, and reads its own write back
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
         const names = yield* dbAfter.q(
-          Ramose.query(User).select({ name: User.name }),
+          Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))),
         );
 ```
 

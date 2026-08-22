@@ -13,7 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
-import { query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Query } from "../src/db/internal.ts";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
@@ -58,7 +59,7 @@ const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   };
 };
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
 const users = async (...who: string[]) => {
   const conn = await catalogWorld(Movies);

@@ -16,8 +16,9 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import { schemaTx } from "../src/db/ensure.ts";
-import { Attr, Catalog, Namespace, query } from "../src/db/internal.ts";
+import { Attr, Catalog, Namespace, Query } from "../src/db/internal.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import type { Session } from "../src/db/session.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
@@ -37,15 +38,15 @@ const Note = Namespace("note", {
 const WithSlug = Catalog({ user: User, movie: Movie, meta: Meta, doc: Doc });
 const WithSecret = Catalog({ user: User, movie: Movie, meta: Meta, secret: Secret });
 const WithNotes = Catalog({ user: User, movie: Movie, meta: Meta, note: Note });
-const secretNotes = query(Secret).select({ note: Secret.note });
-const noteTitles = query(Note).select({ title: Note.title });
-const noteAudits = query(Note).select({ audit: Note.audit });
+const secretNotes = Query.q(() => pipe(Query.entities(Secret), Query.select({ note: Secret.note })));
+const noteTitles = Query.q(() => pipe(Query.entities(Note), Query.select({ title: Note.title })));
+const noteAudits = Query.q(() => pipe(Query.entities(Note), Query.select({ audit: Note.audit })));
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   const seen: A[] = [];
@@ -199,7 +200,9 @@ describe("optimistic transact", () => {
       }),
     );
     expect(report.t).toBe(server.t);
-    const rows = await run(db.q(query(User).select({ id: User.id, name: User.name })));
+    const rows = await run(
+      db.q(Query.q(() => pipe(Query.entities(User), Query.select({ id: User.id, name: User.name })))),
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.name).toBe("Ada");
     const fact = await server.db().first(Index.AVET, {
@@ -577,14 +580,15 @@ describe("confirmed follower", () => {
         yield* e.add(User.name, "Ada");
       }),
     );
-    const before = await run(db.q(query(User)));
+    const allUsers = Query.q(() => Query.entities(User));
+    const before = await run(db.q(allUsers));
     const ackCall = peer.calls.filter((call) => call.url.endsWith("/transact")).at(-1)!;
     void ackCall;
 
     const datoms = (await snapshotOf(server)).datoms.filter((d) => d[4] === report.t);
     peer.push({ op: "tx", t: report.t, datoms });
     await settle();
-    expect(await run(db.q(query(User)))).toEqual(before);
+    expect(await run(db.q(allUsers))).toEqual(before);
     await c.dispose();
   });
 

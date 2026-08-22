@@ -45,7 +45,9 @@
  *   const ada = yield* tx.entity();
  *   yield* ada.add(User.name, "Ada");
  * });
- * const rows = yield* dbAfter.q(Ramose.query(User).select({ name: User.name }));
+ * const rows = yield* dbAfter.q(
+ *   Ramose.Query.q(() => pipe(Ramose.Query.entities(User), Ramose.Query.select({ name: User.name }))),
+ * );
  * ```
  *
  * Provide `Ramose.ServerBinding` (a Worker service binding to the server) or

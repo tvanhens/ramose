@@ -60,7 +60,7 @@ const TodoList = () => {
 };
 ```
 
-`useLive(db, query, params?): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Bind `Ramose.params` as the third argument; a params-only change keeps the last `rows`.
+`useLive(db, query, params?): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Bind the query's declared params as the third argument; a params-only change keeps the last `rows`.
 
 - `rows` is `undefined` until the first answer, and again right after `db` or `query` change.
 - `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the rows stay.

@@ -2,10 +2,10 @@
 
 Development notes for people changing Ramose itself. All docs live at
 [ramose.ai](https://ramose.ai) (source in `website/`) — the docs site is the
-sole documentation location. Remaining query work lives on
-[issue #18](https://github.com/tvanhens/ramose/issues/18); the shipped query
-language is on the website
+sole documentation location. The shipped query language (the kernel:
+`Query.q`, the pipeable stdlib, `Q`) is on the website
 ([Read data](https://ramose.ai/guides/queries/),
+[The query language](https://ramose.ai/reference/query-language/),
 [Client API](https://ramose.ai/reference/client-api/)).
 Recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
 brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in

@@ -1,66 +1,97 @@
 ---
 title: Read data
-description: Build a query as a value, run it, filter it, choose the fields (through references), order and page, count and group, read one record, read the past.
+description: Build a query as a piped value, run it, filter it, choose the fields (through references), order and page, count, read one record, read the past.
 ---
 import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen.
+A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen. The everyday spelling is a **pipe** of combinators; the same value can also be written as a generator of clauses — that power room is [The query language](/reference/query-language/).
 
-<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count and group", "Paint a recursive tree as a window", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={12} />
+<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count", "Paint a recursive tree as a window", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={12} />
 
 ## A query is a value
 
-Reef's whole board is one query, built once at module scope:
+Reef's whole board is one query, built once at module scope with `Query.q`:
 
-```ts title="examples/reef/src/domain/queries.ts:66-68"
-export const boardQuery = Ramose.query(Issue)
-  .orderBy(Issue.rank, "asc")
-  .select(boardShape);
+```ts title="examples/reef/src/domain/queries.ts:70-77"
+export const boardQuery = Query.q(() =>
+  pipe(
+    Query.entities(Issue),
+    Query.select(boardShape),
+    Query.orderBy(Issue.rank, "asc"),
+  ),
+);
 ```
 
-`Ramose.query(Issue)` means "every issue"; everything after it narrows or shapes that set. Because it is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged.
+`Query.entities(Issue)` means "every issue"; each stage after it narrows or shapes that set. `Query` is `Ramose.Query` from `ramose/db` (the same names are importable flat from `ramose/query`); `pipe` is Effect's ordinary [`pipe`](https://effect.website/docs/getting-started/building-pipelines/). Because the query is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged.
 
 ## Run it
 
-`db.q(query)` runs it once. Reef looks up your own user row this way when you enter a workspace:
+`db.q(query)` runs it once. Reef looks up your own user row this way when you enter a workspace — the changing value (`sub`) is a declared **param**, bound at the call:
 
-```ts title="examples/reef/src/app/mutations.ts:61-64"
-    const mineQuery = Ramose.query(User)
-      .where(User.sub.eq(me.id))
-      .select({ id: User.id });
-    const existing = yield* db.q(mineQuery);
+```ts title="examples/reef/src/app/mutations.ts:18-25"
+const mineQuery = Query.q({ sub: User.sub }, (p) =>
+  pipe(
+    Query.entities(User),
+    Query.is(User.sub, p.sub),
+    Query.select({ id: User.id }),
+  ),
+);
+// …
+const existing = yield* db.q(mineQuery, { sub: me.id });
 ```
 
-In React, `useQuery(db, query)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.q(query))`.
+A param is declared from an attribute reference (`User.sub` — the hole takes that attribute's type) or any Effect Schema; `Ramose.EidOf(N)` declares an entity-valued hole, and `Ramose.optional(…)` one that may stay unbound. The query object never changes identity — only the bindings do.
+
+In React, `useQuery(db, query, params?)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.q(query))`.
 
 ## Filter
 
-Every field carries its own predicates. `where` takes any number; all must hold:
+Filters are pipeable stages before `select`; all must hold. Reef's comments are the comments pointing at one issue:
 
-```ts title="examples/reef/src/domain/queries.ts:78-82"
-const CommentP = Ramose.params({ issueId: Issue.id });
-export const commentsQuery = Ramose.query(Comment, CommentP)
-  .where(Comment.issue.is(CommentP.issueId))
-  .orderBy(Comment.at, "asc")
-  .select(commentShape);
+```ts title="examples/reef/src/domain/queries.ts:94-101"
+export const commentsQuery = Query.q({ issueId: Ramose.EidOf(Issue) }, (p) =>
+  pipe(
+    Query.entities(Comment),
+    Query.is(Comment.issue, p.issueId),
+    Query.select(commentShape),
+    Query.orderBy(Comment.at, "asc"),
+  ),
+);
 ```
 
-| on | predicates |
+| stage | meaning |
 | --- | --- |
-| any field | `eq` `ne` `lt` `lte` `gt` `gte` `in([…])` `exists()` `missing()` |
-| strings | `startsWith` `endsWith` `includes` `matches` (case-sensitive; `matches` takes a string or a `RegExp` with no flags) |
-| references | `is(id)` — points at this record; hop through it and keep filtering: `Issue.assignee.name.startsWith("A")` |
-| many-valued fields | `some(p)` `every(p)` `none(p)` — quantify a predicate over the values; for many-valued scalars the value cursor is `.each` (`field.each.startsWith("a")`) |
+| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id, a row cell, or a param) |
+| `has(attr)` / `missing(attr)` | the fact is there / is not there — absence is not a value |
+| `where(attr, (v) => …)` | bind the field's value and constrain it: `where(Issue.title, (t) => Q.startsWith(t, "re:"))`; the comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (case-sensitive; `matches` takes a string or a `RegExp` with no flags) |
+| `follow(ref)` / `backlink(ref)` | refocus the pipeline on the reference's target / on the records pointing here — filter across a hop: `pipe(entities(Issue), follow(Issue.owner), is(User.name, "Ada"))` |
+| `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over the records pointing here through `ref` (`every` and `none` are vacuously true of a record nothing points at) |
+| `when(gate, …ps)` | the given filters are part of the query only while the param gate is on — see below |
+| `updatedSince(t)` / `assertedBy(attr, who)` | time and provenance as ordinary stages |
 
-Absence is not a value: `eq` and the comparisons need the fact to be there, so ask with `exists()` or `missing()` when absence is the question. `Ramose.or(…)` and `Ramose.not(…)` combine predicates; a **reference** reads backwards with `.reverse` — `Issue.creator.reverse` from a user is "the issues that point at me" ([glossary](/concepts/glossary/#reference)). That backlink is many-valued (an array in a shape). The exception is a `{ isComponent: true }` reference: its reverse is one record, because a component has at most one owner.
+`Q.or(…)` and `Q.not(…)` combine clauses in the generator spelling; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
+
+**Param-gated filters.** `Query.when(gate, …filters)` includes its filters only while the gate is on: a `Param<boolean>` gates on its value, a `Ramose.optional` param gates on being bound (and inside the body that param is bound, so referencing it there is always legal). Gate off, the clauses lower to nothing; gate on, they lower exactly as if written inline. One query object serves both states — no forking, no `useMemo`:
+
+```ts
+const board = Query.q({ owner: Ramose.optional(Ramose.EidOf(User)) }, (p) =>
+  pipe(
+    Query.entities(Issue),
+    Query.when(p.owner, Query.is(Issue.owner, p.owner)),
+    Query.select({ id: Issue.id, title: Issue.title }),
+  ),
+);
+// db.q(board, {})                 — every issue
+// db.q(board, { owner: adaId })   — Ada's issues
+```
 
 ## Choose the fields
 
 `select` decides both the rows you get and their TypeScript type — the **shape** ([glossary](/concepts/glossary/#shape)). Reef's board shape follows two references and one set:
 
-```ts title="examples/reef/src/domain/queries.ts:24-34"
+```ts title="examples/reef/src/domain/queries.ts:28-38"
 export const boardShape = {
   id: Issue.id,
   title: Issue.title,
@@ -78,17 +109,19 @@ export const boardShape = {
 - `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
 - `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
+- A **reference** also reads backwards in a shape with `.reverse` — `Issue.creator.reverse.select({ … })` from a user is "the issues that point at me", many-valued unless the reference is `{ isComponent: true }` (a component has at most one owner).
 
-The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A query with no `.select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
+The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A query with no `select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
 
 When the same card repeats under itself — a comment thread, an org chart — write `ref.select(Ramose.again(n))` on that edge. `n` is a hop bound you name (`1` through `16`): the same shape, again, that many full hops, then a stub `{ id }`. A many-valued again edge needs an explicit `.limit(n)` (the server will not pick a default width for you). The shape must include `N.id`; a cycle or a hop that runs out of budget comes back as that id, still in the array, not dropped.
+
+A many-valued reference in a shape can order and page its own collection *inside* the pull — `.orderBy(key, dir)` / `.limit(n)` / `.offset(n)` before its `.select` — without changing which rows you get:
 
 ```ts
 .select({
   id: Comment.id,
   body: Comment.body,
   replies: Comment.replies
-    .where(Comment.deleted.eq(false))
     .orderBy(Comment.createdAt, "asc")
     .limit(50)
     .select(Ramose.again(4)),
@@ -104,7 +137,6 @@ Without `again`, the inner `.select` is a thinner card and then it stops. Nested
   id: Comment.id,
   body: Comment.body,
   replies: Comment.replies
-    .where(Comment.deleted.eq(false))
     .orderBy(Comment.createdAt, "asc")
     .limit(20)
     .select({ id: Comment.id, body: Comment.body }),
@@ -126,7 +158,6 @@ Without `again`, the inner `.select` is a thinner card and then it stops. Nested
   id: Comment.id,
   body: Comment.body,
   replies: Comment.replies
-    .where(Comment.deleted.eq(false))
     .orderBy(Comment.createdAt, "asc")
     .limit(20)
     .select(Ramose.again(1)),
@@ -150,18 +181,20 @@ Without `again`, the inner `.select` is a thinner card and then it stops. Nested
 A Reddit thread is a window, not one fetch. `again(4)` plus `.limit(20)` on replies is the first paint. The stub `{ id }` is the "continue this thread" handle: the same module-scope query, rebound at the stub.
 
 ```ts
-const P = Ramose.params({ root: Comment.id });
-const thread = Ramose.query(Comment, P)
-  .where(Comment.id.is(P.root))
-  .select({
-    id: Comment.id,
-    body: Comment.body,
-    replies: Comment.replies
-      .where(Comment.deleted.eq(false))
-      .orderBy(Comment.createdAt, "asc")
-      .limit(20)
-      .select(Ramose.again(4)),
-  });
+const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
+  pipe(
+    Query.entities(Comment),
+    Query.is(Comment.id, p.root),
+    Query.select({
+      id: Comment.id,
+      body: Comment.body,
+      replies: Comment.replies
+        .orderBy(Comment.createdAt, "asc")
+        .limit(20)
+        .select(Ramose.again(4)),
+    }),
+  ),
+);
 // useLive(db, thread, { root: postId })        first paint
 // useLive(db, thread, { root: clicked.id })    continue this thread
 ```
@@ -178,52 +211,74 @@ Which records can reach which is a *set* of ids. `again` paints a *tree*. Graph 
 
 ```ts
   // Todo is the todos example's record type.
-  .orderBy(Todo.createdAt, "asc", { empty: "last" }).limit(20).offset(0);
+  pipe(
+    Query.entities(Todo),
+    Query.select(todoShape),
+    Query.orderBy(Todo.createdAt, "asc", { empty: "last" }),
+    Query.limit(20),
+    Query.offset(0),
+  )
 ```
 
-`empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
+`orderBy` takes the attribute itself, or — after `select` — the name of a selected column (`Query.orderBy("createdAt")`). `empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
 
-`.one()` and `.oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it.
+`one()` and `oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it. They are methods on the query value:
 
 ```ts
-const ada = Ramose.query(User).where(User.email.eq("ada@example")).one().select({
-  name: User.name,
-});
+const byEmail = Query.q({ email: User.email }, (p) =>
+  pipe(Query.entities(User), Query.is(User.email, p.email), Query.select({ name: User.name })),
+);
+
+const ada = yield* db.q(byEmail.one(), { email: "ada@example" });
 // { name: string } | null — null when nobody matches
 
-const theAda = Ramose.query(User)
-  .where(User.email.eq("ada@example"))
-  .oneOrFail()
-  .select({ name: User.name });
+const theAda = yield* db.q(byEmail.oneOrFail(), { email: "ada@example" });
 // { name: string } — fails with NotOne if there are zero or two matches
 ```
 
-`.one()` is at most one: two matches are not an error, and the rest are never fetched. `.oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
+`one()` is at most one: two matches are not an error, and the rest are never fetched. `oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
 
-`.after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
-
-## Count and group
-
-When the answer is a number, not rows, end with `.count()`, `.countDistinct(field)`, `.sum(field)`, `.avg(field)`, `.min(field)`, `.max(field)` — several at once with `.aggregate({ … })`, one row per group with `.groupBy({ … }).aggregate({ … })`. After a grouped aggregate, `.having((g) => g.n.gt(5))` keeps groups whose cells match. The work runs on the server.
+`after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
 
 ```ts
-const open = yield* db.q(Ramose.query(Todo).where(Todo.done.eq(false)).count()); // number
-const busy = yield* db.q(
-  Ramose.query(Todo).groupBy({ owner: Todo.owner }).aggregate({ n: Ramose.count() }).having((g) => g.n.gt(5)),
-);
+const page1 = yield* db.q(boardQuery.after(null));
+const page2 = yield* db.q(boardQuery.after(page1.cursor));
+// page.cursor is null when the page came back short — nothing past it
 ```
 
-A count is a `number`; `avg` / `min` / `max` are `| null` over no rows (`count` / `sum` answer `0`); a grouped row is your keys plus your aggregates. Having drops groups; it does not change that row. Aggregates replace the rows, so they do not combine with `.select` or paging. Rules: [Client API](/reference/client-api/#query-builder).
+## Count
+
+When the answer is a number, not rows, project an aggregate cell: `Q.count(handle)` (and `Q.countDistinct` / `Q.sum` / `Q.avg` / `Q.min` / `Q.max`) in a record projection, written in the generator spelling. The record's other cells are the group keys — no cells besides aggregates means one row for the whole match set:
+
+```ts
+const openCount = Query.q(function* () {
+  const todo = yield* Query.entities(Todo);
+  yield* Query.is(Todo.done, false)(todo);
+  return { n: Q.count(todo) };
+});
+const rows = yield* db.q(openCount);
+const open = rows[0]?.n ?? 0; // no matches → no rows
+
+const perOwner = Query.q(function* () {
+  const todo = yield* Query.entities(Todo);
+  const owner = yield* Query.follow(Todo.owner)(todo);
+  const name = yield* Q.fact(owner, User.name);
+  return { owner: name.v, n: Q.count(todo) };
+});
+// one row per owner: { owner: string, n: number }
+```
+
+The work runs on the server. `avg` / `min` / `max` are `| null` over no rows. Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
 
 ## Read one record
 
 When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:258"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:259"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
 ```
 
-```ts title="examples/reef/src/domain/queries.ts:40-46"
+```ts title="examples/reef/src/domain/queries.ts:44-50"
 export const issueExtraShape = {
   title: Issue.title,
   description: Issue.description.optional,
@@ -241,7 +296,7 @@ The subject is `{ id }` or a lookup by unique key, `[User.sub, "user_ada"]`. The
 
 Every query runs unchanged against an earlier version of the database. Reef's time-travel slider is `useQuery` on `db.asOf(t)`; its "deleted, still in history" strip is the same idea over `db.history`:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:484-485"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx"
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
   const everything = useQuery(db.history, everyIssueEverQuery);
 ```
@@ -250,14 +305,15 @@ Every query runs unchanged against an earlier version of the database. Reef's ti
 
 ## Rules the builder enforces
 
-- A select field is a direct field of the queried record type or a nested `ref.select({…})`; a hop in a select (`{ creatorName: Issue.creator.name }`) is a type error and a runtime error.
-- `Ramose.again(n)` is a shape on a self-reference (`ref.select(Ramose.again(n))`), not a field and not the query's own `.select`. The bound is a literal `1`–`16`. A many-valued again edge needs `.limit(n)`. The shape must select `N.id`.
-- `orderBy` across a many-valued hop throws, and so does `orderBy(field.each)` — sort by a single-valued field.
-- `.each` only works inside its own collection's `some/every/none` or per-element constraints.
+- Filter stages come before `select` — clauses close before the projection.
+- A select field is a direct field of the queried record type or a nested `ref.select({…})`; a hop in a select (`{ creatorName: Issue.creator.name }`) is a runtime error.
+- `Ramose.again(n)` is a shape on a self-reference (`ref.select(Ramose.again(n))`), not a field and not the query's own `select`. The bound is a literal `1`–`16`. A many-valued again edge needs `.limit(n)`. The shape must select `N.id`.
+- `orderBy` across a many-valued attribute throws — sort by a single-valued field.
+- `after(cursor)` needs an `orderBy` (the cursor is a position in the sort), and a cursor only continues the query that minted it.
 - Everything runs on the server, under a memory limit per query; exceeding it fails with `QueryBudgetExceeded` — narrow the query. See [Query budget](/reference/server/#query-budget).
 
 <Next links={[
   { href: "/guides/live-queries/", label: "Live queries", why: "the same query, re-run for you on every change" },
-  { href: "/guides/transactions/", label: "Write data", why: "the other half: create, change, delete" },
-  { href: "/reference/client-api/", label: "Client API", why: "every builder method, with an example" },
+  { href: "/reference/query-language/", label: "The query language", why: "the generator tier: Q.fact, rules, recursion, composition" },
+  { href: "/reference/client-api/", label: "Client API", why: "every combinator and terminal, with an example" },
 ]} />

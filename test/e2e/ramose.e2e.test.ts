@@ -10,6 +10,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
@@ -17,6 +18,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import { attrMap, Peer } from "../support/ramoseHttp.ts";
+
+const { Query, Q } = Ramose;
 
 const URL_ = process.env.RAMOSE_URL;
 const token = process.env.RAMOSE_TOKEN;
@@ -185,6 +188,9 @@ const Session = Ramose.Namespace("s", {
   n: Ramose.Attr(Ramose.Long),
 });
 const SessionCatalog = Ramose.Catalog({ s: Session });
+const sessionNames = Query.q(() =>
+  pipe(Query.entities(Session), Query.select({ name: Session.name })),
+);
 
 /** Reef-shaped card-one issue: title / status / rank + required creator join. */
 const ReefUser = Ramose.Namespace("user", {
@@ -197,15 +203,19 @@ const ReefIssue = Ramose.Namespace("issue", {
   creator: Ramose.Attr(Ramose.Ref(() => ReefUser)),
 });
 const ReefBoard = Ramose.Catalog({ user: ReefUser, issue: ReefIssue });
-const reefBoardQuery = Ramose.query(ReefIssue)
-  .orderBy(ReefIssue.rank, "asc")
-  .select({
-    id: ReefIssue.id,
-    title: ReefIssue.title,
-    status: ReefIssue.status,
-    rank: ReefIssue.rank,
-    creator: ReefIssue.creator.select({ name: ReefUser.name }),
-  });
+const reefBoardQuery = Query.q(() =>
+  pipe(
+    Query.entities(ReefIssue),
+    Query.select({
+      id: ReefIssue.id,
+      title: ReefIssue.title,
+      status: ReefIssue.status,
+      rank: ReefIssue.rank,
+      creator: ReefIssue.creator.select({ name: ReefUser.name }),
+    }),
+    Query.orderBy("rank", "asc"),
+  ),
+);
 type ReefBoardRow = Ramose.Row<typeof reefBoardQuery>;
 
 d("ramose session socket e2e", () => {
@@ -255,11 +265,7 @@ d("ramose session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          absorb(
-            report.dbAfter.q(
-              Ramose.query(Session).select({ name: Session.name }),
-            ),
-          ),
+          absorb(report.dbAfter.q(sessionNames)),
         );
         expect(names).toEqual([{ name: "Ada" }]);
 
@@ -277,9 +283,7 @@ d("ramose session socket e2e", () => {
         const seen: number[] = [];
         const fiber = a.runFork(
           Stream.runForEach(
-            dbA.live(
-              Ramose.query(Session).select({ name: Session.name }),
-            ),
+            dbA.live(sessionNames),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
         );
@@ -298,11 +302,7 @@ d("ramose session socket e2e", () => {
         let count = 0;
         for (let i = 0; i < 40 && count < 2; i++) {
           count = (
-            await a.runPromise(
-              absorb(
-                dbA.q(Ramose.query(Session).select({ name: Session.name })),
-              ),
-            )
+            await a.runPromise(absorb(dbA.q(sessionNames)))
           ).length;
           if (count < 2) await Bun.sleep(250);
         }
@@ -354,41 +354,49 @@ d("ramose session socket e2e", () => {
         );
         const view = report.dbAfter;
 
-        expect(await rt.runPromise(absorb(view.q(Ramose.query(Session).count())))).toBe(4);
-        expect(await rt.runPromise(absorb(view.q(Ramose.query(Session).sum(Session.n))))).toBe(5);
+        // `.count()` / `.sum(attr)` scalars → count/sum cells; the kernel
+        // answers zero rows over an empty match set, hence `?? 0`.
+        const countQ = Query.q(function* () {
+          const e = yield* Query.entities(Session);
+          return { n: Q.count(e) };
+        });
+        const countRows = await rt.runPromise(absorb(view.q(countQ)));
+        expect(countRows[0]?.n ?? 0).toBe(4);
+        const sumQ = Query.q(function* () {
+          const e = yield* Query.entities(Session);
+          const f = yield* Q.fact(e, Session.n);
+          return { total: Q.sum(f.v) };
+        });
+        const sumRows = await rt.runPromise(absorb(view.q(sumQ)));
+        expect(sumRows[0]?.total ?? 0).toBe(5);
 
-        const groups = await rt.runPromise(
-          absorb(
-            view.q(
-              Ramose.query(Session)
-                .groupBy({ n: Session.n })
-                .aggregate({ rows: Ramose.count() }),
-            ),
-          ),
-        );
+        // groupBy/aggregate → a record projection: the bound cell is the
+        // group key, the aggregate cell counts the group.
+        const perN = Query.q(function* () {
+          const e = yield* Query.entities(Session);
+          const f = yield* Q.fact(e, Session.n);
+          return { n: f.v, rows: Q.count(e) };
+        });
+        const groups = await rt.runPromise(absorb(view.q(perN)));
         expect([...groups].sort((a, b) => a.n - b.n)).toEqual([
           { n: 1, rows: 1 },
           { n: 2, rows: 2 },
         ]);
 
-        const kept = await rt.runPromise(
-          absorb(
-            view.q(
-              Ramose.query(Session)
-                .groupBy({ n: Session.n })
-                .aggregate({ rows: Ramose.count() })
-                .having((g) => g.rows.gt(1)),
-            ),
-          ),
-        );
+        // `.having((g) => g.rows.gt(1))` has no kernel spelling — filter the
+        // grouped rows in JS, keeping the assertion's intent.
+        const kept = groups.filter((g) => g.rows > 1);
         expect(kept).toEqual([{ n: 2, rows: 2 }]);
 
-        const pageQ = (after: Ramose.Cursor | null) =>
-          Ramose.query(Session)
-            .orderBy(Session.name)
-            .limit(3)
-            .after(after)
-            .select({ name: Session.name });
+        const paged = Query.q(() =>
+          pipe(
+            Query.entities(Session),
+            Query.select({ name: Session.name }),
+            Query.orderBy("name"),
+            Query.limit(3),
+          ),
+        );
+        const pageQ = (after: Ramose.Cursor | null) => paged.after(after);
         const p1 = await rt.runPromise(absorb(view.q(pageQ(null))));
         expect(p1.rows.map((r) => r.name)).toEqual(["a", "b", "c"]);
         expect(p1.cursor).not.toBeNull();
@@ -556,7 +564,12 @@ d("ramose session socket e2e", () => {
         const people = await phoneRt.runPromise(
           absorb(
             person.dbAfter.q(
-              Ramose.query(ReefUser).select({ id: ReefUser.id, name: ReefUser.name }),
+              Query.q(() =>
+                pipe(
+                  Query.entities(ReefUser),
+                  Query.select({ id: ReefUser.id, name: ReefUser.name }),
+                ),
+              ),
             ),
           ),
         );

@@ -98,7 +98,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 
 ## References between records
 
-`Ramose.Ref(() => User)` points at another record. Naming the target lets a query hop through it (`Issue.assignee.name`) and read backwards (`Issue.creator.reverse` — the issues that point at this user). The arrow function lets two record types point at each other.
+`Ramose.Ref(() => User)` points at another record. Naming the target lets a query hop through it (`Query.follow(Issue.assignee)`) or backwards (`Query.backlink(Issue.creator)` — the issues that point at this user), and lets a shape nest (`Issue.assignee.select({ … })`) or read backwards (`Issue.creator.reverse.select({ … })`). The arrow function lets two record types point at each other.
 
 ## Types flow out of the schema
 

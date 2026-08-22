@@ -90,10 +90,14 @@ export const Issue = Ramose.Namespace("issue", {
   <div class="rg-moment-code">
     <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:234-238" />
 
-```ts title="examples/reef/src/domain/queries.ts:66-68 · app/screens/BoardScreen.tsx:234-236"
-export const boardQuery = Ramose.query(Issue)
-  .orderBy(Issue.rank, "asc")
-  .select(boardShape);
+```ts title="examples/reef/src/domain/queries.ts:70-77 · app/screens/BoardScreen.tsx"
+export const boardQuery = Query.q(() =>
+  pipe(
+    Query.entities(Issue),
+    Query.select(boardShape),
+    Query.orderBy(Issue.rank, "asc"),
+  ),
+);
 // …
 const db = useDb(slug, Reef);
 const board = useLive(db, boardQuery);

@@ -767,7 +767,8 @@ describe("db.q end to end", () => {
     // when does not nest into or/not: an off gate would blank the branch
     const inOr = Query.q({ onlyOpen: Schema.Boolean }, function* (p) {
       const issue = yield* Query.entities(Issue);
-      yield* Q.or(Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue)));
+      // the type system rejects this too — the cast exercises the runtime guard
+      yield* Q.or(Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue)) as never);
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });

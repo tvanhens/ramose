@@ -13,7 +13,8 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import { query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Query } from "../src/db/internal.ts";
 import { type Call, client, fakePeer, redacted, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -46,7 +47,7 @@ const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   };
 };
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 const row = (name: string) => [{ name }];
 
 /** `/info` at `state.t` over HTTPS, reads at `state` over the socket. */

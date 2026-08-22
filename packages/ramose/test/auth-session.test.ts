@@ -15,7 +15,8 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { fromResponse } from "../src/db/Errors.ts";
-import { query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Query } from "../src/db/internal.ts";
 import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -24,7 +25,7 @@ const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
 describe("the credential on the wire", () => {
   test("the socket takes ?token=, the HTTPS write takes Authorization", async () => {

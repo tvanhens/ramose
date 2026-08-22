@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import {
   DB_SEAM,
   type DbSeam,
-  query,
+  Query,
   type ReadDb,
 } from "../src/db/internal.ts";
 import { client, fakePeer, httpsClient, settle } from "./peer.ts";
@@ -86,7 +86,7 @@ describe("the wake", () => {
     expect(off).toBeDefined();
 
     // unsolicited frames ride the session socket, which a first read opens
-    await Effect.runPromise(db.q(query(User)).pipe(Effect.ignore));
+    await Effect.runPromise(db.q(Query.q(() => Query.entities(User))).pipe(Effect.ignore));
     peer.push({ op: "tx", t: 9, datoms: [] });
     await settle();
     expect(wakes).toBeGreaterThan(0);

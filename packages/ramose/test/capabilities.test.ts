@@ -16,7 +16,8 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
-import { query, type Tx } from "../src/db/index.ts";
+import { pipe } from "effect/Function";
+import { Query, type Tx } from "../src/db/index.ts";
 import { ReadDatabases } from "../src/ReadDatabases.ts";
 import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
 import type { Server } from "../src/Server.ts";
@@ -236,7 +237,7 @@ describe("ReadDatabases", () => {
         const ramose = yield* ReadDatabases(server());
         return yield* ramose
           .db("movies", Movies)
-          .q(query(User).select({ name: User.name }));
+          .q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 

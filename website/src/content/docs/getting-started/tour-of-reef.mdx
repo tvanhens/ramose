@@ -106,10 +106,14 @@ Provisioning scripts, migrations, per-customer routing (`ramose.db(name)` is the
 
 The board is one **live query** — a query that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)):
 
-```ts title="examples/reef/src/domain/queries.ts:66-68"
-export const boardQuery = Ramose.query(Issue)
-  .orderBy(Issue.rank, "asc")
-  .select(boardShape);
+```ts title="examples/reef/src/domain/queries.ts:70-77"
+export const boardQuery = Query.q(() =>
+  pipe(
+    Query.entities(Issue),
+    Query.select(boardShape),
+    Query.orderBy(Issue.rank, "asc"),
+  ),
+);
 ```
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx:234-238"
@@ -270,12 +274,14 @@ Every write gets a **version number** `t`, in order ([glossary](/concepts/glossa
   const everything = useQuery(db.history, everyIssueEverQuery);
 ```
 
-```ts title="examples/reef/src/domain/queries.ts:84-88"
+```ts title="examples/reef/src/domain/queries.ts:104-110"
 /** Over `db.history` this also returns issues that no longer exist. */
-export const everyIssueEverQuery = Ramose.query(Issue).select({
-  id: Issue.id,
-  title: Issue.title,
-});
+export const everyIssueEverQuery = Query.q(() =>
+  pipe(
+    Query.entities(Issue),
+    Query.select({ id: Issue.id, title: Issue.title }),
+  ),
+);
 ```
 
 :::tip[What you didn't write]

@@ -228,9 +228,13 @@ export const todoShape = {
   createdAt: Todo.createdAt,
 } as const;
 
-export const todoQuery = Ramose.query(Todo)
-  .orderBy(Todo.createdAt, "asc")
-  .select(todoShape);
+export const todoQuery = Ramose.Query.q(() =>
+  pipe(
+    Ramose.Query.entities(Todo),
+    Ramose.Query.select(todoShape),
+    Ramose.Query.orderBy(Todo.createdAt, "asc"),
+  ),
+);
 
 /** One row of {@link todoQuery} — inferred, never restated. */
 export type TodoRow = Ramose.Row<typeof todoQuery>;
@@ -402,10 +406,14 @@ Leave `bun run dev` running while you make these edits. It watches the stack fil
 Add a second query in `src/todos.ts`:
 
 ```ts title="src/todos.ts"
-export const openTodos = Ramose.query(Todo)
-  .where(Todo.done.eq(false))
-  .orderBy(Todo.createdAt, "asc")
-  .select(todoShape);
+export const openTodos = Ramose.Query.q(() =>
+  pipe(
+    Ramose.Query.entities(Todo),
+    Ramose.Query.is(Todo.done, false),
+    Ramose.Query.select(todoShape),
+    Ramose.Query.orderBy(Todo.createdAt, "asc"),
+  ),
+);
 ```
 
 Import it in `src/App.tsx` alongside `todoQuery`, then switch `TodoList` between the two:

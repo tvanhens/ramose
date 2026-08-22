@@ -10,7 +10,8 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { connect, query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { connect, Query } from "../src/db/internal.ts";
 import { fakePeer, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -19,7 +20,7 @@ const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
 const ramose = (peer: FakePeer) =>
   connect({

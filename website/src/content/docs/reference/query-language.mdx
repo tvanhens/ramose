@@ -5,9 +5,9 @@ description: The kernel query surface — Query.q, the pipeable stdlib, named ru
 
 The minimum set of ideas behind the query language: what a query is, what
 the kernel is made of, and why every larger construct is derived rather
-than primitive. The navigational surface (`Ramose.query(N).where(...)`,
-[Read data](/guides/queries/)) still ships; its migration onto this
-language is follow-up work.
+than primitive. This is the one constraint language — the pipe spelling
+taught in [Read data](/guides/queries/) and the generator spelling below
+are two spellings of the same value.
 
 ## One kind of object
 
@@ -125,6 +125,18 @@ charged against the existing query budget, so a runaway recursion is a
    `Query.refine` are derived from `open`.
 3. `Query.rule` — engine-expanded, recursive, budgeted; serializes with
    the query.
+
+## Terminals ride the value
+
+`q.one()` / `q.oneOrFail()` force `limit 1`/`2` at lowering and unwrap the
+answer (a miss is `NotOne`); `q.after(cursor)` turns the result into a
+keyset `Page` — the sort-key cells ride in `find` past the projection, the
+entity id joins the order as a tie-breaker, and the next cursor is minted
+from the last row. `Q.when(gate, body)` (pipe spelling `Query.when`) is a
+param-gated clause group: the binder's gate decides at lowering whether the
+group splices inline or lowers to nothing, so one query value serves both
+states. None of these delegate through `q.open` — a cursor is
+post-processing for the outermost query; strip it with `q.logic()`.
 
 ## Effect stops at the boundary
 

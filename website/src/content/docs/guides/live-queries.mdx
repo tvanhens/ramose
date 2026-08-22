@@ -84,13 +84,13 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 ## Hoist your queries
 
-`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does. Changing **values** are `Ramose.params` — bind them as the third argument; an inline `{ issueId }` is fine, and a params-only change does not blank `rows`:
+`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does — a `Query.q` value is inert data with stable identity, which is exactly what a hook dependency wants. Changing **values** are declared params (`Query.q({ issueId: … }, body)`) — bind them as the third argument; an inline `{ issueId }` is fine (params are compared by value), and a params-only change does not blank `rows`:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:266"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:267"
   const comments = useLive(db, commentsQuery, { issueId });
 ```
 
-`db.asOf(t)` inline is fine — views compare by value. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
+`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so hoist those too — or accept the re-subscribe, which is what a new page wants anyway. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "who may read and write each field" },

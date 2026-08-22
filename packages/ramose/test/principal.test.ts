@@ -14,13 +14,14 @@ import * as Effect from "effect/Effect";
 import { client, fakePeer, httpsClient, redacted, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
-import { query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Query } from "../src/db/internal.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
-const names = query(User).select({ name: User.name });
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
 /** `/info` at a mutable principal; reads answer over the socket. */
 const peerWith = (state: {

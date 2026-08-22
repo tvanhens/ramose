@@ -164,10 +164,26 @@ type AgainNsField<F, S, K extends string> = AgainTargetNs<F> extends ShapeNs<S>
   ? F
   : AgainNsMismatch<K, ShapeNs<S> & string>;
 
+/** A card-many **ref** (a many forward ref, or an ordinary backlink):
+ * the hop with elements a nested collection can order and page. */
+type IsManyRef<A> = IsMany<A> extends true
+  ? A extends { readonly valueType: ":db.type/ref" }
+    ? true
+    : false
+  : false;
+
+/**
+ * A sort key for a nested collection: a card-one attribute of the element.
+ */
+export type NestedOrderKey = PathCarrier & {
+  readonly cardinality?: "one";
+};
+
 /**
  * Predicate-free stamp on every attribute reference: the pull-shaping
  * methods. `.optional` / `.orDefault` wrap the receiver; `.select` opens a
- * nested shape on a ref.
+ * nested shape on a ref; a card-many ref also orders and pages its
+ * collection *inside* the pull (`.orderBy` / `.limit` / `.offset`).
  */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly optional: ReturnType<typeof optional<A>>;
@@ -183,6 +199,111 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? RefSelect<A>
     : never;
+  /** Card-many ref only: sort this collection by a card-one key of its
+   * element. Evaluated inside the pull — it never changes the row set. */
+  readonly orderBy: IsManyRef<A> extends true
+    ? (
+        key: NestedOrderKey,
+        dir?: OrderDir,
+        opts?: { readonly empty?: OrderEmpty },
+      ) => CollectionNav<A>
+    : never;
+  /** Card-many ref only: keep at most `n` elements. Required before
+   * `.select(again(n))` — the engine default is not a tree budget. */
+  readonly limit: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
+  /** Card-many ref only: drop `n` elements from the front. */
+  readonly offset: IsManyRef<A> extends true ? (n: number) => CollectionNav<A> : never;
+};
+
+/**
+ * A cardinality-many ref with pull-phase constraints attached:
+ *
+ * ```ts
+ * Comment.replies.orderBy(Comment.createdAt, "asc").limit(20)
+ *   .select({ id: Comment.id, body: Comment.body })
+ * ```
+ *
+ * The constraints lower to the `PullAttrSpec` fields of *this* collection
+ * (`:order` / `:offset` / `:limit`) and are evaluated inside the pull, after
+ * the outer `:order` / `:offset` / `:limit` slice — they page the collection,
+ * never the rows. An element-less collection is `[]`, not a dropped parent,
+ * so the outer `limit` still counts rows the client keeps.
+ */
+export interface CollectionNav<A extends PathCarrier = PathCarrier> {
+  readonly _tag: "collection";
+  readonly attr: A;
+  /** Already lowered — each call lowers its argument eagerly. */
+  readonly constraints: PullNestedConstraints;
+  orderBy(
+    key: NestedOrderKey,
+    dir?: OrderDir,
+    opts?: { readonly empty?: OrderEmpty },
+  ): CollectionNav<A>;
+  limit(n: number): CollectionNav<A>;
+  offset(n: number): CollectionNav<A>;
+  readonly select: A extends { readonly valueType: ":db.type/ref" }
+    ? RefSelect<A>
+    : never;
+}
+
+const nestedCount = (n: unknown, what: string): number => {
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 0) {
+    throw new Error(`ramose/query: nested ${what} takes a non-negative integer, got ${String(n)}`);
+  }
+  return n;
+};
+
+const lowerElemOrder = (
+  key: PathCarrier,
+  dir: OrderDir,
+  empty: OrderEmpty | undefined,
+): { path: string[]; reverse?: boolean[]; dir: OrderDir; empty?: OrderEmpty } => {
+  const path = pathOf(key);
+  if (cardsOf(key).includes("many")) {
+    throw new Error(
+      `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+    );
+  }
+  const revs = revsOf(key);
+  return {
+    path: [...path],
+    ...(revs.some(Boolean) ? { reverse: [...revs] } : {}),
+    dir,
+    ...(empty !== undefined ? { empty } : {}),
+  };
+};
+
+const collectionNav = <A extends PathCarrier>(
+  attr: A,
+  constraints: PullNestedConstraints,
+): CollectionNav<A> => {
+  const self: CollectionNav<A> = {
+    _tag: "collection",
+    attr,
+    constraints,
+    orderBy: (key, dir = "asc", opts) =>
+      collectionNav(attr, {
+        ...constraints,
+        order: [...(constraints.order ?? []), lowerElemOrder(key, dir, opts?.empty)],
+      }),
+    limit: (n) => collectionNav(attr, { ...constraints, limit: nestedCount(n, "limit") }),
+    offset: (n) => collectionNav(attr, { ...constraints, offset: nestedCount(n, "offset") }),
+    select: ((shape: Shape | AllShape | Again) =>
+      makeSelectNested(attr, shape, constraints)) as CollectionNav<A>["select"],
+  };
+  return self;
+};
+
+/** Start constraining a collection: only a cardinality-many **ref** has
+ * elements (entities) to order and page inside the pull. */
+const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
+  const cards = cardsOf(attr);
+  if (cards[cards.length - 1] !== "many" || !isRefNav(attr)) {
+    throw new Error(
+      `ramose/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested orderBy / limit / offset page a cardinality-many reference collection; constrain rows in the query itself`,
+    );
+  }
+  return collectionNav(attr, {});
 };
 
 export interface SelectNested<A = unknown, S = unknown> {
@@ -212,7 +333,7 @@ export const makeSelectNested = (
     const cards = cardsOf(attr);
     if (cards[cards.length - 1] === "many" && constraints?.limit === undefined) {
       throw new Error(
-        `ramose/query: ${pathOf(attr).join(" → ")} is a card-many again edge — the engine default of 1000 is not a tree budget`,
+        `ramose/query: ${pathOf(attr).join(" → ")} is a card-many again edge — write .limit(n) before .select(Ramose.again(${shape.depth})); the engine default of 1000 is not a tree budget`,
       );
     }
   }
@@ -242,6 +363,20 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     // like `.optional`, it wraps the *receiver* (issue #69)
     orDefault(this: PathCarrier, value: unknown) {
       return pullDefault(this, value);
+    },
+    orderBy(
+      this: PathCarrier,
+      key: NestedOrderKey,
+      dir: OrderDir = "asc",
+      opts?: { readonly empty?: OrderEmpty },
+    ) {
+      return collectionOf(this, "orderBy").orderBy(key, dir, opts);
+    },
+    limit(this: PathCarrier, n: number) {
+      return collectionOf(this, "limit").limit(n);
+    },
+    offset(this: PathCarrier, n: number) {
+      return collectionOf(this, "offset").offset(n);
     },
   };
 

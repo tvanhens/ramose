@@ -11,7 +11,8 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import { query } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Query } from "../src/db/internal.ts";
 import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -23,17 +24,21 @@ const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
 const rows = (result: unknown[], t = 2) => ({ body: { t, root: t, result } });
 
 /** The one query every test here runs; only the transport is under test. */
-const names = query(User).select({ name: User.name });
-const eids = query(User);
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
+const eids = Query.q(() => Query.entities(User));
 
-/** The namespace scope both lower to: `?e` has some `:user/*` attribute. */
-const userScope = [
+/** The namespace scope both lower to: the `isUser` rule — `?e` has some
+ * `:user/*` attribute. */
+const userRules = [
   [
-    "or",
-    ["?e", ":user/name", "_"],
-    ["?e", ":user/age", "_"],
-    ["?e", ":user/friends", "_"],
-    ["?e", ":user/bestFriend", "_"],
+    ["isUser", "?qm0"],
+    [
+      "or",
+      ["?qm0", ":user/name", "_"],
+      ["?qm0", ":user/age", "_"],
+      ["?qm0", ":user/friends", "_"],
+      ["?qm0", ":user/bestFriend", "_"],
+    ],
   ],
 ];
 
@@ -99,7 +104,7 @@ describe("reads become frames", () => {
       {
         id: 1,
         op: "q",
-        query: { find: ["?e"], where: userScope },
+        query: { find: ["?q0"], where: [["isUser", "?q0"]], rules: userRules },
         inputs: [],
         asOf: 2,
       },
@@ -120,12 +125,13 @@ describe("reads become frames", () => {
           find: [
             [
               "pull",
-              "?e",
+              "?q0",
               [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
             ],
           ],
           // `name` is not `.optional`, so it is a where clause too
-          where: [...userScope, ["?e", ":user/name", "_"]],
+          where: [["isUser", "?q0"], ["?q0", ":user/name", "_"]],
+          rules: userRules,
         },
         inputs: [],
         history: true,
@@ -152,7 +158,9 @@ describe("reads become frames", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const build = (n: string) =>
-      query(User).where(User.name.eq(n)).select({ name: User.name });
+      Query.q(() =>
+        pipe(Query.entities(User), Query.is(User.name, n), Query.select({ name: User.name })),
+      );
 
     const first = run(db.asOf(1).q(build("a")));
     const second = run(db.asOf(1).q(build("b")));

@@ -10,15 +10,17 @@
  * `db.q(q, { issueId })` / `useLive(db, q, { issueId })`.
  *
  * ```ts
- * const P = Ramose.params({
- *   issueId:  Issue.id,                       // Param<Eid<typeof Issue>>
- *   term:     Schema.String,                  // Param<string>
- *   owner:    Ramose.optional(User.id),       // may be unbound
- * });
- * const q = Ramose.query(Comment, P).where(Comment.issue.is(P.issueId));
+ * const q = Query.q(
+ *   {
+ *     issueId: Ramose.EidOf(Issue),          // Param<Eid<typeof Issue>>
+ *     term:    Schema.String,                // Param<string>
+ *     owner:   Ramose.optional(User.id),     // may be unbound
+ *   },
+ *   (p) => pipe(Query.entities(Comment), Query.is(Comment.issue, p.issueId), …),
+ * );
  * ```
  *
- * Substitution happens at lowering time (`lowerNavQuery`), never via the
+ * Substitution happens at lowering time (`lowerQueryObject`), never via the
  * wire's `:in` / `inputs` channel — the peer sees exactly the query the same
  * literals would have produced. Value holes only: no param may stand in a
  * structural position (an attribute, a namespace, a shape, an `orderBy` key).
@@ -216,7 +218,7 @@ export type ParamArgs<B> = [B] extends [never]
 /**
  * `Ramose.params({...})` — declare a query's value holes, by attribute
  * reference or Effect Schema. Declared, not inferred-from-use: the set is
- * what `Ramose.query(N, P)` scopes, what the terminal binds, and what a
+ * what `Query.q(params, body)` declares as its head, what the terminal binds, and what a
  * mistyped binding is checked against.
  */
 export const params = <const Spec extends ParamsSpec>(
@@ -251,7 +253,7 @@ export interface ParamBinder {
 
 const notScoped = (key: string): Error =>
   new Error(
-    `ramose/params: the param "${key}" is used in a query that is not scoped to its set — pass the set to Ramose.query(N, P)`,
+    `ramose/params: the param "${key}" is used in a query that is not scoped to its set — declare the set in the query's head (Query.q(params, body))`,
   );
 
 /**
@@ -267,7 +269,7 @@ export const bindParams = (
   if (set === undefined) {
     if (bindings !== undefined && Object.keys(bindings).length > 0) {
       throw new Error(
-        "ramose/params: this query declares no params — declare them with Ramose.params and scope the query with Ramose.query(N, P)",
+        "ramose/params: this query declares no params — declare them in the query's head (Query.q(params, body))",
       );
     }
     return {

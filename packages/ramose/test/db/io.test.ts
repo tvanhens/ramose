@@ -24,15 +24,23 @@ import {
   toWireDatom,
 } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import { Databases, layer, query as navQuery } from "../../src/db/internal.ts";
+import { Databases, Query, layer } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 /** The one query most of these tests run; only the transport is under test. */
-const names = navQuery(User).select({ name: User.name });
-/** The entity behind a known name, as an `Eid`. */
-const adaId = navQuery(User).where(User.name.eq("Ada"));
+const names = Query.q(() =>
+  pipe(Query.entities(User), Query.select({ name: User.name })),
+);
+/** The entity behind a known name, as an `{ id }` row (no select: the
+ * generator returns the focus, so the row keeps its precise id type). */
+const adaId = Query.q(function* () {
+  const user = yield* Query.entities(User);
+  yield* Query.is(User.name, "Ada")(user);
+  return user;
+});
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
@@ -290,7 +298,11 @@ describe("install → transact → q → pull", () => {
     );
 
     const rows = await run(
-      dbAfter.q(navQuery(User).select({ id: User.id, name: User.name })),
+      dbAfter.q(
+        Query.q(() =>
+          pipe(Query.entities(User), Query.select({ id: User.id, name: User.name })),
+        ),
+      ),
     );
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Bob"]);
     expect(rows.every((r) => typeof r.id === "number")).toBe(true);

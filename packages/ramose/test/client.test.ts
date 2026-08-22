@@ -18,7 +18,8 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type { DbError } from "../src/db/internal.ts";
-import { Databases, layer, query, schemaTx } from "../src/db/internal.ts";
+import { pipe } from "effect/Function";
+import { Databases, layer, Query, schemaTx } from "../src/db/internal.ts";
 import { client, fakePeer, httpsClient, type Call } from "./peer.ts";
 
 import { Movie, Movies, User } from "./db/fixture.ts";
@@ -28,24 +29,8 @@ const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
 /** The two queries these tests run; only the transport is under test. */
-const names = query(User).select({ name: User.name });
-const eids = query(User);
-
-/** The namespace scope every `:user/*` query carries. */
-const userScope = [
-  "or",
-  ["?e", ":user/name", "_"],
-  ["?e", ":user/age", "_"],
-  ["?e", ":user/friends", "_"],
-  ["?e", ":user/bestFriend", "_"],
-];
-const namesWire = {
-  find: [
-    ["pull", "?e", [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }]],
-  ],
-  // `name` is not `.optional`, so the peer drops the rows that lack it
-  where: [userScope, ["?e", ":user/name", "_"]],
-};
+const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
+const eids = Query.q(() => Query.entities(User));
 
 const ack = (t = 7, txEid = 13194139533319, datoms = 3) => ({
   t,
@@ -499,7 +484,7 @@ describe("the JSON transport", () => {
           root: 1,
           // echo the where-clause constants back as the relation
           result: [
-            [(frame.query as { where: unknown[][] }).where[1][2]],
+            [(frame.query as { where: unknown[][] }).where[0][2]],
             [{ $uuid: "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" }],
           ],
         },
@@ -508,21 +493,16 @@ describe("the JSON transport", () => {
     const c = client(peer);
 
     const rows: readonly unknown[] = await run(
-      c.ramose.db("movies", Movies).asOf(1).q(query(Movie).where(Movie.released.eq(when))),
+      c.ramose
+        .db("movies", Movies)
+        .asOf(1)
+        .q(Query.q(() => pipe(Query.entities(Movie), Query.is(Movie.released, when)))),
     );
 
     // on the wire: tagged, JSON-safe (pinned views still ride the socket)
     expect(peer.frameOps("q")[0].query).toEqual({
-      find: ["?e"],
-      where: [
-        [
-          "or",
-          ["?e", ":movie/title", "_"],
-          ["?e", ":movie/year", "_"],
-          ["?e", ":movie/released", "_"],
-        ],
-        ["?e", ":movie/released", { $inst: when.getTime() }],
-      ],
+      find: ["?q0"],
+      where: [["?q0", ":movie/released", { $inst: when.getTime() }]],
     });
     // back off the wire: the original types
     expect(rows[0]).toBeInstanceOf(Date);

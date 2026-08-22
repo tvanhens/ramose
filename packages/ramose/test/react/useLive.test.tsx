@@ -7,6 +7,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
 import * as Cause from "effect/Cause";
+import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -28,9 +29,11 @@ const Todo = Ramose.Namespace("todo", {
 });
 const Todos = Ramose.Catalog({ todo: Todo });
 
-/** No `.select`, so rows are entity ids — the peer's `[[eid], …]` unwrapped. */
-const allTodos = Ramose.query(Todo);
-const oneTodo = Ramose.query(Todo).limit(1);
+/** No `select`, so rows are entity ids — the peer's `[[eid], …]` unwrapped. */
+const allTodos = Ramose.Query.q(() => Ramose.Query.entities(Todo));
+const oneTodo = Ramose.Query.q(() =>
+  pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(1)),
+);
 
 /** Every pass is a handful of microtasks; a beat is plenty. */
 const settle = (ms = 25) => Bun.sleep(ms);
@@ -139,7 +142,7 @@ describe("useLive (query form)", () => {
     const { db, peer, close } = overlaySetup(world);
     try {
       const { result, rerender } = renderHook(
-        ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
+        ({ query }: { query: Ramose.QueryObject<{ readonly id: number }> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );
@@ -165,7 +168,7 @@ describe("useLive (query form)", () => {
     const { db, close } = overlaySetup(world);
     try {
       const { result, rerender, unmount } = renderHook(
-        ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
+        ({ query }: { query: Ramose.QueryObject<{ readonly id: number }> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );
@@ -309,8 +312,9 @@ describe("useLive (query form)", () => {
   });
 
   test("a params-only change re-runs without a new query object and does not blank rows", async () => {
-    const P = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.query(Todo, P).limit(P.n);
+    const limited = Ramose.Query.q({ n: Schema.Number }, (p) =>
+      pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(p.n)),
+    );
     const object = limited;
 
     const world = await todoWorld(2);

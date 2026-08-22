@@ -13,6 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import { type ReactNode, StrictMode, useEffect } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { fakePeer, type FakePeer } from "./peer.ts";
@@ -32,7 +33,9 @@ const Todo = Ramose.Namespace("todo", {
   title: Ramose.Attr(Schema.String),
 });
 const Todos = Ramose.Catalog({ todo: Todo });
-const titles = Ramose.query(Todo).select({ title: Todo.title });
+const titles = Ramose.Query.q(() =>
+  pipe(Ramose.Query.entities(Todo), Ramose.Query.select({ title: Todo.title })),
+);
 
 const providerProps = (peer: FakePeer, url = "https://peer.example.com") => ({
   url,
