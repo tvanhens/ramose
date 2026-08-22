@@ -19,7 +19,7 @@ import { InvalidRequest } from "./db/Errors.ts";
 
 /**
  * The pinned verifier/minter contract. Declare once; hand it to
- * {@link import("./Server.ts").authEnv} (`{ auth }`) and to {@link claims}.
+ * `authEnv` (`{ auth }`) and to {@link claims}.
  */
 export interface AuthConfig {
   /** The `iss` every token carries and the peer pins (`RAMOSE_JWT_ISS`). */

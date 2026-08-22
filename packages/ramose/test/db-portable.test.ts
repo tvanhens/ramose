@@ -21,8 +21,10 @@
  *      package, so nothing but this assertion stops a stray relative import
  *      from pulling the peer Worker / deploy barrel into a consumer bundle.
  *
- * The walk is static and includes `import type`: a type-only edge to `alchemy`
- * is still a coupling this entry is not allowed to have.
+ * The walk is static and includes `import type` and JSDoc
+ * `{@link import("./X")}`: either is still a coupling this entry is not
+ * allowed to have (Auth.ts used to `{@link import("./Server.ts")}`, which
+ * pulled the whole deploy engine into `ramose/better-auth`).
  */
 
 import { describe, expect, test } from "bun:test";
