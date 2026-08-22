@@ -158,10 +158,13 @@ export type TxEffectBody<
   R = never,
 > = (tx: Tx<C>) => Effect.Effect<unknown, E, R>;
 
-const isHandle = (e: unknown): e is Entity =>
+/** @internal An entity handle, as opposed to a raw eid / tempid / lookup. */
+export const isEntity = (e: unknown): e is Entity =>
   typeof e === "object" &&
   e !== null &&
   (e as { _tag?: unknown })._tag === "Entity";
+
+const isHandle = isEntity;
 
 const resolveEntity = (e: unknown): unknown => {
   if (isHandle(e)) return e.eid;

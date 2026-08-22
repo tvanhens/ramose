@@ -29,6 +29,11 @@ import { processTx, TxError } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
 import type { AnyCatalog } from "./Catalog.ts";
 import { schemaTx } from "./ensure.ts";
+import { lowerQueryObject } from "./query/index.ts";
+import { lowerPullPattern } from "./Pull.ts";
+import { NotOne, ParamError } from "./Errors.ts";
+import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
+import type { AnyOperation, OperationInvocation } from "./Operation.ts";
 import {
   type DbError,
   fromResponse,
@@ -68,7 +73,21 @@ export interface Overlay {
     body: Record<string, unknown>,
   ): Effect.Effect<unknown, DbError>;
   transact(tx: readonly unknown[]): Effect.Effect<OverlayAck, DbError>;
+  run(args: OverlayRunArgs): Effect.Effect<OverlayOpAck, DbError>;
   handlePush(frame: Record<string, unknown>): Promise<void>;
+}
+
+export interface OverlayRunArgs {
+  readonly invocation: OperationInvocation;
+  readonly operation: AnyOperation;
+  readonly catalog: AnyCatalog;
+  readonly principal: { readonly eid: number | null; readonly class: string };
+  readonly db: string;
+}
+
+export interface OverlayOpAck extends OverlayAck {
+  readonly output: unknown;
+  readonly clientOpId: string;
 }
 
 export interface OverlayOptions {
@@ -76,6 +95,10 @@ export interface OverlayOptions {
   readonly post: (
     tx: readonly unknown[],
     clientTxId: string,
+  ) => Effect.Effect<unknown, DbError>;
+  /** Required for `overlay.run`. Transact-only tests may omit it. */
+  readonly postOp?: (
+    invocation: OperationInvocation,
   ) => Effect.Effect<unknown, DbError>;
   /** Installs catalog attrs locally so processTx / q can resolve idents. */
   readonly catalog?: AnyCatalog | undefined;
@@ -86,6 +109,7 @@ interface PendingLayer {
   tx: unknown[];
   datoms: Datom[];
   tempids: Record<string, number>;
+  invocation?: OperationInvocation;
 }
 
 const TX_EID_CAP = 2 ** 42;
@@ -100,6 +124,18 @@ const asTempids = (value: unknown): Record<string, number> => {
     if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
   }
   return out;
+};
+
+const remapEntityRef = (
+  entity: unknown,
+  eids: Map<number, number>,
+  referred: Record<string, number>,
+): unknown => {
+  if (typeof entity === "number") return eids.get(entity) ?? entity;
+  if (typeof entity === "string" && referred[entity] !== undefined) {
+    return referred[entity];
+  }
+  return entity;
 };
 
 const clientTxId = (): string =>
@@ -214,7 +250,12 @@ const classifyQuery = (err: unknown): DbError => {
       spentBy: err.spentBy,
     });
   }
-  if (err instanceof QueryParseError || err instanceof QueryError) {
+  if (
+    err instanceof QueryParseError ||
+    err instanceof QueryError ||
+    err instanceof NotOne ||
+    err instanceof ParamError
+  ) {
     return new InvalidRequest({ message: err.message });
   }
   return new InternalError({
@@ -395,6 +436,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       }
       if (Object.keys(foreign).length > 0) {
         layer.tx = rewriteTx(layer.tx, foreign, conn?.db().schema);
+      }
+      if (layer.invocation?.entity !== undefined) {
+        const next = remapEntityRef(layer.invocation.entity, eids, referred);
+        if (next !== layer.invocation.entity) {
+          layer.invocation = { ...layer.invocation, entity: next };
+        }
       }
       layer.datoms = rewriteDatoms(layer.datoms, eids);
       for (const [tmp, e] of Object.entries(layer.tempids)) {
@@ -657,6 +704,168 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
+  const speculative = async (extra: readonly unknown[]): Promise<EngineDb> => {
+    const base = view();
+    if (extra.length === 0) return base;
+    const expansion = await processTx(
+      base,
+      [...extra],
+      Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+      nextEid(),
+      Date.now(),
+    );
+    return overlayDb(base, expansion.datoms);
+  };
+
+  const run: Overlay["run"] = (args) =>
+    ready(false).pipe(
+      Effect.flatMap(() =>
+        Effect.gen(function* () {
+          let collected: () => readonly unknown[] = () => [];
+          const built = buildOp({
+            catalog: args.catalog,
+            db: args.db,
+            principal: {
+              eid: args.principal.eid,
+              class: args.principal.class,
+              claims: {},
+            },
+            self: args.invocation.entity,
+            effects: "halt",
+            q: (input, params) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const lowered = lowerQueryObject(input, params);
+                  const db = await speculative(collected());
+                  const result = await engineQuery(db, lowered.query, []);
+                  const rows = lowered.finalize(result);
+                  if (rows instanceof NotOne || rows instanceof ParamError) {
+                    throw rows;
+                  }
+                  return rows;
+                },
+                catch: classifyQuery,
+              }),
+            pull: (subject, pattern) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const db = await speculative(collected());
+                  const normalized = normalizePullPattern(lowerPullPattern(pattern));
+                  const eid =
+                    typeof subject === "number"
+                      ? subject
+                      : await db.entid(entityRefOf(subject));
+                  if (eid === undefined) return null;
+                  return enginePull(db, eid, normalized);
+                },
+                catch: classifyQuery,
+              }),
+          });
+          collected = built.ops;
+
+          yield* runBody(
+            args.operation.body,
+            built.op,
+            args.invocation.input,
+          ).pipe(
+            Effect.mapError((e) =>
+              isDatabaseError(e) ? e : classifyTx(e),
+            ),
+          );
+
+          const tx = [...built.ops()];
+          const id = args.invocation.clientOpId;
+          let invocation: OperationInvocation = { ...args.invocation };
+
+          if (tx.length > 0) {
+            const expansion = yield* Effect.tryPromise({
+              try: () =>
+                processTx(
+                  view(),
+                  tx,
+                  Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+                  nextEid(),
+                  Date.now(),
+                ),
+              catch: classifyTx,
+            });
+            pending.push({
+              clientTxId: id,
+              tx,
+              datoms: expansion.datoms,
+              tempids: expansion.tempids,
+              invocation,
+            });
+            notify();
+          }
+
+          const posted = yield* Effect.callback<OverlayOpAck, DbError>((resume) => {
+            const postOp = options.postOp;
+            if (postOp === undefined) {
+              resume(
+                Effect.fail(
+                  new InternalError({
+                    message: "ramose: overlay has no postOp",
+                  }),
+                ),
+              );
+              return Effect.void;
+            }
+            const runPost = () =>
+              Effect.runPromise(
+                postOp(
+                  pending.find((l) => l.clientTxId === id)?.invocation ??
+                    invocation,
+                ),
+              )
+                .then(async (body) => {
+                  const ack = record(body);
+                  const t = typeof ack.t === "number" ? ack.t : 0;
+                  const raw = ack.datoms;
+                  const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
+                  const tempids = asTempids(ack.tempids);
+                  await enqueueApply(() => {
+                    const layer = dropLayer(id);
+                    if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
+                    if (layer !== undefined) remapQueued(tempids, layer.tempids);
+                    notify();
+                  });
+                  resume(
+                    Effect.succeed({
+                      t,
+                      txEid: typeof ack.txEid === "number" ? ack.txEid : 0,
+                      tempids,
+                      datoms,
+                      datomCount:
+                        datoms.length > 0
+                          ? datoms.length
+                          : typeof ack.datoms === "number"
+                            ? ack.datoms
+                            : 0,
+                      clientTxId: id,
+                      clientOpId: id,
+                      output: ack.output,
+                    }),
+                  );
+                })
+                .catch(async (err) => {
+                  await enqueueApply(() => {
+                    dropLayer(id);
+                    notify();
+                  });
+                  resume(
+                    Effect.fail(isDatabaseError(err) ? err : classifyTx(err)),
+                  );
+                });
+            const next = outbox.then(runPost, runPost);
+            outbox = next.catch(() => undefined);
+            return Effect.void;
+          });
+          return posted;
+        }),
+      ),
+    );
+
   /** The one tx apply: paint, then notify. */
   const applyTx = (frame: Record<string, unknown>): void => {
     const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
@@ -705,6 +914,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     ready,
     read,
     transact,
+    run,
     handlePush,
   };
 };

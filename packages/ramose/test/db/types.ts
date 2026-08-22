@@ -237,6 +237,7 @@ const caught = movies
       QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
       InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
+      OperationRejected: (e) => Effect.succeed(e.message),
     }),
   );
 type _caught = Expect<
@@ -283,12 +284,12 @@ void _viaEffect;
 /** `Databases` — the key *is* the client, and it has exactly one method. */
 type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
 
-/** `Db<C>` is `ReadDb<C>` plus `principal`, `transact` and `install`, and nothing else. */
+/** `Db<C>` is `ReadDb<C>` plus `principal`, `transact`, `install` and `run`. */
 type _readDbKeys = Expect<
   Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "livePull" | "live" | "basis" | "asOf" | "history">
 >;
 type _dbKeys = Expect<
-  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "principal" | "transact" | "install">
+  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "principal" | "transact" | "install" | "run">
 >;
 type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 
@@ -361,7 +362,7 @@ type _namespaceIsNamespace = Expect<Extends<typeof User, AnyNamespace>>;
 type _catalogTag = Expect<Equal<Catalog["_tag"], "Catalog">>;
 type _catalogIsCatalog = Expect<Extends<typeof Movies, Catalog>>;
 
-/** `DbError` is the union of exactly the eight tagged errors. */
+/** `DbError` is the union of the tagged errors a write or read can raise. */
 type _dbErrorUnion = Expect<
   Equal<
     DbError["_tag"],
@@ -373,5 +374,6 @@ type _dbErrorUnion = Expect<
     | "QueryBudgetExceeded"
     | "InternalError"
     | "NetworkError"
+    | "OperationRejected"
   >
 >;

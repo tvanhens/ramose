@@ -48,7 +48,7 @@ const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "Transa
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("ramose/worker"),
+  main: import.meta.resolve("./peer.ts"),
   compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
   dev: { port: DEV_PEER_PORT },
   // The data plane rides the SPA's own origin: a route claims `/db/*` on the

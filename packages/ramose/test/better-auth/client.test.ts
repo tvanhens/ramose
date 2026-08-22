@@ -88,7 +88,11 @@ describe("ramoseTokenClient", () => {
 
     const source = Ramose.token.jwt(() => client.ramose.token({ db: "wave" }));
     const claims = await source.claims();
-    expect(claims.ramose).toEqual({ db: "wave", class: "admin" });
+    expect(claims.ramose).toEqual({
+      db: "wave",
+      class: "admin",
+      attrs: { name: "owner@wave.test", email: "owner@wave.test" },
+    });
 
     const token = Redacted.value(await Effect.runPromise(source.token));
     expect(token.split(".")).toHaveLength(3);

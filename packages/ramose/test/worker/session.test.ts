@@ -99,6 +99,21 @@ describe("planOf: frame → sub-request", () => {
     expect([tx.rest, tx.method]).toEqual(["/transact", "POST"]);
     expect(JSON.parse(tx.body)).toEqual({ tx: [{ ":db/id": -1 }] });
     const replay = planOf({ id: 4, op: "transact", tx: [{ ":db/id": -1 }], clientTxId: "c1" }) as any;
+    const operation = planOf({
+      id: 5,
+      op: "operation",
+      name: "issue/move",
+      entity: 1001,
+      input: { status: "done" },
+      clientOpId: "op-1",
+    }) as any;
+    expect([operation.rest, operation.method]).toEqual(["/op", "POST"]);
+    expect(JSON.parse(operation.body)).toEqual({
+      name: "issue/move",
+      entity: 1001,
+      input: { status: "done" },
+      clientOpId: "op-1",
+    });
     expect(JSON.parse(replay.body)).toEqual({ tx: [{ ":db/id": -1 }], clientTxId: "c1" });
   });
 

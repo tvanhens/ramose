@@ -108,6 +108,19 @@ export class NotOne extends Data.TaggedError("NotOne")<{
   readonly found: 0 | 2;
 }> {}
 
+/**
+ * An operation was refused before or during execution (dangling / foreign
+ * entity, a body-thrown rejection). Schema failures stay {@link InvalidRequest};
+ * policy denials stay {@link TxRejected} / {@link Unauthorized}. Terminal —
+ * never silently retried, because effect steps may not be free to repeat.
+ */
+export class OperationRejected extends Data.TaggedError("OperationRejected")<{
+  readonly message: string;
+  readonly name: string;
+  readonly step?: string;
+  readonly reason?: string;
+}> {}
+
 export type DbError =
   | TxRejected
   | Unavailable
@@ -116,7 +129,8 @@ export type DbError =
   | Unauthorized
   | QueryBudgetExceeded
   | InternalError
-  | NetworkError;
+  | NetworkError
+  | OperationRejected;
 
 const TAGS = new Set([
   "TxRejected",
@@ -127,6 +141,7 @@ const TAGS = new Set([
   "QueryBudgetExceeded",
   "InternalError",
   "NetworkError",
+  "OperationRejected",
 ]);
 
 export const isDatabaseError = (value: unknown): value is DbError =>
@@ -181,6 +196,13 @@ export const fromResponse = (
     });
 
   switch (b.tag) {
+    case "OperationRejected":
+      return new OperationRejected({
+        message: str(b.message ?? b.error, `HTTP ${status}`),
+        name: str(b.name, ""),
+        ...opt("step", b.step),
+        ...opt("reason", b.reason),
+      });
     case "TxRejected":
       return new TxRejected({ message, code: str(b.code, "tx/rejected") });
     case "TransactorDead": {
@@ -223,6 +245,14 @@ export const fromResponse = (
       }
       return new DatabaseNotFound({ message });
     case 409:
+      if (b.tag === "OperationRejected" || b.error === "OperationRejected") {
+        return new OperationRejected({
+          message: str(b.message ?? b.error, `HTTP ${status}`),
+          name: str(b.name, ""),
+          ...opt("step", b.step),
+          ...opt("reason", b.reason),
+        });
+      }
       return new TxRejected({ message, code: str(b.code, "tx/rejected") });
     case 413:
       return budget();

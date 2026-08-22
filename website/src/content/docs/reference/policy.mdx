@@ -32,7 +32,7 @@ const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, 
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:32-61"
+```ts title="examples/reef/src/domain/policy.ts:37-61"
 export const policy = Ramose.policy(
   {
     catalog: Reef,
@@ -42,9 +42,7 @@ export const policy = Ramose.policy(
   {
     user: {
       read: true,
-      // …
-      create: P.class("member"),
-      preset: [P.preset(User.sub, P.claims.sub)],
+      add: self,
     },
     // …
     issue: {
@@ -112,7 +110,7 @@ The same `inOrg` value pipes in the app (`pipe(entities(Doc), Query.refine(inOrg
 
 Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version. Relation-based visibility ("issues in a project whose team I belong to") is an ordinary fragment: there is no depth cap and no second language.
 
-`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Roles become facts later; until then the gate stays in config.
+`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Prefer a role fact when the peer materializes one (`Q.fact(me, User.role, "admin")`); keep `P.class` for deployments where the role must stay token-only.
 
 ## How rules combine
 

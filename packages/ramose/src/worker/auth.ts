@@ -23,6 +23,7 @@ import {
   componentLogger,
   filterDb,
   isAdmin,
+  shouldProvision,
 } from "../internal/core/index.ts";
 import { type Basis, dbFromBasis } from "../internal/replica/basis.ts";
 import { type RamoseEnv, envInt, policyOf } from "../internal/transactor/index.ts";
@@ -164,6 +165,7 @@ export function clearAuthCache(): void {
   reported.clear();
   principals.clear();
   eids.clear();
+  provisioned.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -278,10 +280,52 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
 
 /** Only *found* entities are cached: a user created moments ago must resolve now. */
 const eids = new Map<string, { eid: number; at: number }>();
+/** Isolate memo: this `(sub, db, class, attrs)` was provisioned — skip the writer round-trip. */
+const provisioned = new Map<string, { eid: number; at: number }>();
+
+const eidKey = (sub: string, dbName: string): string => `${sub}|${dbName}`;
+
+/** Stable fingerprint so a renamed user re-provisions; skipped keys still change the key. */
+const attrsFingerprint = (attrs: Readonly<Record<string, unknown>> | undefined): string => {
+  if (attrs === undefined) return "";
+  const keys = Object.keys(attrs).sort();
+  return JSON.stringify(keys.map((k) => [k, attrs[k]]));
+};
+
+const provisionKey = (principal: Principal): string =>
+  `${principal.sub}|${principal.db}|${principal.class}|${attrsFingerprint(principal.claims.attrs)}`;
+
+/** Drop a cached `sub → eid` (and any provision memo for that pair) after a write. */
+export function forgetEid(sub: string, dbName: string): void {
+  eids.delete(eidKey(sub, dbName));
+  const prefix = `${sub}|${dbName}|`;
+  for (const k of provisioned.keys()) if (k.startsWith(prefix)) provisioned.delete(k);
+}
+
+/** Remember a just-provisioned eid so `/info` and `withEid` see it immediately. */
+export function rememberProvisioned(principal: Principal, eid: number): Principal {
+  if (principal.sub === undefined) return { ...principal, eid };
+  const now = Date.now();
+  if (eids.size > 256) eids.clear();
+  if (provisioned.size > 256) provisioned.clear();
+  eids.set(eidKey(principal.sub, principal.db), { eid, at: now });
+  provisioned.set(provisionKey(principal), { eid, at: now });
+  return { ...principal, eid };
+}
+
+/** A still-fresh provision memo for this token class + attrs, if we already wrote the row. */
+export function cachedProvision(principal: Principal): number | undefined {
+  if (principal.sub === undefined) return undefined;
+  const hit = provisioned.get(provisionKey(principal));
+  if (hit === undefined || Date.now() - hit.at >= PRINCIPAL_MEMO_MS) return undefined;
+  return hit.eid;
+}
+
+export { shouldProvision };
 
 /** One AVET lookup on the policy's `principal` attribute, memoized when found. */
 async function resolveEid(policy: CompiledPolicy, sub: string, dbName: string, ruleDb: Db): Promise<number | undefined> {
-  const key = `${sub}|${dbName}`;
+  const key = eidKey(sub, dbName);
   const now = Date.now();
   const hit = eids.get(key);
   if (hit !== undefined && now - hit.at < PRINCIPAL_MEMO_MS) return hit.eid;
@@ -301,10 +345,11 @@ export async function withEid(policy: CompiledPolicy, principal: Principal, rule
 
 /**
  * The principal as the wire tells it to its own client — the session `auth`
- * ack and `/info` carry `{ eid, class }`, `eid: null` when the policy's
- * `principal` attribute has no row for this `sub` yet (or there is no policy
- * to resolve one under). Informational, so unlike {@link withEid} it resolves
- * for admins too: an admin is exempt from filtering, not from having a row.
+ * ack and `/info` carry `{ eid, class }`. `eid: null` only for principals
+ * the peer does not provision (anonymous, service, no policy, or the
+ * principal attr is not deployed yet). Informational, so unlike {@link withEid}
+ * it resolves for admins too: an admin is exempt from filtering, not from
+ * having a row.
  */
 export async function describePrincipal(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis): Promise<{ eid: number | null; class: string }> {
   const st = authState(env);

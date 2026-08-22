@@ -7,22 +7,11 @@
  */
 
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
-import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
-
-const { Query } = Ramose;
-
-/** The caller's own `user` row, by the sub their JWT carries. */
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
+import { Comment, Issue, Label, Reef, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -32,57 +21,139 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
   { name: "infra", color: "#3fb970" },
 ];
 
+const StatusSchema = Schema.Literals(["backlog", "todo", "doing", "done"]);
+
+const authFetch = (
+  env: unknown,
+): ((input: string, init?: RequestInit) => Promise<Response>) | undefined => {
+  if (typeof env !== "object" || env === null || !("AUTH" in env)) {
+    return undefined;
+  }
+  const auth = env.AUTH;
+  if (typeof auth !== "object" || auth === null || !("fetch" in auth)) {
+    return undefined;
+  }
+  const fetchFn = auth.fetch;
+  if (typeof fetchFn !== "function") return undefined;
+  return (input, init) => fetchFn.call(auth, input, init);
+};
+
 /**
- * Workspace provisioning, from the browser, under the creator's admin-class
- * JWT: install the catalog on the fresh name, then seed labels and the
- * creator's own `user` row. This *is* the multi-tenancy demo — no resource,
- * no deploy, one `install()` and one transaction.
+ * Workspace provisioning as an operation: install + optional org registration
+ * as effects, then seed labels. The peer upserts the creator's `user` row
+ * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
+ * must not write that row. Effects come first, so there is no optimistic
+ * prefix; the creating tab has no session yet.
  */
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
-  Effect.gen(function* () {
-    yield* db.install();
-    yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
+export const provisionWorkspaceOp = Ramose.Operation(
+  "workspace/provision",
+  {
+    input: Schema.Struct({}),
+    output: Schema.Struct({ ready: Schema.Boolean }),
+  },
+  (op) =>
+    Effect.gen(function* () {
+      yield* op.effect("db/install", ({ databases }) => databases.install(Reef, op.db));
+      yield* op.effect("org/register", ({ env, principal }) => {
+        const register = authFetch(env);
+        if (register === undefined) return Effect.void;
+        const name =
+          typeof principal.name === "string" && principal.name.length > 0
+            ? principal.name
+            : op.db;
+        return Effect.tryPromise({
+          try: () =>
+            register("https://auth/api/auth/organization/create", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name, slug: op.db }),
+            }),
+          catch: (cause) =>
+            new Ramose.InternalError({
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
+        }).pipe(Effect.asVoid);
+      });
       for (const seed of SEED_LABELS) {
-        const label = yield* tx.entity();
+        const label = yield* op.entity();
         yield* label.add(Label.name, seed.name);
         yield* label.add(Label.color, seed.color);
       }
-    });
-  });
+      return { ready: true };
+    }),
+);
 
-/**
- * First entry by a member: write your own `user` row if it is not there.
- * `:user/sub` is a preset attribute, so supplying your own sub is a no-op
- * check and supplying anyone else's is `Unauthorized`. Viewers skip the
- * write — they never need an entity (reads are class-scoped).
- *
- * Returns the caller's user eid, or `undefined` for a viewer who has none.
- */
-export const ensureSelf = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-  canWrite: boolean,
-) =>
-  Effect.gen(function* () {
-    const existing = yield* db.q(mineQuery, { sub: me.id });
-    if (existing.length > 0) return existing[0]!.id;
-    if (!canWrite) return undefined;
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-    });
-    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
-    return after[0]?.id;
-  });
+export const provisionWorkspace = (db: ReefDb) =>
+  db.run(provisionWorkspaceOp, {}).pipe(Effect.asVoid);
+
+export const moveIssueOp = Ramose.Operation(
+  "issue/move",
+  {
+    on: Issue,
+    input: Schema.Struct({ status: StatusSchema, rank: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) =>
+    Effect.gen(function* () {
+      yield* op.add(op.self, Issue.status, input.status);
+      yield* op.add(op.self, Issue.rank, input.rank);
+      return {};
+    }),
+);
+
+export const setStatusOp = Ramose.Operation(
+  "issue/set-status",
+  {
+    on: Issue,
+    input: Schema.Struct({ status: StatusSchema }),
+    output: Schema.Struct({}),
+  },
+  (op, input) =>
+    Effect.gen(function* () {
+      yield* op.add(op.self, Issue.status, input.status);
+      return {};
+    }),
+);
+
+export const addCommentOp = Ramose.Operation(
+  "issue/add-comment",
+  {
+    on: Issue,
+    input: Schema.Struct({ body: Schema.String, authorId: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) =>
+    Effect.gen(function* () {
+      const comment = yield* op.entity();
+      yield* comment.add(Comment.body, input.body);
+      yield* comment.add(Comment.at, new Date());
+      yield* comment.add(Comment.author, input.authorId);
+      yield* comment.add(Comment.issue, op.self);
+      return {};
+    }),
+);
+
+export const deleteIssueOp = Ramose.Operation(
+  "issue/delete",
+  {
+    on: Issue,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) =>
+    Effect.gen(function* () {
+      yield* op.retractEntity(op.self);
+      return {};
+    }),
+);
+
+export const operations = Ramose.Operations({
+  provisionWorkspaceOp,
+  moveIssueOp,
+  setStatusOp,
+  addCommentOp,
+  deleteIssueOp,
+});
 
 export interface NewIssue {
   readonly title: string;
@@ -125,17 +196,11 @@ export const moveIssue = (
   issueId: number,
   status: Status,
   rank: number,
-) =>
-  db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.status, status);
-    yield* tx.add(issueId, Issue.rank, rank);
-  });
+) => db.run(moveIssueOp, issueId, { status, rank });
 
 /** Status change from the detail panel — keeps the rank (column position). */
 export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
-  db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.status, status);
-  });
+  db.run(setStatusOp, issueId, { status });
 
 export const setTitle = (db: ReefDb, issueId: number, title: string) =>
   db.transact(function* (tx) {
@@ -182,23 +247,14 @@ export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
   });
 
 export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.transact(function* (tx) {
-    yield* tx.retractEntity(issueId);
-  });
+  db.run(deleteIssueOp, issueId, {});
 
 export const addComment = (
   db: ReefDb,
   myEid: number,
   issueId: number,
   body: string,
-) =>
-  db.transact(function* (tx) {
-    const comment = yield* tx.entity();
-    yield* comment.add(Comment.body, body);
-    yield* comment.add(Comment.at, new Date());
-    yield* comment.add(Comment.author, myEid);
-    yield* comment.add(Comment.issue, issueId);
-  });
+) => db.run(addCommentOp, issueId, { body, authorId: myEid });
 
 export const deleteComment = (db: ReefDb, commentId: number) =>
   db.transact(function* (tx) {

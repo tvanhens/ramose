@@ -39,7 +39,7 @@ import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
-import { bindSelf, type Workspace } from "../ramose.ts";
+import { type Workspace } from "../ramose.ts";
 import { useBoardSelection } from "../route.tsx";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
@@ -236,17 +236,12 @@ export const BoardScreen = ({
   const [myEid, setMyEid] = useState<number | undefined>(undefined);
   const [selfReady, setSelfReady] = useState(false);
 
-  const userId = user.id;
-  const userName = user.name;
-  const userEmail = user.email;
   useEffect(() => {
     let cancelled = false;
-    void Effect.runPromise(
-      bindSelf(db, { id: userId, name: userName, email: userEmail }, cls),
-    ).then(
-      (eid) => {
+    void Effect.runPromise(db.principal()).then(
+      (who) => {
         if (cancelled) return;
-        setMyEid(eid);
+        setMyEid(who.eid?.id);
         setSelfReady(true);
       },
       (err) => {
@@ -258,7 +253,7 @@ export const BoardScreen = ({
     return () => {
       cancelled = true;
     };
-  }, [db, userId, userName, userEmail, cls, toast]);
+  }, [db, toast]);
 
   const board = useLive(db, boardQuery);
   const people = useLive(db, peopleQuery);
@@ -317,7 +312,7 @@ export const BoardScreen = ({
       setSelected(null);
     }
   }, [selected, selectedRow, liveRows, setSelected]);
-  const canWrite = myEid !== undefined;
+  const canWrite = cls !== "viewer";
 
   if (board.error !== undefined) {
     return (
@@ -428,11 +423,12 @@ export const BoardScreen = ({
                         <>
                           <Button
                             variant="primary"
-                            onClick={() =>
+                            onClick={() => {
+                              if (myEid === undefined) return;
                               void run(
                                 seedSampleIssues(db, myEid, labels.rows ?? []),
-                              )
-                            }
+                              );
+                            }}
                           >
                             <Icon name="sparkles" size={14} /> Add sample issues
                           </Button>

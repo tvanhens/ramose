@@ -10,6 +10,7 @@ export type ClientFrame =
   /** token refresh — the only frame that is not a sub-request */
   | { id: number; op: "auth"; token: string }
   | { id: number; op: "transact"; tx: unknown[]; clientTxId?: string }
+  | { id: number; op: "operation"; name: string; entity?: unknown; input: unknown; clientOpId?: string }
   /** catch-up: walk `(from, now]` and skip empties; resync if the gap is gone or a rule view flipped */
   | { id: number; op: "sync"; from: number }
   | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
@@ -25,7 +26,7 @@ export interface ReplyFrame {
   headers?: Record<string, string>;
 }
 
-/** Who a session is, as the wire tells it: `eid` is `null` when the policy's principal attribute has no row yet. */
+/** Who a session is, as the wire tells it: `eid` is `null` only when the peer does not provision this principal. */
 export interface WirePrincipal {
   eid: number | null;
   class: string;
@@ -99,8 +100,10 @@ export interface SessionOptions {
   principal?: Principal;
   /** re-verify a token for this same database; rejects when it is refused */
   authenticate?: (token: string) => Promise<Principal>;
-  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when its row does not exist yet */
+  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when the peer does not provision this principal */
   describe?: (principal: Principal) => Promise<WirePrincipal>;
+  /** peer-owned upsert before the `auth` ack, so the swapped principal has an eid */
+  provision?: (principal: Principal) => Promise<Principal>;
   /**
    * Novelty since the current root — used by `{ op: "sync" }` only.
    * Follow is apply-then-push ({@link Session.applyEntry}), not a poller.
@@ -192,6 +195,13 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
       const body: Record<string, unknown> = { tx: f.tx };
       if (typeof f.clientTxId === "string" && f.clientTxId.length > 0) body.clientTxId = f.clientTxId;
       return { id, op: "transact", rest: "/transact", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify(body) };
+    }
+    case "operation": {
+      if (typeof f.name !== "string" || f.name.length === 0) return { id, error: "operation frame needs name" };
+      const body: Record<string, unknown> = { name: f.name, input: f.input };
+      if (f.entity !== undefined) body.entity = f.entity;
+      if (typeof f.clientOpId === "string" && f.clientOpId.length > 0) body.clientOpId = f.clientOpId;
+      return { id, op: "operation", rest: "/op", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify(body) };
     }
     case "q": {
       if (f.query === undefined || f.query === null) return { id, error: "q frame needs query" };
@@ -409,6 +419,13 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     try {
       principal = await options.authenticate(typeof f.token === "string" ? f.token : "");
+      if (options.provision !== undefined) {
+        try {
+          principal = await options.provision(principal);
+        } catch {
+          // a transient writer error must not fail the swap; describe may still resolve
+        }
+      }
       let who: WirePrincipal | undefined;
       if (options.describe !== undefined) {
         try {
@@ -500,16 +517,22 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
     // HTTP ack paints the writer overlay. It does not move the follow cursor —
     // that moves when the replica applies this t and walks the socket.
-    if (plan.op === "transact" && res.ok) {
-      const ack = body as { t?: unknown; clientTxId?: unknown } | null;
+    if ((plan.op === "transact" || plan.op === "operation") && res.ok) {
+      const ack = body as { t?: unknown; clientTxId?: unknown; clientOpId?: unknown } | null;
       const echoT = typeof ack?.t === "number" ? ack.t : undefined;
-      let echoId = typeof ack?.clientTxId === "string" && ack.clientTxId.length > 0 ? ack.clientTxId : undefined;
+      let echoId =
+        typeof ack?.clientTxId === "string" && ack.clientTxId.length > 0
+          ? ack.clientTxId
+          : typeof ack?.clientOpId === "string" && ack.clientOpId.length > 0
+            ? ack.clientOpId
+            : undefined;
       if (echoId === undefined && plan.body !== undefined) {
         try {
-          const req = JSON.parse(plan.body) as { clientTxId?: unknown };
+          const req = JSON.parse(plan.body) as { clientTxId?: unknown; clientOpId?: unknown };
           if (typeof req.clientTxId === "string" && req.clientTxId.length > 0) echoId = req.clientTxId;
+          else if (typeof req.clientOpId === "string" && req.clientOpId.length > 0) echoId = req.clientOpId;
         } catch {
-          /* body was not JSON — no clientTxId to echo */
+          /* body was not JSON — no client id to echo */
         }
       }
       if (echoT !== undefined && echoId !== undefined) writerEcho = { t: echoT, clientTxId: echoId };

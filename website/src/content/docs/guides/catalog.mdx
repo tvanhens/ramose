@@ -123,11 +123,8 @@ export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos
 
 From the app, for names created at runtime — how Reef makes a workspace:
 
-```ts title="examples/reef/src/app/mutations.ts:28-33"
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
+```ts title="examples/reef/src/app/mutations.ts:29-31"
+export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
     yield* db.install();
 ```

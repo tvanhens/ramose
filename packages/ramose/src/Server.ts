@@ -178,6 +178,14 @@ export type ServerProps = {
   /** The server's auth configuration, for a deploy-time consistency check only. */
   auth?: PeerAuth;
   /**
+   * Bundled operations registry (`Ramose.Operations({…})`). The Alchemy
+   * Worker entry should call `createPeer({ operations })` from `ramose/worker`
+   * so the same module is in the peer isolate.
+   */
+  operations?: unknown;
+  /** `"operations"` rejects raw `/transact` for app-class tokens. */
+  writes?: "all" | "operations";
+  /**
    * Liveness probe before anything binds to the URL, in both modes (`alchemy
    * dev` runs it on a tighter ladder); `false` skips it.
    */

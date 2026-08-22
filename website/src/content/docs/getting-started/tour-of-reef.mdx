@@ -66,22 +66,20 @@ Password hashing, sessions, the token-mint route (`ramoseToken` is a plugin), au
 
 ## Workspaces
 
-<Shot src="/reef/workspaces.png" alt="Reef's workspace picker listing two workspaces, Coral Reef Divers and Kelp Forest, each labelled with its own database name, above a New workspace form" caption="Each workspace is its own database. Create runs install() from the browser." code="examples/reef/src/app/mutations.ts:28-45" />
+<Shot src="/reef/workspaces.png" alt="Reef's workspace picker listing two workspaces, Coral Reef Divers and Kelp Forest, each labelled with its own database name, above a New workspace form" caption="Each workspace is its own database. Create runs install() from the browser." code="examples/reef/src/app/mutations.ts:29-39" />
 
 A **workspace** is one customer's isolated data — one database ([glossary](/concepts/glossary/#workspace)). Create installs the schema into a fresh database and seeds it:
 
 *Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
 
-```ts title="examples/reef/src/app/mutations.ts:32-40"
+```ts title="examples/reef/src/app/mutations.ts:30-38"
   Effect.gen(function* () {
     yield* db.install();
     yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
       for (const seed of SEED_LABELS) {
         const label = yield* tx.entity();
+        yield* label.add(Label.name, seed.name);
+        yield* label.add(Label.color, seed.color);
 ```
 
 Opening one goes to `/:slug` and mounts a provider keyed by its name; switching swaps the connection:
@@ -136,7 +134,7 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
-```ts title="examples/reef/src/app/mutations.ts:113-122"
+```ts title="examples/reef/src/app/mutations.ts:77-86"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,

@@ -26,19 +26,23 @@ describe("reef policy", () => {
     expect(parsed.classes).toEqual([...CLASSES]);
   });
 
-  test("presets pin creator, author and sub to the caller", () => {
+  test("presets pin creator and author to the caller", () => {
     const parsed = parsePolicy(JSON.parse(compiledPolicy()));
     expect(Object.keys(parsed.preset).sort()).toEqual([
       ":comment/author",
       ":issue/creator",
-      ":user/sub",
     ]);
     expect(parsed.preset[":issue/creator"]).toEqual({ _tag: "principal" });
     expect(parsed.preset[":comment/author"]).toEqual({ _tag: "principal" });
-    expect(parsed.preset[":user/sub"]).toEqual({
-      _tag: "claim",
-      path: ["sub"],
-    });
+  });
+
+  test("user has no write arms — the peer owns the row", () => {
+    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
+    expect(parsed.ns?.user?.create).toBeUndefined();
+    expect(parsed.ns?.user?.add).toBeUndefined();
+    expect(parsed.ns?.user?.retract).toBeUndefined();
+    expect(parsed.ns?.user?.retractEntity).toBeUndefined();
+    expect(parsed.preset[":user/sub"]).toBeUndefined();
   });
 
   test("privateNote read is narrowed to the admin class", () => {

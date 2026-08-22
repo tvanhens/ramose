@@ -37,6 +37,7 @@ import {
   send,
 } from "./http.ts";
 import { openOverlay, type Overlay } from "./overlay.ts";
+import type { OperationInvocation } from "./Operation.ts";
 import {
   globalWebSocket,
   openSession,
@@ -188,6 +189,7 @@ export const makeDatabases = (
       existing = openOverlay({
         session: socket,
         post: (tx, clientTxId) => postTx(name, tx, clientTxId),
+        postOp: (invocation) => postOp(name, invocation),
         catalog: catalogs.get(name),
       });
       overlays.set(name, existing);
@@ -270,6 +272,28 @@ export const makeDatabases = (
         body: {
           tx,
           ...(clientTxId !== undefined ? { clientTxId } : {}),
+        },
+      });
+      return result.body;
+    });
+
+  const postOp = (
+    name: string,
+    invocation: OperationInvocation,
+  ): Effect.Effect<unknown, DbError> =>
+    Effect.gen(function* () {
+      const result = yield* send({
+        fetch: config.fetch,
+        url: yield* config.url,
+        method: "POST",
+        path: dbPath(name, "/op"),
+        token: yield* bearer(config.token),
+        headers: config.headers,
+        body: {
+          name: invocation.name,
+          input: invocation.input,
+          clientOpId: invocation.clientOpId,
+          ...(invocation.entity !== undefined ? { entity: invocation.entity } : {}),
         },
       });
       return result.body;
@@ -367,6 +391,7 @@ export const makeDatabases = (
         : frame(socket, op, body, minT);
     },
     transact: (name, tx, clientTxId) => postTx(name, tx, clientTxId),
+    operation: (name, invocation) => postOp(name, invocation),
     info,
     principal,
   };
