@@ -44,9 +44,9 @@ Three consequences motivate this design:
   database; raw `/transact` is closed to app tokens.
 - An operation body mixes **transaction steps** (datom writes) with
   **side-effect steps** (anything else: provisioning, auth calls, webhooks).
-- Clients execute the same body optimistically — side-effect steps skipped —
-  and queue the operation for server persistence; a rejection revokes the
-  optimistic entry.
+- Clients execute the same body optimistically *up to the first side-effect
+  step* — the optimistic prefix — and queue the operation for server
+  persistence; a rejection revokes the optimistic entry.
 - Reuse the existing machinery: overlay pending layers, FIFO outbox, tempid
   remap, group commit, replay keys.
 
@@ -83,7 +83,7 @@ export const createIssue = Ramose.Operation("issue/create", {
   yield* op.add(id, Issue.status, input.status);
   yield* op.add(id, Issue.creator, op.principal.eid); // server-authored identity
 
-  // side-effect step: runs on the server, skipped on the client
+  // side-effect step: runs on the server; client execution stops here
   yield* op.effect("notify", ({ env }) => postToSlack(env, input.title));
 
   return { id };
@@ -112,15 +112,20 @@ run(db.run(createIssue, { title, status: "todo" })); // Effect<OpReport<typeof c
 
 |                  | Transaction steps | Side-effect steps |
 | ---------------- | ----------------- | ----------------- |
-| **Verbs**        | `op.entity`, `op.add`, `op.retract`, `op.retractEntity`; reads via `op.q` / `op.pull` against the speculative view | `op.effect(name, run, { optimistic? })` |
+| **Verbs**        | `op.entity`, `op.add`, `op.retract`, `op.retractEntity`; reads via `op.q` / `op.pull` against the speculative view | `op.effect(name, run)` |
 | **Server**       | Accumulate into *one* transaction, committed atomically at the end via the existing Transactor group commit | Run in step order, immediately, with server context (`env`, bindings, `principal`); results flow to later steps |
-| **Client**       | Applied optimistically to the overlay as a pending layer | Skipped — yield `optimistic(input)` if declared, else `undefined` |
+| **Client**       | Applied optimistically as a pending layer *if they precede the first effect step*; steps after it are server-only | Never run — client execution of the body ends at the first effect step |
 | **On rejection** | Nothing committed; optimistic layer revoked | Already ran; must be idempotent or compensated |
 
 Interleaving is real, not cosmetic: an effect can produce a value a later
 transaction step writes (create an external resource, then record its id as a
 datom). But the datoms themselves are all-or-nothing — an operation never
-half-commits its writes.
+half-commits its writes. And because any step after the first effect may
+depend on that effect's response, the client cannot safely guess past it:
+the **optimistic prefix** — the transaction steps before the first
+side-effect step — is the exact boundary of what can be committed
+optimistically. Authors control how much of an operation is optimistic by
+ordering effect-independent writes first.
 
 > **Decision.** Effects run *before* the commit, in body order, and are not
 > rolled back if the commit is rejected. Authors get one honest contract —
@@ -132,14 +137,23 @@ half-commits its writes.
 ## 5. Client: optimistic execution and revocation
 
 Client-side, `db.run(operation, input)` decodes the input, then executes the
-*same body* against the overlay's speculative view. Transaction verbs collect
-ops exactly as `txBuilder` does today; `op.effect` steps are skipped. The
-resulting ops become a `PendingLayer` keyed by a fresh `clientOpId`, visible
+*same body* against the overlay's speculative view — but only up to the
+first `op.effect` step. Transaction verbs in that prefix collect ops exactly
+as `txBuilder` does today; at the first effect, client execution stops. The
+prefix ops become a `PendingLayer` keyed by a fresh `clientOpId`, visible
 to live queries in the same tick, and the invocation — `{ name, input,
 clientOpId }`, not raw ops — is queued on the existing FIFO outbox.
 
+> **Decision.** Optimistic execution stops at the first side-effect step.
+> Transaction steps after an effect may depend on the effect's response, so
+> the client cannot assume they are safe to commit optimistically — no
+> `optimistic` simulation hooks, no `undefined`-typed effect results. The
+> client never evaluates an effect thunk at all, and an operation that opens
+> with an effect is simply not optimistic.
+
 ```
-app ──run(op, input)──▶ client runtime ──▶ PendingLayer(clientOpId) ──▶ outbox (FIFO)
+app ──run(op, input)──▶ client runtime ──▶ prefix → PendingLayer(clientOpId) ──▶ outbox (FIFO)
+                        (runs body until first effect step)
                                                                           │
                                           POST /db/:name/op { name, input, clientOpId }
                                                                           ▼
@@ -156,10 +170,10 @@ renamed: acks drop the layer by `clientOpId` and paint the server's
 `WireDatom[]`; `remapQueued` rewrites tempids in still-queued invocations'
 optimistic layers; failures drop the layer and surface a typed error (the
 "drag snaps back, toast explains why" behavior Reef already demonstrates).
-The one new rule: because the server re-executes the body against *its*
-state, confirmed datoms may legitimately differ from the optimistic guess —
-which the ack repaint already handles, since confirmed truth always replaces
-the layer wholesale.
+Because the server executes the *full* body against *its* state, the
+confirmed transaction is normally a superset of the optimistic prefix and
+may differ from it — which the ack repaint already handles, since confirmed
+truth always replaces the layer wholesale.
 
 ## 6. Wire & server: transport, execution, idempotency
 
@@ -206,9 +220,9 @@ steps are arbitrary functions and cannot ship as data.
 > reads; rejected for v1.
 
 Portability falls out of the module boundary: an operations module imports
-`ramose/db` and app schema only, so the same file bundles into the browser
-(where effect thunks are dead weight but never invoked — and tree-shakeable
-behind the `optimistic` split if size demands it later).
+`ramose/db` and app schema only, so the same file bundles into the browser.
+Effect thunks are dead weight there — the client stops before ever reaching
+one — and can be split out of the browser bundle later if size demands it.
 
 ## 8. Enforcement & migration: closing the raw write path
 
@@ -233,7 +247,7 @@ export const provisionWorkspace = Ramose.Operation("workspace/provision", {
   yield* op.effect("db/install", ({ databases }) => databases.install(input.slug, Reef));
   yield* op.effect("org/register", ({ env, principal }) => registerOrg(env, input, principal));
 
-  // transaction steps: seed rows — optimistic in the creating tab
+  // transaction steps: follow the effects, so no optimistic prefix — commit server-side only
   const self = yield* op.entity();
   yield* op.add(self, User.name, op.principal.name);
   yield* seedLabels(op);
@@ -243,7 +257,11 @@ export const provisionWorkspace = Ramose.Operation("workspace/provision", {
 
 What is today two browser-run transactions under an admin JWT plus an
 unrelated auth-Worker call becomes one named, schema-checked, server-ordered
-operation.
+operation. Here the effects come first, so nothing is applied optimistically
+— appropriate, since the creating tab has no session on the new database
+yet. In ordinary data operations like `createIssue`, authors put
+effect-independent writes ahead of the first effect and keep today's
+instant feel.
 
 ## 9. Errors: one new tagged error
 
@@ -263,9 +281,11 @@ retried, precisely because its effect steps may not be free to repeat.
   database; is an operation always bound to one `db(name)`, with
   control-plane databases reached only via effects, or do we allow
   multi-database transaction steps later?
-- **Effect result surfacing.** Should skipped effects on the client be typed
-  as `A | undefined` (honest, noisy) or require an `optimistic` simulation
-  whenever a later transaction step consumes the result?
+- **Prefix ergonomics.** The optimistic prefix ends at the first effect even
+  when later transaction steps don't actually consume its result. Is
+  author-controlled ordering enough, or do we eventually want an explicit
+  escape hatch (e.g. marking an effect as not ending the prefix) for
+  effect-independent writes?
 - **Registry drift.** Client and server can briefly disagree on the operation
   set across deploys; unknown-name rejection covers the safety, but do we
   want a version handshake in `info`?
