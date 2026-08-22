@@ -67,9 +67,9 @@ Three consequences motivate this design:
 
 An operation is a named value built from `ramose/db` (so definitions stay
 portable — they must pass `test/db-portable.test.ts` and import no Worker or
-engine internals). The body is an Effect: the definition takes
-`(op, input) => Effect<Output, E>`, written with `Effect.gen` (or
-`Effect.fn`) per house style. `op` exposes the four transaction verbs plus
+engine internals). The body is an Effect, passed as the third argument to
+`Ramose.Operation`: `(op, input) => Effect<Output, E>`, written with
+`Effect.gen` (or `Effect.fn`) per house style. `op` exposes the four transaction verbs plus
 reads and an effect step, each itself an Effect, so bodies compose like any
 other Effect — helpers are plain functions returning Effects, and failures
 ride the typed error channel:
@@ -82,7 +82,7 @@ import * as Schema from "effect/Schema";
 export const createIssue = Ramose.Operation("issue/create", {
   input: Schema.Struct({ title: Schema.String, status: IssueStatus }),
   output: Schema.Struct({ id: Ramose.EntityId }),
-})((op, input) =>
+}, (op, input) =>
   Effect.gen(function* () {
     const id = yield* op.entity();
     yield* op.add(id, Issue.title, input.title);
@@ -259,7 +259,7 @@ kinds:
 export const provisionWorkspace = Ramose.Operation("workspace/provision", {
   input: Schema.Struct({ slug: Schema.String, name: Schema.String }),
   output: Schema.Struct({ ready: Schema.Boolean }),
-})((op, input) =>
+}, (op, input) =>
   Effect.gen(function* () {
     // side effects: schema install + org registration — server only, idempotent
     yield* op.effect("db/install", ({ databases }) => databases.install(input.slug, Reef));
