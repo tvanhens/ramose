@@ -35,6 +35,21 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
 
 const StatusSchema = Schema.Literals(["backlog", "todo", "doing", "done"]);
 
+const authFetch = (
+  env: unknown,
+): ((input: string, init?: RequestInit) => Promise<Response>) | undefined => {
+  if (typeof env !== "object" || env === null || !("AUTH" in env)) {
+    return undefined;
+  }
+  const auth = env.AUTH;
+  if (typeof auth !== "object" || auth === null || !("fetch" in auth)) {
+    return undefined;
+  }
+  const fetchFn = auth.fetch;
+  if (typeof fetchFn !== "function") return undefined;
+  return (input, init) => fetchFn.call(auth, input, init);
+};
+
 const Person = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -56,7 +71,7 @@ export const provisionWorkspaceOp = Ramose.Operation(
     Effect.gen(function* () {
       yield* op.effect("db/install", ({ databases }) => databases.install(Reef, op.db));
       yield* op.effect("org/register", ({ env }) => {
-        const register = (env as { AUTH?: { fetch?: typeof fetch } }).AUTH?.fetch;
+        const register = authFetch(env);
         if (register === undefined) return Effect.void;
         return Effect.tryPromise({
           try: () =>
@@ -66,10 +81,9 @@ export const provisionWorkspaceOp = Ramose.Operation(
               body: JSON.stringify({ name: input.name, slug: op.db }),
             }),
           catch: (cause) =>
-            ({
-              _tag: "InternalError",
+            new Ramose.InternalError({
               message: cause instanceof Error ? cause.message : String(cause),
-            }) as const,
+            }),
         }).pipe(Effect.asVoid);
       });
       const user = yield* op.entity();
@@ -99,7 +113,7 @@ export const moveIssueOp = Ramose.Operation(
   },
   (op, input) =>
     Effect.gen(function* () {
-      yield* op.add(op.self, Issue.status, input.status as Status);
+      yield* op.add(op.self, Issue.status, input.status);
       yield* op.add(op.self, Issue.rank, input.rank);
       return {};
     }),
@@ -114,7 +128,7 @@ export const setStatusOp = Ramose.Operation(
   },
   (op, input) =>
     Effect.gen(function* () {
-      yield* op.add(op.self, Issue.status, input.status as Status);
+      yield* op.add(op.self, Issue.status, input.status);
       return {};
     }),
 );

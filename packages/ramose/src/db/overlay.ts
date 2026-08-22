@@ -32,7 +32,7 @@ import { schemaTx } from "./ensure.ts";
 import { lowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
 import { NotOne, ParamError } from "./Errors.ts";
-import { buildOp, runBody } from "./op-handle.ts";
+import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
 import type { AnyOperation, OperationInvocation } from "./Operation.ts";
 import {
   type DbError,
@@ -249,7 +249,12 @@ const classifyQuery = (err: unknown): DbError => {
       limit: err.limit,
     });
   }
-  if (err instanceof QueryParseError || err instanceof QueryError) {
+  if (
+    err instanceof QueryParseError ||
+    err instanceof QueryError ||
+    err instanceof NotOne ||
+    err instanceof ParamError
+  ) {
     return new InvalidRequest({ message: err.message });
   }
   return new InternalError({
@@ -703,7 +708,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     if (extra.length === 0) return base;
     const expansion = await processTx(
       base,
-      extra as unknown[],
+      [...extra],
       Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
       nextEid(),
       Date.now(),
@@ -729,12 +734,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             q: (input, params) =>
               Effect.tryPromise({
                 try: async () => {
-                  const lowered = lowerQueryObject(
-                    input as never,
-                    params as never,
-                  );
+                  const lowered = lowerQueryObject(input, params);
                   const db = await speculative(collected());
-                  const result = await engineQuery(db, lowered.query as object, []);
+                  const result = await engineQuery(db, lowered.query, []);
                   const rows = lowered.finalize(result);
                   if (rows instanceof NotOne || rows instanceof ParamError) {
                     throw rows;
@@ -751,9 +753,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   const eid =
                     typeof subject === "number"
                       ? subject
-                      : await db.entid(subject as number | string | [string, unknown]);
+                      : await db.entid(entityRefOf(subject));
                   if (eid === undefined) return null;
-                  return enginePull(db, eid, normalized as never);
+                  return enginePull(db, eid, normalized);
                 },
                 catch: classifyQuery,
               }),
@@ -770,7 +772,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             ),
           );
 
-          const tx = built.ops() as unknown[];
+          const tx = [...built.ops()];
           const id = args.invocation.clientOpId;
           let invocation: OperationInvocation = { ...args.invocation };
 

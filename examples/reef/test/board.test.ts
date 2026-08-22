@@ -114,10 +114,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         pull: () => Effect.succeed(null),
       });
       const prefix = await Effect.runPromise(
-        runBody(operation.body, built.op, body.input) as Effect.Effect<
-          { output: unknown; halted: boolean },
-          unknown
-        >,
+        runBody(operation.body, built.op, body.input),
       );
       const ops = built.ops();
       if (ops.length === 0) {

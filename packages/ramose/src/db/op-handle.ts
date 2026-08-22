@@ -6,14 +6,15 @@
 
 import * as Effect from "effect/Effect";
 import type { AnyCatalog } from "./Catalog.ts";
-import type { DbError } from "./Errors.ts";
+import { type DbError, InternalError, InvalidRequest } from "./Errors.ts";
 import {
-  type Op,
   type OpPrincipal,
   type EffectThunk,
+  type RuntimeOp,
   PrefixHalt,
 } from "./Operation.ts";
-import { txBuilder, type Entity } from "./Tx.ts";
+import type { AnyQueryObject } from "./query/index.ts";
+import { isEntity, txBuilder, type Entity } from "./Tx.ts";
 
 export interface OpHandleOptions {
   readonly catalog: AnyCatalog;
@@ -21,7 +22,7 @@ export interface OpHandleOptions {
   readonly principal: OpPrincipal;
   readonly self?: unknown;
   readonly q: (
-    input: unknown,
+    input: AnyQueryObject,
     params?: Readonly<Record<string, unknown>>,
   ) => Effect.Effect<unknown, DbError>;
   readonly pull: (
@@ -29,7 +30,8 @@ export interface OpHandleOptions {
     pattern: unknown,
   ) => Effect.Effect<unknown, DbError>;
   /**
-   * `"halt"` — client prefix: `op.effect` fails with {@link PrefixHalt}.
+   * `"halt"` — client prefix: `op.effect` dies with {@link PrefixHalt}
+   * (a defect, not a typed failure — the body never names it).
    * `"run"` — server: evaluate the thunk with `ctx`.
    */
   readonly effects: "halt" | "run";
@@ -45,52 +47,77 @@ export interface OpHandleOptions {
 }
 
 export interface BuiltOp {
-  readonly op: Op<any>;
+  readonly op: RuntimeOp;
   readonly ops: () => readonly unknown[];
 }
 
+const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): Entity => {
+  // Worker catalogs are empty; `tx.entity` is catalog-typed. The runtime
+  // already accepts eid / tempid / lookup / handle via `resolveEntity`.
+  const bind = tx.entity as (id?: unknown) => Effect.Effect<Entity>;
+  return Effect.runSync(bind(self));
+};
+
+/** Narrow a pull subject to an engine entity ref without a channel cast. */
+export const entityRefOf = (
+  subject: unknown,
+): number | string | [string, unknown] => {
+  if (typeof subject === "number" || typeof subject === "string") return subject;
+  if (isEntity(subject)) {
+    const eid = subject.eid;
+    if (typeof eid === "number" || typeof eid === "string") return eid;
+    if (Array.isArray(eid) && eid.length === 2 && typeof eid[0] === "string") {
+      return [eid[0], eid[1]];
+    }
+  }
+  if (
+    Array.isArray(subject) &&
+    subject.length === 2 &&
+    typeof subject[0] === "string"
+  ) {
+    return [subject[0], subject[1]];
+  }
+  throw new InvalidRequest({ message: "bad pull subject" });
+};
+
+const missingInstall = (): Effect.Effect<unknown, InternalError> =>
+  Effect.fail(
+    new InternalError({
+      message: "ramose: no databases.install on this runtime",
+    }),
+  );
+
 export const buildOp = (options: OpHandleOptions): BuiltOp => {
   const tx = txBuilder(options.catalog);
-  let self: Entity | undefined;
-  if (options.self !== undefined) {
-    self = Effect.runSync(tx.entity(options.self as never));
-  }
+  const self =
+    options.self === undefined ? undefined : wrapSelf(tx, options.self);
 
-  const effect = <A, E, R>(
+  const effect = <A, E>(
     _name: string,
-    run: EffectThunk<A, E, R>,
-  ): Effect.Effect<A, E, R> => {
+    run: EffectThunk<A, E>,
+  ): Effect.Effect<A, E | InternalError> => {
     if (options.effects === "halt") {
-      return Effect.fail(new PrefixHalt()) as unknown as Effect.Effect<A, E, R>;
+      return Effect.die(new PrefixHalt());
     }
     const ctx = {
       env: options.effectCtx?.env,
       principal: options.principal,
       databases: options.effectCtx?.databases ?? {
-        install: () =>
-          Effect.fail({
-            _tag: "InternalError",
-            message: "ramose: no databases.install on this runtime",
-          } as DbError),
+        install: () => missingInstall(),
       },
     };
     const out = run(ctx);
-    return (
-      Effect.isEffect(out)
-        ? out
-        : Effect.tryPromise({
-            try: () => out,
-            catch: (cause) =>
-              ({
-                _tag: "InternalError",
-                message:
-                  cause instanceof Error ? cause.message : String(cause),
-              }) as DbError,
-          })
-    ) as Effect.Effect<A, E, R>;
+    if (Effect.isEffect(out)) return out;
+    return Effect.tryPromise({
+      try: () => out,
+      catch: (cause) =>
+        new InternalError({
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+    });
   };
 
-  const op = {
+  const op: RuntimeOp = {
     ...tx,
     self,
     principal: options.principal,
@@ -98,7 +125,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     q: options.q,
     pull: options.pull,
     effect,
-  } as Op<any>;
+  };
 
   return {
     op,
@@ -106,20 +133,17 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   };
 };
 
-const isPrefixHalt = (e: unknown): e is PrefixHalt =>
-  typeof e === "object" &&
-  e !== null &&
-  (e as { _tag?: unknown })._tag === "ramose/PrefixHalt";
-
-/** Run a body, treating {@link PrefixHalt} as a successful prefix stop. */
+/** Run a body, treating a {@link PrefixHalt} defect as a successful prefix stop. */
 export const runBody = (
-  body: (op: Op<any>, input: unknown) => Effect.Effect<unknown, any, any>,
-  op: Op<any>,
+  body: (op: RuntimeOp, input: unknown) => Effect.Effect<unknown, unknown>,
+  op: RuntimeOp,
   input: unknown,
 ): Effect.Effect<{ output: unknown; halted: boolean }, unknown> =>
   body(op, input).pipe(
     Effect.map((output) => ({ output, halted: false })),
-    Effect.catchIf(isPrefixHalt, () =>
-      Effect.succeed({ output: undefined, halted: true }),
+    Effect.catchDefect((defect) =>
+      defect instanceof PrefixHalt
+        ? Effect.succeed({ output: undefined, halted: true })
+        : Effect.die(defect),
     ),
-  ) as Effect.Effect<{ output: unknown; halted: boolean }, unknown>;
+  );

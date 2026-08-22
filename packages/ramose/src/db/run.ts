@@ -11,6 +11,7 @@ import { record } from "./http.ts";
 import {
   type AnyOperation,
   decodeInput,
+  decodeOutput,
   type OpPrincipal,
   type OpReport,
   type OperationInvocation,
@@ -53,14 +54,14 @@ const reportOf = <C extends AnyCatalog, O>(
     readonly t: number;
     readonly txEid: number;
     readonly datomCount: number;
-    readonly output: unknown;
+    readonly output: O;
   },
   make: (wire: Wire, name: string, catalog: C, view: RunView) => Db<C>,
 ): OpReport<O, C> => ({
   t: ack.t,
   txEid: makeEid<C>(ack.txEid),
   datomCount: ack.datomCount,
-  output: ack.output as O,
+  output: ack.output,
   dbAfter: make(wire, name, catalog, view),
 });
 
@@ -104,13 +105,22 @@ export const runOperation = <C extends AnyCatalog, O>(
         principal: asPrincipal(who),
         db: name,
       });
-      return reportOf<C, O>(wire, name, catalog, view, ack, make);
+      const output = yield* decodeOutput<O>(operation.output, ack.output);
+      return reportOf<C, O>(
+        wire,
+        name,
+        catalog,
+        view,
+        { ...ack, output },
+        make,
+      );
     }
 
     const body = yield* wire.operation(name, invocation);
     const ack = record(body);
     const t = typeof ack.t === "number" ? ack.t : 0;
     wire.session(name)?.bump(t);
+    const output = yield* decodeOutput<O>(operation.output, ack.output);
     return reportOf<C, O>(
       wire,
       name,
@@ -124,7 +134,7 @@ export const runOperation = <C extends AnyCatalog, O>(
           : typeof ack.datoms === "number"
             ? ack.datoms
             : 0,
-        output: ack.output,
+        output,
       },
       make,
     );

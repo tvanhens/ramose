@@ -18,7 +18,7 @@ import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
-import type { Entity } from "./Tx.ts";
+import { isEntity } from "./Tx.ts";
 
 /** Schema for an entity id in operation input / output. */
 export const EntityId: typeof Schema.Number = Schema.Number;
@@ -61,9 +61,9 @@ export interface OperationEffectContext {
   };
 }
 
-export type EffectThunk<A = unknown, E = unknown, R = unknown> = (
+export type EffectThunk<A = unknown, E = unknown> = (
   ctx: OperationEffectContext,
-) => Effect.Effect<A, E, R> | Promise<A>;
+) => Effect.Effect<A, E> | Promise<A>;
 
 /**
  * Entity handle a body writes through. Catalog-generic: operations are
@@ -116,10 +116,10 @@ export interface Op<N extends AnyNamespace | undefined = undefined> {
    * with {@link OperationEffectContext}. On the client this interrupts the
    * body — later steps are never guessed.
    */
-  effect<A, E = never, R = never>(
+  effect<A, E = never>(
     name: string,
-    run: EffectThunk<A, E, R>,
-  ): Effect.Effect<A, E, R>;
+    run: EffectThunk<A, E>,
+  ): Effect.Effect<A, E | DbError>;
 }
 
 export interface Operation<
@@ -132,11 +132,19 @@ export interface Operation<
   readonly name: Name;
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
-  readonly on: N;
-  readonly body: (op: Op<N>, input: I) => Effect.Effect<O, any, any>;
+  readonly on: N | undefined;
+  readonly body: (op: RuntimeOp, input: I) => Effect.Effect<O, unknown>;
 }
 
 export type AnyOperation = Operation<string, any, any, any>;
+
+/**
+ * Runtime handle the overlay and Worker actually build. `self` is set only
+ * when the operation is contextual — {@link Op} narrows that at the body.
+ */
+export type RuntimeOp = Omit<Op<AnyNamespace>, "self"> & {
+  readonly self: OpEntity | undefined;
+};
 
 export interface Operations<
   M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
@@ -168,14 +176,16 @@ export const Operation = <
 >(
   name: Name,
   schemas: OperationSchemas<I, O, N>,
-  body: (op: Op<N>, input: I) => Effect.Effect<O, any, any>,
+  body: (op: Op<N>, input: I) => Effect.Effect<O, unknown>,
 ): Operation<Name, I, O, N> => ({
   _tag: "Operation",
   name,
   input: schemas.input,
   output: schemas.output,
-  on: schemas.on as N,
-  body,
+  on: schemas.on,
+  // Contextual bodies see `op.self: OpEntity`. The runtime handle leaves
+  // `self` unset for non-contextual ops; the Worker validates `on` first.
+  body: (op, input) => body(op as Op<N>, input),
 });
 
 /** A deploy-time / client registry of operations. */
@@ -211,14 +221,7 @@ export const lowerEntityArg = (entity: unknown): unknown => {
   if (entity === undefined || entity === null) return undefined;
   if (typeof entity === "number" || typeof entity === "string") return entity;
   if (isEntityLike(entity)) return entity.id;
-  if (
-    typeof entity === "object" &&
-    entity !== null &&
-    (entity as { _tag?: unknown })._tag === "Entity" &&
-    "eid" in entity
-  ) {
-    return (entity as Entity).eid;
-  }
+  if (isEntity(entity)) return entity.eid;
   return entity;
 };
 
@@ -226,7 +229,7 @@ const isEntityLike = (value: unknown): value is { readonly id: number } =>
   typeof value === "object" &&
   value !== null &&
   "id" in value &&
-  typeof (value as { id: unknown }).id === "number";
+  typeof value.id === "number";
 
 /**
  * Replace entity handles and tempid strings with resolved eids so an
@@ -236,12 +239,8 @@ export const materializeOutput = (
   value: unknown,
   tempids: Readonly<Record<string, number>>,
 ): unknown => {
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { _tag?: unknown })._tag === "Entity"
-  ) {
-    const ref = (value as Entity).eid;
+  if (isEntity(value)) {
+    const ref = value.eid;
     if (typeof ref === "string") return tempids[ref] ?? ref;
     return ref;
   }
@@ -253,7 +252,7 @@ export const materializeOutput = (
   }
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(value)) {
       out[k] = materializeOutput(v, tempids);
     }
     return out;
@@ -278,9 +277,23 @@ export const decodeInput = <I>(
 /** Encode operation output for the wire. */
 export const encodeOutput = <O>(
   schema: Schema.Codec<O, unknown>,
-  output: O,
+  output: unknown,
 ): Effect.Effect<unknown, InvalidRequest> =>
   Schema.encodeUnknownEffect(schema)(output).pipe(
+    Effect.mapError(
+      (e) =>
+        new InvalidRequest({
+          message: e.message || "invalid operation output",
+        }),
+    ),
+  );
+
+/** Decode a wire output back into the operation's output type. */
+export const decodeOutput = <O>(
+  schema: Schema.Codec<O, unknown>,
+  output: unknown,
+): Effect.Effect<O, InvalidRequest> =>
+  Schema.decodeUnknownEffect(schema)(output).pipe(
     Effect.mapError(
       (e) =>
         new InvalidRequest({

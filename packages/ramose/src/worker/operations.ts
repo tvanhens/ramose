@@ -4,6 +4,7 @@
  */
 
 import {
+  type Datom,
   type Principal,
   Db as CoreDb,
   Index,
@@ -18,8 +19,15 @@ import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts
 import * as Effect from "effect/Effect";
 import type { AnyCatalog } from "../db/Catalog.ts";
 import { schemaTx } from "../db/ensure.ts";
-import { InternalError, NotOne, ParamError } from "../db/Errors.ts";
-import { buildOp, runBody } from "../db/op-handle.ts";
+import {
+  InternalError,
+  InvalidRequest,
+  isDatabaseError,
+  NotOne,
+  ParamError,
+  type DbError,
+} from "../db/Errors.ts";
+import { buildOp, entityRefOf, runBody } from "../db/op-handle.ts";
 import {
   type AnyOperation,
   type AnyOperations,
@@ -43,13 +51,31 @@ export const lookupOperation = (
   name: string,
 ): AnyOperation | undefined => registry?.get(name);
 
-const overlayOn = (confirmed: CoreDb, extra: readonly { t: number }[]): CoreDb => {
+const tagOf = (err: unknown): string | undefined =>
+  typeof err === "object" &&
+  err !== null &&
+  "_tag" in err &&
+  typeof err._tag === "string"
+    ? err._tag
+    : undefined;
+
+const asQueryFailure = (cause: unknown): DbError => {
+  if (isDatabaseError(cause)) return cause;
+  if (cause instanceof NotOne || cause instanceof ParamError) {
+    return new InvalidRequest({ message: cause.message });
+  }
+  return new InternalError({
+    message: cause instanceof Error ? cause.message : String(cause),
+  });
+};
+
+const overlayOn = (confirmed: CoreDb, extra: readonly Datom[]): CoreDb => {
   if (extra.length === 0) return confirmed;
   const nov = new Novelty();
   const avet = (a: number) => confirmed.schema.isAvet(a);
   const vaet = (a: number) => confirmed.schema.isVaet(a);
   nov.add(confirmed.novelty.byIndex[Index.EAVT].all(), avet, vaet);
-  nov.add(extra as never, avet, vaet);
+  nov.add(extra, avet, vaet);
   let basisT = confirmed.basisT;
   for (const d of extra) if (d.t > basisT) basisT = d.t;
   return new CoreDb({
@@ -66,7 +92,7 @@ const withOps = async (base: CoreDb, ops: readonly unknown[]): Promise<CoreDb> =
   if (ops.length === 0) return base;
   const expansion = await processTx(
     base,
-    ops as never,
+    [...ops],
     base.basisT + 1,
     base.nextEid,
     Date.now(),
@@ -168,8 +194,8 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
         : typeof raw === "object" &&
             raw !== null &&
             "id" in raw &&
-            typeof (raw as { id: unknown }).id === "number"
-          ? (raw as { id: number }).id
+            typeof raw.id === "number"
+          ? raw.id
           : undefined;
     if (eid === undefined) {
       throw new OperationRejected({
@@ -202,7 +228,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
       sub: args.principal.sub,
       name:
         typeof args.principal.claims.attrs?.name === "string"
-          ? (args.principal.claims.attrs.name as string)
+          ? args.principal.claims.attrs.name
           : undefined,
       claims: { ...args.principal.claims },
     },
@@ -218,14 +244,14 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
     q: (input, params) =>
       Effect.tryPromise({
         try: async () => {
-          const lowered = lowerQueryObject(input as never, params as never);
+          const lowered = lowerQueryObject(input, params);
           const db = await withOps(dbv, collected());
-          const result = await engineQuery(db, lowered.query as never, []);
+          const result = await engineQuery(db, lowered.query, []);
           const rows = lowered.finalize(result);
           if (rows instanceof NotOne || rows instanceof ParamError) throw rows;
           return rows;
         },
-        catch: (e) => e as never,
+        catch: asQueryFailure,
       }),
     pull: (subject, pattern) =>
       Effect.tryPromise({
@@ -233,11 +259,13 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
           const db = await withOps(dbv, collected());
           const normalized = normalizePullPattern(lowerPullPattern(pattern));
           const eid =
-            typeof subject === "number" ? subject : await db.entid(subject as never);
+            typeof subject === "number"
+              ? subject
+              : await db.entid(entityRefOf(subject));
           if (eid === undefined) return null;
           return enginePull(db, eid, normalized);
         },
-        catch: (e) => e as never,
+        catch: asQueryFailure,
       }),
   });
   collected = built.ops;
@@ -245,26 +273,23 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
   let result: { output: unknown; halted: boolean };
   try {
     result = await Effect.runPromise(
-      runBody(operation.body, built.op, decoded) as Effect.Effect<
-        { output: unknown; halted: boolean },
-        unknown
-      >,
+      runBody(operation.body, built.op, decoded),
     );
   } catch (err) {
-    const tagged = err as { _tag?: string };
-    if (tagged?._tag === "OperationRejected") throw err;
+    const tag = tagOf(err);
+    if (tag === "OperationRejected") throw err;
     throw new OperationRejected({
       message: err instanceof Error ? err.message : String(err),
       name: operation.name,
       step: "body",
-      reason: tagged?._tag,
+      reason: tag,
     });
   }
 
   let output: unknown = materializeOutput(result.output, {});
   try {
     output = await Effect.runPromise(
-      encodeOutput(operation.output, output as never),
+      encodeOutput(operation.output, output),
     );
   } catch {
     // keep the materialized value if the schema cannot encode handles
