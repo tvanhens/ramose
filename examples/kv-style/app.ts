@@ -44,7 +44,7 @@ export const App = Cloudflare.Worker(
     // alchemy.run.ts) or at tenant creation with `db.install()` — never per
     // request. The token is shared across every name: it is the peer's one
     // `RAMOSE_TOKEN`, checked for every tenant database and ignored when the
-    // peer has it unset (docs/RUNBOOK.md).
+    // peer has it unset (https://ramose.ai/reference/server/).
 
     /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
     const createTenant = (tenantId: string) =>

@@ -9,7 +9,7 @@ import type { AuthConfig } from "ramose";
 import { isDatabaseName } from "ramose/db";
 
 /**
- * The one verifier/minter contract (docs/AUTH_LAYER.md §1):
+ * The one verifier/minter contract (https://ramose.ai/guides/sign-in/):
  *
  * - `issuer` — the `iss` every Reef JWT carries and the peer pins
  *   (`RAMOSE_JWT_ISS`). An opaque agreed string — verification keys come

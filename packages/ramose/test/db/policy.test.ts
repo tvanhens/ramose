@@ -18,7 +18,7 @@ const App = Catalog({ user: User, org: Org, project: Project, doc: Doc });
 
 const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
 
-/** The spec's example, verbatim (docs/AUTH_LAYER.md §2). */
+/** The policy reference's example, verbatim (https://ramose.ai/reference/policy/). */
 const specPolicy = P.policy(App, {
   principal: User.sub,
   classes: ["anonymous", "member", "admin"],

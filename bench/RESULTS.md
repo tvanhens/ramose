@@ -78,7 +78,7 @@ Single-write mode is fsync-bound (~630 tx/s regardless of concurrency);
 group commit converts concurrency into batch size and reaches ~2.8k tx/s on
 this machine, i.e. the write ceiling of one logical database is
 **low-thousands tx/s** as the spec expects (§7). Beyond that, split the
-logical database (see `docs/RUNBOOK.md`).
+logical database (see https://ramose.ai/reference/server/).
 
 Through the full local stack (`bun alchemy dev`, Worker → Transactor DO,
 `bun run bench/write-do.bench.ts <clients> 5`; "off" = `RAMOSE_MAX_BATCH=1`):
@@ -147,7 +147,7 @@ timed here (memory of the in-process harness); scale the 4M row linearly.
 | M4 incremental indexer | verified at 600k datoms (scaled from 10M) | exact new-object count == |reachable(new) − reachable(old)|; as-of via old root; consistent snapshots; bounded, re-arming runs |
 | M5 replica + novelty | e2e | reconnect under concurrent writes → no missed datoms; root flip drops novelty |
 | M6 peer + time travel + SDK | e2e | schema → transact → query → as-of → history → pull; persistence across a full stack restart verified manually |
-| M7 | **done** (verified on a real Cloudflare deployment; see "Cloudflare" section) | planner memory guardrail (413 `query/budget-exceeded`, tested), write-ceiling load tests with/without group commit + warm read bench, structured logs/metrics per component, `docs/RUNBOOK.md`; timed indexer bench |
+| M7 | **done** (verified on a real Cloudflare deployment; see "Cloudflare" section) | planner memory guardrail (413 `query/budget-exceeded`, tested), write-ceiling load tests with/without group commit + warm read bench, structured logs/metrics per component, the server operations reference (ramose.ai/reference/server); timed indexer bench |
 
 ## Cloudflare (real deployment, stage `cf-e2e`, 2026-08-16)
 

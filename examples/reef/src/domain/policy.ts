@@ -1,5 +1,5 @@
 /**
- * The workspace policy (docs/AUTH_LAYER.md): rules over catalog attributes and
+ * The workspace policy (https://ramose.ai/reference/policy/): rules over catalog attributes and
  * JWT claims, compiled at deploy into the peer Worker's env. One policy serves
  * every workspace — the JWT's `ramose.db` binds a token to one of them.
  *

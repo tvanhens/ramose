@@ -1,9 +1,8 @@
 # Contributing to Ramose
 
-Development notes for people changing Ramose itself. Consumer docs live at
-[ramose.ai](https://ramose.ai) (source in `website/`). In-repo design notes stay
-in `docs/` (`API.md`, `AUTH_LAYER.md`, `RUNBOOK.md`,
-`TX_WRITE_PERF.md`). Remaining query work lives on
+Development notes for people changing Ramose itself. All docs live at
+[ramose.ai](https://ramose.ai) (source in `website/`) — the docs site is the
+sole documentation location. Remaining query work lives on
 [issue #18](https://github.com/tvanhens/ramose/issues/18); the shipped query
 language is on the website
 ([Read data](https://ramose.ai/guides/queries/),

@@ -52,7 +52,7 @@ export const Store = Cloudflare.R2.Bucket("Store");
 // would start a fresh dataset and orphan every point already written.
 export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
 
-/** Server auth (docs/AUTH_LAYER.md), all opt-in: nothing set deploys today's peer. */
+/** Server auth (https://ramose.ai/reference/server/), all opt-in: nothing set deploys today's peer. */
 const auth: Ramose.PeerAuth = {
   policy: process.env.RAMOSE_POLICY,
   jwksUrl: process.env.RAMOSE_JWKS_URL,

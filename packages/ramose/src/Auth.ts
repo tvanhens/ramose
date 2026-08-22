@@ -2,7 +2,7 @@
  * The verifier/minter contract, declared once on the deploy side.
  *
  * Ramose verifies JWTs and never issues them — but the *shape* it verifies
- * (docs/AUTH_LAYER.md §1) is a contract with two consumers: the peer's env
+ * (https://ramose.ai/guides/sign-in/) is a contract with two consumers: the peer's env
  * (`authEnv` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` / `RAMOSE_JWT_MAX_TTL`)
  * and the app's mint route (which signs the payload). `AuthConfig` is that
  * contract as one value; {@link claims} builds the payload from it, so the
@@ -49,7 +49,7 @@ export interface ClaimsInput {
 }
 
 /**
- * The payload the peer verifies (docs/AUTH_LAYER.md §1), as built — every
+ * The payload the peer verifies (https://ramose.ai/guides/sign-in/), as built — every
  * field present. The client-side `Claims` on `ramose/db` is the
  * same shape *decoded but unverified* (all-optional, UI hints only); this is
  * the minted original.

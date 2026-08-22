@@ -1,12 +1,12 @@
 /**
  * The ops HTTP harness — **not** a client SDK and not a package.
  *
- * `docs/API.md` deletes the idea of a separate client package: the typed
- * surface is `ramose/db` (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is
- * Worker internals. What is left here is the *ops* half that no public API
- * names — raw datalog strings, the metrics response headers, and the admin
- * routes `docs/RUNBOOK.md` documents (`/info`, `/admin/index`, `/admin/gc`,
- * `/admin/replica/reconnect`).
+ * There is no separate client package: the typed surface is `ramose/db`
+ * (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is Worker internals.
+ * What is left here is the *ops* half that no public API names — raw datalog
+ * strings, the metrics response headers, and the admin routes the server
+ * reference documents (https://ramose.ai/reference/server/ — `/info`,
+ * `/admin/index`, `/admin/gc`, `/admin/replica/reconnect`).
  *
  * Its only consumers are `test/e2e` and `bench/`, both of which run against a
  * real deployment and assert on exactly those internals. Nothing in

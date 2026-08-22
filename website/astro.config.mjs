@@ -149,6 +149,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "Client API", slug: "reference/client-api" },
+            { label: "The query language", slug: "reference/query-language" },
             { label: "React hooks", slug: "reference/react" },
             { label: "Policy", slug: "reference/policy" },
             { label: "Errors", slug: "reference/errors" },

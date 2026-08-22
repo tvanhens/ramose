@@ -1,9 +1,13 @@
-# The query language
+---
+title: The query language
+description: The kernel query surface — Query.q, the pipeable stdlib, named rules, and composition by delegation — and how it lowers onto the engine.
+---
 
-Settled 2026-08-22. This is the implementation map for the query redesign
-(the design record supersedes issues #141–#148); the nav surface
-(`Ramose.query(N).where(...)`) still ships and its migration onto this
-language is follow-up work (old #144).
+The minimum set of ideas behind the query language: what a query is, what
+the kernel is made of, and why every larger construct is derived rather
+than primitive. The navigational surface (`Ramose.query(N).where(...)`,
+[Read data](/guides/queries/)) still ships; its migration onto this
+language is follow-up work.
 
 ## One kind of object
 
@@ -41,19 +45,20 @@ export const inbox = Query.q(
 );
 ```
 
-Escalating from pipe to generator is un-sugaring, never rewriting.
+Escalating from pipe to generator is un-sugaring, never rewriting. The
+same names are reachable as `Ramose.Q` / `Ramose.Query` from `ramose/db`,
+or flat from the `ramose/query` subpath.
 
 ## The kernel is inert data
 
-`src/db/query/kernel.ts`. Primitives are typed clause *descriptions*, not
-Effects — serializability is definitional, and there is no build runtime,
-ambient collector, or cast:
+Primitives are typed clause *descriptions*, not Effects — serializability
+is definitional, and there is no build runtime, ambient collector, or
+cast:
 
 - `Q.fact(e, attr, v?)` — the one pattern clause, five positions. Unbound
   positions mint typed vars (lazily: reading `f.t` is what puts the tx
   position on the wire); the handle exposes `{ e, v, t, tx, op }`, so
-  time-based questions are ordinary clauses (`f.t` reads as the basis `t`,
-  converted through the stable tx partition base).
+  time-based questions are ordinary clauses (`f.t` reads as the basis `t`).
 - Value comparisons — `Q.eq`, `Q.gt`, `Q.startsWith`, `Q.in`, … over bound
   vars.
 - `Q.or` / `Q.not` — take sub-generators; closure capture over outer
@@ -66,7 +71,8 @@ ambient collector, or cast:
 contributing the clause (the orphaned-clause bug is structurally gone),
 clauses accumulate implicitly while bindings return explicitly, and every
 inclusion re-runs the build function — fresh vars make self-joins hygienic
-with no alpha-renaming machinery. Variables are identities, not names.
+with no alpha-renaming machinery. Variables are identities, not names: a
+typo is a compile error.
 
 ## Inputs declared, output inferred
 
@@ -96,12 +102,12 @@ instantiated fragment is one mechanical call
 clause value expanded by the *engine*, which is what makes recursion work.
 
 On the wire the query gains a `rules` section
-(`[[name ?arg…] clause…]`, same-named defs are disjunctive branches);
-`internal/core/query/{ast,parse,engine}.ts` implement it. A non-recursive
-call inlines to an or-join (bound arguments still seek); a recursive call
-is answered from a memoized bottom-up fixpoint whose every round — and
-cumulative expansion work — is charged against the existing query budget,
-so a runaway recursion is a `QueryBudgetExceeded`, never a hang.
+(`[[name ?arg…] clause…]`; same-named definitions are disjunctive branches
+with one shared head). A non-recursive call inlines to an or-join (bound
+arguments still seek); a recursive call is answered from a memoized
+bottom-up fixpoint whose every round — and cumulative expansion work — is
+charged against the existing query budget, so a runaway recursion is a
+`QueryBudgetExceeded`, never a hang.
 
 ## Composition is delegation, at three altitudes
 
@@ -109,7 +115,8 @@ so a runaway recursion is a `QueryBudgetExceeded`, never a hang.
    build; native JS delegation. A fragment is a rule with modes: bound
    vars are its arguments, the free var its return — the dataflow that
    makes pipe thread. `Query.stage(frag)` lifts a userland fragment with
-   the same adapter the shipped combinators use.
+   the same adapter the shipped combinators use, so a userland combinator
+   is indistinguishable from a shipped one.
 2. `yield* q.open(p)` — a whole closed query as a subquery: clauses
    inline, declared params rebind from `p` (a bound handle correlates, an
    outer token forwards, a literal fixes), and `{ focus, cols }` comes
@@ -126,7 +133,3 @@ computation becomes real — `db.q` returns an Effect with typed failures,
 `db.live` is a Stream. Because built queries are inert data they are
 hashable for live-query identity and stable as hook dependencies; the
 same wire form runs on the peer and on the local session overlay.
-
-Surfaces: `Ramose.Q` / `Ramose.Query` on `ramose/db`, or flat from
-`ramose/query`. Tests: `test/db/kernel-query.test.ts` (surface, lowering,
-end-to-end) and `test/internal/core/query.rules.test.ts` (engine rules).

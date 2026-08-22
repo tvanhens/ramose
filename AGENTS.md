@@ -5,8 +5,10 @@ Objects + R2), built on the Effect runtime. It is a Bun workspace with one
 published package — `packages/ramose` (npm: `ramose`), which is the engine, the
 peer Worker and the client — and two consumer demos in `examples/*`.
 
-See `README.md` for the product overview, `CONTRIBUTING.md` for local commands,
-tests and CI, and `docs/` (`API.md`, `AUTH_LAYER.md`, `RUNBOOK.md`) for details.
+See `README.md` for the product overview and `CONTRIBUTING.md` for local
+commands, tests and CI. All documentation lives on the docs site
+([ramose.ai](https://ramose.ai), source in `website/`) — there is no in-repo
+`docs/` folder.
 
 ## Cursor Cloud specific instructions
 

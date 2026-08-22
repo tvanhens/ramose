@@ -1,6 +1,7 @@
 /**
  * `ramose/better-auth` — the Better Auth server plugin that mints the
- * workspace-scoped JWTs a Ramose peer verifies (docs/AUTH_LAYER.md §1).
+ * workspace-scoped JWTs a Ramose peer verifies
+ * (https://ramose.ai/guides/sign-in/).
  *
  * Ramose verifies tokens and never issues them, so every app repeats the
  * same mint route: read the Better Auth session, decide the caller's policy

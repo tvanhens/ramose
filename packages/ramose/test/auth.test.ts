@@ -1,6 +1,6 @@
 /**
  * The verifier/minter contract: `claims` builds the payload the peer
- * verifies (docs/AUTH_LAYER.md §1) from one `AuthConfig`, and `authEnv`
+ * verifies (https://ramose.ai/guides/sign-in/) from one `AuthConfig`, and `authEnv`
  * accepts that same config in place of the three loose keys — so the minted
  * lifetime equals the verifier's cap by construction.
  */

@@ -244,7 +244,7 @@ type _caught = Expect<
 >;
 type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
 
-// ── §2 of docs/API.md, name by name ────────────────────────────────────────
+// ── the public surface (ramose.ai/reference/client-api), name by name ──────
 //
 // `db-portable.test.ts` pins that the barrel exports *these names and no
 // others*; `surface.test.ts` does the same for `ramose`. What is left

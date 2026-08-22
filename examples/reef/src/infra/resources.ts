@@ -3,7 +3,7 @@
  * QueryReplica DO) with the compiled workspace policy armed, and the
  * `Ramose.Server` resource on top of it.
  *
- * Auth wiring (docs/AUTH_LAYER.md §4 "Alchemy" seam):
+ * Auth wiring (the Alchemy seam — https://ramose.ai/guides/sign-in/):
  *
  *   RAMOSE_POLICY           domain/policy.ts, compiled to wire JSON at deploy
  *   RAMOSE_JWKS_URL         the auth Worker's Better Auth JWKS endpoint —
