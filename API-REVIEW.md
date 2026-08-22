@@ -15,6 +15,10 @@ claims by executing the engine or lowering real queries.
 > surface. Item 1 is therefore framed as the workstream list to make operations
 > launch-ready (one issue per bold lead-in), and items 3, 5, and 7 carry the
 > follow-on changes.
+>
+> This report is filed as issues
+> [#170](https://github.com/tvanhens/ramose/issues/170)–[#204](https://github.com/tvanhens/ramose/issues/204),
+> tracked by [#205](https://github.com/tvanhens/ramose/issues/205).
 
 ## The ten
 
