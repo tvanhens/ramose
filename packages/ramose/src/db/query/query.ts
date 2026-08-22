@@ -1107,10 +1107,16 @@ export const lowerQueryObject = (
 
   // ── clauses + cursor ─────────────────────────────────────────────────────
   const projVars = new Set<number>();
+  /** Aggregated *value* vars: their rows must not collapse — see `withVars`. */
+  const aggValueVars = new Set<number>();
   const collectProjVars = (cell: Cell): void => {
     if (isVar(cell)) projVars.add(cell.id);
-    else if (isAggSpec(cell)) projVars.add(cell.v.id);
-    else if (isPullSpec(cell)) projVars.add(cell.focus.id);
+    else if (isAggSpec(cell)) {
+      projVars.add(cell.v.id);
+      // an entity (or tx) var is an identity — its bindings are already
+      // distinct rows; a value var is not, so it needs row provenance
+      if (cell.v.kind !== "entity" && cell.v.kind !== "tx") aggValueVars.add(cell.v.id);
+    } else if (isPullSpec(cell)) projVars.add(cell.focus.id);
     else if (typeof cell === "object" && cell !== null) {
       for (const sub of Object.values(cell as CellRecord)) collectProjVars(sub as Cell);
     }
@@ -1119,7 +1125,36 @@ export const lowerQueryObject = (
   else if (isPullSpec(proj)) projVars.add(proj.focus.id);
   else collectProjVars(isRowsSpec(proj) ? proj.cells : (proj as CellRecord));
 
-  where.unshift(...lowerClauses(resolveWhens(built.clauses, binder), projVars));
+  const clauses = resolveWhens(built.clauses, binder);
+  where.unshift(...lowerClauses(clauses, projVars));
+
+  // Aggregating over a *value* var must not collapse rows that agree on the
+  // value: two entities with the same rank are two rows to a sum. The entity
+  // position of each fact that binds an aggregated value rides in `:with` —
+  // distinctness includes it without projecting it (the nav lowering carried
+  // its root the same way). An e-var already in the projection is grouping,
+  // not multiplicity, and stays out.
+  // Top-level facts only: a var bound solely inside an or/not group is not
+  // bound at the query's top level, so it cannot ride `:with` (and gated
+  // groups were already spliced inline by resolveWhens).
+  const withVars: string[] = [];
+  if (aggValueVars.size > 0) {
+    const seen = new Set<number>();
+    for (const c of clauses) {
+      if (c._tag !== "fact") continue;
+      const v = c.vVar ?? c.v0;
+      const bindsAgg =
+        (isVar(v) && aggValueVars.has(v.id)) ||
+        (c.txVar !== undefined && aggValueVars.has(c.txVar.id)) ||
+        (c.opVar !== undefined && aggValueVars.has(c.opVar.id));
+      if (!bindsAgg) continue;
+      const e = c.eVar ?? c.e0;
+      if (isVar(e) && !projVars.has(e.id) && !seen.has(e.id)) {
+        seen.add(e.id);
+        withVars.push(nameOf(e));
+      }
+    }
+  }
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
   if (built.order.length > 0) {
@@ -1183,6 +1218,7 @@ export const lowerQueryObject = (
   const query: Record<string, unknown> = {
     find,
     where,
+    ...(withVars.length > 0 ? { with: withVars } : {}),
     ...(ruleDefs.length > 0 ? { rules: ruleDefs } : {}),
     ...(order.length > 0 ? { order } : {}),
     ...(seek !== undefined && seek !== null ? { after: [...seek.keys] } : {}),

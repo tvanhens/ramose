@@ -606,6 +606,58 @@ describe("db.q end to end", () => {
     await peer.dispose();
   });
 
+  test("aggregates sum rows, not distinct values — the bound entity rides in :with", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    // a second rank-2 issue: sum must see both rows, not one distinct 2
+    await run(
+      db.transact(function* (tx) {
+        const dupe = yield* tx.entity();
+        yield* dupe.add(Issue.title, "the duplicate rank");
+        yield* dupe.add(Issue.done, true);
+        yield* dupe.add(Issue.rank, 2);
+        yield* dupe.add(Issue.owner, ids.ada!.id as never);
+      }),
+    );
+
+    const totals = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const r = yield* Q.fact(issue, Issue.rank);
+      return { total: Q.sum(r.v), n: Q.count(r.v), distinct: Q.countDistinct(r.v) };
+    });
+    // ranks are 3, 1, 2, 2
+    expect(await run(db.q(totals))).toEqual([{ total: 8, n: 4, distinct: 3 }] as never);
+
+    // the fact's e-position rides in :with; an aggregated entity var needs none
+    const lowered = lowerQueryObject(totals);
+    expect(lowered.query.with).toHaveLength(1);
+    const perOwner = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      return { owner: name.v, n: Q.count(issue) };
+    });
+    expect(lowerQueryObject(perOwner).query.with).toBeUndefined();
+
+    // grouped: the duplicate values stay two rows inside their group too
+    const perDone = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const d = yield* Q.fact(issue, Issue.done);
+      const r = yield* Q.fact(issue, Issue.rank);
+      return { done: d.v, total: Q.sum(r.v) };
+    });
+    const rows = await run(db.q(perDone));
+    const sorted = [...rows].sort((a, b) => Number(a.done) - Number(b.done));
+    expect(sorted).toEqual([
+      { done: false, total: 4 },
+      { done: true, total: 4 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
   test("an ungrouped aggregate answers one row over the empty set", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
