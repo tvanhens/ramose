@@ -1,6 +1,7 @@
 /**
- * Policy eval bench (#154): reef-shaped public reads (`true` arms) and a
- * selective own-issue fragment, v1 expression vs v2 engine rule.
+ * Policy eval bench (#154 / #156): reef-shaped public reads (`true` arms)
+ * and a selective own-issue fragment. v1 is the expression walker; v2
+ * per-entity is #154 (`visibleSetMax: 0`); v2 set is #156.
  *
  *   bun run bench/policy.bench.ts [issues=400]
  */
@@ -137,6 +138,9 @@ results["reef v2 comments (true)"] = await bench("reef v2 comments (true)", () =
 results["reef v1 privateNote scrub"] = await bench("reef v1 privateNote scrub", () => query(filterDb(db, db, reefV1, alice), NOTES));
 results["reef v2 privateNote scrub"] = await bench("reef v2 privateNote scrub", () => query(filterDb(db, db, reefV2, alice), NOTES));
 results["own v1 titles"] = await bench("own v1 titles (eq creator)", () => query(filterDb(db, db, ownV1, alice), TITLES));
-results["own v2 titles"] = await bench("own v2 titles (fragment)", () => query(filterDb(db, db, ownV2, alice), TITLES));
+results["own v2 titles (per-entity)"] = await bench("own v2 titles (per-entity)", () =>
+  query(filterDb(db, db, ownV2, alice, { visibleSetMax: 0 }), TITLES),
+);
+results["own v2 titles (set)"] = await bench("own v2 titles (set)", () => query(filterDb(db, db, ownV2, alice), TITLES));
 
 console.log(JSON.stringify({ nUsers, nIssues, results }, null, 2));

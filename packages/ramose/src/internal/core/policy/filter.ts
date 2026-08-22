@@ -57,7 +57,11 @@ export class FilteredDb extends Db {
     return undefined;
   }
 
-  /** Is `[e a …]` readable? Bootstrap `:db/*` datoms always are. */
+  /**
+   * Is `[e a …]` readable? Bootstrap `:db/*` datoms always are.
+   * Named-rule membership is a set lookup once `PolicyMemo` has materialized
+   * the request-scoped visible set; `allowsOp` remains the only enforcement.
+   */
   async visible(d: Datom): Promise<boolean> {
     if (isSystemAttrId(d.a)) return true;
     const attr = this.view.ruleDb.attr(d.a) ?? this.schema.attr(d.a);
@@ -95,7 +99,7 @@ export function filterDb(
   ruleDb: Db,
   policy: CompiledPolicy,
   principal: Principal,
-  opts?: { readonly maxCells?: number },
+  opts?: { readonly maxCells?: number; readonly visibleSetMax?: number },
 ): Db {
   if (isAdmin(principal)) return db;
   const rules = ruleDb instanceof FilteredDb ? ruleDb.view.ruleDb : ruleDb;
@@ -103,7 +107,7 @@ export function filterDb(
     policy,
     principal,
     ruleDb: rules,
-    memo: new PolicyMemo(opts?.maxCells),
+    memo: new PolicyMemo({ maxCells: opts?.maxCells, visibleSetMax: opts?.visibleSetMax }),
   };
   return new FilteredDb(optionsOf(db), view);
 }
