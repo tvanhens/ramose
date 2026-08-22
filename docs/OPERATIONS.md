@@ -1,9 +1,10 @@
-# Superseded — see issues #141–#148
+# Superseded
 
 This file was an early draft of the operations / query-language / policy
-rework. The design has since moved on (the query language lands first; the
-kernel, rules, pipeable library, and the operations wire all changed shape),
-and the **GitHub issues are the authoritative record**:
+rework. The design exploration that followed it was recorded in issues
+#141–#148, which have since been **closed (not planned)** — the design is
+being restarted from a clean slate. Neither this file nor those issues
+should be treated as current design; they remain readable as history:
 
 - [#141](https://github.com/tvanhens/ramose/issues/141) — query kernel: typed clauses over the engine IR
 - [#142](https://github.com/tvanhens/ramose/issues/142) — query rules: named fragments with bounded recursion
@@ -14,4 +15,3 @@ and the **GitHub issues are the authoritative record**:
 - [#147](https://github.com/tvanhens/ramose/issues/147) — operations: typed writes, optimistic client interpreter
 - [#148](https://github.com/tvanhens/ramose/issues/148) — operations: server-side commit and validation
 
-Nothing in this file should be treated as current design.
