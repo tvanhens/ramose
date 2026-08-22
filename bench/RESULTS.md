@@ -489,3 +489,25 @@ remove at the price above. Summary vs the 36–39 ms baseline:
 | **new default, no headers** (cache + ttl, auto=enam) | **0 ms** | **0 ms** |
 
 Stage destroyed after the run (`bun alchemy destroy` → Worker + Store deleted, `/health` → 404). alchemy-state-store untouched.
+
+## Policy fragment evaluation (#154)
+
+In-process, Bun 1.4, Cloud Agent VM. Dataset: 20 users, 400 issues (20 owned
+by the caller), 800 comments. `bun run bench:policy`. v1 is the expression
+walker (`P.eq` / `P.const`); v2 is a named fragment rule through the query
+engine. Reef's shipped read arms are `true` (public) plus an admin-only
+`privateNote` class gate — they never hit the engine.
+
+| path | rows | v1 p50 | v2 p50 | v2 p95 |
+|---|---|---|---|---|
+| unfiltered issue titles | 400 | — | 0.14 ms | 0.57 ms |
+| reef titles (`read: true`) | 400 | 0.33 ms | **0.24 ms** | 0.40 ms |
+| reef comments (`read: true`) | 800 | 0.49 ms | **0.45 ms** | 1.12 ms |
+| reef `privateNote` scrub (member) | 0 | 0.07 ms | **0.07 ms** | 0.16 ms |
+| own-issue titles (selective) | 20 | 0.68 ms | 4.80 ms | 5.93 ms |
+
+**Reef read paths did not regress.** `true` arms and the class-only attr
+narrowing stay on the existing walker; v2 is at or under v1. The selective
+own-issue miss is one engine query per unseen entity (400 candidates → 20
+visible) and is ~7× the expression walk — the cost #154 accepted, and the
+workload #156 (set materialization) is sequenced to absorb.
