@@ -196,7 +196,21 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const path = new URL(url, "https://peer.local").pathname;
     httpPaths.push(path);
-    const body = fromJson(JSON.parse(String(init.body))) as any;
+    if (path.endsWith("/info")) {
+      return new Response(
+        JSON.stringify({
+          db: "coral-team",
+          t: conn.t,
+          principal: { eid: myEid ?? null, class: "admin" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    const raw = init.body;
+    const body =
+      raw === undefined || raw === ""
+        ? {}
+        : (fromJson(JSON.parse(String(raw))) as any);
     const reply = path.endsWith("/op")
       ? await answer("op", body)
       : await answer("transact", body);

@@ -195,10 +195,10 @@ export const fromResponse = (
   switch (b.tag) {
     case "OperationRejected":
       return new OperationRejected({
-        message,
+        message: str(b.message ?? b.error, `HTTP ${status}`),
         name: str(b.name, ""),
         ...opt("step", b.step),
-        ...opt("reason", b.reason ?? b.error),
+        ...opt("reason", b.reason),
       });
     case "TxRejected":
       return new TxRejected({ message, code: str(b.code, "tx/rejected") });
@@ -244,10 +244,10 @@ export const fromResponse = (
     case 409:
       if (b.tag === "OperationRejected" || b.error === "OperationRejected") {
         return new OperationRejected({
-          message,
+          message: str(b.message ?? b.error, `HTTP ${status}`),
           name: str(b.name, ""),
           ...opt("step", b.step),
-          ...opt("reason", b.reason ?? b.error),
+          ...opt("reason", b.reason),
         });
       }
       return new TxRejected({ message, code: str(b.code, "tx/rejected") });
