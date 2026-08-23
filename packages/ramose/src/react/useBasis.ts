@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useBasis` — where the database's basis is: `db.basis()` on mount, then
  * again on every wake of the db's session (a `{ op: "tx" }` / resync, a
@@ -26,9 +28,12 @@ export const useBasis = <C extends Catalog.Any>(
 
     let disposed = false;
     let landed: number | undefined;
+    let inflight = false;
     const runs = { issued: 0, applied: 0 };
     const read = (): void => {
+      if (inflight) return;
       const seq = ++runs.issued;
+      inflight = true;
       const land = (value: number | undefined): void => {
         if (disposed || seq < runs.applied) return;
         runs.applied = seq;
@@ -38,13 +43,16 @@ export const useBasis = <C extends Catalog.Any>(
       void db
         .basis()
         .then((basis) => land(basis.t))
-        .catch(() => land(undefined));
+        .catch(() => land(undefined))
+        .finally(() => {
+          inflight = false;
+        });
     };
 
     read();
     const off = seamOf(db)?.onWake(() => {
       queueMicrotask(() => {
-        if (disposed) return;
+        if (disposed || inflight) return;
         const seen = seamOf(db)?.t();
         if (seen !== undefined && landed !== undefined && seen <= landed) {
           return;

@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `usePull` — a standing `db.livePull(subject, pattern)` as `Live` state:
  * `rows` is the projection or `null` (a retract is an emission, not an end),

@@ -14,7 +14,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import type { EffectDb, EffectReadDb } from "./effect-types.ts";
+import type { EffectDb, EffectOf, EffectReadDb } from "./effect-types.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
@@ -86,18 +86,18 @@ export interface Wire {
     op: "q" | "pull",
     body: Record<string, unknown>,
     minT: number | undefined,
-  ): Effect.Effect<unknown, DbError>;
+  ): EffectOf<unknown, DbError>;
   /** `POST /db/:name/transact`. The one writer, always over HTTPS. */
   transact(
     name: string,
     tx: readonly unknown[],
     clientTxId?: string,
-  ): Effect.Effect<unknown, DbError>;
+  ): EffectOf<unknown, DbError>;
   /** `POST /db/:name/op`. The operations writer, always over HTTPS. */
   operation(
     name: string,
     invocation: OperationInvocation,
-  ): Effect.Effect<unknown, DbError>;
+  ): EffectOf<unknown, DbError>;
   /**
    * Session overlay — confirmed follower + pending layers. Absent on an
    * HTTPS-only client, where reads stay on the peer and writes have no
@@ -108,7 +108,7 @@ export interface Wire {
     | {
         transact(
           tx: readonly unknown[],
-        ): Effect.Effect<
+        ): EffectOf<
           {
             readonly t: number;
             readonly txEid: number;
@@ -126,7 +126,7 @@ export interface Wire {
             readonly class: string;
           };
           readonly db: string;
-        }): Effect.Effect<
+        }): EffectOf<
           {
             readonly t: number;
             readonly txEid: number;
@@ -143,13 +143,13 @@ export interface Wire {
       }
     | undefined;
   /** `GET /db/:name/info` — where the basis is. Always HTTPS: cheap, authoritative. */
-  info(name: string): Effect.Effect<unknown, DbError>;
+  info(name: string): EffectOf<unknown, DbError>;
   /**
    * Who this connection is: `/info`'s `principal`, cached per session
    * generation — re-read on reconnect, and never cached while `eid` is `null`
    * (the row may be written at any moment).
    */
-  principal(name: string): Effect.Effect<SessionPrincipal, DbError>;
+  principal(name: string): EffectOf<SessionPrincipal, DbError>;
   /** This database's session, opened lazily; `undefined` with no `WebSocket`. */
   session(name: string): Session | undefined;
 }

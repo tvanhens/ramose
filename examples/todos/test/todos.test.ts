@@ -14,6 +14,9 @@
 import { describe, expect, test } from "bun:test";
 import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
+import { InternalError } from "../../../packages/ramose/src/db/Errors.ts";
+import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
+import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
 import { Connection, fromJson, pull, query, toJson, toWireDatom } from "ramose/internal/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -23,6 +26,7 @@ import { Todo, Todos } from "../schema.ts";
 import {
   addTodo,
   deleteTodo,
+  operations,
   pullTodo,
   setDone,
   todoQuery,
@@ -48,6 +52,66 @@ const inProcessPeer = async () => {
   const answer = async (op: string, body: any) => {
     if (op === "sync") {
       return { status: 200, body: { t: conn.t, from: body.from ?? 0 } };
+    }
+    if (op === "op") {
+      const operation = operations.get(String(body.name ?? ""));
+      if (operation === undefined) {
+        return { status: 400, body: { error: `unknown operation: ${body.name}` } };
+      }
+      const built = buildOp({
+        catalog: Todos,
+        db: "todos",
+        principal: { eid: null, class: "admin", claims: {} },
+        self: body.entity,
+        effects: "run",
+        effectCtx: {
+          env: {},
+          databases: {
+            install: (catalog) =>
+              Effect.tryPromise({
+                try: () => conn.transact(schemaTx(catalog) as never),
+                catch: (cause) =>
+                  new InternalError({
+                    message:
+                      cause instanceof Error ? cause.message : String(cause),
+                  }),
+              }),
+          },
+        },
+        q: () => Effect.succeed([]),
+        pull: () => Effect.succeed(null),
+      });
+      const prefix = await Effect.runPromise(
+        runBody(operation, built.op, body.input),
+      );
+      const ops = built.ops();
+      if (ops.length === 0) {
+        return {
+          status: 200,
+          body: {
+            t: conn.t,
+            txEid: 0,
+            tempids: {},
+            datoms: [],
+            output: prefix.output,
+            clientOpId: body.clientOpId,
+            clientTxId: body.clientOpId,
+          },
+        };
+      }
+      const rep = await conn.transact(ops as never);
+      return {
+        status: 200,
+        body: {
+          t: rep.t,
+          txEid: rep.txEid,
+          tempids: rep.tempids,
+          datoms: rep.txData.map(toWireDatom),
+          output: prefix.output,
+          clientOpId: body.clientOpId,
+          clientTxId: body.clientOpId,
+        },
+      };
     }
     if (op === "transact") {
       const rep = await conn.transact(body.tx);
@@ -75,12 +139,30 @@ const inProcessPeer = async () => {
   };
 
   const fetchImpl = (async (url: string, init: RequestInit) => {
-    const body = fromJson(JSON.parse(String(init.body))) as any;
-    const reply = await answer("transact", body);
-    // a write is a filtered tx frame every socket must hear about
+    const path = new URL(url, "https://peer.local").pathname;
+    if (path.endsWith("/info") && (init.method ?? "GET") === "GET") {
+      return new Response(
+        JSON.stringify({
+          db: "todos",
+          t: conn.t,
+          principal: { eid: null, class: "admin" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    const raw = init.body;
+    const body =
+      raw === undefined || raw === ""
+        ? {}
+        : (fromJson(JSON.parse(String(raw))) as any);
+    const reply = path.endsWith("/op")
+      ? await answer("op", body)
+      : await answer("transact", body);
     const datoms = (reply.body as { datoms?: unknown }).datoms;
-    for (const push of pushes) {
-      push({ op: "tx", t: conn.t, datoms: Array.isArray(datoms) ? datoms : [] });
+    if (Array.isArray(datoms) && datoms.length > 0) {
+      for (const push of pushes) {
+        push({ op: "tx", t: conn.t, datoms });
+      }
     }
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,

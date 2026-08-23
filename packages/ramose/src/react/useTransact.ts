@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useTransact` — run a promise from an event handler, and know whether it
  * is running and whether it failed.

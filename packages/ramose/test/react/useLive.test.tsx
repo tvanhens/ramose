@@ -344,7 +344,8 @@ const immediate = <A,>(values: readonly A[]): Ramose.Subscription<A> => ({
 
 describe("useLive (subscription form)", () => {
   test("drains any subscription — no db, no provider", async () => {
-    const { result } = renderHook(() => useLive(immediate(["a", "b", "c"])));
+    const sub = immediate(["a", "b", "c"]);
+    const { result } = renderHook(() => useLive(sub));
     await waitFor(() => expect(result.current.rows).toBe("c"));
     expect(result.current.ticks).toBe(2);
     expect(result.current.error).toBeUndefined();

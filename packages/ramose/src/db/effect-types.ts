@@ -7,6 +7,10 @@
 
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
+
+/** Re-export so `Db.d.ts` can name Effect without importing `effect`. */
+export type EffectOf<A, E = never, R = never> = Effect.Effect<A, E, R>;
+export type StreamOf<A, E = never, R = never> = Stream.Stream<A, E, R>;
 import type { AnyCatalog } from "./Catalog.ts";
 import type { DbPrincipal, QueryError, TxReport } from "./Db.ts";
 import type { DbError } from "./Errors.ts";

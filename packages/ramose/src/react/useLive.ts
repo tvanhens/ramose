@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useLive` — a standing read as React state: `{ rows, error, ticks }`,
  * reset when the inputs change.
@@ -12,6 +14,11 @@
  *   be a stable object (build it at module scope). Bind changing values
  *   with `Ramose.params` as the third argument; a params-only change
  *   re-runs without blanking `rows`.
+ *
+ * Subscription form (`useLive(sub)`) keys on handle **identity**. Hoist the
+ * handle (`const sub = db.live(q)` / `immediate(…)` outside render, or a
+ * `useMemo`). `useLive(db.live(q))` built inline is a new subscription every
+ * render and will re-subscribe forever — use the query form instead.
  */
 
 import type {
@@ -82,7 +89,10 @@ export function useLive(
   useEffect(() => {
     const queryChanged = query !== queryRef.current;
     queryRef.current = query;
-    if (query === undefined || queryChanged) {
+    // Query form: a new query object blanks rows. Subscription form keys
+    // on handle identity — do not reset+replay here or a fresh handle
+    // built inline (`immediate(…)` / `db.live(q)`) loops setState forever.
+    if (query !== undefined && queryChanged) {
       setState(INITIAL);
     }
     let emissions = 0;
@@ -92,11 +102,15 @@ export function useLive(
         if (cancelled) return;
         const ticks = emissions;
         emissions += 1;
-        setState({ rows, error: undefined, ticks });
+        setState((prev) =>
+          prev.rows === rows && prev.ticks === ticks && prev.error === undefined
+            ? prev
+            : { rows, error: undefined, ticks },
+        );
       },
       (error) => {
         if (cancelled) return;
-        setState((prev) => ({ ...prev, error }));
+        setState((prev) => (prev.error === error ? prev : { ...prev, error }));
       },
     );
     return () => {

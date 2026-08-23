@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * `useQuery` — one-shot `db.q(query)` as React state.
  *

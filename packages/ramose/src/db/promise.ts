@@ -39,7 +39,9 @@ export const fromStream = <A, E>(
   };
 
   const listeners = new Set<Listener>();
-  const buffer: A[] = [];
+  // Last emission only — a standing live must not retain every pass.
+  let latest: A | undefined;
+  let hasLatest = false;
   let error: E | undefined;
   let ended = false;
   let closed = false;
@@ -48,7 +50,8 @@ export const fromStream = <A, E>(
   const fiber = Effect.runFork(
     Stream.runForEach(stream, (value) =>
       Effect.sync(() => {
-        buffer.push(value);
+        latest = value;
+        hasLatest = true;
         for (const listener of listeners) listener.onValue(value);
       }),
     ).pipe(
@@ -79,7 +82,7 @@ export const fromStream = <A, E>(
 
   return {
     subscribe(onValue, onError) {
-      for (const value of buffer) onValue(value);
+      if (hasLatest) onValue(latest as A);
       if (error !== undefined) onError?.(error);
       const listener: Listener = { onValue, onError };
       listeners.add(listener);
@@ -100,7 +103,7 @@ export const fromStream = <A, E>(
         notify = undefined;
       };
 
-      for (const value of buffer) queue.push({ kind: "value", value });
+      if (hasLatest) queue.push({ kind: "value", value: latest as A });
       if (error !== undefined) queue.push({ kind: "error", error });
       else if (ended) queue.push({ kind: "end" });
 

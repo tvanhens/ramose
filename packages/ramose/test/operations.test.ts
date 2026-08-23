@@ -17,6 +17,7 @@ import {
   Operations,
   OperationRejected,
   Query,
+  txBuilder,
 } from "../src/db/internal.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
@@ -336,5 +337,16 @@ describe("db.run wire", () => {
     const err = await runFail(db.run(setName, undefined, { name: "x" }));
     expect((err as { _tag: string })._tag).toBe("InvalidRequest");
     await c.dispose();
+  });
+});
+
+describe("optional add", () => {
+  test("add(undefined | null) is a no-op — it is not encoded as a nil datom", () => {
+    const tx = txBuilder(Movies);
+    const e = Effect.runSync(tx.entity());
+    Effect.runSync(e.add(User.name, "Ada"));
+    Effect.runSync(e.add(User.age, undefined as never));
+    Effect.runSync(e.add(User.age, null as never));
+    expect(tx.spec.ops).toEqual([[":db/add", "tmp-1", ":user/name", "Ada"]]);
   });
 });

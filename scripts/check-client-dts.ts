@@ -12,7 +12,11 @@ import { join } from "node:path";
 
 const ROOT = "packages/ramose/dist";
 const EFFECT_IMPORT =
-  /from\s+["']effect(?:\/[^"']*)?["']|import\(\s*["']effect(?:\/[^"']*)?["']/;
+  /(?:^|\n)\s*(?:import|export)[\s\S]*?\sfrom\s*["']effect(?:\/[^"']*)?["']|(?:^|\n)\s*import\s*["']effect(?:\/[^"']*)?["']|import\(\s*["']effect(?:\/[^"']*)?["']/;
+
+/** Drop comments so JSDoc samples (`from "effect/Schema"`) are not imports. */
+const withoutComments = (src: string): string =>
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
 const files: string[] = [
   join(ROOT, "db/index.d.ts"),
@@ -42,7 +46,7 @@ if (missing.length > 0) {
 
 const leaks: string[] = [];
 for (const file of files) {
-  const src = readFileSync(file, "utf8");
+  const src = withoutComments(readFileSync(file, "utf8"));
   if (EFFECT_IMPORT.test(src)) leaks.push(file);
 }
 
