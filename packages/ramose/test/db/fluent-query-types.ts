@@ -107,6 +107,11 @@ db.query(partial, { issueId: 1 as Eid<typeof Issue>, extra: "Ada" });
 const onlyIds = Query.from(Comment).ids();
 type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: number }>>;
 
+const idsThenSelect = Query.from(Comment).ids().select({ text: Comment.text });
+type _idsThenSelect = Expect<Equal<Row<typeof idsThenSelect>, { readonly text: string }>>;
+const selectThenIds = Query.from(Comment).select({ text: Comment.text }).ids();
+type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: number }>>;
+
 // ── optional fields only are `| undefined` ─────────────────────────────────
 
 const Note = Entity("note", {

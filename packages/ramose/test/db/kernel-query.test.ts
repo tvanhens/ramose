@@ -1515,11 +1515,16 @@ describe("Query.from — fluent app spelling", () => {
 
   test("entityShape nests the target entity's id, not the source's", () => {
     const shape = entityShape(Comment) as unknown as {
-      readonly issue: { readonly _tag: string; readonly shape: { readonly id: unknown } };
+      readonly issue: {
+        readonly _tag: string;
+        readonly field: { readonly _tag: string; readonly shape: { readonly id: unknown } };
+      };
     };
-    expect(shape.issue._tag).toBe("select");
-    expect(shape.issue.shape.id).toBe(Issue.id);
-    expect(shape.issue.shape.id).not.toBe(Comment.id);
+    // card-one refs are `.optional` at runtime so a missing fact keeps the row
+    expect(shape.issue._tag).toBe("optional");
+    expect(shape.issue.field._tag).toBe("select");
+    expect(shape.issue.field.shape.id).toBe(Issue.id);
+    expect(shape.issue.field.shape.id).not.toBe(Comment.id);
   });
 
   test("select-less fluent query serializes the expanded entity shape, not [*]", async () => {
@@ -1600,5 +1605,115 @@ describe("Query.from — fluent app spelling", () => {
     expect(got.has(ids.ada.id)).toBe(true);
     expect(got.has(ids.grace.id)).toBe(true);
     await peer.dispose();
+  });
+
+  test("a missing required fact does not drop the entity", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+    const rows = await db.query(Query.from(User).orderBy(User.name, "asc"));
+    const lin = rows.find((r) => r.name === "Lin");
+    expect(lin).toBeDefined();
+    expect(lin!.age).toBeUndefined();
+    await peer.dispose();
+  });
+
+  test("params inside Query.none bind (module docstring spelling)", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const p = params({ me: User.id });
+    const inbox = Query.from(Issue)
+      .where({ done: false })
+      .where(Query.none(Comment.issue, Query.is(Comment.author, p.me)))
+      .select({ title: Issue.title })
+      .orderBy(Issue.title, "asc");
+    expect((await db.query(inbox, { me: ids.ada as never })).map((r) => r.title)).toEqual([
+      "ship the release",
+    ]);
+    expect((await db.query(inbox, { me: ids.grace as never })).map((r) => r.title)).toEqual([
+      "fix the flake",
+      "ship the release",
+    ]);
+    await peer.dispose();
+  });
+
+  test("params inside Query.some bind", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const p = params({ me: User.id });
+    const commented = Query.from(Issue)
+      .where(Query.some(Comment.issue, Query.is(Comment.author, p.me)))
+      .select({ title: Issue.title });
+    expect((await db.query(commented, { me: ids.ada as never })).map((r) => r.title)).toEqual([
+      "fix the flake",
+    ]);
+    expect(await db.query(commented, { me: ids.grace as never })).toEqual([]);
+    await peer.dispose();
+  });
+
+  test("params inside Query.matching bind", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+    const p = params({ term: Issue.title });
+    const q = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.startsWith(t, p.term)))
+      .select({ title: Issue.title })
+      .orderBy(Issue.title, "asc");
+    expect((await db.query(q, { term: "fix" })).map((r) => r.title)).toEqual(["fix the flake"]);
+    await peer.dispose();
+  });
+
+  test("params inside a nested select where bind", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const p = params({ who: User.id });
+    const q = Query.from(Issue)
+      .select({
+        title: Issue.title,
+        theirs: Comment.issue.reverse.select(
+          { text: Comment.text },
+          { where: [Query.is(Comment.author, p.who)] },
+        ),
+      })
+      .orderBy(Issue.title, "asc");
+    const rows = await db.query(q, { who: ids.ada as never });
+    expect(rows.find((r) => r.title === "fix the flake")!.theirs).toEqual([{ text: "on it" }]);
+    const grace = await db.query(q, { who: ids.grace as never });
+    expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
+    await peer.dispose();
+  });
+
+  test("orderBy string key resolves against the default entity shape", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+    const rows = await db.query(Query.from(Issue).orderBy("title", "asc"));
+    expect(rows.map((r) => r.title)).toEqual([
+      "archive the docs",
+      "fix the flake",
+      "ship the release",
+    ]);
+    await peer.dispose();
+  });
+
+  test("the later of .ids() / .select() wins", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+    const titled = await db.query(Query.from(Issue).ids().select({ title: Issue.title }));
+    expect(titled.every((r) => typeof r.title === "string")).toBe(true);
+    const onlyIds = await db.query(Query.from(Issue).select({ title: Issue.title }).ids());
+    expect(onlyIds.every((r) => "id" in r && !("title" in r))).toBe(true);
+    await peer.dispose();
+  });
+
+  test("where() with no arguments throws a ramose/query message", () => {
+    expect(() => (Query.from(Issue).where as (arg?: unknown) => unknown)()).toThrow(
+      /ramose\/query: where\(\)/,
+    );
   });
 });

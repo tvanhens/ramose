@@ -12,7 +12,6 @@ import {
   isParam,
   type AnyParam,
   type AnyParamSet,
-  type ParamsSpec,
   type ScopeOf,
 } from "../Params.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, SelectResult, Shape, ValidShape } from "../shapes.ts";
@@ -107,19 +106,11 @@ const refTargetEntity = (
   return source;
 };
 
-/** Schema.optional (and friends) show up as a Union that includes Undefined. */
-const schemaIsOptional = (schema: unknown): boolean => {
-  if (schema === null || (typeof schema !== "object" && typeof schema !== "function")) {
-    return false;
-  }
-  const ast = (schema as { readonly ast?: { readonly _tag?: string; readonly types?: readonly { readonly _tag?: string }[] } }).ast;
-  if (ast?._tag === "Undefined") return true;
-  if (ast?._tag === "Union") {
-    return ast.types?.some((t) => t._tag === "Undefined") ?? false;
-  }
-  return false;
-};
-
+/**
+ * Expand `N.fields` into the pull shape. Card-one fields are `.optional` at
+ * runtime so a missing fact does not drop the row; {@link EntityRow} still
+ * types required scalars as required (optimistic about presence).
+ */
 export const entityShape = (ns: AnyEntity): Shape => {
   const sourceId = entityId(ns);
   const out: Record<string, unknown> = { id: sourceId };
@@ -131,22 +122,25 @@ export const entityShape = (ns: AnyEntity): Shape => {
       readonly select: (shape: Shape) => { readonly optional: unknown };
       readonly optional: unknown;
     };
-    const optional = schemaIsOptional(f.schema);
     if (f.valueType === "ref") {
       const nested = f.select({ id: entityId(refTargetEntity(f, ns)) });
-      out[key] =
-        f.cardinality === "many" ? nested : optional ? nested.optional : nested;
+      out[key] = f.cardinality === "many" ? nested : nested.optional;
     } else {
-      out[key] =
-        f.cardinality === "many" ? field : optional ? f.optional : field;
+      out[key] = f.cardinality === "many" ? field : f.optional;
     }
   }
   return out as Shape;
 };
 
+/** Insert the default select *before* orderBy/limit/offset so string keys resolve. */
 const withDefaultShape = (pipe: Pipeline): Pipeline => {
   if (pipe.stages.some((s) => s.kind === "select" || s.kind === "ids")) return pipe;
-  return selectStage(entityShape(pipe.ns))(pipe);
+  const idx = pipe.stages.findIndex(
+    (s) => s.kind === "orderBy" || s.kind === "limit" || s.kind === "offset",
+  );
+  const head = idx === -1 ? pipe : { ...pipe, stages: pipe.stages.slice(0, idx) };
+  const next = selectStage(entityShape(pipe.ns))(head);
+  return idx === -1 ? next : { ...next, stages: [...next.stages, ...pipe.stages.slice(idx)] };
 };
 
 // ── where object ────────────────────────────────────────────────────────────
@@ -220,21 +214,23 @@ const adoptParam = (current: AnyParamSet | undefined, p: AnyParam): AnyParamSet 
   return current;
 };
 
-const adoptValue = (current: AnyParamSet | undefined, value: unknown): AnyParamSet | undefined => {
+const adoptValue = (
+  current: AnyParamSet | undefined,
+  value: unknown,
+  seen = new Set<object>(),
+): AnyParamSet | undefined => {
   if (isParam(value)) return adoptParam(current, value);
   if (typeof value === "function") {
     let next = current;
     for (const p of paramsOfStage(value)) next = adoptParam(next, p);
     return next;
   }
-  return current;
-};
-
-const specFromSet = (set: AnyParamSet | undefined): ParamsSpec | undefined => {
-  if (set === undefined) return undefined;
-  const spec: Record<string, { readonly Type: unknown }> = {};
-  for (const key of Object.keys(set)) spec[key] = { Type: undefined };
-  return spec;
+  if (value === null || typeof value !== "object") return current;
+  if (seen.has(value)) return current;
+  seen.add(value);
+  let next = current;
+  for (const child of Object.values(value)) next = adoptValue(next, child, seen);
+  return next;
 };
 
 const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pipeline => {
@@ -311,7 +307,7 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
   seek?: Cursor | null,
 ): FluentQuery<N, Row, PB> => {
   const qv = makeQueryObject<Row, PB>(
-    specFromSet(paramSet),
+    undefined,
     paramSet,
     () => withDefaultShape(pipe),
     stripCursor,
@@ -325,6 +321,11 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
 
   const fluent = qv as FluentQuery<N, Row, PB>;
   fluent.where = ((arg: WhereEq<N> | FilterStage, ...rest: FilterStage[]) => {
+    if (arg === undefined && rest.length === 0) {
+      throw new Error(
+        "ramose/query: where() takes an equality object or one or more filter stages",
+      );
+    }
     if (typeof arg === "function") {
       const stages = [arg, ...rest];
       let set = paramSet;
@@ -337,7 +338,7 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
     return next(applyEq(pipe, ns, eq), set);
   }) as FluentQuery<N, Row, PB>["where"];
   fluent.select = ((shape: Shape & ValidShape<Shape>) =>
-    next(selectStage(shape)(pipe))) as FluentQuery<N, Row, PB>["select"];
+    next(selectStage(shape)(pipe), adoptValue(paramSet, shape))) as FluentQuery<N, Row, PB>["select"];
   fluent.orderBy = (key, dir, opts) => next(orderByStage(key, dir, opts)(pipe));
   fluent.limit = ((n: number | AnyParam) =>
     next(limitStage(n)(pipe), adoptValue(paramSet, n))) as FluentQuery<N, Row, PB>["limit"];

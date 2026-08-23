@@ -18,6 +18,7 @@ import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, S
 import {
   Q,
   isVar,
+  mkVar,
   type AnyVar,
   type AttrLike,
   type EidCell,
@@ -30,12 +31,52 @@ import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
 /** Params closed over by a dual stage — fluent `where`/`limit` collect these. */
 const STAGE_PARAMS = new WeakMap<object, AnyParam[]>();
 
+const collectParams = (values: readonly unknown[], seen = new Set<object>()): AnyParam[] => {
+  const found: AnyParam[] = [];
+  const walk = (v: unknown): void => {
+    if (isParam(v)) {
+      found.push(v);
+      return;
+    }
+    if (typeof v === "function") {
+      if (seen.has(v)) return;
+      seen.add(v);
+      for (const p of paramsOfStage(v)) found.push(p);
+      return;
+    }
+    if (v === null || typeof v !== "object") return;
+    if (seen.has(v)) return;
+    seen.add(v);
+    for (const child of Object.values(v)) walk(child);
+  };
+  for (const v of values) walk(v);
+  return found;
+};
+
 const trackParams = <T extends object>(stage: T, ...values: unknown[]): T => {
-  const found = values.filter(isParam);
+  const found = collectParams(values);
   if (found.length > 0) {
     STAGE_PARAMS.set(stage, [...(STAGE_PARAMS.get(stage) ?? []), ...found]);
   }
   return stage;
+};
+
+/** Dry-run a `matching` pred so params in `Q.startsWith(v, p.term)` surface. */
+const peekPred = (pred: (v: never) => unknown): unknown[] => {
+  try {
+    const out = pred(mkVar("value") as never);
+    if (
+      typeof out === "object" &&
+      out !== null &&
+      typeof (out as { next?: unknown }).next === "function" &&
+      typeof (out as { throw?: unknown }).throw === "function"
+    ) {
+      return [...(out as Iterable<unknown>)];
+    }
+    return [out];
+  } catch {
+    return [];
+  }
 };
 
 /** @internal Params a dual stage closed over. */
@@ -105,8 +146,10 @@ const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
   );
 
 const traversal = (frag: (focus: AnyVar) => QueryGen<Var<EidCell>>): TraversalStage =>
-  ((x: unknown) =>
-    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as TraversalStage;
+  trackParams(
+    ((x: unknown) =>
+      isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as TraversalStage,
+  );
 
 /**
  * Lift a plain fragment into a pipeable stage — the same adapter every
@@ -168,10 +211,13 @@ export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
 ): FilterStage =>
-  filter(function* (e) {
-    const f = yield* Q.fact(e, attr);
-    yield* pred(f.v) as QueryGen<unknown>;
-  });
+  trackParams(
+    filter(function* (e) {
+      const f = yield* Q.fact(e, attr);
+      yield* pred(f.v) as QueryGen<unknown>;
+    }),
+    ...peekPred(pred as (v: never) => unknown),
+  );
 
 // ── traversals ──────────────────────────────────────────────────────────────
 
@@ -203,24 +249,30 @@ export const some = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
 
 /** `none(R, ps…)`: ¬∃ other. `[other R e]` ∧ ps(other). */
 export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
-    yield* Q.not(function* () {
-      const other = yield* backlink(ref)(e);
-      for (const p of ps) yield* p(other) as QueryGen<unknown>;
-    });
-  });
+  trackParams(
+    filter(function* (e) {
+      yield* Q.not(function* () {
+        const other = yield* backlink(ref)(e);
+        for (const p of ps) yield* p(other) as QueryGen<unknown>;
+      });
+    }),
+    ...ps,
+  );
 
 /** `every(R, ps…)`: ¬∃ other. `[other R e]` ∧ ¬ps(other) — vacuously true
  * of a focus nothing points at, like the nav surface's `every`. */
 export const every = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
-    yield* Q.not(function* () {
-      const other = yield* backlink(ref)(e);
+  trackParams(
+    filter(function* (e) {
       yield* Q.not(function* () {
-        for (const p of ps) yield* p(other) as QueryGen<unknown>;
+        const other = yield* backlink(ref)(e);
+        yield* Q.not(function* () {
+          for (const p of ps) yield* p(other) as QueryGen<unknown>;
+        });
       });
-    });
-  });
+    }),
+    ...ps,
+  );
 
 // ── param-gated clauses ─────────────────────────────────────────────────────
 
@@ -265,10 +317,13 @@ export const updatedSince = (since: number | AnyParam): FilterStage =>
 /** Some fact about the focus rides a transaction whose entity carries
  * `[tx A who]` — provenance as an ordinary clause. */
 export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
-    const f = yield* Q.fact(e);
-    yield* Q.fact(f.tx, attr, who);
-  });
+  trackParams(
+    filter(function* (e) {
+      const f = yield* Q.fact(e);
+      yield* Q.fact(f.tx, attr, who);
+    }),
+    who,
+  );
 
 // ── terminals: they close the query, not compose it ─────────────────────────
 
