@@ -77,7 +77,7 @@ export const errorToHttp = (err: DbError): ErrorHttp => {
         body: {
           error: err.message,
           tag: "OperationRejected",
-          name: err.name,
+          operation: err.operation,
           ...(err.step === undefined ? {} : { step: err.step }),
           ...(err.reason === undefined ? {} : { reason: err.reason }),
         },
@@ -104,6 +104,11 @@ export const errorResponse = (err: DbError): Response => {
  * Classify `unknown` as a {@link DbError} when it is one; otherwise wrap
  * as {@link InternalError}. Useful at a Worker boundary that `catch`es
  * anything.
+ *
+ * Worker-only tags (`NotFound`, `BadRequest`, `Internal`, `UpstreamError`)
+ * are not {@link DbError}s and become `InternalError` (500) here. For the
+ * peer Worker's own request Effect, use `fromThrown` + `toHttp` instead —
+ * this helper does not know about those tags.
  */
 export const toDbError = (err: unknown): DbError => {
   if (isDatabaseError(err)) return err;

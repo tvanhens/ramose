@@ -154,7 +154,8 @@ export class NotOne extends Data.TaggedError("NotOne")<{
  */
 export class OperationRejected extends Data.TaggedError("OperationRejected")<{
   readonly message: string;
-  readonly name: string;
+  /** The operation id (`user/create`). Not `Error.name` — that stays the tag. */
+  readonly operation: string;
   readonly step?: string;
   readonly reason?: string;
 }> {}
@@ -237,7 +238,7 @@ export const fromResponse = (
     case "OperationRejected":
       return new OperationRejected({
         message: str(b.message ?? b.error, `HTTP ${status}`),
-        name: str(b.name, ""),
+        operation: str(b.operation ?? b.name, ""),
         ...opt("step", b.step),
         ...opt("reason", b.reason),
       });
@@ -273,8 +274,15 @@ export const fromResponse = (
       return new InvalidRequest({ message });
     case 401:
     case 403:
-      // `{ error, code: "policy", attr: ":doc/owner" }` surfaces typed
-      return new Unauthorized({ message, ...opt("code", b.code), ...opt("attr", b.attr) });
+      // `{ error, code: "policy", attr: ":doc/owner" }` surfaces typed.
+      // Keep `status` so `errorToHttp` can round-trip a 403 that is not
+      // `code: "policy"` (an admin-only route, a known caller refused).
+      return new Unauthorized({
+        message,
+        status,
+        ...opt("code", b.code),
+        ...opt("attr", b.attr),
+      });
     case 404:
       // Application misses are JSON `{ error }`. Cloudflare's workers.dev
       // miss is an HTML "Page not found" — treat as Unavailable so callers
@@ -290,7 +298,7 @@ export const fromResponse = (
       if (b.tag === "OperationRejected" || b.error === "OperationRejected") {
         return new OperationRejected({
           message: str(b.message ?? b.error, `HTTP ${status}`),
-          name: str(b.name, ""),
+          operation: str(b.operation ?? b.name, ""),
           ...opt("step", b.step),
           ...opt("reason", b.reason),
         });

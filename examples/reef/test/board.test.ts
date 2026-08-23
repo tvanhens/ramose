@@ -468,7 +468,7 @@ describe("the board's writes move the board's live stream", () => {
     peer.rejectNextTransact({
       error: "denied",
       tag: "OperationRejected",
-      name: "issue/create",
+      operation: "issue/create",
       reason: "policy",
     });
     const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {

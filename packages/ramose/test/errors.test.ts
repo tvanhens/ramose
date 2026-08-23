@@ -112,18 +112,28 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
 });
 
 describe("fromResponse — DO errors passed through (tagged)", () => {
-  test("409 OperationRejected keeps name / reason", () => {
+  test("409 OperationRejected keeps operation / reason", () => {
     const e = fromResponse(409, {
       error: "OperationRejected",
       tag: "OperationRejected",
       message: "entity 1 does not exist",
-      name: "issue/close",
+      operation: "issue/close",
       reason: "dangling",
     }) as OperationRejected;
     expect(e._tag).toBe("OperationRejected");
-    expect(e.name).toBe("issue/close");
+    expect(e.operation).toBe("issue/close");
+    expect(e.name).toBe("OperationRejected");
     expect(e.reason).toBe("dangling");
     expect(e.message).toBe("entity 1 does not exist");
+  });
+
+  test("409 OperationRejected still reads a legacy `name` body field", () => {
+    const e = fromResponse(409, {
+      error: "OperationRejected",
+      tag: "OperationRejected",
+      name: "issue/close",
+    }) as OperationRejected;
+    expect(e.operation).toBe("issue/close");
   });
 
   test("409 TxRejected keeps the TxError code", () => {
@@ -215,7 +225,7 @@ describe("isDatabaseError", () => {
       new QueryBudgetExceeded({ message: "", code: "", clause: "", cells: 0, limit: 0 }),
       new InternalError({ message: "" }),
       new NetworkError({ message: "" }),
-      new OperationRejected({ message: "", name: "x" }),
+      new OperationRejected({ message: "", operation: "x" }),
     ];
     for (const e of all) expect(isDatabaseError(e)).toBe(true);
   });

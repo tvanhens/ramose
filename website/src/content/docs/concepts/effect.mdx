@@ -77,26 +77,18 @@ On the app path, `await db.query(…)` / `db.run(…)` reject with the tagged cl
 
 The hatch (`db.effect.*`) still produces Effects. `runPromise` from `ramose/effect` (or `ramose/db/effect`) unwraps them so the Promise rejects with that same class, not a FiberFailure. Do not use `Effect.runPromise` on a Ramose Effect if you need `_tag` / `instanceof` to work.
 
-Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`, `OperationRejected`. Hatch code can still `Effect.catchTags`:
+Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`, `OperationRejected`. A Worker that proxies those to HTTP uses `errorToHttp`:
 
-```ts title="examples/kv-style/app.ts:128-143"
-        Effect.catchTags({
-          TxRejected: (e) =>
-            HttpServerResponse.json({ error: e.message, code: e.code }, { status: 409 }),
-          Unavailable: (e) =>
-            HttpServerResponse.json(
-              { error: e.message },
-              { status: 503, headers: { "retry-after": String(Math.ceil(e.retryAfterMs / 1000)) } },
-            ),
-          QueryBudgetExceeded: (e) =>
-            HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
-          // …
-          Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
-          // …
+```ts title="examples/kv-style/app.ts:123-129"
+      }).pipe(
+        // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
+        Effect.catch((e) => {
+          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
+          return HttpServerResponse.json(body, { status, headers });
         }),
 ```
 
-To handle any error the same way, `Effect.catch`. In React, `errorMessage(e)` from `ramose/react` turns any of them into a string. The full list, with status codes and what the user sees, is on [Errors](/reference/errors/).
+Hatch code (`db.effect.*`) can still `Effect.catchTags` by `_tag`. In React, `errorMessage(e)` from `ramose/react` turns any of them into a string. The full list, with status codes and what the user sees, is on [Errors](/reference/errors/).
 
 ## Words you can ignore for now
 

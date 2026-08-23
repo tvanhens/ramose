@@ -110,7 +110,7 @@ export function toHttp(err: RamoseError): HttpError {
           error: "OperationRejected",
           tag: "OperationRejected",
           message: err.message,
-          name: err.name,
+          operation: err.operation,
           ...(err.step === undefined ? {} : { step: err.step }),
           ...(err.reason === undefined ? {} : { reason: err.reason }),
         },

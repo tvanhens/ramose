@@ -1,6 +1,6 @@
 ---
 title: Errors
-description: The nine request errors, plus NotOne, ParamError and PolicyError — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
+description: The nine request errors, plus NotOne, ParamError and PolicyError — what each means, what to show the user, which are retried for you.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -78,7 +78,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | 400 | `InvalidRequest` |
 | 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule) |
 | 404 | `DatabaseNotFound` (unknown route) |
-| 409 | `TxRejected` (`{ error, tag, code }`) or `OperationRejected` (`{ error, tag, name }`) |
+| 409 | `TxRejected` (`{ error, tag, code }`) or `OperationRejected` (`{ error, tag, operation }`) |
 | 413 | `QueryBudgetExceeded` |
 | 503 (+ `retry-after`) | `Unavailable` |
 | other 5xx | `InternalError` |

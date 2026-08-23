@@ -112,6 +112,7 @@ describe("POST /db/:name/op", () => {
     );
     expect(dangling.status).toBe(409);
     expect(dangling.body.tag).toBe("OperationRejected");
+    expect(dangling.body.operation).toBe("movie/set-title");
     expect(dangling.body.reason).toBe("dangling");
 
     const foreign = await peer.json(

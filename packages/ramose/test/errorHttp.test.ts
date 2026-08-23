@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DatabaseNotFound,
+  fromResponse,
   InternalError,
   InvalidRequest,
   NetworkError,
@@ -39,7 +40,7 @@ describe("errorToHttp", () => {
     ).toBe(413);
     expect(statusOf(new InternalError({ message: "m" }))).toBe(500);
     expect(statusOf(new NetworkError({ message: "m" }))).toBe(502);
-    expect(statusOf(new OperationRejected({ message: "m", name: "x" }))).toBe(409);
+    expect(statusOf(new OperationRejected({ message: "m", operation: "x" }))).toBe(409);
   });
 
   test("Unavailable carries retry-after", () => {
@@ -57,6 +58,24 @@ describe("errorToHttp", () => {
       tag: "TxRejected",
       code: "tx/invalid",
     });
+  });
+
+  test("403 non-policy, 403 policy, and 401 keep their status through errorToHttp", () => {
+    const forbidden = fromResponse(403, { error: "admin only", code: "admin" }) as Unauthorized;
+    expect(forbidden.status).toBe(403);
+    expect(errorToHttp(forbidden).status).toBe(403);
+
+    const policy = fromResponse(403, {
+      error: "denied",
+      code: "policy",
+      attr: ":doc/owner",
+    }) as Unauthorized;
+    expect(policy.status).toBe(403);
+    expect(errorToHttp(policy).status).toBe(403);
+
+    const unauth = fromResponse(401, { error: "unauthorized" }) as Unauthorized;
+    expect(unauth.status).toBe(401);
+    expect(errorToHttp(unauth).status).toBe(401);
   });
 
   test("toDbError keeps a tagged error and wraps anything else", () => {

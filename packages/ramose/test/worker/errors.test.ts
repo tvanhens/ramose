@@ -55,16 +55,16 @@ describe("tagged failure → status/body", () => {
     expect(toHttp(new Internal({ message: "kaboom" }))).toEqual({ status: 500, body: { error: "kaboom", stack: undefined } });
   });
 
-  test("OperationRejected → 409 { tag, name, step?, reason? }", () => {
+  test("OperationRejected → 409 { tag, operation, step?, reason? }", () => {
     expect(
-      toHttp(new OperationRejected({ message: "gone", name: "issue/close", reason: "dangling" })),
+      toHttp(new OperationRejected({ message: "gone", operation: "issue/close", reason: "dangling" })),
     ).toEqual({
       status: 409,
       body: {
         error: "OperationRejected",
         tag: "OperationRejected",
         message: "gone",
-        name: "issue/close",
+        operation: "issue/close",
         reason: "dangling",
       },
     });
@@ -120,6 +120,6 @@ describe("Effect.catchTags dispatch", () => {
     expect((await run(new UpstreamError({ status: 503, body: "down" }))).status).toBe(503);
     expect((await run(new QueryBudgetExceeded({ message: "m", code: "query/budget-exceeded", clause: "c", cells: 2, limit: 1 }))).status).toBe(413);
     expect((await run(new Internal({ message: "m" }))).status).toBe(500);
-    expect((await run(new OperationRejected({ message: "m", name: "x" }))).status).toBe(409);
+    expect((await run(new OperationRejected({ message: "m", operation: "x" }))).status).toBe(409);
   });
 });

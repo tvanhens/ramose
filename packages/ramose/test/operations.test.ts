@@ -234,7 +234,7 @@ describe("optimistic prefix", () => {
             error: "OperationRejected",
             tag: "OperationRejected",
             message: "denied",
-            name: "user/create",
+            operation: "user/create",
             reason: "policy",
           },
         };
@@ -441,7 +441,7 @@ describe("db.run / db.query promise rejection identity", () => {
               error: "denied",
               tag: "OperationRejected",
               message: "denied",
-              name: "user/create",
+              operation: "user/create",
               reason: "policy",
             },
           };
@@ -457,11 +457,9 @@ describe("db.run / db.query promise rejection identity", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(OperationRejected);
       expect((error as OperationRejected)._tag).toBe("OperationRejected");
-      expect((error as OperationRejected).name).toBe("user/create");
-      expect((error as Error).name).not.toBe("FiberFailure");
-      expect((error as { constructor?: { name?: string } }).constructor?.name).not.toBe(
-        "FiberFailure",
-      );
+      expect((error as OperationRejected).operation).toBe("user/create");
+      expect((error as OperationRejected).name).toBe("OperationRejected");
+      expect((error as OperationRejected).name).not.toBe("FiberFailure");
     }
     close();
   });

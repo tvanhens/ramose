@@ -200,7 +200,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
     if (eid === undefined) {
       throw new OperationRejected({
         message: `operation ${operation.name} needs an entity`,
-        name: operation.name,
+        operation: operation.name,
         reason: "dangling",
       });
     }
@@ -211,7 +211,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
           check === "dangling"
             ? `entity ${eid} does not exist`
             : `entity ${eid} is not a ${operation.on.ns}`,
-        name: operation.name,
+        operation: operation.name,
         reason: check,
       });
     }
@@ -280,7 +280,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
     if (tag === "OperationRejected") throw err;
     throw new OperationRejected({
       message: err instanceof Error ? err.message : String(err),
-      name: operation.name,
+      operation: operation.name,
       step: "body",
       reason: tag,
     });
