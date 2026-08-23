@@ -3,14 +3,13 @@
  * against the catalog, carries exactly the rules the demo narrates, and the
  * app's pull shapes survive the masked-read check.
  *
- * `parsePolicy` comes from `ramose/internal/*` — the engine, reachable but
- * unsupported — because "core accepts this JSON" is the assertion, and the
- * public surface only offers the compiler that produces it. An app never
- * imports it.
+ * `parsePolicy` comes from the engine via a workspace-relative import —
+ * example test suites keep that access without the public package promising
+ * it. An app never imports it.
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "ramose/internal/core/policy/ast.ts";
+import { parsePolicy } from "../../../packages/ramose/src/internal/core/policy/ast.ts";
 import * as Ramose from "ramose";
 import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";

@@ -31,10 +31,9 @@
  *
  * `main` is a **path**, not a module specifier — Alchemy `realpath`s it before
  * bundling — which is why the package name goes through `import.meta.resolve`.
- * `Ramose.workerEntry()` from `ramose/workerEntry` is the same
- * resolution under a name. A bare `"ramose/worker"` resolves against the
- * working directory, finds nothing, and leaves a Worker that binds its port
- * and never answers; the probe below is what turns that into an error.
+ * A bare `"ramose/worker"` resolves against the working directory, finds
+ * nothing, and leaves a Worker that binds its port and never answers; the
+ * probe below is what turns that into an error.
  *
  * @section Using it from a Worker
  * @example Open a database, then transact and query

@@ -9,7 +9,7 @@
     "`allowImportingTsExtensions` legal here without `noEmit`.",
     "",
     "Emit is unbundled: the module graph and file layout are preserved so the",
-    "subpath exports (`ramose/db`, `ramose/worker`, `ramose/db/Db.ts`, ...) keep",
+    "enumerated subpath exports (`ramose/db`, `ramose/worker`, ...) keep",
     "resolving after the build. packages/ramose/tsconfig.build.json extends this",
     "and sets rootDir/outDir; it is kept separate so the build config and the",
     "repo-wide typecheck config (tsconfig.json) cannot drift into each other."

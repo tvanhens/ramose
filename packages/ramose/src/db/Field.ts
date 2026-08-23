@@ -126,6 +126,11 @@ export type AnyField = Field<
   boolean
 >;
 
+export declare namespace Field {
+  /** Any field — the bound for field-generic helpers. */
+  export type Any = AnyField;
+}
+
 export const isField = (value: unknown): value is AnyField =>
   typeof value === "object" &&
   value !== null &&

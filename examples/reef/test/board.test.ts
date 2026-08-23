@@ -8,9 +8,9 @@
  *
  * Pinned `asOf` / `history` still ride the peer (Reef's Time travel screen).
  *
- * `ramose/internal/*` is the engine, reachable but unsupported: it is how
- * this test stands an in-process server up without a Worker. An app never
- * imports it — `ramose/db` and `ramose/react` are the surface.
+ * Engine internals are workspace-relative: this test stands an in-process
+ * server up without a Worker. An app never imports them — `ramose/db` and
+ * `ramose/react` are the surface.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -24,7 +24,7 @@ import {
   query,
   toJson,
   toWireDatom,
-} from "ramose/internal/core";
+} from "../../../packages/ramose/src/internal/core/index.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

@@ -30,6 +30,7 @@ import {
 } from "./http.ts";
 import { openOverlay, type Overlay } from "./overlay.ts";
 import type { OperationInvocation } from "./Operation.ts";
+import type { DatabasesShape } from "./client-shape.ts";
 import type { AnySchema } from "./Schema.ts";
 import {
   globalWebSocket,
@@ -44,10 +45,7 @@ import {
   wrapTokenCause,
 } from "./token.ts";
 
-/** One method, because a database is a name. */
-export interface DatabasesShape {
-  db<C extends AnySchema>(name: string, schema: C): Db<C>;
-}
+export type { DatabasesShape } from "./client-shape.ts";
 
 /**
  * @internal What {@link makeDatabases} needs. Deliberately looser than

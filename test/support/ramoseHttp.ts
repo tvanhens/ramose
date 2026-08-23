@@ -13,8 +13,8 @@
  * `packages/**` imports it.
  */
 
-import { fromJson, toJson } from "ramose/internal/core";
-import type { TxData } from "ramose/internal/core";
+import { fromJson, toJson } from "../../packages/ramose/src/internal/core/json.ts";
+import type { TxData } from "../../packages/ramose/src/internal/core/tx.ts";
 
 export interface PeerOptions {
   token?: string;

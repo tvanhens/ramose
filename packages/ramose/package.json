@@ -45,8 +45,8 @@
     "tree do not merely duplicate bytes — they produce two mutually unassignable",
     "sets of types and nothing typechecks. The mitigation is that a consumer",
     "never has to name `effect` at all: it arrives under `ramose`, and the",
-    "`ramose/effect` and `ramose/schema` subpaths re-export the same module",
-    "instances for resolvers that do not hoist (pnpm's default, Yarn PnP). A",
+    "`ramose/effect` subpath re-exports the same module instances for",
+    "resolvers that do not hoist (pnpm's default, Yarn PnP). A",
     "consumer who *does* add `effect` to their own manifest should use a range",
     "compatible with this one; anything else is the one way back to two copies.",
     "",
@@ -101,41 +101,15 @@
       "types": "./dist/better-auth/client.d.ts",
       "default": "./dist/better-auth/client.js"
     },
-    "./workerEntry": {
-      "bun": "./src/workerEntry.ts",
-      "types": "./dist/workerEntry.d.ts",
-      "default": "./dist/workerEntry.js"
-    },
     "./effect": {
       "bun": "./src/effect.ts",
       "types": "./dist/effect.d.ts",
       "default": "./dist/effect.js"
     },
-    "./schema": {
-      "bun": "./src/schema.ts",
-      "types": "./dist/schema.d.ts",
-      "default": "./dist/schema.js"
-    },
-    "./*.js": {
-      "bun": "./src/*.ts",
-      "types": "./dist/*.d.ts",
-      "default": "./dist/*.js"
-    },
-    "./*.ts": {
-      "bun": "./src/*.ts",
-      "types": "./dist/*.d.ts",
-      "default": "./dist/*.js"
-    },
-    "./*": {
-      "bun": "./src/*.ts",
-      "types": "./dist/*.d.ts",
-      "default": "./dist/*.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "src",
     "LICENSE",
     "NOTICE"
   ],

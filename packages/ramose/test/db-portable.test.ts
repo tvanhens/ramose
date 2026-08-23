@@ -219,6 +219,7 @@ describe("the `/db` barrel's public names", () => {
         // shapes and params
         "all",
         "again",
+        "pick",
         "values",
         "params",
         "optional",

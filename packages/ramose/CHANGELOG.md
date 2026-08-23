@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Enumerated exports map (part of #201, tracker #205)
+
+Wildcard subpaths (`./*`, `./*.ts`, `./*.js`) are gone. The public set is
+`ramose`, `ramose/db`, `ramose/db/effect`, `ramose/worker`, `ramose/react`,
+`ramose/better-auth`, `ramose/better-auth/client`, and `ramose/effect`.
+Cut: `ramose/query` (duplicate of `Query`), `ramose/schema` (shorthands
+replaced its app-path role), `ramose/workerEntry` (folded into #203 later).
+`src` no longer ships in the tarball — `dist` includes declaration maps.
+`ramose/internal/*` does not resolve. Types a consumer needs
+(`AnyEntity` / `Entity.Any`, `ValueOf`, `FieldOptions`, `DbValueType`,
+`DatabasesShape`, `ReadDatabasesShape`, `pick`, `RamoseEnv`) are on the
+public barrels.
+
 ### Fluent query builder (part of #208, tracker #205)
 
 `Query.from(Entity).where({…}).select(…).orderBy(…)` is the primary app

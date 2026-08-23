@@ -171,11 +171,13 @@ cache miss). Manual republish: **Actions → Docs publish → Run workflow**.
 
 ## Releasing to npm
 
-One package publishes to npm: `ramose`, from `packages/ramose`. Its five
-consumer-facing entries — `ramose`, `ramose/db`, `ramose/worker`,
-`ramose/react`, `ramose/better-auth` — are subpath exports of that one
-manifest, and the engine (`core`, `storage`, `transactor`, `replica`) lives
-under `src/internal/` and is not published under any other name.
+One package publishes to npm: `ramose`, from `packages/ramose`. The
+enumerated subpath set is `ramose`, `ramose/db`, `ramose/db/effect`,
+`ramose/worker`, `ramose/react`, `ramose/better-auth`,
+`ramose/better-auth/client`, and `ramose/effect` (the Effect escape hatch).
+The engine (`core`, `storage`, `transactor`, `replica`) lives under
+`src/internal/` and is not a public import. The published tarball is `dist`
+(with declaration maps); `src` does not ship.
 
 The private workspace root carries the same version, and
 `scripts/check-release.ts` fails the release if the two drift.
@@ -280,16 +282,18 @@ rewrites those to `.js` on the way out. Emit is unbundled so the file layout —
 and therefore the subpath exports — survives the build.
 
 The `exports` map serves both audiences: the `bun` condition points at
-TypeScript source (which also ships), everything else resolves to `dist`. That
-is what keeps `bun test` instant in this repo while consumers get compiled
-output. Deep subpaths accept all three spellings — `ramose/db/Db`, `Db.ts` and
-`Db.js` all land on the same module.
+TypeScript source in this workspace (so `bun test` stays instant), everything
+else resolves to `dist`. The published tarball ships `dist` only — the `bun`
+condition is for the checkout, not the npm package. There are no wildcard
+subpaths; `ramose/internal/*`, `ramose/query`, `ramose/schema`, and
+`ramose/workerEntry` do not resolve. Example test suites that need the engine
+use workspace-relative imports.
 
-`ramose/effect` and `ramose/schema` are re-export modules, not code of ours:
-they exist so a consumer whose resolver refuses undeclared imports (pnpm
-without hoisting, Yarn PnP) never has to name `effect` in their own manifest.
-Two copies of `effect` in one tree would be two incompatible sets of types —
-Effect types cross Ramose's public API — so the ranges in
+`ramose/effect` is a re-export module, not code of ours: it exists so a
+consumer whose resolver refuses undeclared imports (pnpm without hoisting,
+Yarn PnP) never has to name `effect` in their own manifest. Two copies of
+`effect` in one tree would be two incompatible sets of types — Effect types
+cross the hatch and deploy surfaces — so the ranges in
 `packages/ramose/package.json` are load-bearing; the `//dependencies` key there
 explains each one.
 

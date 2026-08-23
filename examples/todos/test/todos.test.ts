@@ -6,9 +6,9 @@
  * What it pins is the loop the UI depends on: a write moves the live stream
  * with no refetch and no invalidation call of its own.
  *
- * `ramose/internal/*` is the engine, reachable but unsupported: it is how this
- * test stands an in-process server up without a Worker. An app never imports
- * it — `ramose/db` and `ramose` are the surface.
+ * Engine internals are workspace-relative: this test stands an in-process
+ * server up without a Worker. An app never imports them — `ramose/db` and
+ * `ramose` are the surface.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -16,7 +16,7 @@ import * as Ramose from "ramose/db";
 import { InternalError } from "../../../packages/ramose/src/db/Errors.ts";
 import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
-import { Connection, fromJson, pull, query, toJson, toWireDatom } from "ramose/internal/core";
+import { Connection, fromJson, pull, query, toJson, toWireDatom } from "../../../packages/ramose/src/internal/core/index.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

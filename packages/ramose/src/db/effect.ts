@@ -18,9 +18,9 @@ import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import type { ClientOptions } from "./connect.ts";
 import type { DbError } from "./Errors.ts";
+import type { DatabasesShape } from "./client-shape.ts";
 import {
   type DatabasesConfig,
-  type DatabasesShape,
   makeDatabases,
   resolvePlainToken,
   resolveTransport,
@@ -29,7 +29,7 @@ import type { EffectOf, RedactedOf } from "./effect-types.ts";
 import type { TokenInput } from "./token.ts";
 
 export type { EffectDb, EffectReadDb } from "./effect-types.ts";
-export type { DatabasesShape };
+export type { DatabasesShape } from "./client-shape.ts";
 
 /**
  * The capability. Yield it to get the client:

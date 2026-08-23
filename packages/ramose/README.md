@@ -16,20 +16,21 @@ package at a version that resolves, so there is nothing else to pin.
 
 Ramose is pre-release: expect the API to change between minor versions.
 
-## The five entries
+## The public entries
 
 | Import | What it is |
 | --- | --- |
 | `ramose/db` | Schema, the client, `Db<C>`, the tagged errors. Portable — browser, Worker, Node, Bun, a test. |
+| `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
 | `ramose` | Everything on `ramose/db` plus the deploy-time half: the `Server` and `Database` resources, the capabilities, the transports, typed policy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
 | `ramose/react` | `RamoseProvider`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
 | `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. |
+| `ramose/effect` | Effect escape hatch — re-exports the Effect modules Ramose's own API hands you. |
 
 App schemas use `Ramose.string()` / `boolean()` / `Enum([...])` and do not
-import Effect. Two conveniences for the hatch path: `ramose/schema` re-exports
-`effect/Schema` and `ramose/effect` re-exports the Effect modules Ramose's own
-API hands you. They are re-exports of the same module instances, not copies.
+import Effect. `ramose/effect` re-exports the same `effect` module instances
+(not copies) for resolvers that refuse undeclared dependencies.
 
 ## A first look
 

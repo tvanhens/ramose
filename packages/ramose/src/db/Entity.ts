@@ -131,6 +131,11 @@ export type AnyEntity = {
   readonly fields: StampedMap<string, FieldMap>;
 };
 
+export declare namespace Entity {
+  /** Any entity — the bound for entity-generic helpers. */
+  export type Any = AnyEntity;
+}
+
 /**
  * `field.reverse` — the same ref hop, read backwards: a shape node for
  * backlink selects. The hop's cardinality is the backlink's: many for an

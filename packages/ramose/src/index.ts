@@ -55,6 +55,7 @@ export {
 // ── capabilities and transports ────────────────────────────────────────────
 export { ReadDatabases } from "./ReadDatabases.ts";
 export { ReadWriteDatabases } from "./ReadWriteDatabases.ts";
+export type { ReadDatabasesShape } from "./Source.ts";
 export { ServerBinding } from "./ServerBinding.ts";
 export { ServerHttp } from "./ServerHttp.ts";
 export { providers, Providers } from "./Providers.ts";

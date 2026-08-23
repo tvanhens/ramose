@@ -14,22 +14,18 @@
  * and logs `ready`, and every request to it hangs.
  *
  * ```typescript
- * import * as Ramose from "ramose/workerEntry";
- *
- * Cloudflare.Worker("Peer", { main: Ramose.workerEntry() })   // ✓
+ * Cloudflare.Worker("Peer", { main: import.meta.resolve("ramose/worker") })   // ✓
  * ```
  *
- * `import.meta.resolve("ramose/worker")` is the same thing written inline, is
- * equally correct, and is what the docs and every stack in this repository
- * show; this exists so the resolution has one home, one error message worth
- * reading, and a test.
+ * `import.meta.resolve("ramose/worker")` is what the docs and every stack in
+ * this repository show. This helper exists so the resolution has one home,
+ * one error message worth reading, and a test — it is not a public subpath.
  *
  * @module
  *
  * Deliberately **not** on the `ramose` barrel. That barrel is imported by
  * Worker and browser code (`ReadWriteDatabases`, `ServerHttp`, `Policy`), and
- * `import.meta.resolve` is a host API with no meaning in either — keeping it on
- * its own subpath keeps it out of every bundle that is not a deploy script.
+ * `import.meta.resolve` is a host API with no meaning in either.
  */
 
 /** The subpath this resolves — the Ramose peer Worker. */

@@ -47,6 +47,7 @@ import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
+export type { RamoseEnv };
 
 // ---- peer metrics (per isolate) --------------------------------------------
 const plog = componentLogger("peer");

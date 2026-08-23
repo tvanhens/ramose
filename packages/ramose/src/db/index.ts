@@ -41,15 +41,27 @@ export {
   string,
   timestamp,
   uuid,
+  type AnyField,
+  type FieldOptions,
+  type ValueOf,
 } from "./Field.ts";
-export { Schema } from "./Schema.ts";
-export { Entity } from "./Entity.ts";
-export { Bytes, Instant, Long, Uuid, UuidString } from "./valueTypes.ts";
+export { Schema, type AnySchema } from "./Schema.ts";
+export { Entity, type AnyEntity } from "./Entity.ts";
+export {
+  Bytes,
+  Instant,
+  Long,
+  Uuid,
+  UuidString,
+  type DbValueType,
+} from "./valueTypes.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";
 // `Ramose.again(n)` — re-apply the enclosing select on a self-ref, n hops
 export { again } from "./Pull.ts";
+// `Ramose.pick(User, "name", "age")` — same-entity field subset for a shape
+export { pick } from "./Pull.ts";
 // `Ramose.values(attr, { where, limit, offset })` — a card-many scalar
 // collection with pull-phase constraints; refs take the same record in
 // `.select(shape, opts)`
@@ -61,8 +73,7 @@ export { EidOf, optional, params } from "./Params.ts";
 // ── the query language (fluent + kernel) ───────────────────────────────────
 // `Q` is the kernel (fact, comparisons, or/not, projections); `Query` is
 // the constructor. App spelling: `Query.from(Issue).where({…}).orderBy(…)`.
-// `Query.q` remains the generator-tier constructor. The same names are
-// importable flat from `ramose/query`.
+// `Query.q` remains the generator-tier constructor.
 export { Q } from "./query/index.ts";
 export * as Query from "./query/surface.ts";
 export type {
@@ -89,6 +100,7 @@ export {
   type ClientOptions,
   connect,
 } from "./connect.ts";
+export type { DatabasesShape } from "./client-shape.ts";
 export {
   type Claims,
   token,
