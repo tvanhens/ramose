@@ -52,7 +52,11 @@ describe("errorToHttp", () => {
     const r = errorResponse(new TxRejected({ message: "bad", code: "tx/invalid" }));
     expect(r.status).toBe(409);
     expect(r.headers.get("content-type")).toBe("application/json");
-    expect(await r.json()).toEqual({ error: "bad", tag: "TxRejected", code: "tx/invalid" });
+    expect((await r.json()) as Record<string, unknown>).toEqual({
+      error: "bad",
+      tag: "TxRejected",
+      code: "tx/invalid",
+    });
   });
 
   test("toDbError keeps a tagged error and wraps anything else", () => {

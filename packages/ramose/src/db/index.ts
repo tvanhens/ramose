@@ -161,9 +161,9 @@ export {
   NotOne,
   OperationRejected,
   ParamError,
+  PolicyError,
   QueryBudgetExceeded,
   TxRejected,
   Unauthorized,
   Unavailable,
 } from "./Errors.ts";
-export { PolicyError } from "./SchemaErrors.ts";

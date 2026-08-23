@@ -35,8 +35,8 @@
  * | `OperationRejected`   | named operation refused (409)              |
  *
  * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link ParamError} (bad query bindings), `PolicyError` (policy failed
- * to compile — deploy time). A runtime policy denial is
+ * {@link ParamError} (bad query bindings), {@link PolicyError} (policy
+ * failed to compile — deploy time). A runtime policy denial is
  * {@link Unauthorized} or {@link TxRejected} with `code: "policy"`.
  *
  * Wire shapes the classifier understands:
@@ -50,6 +50,7 @@
  */
 
 import * as Data from "effect/Data";
+export { PolicyError } from "./SchemaErrors.ts";
 
 /** A transaction was rejected by validation / tempid / unique / policy (409). */
 export class TxRejected extends Data.TaggedError("TxRejected")<{
