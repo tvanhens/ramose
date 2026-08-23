@@ -21,6 +21,7 @@ export type {
 export {
   assertedBy,
   backlink,
+  byId,
   entities,
   every,
   follow,

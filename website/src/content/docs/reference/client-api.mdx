@@ -315,7 +315,8 @@ A param is declared from an attribute reference (`User.sub`), an Effect Schema, 
 | combinator | meaning |
 | --- | --- |
 | `entities(N)` | the source: every record of one type |
-| `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal, id cell, or param) |
+| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number, id cell, or param). Equivalent to `is(N.id, id)` |
+| `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal, id cell, or param). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there |
 | `where(attr, (v) => cmp)` | bind the value and constrain it: `where(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (a `RegExp` with flags throws) |
 | `follow(ref)` / `backlink(ref)` | refocus on the reference's target / on the referrer |
@@ -369,7 +370,7 @@ export const boardShape = {
 const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
   pipe(
     Query.entities(Comment),
-    Query.is(Comment.id, p.root),
+    Query.byId(p.root),
     Query.select({
       id: Comment.id,
       body: Comment.body,
@@ -380,6 +381,7 @@ const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
     }),
   ),
 );
+// Query.is(Comment.id, p.root) is the same filter as Query.byId(p.root)
 ```
 
 **Aggregates.** When the answer is a number, project an aggregate cell in a record — the generator spelling. `Q.count(handle)`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max` are cells; the record's other cells are the group keys, and a record of only aggregates is **exactly one row** for the whole match set — over an empty match set each fn answers for the empty set (`count` / `countDistinct` / `sum` are `0`, `avg` / `min` / `max` are `null`), the same rule SQL's ungrouped aggregates follow. A grouped record is `[]` over no rows: no rows, no groups.

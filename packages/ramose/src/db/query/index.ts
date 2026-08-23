@@ -55,6 +55,7 @@ export {
 export {
   assertedBy,
   backlink,
+  byId,
   entities,
   every,
   follow,

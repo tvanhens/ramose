@@ -852,7 +852,8 @@ export const lowerQueryObject = (
     for (const c of list) {
       switch (c._tag) {
         case "fact": {
-          out.push(lowerFact(c));
+          const clause = lowerFact(c);
+          if (clause !== undefined) out.push(clause);
           break;
         }
         case "cmp":
@@ -976,7 +977,44 @@ export const lowerQueryObject = (
     return found;
   };
 
-  const lowerFact = (c: FactCommand<any>): unknown[] => {
+  const isWireVar = (x: unknown): x is string => typeof x === "string" && x.startsWith("?");
+
+  /**
+   * `:db/id` is not an attribute — the engine's `requireAttr` / `resolveAttrConst`
+   * throw `unknown attribute :db/id` if we emit `[e, ":db/id", v]`. The id *is*
+   * the entity, so this unifies the e-position with the value: a constant
+   * binds the var via `ground` (the same primitive `Q.in` uses); two vars
+   * share a name; blanks are a no-op (every entity has an id).
+   */
+  const lowerIdFact = (c: FactCommand<any>): unknown[] | undefined => {
+    if (c.txVar !== undefined || c.opVar !== undefined) {
+      throw new Error(
+        "ramose/query: :db/id is the entity's identity, not a datom — it has no tx or op position",
+      );
+    }
+    const ePos = c.eVar ?? c.e0;
+    const vPos = c.vVar ?? c.v0;
+    if (isVar(ePos) && isVar(vPos)) {
+      const eName = names.get(ePos.id);
+      const vName = names.get(vPos.id);
+      if (eName !== undefined && vName !== undefined) {
+        return eName === vName ? undefined : [["=", eName, vName]];
+      }
+      const n = eName ?? vName ?? nameOf(ePos);
+      names.set(ePos.id, n);
+      names.set(vPos.id, n);
+      return undefined;
+    }
+    const e = lowerPos(ePos, "an entity position");
+    const v = lowerPos(vPos, ":db/id's value");
+    if (e === v || e === "_" || v === "_") return undefined;
+    if (isWireVar(e) && !isWireVar(v)) return [["ground", v], e];
+    if (isWireVar(v) && !isWireVar(e)) return [["ground", e], v];
+    return neverClause();
+  };
+
+  const lowerFact = (c: FactCommand<any>): unknown[] | undefined => {
+    if (c.attr?.ident === ":db/id") return lowerIdFact(c);
     const e = lowerPos(c.eVar ?? c.e0, "an entity position");
     const attr = c.attr?.ident ?? "_";
     const v = lowerPos(c.vVar ?? c.v0, attr === "_" ? "a value position" : `${attr}'s value`);

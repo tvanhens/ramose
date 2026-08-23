@@ -339,6 +339,121 @@ describe("lowering", () => {
     expect(query.limit).toBeUndefined();
     expect(query.order).toBeUndefined();
   });
+
+  test("is(N.id, constant) unifies the focus — it does not emit a :db/id pattern", () => {
+    const q = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, 5), Query.select({ title: Issue.title })),
+    );
+    const { query } = lowerQueryObject(q);
+    const where = query.where as unknown[];
+    expect(where).toContainEqual([["ground", 5], "?q0"]);
+    expect(where.some((c) => Array.isArray(c) && c[1] === ":db/id")).toBe(false);
+  });
+
+  test("is(N.id, param) substitutes the binding and unifies", () => {
+    const q = Query.q({ id: EidOf(Issue) }, (p) =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, p.id), Query.select({ title: Issue.title })),
+    );
+    const { query } = lowerQueryObject(q, { id: { id: 42 } });
+    const where = query.where as unknown[];
+    expect(where).toContainEqual([["ground", 42], "?q0"]);
+    expect(where.some((c) => Array.isArray(c) && c[1] === ":db/id")).toBe(false);
+  });
+
+  test("byId lowers to the same wire as is(N.id, …)", () => {
+    const byConst = Query.q(() => pipe(Query.entities(Issue), Query.byId(5), Query.select({ title: Issue.title })));
+    const isConst = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, 5), Query.select({ title: Issue.title })),
+    );
+    expect(lowerQueryObject(byConst).query).toEqual(lowerQueryObject(isConst).query);
+
+    const byParam = Query.q({ id: EidOf(Issue) }, (p) =>
+      pipe(Query.entities(Issue), Query.byId(p.id), Query.select({ title: Issue.title })),
+    );
+    const isParam = Query.q({ id: EidOf(Issue) }, (p) =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, p.id), Query.select({ title: Issue.title })),
+    );
+    const bindings = { id: { id: 42 } };
+    expect(lowerQueryObject(byParam, bindings).query).toEqual(lowerQueryObject(isParam, bindings).query);
+  });
+});
+
+describe("filter by entity id", () => {
+  test("the engine rejects [?e :db/id v] — :db/id is not an attribute", async () => {
+    const conn = await Connection.create();
+    await expect(
+      coreQuery(conn.db(), { find: ["?e"], where: [["?e", ":db/id", 5]] }),
+    ).rejects.toThrow(/unknown attribute :db\/id/);
+  });
+
+  test("is(N.id, constant) filters at the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const byConst = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.is(Issue.id, ids.ship!.id),
+        Query.select({ id: Issue.id, title: Issue.title }),
+      ),
+    );
+    const rows = await run(db.q(byConst));
+    expect(rows).toEqual([{ id: ids.ship, title: "ship the release" }]);
+
+    await peer.dispose();
+  });
+
+  test("is(N.id, param) and byId(param) agree against the engine", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const isParam = Query.q({ id: EidOf(Issue) }, (p) =>
+      pipe(
+        Query.entities(Issue),
+        Query.is(Issue.id, p.id),
+        Query.select({ id: Issue.id, title: Issue.title }),
+      ),
+    );
+    const byIdParam = Query.q({ id: EidOf(Issue) }, (p) =>
+      pipe(
+        Query.entities(Issue),
+        Query.byId(p.id),
+        Query.select({ id: Issue.id, title: Issue.title }),
+      ),
+    );
+    const isRows = await run(db.q(isParam, { id: ids.fix as never }));
+    const byIdRows = await run(db.q(byIdParam, { id: ids.fix as never }));
+    expect(isRows).toEqual([{ id: ids.fix, title: "fix the flake" }]);
+    expect(byIdRows).toEqual(isRows);
+
+    const commentId = (
+      (await run(
+        db.q(
+          Query.q(function* () {
+            const f = yield* Q.fact(Q._, Comment.text);
+            return { id: f.e, text: f.v };
+          }),
+        ),
+      )) as readonly { id: { id: number }; text: string }[]
+    ).find((r) => r.text === "on it")!.id;
+
+    const byComment = Query.q({ root: EidOf(Comment) }, (p) =>
+      pipe(
+        Query.entities(Comment),
+        Query.byId(p.root),
+        Query.select({ id: Comment.id, text: Comment.text }),
+      ),
+    );
+    const comments = await run(db.q(byComment, { root: commentId as never }));
+    expect(comments).toEqual([{ id: commentId, text: "on it" }]);
+
+    const miss = await run(db.q(byIdParam, { id: commentId as never }));
+    expect(miss).toEqual([]);
+
+    await peer.dispose();
+  });
 });
 
 describe("db.q end to end", () => {

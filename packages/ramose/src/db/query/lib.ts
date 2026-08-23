@@ -108,11 +108,21 @@ export const stage: {
 
 type ValueIn<A> = AttrValue<A> | AnyParam | AnyVar | { readonly id: number };
 
-/** `is(A, v)`: `p(e) := [e A v]`. */
+/** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
 export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage =>
   filter(function* (e) {
     yield* Q.fact(e, attr, value);
   });
+
+/**
+ * `byId(id)`: the focus is this entity. The blessed spelling of a filter by
+ * entity id — a serializable query stage, equivalent to `is(N.id, id)`. The
+ * id is a number, an `{ id }` cell, or a param; lowering unifies the focus
+ * with that id (`ground`), and never emits a `:db/id` pattern (that is not
+ * an attribute).
+ */
+export const byId = (id: number | AnyParam | AnyVar | { readonly id: number }): FilterStage =>
+  is({ ident: ":db/id" }, id);
 
 /** `has(A)`: the focus carries some `A` fact. */
 export const has = (attr: AttrLike): FilterStage =>

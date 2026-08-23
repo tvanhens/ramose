@@ -56,7 +56,8 @@ export const commentsQuery = Query.q({ issueId: Ramose.EidOf(Issue) }, (p) =>
 
 | stage | meaning |
 | --- | --- |
-| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id, a row cell, or a param) |
+| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id` is a number, an id cell, or a param). Equivalent to `is(N.id, id)` |
+| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id, a row cell, or a param). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there — absence is not a value |
 | `where(attr, (v) => …)` | bind the field's value and constrain it: `where(Issue.title, (t) => Q.startsWith(t, "re:"))`; the comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (case-sensitive; `matches` takes a string or a `RegExp` with no flags) |
 | `follow(ref)` / `backlink(ref)` | refocus the pipeline on the reference's target / on the records pointing here — filter across a hop: `pipe(entities(Issue), follow(Issue.owner), is(User.name, "Ada"))` |
@@ -180,7 +181,7 @@ A Reddit thread is a window, not one fetch. `again(4)` plus `{ limit: 20 }` on r
 const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
   pipe(
     Query.entities(Comment),
-    Query.is(Comment.id, p.root),
+    Query.byId(p.root),
     Query.select({
       id: Comment.id,
       body: Comment.body,
@@ -193,6 +194,7 @@ const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
 );
 // useLive(db, thread, { root: postId })        first paint
 // useLive(db, thread, { root: clicked.id })    continue this thread
+// Query.is(Comment.id, p.root) is the same filter as Query.byId(p.root)
 ```
 
 Sibling "load more" pages that parent's replies. It is not a deeper `again`.
