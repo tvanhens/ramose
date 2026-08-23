@@ -399,7 +399,7 @@ describe("filter by entity id", () => {
       ),
     );
     const rows = await run(db.q(byConst));
-    expect(rows).toEqual([{ id: ids.ship, title: "ship the release" }]);
+    expect(rows).toEqual([{ id: ids.ship!.id as never, title: "ship the release" }]);
 
     await peer.dispose();
   });
@@ -425,7 +425,7 @@ describe("filter by entity id", () => {
     );
     const isRows = await run(db.q(isParam, { id: ids.fix as never }));
     const byIdRows = await run(db.q(byIdParam, { id: ids.fix as never }));
-    expect(isRows).toEqual([{ id: ids.fix, title: "fix the flake" }]);
+    expect(isRows).toEqual([{ id: ids.fix!.id as never, title: "fix the flake" }]);
     expect(byIdRows).toEqual(isRows);
 
     const commentId = (
@@ -447,7 +447,7 @@ describe("filter by entity id", () => {
       ),
     );
     const comments = await run(db.q(byComment, { root: commentId as never }));
-    expect(comments).toEqual([{ id: commentId, text: "on it" }]);
+    expect(comments).toEqual([{ id: commentId.id as never, text: "on it" }]);
 
     const miss = await run(db.q(byIdParam, { id: commentId as never }));
     expect(miss).toEqual([]);
