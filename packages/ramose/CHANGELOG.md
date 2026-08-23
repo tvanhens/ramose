@@ -15,9 +15,14 @@ through the `paths` block in the root `tsconfig.json`, which Bun honors at
 runtime for both `import` and `Bun.resolveSync`, so `bun test` stays instant.
 
 `scripts/check-release.ts` now fails on any `exports` target that `files`
-does not ship — a manifest check that needs no build. `sideEffects` no longer
-lists `./src/**` globs. Docs that still imported the cut `ramose/schema` and
-`ramose/query` subpaths now use `ramose/effect` and `ramose/db`.
+does not ship — a manifest check that needs no build. Docs that still
+imported the cut `ramose/schema` and `ramose/query` subpaths now use
+`ramose/effect` and `ramose/db`.
+
+`sideEffects` keeps its `./src/**` globs, now with a `//sideEffects` note
+saying why: the peer Worker is bundled from source in this workspace, so
+dropping them lets esbuild tree-shake the Durable Object classes out and
+Cloudflare rejects the upload.
 
 ### Enumerated exports map (part of #201, tracker #205)
 

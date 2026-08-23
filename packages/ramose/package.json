@@ -55,7 +55,21 @@
     "consumer. React stays an optional peer — a server-only app needs none of it",
     "— and so does `better-auth`, which only `ramose/better-auth` touches."
   ],
+  "//sideEffects": [
+    "The `./src/**` globs are load-bearing in this workspace, not leftovers.",
+    "The root tsconfig `paths` point `ramose/worker` at `src/`, so the peer",
+    "Worker is bundled from source here even though only `dist` ships. Alchemy",
+    "re-exports `default` from a generated entry, so the Durable Object classes",
+    "reach the bundle only as re-exports — drop these globs and esbuild treats",
+    "the modules as side-effect-free and tree-shakes `TransactorDO` /",
+    "`QueryReplicaDO` away. Cloudflare then rejects the upload: \"New version of",
+    "script does not export class 'QueryReplicaDO'\". The `./dist/**` globs are",
+    "the same statement for a consumer bundling the published package."
+  ],
   "sideEffects": [
+    "./src/worker/**",
+    "./src/internal/transactor/**",
+    "./src/internal/replica/**",
     "./dist/worker/**",
     "./dist/internal/transactor/**",
     "./dist/internal/replica/**"
