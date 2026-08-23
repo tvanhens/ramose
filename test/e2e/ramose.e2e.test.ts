@@ -180,9 +180,10 @@ d("ramose e2e", () => {
 /**
  * The session socket (`GET /db/:name/session`), over a real WebSocket.
  *
- * `Ramose.layer` is the whole client: reads and `t` ticks ride the socket,
- * `transact` is HTTPS, and a write on *another* connection shows up here as a
- * standing `db.live` re-running.
+ * The session client: reads and `t` ticks ride the socket, writes are
+ * HTTPS, and a write on *another* connection shows up here as a standing
+ * `db.live` re-running. Hatch tests use `ramose/db/effect`; the public
+ * promise path (`connect`, `db.q`, a `Subscription`) is covered separately.
  */
 const Session = Ramose.Namespace("s", {
   name: Ramose.Attr(Schema.String, { unique: "identity" }),
@@ -317,6 +318,51 @@ d("ramose session socket e2e", () => {
       } finally {
         await a.dispose();
         await b.dispose();
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "public connect() promise q, plain-string token, and a Subscription",
+    async () => {
+      const name = `${dbName}-public`;
+      const retry = async <A>(fn: () => Promise<A>): Promise<A> => {
+        const start = Date.now();
+        for (;;) {
+          try {
+            return await fn();
+          } catch (error) {
+            const tag = (error as { _tag?: string })._tag;
+            if (tag !== "Unavailable" && tag !== "NetworkError") throw error;
+            if (Date.now() - start > 30_000) throw error;
+            await Bun.sleep(500);
+          }
+        }
+      };
+
+      const ramose = Ramose.connect({ url, token });
+      try {
+        const pdb = ramose.db(name, SessionCatalog);
+        await retry(() => pdb.install());
+        const raw = new Peer(url, { token, retryTransientMs: 30_000 });
+        await retry(() =>
+          raw.db(name).transact([{ ":s/name": "Ada", ":s/n": 1 }]),
+        );
+        const rows = await retry(() => pdb.q(sessionNames));
+        expect(rows).toEqual([{ name: "Ada" }]);
+
+        const live = pdb.live(sessionNames);
+        const first = await retry(
+          () =>
+            new Promise<readonly { name: string }[]>((resolve, reject) => {
+              live.subscribe(resolve, reject);
+            }),
+        );
+        expect(first).toEqual([{ name: "Ada" }]);
+        live.close();
+      } finally {
+        await ramose.close();
       }
     },
     120_000,

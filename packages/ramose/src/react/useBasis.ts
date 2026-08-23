@@ -29,9 +29,13 @@ export const useBasis = <C extends Catalog.Any>(
     let disposed = false;
     let landed: number | undefined;
     let inflight = false;
+    let pendingWake = false;
     const runs = { issued: 0, applied: 0 };
     const read = (): void => {
-      if (inflight) return;
+      if (inflight) {
+        pendingWake = true;
+        return;
+      }
       const seq = ++runs.issued;
       inflight = true;
       const land = (value: number | undefined): void => {
@@ -46,13 +50,17 @@ export const useBasis = <C extends Catalog.Any>(
         .catch(() => land(undefined))
         .finally(() => {
           inflight = false;
+          if (pendingWake && !disposed) {
+            pendingWake = false;
+            read();
+          }
         });
     };
 
     read();
     const off = seamOf(db)?.onWake(() => {
       queueMicrotask(() => {
-        if (disposed || inflight) return;
+        if (disposed) return;
         const seen = seamOf(db)?.t();
         if (seen !== undefined && landed !== undefined && seen <= landed) {
           return;

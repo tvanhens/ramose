@@ -467,8 +467,9 @@ describe("the board's writes move the board's live stream", () => {
     peer.holdTransact();
     peer.rejectNextTransact({
       error: "denied",
-      tag: "TxRejected",
-      code: "policy",
+      tag: "OperationRejected",
+      name: "issue/create",
+      reason: "policy",
     });
     const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
       title: "Ghost",
@@ -486,7 +487,7 @@ describe("the board's writes move the board's live stream", () => {
     peer.releaseTransact();
     const err = await denied;
     await settle();
-    expect(err._tag).toBe("TxRejected");
+    expect(err._tag).toBe("OperationRejected");
     expect(titles(board.rows)).toEqual(["Renamed"]);
     expect(peer.queryOps()).toHaveLength(qBefore);
 

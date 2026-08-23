@@ -12,13 +12,18 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
+import * as Data from "effect/Data";
 import {
+  InternalError,
   Operation,
   Operations,
   OperationRejected,
+  PrefixHalt,
   Query,
+  Unauthorized,
   txBuilder,
 } from "../src/db/internal.ts";
+import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
@@ -329,6 +334,90 @@ describe("optimistic prefix", () => {
   });
 });
 
+const stubOp = (effects: "halt" | "run") =>
+  buildOp({
+    catalog: Movies,
+    db: "movies",
+    principal: { eid: null, class: "admin", claims: {} },
+    effects,
+    q: () => Effect.succeed([]),
+    pull: () => Effect.succeed(null),
+  });
+
+describe("PrefixHalt is out-of-band", () => {
+  test("a swallowed PrefixHalt still stops the optimistic prefix", async () => {
+    const built = stubOp("halt");
+    const swallow = {
+      body: async (op: {
+        entity: () => {
+          add: (attr: unknown, value: unknown) => void;
+        };
+        effect: (name: string, run: () => unknown) => Promise<unknown>;
+      }) => {
+        const e = op.entity();
+        e.add(User.name, "Ada");
+        try {
+          await op.effect("charge", () => "nope");
+        } catch {
+          const extra = op.entity();
+          extra.add(User.name, "AFTER");
+        }
+        return { ok: true };
+      },
+    };
+    const result = await Effect.runPromise(runBody(swallow, built.op, {}));
+    expect(result.halted).toBe(true);
+    expect(result.output).toBeUndefined();
+    expect(built.ops()).toEqual([[":db/add", "tmp-1", ":user/name", "Ada"]]);
+  });
+
+  test("PrefixHalt is exported so a caller can rethrow", () => {
+    const err = new PrefixHalt();
+    expect(err).toBeInstanceOf(PrefixHalt);
+    expect(err._tag).toBe("ramose/PrefixHalt");
+  });
+});
+
+describe("op.effect thunk rejections", () => {
+  class PaymentDeclined extends Data.TaggedError("PaymentDeclined")<{
+    readonly message: string;
+  }> {}
+
+  test("a tagged / _tag cause passes through; unknown wraps InternalError", async () => {
+    const built = stubOp("run");
+    const op = asPromiseOp(built.op);
+
+    try {
+      await op.effect("charge", async () => {
+        throw new PaymentDeclined({ message: "card" });
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PaymentDeclined);
+      expect((error as PaymentDeclined)._tag).toBe("PaymentDeclined");
+    }
+
+    try {
+      await op.effect("deny", async () => {
+        throw new Unauthorized({ message: "no" });
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Unauthorized);
+    }
+
+    try {
+      await op.effect("boom", async () => {
+        throw new Error("plain");
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(InternalError);
+      expect((error as InternalError).message).toBe("plain");
+    }
+  });
+});
+
 describe("db.run wire", () => {
   test("a contextual op without an entity is InvalidRequest", async () => {
     const peer = fakePeer();
@@ -341,12 +430,16 @@ describe("db.run wire", () => {
 });
 
 describe("optional add", () => {
-  test("add(undefined | null) is a no-op — it is not encoded as a nil datom", () => {
+  test("add(undefined | null) is encoded as a nil datom — the transactor rejects it", () => {
     const tx = txBuilder(Movies);
     const e = Effect.runSync(tx.entity());
     Effect.runSync(e.add(User.name, "Ada"));
     Effect.runSync(e.add(User.age, undefined as never));
     Effect.runSync(e.add(User.age, null as never));
-    expect(tx.spec.ops).toEqual([[":db/add", "tmp-1", ":user/name", "Ada"]]);
+    expect(tx.spec.ops).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+      [":db/add", "tmp-1", ":user/age", undefined],
+      [":db/add", "tmp-1", ":user/age", null],
+    ]);
   });
 });

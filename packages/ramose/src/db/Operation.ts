@@ -24,10 +24,9 @@ import { isEntity } from "./Tx.ts";
 export const EntityId: typeof Schema.Number = Schema.Number;
 
 /**
- * Internal halt: client-side `op.effect` ends the optimistic prefix.
- * Not a {@link DbError}; `db.run` catches it and keeps the ops so far.
- *
- * @internal
+ * Client-side `op.effect` ends the optimistic prefix. Not a {@link DbError};
+ * `db.run` keeps the ops collected so far. Thrown into an async body — rethrow
+ * it from a `catch` if you intercept it; swallowing does not un-halt the prefix.
  */
 export class PrefixHalt extends Data.TaggedError("ramose/PrefixHalt")<{}> {}
 
@@ -151,6 +150,10 @@ export interface RuntimeOp {
   readonly principal: OpPrincipal;
   readonly db: string;
   readonly _effects: "halt" | "run";
+  /** Set when client-side `op.effect` fires; `try/catch` cannot clear it. */
+  readonly _prefix: { halted: boolean };
+  /** Snapshot ops at the first halt so later writes are not guessed. */
+  readonly _haltPrefix: () => void;
   entity(): Effect.Effect<RuntimeOpEntity>;
   entity(id: unknown): Effect.Effect<RuntimeOpEntity>;
   add(e: unknown, attr: unknown, value: unknown): Effect.Effect<void>;

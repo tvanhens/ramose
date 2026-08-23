@@ -7,23 +7,21 @@
  *
  * Two rules for callers: the view and the `subject` are structural —
  * `db.asOf(t)` and `{ id: 17 }` written inline are fine — while `pattern`
- * is identity, so hoist it exactly as you hoist a query.
+ * is identity, so hoist it exactly as you hoist a query. Changing the
+ * subject blanks `rows` until the new pull lands.
  */
 
 import type {
   Catalog,
   CatalogEid,
-  DbError,
   Eid,
   IdentPullPattern,
   LookupRef,
   Pull,
   ReadDb,
-  Subscription,
   ValidatePull,
 } from "../db/index.ts";
-import { useMemo } from "react";
-import { type Live, useLive } from "./useLive.ts";
+import { type Live, useLiveSubscription } from "./useLive.ts";
 import { viewDep } from "./seam.ts";
 
 /** The pattern a subject accepts — the same rule as `db.pull` / `db.livePull`. */
@@ -55,9 +53,12 @@ export const usePull = <C extends Catalog.Any, const P>(
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);
   const key = subjectKey(subject);
-  const sub: Subscription<Pull<C, P> | null, DbError> = useMemo(
-    () => db.livePull<P>(subject, pattern),
+  return useLiveSubscription(
+    () => ({
+      sub: db.livePull<P>(subject, pattern),
+      owned: true,
+    }),
+    [view, key, pattern],
     [view, key, pattern],
   );
-  return useLive(sub);
 };

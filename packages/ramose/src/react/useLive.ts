@@ -2,12 +2,13 @@
 
 /**
  * `useLive` — a standing read as React state: `{ rows, error, ticks }`,
- * reset when the inputs change.
+ * reset when the subscription identity changes.
  *
  * Two rules for consumers:
  *
- * - `useLive(db, query)` subscribes to `db.live(query)` on the view's
- *   structural key and `query`. Neither needs a provider.
+ * - `useLive(db, query)` constructs `db.live(query)` inside the effect,
+ *   keyed on the view, `query`, and params. Neither needs a provider. The
+ *   hook owns that handle and closes it on cleanup.
  * - The view is structural, the query is identity, params are structural:
  *   `useLive(db.asOf(t), q)` built inline re-subscribes per `t`, not per
  *   render — the same rule as `useQuery` / `usePull` — while `query` must
@@ -15,10 +16,10 @@
  *   with `Ramose.params` as the third argument; a params-only change
  *   re-runs without blanking `rows`.
  *
- * Subscription form (`useLive(sub)`) keys on handle **identity**. Hoist the
- * handle (`const sub = db.live(q)` / `immediate(…)` outside render, or a
- * `useMemo`). `useLive(db.live(q))` built inline is a new subscription every
- * render and will re-subscribe forever — use the query form instead.
+ * Subscription form (`useLive(sub)`) keys on handle **identity**. The hook
+ * never `close()`s a handle it did not create — only `off()`.
+ * `useLive(db.live(q))` built inline is a new subscription every render
+ * and will re-subscribe forever — use the query form instead.
  */
 
 import type {
@@ -31,7 +32,7 @@ import type {
 } from "../db/index.ts";
 import { paramsKey } from "../db/Params.ts";
 import type { ParamArgs } from "../db/Params.ts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
 
 /** What a standing read looks like from a component. */
@@ -54,47 +55,34 @@ const INITIAL: Live<never, never> = {
   ticks: 0,
 };
 
-/** Query form: `db.live(query, params)`, memoised on the view, `query`, and params. */
-export function useLive<C extends Catalog.Any, R, P = never, Out = readonly R[]>(
-  db: ReadDb<C>,
-  query: QueryObject<R, P, Out>,
-  ...params: ParamArgs<P>
-): Live<Out, QueryError<Out, P>>;
-/** Subscription form: a handle built elsewhere; re-subscribes when its identity changes. */
-export function useLive<A, E>(sub: Subscription<A, E>): Live<A, E>;
-export function useLive(
-  source: ReadDb | Subscription<unknown, unknown>,
-  query?: QueryObject<unknown, unknown, unknown>,
-  params?: unknown,
-): Live<unknown, unknown> {
-  const sourceDep =
-    query === undefined ? source : viewDep(source as ReadDb);
-  const pKey = query === undefined ? "" : paramsKey(params);
-  const sub = useMemo(
-    () =>
-      query === undefined
-        ? (source as Subscription<unknown, unknown>)
-        : params === undefined
-          ? (source as ReadDb).live(query as QueryObject<unknown>)
-          : (source as ReadDb).live(
-              query as QueryObject<unknown, Record<string, unknown>>,
-              params as Record<string, unknown>,
-            ),
-    [sourceDep, query, pKey],
-  );
+type Acquire<A, E> = () => {
+  readonly sub: Subscription<A, E>;
+  readonly owned: boolean;
+};
 
-  const [state, setState] = useState<Live<unknown, unknown>>(INITIAL);
-  const queryRef = useRef(query);
+/**
+ * Drive a {@link Subscription} as `Live` state. `acquire` runs inside the
+ * effect; the hook closes only handles it created. `resetKeys` blanks `rows`
+ * when the subscription identity actually changes (not on a params-only
+ * re-run, and not on a render-fresh handle).
+ */
+export const useLiveSubscription = <A, E>(
+  acquire: Acquire<A, E>,
+  deps: readonly unknown[],
+  resetKeys: readonly unknown[],
+): Live<A, E> => {
+  const [state, setState] = useState<Live<A, E>>(INITIAL as Live<A, E>);
+  const seen = useRef(resetKeys);
+  const identityChanged =
+    seen.current.length !== resetKeys.length ||
+    seen.current.some((key, i) => key !== resetKeys[i]);
+  if (identityChanged) {
+    seen.current = resetKeys;
+    setState(INITIAL as Live<A, E>);
+  }
 
   useEffect(() => {
-    const queryChanged = query !== queryRef.current;
-    queryRef.current = query;
-    // Query form: a new query object blanks rows. Subscription form keys
-    // on handle identity — do not reset+replay here or a fresh handle
-    // built inline (`immediate(…)` / `db.live(q)`) loops setState forever.
-    if (query !== undefined && queryChanged) {
-      setState(INITIAL);
-    }
+    const { sub, owned } = acquire();
     let emissions = 0;
     let cancelled = false;
     const off = sub.subscribe(
@@ -116,9 +104,49 @@ export function useLive(
     return () => {
       cancelled = true;
       off();
-      sub.close();
+      if (owned) sub.close();
     };
-  }, [sub]);
+    // acquire closes over the same values as deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
 
   return state;
+};
+
+/** Query form: `db.live(query, params)`, constructed inside the effect. */
+export function useLive<C extends Catalog.Any, R, P = never, Out = readonly R[]>(
+  db: ReadDb<C>,
+  query: QueryObject<R, P, Out>,
+  ...params: ParamArgs<P>
+): Live<Out, QueryError<Out, P>>;
+/** Subscription form: a handle built elsewhere; re-subscribes when its identity changes. */
+export function useLive<A, E>(sub: Subscription<A, E>): Live<A, E>;
+export function useLive(
+  source: ReadDb | Subscription<unknown, unknown>,
+  query?: QueryObject<unknown, unknown, unknown>,
+  params?: unknown,
+): Live<unknown, unknown> {
+  const sourceDep =
+    query === undefined ? source : viewDep(source as ReadDb);
+  const pKey = query === undefined ? "" : paramsKey(params);
+  return useLiveSubscription(
+    () =>
+      query === undefined
+        ? {
+            sub: source as Subscription<unknown, unknown>,
+            owned: false,
+          }
+        : {
+            sub:
+              params === undefined
+                ? (source as ReadDb).live(query as QueryObject<unknown>)
+                : (source as ReadDb).live(
+                    query as QueryObject<unknown, Record<string, unknown>>,
+                    params as Record<string, unknown>,
+                  ),
+            owned: true,
+          },
+    [sourceDep, query, pKey],
+    query === undefined ? [source] : [sourceDep, query],
+  );
 }

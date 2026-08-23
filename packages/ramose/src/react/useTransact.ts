@@ -13,10 +13,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export interface Transact {
   /**
-   * Runs the work; rejects with the tagged error, so handlers that `void`
-   * the promise stay `void`-safe while `error` / `onError` still fire.
+   * Runs the work. Always resolves — failure lands on `error` / `onError`,
+   * so `void run(...)` is safe. On success, resolves to the work's value.
    */
-  readonly run: <A>(work: Promise<A> | (() => Promise<A>)) => Promise<A>;
+  readonly run: <A>(
+    work: Promise<A> | (() => Promise<A>),
+  ) => Promise<A | undefined>;
   /** In-flight count > 0. */
   readonly pending: boolean;
   /**
@@ -29,7 +31,7 @@ export interface Transact {
 /**
  * One hook for running writes from event handlers.
  *
- * - `run` resolves or rejects with the work's value / tagged error.
+ * - `run` always resolves: the value on success, `undefined` on failure.
  * - `pending` counts concurrent runs: true while any run is in flight.
  * - `onError` fires per failure (the toast hook); `error` also lands on the
  *   return for inline rendering, and clears on the next successful run (or
@@ -56,7 +58,9 @@ export const useTransact = (options?: {
   onErrorRef.current = options?.onError;
 
   const run = useCallback(
-    async <A>(work: Promise<A> | (() => Promise<A>)): Promise<A> => {
+    async <A>(
+      work: Promise<A> | (() => Promise<A>),
+    ): Promise<A | undefined> => {
       if (mounted.current) setInFlight((n) => n + 1);
       try {
         const value = await (typeof work === "function" ? work() : work);
@@ -65,7 +69,7 @@ export const useTransact = (options?: {
       } catch (failure) {
         if (mounted.current) setError(failure);
         onErrorRef.current?.(failure);
-        throw failure;
+        return undefined;
       } finally {
         if (mounted.current) setInFlight((n) => n - 1);
       }

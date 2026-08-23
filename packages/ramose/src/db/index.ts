@@ -107,13 +107,13 @@ export type {
   RecurStub,
   ValidatePull,
 } from "./Pull.ts";
-export type { Entity, Tx } from "./Tx.ts";
 
 // ── operations ─────────────────────────────────────────────────────────────
 export {
   EntityId,
   Operation,
   Operations,
+  PrefixHalt,
   type AnyOperation,
   type AnyOperations,
   type Op,

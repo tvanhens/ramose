@@ -6,7 +6,7 @@
 
 import * as Effect from "effect/Effect";
 import type { AnyCatalog } from "./Catalog.ts";
-import { type DbError, InternalError, InvalidRequest } from "./Errors.ts";
+import { type DbError, InternalError, InvalidRequest, isDatabaseError } from "./Errors.ts";
 import {
   type AnyOperation,
   type EffectThunk,
@@ -92,10 +92,33 @@ const missingInstall = (): Effect.Effect<unknown, InternalError> =>
     }),
   );
 
+const asEffectCause = <E>(cause: unknown): E | InternalError => {
+  if (isDatabaseError(cause)) return cause;
+  if (
+    cause !== null &&
+    typeof cause === "object" &&
+    "_tag" in cause &&
+    typeof (cause as { _tag: unknown })._tag === "string"
+  ) {
+    return cause as E;
+  }
+  return new InternalError({
+    message: cause instanceof Error ? cause.message : String(cause),
+  });
+};
+
 export const buildOp = (options: OpHandleOptions): BuiltOp => {
   const tx = txBuilder(options.catalog);
   const self =
     options.self === undefined ? undefined : wrapSelf(tx, options.self);
+  const prefix = { halted: false };
+  let frozen: readonly unknown[] | undefined;
+
+  const haltPrefix = (): void => {
+    if (prefix.halted) return;
+    prefix.halted = true;
+    frozen = [...tx.spec.ops];
+  };
 
   const effect = <A, E>(
     _name: string,
@@ -113,6 +136,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     ) => Effect.Effect<A, E> | Promise<A>,
   ): Effect.Effect<A, E | InternalError> => {
     if (options.effects === "halt") {
+      haltPrefix();
       return Effect.die(new PrefixHalt());
     }
     const ctx = {
@@ -126,10 +150,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     if (Effect.isEffect(out)) return out;
     return Effect.tryPromise({
       try: () => out,
-      catch: (cause) =>
-        new InternalError({
-          message: cause instanceof Error ? cause.message : String(cause),
-        }),
+      catch: (cause) => asEffectCause<E>(cause),
     });
   };
 
@@ -139,6 +160,8 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     principal: options.principal,
     db: options.db,
     _effects: options.effects,
+    _prefix: prefix,
+    _haltPrefix: haltPrefix,
     q: options.q,
     pull: options.pull,
     effect,
@@ -146,7 +169,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
 
   return {
     op,
-    ops: () => tx.spec.ops,
+    ops: () => frozen ?? tx.spec.ops,
   };
 };
 
@@ -189,7 +212,10 @@ export const asPromiseOp = (op: RuntimeOp): Op<any> => {
       asPromise(op.q(input, params))) as Op["q"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),
     effect: <A>(name: string, run: EffectThunk<A>): Promise<A> => {
-      if (op._effects === "halt") throw new PrefixHalt();
+      if (op._effects === "halt") {
+        op._haltPrefix();
+        throw new PrefixHalt();
+      }
       return asPromise(
         op.effect(name, (ctx) =>
           Promise.resolve(
@@ -218,14 +244,18 @@ export const runBody = (
     try: () => Promise.resolve(operation.body(asPromiseOp(op), input)),
     catch: (cause) => cause,
   }).pipe(
-    Effect.map((output) => ({ output, halted: false })),
+    Effect.map((output) =>
+      op._prefix.halted
+        ? { output: undefined, halted: true }
+        : { output, halted: false },
+    ),
     Effect.catch((cause) =>
-      cause instanceof PrefixHalt
+      op._prefix.halted || cause instanceof PrefixHalt
         ? Effect.succeed({ output: undefined, halted: true })
         : Effect.fail(cause),
     ),
     Effect.catchDefect((defect) =>
-      defect instanceof PrefixHalt
+      op._prefix.halted || defect instanceof PrefixHalt
         ? Effect.succeed({ output: undefined, halted: true })
         : Effect.die(defect),
     ),

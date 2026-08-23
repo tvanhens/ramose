@@ -96,6 +96,32 @@ describe("usePull", () => {
     expect(peer.frameOps("pull")).toHaveLength(0);
   });
 
+  test("subject A → B blanks before B lands on a delayed pull", async () => {
+    const peer = fakePeer({
+      answer: (frame: Frame) => {
+        if (frame.op === "pull") {
+          const eid = frame.eid as number;
+          if (eid === 18) {
+            return { delay: 40, body: { t: 3, result: { title: "B" } } };
+          }
+          return { body: { t: 3, result: { title: "A" } } };
+        }
+        return { body: { t: 3, result: [] } };
+      },
+    });
+    const { result, rerender } = renderHook(
+      ({ id }: { id: number }) =>
+        usePull(useDb("todos", Todos).asOf(3), { id }, shape),
+      { wrapper: wrapperFor(peer), initialProps: { id: 17 } },
+    );
+    await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
+
+    rerender({ id: 18 });
+    expect(result.current.rows).toBeUndefined();
+    await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
+    expect(result.current.ticks).toBe(0);
+  });
+
   test("both spellings of a lookup ref are one subject", async () => {
     const world = await todoWorld();
     const peer = overlayPeer(world);
@@ -166,6 +192,29 @@ describe("usePull", () => {
     expect((result.current.error as { _tag?: string })._tag).toBe(
       "Unauthorized",
     );
+  });
+
+  test("explicit unmount/remount still receives updates", async () => {
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
+    const first = renderHook(
+      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      { wrapper: wrapperFor(peer) },
+    );
+    await waitFor(() => expect(first.result.current.rows).toEqual({ title: "A" }));
+    first.unmount();
+
+    const { result } = renderHook(
+      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      { wrapper: wrapperFor(peer) },
+    );
+    await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
+
+    const renamed = txSnap(
+      await world.conn.transact([{ ":db/id": world.a, ":todo/title": "B" }]),
+    );
+    peer.push({ op: "tx", t: renamed.t, datoms: renamed.datoms });
+    await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
   });
 
   test("StrictMode holds exactly one subscription at steady state", async () => {

@@ -282,6 +282,27 @@ describe("useLive (query form)", () => {
     }
   });
 
+  test("explicit unmount/remount of the query form still receives updates", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
+    try {
+      const first = renderHook(() => useLive(db, allTodos));
+      await waitFor(() => expect(first.result.current.rows).toEqual(ids(...world.eids)));
+      first.unmount();
+
+      const { result } = renderHook(() => useLive(db, allTodos));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
+    } finally {
+      await close();
+    }
+  });
+
   test("StrictMode double-mount subscribes exactly once at steady state", async () => {
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
@@ -363,5 +384,55 @@ describe("useLive (subscription form)", () => {
     rerender({ sub: second });
     await waitFor(() => expect(result.current.rows).toBe(2));
     expect(result.current.ticks).toBe(0);
+  });
+
+  test("switching subscription identity blanks rows before the next emission", async () => {
+    const first = immediate(["A"]);
+    const later: ((value: string) => void)[] = [];
+    const second: Ramose.Subscription<string> = {
+      subscribe(onValue) {
+        later.push(onValue);
+        return () => {};
+      },
+      async *[Symbol.asyncIterator]() {},
+      close() {},
+    };
+    const { result, rerender } = renderHook(
+      ({ sub }: { sub: Ramose.Subscription<string> }) => useLive(sub),
+      { initialProps: { sub: first } },
+    );
+    await waitFor(() => expect(result.current.rows).toBe("A"));
+
+    rerender({ sub: second });
+    expect(result.current.rows).toBeUndefined();
+    expect(result.current.ticks).toBe(0);
+
+    later[0]?.("B");
+    await waitFor(() => expect(result.current.rows).toBe("B"));
+  });
+
+  test("unmount/remount of an external handle never close()s it", async () => {
+    let closed = 0;
+    const sub: Ramose.Subscription<string> = {
+      subscribe(onValue) {
+        onValue("a");
+        return () => {};
+      },
+      async *[Symbol.asyncIterator]() {
+        yield "a";
+      },
+      close() {
+        closed += 1;
+      },
+    };
+    const first = renderHook(() => useLive(sub));
+    await waitFor(() => expect(first.result.current.rows).toBe("a"));
+    first.unmount();
+    expect(closed).toBe(0);
+
+    const second = renderHook(() => useLive(sub));
+    await waitFor(() => expect(second.result.current.rows).toBe("a"));
+    second.unmount();
+    expect(closed).toBe(0);
   });
 });

@@ -182,7 +182,6 @@ const makeHandle = <C extends AnyCatalog>(
   eid,
   add: (attr: unknown, value: unknown) =>
     Effect.sync(() => {
-      if (value == null) return;
       ops.push([":db/add", eid, lowerAttr(attr), value]);
     }),
   retract: (attr: unknown, value?: unknown) =>
@@ -222,7 +221,6 @@ export const txBuilder = <C extends AnyCatalog>(catalog: C): Tx<C> => {
       })) as Tx<C>["entity"],
     add: (e: unknown, attr: unknown, value: unknown) =>
       Effect.sync(() => {
-        if (value == null) return;
         ops.push([":db/add", resolveEntity(e), lowerAttr(attr), value]);
       }),
     retract: (e: unknown, attr: unknown, value?: unknown) =>

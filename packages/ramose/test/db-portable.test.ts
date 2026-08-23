@@ -227,6 +227,7 @@ describe("the `/db` barrel's public names", () => {
         "EntityId",
         "Operation",
         "Operations",
+        "PrefixHalt",
         // errors
         "TxRejected",
         "Unavailable",

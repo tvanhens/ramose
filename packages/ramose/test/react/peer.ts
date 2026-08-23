@@ -70,7 +70,9 @@ export interface PeerOptions {
   /** Answers socket frames. Defaults to `{ t: 1, root: 1, result: [] }`. */
   readonly answer?: Answer | undefined;
   /** Answers HTTPS; the default acks transact and answers `/info` at `t: 1`. */
-  readonly http?: ((call: Call) => Reply | undefined) | undefined;
+  readonly http?:
+    | ((call: Call) => Reply | Promise<Reply> | undefined)
+    | undefined;
 }
 
 const defaultHttp = (call: Call): Reply => {
@@ -176,7 +178,12 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
     calls.push(call);
-    const reply = options.http?.(call) ?? defaultHttp(call);
+    const raw = options.http?.(call);
+    const reply = (raw === undefined ? defaultHttp(call) : await raw) ??
+      defaultHttp(call);
+    if (reply.delay !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, reply.delay));
+    }
     return new Response(JSON.stringify(reply.body), {
       status: reply.status ?? 200,
       headers: { "content-type": "application/json" },

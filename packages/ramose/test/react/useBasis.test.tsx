@@ -93,4 +93,45 @@ describe("useBasis", () => {
     await waitFor(() => expect(result.current).toBe(7));
     expect(infoCalls(peer.calls)).toHaveLength(1);
   });
+
+  test("a wake during an in-flight /info is not dropped", async () => {
+    let released = false;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const state = { t: 4 };
+    const peer = fakePeer({
+      http: async (call) => {
+        if (call.url.includes("/info")) {
+          if (!released) await hold;
+          return { body: { db: "todos", t: state.t } };
+        }
+        return undefined;
+      },
+    });
+
+    const { result } = renderHook(
+      () => {
+        const db = useDb("todos", Todos);
+        useEffect(() => {
+          db.q(titles).catch(() => {});
+        }, [db]);
+        return useBasis(db);
+      },
+      { wrapper: wrapperFor(peer) },
+    );
+
+    await waitFor(() => expect(infoCalls(peer.calls).length).toBe(1));
+    expect(result.current).toBeUndefined();
+
+    state.t = 5;
+    peer.push({ op: "tx", t: 5, datoms: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    released = true;
+    release();
+
+    await waitFor(() => expect(result.current).toBe(5));
+    expect(infoCalls(peer.calls).length).toBeGreaterThanOrEqual(2);
+  });
 });

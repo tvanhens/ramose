@@ -46,6 +46,20 @@ export const fromStream = <A, E>(
   let ended = false;
   let closed = false;
   let failed = false;
+  let finished = false;
+
+  const finish = (kind: "error" | "end", err?: E): void => {
+    if (finished) return;
+    finished = true;
+    if (kind === "error") {
+      failed = true;
+      error = err as E;
+      for (const listener of listeners) listener.onError?.(error);
+    } else {
+      ended = true;
+      for (const listener of listeners) listener.onEnd?.();
+    }
+  };
 
   const fiber = Effect.runFork(
     Stream.runForEach(stream, (value) =>
@@ -58,17 +72,12 @@ export const fromStream = <A, E>(
       Effect.catchCause((cause) =>
         Effect.sync(() => {
           if (Cause.hasInterrupts(cause)) return;
-          failed = true;
-          error = failureOf(cause) as E;
-          for (const listener of listeners) listener.onError?.(error);
+          finish("error", failureOf(cause) as E);
         }),
       ),
       Effect.andThen(
         Effect.sync(() => {
-          ended = true;
-          if (!failed) {
-            for (const listener of listeners) listener.onEnd?.();
-          }
+          if (!failed) finish("end");
         }),
       ),
     ),
@@ -77,6 +86,9 @@ export const fromStream = <A, E>(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    // Fiber.interrupt does not run catchCause / onEnd, so parked
+    // `for await` iterators would hang unless we wake them here.
+    finish("end");
     Effect.runFork(Fiber.interrupt(fiber));
   };
 

@@ -18,6 +18,7 @@ import type {
   Expect,
   NotOne,
   ParamError,
+  Subscription,
 } from "../../src/db/internal.ts";
 import { Q, Query } from "../../src/db/internal.ts";
 
@@ -41,6 +42,24 @@ type NamedRows = readonly {
   readonly age: number | undefined;
 }[];
 type _named = Expect<Equal<typeof named, Stream.Stream<NamedRows, DbError>>>;
+
+const publicLive = db.live(
+  Query.q(() =>
+    pipe(
+      Query.entities(User),
+      Query.select({ name: User.name, age: User.age.optional }),
+    ),
+  ),
+);
+type _publicLive = Expect<
+  Equal<typeof publicLive, Subscription<NamedRows, DbError>>
+>;
+type _publicLiveErr = Expect<
+  Equal<
+    Parameters<NonNullable<Parameters<(typeof publicLive)["subscribe"]>[1]>>[0],
+    DbError
+  >
+>;
 /** `live` requires nothing: teardown is fiber interruption, not a `Scope`. */
 type _namedR = Expect<Equal<Stream.Services<typeof named>, never>>;
 type _namedErr = Expect<Equal<Stream.Error<typeof named>, DbError>>;
@@ -181,6 +200,14 @@ type Projection = {
 };
 type _projected = Expect<
   Equal<typeof projected, Stream.Stream<Projection | null, DbError>>
+>;
+
+const publicPull = db.livePull(eid, {
+  name: User.name,
+  age: User.age.optional,
+});
+type _publicPull = Expect<
+  Equal<typeof publicPull, Subscription<Projection | null, DbError>>
 >;
 /** `livePull` requires nothing either: teardown is fiber interruption. */
 type _projectedR = Expect<Equal<Stream.Services<typeof projected>, never>>;

@@ -175,9 +175,60 @@ describe("the promise / subscription surface", () => {
     live.close();
     await c.close();
   });
+
+  test("db.live close() stops emissions; for-await ends; onError is tagged", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+    });
+    const c = ramose(peer);
+    const db = c.db("movies", Movies);
+
+    const live = db.live(names);
+    const seen: unknown[] = [];
+    live.subscribe((rows) => seen.push(rows));
+    await Bun.sleep(20);
+    expect(seen.length).toBe(1);
+    live.close();
+    peer.push({ op: "tx", t: 2, datoms: [] });
+    await Bun.sleep(20);
+    expect(seen.length).toBe(1);
+
+    const iterate = db.live(names);
+    const walked: unknown[] = [];
+    const done = (async () => {
+      for await (const rows of iterate) walked.push(rows);
+    })();
+    await Bun.sleep(20);
+    iterate.close();
+    await done;
+    expect(walked.length).toBe(1);
+
+    await c.close();
+    const dead = db.live(names);
+    const error = await new Promise<unknown>((resolve) => {
+      dead.subscribe(
+        () => {},
+        (err) => resolve(err),
+      );
+    });
+    expect((error as { _tag?: string })._tag).toBe("NetworkError");
+    dead.close();
+  });
 });
 
 describe("provisioning mistakes throw synchronously", () => {
+  test("a malformed token object is a defect, not a silent anonymous connect", () => {
+    const peer = fakePeer();
+    expect(() =>
+      connect({
+        url: "https://peer.example.com",
+        fetch: peer.fetch,
+        token: { token: async () => "x" } as never,
+      }),
+    ).toThrow(/token must be/);
+    expect(peer.calls).toEqual([]);
+  });
+
   test("a malformed url throws from connect itself, before any request", () => {
     const peer = fakePeer();
     expect(() =>

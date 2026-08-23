@@ -410,20 +410,20 @@ export const makeDatabases = (
 };
 
 /**
- * @internal Token the hatch / Worker transports still accept — a plain
+ * Token the hatch / Worker transports still accept — a plain
  * {@link TokenInput} or an Effect of a redacted string.
  */
-export type InternalToken =
+export type EffectToken =
   | TokenInput
   | Effect.Effect<Redacted.Redacted<string>, DbError>;
 
-/** @internal */
-export interface InternalClientOptions extends Omit<ClientOptions, "token"> {
-  readonly token?: InternalToken;
+/** Options for {@link layer} — `ClientOptions` plus an Effect-valued token. */
+export interface EffectClientOptions extends Omit<ClientOptions, "token"> {
+  readonly token?: EffectToken;
 }
 
 const resolveClientToken = (
-  token: InternalToken | undefined,
+  token: EffectToken | undefined,
 ): Effect.Effect<Redacted.Redacted<string>, DbError> | undefined => {
   if (token === undefined) return undefined;
   if (typeof token === "string") return Effect.succeed(Redacted.make(token));
@@ -440,12 +440,14 @@ const resolveClientToken = (
       catch: wrapTokenCause,
     });
   }
-  return undefined;
+  throw new Error(
+    "ramose: token must be a string, TokenSource, () => string | Promise<string>, or an Effect",
+  );
 };
 
 /** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
 const configure = (
-  options: InternalClientOptions,
+  options: EffectClientOptions,
 ): Effect.Effect<DatabasesConfig> =>
   Effect.suspend(() => {
     try {
@@ -483,7 +485,7 @@ const configure = (
  * the layer's scope closes (a `ManagedRuntime` disposed with the page, a
  * `Layer.launch`, a test).
  */
-export const layer = (options: InternalClientOptions): Layer.Layer<Databases> =>
+export const layer = (options: EffectClientOptions): Layer.Layer<Databases> =>
   Layer.effect(
     Databases,
     Effect.gen(function* () {
@@ -494,10 +496,9 @@ export const layer = (options: InternalClientOptions): Layer.Layer<Databases> =>
   );
 
 /**
- * The handle {@link connect} returns: the same pure `db` as {@link Databases},
- * plus the close `layer` performs as its finalizer — and nothing else. In
- * particular no `run`: every `Db` method has `R = never`, so
- * `Effect.runPromise(db.q(…))` is how its Effects run.
+ * The handle {@link connect} returns: the same `db` as {@link Databases},
+ * plus the close `layer` performs as its finalizer. Methods on `db` are
+ * promises (`db.q`, `db.run`); Effect variants live on `db.effect`.
  */
 export interface Client {
   /** Pure — the same call as `Databases.db`: no network, no ensure, no socket. */

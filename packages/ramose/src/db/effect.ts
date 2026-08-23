@@ -17,6 +17,6 @@ export {
   Databases,
   layer,
   type DatabasesShape,
-  type InternalClientOptions,
-  type InternalToken,
+  type EffectClientOptions,
+  type EffectToken,
 } from "./Databases.ts";

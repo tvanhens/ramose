@@ -8,7 +8,7 @@
  * ```typescript
  * const authClient = createAuthClient({ plugins: [ramoseTokenClient()] });
  * const source = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
- * const runtime = ManagedRuntime.make(Ramose.layer({ url, token: source }));
+ * const ramose = Ramose.connect({ url, token: source });
  * ```
  *
  * Failure typing matches what `token.jwt` documents: a 401/403 from the mint

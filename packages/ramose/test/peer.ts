@@ -12,7 +12,7 @@ import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import {
-  type InternalClientOptions,
+  type EffectClientOptions,
   Databases,
   type DatabasesShape,
   layer,
@@ -251,7 +251,7 @@ export interface Client {
 /** A client over a fake peer, disposed by the caller. */
 export const client = (
   peer: Pick<FakePeer, "fetch" | "webSocket">,
-  options: Partial<InternalClientOptions> = {},
+  options: Partial<EffectClientOptions> = {},
 ): Client => {
   const runtime = ManagedRuntime.make(
     layer({

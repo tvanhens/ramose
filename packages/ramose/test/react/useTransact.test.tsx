@@ -85,19 +85,59 @@ describe("useTransact", () => {
       useTransact({ onError: (e) => seen.push(e) }),
     );
 
-    let caught: unknown;
+    let outcome: unknown;
     await act(async () => {
-      try {
-        await result.current.run(Promise.reject(denied));
-      } catch (error) {
-        caught = error;
-      }
+      outcome = await result.current.run(Promise.reject(denied));
     });
 
-    expect(caught).toBe(denied);
+    expect(outcome).toBeUndefined();
     expect(seen).toEqual([denied]);
     expect(result.current.error).toBe(denied);
     expect(result.current.pending).toBe(false);
+  });
+
+  test("void run(rejected) does not become unhandledrejection", async () => {
+    const denied = new Unauthorized({ message: "no" });
+    const rejections: unknown[] = [];
+    const onWindow = (event: PromiseRejectionEvent) => {
+      rejections.push(event.reason);
+      event.preventDefault();
+    };
+    const onProcess = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    window.addEventListener("unhandledrejection", onWindow);
+    process.on("unhandledRejection", onProcess);
+    const { result } = renderHook(() => useTransact());
+    try {
+      await act(async () => {
+        void result.current.run(Promise.reject(denied));
+      });
+      await Bun.sleep(20);
+      expect(result.current.error).toBe(denied);
+      expect(rejections).toEqual([]);
+    } finally {
+      window.removeEventListener("unhandledrejection", onWindow);
+      process.off("unhandledRejection", onProcess);
+    }
+  });
+
+  test("run(() => Promise) thunk form resolves and records error", async () => {
+    const denied = new Unauthorized({ message: "thunk" });
+    const { result } = renderHook(() => useTransact());
+
+    let value: unknown;
+    await act(async () => {
+      value = await result.current.run(() => Promise.resolve(7));
+    });
+    expect(value).toBe(7);
+    expect(result.current.error).toBeUndefined();
+
+    await act(async () => {
+      value = await result.current.run(() => Promise.reject(denied));
+    });
+    expect(value).toBeUndefined();
+    expect(result.current.error).toBe(denied);
   });
 
   test("error clears on the next successful run, and on clearError", async () => {
@@ -105,11 +145,7 @@ describe("useTransact", () => {
     const { result } = renderHook(() => useTransact());
 
     await act(async () => {
-      try {
-        await result.current.run(Promise.reject(denied));
-      } catch {
-        /* expected */
-      }
+      await result.current.run(Promise.reject(denied));
     });
     expect(result.current.error).toBe(denied);
 
@@ -119,11 +155,7 @@ describe("useTransact", () => {
     expect(result.current.error).toBeUndefined();
 
     await act(async () => {
-      try {
-        await result.current.run(Promise.reject(denied));
-      } catch {
-        /* expected */
-      }
+      await result.current.run(Promise.reject(denied));
     });
     expect(result.current.error).toBe(denied);
     act(() => result.current.clearError());
@@ -149,11 +181,7 @@ describe("useTransact", () => {
 
     g.resolve();
     await act(async () => {
-      try {
-        await ranA;
-      } catch {
-        /* expected */
-      }
+      await ranA;
     });
     expect(result.current.error).toBe(denied);
     expect(result.current.pending).toBe(false);
@@ -200,11 +228,7 @@ describe("useTransact", () => {
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
       g.resolve();
-      try {
-        await outcome;
-      } catch {
-        /* expected */
-      }
+      await outcome;
     } finally {
       console.error = noisy;
     }
