@@ -6,9 +6,10 @@
  * the two capabilities and the two transport layers.
  *
  * Client bundlers that honor the `browser` export condition resolve this
- * specifier to `src/browser.ts` (the `ramose/db` surface) so they do not
- * pull Alchemy. App code should import `ramose/db` directly. Types stay
- * on this file so `import type { AuthConfig } from "ramose"` still works.
+ * specifier to `dist/browser.js` — `ramose/db` plus the alchemy-free
+ * shared names (`policy` / `Policy` / `claims`) — so they do not pull
+ * Alchemy. App code should import `ramose/db` directly. Types stay on
+ * this file so `import type { AuthConfig } from "ramose"` still works.
  *
  * ```typescript
  * import * as Alchemy from "alchemy";

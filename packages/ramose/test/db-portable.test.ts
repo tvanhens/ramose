@@ -296,20 +296,29 @@ describe("ramose/better-auth is portable", () => {
 
 describe("the root `browser` condition is portable", () => {
   const graph = walk(BROWSER);
-  const allowed = [...ALLOWED, "packages/ramose/src/browser.ts"];
+  const allowed = [
+    ...ALLOWED,
+    "packages/ramose/src/browser.ts",
+    "packages/ramose/src/Auth.ts",
+  ];
 
   test("no module in the graph imports `alchemy` or the deploy barrel", () => {
     assertPortable(graph, allowed, effectBare);
   });
 
-  test("the browser module is the db surface, not Server", async () => {
+  test("the browser module is db + policy/claims, not Server", async () => {
     const browser = await import("../src/browser.ts");
     const deploy = await import("../src/index.ts");
+    expect("connect" in browser).toBe(true);
+    expect("policy" in browser).toBe(true);
+    expect("Policy" in browser).toBe(true);
+    expect("claims" in browser).toBe(true);
     expect("Server" in browser).toBe(false);
     expect("Database" in browser).toBe(false);
     expect("providers" in browser).toBe(false);
-    expect("connect" in browser).toBe(true);
+    expect("authEnv" in browser).toBe(false);
     expect("Server" in deploy).toBe(true);
+    expect("policy" in deploy).toBe(true);
   });
 
   test("it bundles for the browser without alchemy", async () => {

@@ -14,7 +14,8 @@ app needs neither it nor `react-dom`. `effect` comes with this package.
 `alchemy` is owned and pinned to the 2.x beta this release tests
 (`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is bumped per release. Apps
 using `ramose/better-auth` also need the optional peers `better-auth` and
-`zod`.
+`zod`. The zod peer is naming hygiene, not a smaller install —
+`better-auth` already depends on zod.
 
 Ramose is pre-release: expect the API to change between minor versions.
 
@@ -24,7 +25,7 @@ Ramose is pre-release: expect the API to change between minor versions.
 | --- | --- |
 | `ramose/db` | Schema, the client, `Db<C>`, the tagged errors. Portable — browser, Worker, Node, Bun, a test. |
 | `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
-| `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to the `ramose/db` surface so they do not pull Alchemy. |
+| `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to `ramose/db` plus alchemy-free `policy` / `Policy` / `claims` — not `Server` / Alchemy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
 | `ramose/react` | `RamoseProvider`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
 | `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |

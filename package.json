@@ -61,7 +61,7 @@
     "@alchemy.run/better-auth": "^2.0.0-beta.72",
     "@effect/platform-bun": ">=4.0.0-beta.105",
     "@effect/platform-node": ">=4.0.0-beta.105",
-    "alchemy": "latest",
+    "alchemy": "2.0.0-beta.72",
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-beta.105",
     "ramose": "workspace:*"

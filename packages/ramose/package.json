@@ -52,11 +52,14 @@
     "the quickstart runs. Its types sit in the public deploy signatures, and",
     "the 2.x line is still beta (no semver signal). The range is pinned to the",
     "tested beta and bumped per release — not `>=x <3`, which would admit",
-    "every future 2.x beta.",
+    "every future 2.x beta. The workspace root pins the same tested version",
+    "(exact) so `bun update alchemy` cannot split two copies.",
     "",
     "React is an optional peer — a server-only app needs none of it. So are",
     "`better-auth` and `zod`, which only `ramose/better-auth` touches. Apps",
-    "using that subpath need both peers installed."
+    "using that subpath need both peers installed. The zod peer is naming",
+    "hygiene, not a smaller install: `better-auth` already depends on zod, so",
+    "it stays in the tree of any app that uses `ramose/better-auth`."
   ],
   "//sideEffects": [
     "The `./src/**` globs are load-bearing in this workspace, not leftovers.",

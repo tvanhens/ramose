@@ -54,6 +54,23 @@ if (root.version !== version) {
   errors.push(`the workspace root is at ${root.version} but ${label} is at ${version}`);
 }
 
+// The published alchemy range is a tested 2.x-beta window, bumped per
+// release. The workspace root must pin the same tested version (exact) so
+// `bun update alchemy` cannot install npm `latest` beside it and split two
+// copies of alchemy's types into examples vs packages/ramose.
+const packageAlchemy = manifest.dependencies?.alchemy;
+const rootAlchemy = root.dependencies?.alchemy;
+const alchemyFloor = packageAlchemy?.match(/^>=(\S+) </)?.[1];
+if (packageAlchemy === undefined) {
+  errors.push(`${label} is missing an alchemy dependency`);
+} else if (rootAlchemy !== alchemyFloor) {
+  errors.push(
+    `the workspace root alchemy is ${JSON.stringify(rootAlchemy)} but ${label} ` +
+      `pins ${JSON.stringify(packageAlchemy)} — root must be the exact floor ` +
+      `(${JSON.stringify(alchemyFloor)}) so the next bump cannot half-land`,
+  );
+}
+
 // --- the tag matches --------------------------------------------------------
 if (tag) {
   const expected = `v${version}`;
@@ -120,6 +137,25 @@ if (checkBuilt) {
       errors.push(`${label} lists "${file}" in "files" but ${PACKAGE_DIR}/${file} does not exist`);
     }
   }
+
+  // The `browser` condition is the claim: `import "ramose"` in a client
+  // bundle must land on the portable module, not the deploy barrel. Node's
+  // resolver is the one that honors `--conditions=browser`; Bun's checkout
+  // `paths` map would hide a broken exports target.
+  const browserResolved = resolveRamose(["--conditions=browser"]);
+  const defaultResolved = resolveRamose([]);
+  if (browserResolved !== undefined && !browserResolved.endsWith("/dist/browser.js")) {
+    errors.push(
+      `node --conditions=browser import.meta.resolve("ramose") landed on ` +
+        `${browserResolved}, expected …/dist/browser.js`,
+    );
+  }
+  if (defaultResolved !== undefined && !defaultResolved.endsWith("/dist/index.js")) {
+    errors.push(
+      `node import.meta.resolve("ramose") landed on ${defaultResolved}, ` +
+        `expected …/dist/index.js`,
+    );
+  }
 }
 
 if (errors.length > 0) {
@@ -143,6 +179,23 @@ function shipsInTarball(target: string, files: string[]): boolean {
     return path === root || path.startsWith(`${root}/`);
   });
 }
+
+/** Resolve `ramose` through Node's package exports, from the repo root. */
+function resolveRamose(extra: string[]): string | undefined {
+  const result = Bun.spawnSync(
+    ["node", ...extra, "-e", 'console.log(import.meta.resolve("ramose"))'],
+    { cwd: process.cwd() },
+  );
+  if (result.exitCode !== 0) {
+    errors.push(
+      `node ${extra.join(" ")} import.meta.resolve("ramose") failed: ` +
+        `${result.stderr.toString().trim() || result.stdout.toString().trim()}`,
+    );
+    return undefined;
+  }
+  return result.stdout.toString().trim().replace(/^file:\/\//, "");
+}
+
 
 /** Every concrete file path named in an `exports` map, ignoring `*` patterns. */
 function exportTargets(exports: unknown): string[] {

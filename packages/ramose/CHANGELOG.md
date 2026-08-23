@@ -11,12 +11,18 @@ in the package imported them. `zod` is an optional peer next to
 beta (`>=2.0.0-beta.72 <2.0.0-beta.73`), bumped per release, instead of
 `>=2.0.0-beta.72 <3.0.0` which admitted every future 2.x beta.
 
+The workspace root pins the same tested alchemy (`2.0.0-beta.72`) so
+`bun update alchemy` cannot split two copies. `scripts/check-release.ts`
+fails if the root pin is not the package range's floor.
+
 The root `ramose` entry has a `browser` condition that resolves to
-`dist/browser.js` — the portable `ramose/db` surface — so
-`import * as Ramose from "ramose"` in a client bundle does not pull the
-Alchemy deploy engine. Types stay on the deploy barrel so an isomorphic
+`dist/browser.js` — `ramose/db` plus alchemy-free `policy` / `Policy` /
+`claims` — so `import * as Ramose from "ramose"` in a client bundle does
+not pull Alchemy. Types stay on the deploy barrel so an isomorphic
 `import type { AuthConfig } from "ramose"` still resolves. Worker / SSR
-deploy files keep the default target. No `bun` condition points at `src`.
+deploy files keep the default target. No `bun` condition points at
+`src` (the tarball does not ship `src`). The zod peer is naming hygiene,
+not a smaller install — `better-auth` already depends on zod.
 
 `ramose/effect` stays the opt-in Effect hatch (`pipe`, `Function`,
 `Redacted`, and the modules Ramose's API already handed you). Schema
