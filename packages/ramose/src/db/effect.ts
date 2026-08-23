@@ -23,7 +23,7 @@ import {
   type DatabasesShape,
   makeDatabases,
   resolvePlainToken,
-  transportFromClientOptions,
+  resolveTransport,
 } from "./factory.ts";
 import type { EffectOf, RedactedOf } from "./effect-types.ts";
 import type { TokenInput } from "./token.ts";
@@ -66,7 +66,7 @@ const resolveEffectToken = (
 };
 
 const configure = (options: EffectClientOptions): DatabasesConfig => ({
-  ...transportFromClientOptions(options),
+  ...resolveTransport(options),
   token: resolveEffectToken(options.token),
 });
 

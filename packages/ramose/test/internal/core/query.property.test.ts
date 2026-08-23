@@ -60,6 +60,8 @@ function naive(facts: Fact[], patterns: Pattern[], findVars: string[]): Set<stri
 }
 
 describe("query ≡ naive reference on random data", () => {
+  // Seeded; isolation is ~2s, but a contended suite has timed out at bun's
+  // 5s default (5246ms). Give the property run room.
   test("random conjunctive queries, before and after indexing", async () => {
     const r = rng(2024);
     const conn = await Connection.create({ build: { leafSize: 8, fanout: 4 } });
@@ -138,5 +140,5 @@ describe("query ≡ naive reference on random data", () => {
     const old = conn.db().asOf(30);
     const n = await query(old, `[:find (count ?e) . :where [?e :p/name]]`);
     expect(n).toBeLessThan(N);
-  });
+  }, 15_000);
 });

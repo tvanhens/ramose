@@ -370,8 +370,11 @@ export const makeDatabases = (
   };
 };
 
-/** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
-const resolveTransport = (
+/**
+ * @internal Shared transport bits for `connect` and the hatch's Effect-valued
+ * token path. A malformed URL, or no `fetch` at all, is a defect.
+ */
+export const resolveTransport = (
   options: Pick<ClientOptions, "url" | "fetch" | "webSocket">,
 ): Pick<DatabasesConfig, "url" | "fetch" | "webSocket"> => {
   try {
@@ -433,8 +436,3 @@ export const configFromClientOptions = (
   ...resolveTransport(options),
   token: resolvePlainToken(options.token),
 });
-
-/**
- * @internal Shared transport bits for the hatch's Effect-valued token path.
- */
-export const transportFromClientOptions = resolveTransport;
