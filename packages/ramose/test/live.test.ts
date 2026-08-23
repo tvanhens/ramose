@@ -359,3 +359,62 @@ describe("a pinned view has no news", () => {
     await c.dispose();
   });
 });
+
+describe("structural sharing across emissions", () => {
+  test("an added row keeps Object.is identity on unchanged rows", async () => {
+    const world = await users("Ada");
+    const state = { t: world.t, datoms: world.datoms };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
+    await settle();
+    expect(live.seen).toHaveLength(1);
+    const first = live.seen[0] as readonly { name: string }[];
+
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    state.t = bob.t;
+    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
+    await settle();
+
+    const second = live.seen[1] as readonly { name: string }[];
+    expect(second).toHaveLength(2);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toEqual({ name: "Bob" });
+    expect(second).not.toBe(first);
+
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("a single-row change keeps Object.is identity on the other row", async () => {
+    const conn = await catalogWorld(Movies);
+    const ada = txSnap(await conn.transact([{ ":db/id": "ada", ":user/name": "Ada" }]));
+    const cy = txSnap(await conn.transact([{ ":db/id": "cy", ":user/name": "Cy" }]));
+    const snap = await snapshotOf(conn);
+    const state = { t: snap.t, datoms: snap.datoms };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
+    await settle();
+    const first = live.seen[0] as readonly { name: string }[];
+    expect(first.map((r) => r.name)).toEqual(["Ada", "Cy"]);
+
+    const change = txSnap(
+      await conn.transact([{ ":db/id": ada.tempids.ada, ":user/name": "Ada!" }]),
+    );
+    state.t = change.t;
+    peer.push({ op: "tx", t: change.t, datoms: change.datoms });
+    await settle();
+
+    const second = live.seen[1] as readonly { name: string }[];
+    expect(second.map((r) => r.name)).toEqual(["Ada!", "Cy"]);
+    expect(second.find((r) => r.name === "Cy")).toBe(first.find((r) => r.name === "Cy"));
+    expect(second.find((r) => r.name === "Ada!")).not.toBe(
+      first.find((r) => r.name === "Ada"),
+    );
+    void cy;
+
+    await live.stop();
+    await c.dispose();
+  });
+});
