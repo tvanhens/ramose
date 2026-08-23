@@ -75,6 +75,8 @@ export {
   type FluentQuery,
   type LoweredKernelQuery,
   type QueryObject,
+  type Row,
+  type Rows,
   type RuleValue,
 } from "./query/index.ts";
 export * from "./session.ts";

@@ -211,7 +211,6 @@ const reefBoardQuery = Query.from(ReefIssue)
     creator: ReefIssue.creator.select({ name: ReefUser.name }),
   })
   .orderBy("rank", "asc");
-);
 type ReefBoardRow = Ramose.Row<typeof reefBoardQuery>;
 
 d("ramose session socket e2e", () => {

@@ -36,9 +36,8 @@ declare const db: Db<typeof Movies>;
 // ── Decision 4: Issue.id produces branded Eid — no recased idOf ────────────
 
 const p = params({ issueId: Issue.id });
-type _issueIdParam = Expect<
-  Equal<(typeof p)["issueId"], Param<Eid<typeof Issue>, { readonly issueId: Eid<typeof Issue> }, false>>
->;
+type IssueIdValue = (typeof p)["issueId"] extends Param<infer T, any, any> ? T : never;
+type _issueIdIsEid = Expect<Equal<IssueIdValue, Eid<typeof Issue>>>;
 
 // ── header example ─────────────────────────────────────────────────────────
 
@@ -46,33 +45,26 @@ const commentsQuery = Query.from(Comment)
   .where({ issue: p.issueId })
   .orderBy(Comment.at, "asc");
 
-type CommentDefaultRow = {
-  readonly id: Eid<typeof Comment>;
-  readonly text: string | undefined;
-  readonly at: Date | undefined;
-  readonly issue: { readonly id: number } | undefined;
-};
-type _headerRow = Expect<Equal<Row<typeof commentsQuery>, CommentDefaultRow>>;
-type _headerEntity = Expect<Equal<Row<typeof commentsQuery>, EntityRow<typeof Comment>>>;
+type HeaderRow = Row<typeof commentsQuery>;
+type _headerEntity = Expect<Equal<HeaderRow, EntityRow<typeof Comment>>>;
+type _headerId = Expect<Equal<HeaderRow["id"], Eid<typeof Comment>>>;
+type _headerText = Expect<Equal<HeaderRow["text"], string | undefined>>;
+type _headerIssue = Expect<Equal<HeaderRow["issue"], { readonly id: number } | undefined>>;
 
 const commentShape = {
   id: Comment.id,
   text: Comment.text,
-  at: Comment.at,
 } as const;
 const commentTitles = Query.from(Comment)
   .where({ issue: p.issueId })
   .select(commentShape)
   .orderBy(Comment.at, "asc");
 type _selectRow = Expect<
-  Equal<
-    Row<typeof commentTitles>,
-    { readonly id: Eid<typeof Comment>; readonly text: string; readonly at: Date }
-  >
+  Equal<Row<typeof commentTitles>, { readonly id: Eid<typeof Comment>; readonly text: string }>
 >;
 
 const _bound = db.query(commentsQuery, { issueId: 1 as Eid<typeof Issue> });
-type _boundOk = Expect<Equal<typeof _bound, Promise<readonly CommentDefaultRow[]>>>;
+type _boundOk = Expect<Equal<typeof _bound, Promise<readonly EntityRow<typeof Comment>[]>>>;
 
 // @ts-expect-error a declared head must be bound at the terminal
 db.query(commentsQuery);

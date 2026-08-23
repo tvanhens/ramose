@@ -56,8 +56,12 @@ export type EntityRow<N extends AnyEntity> = {
 };
 
 /** Expand `N.fields` into the pull shape the default row serializes as. */
+const entityId = (ns: AnyEntity): PathCarrier =>
+  (ns as AnyEntity & { readonly id: PathCarrier }).id;
+
 export const entityShape = (ns: AnyEntity): Shape => {
-  const out: Record<string, unknown> = { id: ns.id };
+  const id = entityId(ns);
+  const out: Record<string, unknown> = { id };
   for (const [key, field] of Object.entries(ns.fields)) {
     const f = field as {
       readonly valueType?: string;
@@ -66,7 +70,7 @@ export const entityShape = (ns: AnyEntity): Shape => {
       readonly optional: unknown;
     };
     if (f.valueType === "ref") {
-      const nested = f.select({ id: ns.id });
+      const nested = f.select({ id });
       out[key] = f.cardinality === "many" ? nested : nested.optional;
     } else {
       out[key] = f.cardinality === "many" ? field : f.optional;
@@ -96,7 +100,7 @@ type EqValue<A> = IsRef<A> extends true
 export type WhereEq<N extends AnyEntity> = {
   readonly [K in keyof N["fields"]]?: EqValue<N["fields"][K]>;
 } & {
-  readonly id?: Eid<N> | number | { readonly id: number } | Param<Eid<N>, any, boolean> | Param<number, any, boolean>;
+  readonly id?: Eid<N> | number | { readonly id: number } | ParamLike<Eid<N>> | ParamLike<number>;
 };
 
 type ScopeOfWhere<W> = ScopeOf<W[keyof W]>;
@@ -171,7 +175,7 @@ const specFromSet = (set: AnyParamSet | undefined): ParamsSpec | undefined => {
 const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pipeline => {
   let next = pipe;
   for (const [key, value] of Object.entries(eq)) {
-    const attr = key === "id" ? ns.id : ns.fields[key];
+    const attr = key === "id" ? entityId(ns) : ns.fields[key];
     if (attr === undefined) {
       throw new Error(`ramose/query: where({ ${key} }) — "${ns.ns}" has no field "${key}"`);
     }
