@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Inline values are the documented query spelling (part of #228, tracker #205)
+
+App queries put changing values in `.where` (`where({ issue: issueId })`).
+`useLive(db, q)` and `db.query(q)` are documented without a bindings
+argument; the argument stays accepted. `Ramose.params`, `optional`,
+`EidOf`, and `Query.when` stay exported. `where({ done, rank })` and
+`where({ rank, done })` now lower to the same clause order so #227 cache
+keys are construction-order independent.
+
 ### Dependency hygiene (part of #202, tracker #205)
 
 `@effect/platform-bun` and `@effect/platform-node` are removed — nothing

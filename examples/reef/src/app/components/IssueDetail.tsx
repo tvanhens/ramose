@@ -264,7 +264,7 @@ export const IssueDetail = ({
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
-  const comments = useLive(db, commentsQuery, { issueId });
+  const comments = useLive(db, commentsQuery(issueId));
 
   const submitComment = () => {
     const body = commentDraft.trim();

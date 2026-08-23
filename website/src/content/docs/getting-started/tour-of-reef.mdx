@@ -29,7 +29,7 @@ To build your own app instead, nothing is cloned: [Getting started](/getting-sta
 | --- | --- | --- |
 | `src/domain/schema.ts` | 76 | what exists — the schema |
 | `src/domain/policy.ts` | 78 | who may — the permissions |
-| `src/domain/queries.ts` | 95 | what screens read |
+| `src/domain/queries.ts` | 99 | what screens read |
 | `src/infra/resources.ts` | 74 | the Ramose server, declared |
 | `src/infra/api.ts` | 139 | the sign-in Worker (Better Auth) |
 | `rank.ts` · `roles.ts` · `shared.ts` · `alchemy.run.ts` | 219 | drag ordering, role names, shared constants, the stack |
@@ -166,7 +166,7 @@ The panel **reads one record** with `usePull` — by id, with the fields you cho
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
-  const comments = useLive(db, commentsQuery, { issueId });
+  const comments = useLive(db, commentsQuery(issueId));
 ```
 
 The board's **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)). It follows references, so a card gets creator, assignee and labels inline:

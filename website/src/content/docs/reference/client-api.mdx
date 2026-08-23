@@ -172,7 +172,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 `ramose.db(name, schema)` returns a `Db`. `db.asOf(t)` and `db.history` return a `ReadDb` — everything below except `principal`, `run` and `install`.
 
-**`db.query(query, params?): Promise<Out>`** — run a query once. Bind the query's declared params as the second argument. The result is the query's terminal: the rows array, one row (or `null`) after `q.one()` / `q.oneOrFail()` (`oneOrFail` fails with `NotOne`), a `{ rows, cursor }` page after `q.after(cursor)`. The hatch is `db.effect.query`.
+**`db.query(query): Promise<Out>`** — run a query once. Put values in the query (`where({ title })`). The leftover bindings argument is still accepted. The result is the query's terminal: the rows array, one row (or `null`) after `q.one()` / `q.oneOrFail()` (`oneOrFail` fails with `NotOne`), a `{ rows, cursor }` page after `q.after(cursor)`. The hatch is `db.effect.query`.
 
 ```ts
 const who = await db.principal();
@@ -180,7 +180,7 @@ const myEid = who.eid?.id;
 const people = await db.query(peopleQuery);
 ```
 
-**`db.live(query, params?): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query, params?)`](/reference/react/#uselive).
+**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
 
 ```ts
 const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
@@ -304,34 +304,29 @@ const myEid = who.eid?.id; // the peer-owned user row
 
 ## Queries
 
-**`Query.from(Entity)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is `Ramose.Query` (the same names are importable flat from `ramose/query`). The chain is immutable and hoistable. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Pass the value to `db.query` / `db.live` directly; hoisted params bind at the call.
+**`Query.from(Entity)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is `Ramose.Query` (the same names are importable flat from `ramose/query`). The chain is immutable. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Put changing values in `.where` and pass the value to `db.query` / `db.live` / `useLive` — no bindings argument.
 
 ```ts
-const p = Ramose.params({ me: User.id });
-
 Query.from(Todo)                         // every todo…
-  .where({ owner: p.me })                // …owned by me
+  .where({ owner: me })                  // …owned by me
   .select({ id: Todo.id, title: Todo.title })  // the shape; without it the row is the full entity
   .orderBy(Todo.title, "asc", { empty: "last" })
   .limit(20)
   .offset(0);
 ```
 
-A param is declared from an attribute reference (`Issue.id`, `User.sub`) or an Effect Schema; `Ramose.optional(decl)` marks one that may stay unbound. `Issue.id` produces a branded `Eid`.
-
 **Combinators** — each is a pipeable stage on the query, and the same name applied to a bound handle is the plain generator fragment:
 
 | combinator | meaning |
 | --- | --- |
 | `entities(N)` | the source: every record of one type |
-| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number, id cell, or param). Equivalent to `is(N.id, id)` |
-| `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal, id cell, or param). `is(N.id, id)` is the same filter as `byId(id)` |
+| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number or id cell). Equivalent to `is(N.id, id)` |
+| `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal or id cell). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there |
 | `matching(attr, (v) => cmp)` | bind the value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (a `RegExp` with flags throws) |
 | `ids()` | project only `{ id }` rows — the cheap live-subscription workhorse |
 | `follow(ref)` / `backlink(ref)` | refocus on the reference's target / on the referrer |
 | `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over referrers through `ref` (`every` / `none` are vacuously true of a record nothing points at) |
-| `when(gate, …ps)` | include the filters only while the param gate is on — a `Param<boolean>` gates on its value, an optional param on being bound |
 | `updatedSince(t)` / `assertedBy(attr, who)` | time and provenance clauses |
 | `select(shape)` / `orderBy(key, dir?, opts?)` / `limit(n)` / `offset(n)` | shape, sort, page — on the server |
 | `stage(fragment)` | lift your own fragment with the same adapter the shipped combinators use |
@@ -348,12 +343,11 @@ q.logic()        // the query without its cursor (orderBy/limit/offset/one/after
 ```
 
 ```ts title="examples/reef/src/domain/queries.ts"
-const p = Ramose.params({ issueId: Issue.id });
-
-export const commentsQuery = Query.from(Comment)
-  .where({ issue: p.issueId })
-  .select(commentShape)
-  .orderBy(Comment.at, "asc");
+export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
+  Query.from(Comment)
+    .where({ issue: issueId })
+    .select(commentShape)
+    .orderBy(Comment.at, "asc");
 ```
 
 **Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ owned: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
@@ -372,21 +366,21 @@ export const boardShape = {
 } as const;
 ```
 
-**Recursive trees.** A thread is a window, not one fetch. `again(4)` and `{ limit: 20 }` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread, { root: clicked.id })`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
+**Recursive trees.** A thread is a window, not one fetch. `again(4)` and `{ limit: 20 }` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread(clicked.id))`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
 
 ```ts
-const p = Ramose.params({ root: Comment.id });
-const thread = Query.from(Comment)
-  .where(Query.byId(p.root))
-  .select({
-    id: Comment.id,
-    body: Comment.body,
-    replies: Comment.replies.select(Ramose.again(4), {
-      orderBy: Comment.createdAt,
-      limit: 20,
-    }),
-  });
-// Query.is(Comment.id, p.root) is the same filter as Query.byId(p.root)
+const thread = (root: Ramose.Eid<typeof Comment>) =>
+  Query.from(Comment)
+    .where(Query.byId(root))
+    .select({
+      id: Comment.id,
+      body: Comment.body,
+      replies: Comment.replies.select(Ramose.again(4), {
+        orderBy: Comment.createdAt,
+        limit: 20,
+      }),
+    });
+// Query.is(Comment.id, root) is the same filter as Query.byId(root)
 ```
 
 **Aggregates.** When the answer is a number, project an aggregate cell in a record — the generator spelling. `Q.count(handle)`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max` are cells; the record's other cells are the group keys, and a record of only aggregates is **exactly one row** for the whole match set — over an empty match set each fn answers for the empty set (`count` / `countDistinct` / `sum` are `0`, `avg` / `min` / `max` are `null`), the same rule SQL's ungrouped aggregates follow. A grouped record is `[]` over no rows: no rows, no groups.

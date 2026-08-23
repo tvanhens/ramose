@@ -1,12 +1,11 @@
 /**
- * `Ramose.params` — declared value holes for a query that never changes
- * identity.
+ * `Ramose.params` — leftover declared value holes. The documented app
+ * spelling is inline values in `.where` (`where({ issue: issueId })`);
+ * this set stays exported so a stable AST plus bindings still typechecks.
  *
- * A query is a stable value. `useLive` keys its subscription on the lowered
- * AST (plus {@link paramsKey} when bindings are present), so two hook sites
- * with the same query + params share one standing subscription. A param is
- * the hole for the changing **value**: declared up front, referenced inline
- * as an expression-tree leaf, carried in the query value, and bound at the
+ * `useLive` keys on the lowered AST (plus {@link paramsKey} when bindings
+ * are present). A param is the hole for the changing **value**: declared
+ * up front, referenced as an expression-tree leaf, and bound at the
  * terminal — `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
  *
  * ```ts

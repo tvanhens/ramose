@@ -82,15 +82,17 @@ That call runs until you interrupt it, re-emitting the whole result set on every
 
 There is no per-query subscription state on the server. A live query is a re-run of the same read path against the local overlay, triggered by an overlay apply or an inbound filtered transaction. Bursts of small writes coalesce, because re-runs happen per update rather than per write. Pinned `asOf` / `history` still read the server.
 
-## Hoist your queries
+## Inline values
 
-`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does — a `Query.from` value is inert data with stable identity, which is exactly what a hook dependency wants. Changing **values** are hoisted params (`Ramose.params({ issueId: Issue.id })`) — bind them as the third argument; an inline `{ issueId }` is fine (params are compared by value), and a params-only change does not blank `rows`:
+`useLive` keys its subscription on the lowered query AST, not object identity. Two components that build the same query share one subscription. Put changing values in `.where` — no bindings argument:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx:267"
-  const comments = useLive(db, commentsQuery, { issueId });
+  const comments = useLive(db, commentsQuery(issueId));
 ```
 
-`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so hoist those too — or accept the re-subscribe, which is what a new page wants anyway. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
+Same `issueId` → same key → same shared subscription, even when the query object is new every render. A different `issueId` is a different AST: the hook resubscribes. That is the point. Unstable values (`where({ at: new Date() })`) churn the key every render — keep bound values stable.
+
+`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so a new page resubscribes, which is what a new page wants. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "who may read and write each field" },

@@ -1,10 +1,11 @@
 /**
- * Every read the app asks, as hoisted `Query.from` values — stable
- * dependencies for `useLive`, runnable one-shot (`db.query`), live
- * (`db.live`) against the session overlay, or in the past (`db.asOf(t).query`)
- * on the peer. The pull shapes are also fed to `Ramose.Policy.compile({ pulls })`
- * so a read-masked attribute pulled as required is a deploy-time error, not a
- * silently dropped row.
+ * Every read the app asks, as `Query.from` values — runnable one-shot
+ * (`db.query`), live (`useLive` / `db.live`) against the session overlay, or
+ * in the past (`db.asOf(t).query`) on the peer. Changing values go in
+ * `.where`; two equivalent queries share a live subscription via the
+ * lowered AST. The pull shapes are also fed to
+ * `Ramose.Policy.compile({ pulls })` so a read-masked attribute pulled as
+ * required is a deploy-time error, not a silently dropped row.
  */
 
 import type { Db } from "ramose/db";
@@ -78,12 +79,11 @@ export const labelsQuery = Query.from(Label)
   .select(labelShape)
   .orderBy(Label.name, "asc");
 
-const p = Ramose.params({ issueId: Issue.id });
-
-export const commentsQuery = Query.from(Comment)
-  .where({ issue: p.issueId })
-  .select(commentShape)
-  .orderBy(Comment.at, "asc");
+export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
+  Query.from(Comment)
+    .where({ issue: issueId })
+    .select(commentShape)
+    .orderBy(Comment.at, "asc");
 
 /** Over `db.history` this also returns issues that no longer exist. */
 export const everyIssueEverQuery = Query.from(Issue).select({
@@ -96,4 +96,4 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 export type Person = BoardRow["creator"];
 export type LabelRow = Ramose.Row<typeof labelsQuery>;
-export type CommentRow = Ramose.Row<typeof commentsQuery>;
+export type CommentRow = Ramose.Row<ReturnType<typeof commentsQuery>>;

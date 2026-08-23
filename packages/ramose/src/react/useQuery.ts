@@ -6,8 +6,10 @@
  * Two rules for callers:
  *
  * - The view is structural: `useQuery(db.asOf(t), q)` built inline re-runs
- *   per `t`, not per render. `query` is identity — hoist it. Bind changing
- *   values with `Ramose.params` as the third argument.
+ *   per `t`, not per render. Put changing values in the query
+ *   (`where({ issue: issueId })`). The leftover bindings argument is
+ *   still accepted. `query` is compared by identity here — hoist a
+ *   stable value, or accept a re-run when the object is new.
  * - The in-flight state is `loading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.

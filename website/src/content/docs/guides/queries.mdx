@@ -27,51 +27,45 @@ export const boardQuery = Query.from(Issue)
 `db.query(query)` runs it once. `db.principal()` is who the peer says you are — the row it upserts at session establishment (`sub`, `role`, and `ramose.attrs`) — so finding your own eid does not need a query:
 
 ```ts
-const who = yield* db.principal();
+const who = await db.principal();
 const myEid = who.eid?.id;
 ```
 
-A lookup by any other field is an ordinary query — the changing value is a declared **param**, bound at the call. Hoist `Ramose.params({ issueId: Issue.id })` at module scope; the hole takes that field's type (`Issue.id` is a branded `Eid`). `Ramose.optional(…)` marks one that may stay unbound. The query object never changes identity — only the bindings do.
+A lookup by any other field is an ordinary query — put the value in `.where`. Two independently-built queries with the same literals share a live subscription (the key is the lowered AST). Changing an inline literal changes that key and resubscribes; that is the point.
 
-In React, `useQuery(db, query, params?)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.query(query))`.
+In React, `useQuery(db, query)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await db.query(query)`.
 
 ## Filter
 
-`.where({ … })` is a conjunction of equality filters; keys are the entity's fields. Compound predicates pass a stage fragment to the same method. Reef's comments are the comments pointing at one issue:
+`.where({ … })` is a conjunction of equality filters; keys are the entity's fields. Compound predicates pass a stage fragment to the same method. Reef's comments are the comments pointing at one issue — the changing id is an ordinary value:
 
 ```ts title="examples/reef/src/domain/queries.ts"
-const p = Ramose.params({ issueId: Issue.id });
-
-export const commentsQuery = Query.from(Comment)
-  .where({ issue: p.issueId })
-  .select(commentShape)
-  .orderBy(Comment.at, "asc");
+export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
+  Query.from(Comment)
+    .where({ issue: issueId })
+    .select(commentShape)
+    .orderBy(Comment.at, "asc");
 ```
 
 | stage | meaning |
 | --- | --- |
 | `.where({ field: value })` | conjunction of equality filters; keys typechecked from the entity |
 | `.where(Query.some(…))` / any filter stage | compound predicates — the same method takes fragments |
-| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id` is a number, an id cell, or a param). Equivalent to `is(N.id, id)` |
-| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id, a row cell, or a param). `is(N.id, id)` is the same filter as `byId(id)` |
+| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id` is a number or an id cell). Equivalent to `is(N.id, id)` |
+| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id or a row cell). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there — absence is not a value |
 | `matching(attr, (v) => …)` | bind the field's value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "re:"))`; the comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (case-sensitive; `matches` takes a string or a `RegExp` with no flags) |
 | `follow(ref)` / `backlink(ref)` | refocus the pipeline on the reference's target / on the records pointing here — filter across a hop: `Query.from(Issue)` then a `follow` fragment |
 | `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over the records pointing here through `ref` (`every` and `none` are vacuously true of a record nothing points at) |
-| `when(gate, …ps)` | the given filters are part of the query only while the param gate is on — see below |
 | `updatedSince(t)` / `assertedBy(attr, who)` | time and provenance as ordinary stages |
 
 `Q.or(…)` and `Q.not(…)` combine clauses in the generator spelling; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
 
-**Param-gated filters.** `Query.when(gate, …filters)` includes its filters only while the gate is on: a `Param<boolean>` gates on its value, a `Ramose.optional` param gates on being bound (and inside the body that param is bound, so referencing it there is always legal). Gate off, the clauses lower to nothing; gate on, they lower exactly as if written inline. One query object serves both states — no forking, no `useMemo`:
+**Conditional filters.** The builder is immutable, so a clause that depends on a local is ordinary JavaScript — reassign, or skip the call:
 
 ```ts
-const p = Ramose.params({ owner: Ramose.optional(User.id) });
-const board = Query.from(Issue)
-  .where(Query.when(p.owner, Query.is(Issue.assignee, p.owner)))
-  .select({ id: Issue.id, title: Issue.title });
-// db.query(board, {})                 — every issue
-// db.query(board, { owner: adaId })   — Ada's issues
+let board = Query.from(Issue).select({ id: Issue.id, title: Issue.title });
+if (assignee) board = board.where({ assignee });
 ```
 
 ## Choose the fields
@@ -116,7 +110,7 @@ A many-valued reference in a shape can filter, order, and page its own collectio
 })
 ```
 
-The record is deliberately a record, not a chain: the four slots — `where`, `orderBy` (a key, a `{ key, dir, empty }` record, or an array of them), `limit`, `offset` — evaluate in that fixed order whatever order you write them, exactly like the wire's own nested-constraint map. `where` entries are the same filter fragments the query itself uses — `Query.is`, `Query.has`, `Q.not`, a generator over the element, any userland combinator built from the kernel — ANDed, evaluated per element: a collection that filters to nothing is `[]`, never a dropped row. A many-valued **scalar** has no shape to select through, so it takes the same record as a field: `tags: Ramose.values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })` — the fragment is handed the value itself, and `orderBy` does not apply. A nested filter cannot close over the enclosing query's handles (it runs per element, after the rows are fixed — that is a lowering error); params are fine.
+The record is deliberately a record, not a chain: the four slots — `where`, `orderBy` (a key, a `{ key, dir, empty }` record, or an array of them), `limit`, `offset` — evaluate in that fixed order whatever order you write them, exactly like the wire's own nested-constraint map. `where` entries are the same filter fragments the query itself uses — `Query.is`, `Query.has`, `Q.not`, a generator over the element, any userland combinator built from the kernel — ANDed, evaluated per element: a collection that filters to nothing is `[]`, never a dropped row. A many-valued **scalar** has no shape to select through, so it takes the same record as a field: `tags: Ramose.values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })` — the fragment is handed the value itself, and `orderBy` does not apply. A nested filter cannot close over the enclosing query's handles (it runs per element, after the rows are fixed — that is a lowering error); inline values are fine.
 
 ## A tree is a window
 
@@ -168,23 +162,23 @@ Without `again`, the inner `.select` is a thinner card and then it stops. Nested
 }
 ```
 
-A Reddit thread is a window, not one fetch. `again(4)` plus `{ limit: 20 }` on replies is the first paint. The stub `{ id }` is the "continue this thread" handle: the same module-scope query, rebound at the stub.
+A Reddit thread is a window, not one fetch. `again(4)` plus `{ limit: 20 }` on replies is the first paint. The stub `{ id }` is the "continue this thread" handle: the same query, with the stub's id in `.where`.
 
 ```ts
-const p = Ramose.params({ root: Comment.id });
-const thread = Query.from(Comment)
-  .where(Query.byId(p.root))
-  .select({
-    id: Comment.id,
-    body: Comment.body,
-    replies: Comment.replies.select(Ramose.again(4), {
-      orderBy: Comment.createdAt,
-      limit: 20,
-    }),
-  });
-// useLive(db, thread, { root: postId })        first paint
-// useLive(db, thread, { root: clicked.id })    continue this thread
-// Query.is(Comment.id, p.root) is the same filter as Query.byId(p.root)
+const thread = (root: Ramose.Eid<typeof Comment>) =>
+  Query.from(Comment)
+    .where(Query.byId(root))
+    .select({
+      id: Comment.id,
+      body: Comment.body,
+      replies: Comment.replies.select(Ramose.again(4), {
+        orderBy: Comment.createdAt,
+        limit: 20,
+      }),
+    });
+// useLive(db, thread(postId))          first paint
+// useLive(db, thread(clicked.id))      continue this thread
+// Query.is(Comment.id, root) is the same filter as Query.byId(root)
 ```
 
 Sibling "load more" pages that parent's replies. It is not a deeper `again`.
@@ -211,15 +205,15 @@ Which records can reach which is a *set* of ids. `again` paints a *tree*. Graph 
 `one()` and `oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it. They are methods on the query value:
 
 ```ts
-const p = Ramose.params({ email: User.email });
-const byEmail = Query.from(User)
-  .where({ email: p.email })
-  .select({ name: User.name });
+const byEmail = (email: string) =>
+  Query.from(User)
+    .where({ email })
+    .select({ name: User.name });
 
-const ada = yield* db.query(byEmail.one(), { email: "ada@example" });
+const ada = await db.query(byEmail("ada@example").one());
 // { name: string } | null — null when nobody matches
 
-const theAda = yield* db.query(byEmail.oneOrFail(), { email: "ada@example" });
+const theAda = await db.query(byEmail("ada@example").oneOrFail());
 // { name: string } — fails with NotOne if there are zero or two matches
 ```
 

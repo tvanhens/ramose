@@ -7,16 +7,19 @@
  * Two rules for consumers:
  *
  * - `useLive(db, query)` constructs `db.live(query)` inside the effect,
- *   keyed on the view, the lowered query AST, and params. Neither needs a
+ *   keyed on the view and the lowered query AST. Neither needs a
  *   provider. The hook owns that handle and closes it on cleanup. Two
- *   sites with the same lowered AST + params share one standing
- *   subscription (refcount; last unmount tears it down).
+ *   sites with the same lowered AST share one standing subscription
+ *   (refcount; last unmount tears it down).
  * - The view is structural (`DbSeam.key`), the query is structural
- *   (canonical serialization of the lowered AST), params are structural
- *   (`paramsKey`). `useLive(db.asOf(t), q)` built inline re-subscribes per
- *   `t`, not per render — the same rule as `useQuery` / `usePull`. Build
- *   queries at module scope and bind changing values with `Ramose.params`;
- *   a params-only change re-runs without blanking `rows`.
+ *   (canonical serialization of the lowered AST). `useLive(db.asOf(t), q)`
+ *   built inline re-subscribes per `t`, not per render — the same rule as
+ *   `useQuery` / `usePull`. Put changing values in the query
+ *   (`where({ issue: issueId })`). Same literals → same key, even when
+ *   the object is new every render. Changing an inline literal changes
+ *   the AST key and resubscribes — that is the point. The leftover
+ *   bindings argument is still accepted (stable AST + `paramsKey`); a
+ *   params-only change re-runs without blanking `rows`.
  *
  * Subscription form (`useLive(sub)`) keys on handle **identity**. The hook
  * never `close()`s a handle it did not create — only `off()`.

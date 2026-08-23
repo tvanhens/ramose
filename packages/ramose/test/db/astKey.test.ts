@@ -19,6 +19,8 @@ import {
 
 const Todo = Entity("todo", {
   title: Field(Schema.String),
+  done: Field(Schema.Boolean),
+  rank: Field(Schema.Number),
 });
 
 const allTodos = Query.from(Todo).ids();
@@ -68,6 +70,15 @@ describe("queryAstKey", () => {
     const inline = Query.from(Todo).ids().limit(1);
     expect(JSON.stringify(lowerQueryAst(inline))).not.toContain("$param");
     expect(queryAstKey(inline)).toBe(canonicalAstKey(lowerQueryAst(inline)));
+  });
+
+  test("permuted where-objects share queryAstKey and live cache identity", () => {
+    const a = Query.from(Todo).where({ done: false, rank: 3 });
+    const b = Query.from(Todo).where({ rank: 3, done: false });
+    expect(JSON.stringify(lowerQueryAst(a))).toBe(JSON.stringify(lowerQueryAst(b)));
+    expect(queryAstKey(a)).toBe(queryAstKey(b));
+    const view = "1/todos?asOf=&history=false&minT=";
+    expect(liveSubscriptionKey(view, a)).toBe(liveSubscriptionKey(view, b));
   });
 
   test("two unlowerable queries with the same message do not share a key", () => {

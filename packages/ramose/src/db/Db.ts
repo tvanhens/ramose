@@ -188,7 +188,8 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
   readonly name: string;
   readonly schema: C;
 
-  /** Run a {@link QueryObject} once. Bind params as the second argument.
+  /** Run a {@link QueryObject} once. Put values in the query
+   * (`where({ title })`); the leftover bindings argument is still accepted.
    * The result is the query's terminal: the rows array, one row (or `null`)
    * after `one()` / `oneOrFail()`, a `Page` after `after(cursor)`. */
   query<Row, P = never, Out = readonly Row[]>(
@@ -203,7 +204,7 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
    * session's `t` moves. A pinned view (`asOf` / `history`) emits once and
    * completes. A pass that returns the rows already emitted is not
    * emitted again: a write this query does not see is not a re-render.
-   * Bind params as the second argument.
+   * Put values in the query; the leftover bindings argument is still accepted.
    */
   live<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,

@@ -1481,6 +1481,36 @@ describe("Query.from — fluent app spelling", () => {
     issue: Comment.issue.select({ id: Issue.id }),
   } as const;
 
+  test("inline-value fluent query runs without bindings", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const commentsQuery = Query.from(Comment)
+      .where({ issue: ids.fix })
+      .orderBy(Comment.at, "asc");
+    const commentTitles = Query.from(Comment)
+      .where({ issue: ids.fix })
+      .select(commentShape)
+      .orderBy(Comment.at, "asc");
+
+    const rows = await db.query(commentsQuery);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe("on it");
+    expect(rows[0]!.issue.id as number).toBe(ids.fix.id);
+
+    const titled = await db.query(commentTitles);
+    expect(titled).toEqual([
+      {
+        id: expect.any(Number),
+        text: "on it",
+        at: new Date("2026-01-01T00:00:00.000Z"),
+        issue: { id: ids.fix.id as never },
+      },
+    ]);
+    await peer.dispose();
+  });
+
   test("header example compiles and runs as written", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);

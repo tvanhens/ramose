@@ -347,6 +347,57 @@ describe("useLive (query form)", () => {
     }
   });
 
+  test("inline-value useLive(db, q) with a stable closed-over local does not blank rows", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    try {
+      const { result, rerender } = renderHook(
+        ({ title }: { title: string }) =>
+          useLive(db, Ramose.Query.from(Todo).where({ title }).ids()),
+        { initialProps: { title: "t0" } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      const held = result.current.rows;
+
+      rerender({ title: "t0" });
+      rerender({ title: "t0" });
+      await settle();
+      expect(result.current.rows).toBe(held);
+      expect(result.current.ticks).toBe(0);
+      expect(result.current.error).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  test("changing an inline literal changes the AST key and resubscribes", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    let liveCalls = 0;
+    const orig = db.live.bind(db);
+    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
+      liveCalls += 1;
+      return orig(...args);
+    }) as typeof db.live;
+    try {
+      const { result, rerender } = renderHook(
+        ({ title }: { title: string }) =>
+          useLive(db, Ramose.Query.from(Todo).where({ title }).ids()),
+        { initialProps: { title: "t0" } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(liveCalls).toBe(1);
+
+      rerender({ title: "t1" });
+      expect(result.current.rows).toBeUndefined();
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[1]!)));
+      expect(liveCalls).toBe(2);
+      expect(result.current.ticks).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+
   test("a render-fresh equivalent query does not re-subscribe", async () => {
     const world = await todoWorld(1);
     const { db, close } = overlaySetup(world);
@@ -398,6 +449,27 @@ describe("useLive shared subscription cache", () => {
       },
     };
   };
+
+  test("permuted where-objects share one live subscription", async () => {
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    const spy = spyLive(db);
+    const id = world.eids[0]!;
+    try {
+      const a = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).where({ title: "t0", id }).ids()),
+      );
+      const b = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).where({ id, title: "t0" }).ids()),
+      );
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(id)));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(id)));
+      expect(spy.calls).toBe(1);
+      expect(a.result.current.rows).toBe(b.result.current.rows);
+    } finally {
+      await close();
+    }
+  });
 
   test("two hooks with equal lowered AST share one subscription", async () => {
     const world = await todoWorld(1);

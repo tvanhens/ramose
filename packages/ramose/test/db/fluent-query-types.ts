@@ -1,10 +1,10 @@
 /**
  * Compile-time fixtures for `Query.from`. `bun run typecheck` compiles this file.
  *
- * Pins the #208 ratification: header example (row is
+ * Pins the fluent app spelling: header example (row is
  * `{ id: Eid<Comment>, text: string, at: Date, issue: { id: Eid<Issue> } }`),
- * object-literal `where`, hoisted `params({ issueId: Issue.id })`, and
- * foreign-set tokens.
+ * object-literal `where` with inline values, leftover `params({ issueId })`
+ * bindings, and foreign-set tokens.
  */
 
 import type {
@@ -41,8 +41,18 @@ const p = params({ issueId: Issue.id });
 type IssueIdValue = (typeof p)["issueId"] extends Param<infer T, any, any> ? T : never;
 type _issueIdIsEid = Expect<Equal<IssueIdValue, Eid<typeof Issue>>>;
 
-// ── header example ─────────────────────────────────────────────────────────
+// ── header example (inline values — documented spelling) ───────────────────
 
+declare const issueId: Eid<typeof Issue>;
+const commentsInline = Query.from(Comment)
+  .where({ issue: issueId })
+  .orderBy(Comment.at, "asc");
+const _inlineRun = db.query(commentsInline);
+type _inlineOk = Expect<
+  Equal<typeof _inlineRun, Promise<readonly EntityRow<typeof Comment>[]>>
+>;
+
+// leftover params path — still accepted
 const commentsQuery = Query.from(Comment)
   .where({ issue: p.issueId })
   .orderBy(Comment.at, "asc");
