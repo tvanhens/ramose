@@ -185,7 +185,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
       if (!(ctx.options.plugins ?? []).some((plugin) => plugin.id === "jwt")) {
         throw new BetterAuthError(
           "ramose: the ramoseToken plugin requires Better Auth's jwt plugin — " +
-            "it signs with the same JWKS the peer's RAMOSE_JWKS_URL reads. " +
+            "it signs with the same JWKS the server's RAMOSE_JWKS_URL reads. " +
             "Add jwt() to the plugins array.",
         );
       }

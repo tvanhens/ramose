@@ -1137,7 +1137,7 @@ export const lowerQueryObject = (
     if (isPullSpec(cell)) {
       if (nameCells) {
         throw new Error(
-          "ramose/query: an aggregate-cell comparison and Q.pull cannot share a projection — the peer's :having names find cells and a pull is not one; project bound vars beside the aggregate instead",
+          "ramose/query: an aggregate-cell comparison and Q.pull cannot share a projection — the server's :having names find cells and a pull is not one; project bound vars beside the aggregate instead",
         );
       }
       const map = shapeToPullMap(cell.shape);

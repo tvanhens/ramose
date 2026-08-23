@@ -25,7 +25,7 @@ The entire write vocabulary — no update, no merge:
 | `tx.remove(e, field, value?)` | takes one value back, or every value of that field |
 | `tx.delete(e)` | deletes the record — every fact about it, and any records it owns |
 
-The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.add(…)`, `issue.retract(…)`, `issue.delete()`. Values are checked against the schema as you type.
+The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.set(…)`, `issue.remove(…)`, `issue.delete()`. Values are checked against the schema as you type.
 
 ## Create a record
 
@@ -54,7 +54,7 @@ export const createIssue = (
   });
 ```
 
-A **reference** field takes the other record's id as a number: `issue.add(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
+A **reference** field takes the other record's id as a number: `issue.set(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
 
 ## Change fields
 
@@ -79,7 +79,7 @@ A single-value **field** replaces its old value ([glossary](/concepts/glossary/#
 
 ## Remove a value, delete a record
 
-Clearing a field is `retract` with no value; deleting a record is `retractEntity`:
+Clearing a field is `remove` with no value; deleting a record is `delete`:
 
 ```ts title="examples/reef/src/app/mutations.ts:99-103"
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
@@ -100,7 +100,7 @@ Neither erases history — [Time travel](/concepts/time-travel/) can still show 
 
 ## Many-valued fields
 
-A field declared `cardinality: "many"` is a set. One `add` per value; `retract` with the value takes one out:
+A field declared `cardinality: "many"` is a set. One `set` per value; `remove` with the value takes one out:
 
 ```ts title="examples/reef/src/app/mutations.ts:120-129"
 export const toggleLabel = (
@@ -143,7 +143,7 @@ A write also moves every open screen forward. A **live query** re-runs itself wh
 
 ## When a write is refused
 
-- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer**, the one thing per database that commits writes in order ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `retract denied on :issue/status`.
+- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer**, the one thing per database that commits writes in order ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `remove denied on :issue/status`.
 - **`TxRejected`** (HTTP 409) — the writer refused it: a schema violation, a unique-key conflict, or a denial the first check missed. No version number is spent.
 
 Both are values you can match by name — see [Errors](/reference/errors/). Writes to one database apply one at a time, so there are no conflicts to retry, only refusals to handle.

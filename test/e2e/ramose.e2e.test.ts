@@ -103,8 +103,8 @@ d("ramose e2e", () => {
     expect(idx.root.t).toBeGreaterThanOrEqual(tAge30);
     const after = await db.info();
     expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
-    const q1 = await db.query(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
-    const q2 = await db.query(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
+    const q1 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
+    const q2 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
     expect(q1.result.length).toBe(2);
     expect(q2.result.length).toBe(2);
     if (q2.meta.r2Gets !== null) expect(q2.meta.r2Gets).toBe(0); // warm isolate: no R2 reads
@@ -130,7 +130,7 @@ d("ramose e2e", () => {
     expect(rc.ok).toBe(true);
     const lastT = Math.max(...acks.map((a) => a.t));
     // read-your-writes: the basis served after the last ack covers it
-    const q = await db.query(`[:find (count ?e) . :where [?e :user/email]]`);
+    const q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
     expect(q.t).toBeGreaterThanOrEqual(lastT);
     expect(q.result).toBe(before + 25);
     const info1 = await db.info();

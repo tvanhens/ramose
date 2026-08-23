@@ -98,7 +98,7 @@ export interface EidOfDecl<N extends AnyEntity = AnyEntity> {
 
 export const EidOf = <const N extends AnyEntity>(ns: N): EidOfDecl<N> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
-    throw new Error("ramose/params: EidOf(...) takes a namespace (Ramose.EidOf(User))");
+    throw new Error("ramose/params: EidOf(...) takes an entity (Ramose.EidOf(User))");
   }
   return { _tag: "EidOfDecl", ns, schema: { Type: undefined as never } };
 };

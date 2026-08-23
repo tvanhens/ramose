@@ -108,7 +108,7 @@ Every record type gets an `id` field for free: `Todo.id`. This one file is impor
 
 ## Declare the server
 
-Ramose runs as one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `ramose/worker`. You only name the storage it needs.
+Ramose runs as one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `ramose/worker`. You only name the storage it needs.
 
 ```ts title="resources.ts"
 import * as Ramose from "ramose";
@@ -261,7 +261,7 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
 
 A query is a **value** — hoist it once and run it once, live, or in the past. `TodoRow` is read off the query, so adding a field to the shape changes the type everywhere it is used.
 
-Each write is one all-or-nothing change ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `add` sets a field, `retractEntity` deletes one.
+Each write is one all-or-nothing change ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `set` sets a field, `delete` deletes one.
 
 :::note[Effect, in three rules]
 Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).

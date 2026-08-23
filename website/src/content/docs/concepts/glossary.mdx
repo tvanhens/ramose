@@ -78,7 +78,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="connection"></span><span id="session"></span>**WebSocket connection** (session) | The connection a browser holds to a database; hosts the current-view overlay and carries filtered transactions. Pinned `asOf` / `history` still read the server. Writes always use HTTPS. | `GET /db/:name/session` — [HTTP API](/reference/server/#http-api) |
 | <span id="worker"></span>**Worker** | Cloudflare's serverless function. Your app's backend and the Ramose server are Workers. | `Cloudflare.Worker` |
 | <span id="workspace"></span><span id="tenant"></span>**workspace / customer** (tenant) | One customer's isolated data — one database. Reef's word is workspace. | `ramose.db(slug, Reef)` — [One database per customer](/guides/workspaces/) |
-| <span id="write"></span><span id="transaction"></span>**write** | A group of changes that lands completely or not at all; gets one version number; the only way data enters. | [`db.run`](/reference/client-api/#operations), `TxReport` |
+| <span id="write"></span><span id="transaction"></span>**write** | A group of changes that lands completely or not at all; gets one version number; the only way data enters. | [`db.run`](/reference/client-api/#transactions), `TxReport` |
 | <span id="writer"></span><span id="transactor"></span>**writer** (transactor) | The one thing per database that commits writes, in order. | `TransactorDO` — [The four promises](/concepts/architecture/#the-four-promises) |
 
 ## Reference-only words

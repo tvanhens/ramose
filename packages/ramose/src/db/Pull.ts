@@ -922,7 +922,7 @@ export const assertDirectField = (
   const { path, revs } = hopsOf(attr);
   if (path.length < 2) return;
   throw new Error(
-    `ramose/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct attribute of the queried namespace. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
+    `ramose/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct field of the queried entity. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
   );
 };
 

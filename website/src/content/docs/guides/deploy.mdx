@@ -17,7 +17,7 @@ A **stage** is one isolated copy of the whole stack ([glossary](/concepts/glossa
 
 ## The stack file
 
-The todos app's stack is two files. The deploy file names the three things the **Ramose server** needs on Cloudflare — a [storage bucket](/concepts/glossary/#object-storage) where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. That file is `resources.ts`; `alchemy.run.ts` installs the schema and declares the stack. The Ramose server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer* ([glossary](/concepts/glossary/#server)). [Why these three things →](/concepts/architecture/#what-runs-where)
+The todos app's stack is two files. The deploy file names the three things the **Ramose server** needs on Cloudflare — a [storage bucket](/concepts/glossary/#object-storage) where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. That file is `resources.ts`; `alchemy.run.ts` installs the schema and declares the stack. The Ramose server is the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). [Why these three things →](/concepts/architecture/#what-runs-where)
 
 <details>
 <summary>Copy these two files as-is</summary>
@@ -153,7 +153,7 @@ export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 | name | what it is |
 | --- | --- |
 | `Ramose.Server(id, props)` | the deployed server. Props: `worker` (a `Cloudflare.Worker`, `{ url, workerName? }`, or a bare URL string), `url?` (custom domain), `token?` (the server's `RAMOSE_TOKEN`), `auth?` (deploy-time check), `probe?` (`GET /health` retries: 30 attempts, 2 s apart; `false` skips). Outputs `{ url, workerName, token }`. Delete is a no-op. |
-| `Ramose.Database(id, props)` | "install this schema on that name", after the server. Props: `server`, `catalog`, `name?` (defaults to `id`). Outputs `{ name, server, t }`. Delete is a no-op. |
+| `Ramose.Database(id, props)` | "install this schema on that name", after the server. Props: `server`, `schema`, `name?` (defaults to `id`). Outputs `{ name, server, t }`. Delete is a no-op. |
 | `Ramose.ReadWriteDatabases(server)` | a **capability** — what your Worker may do ([glossary](/concepts/glossary/#capability)): read and write every database on that server |
 | `Ramose.ReadDatabases(server)` | the same with writes removed: no `transact`, `install`, or `principal` |
 | `Ramose.ServerBinding` | how calls travel — a **service binding**, Worker to Worker, no URL ([glossary](/concepts/glossary/#service-binding)). A `Layer<ReadWriteDatabases \| ReadDatabases, never, WorkerEnvironment>`; needs `worker` to be a `Cloudflare.Worker`. No live queries. |

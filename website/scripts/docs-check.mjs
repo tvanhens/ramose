@@ -75,10 +75,9 @@ const BANNED = [
   "datom", "isolate", "standing query", "standing read", "materialize",
   "datalog", "novelty", "tempid", "EAVT", "AEVT", "AVET", "VAET",
 ];
-// Softer: a legitimate use exists, but only so many. `peer` is allowed exactly
-// once per page — the mandated gloss ("Ramose's code calls it the peer") — so
-// one occurrence is the rule being followed and two is a leak.
-const BANNED_SOFT = { peer: 1, upsert: 0, idempotent: 0, checkpoint: 0, colo: 0, segment: 0 };
+// Softer: a legitimate use exists, but only so many. `peer` is banned in
+// prose — the code is `createServer` / `ServerAuth`.
+const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, checkpoint: 0, colo: 0, segment: 0 };
 
 const REFERENCE_PAGES = /^reference\//;
 const NO_LEARN = new Set([

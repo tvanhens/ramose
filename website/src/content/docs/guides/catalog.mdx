@@ -109,7 +109,7 @@ Nothing downstream needs a type annotation. Reef's board row is inferred:
 export type BoardRow = Ramose.Row<typeof boardQuery>;
 ```
 
-`BoardRow["priority"]` is a `number`, `createdAt` a `Date`, `assignee` `{ id; name } | undefined`. Writes are checked too: `issue.add(Issue.priority, "high")` does not compile. Your UI types are your database types; they cannot drift.
+`BoardRow["priority"]` is a `number`, `createdAt` a `Date`, `assignee` `{ id; name } | undefined`. Writes are checked too: `issue.set(Issue.priority, "high")` does not compile. Your UI types are your database types; they cannot drift.
 
 ## Where the schema gets installed
 

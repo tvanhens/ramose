@@ -6,7 +6,7 @@ import ChecklistState from "../../../components/ChecklistState.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-A freshly deployed **Ramose server** accepts every request, from anyone, with full rights. That is the right default for a laptop and the wrong one for the internet. This checklist is for anyone about to point real users at it. (The Ramose server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.)
+A freshly deployed **Ramose server** accepts every request, from anyone, with full rights. That is the right default for a laptop and the wrong one for the internet. This checklist is for anyone about to point real users at it. (The Ramose server is the one Cloudflare Worker that serves all your databases.)
 
 <Learn learn={["Close the front door: policy, keys, origins, token lifetime", "What is kept, and what a teardown deletes", "How much one database can take", "The failures that will happen, and what to do"]} before={[{ href: "/guides/deploy/", label: "Deploy" }, { href: "/guides/permissions/", label: "Permissions" }]} minutes={8} />
 

@@ -11,7 +11,7 @@ Your own Worker gets a typed client bound to the Ramose server — no URL, no to
 
 ## The smallest Worker
 
-You declare what the Worker may do — a **capability** ([glossary](/concepts/glossary/#capability)) — and, separately, how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. The `examples/kv-style` Worker binds it once at start-up:
+You declare what the Worker may do — a **capability** ([glossary](/concepts/glossary/#capability)) — and, separately, how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
 
 ```ts title="examples/kv-style/app.ts:28-33 · app.ts:146"
 export const App = Cloudflare.Worker(

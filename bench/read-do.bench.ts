@@ -60,7 +60,7 @@ const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
 
 const results: Record<string, unknown> = {};
 for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
-  const warm = await db.query(q, inputs, qopts); // warm
+  const warm = await db.queryEnvelope(q, inputs, qopts); // warm
   if (warm.meta?.colo || warm.meta?.replicaHint) console.log(`  ${name}: worker colo=${warm.meta?.colo ?? "?"} replicaHint=${warm.meta?.replicaHint ?? "?"}`);
   const client_ms: number[] = [], server_ms: number[] = [];
   let hits = 0, refetches = 0, behind = 0;
@@ -69,7 +69,7 @@ for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
     Array.from({ length: conc }, async () => {
       while (i++ < runs) {
         const t0 = performance.now();
-        const r = await db.query(q, inputs, qopts);
+        const r = await db.queryEnvelope(q, inputs, qopts);
         client_ms.push(performance.now() - t0);
         if (r.meta?.ms !== null && r.meta?.ms !== undefined) server_ms.push(r.meta.ms);
         if (r.meta?.basisHit) hits++;

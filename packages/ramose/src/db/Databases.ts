@@ -343,7 +343,7 @@ export const makeDatabases = (
             return Effect.fail<DbError>(
               new InternalError({
                 message:
-                  "ramose: the peer's /info reported no principal — it predates db.principal()",
+                  "ramose: the server's /info reported no principal — it predates db.principal()",
               }),
             );
           }

@@ -62,7 +62,7 @@ export type IdRow = { readonly id: number };
  */
 export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
-    throw new Error("ramose/query: entities(...) takes a namespace");
+    throw new Error("ramose/query: entities(...) takes an entity");
   }
   return makePipeline(ns, []);
 };

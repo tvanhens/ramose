@@ -151,7 +151,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   if (url === undefined || url === "") {
     return yield* Effect.fail(
       new InvalidRequest({
-        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a catalog on it`,
+        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
       }),
     );
   }
@@ -170,7 +170,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
       orElse: () =>
         Effect.fail(
           new NetworkError({
-            message: `ramose: installing the catalog on ${JSON.stringify(name)} at ${url} did not finish within ${timeoutMs}ms — the server accepted the connection but never answered. Check that the Worker serving it is actually running (under \`alchemy dev\`, a Worker whose bundle failed still binds its port and answers nothing).`,
+            message: `ramose: installing the schema on ${JSON.stringify(name)} at ${url} did not finish within ${timeoutMs}ms — the server accepted the connection but never answered. Check that the Worker serving it is actually running (under \`alchemy dev\`, a Worker whose bundle failed still binds its port and answers nothing).`,
           }),
         ),
     }),

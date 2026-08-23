@@ -189,25 +189,25 @@ export class PeerDb {
   /**
    * Unwrap the find result. EDN string queries are ops-harness only — not
    * `ramose/db` (`db.query(QueryObject)`). `q` is the scalar / rows the
-   * peer's `:find` produced; `query` is the HTTP envelope around them.
+   * server's `:find` produced; `queryEnvelope` is the HTTP envelope around them.
    */
   async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<T> {
-    const r = await this.query<T>(query, inputs, opts);
+    const r = await this.queryEnvelope<T>(query, inputs, opts);
     return r.result;
   }
 
   /** Envelope (`t`, `root`, `result`, `meta`). Use {@link q} for the find scalar. */
-  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
+  queryEnvelope<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
     return this.client.request<QueryReply<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }
 
-  /** `minT`: read fence, same as `q` / `query`. */
+  /** `minT`: read fence, same as `q` / `queryEnvelope`. */
   async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[], opts: { minT?: number } = {}): Promise<T> {
     const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), compact({ eid, pattern, asOf: this.asOfT, history: this.hist || undefined }), minTHeader(opts));
     return r.result;
   }
 
-  /** `minT`: read fence, same as `q` / `query`. */
+  /** `minT`: read fence, same as `q` / `queryEnvelope`. */
   async entity(eid: number, opts: { minT?: number } = {}): Promise<Record<string, unknown> | undefined> {
     const r = await this.client.request<{ entity: Record<string, unknown> | null }>("GET", this.path(`/entity/${eid}${this.asOfT !== undefined ? `?asOf=${this.asOfT}` : ""}`), undefined, minTHeader(opts));
     return r.entity ?? undefined;
