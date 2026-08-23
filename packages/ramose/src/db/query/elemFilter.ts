@@ -103,7 +103,7 @@ const andOf = (preds: readonly PullElemPred[]): PullElemPred =>
 const isRefAttr = (attr: unknown): boolean =>
   typeof attr === "object" &&
   attr !== null &&
-  (attr as { valueType?: unknown }).valueType === ":db.type/ref";
+  (attr as { valueType?: unknown }).valueType === "ref";
 
 /** Every var a clause list mentions, groups included. */
 const collectVarIds = (list: readonly BClause[], into: Set<number>): void => {

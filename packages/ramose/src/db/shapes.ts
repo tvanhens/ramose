@@ -113,7 +113,7 @@ type IsDefaultable<A> = IsMany<A> extends true
 
 /** Does this node end on a ref (a backlink is one, read the other way)? */
 const isRefNav = (attr: PathCarrier): boolean =>
-  (attr as { valueType?: unknown }).valueType === ":db.type/ref";
+  (attr as { valueType?: unknown }).valueType === "ref";
 
 // ── select shapes ──────────────────────────────────────────────────────────
 

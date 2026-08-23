@@ -435,7 +435,7 @@ const nsOfIdent = (ident: string): string | undefined =>
   /^:([^/]+)\//.exec(ident)?.[1];
 
 const isRefAttr = (attr: AttrLike | undefined): boolean =>
-  attr !== undefined && (attr as { valueType?: unknown }).valueType === ":db.type/ref";
+  attr !== undefined && (attr as { valueType?: unknown }).valueType === "ref";
 
 /** The namespace a ref attr's v-position brand flows from, when resolvable. */
 const refTargetNs = (attr: AttrLike | undefined): string | undefined => {

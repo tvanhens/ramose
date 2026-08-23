@@ -988,7 +988,7 @@ export const inspectPullField = (
   if (isCollectionCarrier(current)) {
     // a scalar collection *is* the field: its elements are values, and a
     // value has no shape to ask for. A ref one still needs its `.select`.
-    if ((current.attr as { valueType?: unknown })?.valueType === ":db.type/ref") {
+    if ((current.attr as { valueType?: unknown })?.valueType === "ref") {
       throw new Error(
         "ramose/schema: a filtered reference collection needs a shape — write `.select({ … }, { where: [ … ] })`",
       );
