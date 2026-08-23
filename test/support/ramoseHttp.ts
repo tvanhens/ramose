@@ -186,13 +186,17 @@ export class PeerDb {
     return this.client.request<Ack>("POST", this.path("/transact"), { tx });
   }
 
-  /** Unwrap the query result. The HTTP harness is not `ramose/db`; `q` stays the ops spelling. */
+  /**
+   * Unwrap the find result. EDN string queries are ops-harness only — not
+   * `ramose/db` (`db.query(QueryObject)`). `q` is the scalar / rows the
+   * peer's `:find` produced; `query` is the HTTP envelope around them.
+   */
   async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<T> {
     const r = await this.query<T>(query, inputs, opts);
     return r.result;
   }
 
-  /** Envelope (`result` + `meta`). */
+  /** Envelope (`t`, `root`, `result`, `meta`). Use {@link q} for the find scalar. */
   query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
     return this.client.request<QueryReply<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }

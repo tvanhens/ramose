@@ -153,7 +153,7 @@ d("ramose e2e", () => {
     // cross product of two unrelated patterns over the users written so far: refused up front
     let err: any;
     try {
-      await db.query(`[:find ?a ?b :where [?x :user/email ?a] [?y :user/email ?b] [?z :user/email ?c]]`);
+      await db.q(`[:find ?a ?b :where [?x :user/email ?a] [?y :user/email ?b] [?z :user/email ?c]]`);
     } catch (e) {
       err = e;
     }
@@ -163,8 +163,8 @@ d("ramose e2e", () => {
       expect(err.status).toBe(413);
       expect(err.code).toBe("query/budget-exceeded");
     }
-    // and a normal query still works afterwards
-    expect(await db.query<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBeGreaterThan(0);
+    // and a normal query still works afterwards (`q` unwraps the find scalar)
+    expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBeGreaterThan(0);
   });
 
   test("write throughput smoke (group commit)", async () => {
