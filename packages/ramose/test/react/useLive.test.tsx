@@ -7,11 +7,11 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
 import * as Schema from "effect/Schema";
-import { type ReactNode, StrictMode } from "react";
-import { renderHook, waitFor } from "@testing-library/react";
+import { memo, type ReactNode, StrictMode } from "react";
+import { render, renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
-import { useLive } from "../../src/react/index.ts";
+import { CHURN_WARNING, useLive } from "../../src/react/useLive.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -343,6 +343,225 @@ describe("useLive (query form)", () => {
       expect(result.current.error).toBeUndefined();
       expect(limited).toBe(object);
     } finally {
+      await close();
+    }
+  });
+
+  test("a render-fresh equivalent query does not re-subscribe", async () => {
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    let liveCalls = 0;
+    const orig = db.live.bind(db);
+    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
+      liveCalls += 1;
+      return orig(...args);
+    }) as typeof db.live;
+    try {
+      const { result, rerender } = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).ids()),
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      expect(liveCalls).toBe(1);
+
+      rerender();
+      rerender();
+      await settle();
+      expect(liveCalls).toBe(1);
+      expect(result.current.ticks).toBe(0);
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe("useLive shared subscription cache", () => {
+  const spyLive = (db: Ramose.ReadDb) => {
+    let calls = 0;
+    let closed = 0;
+    const orig = db.live.bind(db);
+    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
+      calls += 1;
+      const sub = orig(...args);
+      const innerClose = sub.close.bind(sub);
+      sub.close = () => {
+        closed += 1;
+        innerClose();
+      };
+      return sub;
+    }) as typeof db.live;
+    return {
+      get calls() {
+        return calls;
+      },
+      get closed() {
+        return closed;
+      },
+    };
+  };
+
+  test("two hooks with equal lowered AST share one subscription", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
+    const spy = spyLive(db);
+    try {
+      const a = renderHook(() => useLive(db, allTodos));
+      const b = renderHook(() => useLive(db, Ramose.Query.from(Todo).ids()));
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(...world.eids)));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(...world.eids)));
+      expect(spy.calls).toBe(1);
+      expect(a.result.current.rows).toBe(b.result.current.rows);
+
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(a.result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
+      expect(b.result.current.rows).toBe(a.result.current.rows);
+      expect(a.result.current.ticks).toBe(1);
+      expect(b.result.current.ticks).toBe(1);
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("different params do not share; unmount of one does not close the other", async () => {
+    const p = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+    const world = await todoWorld(2);
+    const { db, peer, close } = overlaySetup(world);
+    const spy = spyLive(db);
+    try {
+      const one = renderHook(() => useLive(db, limited, { n: 1 }));
+      const two = renderHook(() => useLive(db, limited, { n: 2 }));
+      await waitFor(() => expect(one.result.current.rows).toEqual(ids(world.eids[0]!)));
+      await waitFor(() => expect(two.result.current.rows).toEqual(ids(...world.eids)));
+      expect(spy.calls).toBe(2);
+
+      one.unmount();
+      await settle();
+      expect(spy.closed).toBe(1);
+
+      const extra = txSnap(
+        await world.conn.transact([{ ":db/id": "t2", ":todo/title": "t2" }]),
+      );
+      peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
+      await waitFor(() =>
+        expect(two.result.current.rows).toEqual(
+          ids(world.eids[0]!, world.eids[1]!, extra.tempids.t2),
+        ),
+      );
+      expect(spy.closed).toBe(1);
+
+      two.unmount();
+      await settle();
+      expect(spy.closed).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  test("last unmount of a shared query closes the standing subscription", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
+    const spy = spyLive(db);
+    try {
+      const a = renderHook(() => useLive(db, allTodos));
+      const b = renderHook(() => useLive(db, allTodos));
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(...world.eids)));
+      expect(spy.calls).toBe(1);
+
+      a.unmount();
+      await settle();
+      expect(spy.closed).toBe(0);
+
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(b.result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
+
+      b.unmount();
+      await settle();
+      expect(spy.closed).toBe(1);
+      const frames = peer.frames.length;
+      peer.push({ op: "tx", t: two.t + 1, datoms: [] });
+      await settle();
+      expect(peer.frames.length).toBe(frames);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a single-row change re-renders only that row's memo child", async () => {
+    const titled = Ramose.Query.from(Todo);
+    const world = await todoWorld(2);
+    const { db, peer, close } = overlaySetup(world);
+    const renders: number[] = [];
+    const Row = memo(function Row({
+      row,
+    }: {
+      row: { readonly id: number; readonly title: string };
+    }) {
+      renders.push(row.id);
+      return <div>{row.title}</div>;
+    });
+    function List() {
+      const { rows } = useLive(db, titled);
+      return (
+        <>
+          {rows?.map((row) => (
+            <Row key={row.id} row={row} />
+          ))}
+        </>
+      );
+    }
+    try {
+      render(<List />);
+      await waitFor(() => expect(renders.length).toBeGreaterThanOrEqual(2));
+      const initial = [...renders];
+      expect(new Set(initial)).toEqual(new Set(world.eids));
+      renders.length = 0;
+
+      const change = txSnap(
+        await world.conn.transact([
+          { ":db/id": world.eids[0]!, ":todo/title": "changed" },
+        ]),
+      );
+      peer.push({ op: "tx", t: change.t, datoms: change.datoms });
+      await waitFor(() => expect(renders.length).toBeGreaterThan(0));
+      expect(renders).toEqual([world.eids[0]!]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("dev-mode warns once when the subscription key churns", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const warnings: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const { result, rerender } = renderHook(
+        ({ n }: { n: number }) => useLive(db, Ramose.Query.from(Todo).ids().limit(n)),
+        { initialProps: { n: 1 } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(warnings).toHaveLength(0);
+
+      rerender({ n: 2 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0]![0])).toBe(CHURN_WARNING);
+
+      rerender({ n: 1 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      console.warn = orig;
       await close();
     }
   });

@@ -35,3 +35,23 @@ export const seamOf = <C extends Schema.Any>(
  */
 export const viewDep = <C extends Schema.Any>(db: ReadDb<C>): unknown =>
   seamOf(db)?.key ?? db;
+
+const objectKeys = new WeakMap<object, string>();
+let nextObjectKey = 1;
+
+/**
+ * The view half of a live subscription key (`DbSeam.key`). Test doubles
+ * without a seam get a stable per-object token so the cache Map can key
+ * them as a string.
+ */
+export const viewKeyOf = <C extends Schema.Any>(db: ReadDb<C>): string => {
+  const key = seamOf(db)?.key;
+  if (key !== undefined) return key;
+  const obj = db as object;
+  let id = objectKeys.get(obj);
+  if (id === undefined) {
+    id = `#${nextObjectKey++}`;
+    objectKeys.set(obj, id);
+  }
+  return id;
+};
