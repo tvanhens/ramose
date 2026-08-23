@@ -215,7 +215,6 @@ interface ImportMetaEnv {
 ```ts title="src/todos.ts"
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
-import { pipe } from "ramose/effect";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
@@ -228,13 +227,9 @@ export const todoShape = {
   createdAt: Todo.createdAt,
 } as const;
 
-export const todoQuery = Ramose.Query.q(() =>
-  pipe(
-    Ramose.Query.entities(Todo),
-    Ramose.Query.select(todoShape),
-    Ramose.Query.orderBy(Todo.createdAt, "asc"),
-  ),
-);
+export const todoQuery = Ramose.Query.from(Todo)
+  .select(todoShape)
+  .orderBy(Todo.createdAt, "asc");
 
 /** One row of {@link todoQuery} — inferred, never restated. */
 export type TodoRow = Ramose.Row<typeof todoQuery>;
@@ -406,14 +401,10 @@ Leave `bun run dev` running while you make these edits. It watches the stack fil
 Add a second query in `src/todos.ts`:
 
 ```ts title="src/todos.ts"
-export const openTodos = Ramose.Query.q(() =>
-  pipe(
-    Ramose.Query.entities(Todo),
-    Ramose.Query.is(Todo.done, false),
-    Ramose.Query.select(todoShape),
-    Ramose.Query.orderBy(Todo.createdAt, "asc"),
-  ),
-);
+export const openTodos = Ramose.Query.from(Todo)
+  .where({ done: false })
+  .select(todoShape)
+  .orderBy(Todo.createdAt, "asc");
 ```
 
 Import it in `src/App.tsx` alongside `todoQuery`, then switch `TodoList` between the two:

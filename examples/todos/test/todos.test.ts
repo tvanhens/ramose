@@ -12,7 +12,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
 import { InternalError } from "../../../packages/ramose/src/db/Errors.ts";
 import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
@@ -317,13 +316,7 @@ describe("the app's writes move the app's live stream", () => {
 
     // `dbAfter` is floored at the write, so this reads its own write
     const rows = await report.dbAfter.query(
-      Ramose.Query.q(() =>
-        pipe(
-          Ramose.Query.entities(Todo),
-          Ramose.Query.is(Todo.title, "pull me"),
-          Ramose.Query.select({ id: Todo.id }),
-        ),
-      ),
+      Ramose.Query.from(Todo).where({ title: "pull me" }).select({ id: Todo.id }),
     );
     const row = await pullTodo(peer.db, { id: rows[0]!.id });
     expect(row).toMatchObject({ title: "pull me", done: false });

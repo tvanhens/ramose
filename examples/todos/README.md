@@ -36,7 +36,7 @@ examples/todos` builds the same bundle for production.
 | `schema.ts` | the catalog, on `ramose/db` — shared by the stack, a Worker and the browser |
 | `resources.ts` / `alchemy.run.ts` | `Ramose.Server` + `Ramose.Database`: the one place the catalog is installed |
 | `src/db.ts` | one client, closed with the page. `db`, nothing else |
-| `src/todos.ts` | `Ramose.Query.q` + writes, so the test drives exactly what the UI does |
+| `src/todos.ts` | `Ramose.Query.from` + writes, so the test drives exactly what the UI does |
 | `src/App.tsx` | the UI on `useLive` + `useTransact` from `ramose/react` — no hand-rolled hooks |
 | `test/todos.test.ts` | those helpers against a real engine `Connection` over both wires |
 
@@ -59,15 +59,9 @@ The query is a **value**, so it is hoisted once at module scope in
 `src/todos.ts`, and one row is named from it, never restated:
 
 ```ts
-import { pipe } from "ramose/effect";
-
-export const todoQuery = Ramose.Query.q(() =>
-  pipe(
-    Ramose.Query.entities(Todo),
-    Ramose.Query.select(todoShape),
-    Ramose.Query.orderBy(Todo.createdAt, "asc"),
-  ),
-);
+export const todoQuery = Ramose.Query.from(Todo)
+  .select(todoShape)
+  .orderBy(Todo.createdAt, "asc");
 
 export type TodoRow = Ramose.Row<typeof todoQuery>;
 ```

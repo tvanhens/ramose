@@ -36,7 +36,7 @@ The slider's ceiling is the current **version number `t`** — the number every 
         // …and the same query as of a past transaction. `asOf` is pure.
         const beforeRows = yield* db
           .asOf(report.t - 1)
-          .query(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
+          .query(Query.from(User).select({ name: User.name }));
 ```
 
 Calling `asOf` costs nothing; the read happens when you run the query.
@@ -53,12 +53,10 @@ Calling `asOf` costs nothing; the read happens when you run the query.
 
 ```ts title="examples/reef/src/domain/queries.ts:84-88"
 /** Over `db.history` this also returns issues that no longer exist. */
-export const everyIssueEverQuery = Query.q(() =>
-  pipe(
-    Query.entities(Issue),
-    Query.select({ id: Issue.id, title: Issue.title }),
-  ),
-);
+export const everyIssueEverQuery = Query.from(Issue).select({
+  id: Issue.id,
+  title: Issue.title,
+});
 ```
 
 Use it for audit trails, "who changed this", and debugging state that no longer exists.

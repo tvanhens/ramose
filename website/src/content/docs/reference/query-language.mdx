@@ -1,13 +1,14 @@
 ---
 title: The query language
-description: The kernel query surface — Query.q, the pipeable stdlib, named rules, and composition by delegation — and how it lowers onto the engine.
+description: The kernel query surface — Query.q, the pipeable stdlib, named rules, and composition by delegation — under the fluent Query.from app spelling.
 ---
 
 The minimum set of ideas behind the query language: what a query is, what
 the kernel is made of, and why every larger construct is derived rather
-than primitive. This is the one constraint language — the pipe spelling
-taught in [Read data](/guides/queries/) and the generator spelling below
-are two spellings of the same value.
+than primitive. This is the one constraint language — the fluent spelling
+taught in [Read data](/guides/queries/) wraps the same pipeline AST; the
+pipe and generator spellings below remain one tier down for joins,
+aggregates, and disjunction.
 
 ## One kind of object
 

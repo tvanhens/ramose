@@ -2,8 +2,8 @@
 
 Development notes for people changing Ramose itself. All docs live at
 [ramose.ai](https://ramose.ai) (source in `website/`) — the docs site is the
-sole documentation location. The shipped query language (the kernel:
-`Query.q`, the pipeable stdlib, `Q`) is on the website
+sole documentation location. The shipped query language (`Query.from`, the kernel
+`Query.q` / pipeable stdlib, `Q`) is on the website
 ([Read data](https://ramose.ai/guides/queries/),
 [The query language](https://ramose.ai/reference/query-language/),
 [Client API](https://ramose.ai/reference/client-api/)).
@@ -27,12 +27,13 @@ internals stay Datomic-shaped.
 | `owned` | `isComponent` | Wire stays `:db/isComponent`. |
 | `valueType: "string"` | `":db.type/string"` | Lowered internally. |
 | `ServerAuth` / `createServer` / `ServerOptions` | `PeerAuth` / `createPeer` / `PeerOptions` | |
-| `db.query` | `db.q` | Hatch is `db.effect.query`. `Query.q` is the constructor (#208). |
+| `db.query` | `db.q` | Hatch is `db.effect.query`. `Query.from` is the app constructor; `Query.q` is the generator/kernel spelling. |
 | `Claims` / `claims()` / `P.claim` | `MintedClaims`, `Policy.Claims`, `P.claims` | One token-payload type; no new JWT fields. |
 
 The Effect hatch's tx handle is `TxHandle` (`tx.entity()`), not `Entity`.
-Value-type helpers `Long` / `Instant` / `Uuid` stay until #207. `Query.q` +
-`pipe` stay until #208. The casing pass (`EidOf`, `./workerEntry`, error
+Value-type helpers `Long` / `Instant` / `Uuid` stay as the advanced-form
+vocabulary (#207). `Query.q` + `pipe` remain the generator/kernel spelling
+under `Query.from`. The casing pass (`EidOf`, `./workerEntry`, error
 suffixes) is deferred — do not bikeshed it on this pass.
 
 ## Local checks

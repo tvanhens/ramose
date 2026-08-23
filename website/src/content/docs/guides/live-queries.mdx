@@ -84,7 +84,7 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 ## Hoist your queries
 
-`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does — a `Query.q` value is inert data with stable identity, which is exactly what a hook dependency wants. Changing **values** are declared params (`Query.q({ issueId: … }, body)`) — bind them as the third argument; an inline `{ issueId }` is fine (params are compared by value), and a params-only change does not blank `rows`:
+`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does — a `Query.from` value is inert data with stable identity, which is exactly what a hook dependency wants. Changing **values** are hoisted params (`Ramose.params({ issueId: Issue.id })`) — bind them as the third argument; an inline `{ issueId }` is fine (params are compared by value), and a params-only change does not blank `rows`:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx:267"
   const comments = useLive(db, commentsQuery, { issueId });

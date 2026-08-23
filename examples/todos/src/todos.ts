@@ -1,6 +1,5 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
@@ -17,13 +16,9 @@ export const todoShape = {
 } as const;
 
 /** Standing list query — a value, not a callback builder. */
-export const todoQuery = Ramose.Query.q(() =>
-  pipe(
-    Ramose.Query.entities(Todo),
-    Ramose.Query.select(todoShape),
-    Ramose.Query.orderBy(Todo.createdAt, "asc"),
-  ),
-);
+export const todoQuery = Ramose.Query.from(Todo)
+  .select(todoShape)
+  .orderBy(Todo.createdAt, "asc");
 
 /** One row from {@link todoQuery} — inferred from the query, never restated. */
 export type TodoRow = Ramose.Row<typeof todoQuery>;

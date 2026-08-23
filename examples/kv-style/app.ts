@@ -15,7 +15,6 @@
 import * as Ramose from "ramose";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { Server } from "./resources.ts";
@@ -24,12 +23,8 @@ import { Movies, User } from "./schema.ts";
 const { Query } = Ramose;
 
 /** Hoisted query values — stable, reusable across requests. */
-const namesQuery = Query.q(() =>
-  pipe(Query.entities(User), Query.select({ name: User.name })),
-);
-const idsQuery = Query.q(() =>
-  pipe(Query.entities(User), Query.select({ id: User.id })),
-);
+const namesQuery = Query.from(User).select({ name: User.name });
+const idsQuery = Query.from(User).select({ id: User.id });
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
 // `service` binding to the server Worker, plus the shared token); the handler

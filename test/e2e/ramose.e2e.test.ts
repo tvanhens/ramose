@@ -10,7 +10,6 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
@@ -190,9 +189,7 @@ const Session = Ramose.Entity("s", {
   n: Ramose.int(),
 });
 const SessionCatalog = Ramose.Schema({ s: Session });
-const sessionNames = Query.q(() =>
-  pipe(Query.entities(Session), Query.select({ name: Session.name })),
-);
+const sessionNames = Query.from(Session).select({ name: Session.name });
 
 /** Reef-shaped card-one issue: title / status / rank + required creator join. */
 const ReefUser = Ramose.Entity("user", {
@@ -205,18 +202,15 @@ const ReefIssue = Ramose.Entity("issue", {
   creator: Ramose.Ref(ReefUser),
 });
 const ReefBoard = Ramose.Schema({ user: ReefUser, issue: ReefIssue });
-const reefBoardQuery = Query.q(() =>
-  pipe(
-    Query.entities(ReefIssue),
-    Query.select({
-      id: ReefIssue.id,
-      title: ReefIssue.title,
-      status: ReefIssue.status,
-      rank: ReefIssue.rank,
-      creator: ReefIssue.creator.select({ name: ReefUser.name }),
-    }),
-    Query.orderBy("rank", "asc"),
-  ),
+const reefBoardQuery = Query.from(ReefIssue)
+  .select({
+    id: ReefIssue.id,
+    title: ReefIssue.title,
+    status: ReefIssue.status,
+    rank: ReefIssue.rank,
+    creator: ReefIssue.creator.select({ name: ReefUser.name }),
+  })
+  .orderBy("rank", "asc");
 );
 type ReefBoardRow = Ramose.Row<typeof reefBoardQuery>;
 
@@ -437,14 +431,10 @@ d("ramose session socket e2e", () => {
         const kept = groups.filter((g) => g.rows > 1);
         expect(kept).toEqual([{ n: 2, rows: 2 }]);
 
-        const paged = Query.q(() =>
-          pipe(
-            Query.entities(Session),
-            Query.select({ name: Session.name }),
-            Query.orderBy("name"),
-            Query.limit(3),
-          ),
-        );
+        const paged = Query.from(Session)
+          .select({ name: Session.name })
+          .orderBy("name")
+          .limit(3);
         const pageQ = (after: Ramose.Cursor | null) => paged.after(after);
         const p1 = await rt.runPromise(absorb(view.effect.query(pageQ(null))));
         expect(p1.rows.map((r) => r.name)).toEqual(["a", "b", "c"]);
@@ -613,12 +603,7 @@ d("ramose session socket e2e", () => {
         const people = await phoneRt.runPromise(
           absorb(
             person.dbAfter.effect.query(
-              Query.q(() =>
-                pipe(
-                  Query.entities(ReefUser),
-                  Query.select({ id: ReefUser.id, name: ReefUser.name }),
-                ),
-              ),
+              Query.from(ReefUser).select({ id: ReefUser.id, name: ReefUser.name }),
             ),
           ),
         );

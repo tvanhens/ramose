@@ -305,24 +305,20 @@ const myEid = who.eid?.id; // the peer-owned user row
 
 ## Queries
 
-**`Query.q(params?, body)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is `Ramose.Query` (the same names are importable flat from `ramose/query`). The body is a pipe of combinators, or a generator of kernel clauses for the full power room ([The query language](/reference/query-language/)). Pass the value to `db.query` / `db.live` directly; declared params bind at the call.
+**`Query.from(Entity)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is `Ramose.Query` (the same names are importable flat from `ramose/query`). The chain is immutable and hoistable. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Pass the value to `db.query` / `db.live` directly; hoisted params bind at the call.
 
 ```ts
-import { pipe } from "effect/Function";
+const p = Ramose.params({ me: User.id });
 
-Query.q({ me: Ramose.EidOf(User) }, (p) =>
-  pipe(
-    Query.entities(Todo),                 // every todo…
-    Query.is(Todo.owner, p.me),           // …owned by me
-    Query.select({ id: Todo.id, title: Todo.title }),  // the shape; without it rows are { id }
-    Query.orderBy("title", "asc", { empty: "last" }),  // a column name, or the attribute itself
-    Query.limit(20),
-    Query.offset(0),
-  ),
-);
+Query.from(Todo)                         // every todo…
+  .where({ owner: p.me })                // …owned by me
+  .select({ id: Todo.id, title: Todo.title })  // the shape; without it the row is the full entity
+  .orderBy(Todo.title, "asc", { empty: "last" })
+  .limit(20)
+  .offset(0);
 ```
 
-A param is declared from an attribute reference (`User.sub`), an Effect Schema, or `Ramose.EidOf(N)` for an entity-valued hole; `Ramose.optional(decl)` marks one that may stay unbound.
+A param is declared from an attribute reference (`Issue.id`, `User.sub`) or an Effect Schema; `Ramose.optional(decl)` marks one that may stay unbound. `Issue.id` produces a branded `Eid`.
 
 **Combinators** — each is a pipeable stage on the query, and the same name applied to a bound handle is the plain generator fragment:
 
@@ -332,7 +328,8 @@ A param is declared from an attribute reference (`User.sub`), an Effect Schema, 
 | `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number, id cell, or param). Equivalent to `is(N.id, id)` |
 | `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal, id cell, or param). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there |
-| `where(attr, (v) => cmp)` | bind the value and constrain it: `where(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (a `RegExp` with flags throws) |
+| `matching(attr, (v) => cmp)` | bind the value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (a `RegExp` with flags throws) |
+| `ids()` | project only `{ id }` rows — the cheap live-subscription workhorse |
 | `follow(ref)` / `backlink(ref)` | refocus on the reference's target / on the referrer |
 | `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over referrers through `ref` (`every` / `none` are vacuously true of a record nothing points at) |
 | `when(gate, …ps)` | include the filters only while the param gate is on — a `Param<boolean>` gates on its value, an optional param on being bound |
@@ -351,15 +348,13 @@ q.after(cursor)  // keyset page — resolves to { rows, cursor }
 q.logic()        // the query without its cursor (orderBy/limit/offset/one/after) — for composition
 ```
 
-```ts title="examples/reef/src/domain/queries.ts:94-101"
-export const commentsQuery = Query.q({ issueId: Ramose.EidOf(Issue) }, (p) =>
-  pipe(
-    Query.entities(Comment),
-    Query.is(Comment.issue, p.issueId),
-    Query.select(commentShape),
-    Query.orderBy(Comment.at, "asc"),
-  ),
-);
+```ts title="examples/reef/src/domain/queries.ts"
+const p = Ramose.params({ issueId: Issue.id });
+
+export const commentsQuery = Query.from(Comment)
+  .where({ issue: p.issueId })
+  .select(commentShape)
+  .orderBy(Comment.at, "asc");
 ```
 
 **Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ owned: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
@@ -381,20 +376,17 @@ export const boardShape = {
 **Recursive trees.** A thread is a window, not one fetch. `again(4)` and `{ limit: 20 }` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread, { root: clicked.id })`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
 
 ```ts
-const thread = Query.q({ root: Ramose.EidOf(Comment) }, (p) =>
-  pipe(
-    Query.entities(Comment),
-    Query.byId(p.root),
-    Query.select({
-      id: Comment.id,
-      body: Comment.body,
-      replies: Comment.replies.select(Ramose.again(4), {
-        orderBy: Comment.createdAt,
-        limit: 20,
-      }),
+const p = Ramose.params({ root: Comment.id });
+const thread = Query.from(Comment)
+  .where(Query.byId(p.root))
+  .select({
+    id: Comment.id,
+    body: Comment.body,
+    replies: Comment.replies.select(Ramose.again(4), {
+      orderBy: Comment.createdAt,
+      limit: 20,
     }),
-  ),
-);
+  });
 // Query.is(Comment.id, p.root) is the same filter as Query.byId(p.root)
 ```
 
@@ -414,14 +406,10 @@ Aggregate cells replace the pull shape, so they do not combine with `select` or 
 **Keyset paging.** `q.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
 
 ```ts
-const paged = Query.q(() =>
-  pipe(
-    Query.entities(Issue),
-    Query.select(boardShape),
-    Query.orderBy(Issue.createdAt, "desc"),
-    Query.limit(20),
-  ),
-);
+const paged = Query.from(Issue)
+  .select(boardShape)
+  .orderBy(Issue.createdAt, "desc")
+  .limit(20);
 const p1 = yield* db.query(paged.after(null));
 const p2 = yield* db.query(paged.after(p1.cursor));   // rows strictly after page one
 ```
