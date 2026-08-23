@@ -9,10 +9,12 @@ spelling — immutable, hoistable, no `pipe`. Object-literal `.where` is a
 conjunction of equality filters; fragments (`Query.some`, `Query.matching`)
 pass to the same method. Hoist `Ramose.params({ issueId: Issue.id })`;
 `Issue.id` is a branded `Eid` (no recased `idOf`). A select-less fluent
-query returns the full entity (friendly keys, refs as `{ id }` cells) and
-serializes that expanded shape, not `[*]`. `.ids()` is today's cheap
-id-only subscription. `Query.q` + pipe remain the generator/kernel
-spelling. Bind-attr `Query.where` is renamed `Query.matching`.
+query returns the full entity (friendly keys; refs as `{ id: Eid<Target> }`
+cells — `Comment.issue` is `{ id: Eid<Issue> }`). Required scalars stay
+required; `| undefined` is only on optional fields. The serialized form
+is that expanded shape, not `[*]`. `.ids()` is today's cheap id-only
+subscription. `Query.q` + pipe remain the generator/kernel spelling.
+Bind-attr `Query.where` is renamed `Query.matching`.
 
 ### Schema value shorthands (part of #207, tracker #205)
 

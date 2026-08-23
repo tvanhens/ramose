@@ -371,11 +371,11 @@ type EntityLike = { readonly fields: object; readonly ns: string };
 type RefShorthand = {
   <const N extends EntityLike>(
     target: N | (() => N),
-  ): Field<TargetedRef<N["fields"], N["ns"]>, "one", undefined, "ref", false>;
+  ): Field<TargetedRef<N["fields"], N["ns"], N>, "one", undefined, "ref", false>;
   <const N extends EntityLike, const O extends FieldOptions>(
     target: N | (() => N),
     options: O,
-  ): Field<TargetedRef<N["fields"], N["ns"]>, CardOf<O>, UniqueOf<O>, "ref", OwnedOf<O>>;
+  ): Field<TargetedRef<N["fields"], N["ns"], N>, CardOf<O>, UniqueOf<O>, "ref", OwnedOf<O>>;
   readonly self: Field<
     TargetedRef<SelfMarker>,
     "one",

@@ -73,10 +73,16 @@ export type UuidString = Uuid;
 export type TargetedRef<
   TargetFields extends object = object,
   Ns extends string = string,
+  Target = unknown,
 > = Schema.Schema<number> & {
   readonly [RefTarget]?: TargetFields;
   readonly _resolve?: () => { readonly fields: TargetFields; readonly ns: Ns };
   readonly _self?: boolean;
+  /**
+   * Phantom: the entity `Ref(User)` was declared against. Brands
+   * `{ id: Eid<User> }` on a default fluent row. Never at runtime.
+   */
+  readonly _target?: Target;
 } & RamoseVt<"ref">;
 
 export type SelfMarker = { readonly [SelfRef]: true };
@@ -94,7 +100,7 @@ type RefFn = {
    */
   <const N extends EntityLike>(
     target: N | (() => N),
-  ): TargetedRef<N["fields"], N["ns"]>;
+  ): TargetedRef<N["fields"], N["ns"], N>;
   /** Self-ref; `Entity` substitutes the enclosing field map. */
   readonly self: TargetedRef<SelfMarker>;
 } & RamoseVt<"ref">;
@@ -112,10 +118,10 @@ export const untargetedRef = asVt(
 export const Ref: RefFn = Object.assign(
   <const N extends EntityLike>(
     target: N | (() => N),
-  ): TargetedRef<N["fields"], N["ns"]> =>
+  ): TargetedRef<N["fields"], N["ns"], N> =>
     Object.assign(asVt(Schema.Number.annotate({ identifier: "ramose/ref" }), "ref"), {
       _resolve: resolveRefTarget(target),
-    }) as TargetedRef<N["fields"], N["ns"]>,
+    }) as TargetedRef<N["fields"], N["ns"], N>,
   {
     self: Object.assign(
       asVt(

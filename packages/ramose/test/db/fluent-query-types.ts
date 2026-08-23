@@ -1,8 +1,10 @@
 /**
  * Compile-time fixtures for `Query.from`. `bun run typecheck` compiles this file.
  *
- * Pins the #208 ratification: header example, object-literal `where`,
- * hoisted `params({ issueId: Issue.id })`, and foreign-set tokens.
+ * Pins the #208 ratification: header example (row is
+ * `{ id: Eid<Comment>, text: string, at: Date, issue: { id: Eid<Issue> } }`),
+ * object-literal `where`, hoisted `params({ issueId: Issue.id })`, and
+ * foreign-set tokens.
  */
 
 import type {
@@ -48,8 +50,11 @@ const commentsQuery = Query.from(Comment)
 type HeaderRow = Row<typeof commentsQuery>;
 type _headerEntity = Expect<Equal<HeaderRow, EntityRow<typeof Comment>>>;
 type _headerId = Expect<Equal<HeaderRow["id"], Eid<typeof Comment>>>;
-type _headerText = Expect<Equal<HeaderRow["text"], string | undefined>>;
-type _headerIssue = Expect<Equal<HeaderRow["issue"], { readonly id: number } | undefined>>;
+type _headerText = Expect<Equal<HeaderRow["text"], string>>;
+type _headerAt = Expect<Equal<HeaderRow["at"], Date>>;
+type _headerIssue = Expect<
+  Equal<HeaderRow["issue"], { readonly id: Eid<typeof Issue> }>
+>;
 
 const commentShape = {
   id: Comment.id,
@@ -101,3 +106,25 @@ db.query(partial, { issueId: 1 as Eid<typeof Issue>, extra: "Ada" });
 
 const onlyIds = Query.from(Comment).ids();
 type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: number }>>;
+
+// ── optional fields only are `| undefined` ─────────────────────────────────
+
+const Note = Entity("note", {
+  body: Field(Schema.String),
+  subtitle: Field(Schema.optional(Schema.String), { valueType: "string" }),
+  author: Ref(User),
+});
+type NoteRow = EntityRow<typeof Note>;
+type _noteBody = Expect<Equal<NoteRow["body"], string>>;
+type _noteSub = Expect<Equal<NoteRow["subtitle"], string | undefined>>;
+type _noteAuthor = Expect<Equal<NoteRow["author"], { readonly id: Eid<typeof User> }>>;
+
+// ── .orderBy keys are typechecked like .where ──────────────────────────────
+
+Query.from(Comment).orderBy(Comment.at, "asc");
+Query.from(Comment).orderBy("at", "asc");
+// @ts-expect-error unknown field is not an orderBy key
+Query.from(Comment).orderBy("nope", "asc");
+Query.from(Comment).select(commentShape).orderBy("text", "asc");
+// @ts-expect-error a column that was not selected is not an orderBy string key
+Query.from(Comment).select(commentShape).orderBy("at", "asc");

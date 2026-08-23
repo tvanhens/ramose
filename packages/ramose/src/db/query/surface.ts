@@ -20,7 +20,7 @@ export type {
 } from "./query.ts";
 
 export { from } from "./fluent.ts";
-export type { EntityRow, FluentQuery, WhereEq } from "./fluent.ts";
+export type { EntityRow, FluentQuery, RefIdCell, WhereEq } from "./fluent.ts";
 
 export {
   assertedBy,

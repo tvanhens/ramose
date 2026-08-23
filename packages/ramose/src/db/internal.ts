@@ -73,6 +73,7 @@ export {
   type AnyQueryObject,
   type EntityRow,
   type FluentQuery,
+  type RefIdCell,
   type LoweredKernelQuery,
   type QueryObject,
   type Row,

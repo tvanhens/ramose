@@ -34,46 +34,111 @@ import { makeQueryObject, type Cursor, type Pipeline, type QueryObject } from ".
 
 type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
 type IsRef<A> = A extends { readonly valueType: "ref" } ? true : false;
+type IsOptional<A> = undefined extends AttrValue<A> ? true : false;
 
-/** A ref under the default shape: an `{ id }` Eid cell, never auto-nested. */
-export type RefIdCell = { readonly id: number };
+/** Instant is a branded `Date`; the app row is the friendly `Date`. */
+type FriendlyScalar<T> = T extends Date ? Date : T;
+
+/**
+ * The entity a `Ref(Issue)` field points at. Self-refs resolve to the
+ * enclosing entity. Untargeted refs stay `AnyEntity`.
+ */
+type RefTarget<A, Enclosing extends AnyEntity> = A extends {
+  readonly schema: { readonly _target?: infer T };
+}
+  ? [T] extends [AnyEntity]
+    ? T
+    : Enclosing
+  : AnyEntity;
+
+/**
+ * A ref under the default shape: an `{ id }` cell branded with the
+ * *target* entity, never auto-nested. `Comment.issue` → `{ id: Eid<Issue> }`.
+ */
+export type RefIdCell<N extends AnyEntity = AnyEntity> = {
+  readonly id: Eid<N>;
+};
+
+type FieldRow<A, Enclosing extends AnyEntity> = IsMany<A> extends true
+  ? IsRef<A> extends true
+    ? readonly RefIdCell<RefTarget<A, Enclosing>>[]
+    : readonly FriendlyScalar<Exclude<AttrValue<A>, undefined>>[]
+  : IsRef<A> extends true
+    ? IsOptional<A> extends true
+      ? RefIdCell<RefTarget<A, Enclosing>> | undefined
+      : RefIdCell<RefTarget<A, Enclosing>>
+    : FriendlyScalar<AttrValue<A>>;
 
 /**
  * The row a select-less fluent query yields: friendly keys, refs as
- * `{ id }` cells, optional card-one fields (`| undefined`), card-many as
- * arrays. Not `all(N)` / `[*]` — lowering expands `N.fields` into this shape.
+ * `{ id: Eid<Target> }` cells. `| undefined` only on optional fields;
+ * required scalars stay required. Card-many are arrays. Not `all(N)` /
+ * `[*]` — lowering expands `N.fields` into this shape.
  */
 export type EntityRow<N extends AnyEntity> = {
   readonly id: Eid<N>;
 } & {
-  readonly [K in keyof N["fields"]]: IsMany<N["fields"][K]> extends true
-    ? IsRef<N["fields"][K]> extends true
-      ? readonly RefIdCell[]
-      : readonly AttrValue<N["fields"][K]>[]
-    : IsRef<N["fields"][K]> extends true
-      ? RefIdCell | undefined
-      : AttrValue<N["fields"][K]> | undefined;
+  readonly [K in keyof N["fields"]]: FieldRow<N["fields"][K], N>;
 };
 
 /** Expand `N.fields` into the pull shape the default row serializes as. */
 const entityId = (ns: AnyEntity): PathCarrier =>
   (ns as AnyEntity & { readonly id: PathCarrier }).id;
 
+/** The entity `Ref(Issue)` was declared against — has `.id` for the nested cell. */
+const refTargetEntity = (
+  field: { readonly schema?: unknown },
+  source: AnyEntity,
+): AnyEntity => {
+  const schema = field.schema as
+    | { readonly _resolve?: () => unknown; readonly _self?: boolean }
+    | undefined;
+  if (schema?._self === true) return source;
+  const resolve = schema?._resolve;
+  if (typeof resolve !== "function") return source;
+  const target = resolve();
+  if (
+    typeof target === "object" &&
+    target !== null &&
+    (target as { _tag?: unknown })._tag === "Entity"
+  ) {
+    return target as AnyEntity;
+  }
+  return source;
+};
+
+/** Schema.optional (and friends) show up as a Union that includes Undefined. */
+const schemaIsOptional = (schema: unknown): boolean => {
+  if (schema === null || (typeof schema !== "object" && typeof schema !== "function")) {
+    return false;
+  }
+  const ast = (schema as { readonly ast?: { readonly _tag?: string; readonly types?: readonly { readonly _tag?: string }[] } }).ast;
+  if (ast?._tag === "Undefined") return true;
+  if (ast?._tag === "Union") {
+    return ast.types?.some((t) => t._tag === "Undefined") ?? false;
+  }
+  return false;
+};
+
 export const entityShape = (ns: AnyEntity): Shape => {
-  const id = entityId(ns);
-  const out: Record<string, unknown> = { id };
+  const sourceId = entityId(ns);
+  const out: Record<string, unknown> = { id: sourceId };
   for (const [key, field] of Object.entries(ns.fields)) {
     const f = field as {
       readonly valueType?: string;
       readonly cardinality?: string;
+      readonly schema?: unknown;
       readonly select: (shape: Shape) => { readonly optional: unknown };
       readonly optional: unknown;
     };
+    const optional = schemaIsOptional(f.schema);
     if (f.valueType === "ref") {
-      const nested = f.select({ id });
-      out[key] = f.cardinality === "many" ? nested : nested.optional;
+      const nested = f.select({ id: entityId(refTargetEntity(f, ns)) });
+      out[key] =
+        f.cardinality === "many" ? nested : optional ? nested.optional : nested;
     } else {
-      out[key] = f.cardinality === "many" ? field : f.optional;
+      out[key] =
+        f.cardinality === "many" ? field : optional ? f.optional : field;
     }
   }
   return out as Shape;
@@ -217,7 +282,7 @@ export interface FluentQuery<
   ): FluentQuery<N, SelectResult<S>, PB>;
 
   orderBy(
-    key: string | PathCarrier,
+    key: (string & keyof Row) | PathCarrier,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): FluentQuery<N, Row, PB, Out>;

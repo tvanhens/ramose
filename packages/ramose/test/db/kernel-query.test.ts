@@ -42,6 +42,7 @@ import {
   values,
   type Db,
 } from "../../src/db/internal.ts";
+import { entityShape } from "../../src/db/query/fluent.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
   Effect.isEffect(value) ? Effect.runPromise(value) : value;
@@ -1497,7 +1498,7 @@ describe("Query.from — fluent app spelling", () => {
     const rows = await db.query(commentsQuery, { issueId: ids.fix as never });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text).toBe("on it");
-    expect(rows[0]!.issue).toEqual({ id: ids.fix.id });
+    expect(rows[0]!.issue.id as number).toBe(ids.fix.id);
     expect(typeof rows[0]!.id).toBe("number");
 
     const titled = await db.query(commentTitles, { issueId: ids.fix as never });
@@ -1510,6 +1511,15 @@ describe("Query.from — fluent app spelling", () => {
       },
     ]);
     await peer.dispose();
+  });
+
+  test("entityShape nests the target entity's id, not the source's", () => {
+    const shape = entityShape(Comment) as unknown as {
+      readonly issue: { readonly _tag: string; readonly shape: { readonly id: unknown } };
+    };
+    expect(shape.issue._tag).toBe("select");
+    expect(shape.issue.shape.id).toBe(Issue.id);
+    expect(shape.issue.shape.id).not.toBe(Comment.id);
   });
 
   test("select-less fluent query serializes the expanded entity shape, not [*]", async () => {

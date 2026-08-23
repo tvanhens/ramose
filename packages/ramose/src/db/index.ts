@@ -70,6 +70,7 @@ export type {
   Cursor,
   EntityRow,
   FluentQuery,
+  RefIdCell,
   OpenArgs,
   OpenResult,
   Page,
