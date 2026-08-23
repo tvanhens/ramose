@@ -28,7 +28,7 @@ const _anySchema: AnySchema = null as unknown as _schemaAny;
 
 type _value = ValueOf<AnyField>;
 type _opts = FieldOptions;
-type _vt: DbValueType = "string";
+const _vt: DbValueType = "string";
 type _dbs = DatabasesShape;
 type _read = ReadDatabasesShape;
 type _env = RamoseEnv;
