@@ -2,12 +2,12 @@
  * `Ramose.params` — declared value holes for a query that never changes
  * identity.
  *
- * A query is a stable value: `useLive` keys its subscription on the query
- * object itself, so a query that takes an argument used to need a factory and
- * a `useMemo` per argument. A param is the hole for the changing **value**:
- * declared up front, referenced inline as an expression-tree leaf, carried in
- * the query value, and bound at the terminal —
- * `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
+ * A query is a stable value. `useLive` keys its subscription on the lowered
+ * AST (plus {@link paramsKey} when bindings are present), so two hook sites
+ * with the same query + params share one standing subscription. A param is
+ * the hole for the changing **value**: declared up front, referenced inline
+ * as an expression-tree leaf, carried in the query value, and bound at the
+ * terminal — `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
  *
  * ```ts
  * const p = Ramose.params({
@@ -61,6 +61,25 @@ export const isParam = (x: unknown): x is AnyParam =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "Param";
+
+/**
+ * A param left in a lowered AST when keying a subscription — `{ $param: key }`
+ * instead of the bound value. Not a wire form: only {@link lowerQueryAst}
+ * emits these so a params query can key as `astKey + paramsKey`.
+ */
+export const isParamHole = (
+  v: unknown,
+): v is { readonly $param: string } =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as { $param?: unknown }).$param === "string" &&
+  Object.keys(v).length === 1;
+
+/** @internal Binder that leaves holes as `{$param}` tokens for subscription keys. */
+export const holesBinder = (): ParamBinder => ({
+  resolve: (p) => ({ $param: p.key }),
+  gateOn: () => true,
+});
 
 /** What a predicate method takes in a value position: a hole for `T`. */
 export type ParamIn<T> = Param<T, any, boolean>;

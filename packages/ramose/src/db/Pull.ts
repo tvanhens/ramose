@@ -3,7 +3,7 @@
 import type { PullElemOrder, PullElemPred } from "../internal/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyField } from "./Field.ts";
-import { isParam, type AnyParam } from "./Params.ts";
+import { isParam, isParamHole, type AnyParam } from "./Params.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
@@ -1161,6 +1161,7 @@ const bindElemValue = (
 ): unknown => {
   if (!isParam(value)) return value;
   const v = resolve(value, `${String(op)} in a nested filter`);
+  if (isParamHole(v)) return v;
   if (op === "in") {
     if (!Array.isArray(v)) {
       throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
@@ -1201,6 +1202,7 @@ const bindCount = (
 ): unknown => {
   if (!isParam(n)) return n;
   const v = resolve(n, `nested ${what}`);
+  if (isParamHole(v)) return v;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
     throw new Error(`ramose/query: nested ${what} takes a non-negative integer, got ${String(v)}`);
   }

@@ -31,6 +31,12 @@ export * from "./idents.ts";
 export * from "./Entity.ts";
 export * from "./shapes.ts";
 export * from "./Params.ts";
+export {
+  canonicalAstKey,
+  liveSubscriptionKey,
+  queryAstKey,
+} from "./astKey.ts";
+export { shareEqualDeep } from "./shareEqualDeep.ts";
 export * from "./Eid.ts";
 export {
   type Again,
@@ -69,6 +75,7 @@ export {
   isPipeline,
   isQueryObject,
   isRuleValue,
+  lowerQueryAst,
   lowerQueryObject,
   type AnyQueryObject,
   type EntityRow,

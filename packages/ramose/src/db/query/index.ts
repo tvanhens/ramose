@@ -33,6 +33,7 @@ export {
   isPipeline,
   isQueryObject,
   isRuleValue,
+  lowerQueryAst,
   lowerQueryObject,
   q,
   refine,

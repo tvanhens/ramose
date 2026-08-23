@@ -40,7 +40,9 @@ import {
 } from "../shapes.ts";
 import {
   bindParams,
+  holesBinder,
   isParam,
+  isParamHole,
   params as makeParams,
   type AnyParam,
   type AnyParamSet,
@@ -737,12 +739,22 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
+/**
+ * The lowered wire AST with param holes left as `{ $param: key }` instead
+ * of bound values. Subscription keys use this so a params query is
+ * `astKey + paramsKey` and does not re-lower on every bindings change.
+ */
+export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
+  lowerQueryObject(qv, undefined, { holes: true }).query;
+
 export const lowerQueryObject = (
   qv: AnyQueryObject,
   bindings?: Readonly<Record<string, unknown>>,
+  opts?: { readonly holes?: boolean },
 ): LoweredKernelQuery => {
   resetGensym();
-  const binder = bindParams(qv.paramSet, bindings);
+  const binder =
+    opts?.holes === true ? holesBinder() : bindParams(qv.paramSet, bindings);
   const ctx: BuildCtx = { clauses: [] };
   const built = runInto(qv, qv.paramSet ?? {}, ctx, qv.stripCursor);
 
@@ -1059,6 +1071,7 @@ export const lowerQueryObject = (
       if (isVar(a)) return nameOf(a);
       let v: unknown = a;
       if (isParam(a)) v = binder.resolve(a, `${op}(...)`);
+      if (isParamHole(v)) return v;
       if (op === "re-find?") return regexSource(v as RegExp | string);
       if (op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
@@ -1272,6 +1285,7 @@ export const lowerQueryObject = (
       }
       let v: unknown = a;
       if (isParam(a)) v = binder.resolve(a, `${c.op}(...)`);
+      if (isParamHole(v)) return v;
       if (c.op === "re-find?") return regexSource(v as RegExp | string);
       if (c.op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
@@ -1345,9 +1359,13 @@ export const lowerQueryObject = (
     }
   }
 
-  const boundCount = (n: number | AnyParam | undefined, what: string): number | undefined => {
+  const boundCount = (
+    n: number | AnyParam | undefined,
+    what: string,
+  ): number | { readonly $param: string } | undefined => {
     if (n === undefined) return undefined;
     const v = isParam(n) ? binder.resolve(n, what) : n;
+    if (isParamHole(v)) return v;
     if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
       throw new Error(`ramose/query: ${what} takes a non-negative integer, got ${String(v)}`);
     }
@@ -1416,7 +1434,8 @@ export const lowerQueryObject = (
         return {
           rows,
           cursor:
-            !Array.isArray(last) || (limit !== undefined && tuples.length < limit)
+            !Array.isArray(last) ||
+            (typeof limit === "number" && tuples.length < limit)
               ? null
               : { _tag: "Cursor", keys: last.slice(baseLen) },
         } satisfies Page;
