@@ -117,14 +117,17 @@ export const useLiveSubscription = <A, E>(
   return state;
 };
 
-// Bundlers replace the dotted `process.env.NODE_ENV` via define; `?.` is
-// not substituted. `typeof` guards both hops so unbundled ESM / Deno
-// never dereference a missing `process`.
-declare const process: { readonly env?: { readonly NODE_ENV?: string } } | undefined;
-const DEV =
-  typeof process === "undefined" ||
-  typeof process.env === "undefined" ||
-  process.env.NODE_ENV !== "production";
+// Bundlers replace the dotted `process.env.NODE_ENV` via define even
+// inside this try (`?.` is not substituted). The declare is for tsc;
+// a missing runtime `process` (unbundled ESM / Deno) throws here and
+// the catch keeps DEV true.
+declare const process: { readonly env: { readonly NODE_ENV?: string } };
+let DEV = true;
+try {
+  DEV = process.env.NODE_ENV !== "production";
+} catch {
+  // no `process`, no substitution — stay in dev mode
+}
 
 const CHURN_WARNING =
   "ramose/react: useLive subscription key changed between renders. " +
