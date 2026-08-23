@@ -86,7 +86,7 @@ describe("the wake", () => {
     expect(off).toBeDefined();
 
     // unsolicited frames ride the session socket, which a first read opens
-    await db.q(Query.q(() => Query.entities(User)));
+    await db.query(Query.q(() => Query.entities(User)));
     peer.push({ op: "tx", t: 9, datoms: [] });
     await settle();
     expect(wakes).toBeGreaterThan(0);

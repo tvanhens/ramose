@@ -29,13 +29,13 @@ import { useLive, useTransact } from "ramose/react";
 import { pipe } from "ramose/effect";
 import * as Schema from "effect/Schema";
 
-const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
-  done: Ramose.Attr(Schema.Boolean),
+const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
+  done: Ramose.Field(Schema.Boolean),
 });
 
 const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });
-const db = ramose.db("todos", Ramose.Catalog({ todo: Todo }));
+const db = ramose.db("todos", Ramose.Schema({ todo: Todo }));
 
 // A query is a value: declare it once, then run it live.
 const todos = Ramose.Query.q(() =>
@@ -52,7 +52,7 @@ const Todos = () => {
   const toggle = (todo: Ramose.Row<typeof todos>) =>
     run(
       db.transact(function* (tx) {
-        yield* tx.add(todo.id, Todo.done, !todo.done);
+        yield* tx.set(todo.id, Todo.done, !todo.done);
       }),
     );
 

@@ -186,12 +186,13 @@ export class PeerDb {
     return this.client.request<Ack>("POST", this.path("/transact"), { tx });
   }
 
-  /** `minT`: read fence — the server refetches its basis if its cached one is older than `t` (e.g. the t of your last transact). */
+  /** Unwrap the query result. The HTTP harness is not `ramose/db`; `q` stays the ops spelling. */
   async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<T> {
     const r = await this.query<T>(query, inputs, opts);
     return r.result;
   }
 
+  /** Envelope (`result` + `meta`). */
   query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
     return this.client.request<QueryReply<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }
@@ -226,15 +227,23 @@ export class PeerDb {
 }
 
 /** Convenience for raw schema installs (the untyped twin of `db.install()`). */
-export function attrMap(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "identity" | "value"; index?: boolean; isComponent?: boolean; doc?: string } = {}) {
+export function attrMap(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "upsert" | "strict" | "identity" | "value"; index?: boolean; owned?: boolean; doc?: string } = {}) {
   const m: Record<string, unknown> = {
     ":db/ident": ident,
     ":db/valueType": valueType.startsWith(":") ? valueType : `:db.type/${valueType}`,
     ":db/cardinality": `:db.cardinality/${opts.cardinality ?? "one"}`,
   };
-  if (opts.unique) m[":db/unique"] = `:db.unique/${opts.unique}`;
+  if (opts.unique) {
+    const uniqueWire = {
+      upsert: "identity",
+      strict: "value",
+      identity: "identity",
+      value: "value",
+    } as const;
+    m[":db/unique"] = `:db.unique/${uniqueWire[opts.unique]}`;
+  }
   if (opts.index) m[":db/index"] = true;
-  if (opts.isComponent) m[":db/isComponent"] = true;
+  if (opts.owned) m[":db/isComponent"] = true;
   if (opts.doc) m[":db/doc"] = opts.doc;
   return m;
 }

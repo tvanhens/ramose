@@ -9,10 +9,10 @@ The exact surface of `ramose/react`, one section per export. This page is for Re
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ```tsx
-import { RamoseProvider, useRamose, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
+import { RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
 ```
 
-Hooks only, no UI. They reach the Ramose server through one client. `useLive`, `useQuery`, `usePull` and `useBasis` take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+Hooks only, no UI. They reach the Ramose server through one client. `useLive`, `useQuery`, `usePull` and `useBasis` take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
 The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`), `Async` (`useQuery`), `Transact` (`useTransact`) and `RamoseProviderProps`.
 
@@ -37,11 +37,7 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
   const db = useDb(slug, Reef);
 ```
 
-`useDb(name, catalog): Db<C>` — `client.db(name, catalog)` from the nearest provider, kept stable on `[client, name, catalog]`. Pass a module-scope schema. `useRamose(): Client` returns the provider's client itself. Both throw outside a provider.
-
-```tsx
-const client = useRamose();
-```
+`useDb(name, schema): Db<C>` — `client.db(name, schema)` from the nearest provider, kept stable on `[client, name, schema]`. Pass a module-scope schema. Throws outside a provider.
 
 ## useLive
 
@@ -75,7 +71,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
-`useQuery(db, query, params?): { data, error, loading }` — one `db.q` per `db` / `query` / params triple. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
+`useQuery(db, query, params?): { data, error, loading }` — one `db.query` per `db` / `query` / params triple. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
 
 ## usePull
 

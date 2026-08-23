@@ -9,46 +9,47 @@
 import { test } from "bun:test";
 import * as Schema from "effect/Schema";
 import {
-  Attr,
-  Catalog,
+  Field,
+  Schema as DbSchema,
   type Eid,
   type Equal,
   type Expect,
   type Extends,
-  Namespace,
+  Entity,
   Policy as P,
   Query,
   Ref,
+  type Claims,
 } from "../../src/db/internal.ts";
 import type { Var } from "../../src/db/query/kernel.ts";
 
-const User = Namespace("user", {
-  sub: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Schema.Number),
+const User = Entity("user", {
+  sub: Field(Schema.String, { unique: "upsert" }),
+  age: Field(Schema.Number),
 });
-const Org = Namespace("org", { members: Attr(Ref, { cardinality: "many" }) });
-const Doc = Namespace("doc", { title: Attr(Schema.String), owner: Attr(Ref) });
-const App = Catalog({ user: User, org: Org, doc: Doc });
+const Org = Entity("org", { members: Field(Ref(() => User), { cardinality: "many" }) });
+const Doc = Entity("doc", { title: Field(Schema.String), owner: Field(Ref(() => User)) });
+const App = DbSchema({ user: User, org: Org, doc: Doc });
 
-const Other = Namespace("other", { sub: Attr(Schema.String) });
+const Other = Entity("other", { sub: Field(Schema.String) });
 
 // ── claims ─────────────────────────────────────────────────────────────────
 
-type _claimSub = Expect<Equal<typeof P.claims.sub, P.ClaimOperand>>;
+type _claimSub = Expect<Equal<typeof P.claim.sub, P.ClaimOperand>>;
 type _claimsShape = Expect<
   Extends<
-    P.Claims,
+    Claims,
     {
       readonly iss: string;
       readonly sub: string;
-      readonly aud: string;
+      readonly aud: string | readonly string[];
       readonly exp: number;
       readonly ramose: { readonly db: string; readonly class: string };
     }
   >
 >;
 
-const typedClaims = P.claimsOf(Schema.Struct({ org: Schema.String }));
+const typedClaims = P.claimOf(Schema.Struct({ org: Schema.String }));
 type _typedAttrKeys = Expect<Equal<keyof (typeof typedClaims)["attrs"], "org">>;
 
 // ── compile surface ────────────────────────────────────────────────────────
@@ -65,23 +66,23 @@ const _fixtures = () => {
   typedClaims.attrs.team;
 
   // inline arm: `me` is the principal token, no annotation
-  P.policy({ catalog: App, principal: User.sub, classes: ["anonymous", "member"] }, {
+  P.policy({ schema: App, principal: User.sub, classes: ["anonymous", "member"] }, {
     doc: { read: (me) => Query.is(Doc.owner, me) },
   });
 
   // record-form class gate: `me` is still contextually typed
-  P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
     doc: { read: { class: "member", rule: (me) => Query.is(Doc.owner, me) } },
   });
 
-  P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
     // @ts-expect-error — "nope" is not a catalog namespace key
     nope: { read: P.class("member") },
   });
 
   P.policy(
     {
-      catalog: App,
+      schema: App,
       // @ts-expect-error — :other/sub is not a catalog ident
       principal: Other.sub,
       classes: ["member"],
@@ -89,10 +90,10 @@ const _fixtures = () => {
     {},
   );
 
-  const pol = P.policy({ catalog: App, principal: User.sub, classes: ["member"] }, {
+  const pol = P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
     doc: { read: P.class("member") },
   });
-  type _catalog = Expect<Equal<(typeof pol)["catalog"], typeof App>>;
+  type _schema = Expect<Equal<(typeof pol)["schema"], typeof App>>;
   const json: string = P.compile(pol, { pulls: [{ title: Doc.title }] });
   return json;
 };

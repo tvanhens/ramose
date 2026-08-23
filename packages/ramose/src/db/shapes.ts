@@ -15,8 +15,8 @@
  */
 
 import { lowerAttr } from "./attrRef.ts";
-import type { AnyAttribute, Cardinality } from "./Attribute.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnyField, Cardinality } from "./Field.ts";
+import type { AnyEntity } from "./Entity.ts";
 import { lowerElemFilter, type ElemFilterFragment } from "./query/elemFilter.ts";
 import type { EidCell, Var } from "./query/kernel.ts";
 import {
@@ -69,7 +69,7 @@ export type PathCarrier = {
    * Which hops in `__path` are walked backwards — parallel to it. A reversed
    * hop is `[?next :a ?e]` instead of `[?e :a ?next]`. It is cardinality-many
    * (any number of entities may point at one) unless the ref is a
-   * `:db/isComponent` one, whose referrer is unique — that backlink is
+   * `:db/owned` one, whose referrer is unique — that backlink is
    * card-one, and `__cards` says so.
    */
   readonly __revs?: readonly boolean[];
@@ -107,7 +107,7 @@ type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
  */
 type IsDefaultable<A> = IsMany<A> extends true
   ? false
-  : A extends { readonly valueType: ":db.type/ref" }
+  : A extends { readonly valueType: "ref" }
     ? false
     : true;
 
@@ -125,7 +125,7 @@ const isRefNav = (attr: PathCarrier): boolean =>
  */
 type RefSelect<A> = {
   <const D extends RecurDepth>(shape: Again<D>, opts?: SelectOpts<A>): SelectNested<A, Again<D>>;
-  <const N extends AnyNamespace>(shape: AllShape<N>, opts?: SelectOpts<A>): SelectNested<A, AllShape<N>>;
+  <const N extends AnyEntity>(shape: AllShape<N>, opts?: SelectOpts<A>): SelectNested<A, AllShape<N>>;
   <const S extends Shape>(shape: S & ValidShape<S>, opts?: SelectOpts<A>): SelectNested<A, S>;
 };
 
@@ -137,7 +137,7 @@ export type OrderEmpty = "first" | "last";
 export type OrderDir = "asc" | "desc";
 
 export type ShapeField =
-  | AnyAttribute
+  | AnyField
   | PathCarrier
   | Again
   | { readonly _tag: "optional"; readonly field: unknown }
@@ -178,7 +178,7 @@ type AgainNsField<F, S, K extends string> = AgainTargetNs<F> extends ShapeNs<S>
 /** A card-many **ref** (a many forward ref, or an ordinary backlink):
  * the hop with elements a nested collection can order and page. */
 type IsManyRef<A> = IsMany<A> extends true
-  ? A extends { readonly valueType: ":db.type/ref" }
+  ? A extends { readonly valueType: "ref" }
     ? true
     : false
   : false;
@@ -198,7 +198,7 @@ export type NestedOrderKey = PathCarrier & {
  * itself, so the fragment is handed the value var directly:
  * `values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })`.
  */
-export type NestedElemPred<A> = A extends { readonly valueType: ":db.type/ref" }
+export type NestedElemPred<A> = A extends { readonly valueType: "ref" }
   ? (focus: Var<EidCell>) => Iterable<unknown>
   : (v: Var<AttrValue<A>>) => Iterable<unknown>;
 
@@ -244,7 +244,7 @@ export type NestedOrderBy =
  */
 export interface NestedOpts<A = PathCarrier> {
   readonly where?: readonly NestedElemPred<A>[];
-  readonly orderBy?: A extends { readonly valueType: ":db.type/ref" }
+  readonly orderBy?: A extends { readonly valueType: "ref" }
     ? NestedOrderBy
     : never;
   readonly limit?: number;
@@ -268,7 +268,7 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly orDefault: IsDefaultable<A> extends true
     ? (value: AttrValue<A>) => PullDefault<A>
     : never;
-  readonly select: A extends { readonly valueType: ":db.type/ref" }
+  readonly select: A extends { readonly valueType: "ref" }
     ? RefSelect<A>
     : never;
 };
@@ -513,7 +513,7 @@ const shapeFieldToPull = (field: unknown): unknown => {
   if (isSelectNested(field)) {
     if (isAllShape(field.shape) || isAgain(field.shape)) return field;
     return nested(
-      field.attr as { readonly valueType: ":db.type/ref" },
+      field.attr as { readonly valueType: "ref" },
       shapeToPullMap(field.shape as Shape),
       field.constraints,
     );
@@ -541,7 +541,7 @@ type NestedSelectResult<A, S, Enclosing = unknown> = [S] extends [
     ? readonly Unroll<Enclosing, D>[]
     : Unroll<Enclosing, D>
   : [S] extends [
-        { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+        { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
       ]
     ? A extends { readonly cardinality: "many" }
       ? readonly AllRow<N>[]

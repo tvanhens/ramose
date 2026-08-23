@@ -2,13 +2,13 @@
 
 import type { PullElemOrder, PullElemPred } from "../internal/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
-import type { AnyAttribute } from "./Attribute.ts";
+import type { AnyField } from "./Field.ts";
 import { isParam, type AnyParam } from "./Params.ts";
 import { isAttrRef } from "./attrRef.ts";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
-import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
+import type { AnyEntity, FieldMap } from "./Entity.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
@@ -37,11 +37,11 @@ export interface PullOptional<F = unknown> {
   readonly field: F;
   /**
    * Nested pull, then maybe. Only on refs
-   * (`valueType: ":db.type/ref"`). Prefer `attr.select(shape).optional`.
+   * (`valueType: "ref"`). Prefer `attr.select(shape).optional`.
    */
-  readonly select: F extends { readonly valueType: ":db.type/ref" }
+  readonly select: F extends { readonly valueType: "ref" }
     ? {
-        <const N extends AnyNamespace>(
+        <const N extends AnyEntity>(
           pattern: AllShape<N>,
         ): PullOptional<PullNested<F, AllShape<N>>>;
         <const P extends Record<string, unknown>>(
@@ -119,7 +119,7 @@ export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> =
  * that returns a select-marker which {@link inspectPullField} understands.
  */
 export const nested = <
-  const A extends { readonly valueType: ":db.type/ref" },
+  const A extends { readonly valueType: "ref" },
   const P extends Record<string, unknown>,
 >(
   attr: A,
@@ -140,18 +140,18 @@ export const nested = <
 
 /** Same-namespace shortcut: `pick(User, "name", "age")`. */
 export const pick = <
-  const N extends { readonly attributes: AttributeMap },
-  const Keys extends readonly (keyof N["attributes"] & string)[],
+  const N extends { readonly fields: FieldMap },
+  const Keys extends readonly (keyof N["fields"] & string)[],
 >(
   ns: N,
   ...keys: Keys
 ): {
-  readonly [K in Keys[number]]: N["attributes"][K];
+  readonly [K in Keys[number]]: N["fields"][K];
 } => {
-  const fields = {} as Record<string, AnyAttribute>;
-  for (const key of keys) fields[key] = ns.attributes[key]!;
+  const fields = {} as Record<string, AnyField>;
+  for (const key of keys) fields[key] = ns.fields[key]!;
   return fields as {
-    readonly [K in Keys[number]]: N["attributes"][K];
+    readonly [K in Keys[number]]: N["fields"][K];
   };
 };
 
@@ -170,7 +170,7 @@ export const pick = <
  * runtime. The same term nests under a ref `.select`:
  * `Todo.owner.select(all(User))` lowers to the peer's `{:todo/owner [*]}`.
  */
-export interface AllShape<N extends AnyNamespace = AnyNamespace> {
+export interface AllShape<N extends AnyEntity = AnyEntity> {
   readonly _tag: "all";
   readonly ns: N;
 }
@@ -181,7 +181,7 @@ export interface AllShape<N extends AnyNamespace = AnyNamespace> {
  * The same wildcard `db.pull(eid, ["*"])` asks for, with the namespace's
  * idents typed.
  */
-export const all = <const N extends AnyNamespace>(ns: N): AllShape<N> => ({
+export const all = <const N extends AnyEntity>(ns: N): AllShape<N> => ({
   _tag: "all",
   ns,
 });
@@ -286,7 +286,7 @@ type FieldsResult<F> = {
  * no cast. An id attr without the phantom stays a plain `number`.
  */
 export type IdCell<F> = F extends { readonly _ns?: infer N }
-  ? [NonNullable<N>] extends [AnyNamespace]
+  ? [NonNullable<N>] extends [AnyEntity]
     ? Eid<NonNullable<N>>
     : number
   : number;
@@ -366,7 +366,7 @@ type NestedResult<A, P, Enclosing = unknown> = [P] extends [
 ]
   ? CardOf<A, Unroll<Enclosing, D>>
   : [P] extends [
-        { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+        { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
       ]
     ? A extends { readonly cardinality: "many" }
       ? readonly AllRow<N>[]
@@ -466,7 +466,7 @@ export type AgainTargetNs<F> = AgainAttr<F> extends {
   readonly ident: `:${infer Own}/${string}`;
 }
   ? AgainAttr<F> extends {
-      readonly schema: { readonly _resolve?: () => { readonly attributes: infer T } };
+      readonly schema: { readonly _resolve?: () => { readonly fields: infer T } };
     }
     ? unknown extends T
       ? Own
@@ -500,14 +500,14 @@ export type TopLevelAgain =
  * One slot in the keyword-soup pull. Attr ref (`User.name`), catalog
  * ident (`":user/name"`), or wildcard.
  */
-export type IdentPullAttr<C extends AnyCatalog> =
+export type IdentPullAttr<C extends AnySchema> =
   | CatalogIdent<C>
   | { readonly ident: CatalogIdent<C> }
   | "*";
 
-export type IdentPullPattern<C extends AnyCatalog> = readonly IdentPullAttr<C>[];
+export type IdentPullPattern<C extends AnySchema> = readonly IdentPullAttr<C>[];
 
-type IdentOfPull<C extends AnyCatalog, A> = A extends "*"
+type IdentOfPull<C extends AnySchema, A> = A extends "*"
   ? "*"
   : A extends { readonly ident: infer I extends string }
     ? I
@@ -516,7 +516,7 @@ type IdentOfPull<C extends AnyCatalog, A> = A extends "*"
       : never;
 
 export type IdentPullIdents<
-  C extends AnyCatalog,
+  C extends AnySchema,
   P extends IdentPullPattern<C>,
 > = IdentOfPull<C, P[number]>;
 
@@ -532,19 +532,19 @@ type PullValue<A> = A extends { readonly cardinality: "many" }
   ? readonly PullValueOne<A>[]
   : PullValueOne<A>;
 
-type PullValueOne<A> = A extends { readonly valueType: ":db.type/ref" }
+type PullValueOne<A> = A extends { readonly valueType: "ref" }
   ? { readonly ":db/id": number }
   : A extends { readonly schema: infer S }
     ? SchemaType<S>
     : never;
 
 /** {@link PullValue} at one catalog ident. */
-type PullReadAtIdent<C extends AnyCatalog, I extends string> = PullValue<
+type PullReadAtIdent<C extends AnySchema, I extends string> = PullValue<
   AttrAtIdent<C, I>
 >;
 
 export type IdentPullResult<
-  C extends AnyCatalog,
+  C extends AnySchema,
   P extends IdentPullPattern<C>,
 > = "*" extends IdentPullIdents<C, P>
   ? {
@@ -572,13 +572,13 @@ export type IdentPullResult<
  * Typing them would mean naming a catalog, which a namespace-scoped query
  * does not have — so the keys named here are the ones you may rely on.
  */
-export type AllRow<N extends AnyNamespace> = {
+export type AllRow<N extends AnyEntity> = {
   readonly ":db/id": number;
 } & {
-  readonly [A in keyof N["attributes"] & string as Ident<
+  readonly [A in keyof N["fields"] & string as Ident<
     N["ns"],
     A
-  >]?: PullValue<N["attributes"][A]>;
+  >]?: PullValue<N["fields"][A]>;
 };
 
 // ── catalog constraint ─────────────────────────────────────────────────────
@@ -596,7 +596,7 @@ type IdentsIn<P> = [P] extends [PullOptional<infer I>]
   : [P] extends [{ readonly _tag: "again" }]
     ? never
     : [P] extends [
-          { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+          { readonly _tag: "all"; readonly ns: { readonly fields: infer A } },
         ]
       ? IdentsIn<A>
       : [P] extends [PullNested<infer A, infer Inner>]
@@ -631,12 +631,12 @@ type IdentsInFields<F> = F extends object
  * {@link AllShape} names a whole namespace rather than fields, so it is
  * checked the same way, against the idents that namespace stamps.
  */
-export type ValidatePull<C extends AnyCatalog, P> = [P] extends [
+export type ValidatePull<C extends AnySchema, P> = [P] extends [
   { readonly _tag: "again" },
 ]
   ? TopLevelAgain
   : [P] extends [
-        { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+        { readonly _tag: "all"; readonly ns: { readonly fields: infer A } },
       ]
     ? [IdentsIn<A>] extends [CatalogIdent<C>]
       ? P
@@ -653,7 +653,7 @@ type HasAgainTermIn<S> = true extends {
   ? true
   : false;
 
-type ValidatePullShape<C extends AnyCatalog, P> = HasAgainTermIn<P> extends true
+type ValidatePullShape<C extends AnySchema, P> = HasAgainTermIn<P> extends true
   ? {
       readonly [K in keyof P]: IsAgainTerm<P[K]> extends true
         ? "again is a shape, not a field — write `ref.select(Ramose.again(n))`"
@@ -669,7 +669,7 @@ type ValidatePullShape<C extends AnyCatalog, P> = HasAgainTermIn<P> extends true
         }
     : ValidatePullIdents<C, P>;
 
-type ValidatePullIdents<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
+type ValidatePullIdents<C extends AnySchema, P> = [IdentsIn<P>] extends [
   CatalogIdent<C> | "*" | ":db/id",
 ]
   ? P
@@ -680,8 +680,8 @@ type ValidatePullIdents<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
  * keys, required vs optional honored. Array → ident keys, all optional.
  * `all(N)` → the wildcard map, keyed by `N`'s idents ({@link AllRow}).
  */
-export type Pull<C extends AnyCatalog, P> = [P] extends [
-  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+export type Pull<C extends AnySchema, P> = [P] extends [
+  { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
 ]
   ? AllRow<N>
   : [P] extends [readonly unknown[]]

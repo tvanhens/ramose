@@ -1,8 +1,8 @@
-/** Lower a catalog to ident-datom maps. Ensure is a separate, idempotent schema tx. */
+/** Lower a schema to ident-datom maps. Ensure is a separate, idempotent schema tx. */
 
-import type { AnyAttribute } from "./Attribute.ts";
-import type { AnyCatalog } from "./Catalog.ts";
-import { inferDbValueType } from "./valueTypes.ts";
+import type { AnyField } from "./Field.ts";
+import type { AnySchema } from "./Schema.ts";
+import { inferDbValueType, toWireValueType } from "./valueTypes.ts";
 
 export interface SchemaAttrTx {
   readonly ":db/ident": string;
@@ -14,38 +14,43 @@ export interface SchemaAttrTx {
   readonly ":db/doc"?: string;
 }
 
+const uniqueWire = {
+  upsert: "identity",
+  strict: "value",
+} as const;
+
 export const attributeTx = (
   ident: string,
-  attribute: AnyAttribute,
+  field: AnyField,
 ): SchemaAttrTx => {
-  const valueType = inferDbValueType(attribute.schema, attribute.valueType);
+  const valueType = inferDbValueType(field.schema, field.valueType);
   const out: SchemaAttrTx = {
     ":db/ident": ident,
-    ":db/valueType": valueType,
-    ":db/cardinality": `:db.cardinality/${attribute.cardinality}`,
+    ":db/valueType": toWireValueType(valueType),
+    ":db/cardinality": `:db.cardinality/${field.cardinality}`,
   };
-  if (attribute.unique !== undefined) {
+  if (field.unique !== undefined) {
     (out as { ":db/unique": string })[":db/unique"] =
-      `:db.unique/${attribute.unique}`;
+      `:db.unique/${uniqueWire[field.unique]}`;
   }
-  if (attribute.index) {
+  if (field.index) {
     (out as { ":db/index": true })[":db/index"] = true;
   }
-  if (attribute.isComponent) {
+  if (field.owned) {
     (out as { ":db/isComponent": true })[":db/isComponent"] = true;
   }
-  if (attribute.doc !== undefined) {
-    (out as { ":db/doc": string })[":db/doc"] = attribute.doc;
+  if (field.doc !== undefined) {
+    (out as { ":db/doc": string })[":db/doc"] = field.doc;
   }
   return out;
 };
 
-/** One map form per attribute, in catalog / namespace / key order. */
-export const schemaTx = (catalog: AnyCatalog): SchemaAttrTx[] => {
+/** One map form per field, in schema / entity / key order. */
+export const schemaTx = (schema: AnySchema): SchemaAttrTx[] => {
   const out: SchemaAttrTx[] = [];
-  for (const ns of Object.values(catalog.namespaces)) {
-    for (const [key, attribute] of Object.entries(ns.attributes)) {
-      out.push(attributeTx(`:${ns.ns}/${key}`, attribute));
+  for (const entity of Object.values(schema.entities)) {
+    for (const [key, field] of Object.entries(entity.fields)) {
+      out.push(attributeTx(`:${entity.ns}/${key}`, field));
     }
   }
   return out;

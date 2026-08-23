@@ -21,10 +21,10 @@ GlobalRegistrator.register();
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 afterAll(() => GlobalRegistrator.unregister());
 
-const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
+const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
 });
-const Todos = Ramose.Catalog({ todo: Todo });
+const Todos = Ramose.Schema({ todo: Todo });
 
 /** No `select`, so rows are entity ids — the peer's `[[eid], …]` unwrapped. */
 const allTodos = Ramose.Query.q(() => Ramose.Query.entities(Todo));

@@ -44,8 +44,8 @@ describe("the credential on the wire", () => {
     const c = client(peer, { token: Effect.succeed(Redacted.make("s3cret")) });
     const db = c.ramose.db("movies", Movies);
 
-    await db.q(names);
-    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(1); }));
+    await db.query(names);
+    await run(db.effect.transact(function* (tx) { yield* tx.delete(1); }));
 
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/movies/session?token=s3cret",
@@ -66,7 +66,7 @@ describe("the credential on the wire", () => {
     const c = client(peer);
     const e = await runFail(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
     expect(e._tag).toBe("Unauthorized");
@@ -142,7 +142,7 @@ describe("a token swap is not a reconnect", () => {
 
     refuse = true;
     expect(
-      await run(c.ramose.db("movies", Movies).asOf(5).q(names)),
+      await run(c.ramose.db("movies", Movies).asOf(5).query(names)),
     ).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.filter((f) => f.op === "auth")).toHaveLength(1);

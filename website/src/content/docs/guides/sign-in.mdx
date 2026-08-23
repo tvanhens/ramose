@@ -118,7 +118,7 @@ const payload = Ramose.claims(
 In the browser, `Ramose.token.jwt(() => fetch("/api/ramose-token", { method: "POST" }).then((r) => r.json()))` wraps your route as Reef's line wraps Better Auth's; a string or `{ token }` both work.
 
 :::note[Two things called claims]
-`Ramose.claims(auth, input)` builds a payload to sign. `P.claims.sub` inside a policy reads a claim from the verified token. Same word, different jobs.
+`Ramose.claims(auth, input)` builds a payload to sign. `P.claim.sub` inside a policy reads a claim from the verified token. Same word, different jobs.
 :::
 
 ## Wire the server

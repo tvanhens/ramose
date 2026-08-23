@@ -163,7 +163,7 @@ describe("the basis is the wake", () => {
 
     await run(
       db.effect.transact(function* (tx) {
-        yield* tx.retractEntity(world.eid);
+        yield* tx.delete(world.eid);
       }),
     );
     await settle();

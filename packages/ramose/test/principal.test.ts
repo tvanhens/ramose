@@ -116,7 +116,7 @@ describe("db.principal()", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await db.q(names); // opens the socket: generation moves
+    await db.query(names); // opens the socket: generation moves
     expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
@@ -125,7 +125,7 @@ describe("db.principal()", () => {
 
     peer.drop(); // the socket dies; the token may differ on the next connect
     await settle();
-    await db.q(names); // reconnects
+    await db.query(names); // reconnects
     expect(peer.sockets).toHaveLength(2);
 
     expect(await db.principal()).toEqual({
@@ -154,7 +154,7 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
     const db = c.ramose.db("movies", Movies);
 
-    await db.q(names); // 401 → auth frame → retried on the same socket
+    await db.query(names); // 401 → auth frame → retried on the same socket
     expect(peer.frameOps("auth")).toHaveLength(1);
 
     expect(await db.principal()).toEqual({
@@ -196,7 +196,7 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
     const db = c.ramose.db("movies", Movies);
 
-    await db.q(names);
+    await db.query(names);
     expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
@@ -205,7 +205,7 @@ describe("db.principal()", () => {
 
     // the peer expires the principal; the next read swaps in place
     refuse = true;
-    await run(db.asOf(2).q(names));
+    await run(db.asOf(2).query(names));
     expect(peer.frameOps("auth")).toHaveLength(1);
 
     // the old eid must not be served: the swapped principal has no row yet

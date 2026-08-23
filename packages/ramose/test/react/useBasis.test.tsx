@@ -36,7 +36,7 @@ describe("useBasis", () => {
         const db = useDb("todos", Todos);
         // one read, so the session socket unsolicited frames ride is open
         useEffect(() => {
-          db.q(titles).catch(() => {});
+          db.query(titles).catch(() => {});
         }, [db]);
         return useBasis(db);
       },
@@ -115,7 +115,7 @@ describe("useBasis", () => {
       () => {
         const db = useDb("todos", Todos);
         useEffect(() => {
-          db.q(titles).catch(() => {});
+          db.query(titles).catch(() => {});
         }, [db]);
         return useBasis(db);
       },

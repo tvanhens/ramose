@@ -8,7 +8,7 @@
  * dependency a hook actually means.
  */
 
-import type { Catalog, ReadDb } from "../db/index.ts";
+import type { Schema, ReadDb } from "../db/index.ts";
 
 const DB_SEAM = Symbol.for("ramose.db.seam");
 
@@ -23,7 +23,7 @@ interface DbSeam {
   readonly t: () => number | undefined;
 }
 
-export const seamOf = <C extends Catalog.Any>(
+export const seamOf = <C extends Schema.Any>(
   db: ReadDb<C>,
 ): DbSeam | undefined =>
   (db as unknown as Partial<Record<symbol, DbSeam>>)[DB_SEAM];
@@ -33,5 +33,5 @@ export const seamOf = <C extends Catalog.Any>(
  * is there (every db a real client builds), identity for anything else (a
  * hand-rolled test double).
  */
-export const viewDep = <C extends Catalog.Any>(db: ReadDb<C>): unknown =>
+export const viewDep = <C extends Schema.Any>(db: ReadDb<C>): unknown =>
   seamOf(db)?.key ?? db;

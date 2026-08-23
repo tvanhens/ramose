@@ -21,7 +21,7 @@
  * fresh vars make self-joins hygienic with no alpha-renaming machinery.
  */
 
-import type { AnyNamespace } from "../Namespace.ts";
+import type { AnyEntity } from "../Entity.ts";
 import type { AnyParam, Param } from "../Params.ts";
 import type { Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
@@ -176,7 +176,7 @@ export type SubBody =
 /** `entities(ns)` in a generator body: mint a branded var, membership rule. */
 export interface MemberCommand extends Yieldable<Var<EidCell>> {
   readonly _tag: "member";
-  readonly ns: AnyNamespace;
+  readonly ns: AnyEntity;
 }
 
 /** `Q.when(gate, body)` — clauses that are part of the query only while the
@@ -207,7 +207,7 @@ export type AnyCommand =
 
 export interface MemberClause {
   readonly _tag: "memberOf";
-  readonly ns: AnyNamespace;
+  readonly ns: AnyEntity;
   readonly v: AnyVar;
 }
 
@@ -515,7 +515,7 @@ const agg = <T>(fn: AggSpec["fn"], v: AnyVar): AggSpec<T> => {
 
 /**
  * The kernel, as one namespace. Everything here is an inert description;
- * `db.q` is where computation (and Effect) begins.
+ * `db.query` is where computation (and Effect) begins.
  */
 export const Q = {
   /**

@@ -7,7 +7,7 @@
  * a `useMemo` per argument. A param is the hole for the changing **value**:
  * declared up front, referenced inline as an expression-tree leaf, carried in
  * the query value, and bound at the terminal —
- * `db.q(q, { issueId })` / `useLive(db, q, { issueId })`.
+ * `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
  *
  * ```ts
  * const q = Query.q(
@@ -29,13 +29,13 @@
 import { stringifyJson } from "../internal/core/json.ts";
 import { ParamError } from "./Errors.ts";
 import type { Eid } from "./Eid.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnyEntity } from "./Entity.ts";
 
 // ── the hole ────────────────────────────────────────────────────────────────
 
 /**
  * One declared hole. `T` is the value it stands for; `B` is the whole set's
- * bindings record (what `db.q(q, bindings)` takes), which is how a hole from
+ * bindings record (what `db.query(q, bindings)` takes), which is how a hole from
  * one set is a type error in a query scoped to another; `Opt` says whether
  * the hole may be unbound (`Ramose.optional`).
  *
@@ -88,7 +88,7 @@ export type ParamDecl =
  * catalog-branded `{ id }` a bare query yields. Both bind with no cast, and
  * both lower to the raw id number wherever the hole stands.
  */
-export interface EidOfDecl<N extends AnyNamespace = AnyNamespace> {
+export interface EidOfDecl<N extends AnyEntity = AnyEntity> {
   readonly _tag: "EidOfDecl";
   readonly ns: N;
   readonly schema: {
@@ -96,8 +96,8 @@ export interface EidOfDecl<N extends AnyNamespace = AnyNamespace> {
   };
 }
 
-export const EidOf = <const N extends AnyNamespace>(ns: N): EidOfDecl<N> => {
-  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Namespace") {
+export const EidOf = <const N extends AnyEntity>(ns: N): EidOfDecl<N> => {
+  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
     throw new Error("ramose/params: EidOf(...) takes a namespace (Ramose.EidOf(User))");
   }
   return { _tag: "EidOfDecl", ns, schema: { Type: undefined as never } };
@@ -160,7 +160,7 @@ export type ParamValue<D> = D extends {
 }
   ? ParamValue<Inner>
   : D extends { readonly ident: ":db/id"; readonly _ns?: infer N }
-    ? NonNullable<N> extends AnyNamespace
+    ? NonNullable<N> extends AnyEntity
       ? Eid<NonNullable<N>>
       : number
     : D extends { readonly schema: { readonly Type: infer T } }
@@ -177,7 +177,7 @@ type IsOptionalDecl<D> = D extends { readonly _tag: "OptionalParamDecl" }
  * The bindings record one declaration spec takes: required keys for required
  * params, optional (`| undefined`) keys for `Ramose.optional` ones. This is
  * the `B` every hole of the set carries, and the second positional argument
- * `db.q` / `db.live` / `useQuery` / `useLive` take.
+ * `db.query` / `db.live` / `useQuery` / `useLive` take.
  */
 export type ParamBindings<Spec extends ParamsSpec> = {
   readonly [K in keyof Spec as IsOptionalDecl<Spec[K]> extends true

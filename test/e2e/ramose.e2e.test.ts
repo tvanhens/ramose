@@ -53,7 +53,7 @@ d("ramose e2e", () => {
   test("schema install → transact → query", async () => {
     const s = await db.transact([
       attrMap(":user/name", "string", { index: true }),
-      attrMap(":user/email", "string", { unique: "identity" }),
+      attrMap(":user/email", "string", { unique: "upsert" }),
       attrMap(":user/age", "long"),
       attrMap(":user/friends", "ref", { cardinality: "many" }),
       attrMap(":user/joined", "instant"),
@@ -153,7 +153,7 @@ d("ramose e2e", () => {
     // cross product of two unrelated patterns over the users written so far: refused up front
     let err: any;
     try {
-      await db.q(`[:find ?a ?b :where [?x :user/email ?a] [?y :user/email ?b] [?z :user/email ?c]]`);
+      await db.query(`[:find ?a ?b :where [?x :user/email ?a] [?y :user/email ?b] [?z :user/email ?c]]`);
     } catch (e) {
       err = e;
     }
@@ -164,7 +164,7 @@ d("ramose e2e", () => {
       expect(err.code).toBe("query/budget-exceeded");
     }
     // and a normal query still works afterwards
-    expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBeGreaterThan(0);
+    expect(await db.query<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBeGreaterThan(0);
   });
 
   test("write throughput smoke (group commit)", async () => {
@@ -184,28 +184,28 @@ d("ramose e2e", () => {
  * The session client: reads and `t` ticks ride the socket, writes are
  * HTTPS, and a write on *another* connection shows up here as a standing
  * `db.live` re-running. Hatch tests use `ramose/db/effect`; the public
- * promise path (`connect`, `db.run`, `db.q`, a `Subscription`) is covered separately.
+ * promise path (`connect`, `db.run`, `db.query`, a `Subscription`) is covered separately.
  */
-const Session = Ramose.Namespace("s", {
-  name: Ramose.Attr(Schema.String, { unique: "identity" }),
-  n: Ramose.Attr(Ramose.Long),
+const Session = Ramose.Entity("s", {
+  name: Ramose.Field(Schema.String, { unique: "upsert" }),
+  n: Ramose.Field(Ramose.Long),
 });
-const SessionCatalog = Ramose.Catalog({ s: Session });
+const SessionCatalog = Ramose.Schema({ s: Session });
 const sessionNames = Query.q(() =>
   pipe(Query.entities(Session), Query.select({ name: Session.name })),
 );
 
 /** Reef-shaped card-one issue: title / status / rank + required creator join. */
-const ReefUser = Ramose.Namespace("user", {
-  name: Ramose.Attr(Schema.String),
+const ReefUser = Ramose.Entity("user", {
+  name: Ramose.Field(Schema.String),
 });
-const ReefIssue = Ramose.Namespace("issue", {
-  title: Ramose.Attr(Schema.String),
-  status: Ramose.Attr(Schema.String),
-  rank: Ramose.Attr(Schema.Number),
-  creator: Ramose.Attr(Ramose.Ref(() => ReefUser)),
+const ReefIssue = Ramose.Entity("issue", {
+  title: Ramose.Field(Schema.String),
+  status: Ramose.Field(Schema.String),
+  rank: Ramose.Field(Schema.Number),
+  creator: Ramose.Field(Ramose.Ref(() => ReefUser)),
 });
-const ReefBoard = Ramose.Catalog({ user: ReefUser, issue: ReefIssue });
+const ReefBoard = Ramose.Schema({ user: ReefUser, issue: ReefIssue });
 const reefBoardQuery = Query.q(() =>
   pipe(
     Query.entities(ReefIssue),
@@ -259,8 +259,8 @@ d("ramose session socket e2e", () => {
           absorb(
             dbA.effect.transact(function* (tx) {
               const ada = yield* tx.entity();
-              yield* ada.add(Session.name, "Ada");
-              yield* ada.add(Session.n, 1);
+              yield* ada.set(Session.name, "Ada");
+              yield* ada.set(Session.n, 1);
             }),
           ),
         );
@@ -268,7 +268,7 @@ d("ramose session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          absorb(report.dbAfter.effect.q(sessionNames)),
+          absorb(report.dbAfter.effect.query(sessionNames)),
         );
         expect(names).toEqual([{ name: "Ada" }]);
 
@@ -296,8 +296,8 @@ d("ramose session socket e2e", () => {
           absorb(
             dbB.effect.transact(function* (tx) {
               const bob = yield* tx.entity();
-              yield* bob.add(Session.name, "Bob");
-              yield* bob.add(Session.n, 2);
+              yield* bob.set(Session.name, "Bob");
+              yield* bob.set(Session.n, 2);
             }),
           ),
         );
@@ -305,7 +305,7 @@ d("ramose session socket e2e", () => {
         let count = 0;
         for (let i = 0; i < 40 && count < 2; i++) {
           count = (
-            await a.runPromise(absorb(dbA.effect.q(sessionNames)))
+            await a.runPromise(absorb(dbA.effect.query(sessionNames)))
           ).length;
           if (count < 2) await Bun.sleep(250);
         }
@@ -361,7 +361,7 @@ d("ramose session socket e2e", () => {
           await Bun.sleep(500);
         }
         expect(latest).toEqual([{ name: "Ada" }]);
-        const rows = await retry(() => pdb.q(sessionNames));
+        const rows = await retry(() => pdb.query(sessionNames));
         expect(rows).toEqual([{ name: "Ada" }]);
         live.close();
       } finally {
@@ -396,8 +396,8 @@ d("ramose session socket e2e", () => {
                 ["d", undefined],
               ] as const) {
                 const e = yield* tx.entity();
-                yield* e.add(Session.name, name);
-                if (n !== undefined) yield* e.add(Session.n, n);
+                yield* e.set(Session.name, name);
+                if (n !== undefined) yield* e.set(Session.n, n);
               }
             }),
           ),
@@ -410,14 +410,14 @@ d("ramose session socket e2e", () => {
           const e = yield* Query.entities(Session);
           return { n: Q.count(e) };
         });
-        const countRows = await rt.runPromise(absorb(view.effect.q(countQ)));
+        const countRows = await rt.runPromise(absorb(view.effect.query(countQ)));
         expect(countRows[0]?.n ?? 0).toBe(4);
         const sumQ = Query.q(function* () {
           const e = yield* Query.entities(Session);
           const f = yield* Q.fact(e, Session.n);
           return { total: Q.sum(f.v) };
         });
-        const sumRows = await rt.runPromise(absorb(view.effect.q(sumQ)));
+        const sumRows = await rt.runPromise(absorb(view.effect.query(sumQ)));
         expect(sumRows[0]?.total ?? 0).toBe(5);
 
         // groupBy/aggregate → a record projection: the bound cell is the
@@ -427,7 +427,7 @@ d("ramose session socket e2e", () => {
           const f = yield* Q.fact(e, Session.n);
           return { n: f.v, rows: Q.count(e) };
         });
-        const groups = await rt.runPromise(absorb(view.effect.q(perN)));
+        const groups = await rt.runPromise(absorb(view.effect.query(perN)));
         expect([...groups].sort((a, b) => a.n - b.n)).toEqual([
           { n: 1, rows: 1 },
           { n: 2, rows: 2 },
@@ -447,10 +447,10 @@ d("ramose session socket e2e", () => {
           ),
         );
         const pageQ = (after: Ramose.Cursor | null) => paged.after(after);
-        const p1 = await rt.runPromise(absorb(view.effect.q(pageQ(null))));
+        const p1 = await rt.runPromise(absorb(view.effect.query(pageQ(null))));
         expect(p1.rows.map((r) => r.name)).toEqual(["a", "b", "c"]);
         expect(p1.cursor).not.toBeNull();
-        const p2 = await rt.runPromise(absorb(view.effect.q(pageQ(p1.cursor))));
+        const p2 = await rt.runPromise(absorb(view.effect.query(pageQ(p1.cursor))));
         expect(p2.rows.map((r) => r.name)).toEqual(["d"]);
         expect(p2.cursor).toBeNull();
       } finally {
@@ -607,13 +607,13 @@ d("ramose session socket e2e", () => {
           absorb(
             phone.effect.transact(function* (tx) {
               const ada = yield* tx.entity();
-              yield* ada.add(ReefUser.name, "Ada");
+              yield* ada.set(ReefUser.name, "Ada");
             }),
           ),
         );
         const people = await phoneRt.runPromise(
           absorb(
-            person.dbAfter.effect.q(
+            person.dbAfter.effect.query(
               Query.q(() =>
                 pipe(
                   Query.entities(ReefUser),
@@ -628,15 +628,15 @@ d("ramose session socket e2e", () => {
           absorb(
             phone.effect.transact(function* (tx) {
               const one = yield* tx.entity();
-              yield* one.add(ReefIssue.title, "One");
-              yield* one.add(ReefIssue.status, "todo");
-              yield* one.add(ReefIssue.rank, 1);
-              yield* one.add(ReefIssue.creator, adaId);
+              yield* one.set(ReefIssue.title, "One");
+              yield* one.set(ReefIssue.status, "todo");
+              yield* one.set(ReefIssue.rank, 1);
+              yield* one.set(ReefIssue.creator, adaId);
               const two = yield* tx.entity();
-              yield* two.add(ReefIssue.title, "Two");
-              yield* two.add(ReefIssue.status, "todo");
-              yield* two.add(ReefIssue.rank, 2);
-              yield* two.add(ReefIssue.creator, adaId);
+              yield* two.set(ReefIssue.title, "Two");
+              yield* two.set(ReefIssue.status, "todo");
+              yield* two.set(ReefIssue.rank, 2);
+              yield* two.set(ReefIssue.creator, adaId);
             }),
           ),
         );
@@ -683,16 +683,16 @@ d("ramose session socket e2e", () => {
           phoneRt.runPromise(
             absorb(
               phone.effect.transact(function* (tx) {
-                yield* tx.add(one!.id, ReefIssue.status, "doing");
-                yield* tx.add(one!.id, ReefIssue.rank, 10);
+                yield* tx.set(one!.id, ReefIssue.status, "doing");
+                yield* tx.set(one!.id, ReefIssue.rank, 10);
               }),
             ),
           ),
           computerRt.runPromise(
             absorb(
               computer.effect.transact(function* (tx) {
-                yield* tx.add(two!.id, ReefIssue.status, "done");
-                yield* tx.add(two!.id, ReefIssue.rank, 20);
+                yield* tx.set(two!.id, ReefIssue.status, "done");
+                yield* tx.set(two!.id, ReefIssue.rank, 20);
               }),
             ),
           ),

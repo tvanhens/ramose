@@ -1,7 +1,7 @@
 /**
  * `ramose/db/effect` — the Effect hatch for the portable client.
  *
- * App code uses promises on `ramose/db` (`db.q`, `db.run`, `db.live`).
+ * App code uses promises on `ramose/db` (`db.query`, `db.run`, `db.live`).
  * Effect users reach the same client through:
  *
  * - `db.effect.*` — Effect / Stream variants of every db method, including

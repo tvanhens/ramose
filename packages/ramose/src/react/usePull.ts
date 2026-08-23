@@ -12,8 +12,8 @@
  */
 
 import type {
-  Catalog,
-  CatalogEid,
+  Schema,
+  SchemaEid,
   Eid,
   IdentPullPattern,
   LookupRef,
@@ -25,7 +25,7 @@ import { type Live, useLiveSubscription } from "./useLive.ts";
 import { viewDep } from "./seam.ts";
 
 /** The pattern a subject accepts — the same rule as `db.pull` / `db.livePull`. */
-type PullPattern<C extends Catalog.Any, P> = [P] extends [readonly unknown[]]
+type PullPattern<C extends Schema.Any, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
   : ValidatePull<C, P>;
 
@@ -46,9 +46,9 @@ const subjectKey = (subject: unknown): string => {
   return JSON.stringify(id ?? subject);
 };
 
-export const usePull = <C extends Catalog.Any, const P>(
+export const usePull = <C extends Schema.Any, const P>(
   db: ReadDb<C>,
-  subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
+  subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
   pattern: PullPattern<C, P>,
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);

@@ -2,29 +2,29 @@
 
 import * as Schema from "effect/Schema";
 import {
-  Attr,
-  Catalog,
+  Field,
+  Schema as DbSchema,
   Instant,
   Long,
-  Namespace,
+  Entity,
   Ref,
 } from "../../src/db/internal.ts";
 
-export const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-  bestFriend: Attr(Ref),
+export const User = Entity("user", {
+  name: Field(Schema.String, { unique: "upsert" }),
+  age: Field(Long),
+  friends: Field(Ref.self, { cardinality: "many" }),
+  bestFriend: Field(Ref.self),
 });
 
-export const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-  released: Attr(Instant),
+export const Movie = Entity("movie", {
+  title: Field(Schema.String, { index: true }),
+  year: Field(Long),
+  released: Field(Instant),
 });
 
-export const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
+export const Meta = Entity("meta", {
+  source: Field(Schema.String),
 });
 
-export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
+export const Movies = DbSchema({ user: User, movie: Movie, meta: Meta });

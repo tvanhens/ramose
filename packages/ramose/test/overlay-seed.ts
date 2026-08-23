@@ -4,7 +4,7 @@
  */
 
 import { schemaTx } from "../src/db/ensure.ts";
-import type { AnyCatalog } from "../src/db/Catalog.ts";
+import type { AnySchema } from "../src/db/Schema.ts";
 import { Connection } from "../src/internal/core/conn.ts";
 import { Index, type Datom } from "../src/internal/core/datom.ts";
 import { toWireDatom, type WireDatom } from "../src/internal/core/log.ts";
@@ -36,8 +36,8 @@ export const txSnap = (rep: {
 });
 
 /** Empty follower with this catalog's schema — same idents the overlay installs. */
-export const catalogWorld = async (catalog: AnyCatalog): Promise<Connection> => {
+export const catalogWorld = async (schema: AnySchema): Promise<Connection> => {
   const conn = await Connection.create();
-  await conn.transact(schemaTx(catalog) as unknown[]);
+  await conn.transact(schemaTx(schema) as unknown[]);
   return conn;
 };

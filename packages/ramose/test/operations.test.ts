@@ -51,10 +51,10 @@ const createUser = Operation(
   },
   async (op, input) => {
     const e = op.entity();
-    e.add(User.name, input.name);
+    e.set(User.name, input.name);
     await op.effect("audit", () => "logged");
     const extra = op.entity();
-    extra.add(User.name, "AFTER");
+    extra.set(User.name, "AFTER");
     return {};
   },
 );
@@ -67,7 +67,7 @@ const setName = Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, User.name, input.name);
+    op.set(op.self, User.name, input.name);
     return {};
   },
 );
@@ -129,10 +129,10 @@ const moviesWorld = async () => {
 
 const seedClient = async (
   peer: { socket: { push: (f: unknown) => void } },
-  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
+  db: { query: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
   conn: Connection,
 ) => {
-  await db.q(names);
+  await db.query(names);
   const snap = await snapshotOf(conn);
   peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   await settle();
@@ -210,7 +210,7 @@ describe("optimistic prefix", () => {
     const report = await pending;
     expect(report.output).toEqual({});
     expect(ack?.t).toBe(report.t);
-    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
+    expect(await db.query(names)).toEqual([{ name: "Ada" }]);
 
     await live.stop();
     await c.dispose();
@@ -256,7 +256,7 @@ describe("optimistic prefix", () => {
     expect((err as OperationRejected)._tag).toBe("OperationRejected");
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
-    expect(await db.q(names)).toEqual([]);
+    expect(await db.query(names)).toEqual([]);
 
     await live.stop();
     await c.dispose();
@@ -312,7 +312,7 @@ describe("optimistic prefix", () => {
     const first = Effect.runPromise(
       db.effect.transact(function* (tx) {
         const e = yield* tx.entity("new");
-        yield* e.add(User.name, "Ada");
+        yield* e.set(User.name, "Ada");
       }),
     );
     await settle();
@@ -328,7 +328,7 @@ describe("optimistic prefix", () => {
     expect(typeof opBodies[0]!.entity).toBe("number");
     expect(opBodies[0]!.entity).not.toBe("new");
     expect(created.t).toBeLessThanOrEqual(renamed.t);
-    expect(await db.q(names)).toEqual([{ name: "Ada Lovelace" }]);
+    expect(await db.query(names)).toEqual([{ name: "Ada Lovelace" }]);
 
     await c.dispose();
   });
@@ -336,7 +336,7 @@ describe("optimistic prefix", () => {
 
 const stubOp = (effects: "halt" | "run") =>
   buildOp({
-    catalog: Movies,
+    schema: Movies,
     db: "movies",
     principal: { eid: null, class: "admin", claims: {} },
     effects,
@@ -350,17 +350,17 @@ describe("PrefixHalt is out-of-band", () => {
     const swallow = {
       body: async (op: {
         entity: () => {
-          add: (attr: unknown, value: unknown) => void;
+          set: (attr: unknown, value: unknown) => void;
         };
         effect: (name: string, run: () => unknown) => Promise<unknown>;
       }) => {
         const e = op.entity();
-        e.add(User.name, "Ada");
+        e.set(User.name, "Ada");
         try {
           await op.effect("charge", () => "nope");
         } catch {
           const extra = op.entity();
-          extra.add(User.name, "AFTER");
+          extra.set(User.name, "AFTER");
         }
         return { ok: true };
       },
@@ -433,9 +433,9 @@ describe("optional add", () => {
   test("add(undefined | null) is encoded as a nil datom — the transactor rejects it", () => {
     const tx = txBuilder(Movies);
     const e = Effect.runSync(tx.entity());
-    Effect.runSync(e.add(User.name, "Ada"));
-    Effect.runSync(e.add(User.age, undefined as never));
-    Effect.runSync(e.add(User.age, null as never));
+    Effect.runSync(e.set(User.name, "Ada"));
+    Effect.runSync(e.set(User.age, undefined as never));
+    Effect.runSync(e.set(User.age, null as never));
     expect(tx.spec.ops).toEqual([
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", undefined],

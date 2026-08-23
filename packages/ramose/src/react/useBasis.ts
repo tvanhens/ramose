@@ -9,11 +9,11 @@
  * one-shot. `undefined` until the first answer lands.
  */
 
-import type { Catalog, ReadDb } from "../db/index.ts";
+import type { Schema, ReadDb } from "../db/index.ts";
 import { useEffect, useState } from "react";
 import { seamOf, viewDep } from "./seam.ts";
 
-export const useBasis = <C extends Catalog.Any>(
+export const useBasis = <C extends Schema.Any>(
   db: ReadDb<C>,
 ): number | undefined => {
   const view = viewDep(db);

@@ -53,7 +53,7 @@ export const Store = Cloudflare.R2.Bucket("Store");
 export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
 
 /** Server auth (https://ramose.ai/reference/server/), all opt-in: nothing set deploys today's peer. */
-const auth: Ramose.PeerAuth = {
+const auth: Ramose.ServerAuth = {
   policy: process.env.RAMOSE_POLICY,
   jwksUrl: process.env.RAMOSE_JWKS_URL,
   issuers: process.env.RAMOSE_JWT_ISS,
@@ -71,7 +71,7 @@ export const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "
 
 export const Worker = Cloudflare.Worker("Worker", {
   // `main` is a path, not a specifier — Alchemy `realpath`s it. The published
-  // default is `ramose/worker` (`createPeer()` with an empty registry). This
+  // default is `ramose/worker` (`createServer()` with an empty registry). This
   // stack registers the e2e operations so `db.run` works in test/e2e.
   main: import.meta.resolve("./e2e-peer.ts"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },

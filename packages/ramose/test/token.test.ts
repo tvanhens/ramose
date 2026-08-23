@@ -100,7 +100,7 @@ describe("token.jwt mints lazily and caches", () => {
     await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     expect(mints).toBe(1);
@@ -109,7 +109,7 @@ describe("token.jwt mints lazily and caches", () => {
     await run(
       db.effect.transact(function* (tx) {
         const bob = yield* tx.entity();
-        yield* bob.add(User.name, "Bob");
+        yield* bob.set(User.name, "Bob");
       }),
     );
     // the second transact re-read the Effect, and the cache answered
@@ -323,7 +323,7 @@ describe("claims() is the decoded payload, UI hints only", () => {
     // not a JWT: no claims, but the credential still flows
     const opaque = token.static("s3cret");
     expect(await read(opaque)).toBe("s3cret");
-    expect(await opaque.claims()).toEqual({});
+    expect(await opaque.claims()).toEqual({} as Awaited<ReturnType<typeof opaque.claims>>);
     opaque.invalidate(); // a no-op, not an error
     expect(await read(opaque)).toBe("s3cret");
   });
@@ -341,7 +341,7 @@ describe("failure typing on the wire", () => {
     const error = await runFail(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     expect((error as { _tag?: string })._tag).toBe("NetworkError");
@@ -365,7 +365,7 @@ describe("failure typing on the wire", () => {
     const error = await runFail(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     // the DbError passes through untouched — no NetworkError wrapping

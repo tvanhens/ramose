@@ -91,7 +91,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         return { status: 400, body: { error: `unknown operation: ${body.name}` } };
       }
       const built = buildOp({
-        catalog: Reef,
+        schema: Reef,
         db: "coral-team",
         principal: { eid: null, class: "admin", claims: {} },
         self: body.entity,
@@ -298,12 +298,12 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
     const seeded = await Effect.runPromise(
       db.effect.transact(function* (tx) {
         const user = yield* tx.entity();
-        yield* user.add(User.sub, "ada");
-        yield* user.add(User.name, "Ada");
-        yield* user.add(User.email, "ada@reef.test");
+        yield* user.set(User.sub, "ada");
+        yield* user.set(User.name, "Ada");
+        yield* user.set(User.email, "ada@reef.test");
       }),
     );
-    const people = await seeded.dbAfter.q(peopleQuery);
+    const people = await seeded.dbAfter.query(peopleQuery);
     myEid = people[0]!.id;
   }
 
@@ -532,11 +532,11 @@ describe("the board's writes move the board's live stream", () => {
     });
 
     const qBefore = peer.queryOps().length;
-    const past = await peer.db.asOf(seedT).q(boardQuery);
+    const past = await peer.db.asOf(seedT).query(boardQuery);
     expect(past).toEqual([]);
     expect(peer.queryOps().length).toBeGreaterThan(qBefore);
 
-    const now = await peer.db.q(boardQuery);
+    const now = await peer.db.query(boardQuery);
     expect(titles(now)).toEqual(["Only in the present"]);
     // current-view q is local — asOf was the only new socket `q`
     expect(peer.queryOps()).toHaveLength(qBefore + 1);
@@ -672,8 +672,8 @@ describe("the board's writes move the board's live stream", () => {
 
   test("people and labels live on the same overlay as the board", async () => {
     const peer = await inProcessPeer();
-    const people = await peer.db.q(peopleQuery);
-    const labels = await peer.db.q(labelsQuery);
+    const people = await peer.db.query(peopleQuery);
+    const labels = await peer.db.query(labelsQuery);
     expect(people.map((p) => p.name)).toEqual(["Ada"]);
     expect(labels).toEqual([]);
     expect(peer.queryOps()).toEqual([]);

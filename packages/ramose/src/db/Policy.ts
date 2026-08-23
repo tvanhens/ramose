@@ -19,11 +19,11 @@ import type {
 } from "../internal/core/policy/ast.ts";
 import { POLICY_OPS } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
-import type { AnyAttribute } from "./Attribute.ts";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnyField } from "./Field.ts";
+import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnyEntity } from "./Entity.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import { Q, lowerQueryObject, q, rule, type Fragment, type QueryGen, type Var } from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
@@ -34,7 +34,7 @@ export type Operand = PolicyOperand;
 export type Op = PolicyOp;
 
 /** A stamped attribute (`User.sub`) — anything carrying `ident` + attr shape. */
-export type AttrRef = AnyAttribute & { readonly ident: string };
+export type AttrRef = AnyField & { readonly ident: string };
 
 export interface Preset {
   readonly _tag: "Preset";
@@ -46,16 +46,16 @@ export interface Preset {
  * The namespace the principal mapping names. `User.sub` under catalog `C`
  * yields `typeof User`, which is what brands `me`.
  */
-export type NsOfPrincipal<C extends AnyCatalog, I extends string> = {
-  [K in keyof C["namespaces"]]: I extends `:${C["namespaces"][K]["ns"]}/${string}`
-    ? C["namespaces"][K]
+export type NsOfPrincipal<C extends AnySchema, I extends string> = {
+  [K in keyof C["entities"]]: I extends `:${C["entities"][K]["ns"]}/${string}`
+    ? C["entities"][K]
     : never;
-}[keyof C["namespaces"]];
+}[keyof C["entities"]];
 
 /** `me` in every arm: a var branded with the principal's namespace. */
-export type Me<N extends AnyNamespace = AnyNamespace> = Var<Eid<N>>;
+export type Me<N extends AnyEntity = AnyEntity> = Var<Eid<N>>;
 
-export type PrincipalMe<C extends AnyCatalog, I extends string> = Me<NsOfPrincipal<C, I>>;
+export type PrincipalMe<C extends AnySchema, I extends string> = Me<NsOfPrincipal<C, I>>;
 
 /** `(me) => fragment` — the arm closes over the typed principal token. */
 export type FragFn<M> = (me: M) => Fragment<Var<unknown>, unknown>;
@@ -106,10 +106,10 @@ export type NsRuleSpec<M> = RuleSpec<M> & {
 };
 
 export interface PolicyHead<
-  C extends AnyCatalog = AnyCatalog,
+  C extends AnySchema = AnySchema,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 > {
-  readonly catalog: C;
+  readonly schema: C;
   /** attribute whose value is the JWT `sub` — derives `me`'s type */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
   readonly classes: readonly string[];
@@ -117,8 +117,8 @@ export interface PolicyHead<
   readonly claims?: Schema.Struct<CF>;
 }
 
-export type PolicyArms<C extends AnyCatalog, M> = {
-  readonly [K in keyof C["namespaces"]]?: NsRuleSpec<M>;
+export type PolicyArms<C extends AnySchema, M> = {
+  readonly [K in keyof C["entities"]]?: NsRuleSpec<M>;
 };
 
 interface CompiledArm {
@@ -134,9 +134,9 @@ interface NsRules {
 }
 
 /** A policy bound to its catalog. `compile` lowers it to the wire JSON. */
-export interface Policy<C extends AnyCatalog = AnyCatalog> {
+export interface Policy<C extends AnySchema = AnySchema> {
   readonly _tag: "Policy";
-  readonly catalog: C;
+  readonly schema: C;
   readonly principal: string;
   readonly classes: readonly string[];
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
@@ -153,24 +153,6 @@ const fail = (message: string, ident?: string, cause?: unknown): never => {
 };
 
 // ── claims ─────────────────────────────────────────────────────────────────
-
-/**
- * The JWT Ramose verifies. `ramose.attrs` is decoded by the policy's own
- * `claims` struct; here it stays open.
- */
-export const Claims = Schema.Struct({
-  iss: Schema.String,
-  sub: Schema.String,
-  aud: Schema.String,
-  exp: Schema.Number,
-  iat: Schema.optional(Schema.Number),
-  ramose: Schema.Struct({
-    db: Schema.String,
-    class: Schema.String,
-    attrs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  }),
-});
-export type Claims = Schema.Schema.Type<typeof Claims>;
 
 export type ClaimOperand = { readonly _tag: "claim"; readonly path: readonly string[] };
 
@@ -199,11 +181,11 @@ const claimAccess = <T>(): ClaimAccess<T> => ({
   attrs: attrsProxy<T>(),
 });
 
-/** `P.claims.sub`, `P.claims.attrs.org`. */
-export const claims: ClaimAccess<Record<string, ClaimOperand>> = claimAccess();
+/** `P.claim.sub`, `P.claim.attrs.org`. */
+export const claim: ClaimAccess<Record<string, ClaimOperand>> = claimAccess();
 
-/** Same accessor with `attrs` keyed by a claims struct: `P.claimsOf(S).attrs.org`. */
-export const claimsOf = <CF extends Schema.Struct.Fields>(
+/** Same accessor with `attrs` keyed by a claims struct: `P.claimOf(S).attrs.org`. */
+export const claimOf = <CF extends Schema.Struct.Fields>(
   _struct: Schema.Struct<CF>,
 ): ClaimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }> =>
   claimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }>();
@@ -256,8 +238,8 @@ export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => 
   return { _tag: "Preset", attr: identOf(attr), operand };
 };
 
-/** Attribute rule; narrows (ANDs with) its namespace rule. */
-export const attr = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<M> => ({
+/** Field rule; narrows (ANDs with) its entity rule. */
+export const field = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<M> => ({
   _tag: "AttrRule",
   attr: identOf(a),
   rules,
@@ -265,10 +247,10 @@ export const attr = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<M
 
 // ── compile fragments → named rules ────────────────────────────────────────
 
-const catalogIdents = (catalog: AnyCatalog): ReadonlySet<string> => {
+const catalogIdents = (schema: AnySchema): ReadonlySet<string> => {
   const out = new Set<string>();
-  for (const ns of Object.values(catalog.namespaces)) {
-    for (const key of Object.keys(ns.attributes)) out.add(`:${ns.ns}/${key}`);
+  for (const ns of Object.values(schema.entities)) {
+    for (const key of Object.keys(ns.fields)) out.add(`:${ns.ns}/${key}`);
   }
   return out;
 };
@@ -373,7 +355,7 @@ const validateRuleBodies = (
   }
   walkIdents(defs, (ident) => {
     if (ident.startsWith(":db/")) return;
-    if (!idents.has(ident)) fail(`${where}: ${ident} is not in the catalog`, ident);
+    if (!idents.has(ident)) fail(`${where}: ${ident} is not in the schema`, ident);
   });
 };
 
@@ -386,32 +368,32 @@ const validateRuleBodies = (
  * classes and unknown namespace keys fail here.
  */
 export function policy<
-  const C extends AnyCatalog,
+  const C extends AnySchema,
   const I extends CatalogIdent<C>,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
   head: {
-    readonly catalog: C;
+    readonly schema: C;
     readonly principal: AttrRef & { readonly ident: I };
     readonly classes: readonly string[];
     readonly claims?: Schema.Struct<CF>;
   },
   arms: PolicyArms<C, PrincipalMe<C, I>>,
 ): Policy<C> {
-  if (head == null || typeof head !== "object" || head.catalog == null) {
-    fail("policy(head, arms) takes a head { catalog, principal, classes }");
+  if (head == null || typeof head !== "object" || head.schema == null) {
+    fail("policy(head, arms) takes a head { schema, principal, classes }");
   }
-  const catalog = head.catalog;
-  if ((catalog as { _tag?: unknown })._tag !== "Catalog") {
-    fail("head.catalog must be a Ramose.Catalog");
+  const schema = head.schema;
+  if ((schema as { _tag?: unknown })._tag !== "Schema") {
+    fail("head.schema must be a Ramose.Schema");
   }
   if (arms == null || typeof arms !== "object") {
-    fail("policy(head, arms) takes the namespace arms as its second argument");
+    fail("policy(head, arms) takes the entity arms as its second argument");
   }
 
-  const idents = catalogIdents(catalog);
+  const idents = catalogIdents(schema);
   const principalIdent = identOf(head.principal as AttrRef);
-  if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the catalog`, principalIdent);
+  if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the schema`, principalIdent);
 
   const classes = [...head.classes];
   if (classes.length === 0) fail("classes must not be empty");
@@ -465,8 +447,8 @@ export function policy<
 
   for (const [nsKey, nsSpec] of Object.entries(arms as Record<string, NsRuleSpec<unknown> | undefined>)) {
     if (nsSpec === undefined) continue;
-    const declared = (catalog.namespaces as Record<string, { ns: string } | undefined>)[nsKey];
-    if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the catalog`);
+    const declared = (schema.entities as Record<string, { ns: string } | undefined>)[nsKey];
+    if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the schema`);
     const prefix = declared!.ns;
     const where = `ns.${nsKey}`;
 
@@ -474,8 +456,8 @@ export function policy<
 
     const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
     for (const a of nsSpec.attrs ?? []) {
-      if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.attr(...)`);
-      if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the catalog`, a.attr);
+      if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.field(...)`);
+      if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the schema`, a.attr);
       if (!a.attr.startsWith(`:${prefix}/`)) {
         fail(`${where}.attrs: ${a.attr} is not under the ${prefix} namespace`, a.attr);
       }
@@ -487,7 +469,7 @@ export function policy<
     const presetMap: Record<string, Operand> = {};
     for (const p of nsSpec.preset ?? []) {
       if (p?._tag !== "Preset") fail(`${where}.preset expects P.preset(...)`);
-      if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the catalog`, p.attr);
+      if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the schema`, p.attr);
       if (!p.attr.startsWith(`:${prefix}/`)) {
         fail(`${where}.preset: ${p.attr} is not under the ${prefix} namespace`, p.attr);
       }
@@ -502,7 +484,7 @@ export function policy<
 
   return {
     _tag: "Policy",
-    catalog,
+    schema,
     principal: principalIdent,
     classes,
     claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
@@ -552,12 +534,12 @@ const lower = (p: Policy): CompiledPolicy => {
   const preset: Record<string, Operand> = {};
 
   for (const [nsKey, entry] of Object.entries(p.ns)) {
-    const declared = (p.catalog.namespaces as Record<string, { attributes: Record<string, unknown> }>)[nsKey]!;
+    const declared = (p.schema.entities as Record<string, { fields: Record<string, unknown> }>)[nsKey]!;
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
-    const declaredIdents = new Set(Object.keys(declared.attributes).map((key) => `:${entry.prefix}/${key}`));
+    const declaredIdents = new Set(Object.keys(declared.fields).map((key) => `:${entry.prefix}/${key}`));
     for (const [ident, own] of Object.entries(entry.attrs)) {
-      if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the catalog`, ident);
+      if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the schema`, ident);
       const narrowed = toWireRules(own);
       if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed;
     }

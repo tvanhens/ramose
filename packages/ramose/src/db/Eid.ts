@@ -10,7 +10,7 @@
  * `Eid<N>` over a **namespace** is the row cell `select({ id: N.id })`
  * yields: the raw id *number* the peer answered, branded with the namespace
  * the field belongs to. The brand is a phantom too — the value stays a plain
- * number, so it still works as a React key, a `tx.add(id, …)` subject or a
+ * number, so it still works as a React key, a `tx.set(id, …)` subject or a
  * predicate value — but the cells do not mix: a `User` id is not a `Todo`
  * id, and a bare `number` is not a cell. Hand it to the next query
  * (`N.id.is(cell)`) or to `db.pull` with no cast. A query with **no**
@@ -18,11 +18,11 @@
  * query names no field, so there is no namespace to brand its rows with.
  */
 
-import type { AnyCatalog } from "./Catalog.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnySchema } from "./Schema.ts";
+import type { AnyEntity } from "./Entity.ts";
 
-export type Eid<S extends AnyCatalog | AnyNamespace = AnyCatalog> =
-  [S] extends [AnyNamespace]
+export type Eid<S extends AnySchema | AnyEntity = AnySchema> =
+  [S] extends [AnyEntity]
     ? number & {
         /**
          * Phantom: the namespace this cell came from, never present at
@@ -42,10 +42,10 @@ export type Eid<S extends AnyCatalog | AnyNamespace = AnyCatalog> =
  * namespace in `C`. This is what lets a `select({ id: N.id })` cell be a
  * `db.pull` subject with no cast — and what keeps another catalog's cells out.
  */
-export type CatalogEid<C extends AnyCatalog> = Eid<
-  C["namespaces"][keyof C["namespaces"]]
+export type SchemaEid<C extends AnySchema> = Eid<
+  C["entities"][keyof C["entities"]]
 >;
 
 /** @internal Query rows and test fixtures wrap raw ids with this. */
-export const makeEid = <C extends AnyCatalog>(id: number): Eid<C> =>
+export const makeEid = <C extends AnySchema>(id: number): Eid<C> =>
   ({ id }) as Eid<C>;

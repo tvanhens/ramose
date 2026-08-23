@@ -127,7 +127,7 @@ describe("role → class mapping", () => {
 
 describe("catalog", () => {
   test("declares the four namespaces the app writes", () => {
-    expect(Object.keys(Reef.namespaces).sort()).toEqual([
+    expect(Object.keys(Reef.entities).sort()).toEqual([
       "comment",
       "issue",
       "label",

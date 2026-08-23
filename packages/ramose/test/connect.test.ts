@@ -48,7 +48,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
     const c = ramose(peer);
     const db = c.db("movies", Movies);
 
-    expect(await db.q(names)).toEqual([]);
+    expect(await db.query(names)).toEqual([]);
     expect(peer.calls).toEqual([]);
     expect(peer.frames[0]).toEqual({
       id: 1,
@@ -59,7 +59,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
     const report = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     expect(peer.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
@@ -91,8 +91,8 @@ describe("close()", () => {
     });
     const c = ramose(peer);
 
-    await run(c.db("movies", Movies).q(names));
-    await run(c.db("other", Movies).q(names));
+    await run(c.db("movies", Movies).query(names));
+    await run(c.db("other", Movies).query(names));
     expect(peer.sockets.map((s) => s.closed)).toEqual([false, false]);
 
     await c.close();
@@ -112,7 +112,7 @@ describe("close()", () => {
     });
     const c = ramose(peer);
 
-    const doomed = runFail(c.db("movies", Movies).q(names));
+    const doomed = runFail(c.db("movies", Movies).query(names));
     await c.close();
 
     expect((await doomed)._tag).toBe("NetworkError");
@@ -125,14 +125,14 @@ describe("close()", () => {
     });
     const c = ramose(peer);
     const db = c.db("movies", Movies);
-    await db.q(names);
+    await db.query(names);
 
     await c.close();
 
-    const onKnownName = await runFail(db.q(names));
+    const onKnownName = await runFail(db.query(names));
     expect(onKnownName._tag).toBe("NetworkError");
     // a name first read after the close fails the same way
-    const onFreshName = await runFail(c.db("fresh", Movies).q(names));
+    const onFreshName = await runFail(c.db("fresh", Movies).query(names));
     expect(onFreshName._tag).toBe("NetworkError");
     expect(peer.calls).toEqual([]);
   });
@@ -145,10 +145,10 @@ describe("the promise / subscription surface", () => {
     });
     const c = ramose(peer);
     const db = c.db("movies", Movies);
-    await db.q(names);
+    await db.query(names);
     await c.close();
     try {
-      await db.q(names);
+      await db.query(names);
       throw new Error("expected failure");
     } catch (error) {
       const e = error as { _tag?: string; name?: string };

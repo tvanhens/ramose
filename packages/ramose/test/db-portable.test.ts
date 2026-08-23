@@ -198,9 +198,9 @@ describe("the `/db` barrel's public names", () => {
     expect(Object.keys(db).sort()).toEqual(
       [
         // schema
-        "Attr",
-        "Namespace",
-        "Catalog",
+        "Field",
+        "Entity",
+        "Schema",
         "Instant",
         "Uuid",
         "UuidString",

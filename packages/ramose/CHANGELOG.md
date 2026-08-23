@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Public vocabulary (part of #204, tracker #205)
+
+App surface names: `Entity` / `Field` / `Schema`, `set` / `remove` /
+`delete`, `unique: "upsert" | "strict"`, `owned`, `valueType: "string"`,
+`ServerAuth` / `createServer` / `ServerOptions`, `db.query` (hatch
+`db.effect.query`). One `Claims` type; policy operand `P.claim` /
+`P.field`. Hatch tx handle is `TxHandle`. Wire protocol stays
+Datomic-shaped. Schema shorthands (#207), fluent `Query.from` (#208),
+and the full docs rewrite (#175) are separate.
+
 ### Policy clause-level pushdown (#157)
 
 A namespace read rule is conjoined into the caller's query **before

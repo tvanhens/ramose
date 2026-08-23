@@ -31,15 +31,15 @@ Inside, a request handler names a database, writes, and reads its own write back
 
         const { t, dbAfter } = yield* tenant.transact(function* (tx) {
           const ada = yield* tx.entity();
-          yield* ada.add(User.name, "Ada");
+          yield* ada.set(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.q(
+        const names = yield* dbAfter.query(
           Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))),
         );
 ```
 
-`ramose.db(name, catalog)` costs nothing per request; creating a customer's database at sign-up is on [One database per customer](/guides/workspaces/#from-a-worker). The file's `effect/unstable/http` imports are Effect 4's HTTP module — the name is Effect's, not a warning about Ramose.
+`ramose.db(name, schema)` costs nothing per request; creating a customer's database at sign-up is on [One database per customer](/guides/workspaces/#from-a-worker). The file's `effect/unstable/http` imports are Effect 4's HTTP module — the name is Effect's, not a warning about Ramose.
 
 ## What the Worker can do
 

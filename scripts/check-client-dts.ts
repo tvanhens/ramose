@@ -34,7 +34,9 @@ const ALLOWED_HOPS = new Set([
   "Operation.d.ts",
   "session.d.ts",
   "Pull.d.ts",
-  "Attribute.d.ts",
+  "Field.d.ts",
+  "Entity.d.ts",
+  "Schema.d.ts",
   "valueTypes.d.ts",
   // hatch file — `layer` / `Databases` / `makeDatabases`. Its own Effect
   // imports are expected; we still scan *its* hops below.

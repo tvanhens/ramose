@@ -36,7 +36,7 @@ The slider's ceiling is the current **version number `t`** — the number every 
         // …and the same query as of a past transaction. `asOf` is pure.
         const beforeRows = yield* db
           .asOf(report.t - 1)
-          .q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
+          .query(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
 ```
 
 Calling `asOf` costs nothing; the read happens when you run the query.

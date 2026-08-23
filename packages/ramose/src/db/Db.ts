@@ -16,12 +16,12 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import type { EffectDb, EffectOf, EffectReadDb } from "./effect-types.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
-import type { AnyCatalog } from "./Catalog.ts";
-import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
+import type { AnySchema } from "./Schema.ts";
+import { type SchemaEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
 import { NotOne, ParamError } from "./Errors.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
   OpReport,
@@ -55,7 +55,7 @@ import type { Subscription } from "./subscription.ts";
 import { txBuilder } from "./Tx.ts";
 
 /**
- * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
+ * What `db.query` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
  * when the peer answers zero or two rows; a parameterized query adds
  * {@link ParamError} for a missing / unknown / ill-typed binding. Every
  * other query — a rows array, `.one()`'s `row | null`, a cursor
@@ -103,7 +103,7 @@ export interface Wire {
    * HTTPS-only client, where reads stay on the peer and writes have no
    * optimistic layer. `makeDb` binds the catalog without opening a socket.
    */
-  bindCatalog?(name: string, catalog: AnyCatalog): void;
+  bindSchema?(name: string, schema: AnySchema): void;
   overlay?(name: string):
     | {
         transact(
@@ -120,7 +120,7 @@ export interface Wire {
         run(args: {
           readonly invocation: OperationInvocation;
           readonly operation: AnyOperation;
-          readonly catalog: AnyCatalog;
+          readonly schema: AnySchema;
           readonly principal: {
             readonly eid: number | null;
             readonly class: string;
@@ -161,13 +161,13 @@ export interface Wire {
  * until the policy's principal attribute has a row for this `sub` — and its
  * class (`"admin"` on a peer with no policy configured).
  */
-export interface DbPrincipal<C extends AnyCatalog = AnyCatalog> {
+export interface DbPrincipal<C extends AnySchema = AnySchema> {
   readonly eid: Eid<C> | null;
   readonly class: string;
 }
 
 /** What a committed transaction reports back. `dbAfter` reads your own writes. */
-export interface TxReport<C extends AnyCatalog = AnyCatalog> {
+export interface TxReport<C extends AnySchema = AnySchema> {
   readonly t: number;
   readonly txEid: Eid<C>;
   readonly datomCount: number;
@@ -179,18 +179,18 @@ export interface TxReport<C extends AnyCatalog = AnyCatalog> {
  * The pull pattern a subject accepts: a literate map, `Ramose.all(N)` (the
  * peer's wildcard row), or the ident-array escape.
  */
-type PullPattern<C extends AnyCatalog, P> = [P] extends [readonly unknown[]]
+type PullPattern<C extends AnySchema, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
   : ValidatePull<C, P>;
 
-export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
+export interface ReadDb<C extends AnySchema = AnySchema> {
   readonly name: string;
-  readonly catalog: C;
+  readonly schema: C;
 
   /** Run a {@link QueryObject} once. Bind params as the second argument.
    * The result is the query's terminal: the rows array, one row (or `null`)
    * after `one()` / `oneOrFail()`, a `Page` after `after(cursor)`. */
-  q<Row, P = never, Out = readonly Row[]>(
+  query<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
     ...params: ParamArgs<P>
   ): Promise<Out>;
@@ -215,7 +215,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * or a lookup ref.
    */
   pull<const P>(
-    subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
+    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
   ): Promise<Pull<C, P> | null>;
 
@@ -228,7 +228,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * pinned view (`asOf` / `history`) emits once and completes.
    */
   livePull<const P>(
-    subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
+    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
   ): Subscription<Pull<C, P> | null, DbError>;
 
@@ -252,7 +252,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly effect: EffectReadDb<C>;
 }
 
-export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
+export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
   /**
    * Who this session is — the peer resolves `sub → eid` at its end, so no
    * query is needed to learn your own entity. A signed-in user is provisioned
@@ -276,7 +276,7 @@ export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
     operation: Operation<string, I, O, undefined>,
     input: I,
   ): Promise<OpReport<O, C>>;
-  run<I, O, N extends AnyNamespace>(
+  run<I, O, N extends AnyEntity>(
     operation: Operation<string, I, O, N>,
     entity: unknown,
     input: I,
@@ -422,10 +422,10 @@ const lowerSubject = (subject: unknown): unknown => {
 };
 
 /** @internal Everything a `Db` and its `ReadDb` views share. */
-const makeRead = <C extends AnyCatalog>(
+const makeRead = <C extends AnySchema>(
   wire: Wire,
   name: string,
-  catalog: C,
+  schema: C,
   view: View,
   bad: InvalidRequest | undefined,
 ): EffectReadDb<C> => {
@@ -599,9 +599,9 @@ const makeRead = <C extends AnyCatalog>(
 
   const read: EffectReadDb<C> = {
     name,
-    catalog,
+    schema,
 
-    q: ((
+    query: ((
       input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
@@ -611,7 +611,7 @@ const makeRead = <C extends AnyCatalog>(
             Effect.map((r) => r.rows),
           ),
         ),
-      )) as EffectReadDb<C>["q"],
+      )) as EffectReadDb<C>["query"],
 
     live: ((
       input: AnyQueryObject,
@@ -664,10 +664,10 @@ const makeRead = <C extends AnyCatalog>(
       ),
 
     asOf: (t: number) =>
-      makeRead(wire, name, catalog, { ...view, asOf: t }, bad),
+      makeRead(wire, name, schema, { ...view, asOf: t }, bad),
 
     get history() {
-      return makeRead(wire, name, catalog, { ...view, history: true }, bad);
+      return makeRead(wire, name, schema, { ...view, history: true }, bad);
     },
   };
   // enumerable, so `makeDb`'s spread carries it onto the writable db too
@@ -754,22 +754,22 @@ const copySeam = (from: object, to: object): void => {
   if (seam !== undefined) (to as Record<symbol, unknown>)[DB_SEAM] = seam;
 };
 
-const wrapRead = <C extends AnyCatalog>(inner: EffectReadDb<C>): ReadDb<C> => {
+const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
   const read = {
     name: inner.name,
-    catalog: inner.catalog,
-    q: ((
+    schema: inner.schema,
+    query: ((
       input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
     ) =>
       asPromise(
         (
-          inner.q as (
+          inner.query as (
             q: AnyQueryObject,
             p?: Readonly<Record<string, unknown>>,
           ) => Effect.Effect<unknown, QueryError>
         )(input, bindings),
-      )) as ReadDb<C>["q"],
+      )) as ReadDb<C>["query"],
     live: ((
       input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
@@ -801,7 +801,7 @@ const wrapRead = <C extends AnyCatalog>(inner: EffectReadDb<C>): ReadDb<C> => {
   return read;
 };
 
-const wrapDb = <C extends AnyCatalog>(inner: EffectDb<C>): Db<C> => {
+const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
   const db = {
     ...wrapRead(inner),
     principal: () => asPromise(inner.principal()),
@@ -819,10 +819,10 @@ const wrapDb = <C extends AnyCatalog>(inner: EffectDb<C>): Db<C> => {
 };
 
 /** @internal `ramose.db(name, catalog)`. Pure: no request, no ensure, no socket. */
-export const makeDb = <C extends AnyCatalog>(
+export const makeDb = <C extends AnySchema>(
   wire: Wire,
   name: string,
-  catalog: C,
+  schema: C,
   view: View = {},
 ): Db<C> => {
   // a bad name never reaches the peer; every operation fails `InvalidRequest`
@@ -832,7 +832,7 @@ export const makeDb = <C extends AnyCatalog>(
 
   // remember the catalog so the first session read can install schema
   // locally — must not open a socket (db() is pure)
-  wire.bindCatalog?.(name, catalog);
+  wire.bindSchema?.(name, schema);
 
   const submit = (
     tx: readonly unknown[],
@@ -846,7 +846,7 @@ export const makeDb = <C extends AnyCatalog>(
           txEid: makeEid<C>(ack.txEid),
           datomCount: ack.datomCount,
           // local confirmed db at `t` — no min-t fence, no refetch
-          dbAfter: makeDb(wire, name, catalog, view),
+          dbAfter: makeDb(wire, name, schema, view),
         })),
       );
     }
@@ -866,14 +866,14 @@ export const makeDb = <C extends AnyCatalog>(
             : typeof ack.datoms === "number"
               ? ack.datoms
               : 0,
-          dbAfter: makeDb(wire, name, catalog, { ...view, minT: t }),
+          dbAfter: makeDb(wire, name, schema, { ...view, minT: t }),
         };
       }),
     );
   };
 
   const effectDb: EffectDb<C> = {
-    ...makeRead(wire, name, catalog, view, bad),
+    ...makeRead(wire, name, schema, view, bad),
 
     principal: () =>
       bad !== undefined
@@ -889,7 +889,7 @@ export const makeDb = <C extends AnyCatalog>(
 
     transact: ((body: (tx: unknown) => unknown) =>
       Effect.suspend(() => {
-        const tx = txBuilder(catalog);
+        const tx = txBuilder(schema);
         const out = body(tx);
         const run = isGenerator(out)
           ? runGenerator(out)
@@ -899,7 +899,7 @@ export const makeDb = <C extends AnyCatalog>(
         );
       })) as EffectDb<C>["transact"],
 
-    install: () => submit(schemaTx(catalog)),
+    install: () => submit(schemaTx(schema)),
 
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       Effect.suspend(() => {
@@ -907,7 +907,7 @@ export const makeDb = <C extends AnyCatalog>(
         return runOperation(
           wire,
           name,
-          catalog,
+          schema,
           view,
           bad,
           operation,

@@ -86,7 +86,7 @@ describe("a server has no database name", () => {
   test("a Database, by contrast, is exactly a name plus its catalog", () => {
     type Props = keyof Database["Props"];
     const hasName: "name" extends Props ? true : false = true;
-    const hasCatalog: "catalog" extends Props ? true : false = true;
+    const hasCatalog: "schema" extends Props ? true : false = true;
     const hasServer: "server" extends Props ? true : false = true;
     expect([hasName, hasCatalog, hasServer]).toEqual([true, true, true]);
   });

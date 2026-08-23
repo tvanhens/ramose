@@ -23,7 +23,7 @@
  */
 
 import type {
-  Catalog,
+  Schema,
   DbError,
   QueryError,
   QueryObject,
@@ -114,7 +114,7 @@ export const useLiveSubscription = <A, E>(
 };
 
 /** Query form: `db.live(query, params)`, constructed inside the effect. */
-export function useLive<C extends Catalog.Any, R, P = never, Out = readonly R[]>(
+export function useLive<C extends Schema.Any, R, P = never, Out = readonly R[]>(
   db: ReadDb<C>,
   query: QueryObject<R, P, Out>,
   ...params: ParamArgs<P>

@@ -1,4 +1,4 @@
-/** Typed attribute: value Schema, cardinality, and Datomic-shaped options. */
+/** Typed field: value Schema, cardinality, and options. */
 
 import type * as Schema from "effect/Schema";
 import {
@@ -8,15 +8,15 @@ import {
 } from "./valueTypes.ts";
 
 export type Cardinality = "one" | "many";
-export type Uniqueness = "identity" | "value";
+export type Uniqueness = "upsert" | "strict";
 
-export interface AttributeOptions {
+export interface FieldOptions {
   readonly cardinality?: Cardinality;
   readonly unique?: Uniqueness;
   readonly index?: boolean;
-  readonly isComponent?: boolean;
+  readonly owned?: boolean;
   readonly doc?: string;
-  /** Override `:db.type/*` inference. Required for custom Schemas. */
+  /** Override inferred `:db.type/*`. Required for custom Schemas. Public spelling is `"string"`, not `":db.type/string"`. */
   readonly valueType?: DbValueType;
 }
 
@@ -39,36 +39,36 @@ type ValueTypeOf<S, O> = [O] extends [{ readonly valueType: infer V }]
   : InferDbValueType<S>;
 
 /**
- * Componenthood, as a *type*: a component ref owns what it points at, so its
- * backlink answers one entity, and `attr.reverse` has to know that before the
+ * Ownership, as a *type*: an owned ref owns what it points at, so its
+ * backlink answers one entity, and `field.reverse` has to know that before the
  * query runs. Anything but a literal `true` is `false` — including the plain
- * `boolean` an un-narrowed {@link AnyAttribute} carries, which is what makes a
+ * `boolean` an un-narrowed {@link AnyField} carries, which is what makes a
  * generic backlink the many-valued one.
  */
-type ComponentOf<O> = [O] extends [{ readonly isComponent: infer B }]
+type OwnedOf<O> = [O] extends [{ readonly owned: infer B }]
   ? B extends true
     ? true
     : false
   : false;
 
-export interface Attribute<
+export interface Field<
   S extends Schema.Top = Schema.Top,
   Card extends Cardinality = Cardinality,
   Unique extends Uniqueness | undefined = Uniqueness | undefined,
   VT extends DbValueType | undefined = DbValueType | undefined,
-  Comp extends boolean = boolean,
+  Owned extends boolean = boolean,
 > {
-  readonly _tag: "Attribute";
+  readonly _tag: "Field";
   readonly schema: S;
   readonly cardinality: Card;
   readonly unique: Unique;
   readonly index: boolean;
-  readonly isComponent: Comp;
+  readonly owned: Owned;
   readonly doc: string | undefined;
   readonly valueType: VT;
 }
 
-export type AnyAttribute = Attribute<
+export type AnyField = Field<
   Schema.Top,
   Cardinality,
   Uniqueness | undefined,
@@ -77,34 +77,34 @@ export type AnyAttribute = Attribute<
 >;
 
 /**
- * Declare an attribute. File it under a namespace key to stamp `:ns/name`.
+ * Declare a field. File it under an entity key to stamp `:entity/name`.
  *
- * **Write the options inline.** `cardinality`, `unique` and `isComponent`
- * reach the attribute's *type* — and so reach `.reverse`'s cardinality, the
+ * **Write the options inline.** `cardinality`, `unique` and `owned`
+ * reach the field's *type* — and so reach `.reverse`'s cardinality, the
  * navigable path, and every row type — only through the `const O` inference on
- * the literal. An options object typed as {@link AttributeOptions} first
- * (`const opts: AttributeOptions = { isComponent: true }`) has already widened
- * those to their optional declared types, and the attribute infers the
+ * the literal. An options object typed as {@link FieldOptions} first
+ * (`const opts: FieldOptions = { owned: true }`) has already widened
+ * those to their optional declared types, and the field infers the
  * defaults (`"one"` / `undefined` / `false`) while the runtime value still
  * carries what you wrote. Pass the literal at the call site, or `as const` it.
  */
-export const Attr: {
+export const Field: {
   <S extends Schema.Top>(
     schema: S,
-  ): Attribute<S, "one", undefined, InferDbValueType<S>, false>;
-  <S extends Schema.Top, const O extends AttributeOptions>(
+  ): Field<S, "one", undefined, InferDbValueType<S>, false>;
+  <S extends Schema.Top, const O extends FieldOptions>(
     schema: S,
     options: O,
-  ): Attribute<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<S, O>, ComponentOf<O>>;
-} = ((schema: Schema.Top, options?: AttributeOptions) => ({
-  _tag: "Attribute" as const,
+  ): Field<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<S, O>, OwnedOf<O>>;
+} = ((schema: Schema.Top, options?: FieldOptions) => ({
+  _tag: "Field" as const,
   schema,
   cardinality: options?.cardinality ?? "one",
   unique: options?.unique,
   index: options?.index ?? options?.unique !== undefined,
-  isComponent: options?.isComponent ?? false,
+  owned: options?.owned ?? false,
   doc: options?.doc,
   valueType: tryInferDbValueType(schema, options?.valueType),
-})) as typeof Attr;
+})) as typeof Field;
 
-export type ValueOf<A extends AnyAttribute> = Schema.Schema.Type<A["schema"]>;
+export type ValueOf<A extends AnyField> = Schema.Schema.Type<A["schema"]>;

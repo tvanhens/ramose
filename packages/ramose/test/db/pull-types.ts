@@ -8,14 +8,14 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
-  Attr,
-  Catalog,
+  Field,
+  Schema as DbSchema,
   type Db,
   type Eid,
   type Equal,
   type Expect,
   type AllRow,
-  Namespace,
+  Entity,
   Ref,
   again,
   all,
@@ -34,7 +34,7 @@ const byCell = db.pull(cell, { name: User.name, age: User.age.optional });
 type ByCell = NonNullable<Awaited<typeof byCell>>;
 type _byCellName = Expect<Equal<ByCell["name"], string>>;
 
-const Elsewhere = Namespace("elsewhere", { label: Attr(Schema.String) });
+const Elsewhere = Entity("elsewhere", { label: Field(Schema.String) });
 declare const foreignCell: Eid<typeof Elsewhere>;
 // @ts-expect-error a cell from a namespace outside this catalog is no subject here
 db.pull(foreignCell, { name: User.name });
@@ -238,7 +238,7 @@ db.pull(eid, {
   friends: User.friends.select({ nope: User.nope }),
 });
 
-const Other = Namespace("tag", { label: Attr(Schema.String) });
+const Other = Entity("tag", { label: Field(Schema.String) });
 // @ts-expect-error attr from a catalog that is not on this client
 db.pull(eid, { label: Other.label });
 
@@ -270,12 +270,12 @@ type _nestedAllBestName = Expect<
 
 // ── `again(n)` on db.pull: same unroll as the nav builder ──────────────────
 
-const Node = Namespace("node", {
-  label: Attr(Schema.String),
-  next: Attr(Ref.self),
-  kids: Attr(Ref.self, { cardinality: "many" }),
+const Node = Entity("node", {
+  label: Field(Schema.String),
+  next: Field(Ref.self),
+  kids: Field(Ref.self, { cardinality: "many" }),
 });
-const Graph = Catalog({ node: Node });
+const Graph = DbSchema({ node: Node });
 declare const graph: Db<typeof Graph>;
 declare const nodeEid: Eid<typeof Graph>;
 

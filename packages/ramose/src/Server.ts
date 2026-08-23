@@ -26,7 +26,7 @@
  *
  * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
- * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+ * export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
  * ```
  *
  * `main` is a **path**, not a module specifier — Alchemy `realpath`s it before
@@ -43,9 +43,9 @@
  * const movies = ramose.db("movies", Movies);
  * const { dbAfter } = yield* movies.transact(function* (tx) {
  *   const ada = yield* tx.entity();
- *   yield* ada.add(User.name, "Ada");
+ *   yield* ada.set(User.name, "Ada");
  * });
- * const rows = yield* dbAfter.q(
+ * const rows = yield* dbAfter.query(
  *   Ramose.Query.q(() => pipe(Ramose.Query.entities(User), Ramose.Query.select({ name: User.name }))),
  * );
  * ```
@@ -128,7 +128,7 @@ export const PROBE_DEFAULTS = {
  * With `policy` unset the server runs today's mode: `RAMOSE_TOKEN` if set,
  * otherwise open.
  */
-export interface PeerAuth {
+export interface ServerAuth {
   /** Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is what arms enforcement. */
   readonly policy?: string | undefined;
   /** Where the issuer's public keys live. Required once `policy` is set. */
@@ -176,10 +176,10 @@ export type ServerProps = {
    */
   token?: Redacted.Redacted<string> | string;
   /** The server's auth configuration, for a deploy-time consistency check only. */
-  auth?: PeerAuth;
+  auth?: ServerAuth;
   /**
    * Bundled operations registry (`Ramose.Operations({…})`). The Alchemy
-   * Worker entry should call `createPeer({ operations })` from `ramose/worker`
+   * Worker entry should call `createServer({ operations })` from `ramose/worker`
    * so the same module is in the peer isolate.
    */
   operations?: unknown;
@@ -203,7 +203,7 @@ export const AUTH_ENV_KEYS = {
   allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
   internalSecret: "RAMOSE_INTERNAL_SECRET",
   // `auth` is not a key: it lowers onto issuers / aud / maxTtl.
-} as const satisfies Record<Exclude<keyof PeerAuth, "auth">, string>;
+} as const satisfies Record<Exclude<keyof ServerAuth, "auth">, string>;
 
 /** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
@@ -212,7 +212,7 @@ export const DEFAULT_JWT_MAX_TTL = 900;
  * Fold an {@link AuthConfig} into the three loose keys it stands in for.
  * Additive: an explicitly set loose key wins over the config's value.
  */
-const withAuthConfig = (auth: PeerAuth): PeerAuth =>
+const withAuthConfig = (auth: ServerAuth): ServerAuth =>
   auth.auth === undefined
     ? auth
     : {
@@ -267,7 +267,7 @@ export const internalSecret = (
  * ```
  */
 export const authEnv = (
-  peerAuth: PeerAuth | undefined,
+  peerAuth: ServerAuth | undefined,
 ): Record<string, string | Redacted.Redacted<string>> => {
   if (peerAuth === undefined) return {};
   const auth = withAuthConfig(peerAuth);
@@ -298,7 +298,7 @@ export const authEnv = (
  * Fail closed at deploy: a policy with no verifier configured would deny every
  * `/db/*` at runtime, so it fails here instead.
  */
-const checkAuth = (peerAuth: PeerAuth | undefined): string | undefined => {
+const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
   if (peerAuth === undefined || peerAuth.policy === undefined || peerAuth.policy === "") {
     return undefined;
   }

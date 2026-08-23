@@ -16,22 +16,22 @@
  * import * as Ramose from "ramose/db";
  * import * as Schema from "effect/Schema";
  *
- * export const Todo = Ramose.Namespace("todo", {
- *   title: Ramose.Attr(Schema.String),
- *   done: Ramose.Attr(Schema.Boolean),
+ * export const Todo = Ramose.Entity("todo", {
+ *   title: Ramose.Field(Schema.String),
+ *   done: Ramose.Field(Schema.Boolean),
  * });
- * export const Todos = Ramose.Catalog({ todo: Todo });
+ * export const Todos = Ramose.Schema({ todo: Todo });
  *
  * const ramose = Ramose.connect({ url, token });
  * export const db = ramose.db("todos", Todos);
- * // Effect users: `db.effect.q` / `import { layer } from "ramose/db/effect"`.
+ * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
  * ```
  */
 
 // ── schema ─────────────────────────────────────────────────────────────────
-export { Attr, type Attribute } from "./Attribute.ts";
-export { Catalog } from "./Catalog.ts";
-export { Namespace } from "./Namespace.ts";
+export { Field } from "./Field.ts";
+export { Schema } from "./Schema.ts";
+export { Entity } from "./Entity.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
@@ -93,7 +93,7 @@ export type {
   ReadDb,
   TxReport,
 } from "./Db.ts";
-export type { CatalogEid, Eid } from "./Eid.ts";
+export type { SchemaEid, Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 // the pattern-side types too, so `ramose/react`'s `usePull` can accept
 // exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)

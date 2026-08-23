@@ -126,7 +126,7 @@ No — none of the three exist. Count rows on the client for now. The full list 
 
 ## Can I use it without React? Without Effect?
 
-Without React, yes: `Effect.runPromise(db.q(query))` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Without Effect, mostly: the React hooks run it for you; elsewhere you only need `Effect.runPromise` and `yield*` inside a write.
+Without React, yes: `Effect.runPromise(db.query(query))` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Without Effect, mostly: the React hooks run it for you; elsewhere you only need `Effect.runPromise` and `yield*` inside a write.
 
 ## Can I use Clerk, Auth0, or my own login?
 

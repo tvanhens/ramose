@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * `useQuery` — one-shot `db.q(query)` as React state.
+ * `useQuery` — one-shot `db.query(query)` as React state.
  *
  * Two rules for callers:
  *
@@ -13,7 +13,7 @@
  *   by issue order, not by resolution order.
  */
 
-import type { Catalog, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
+import type { Schema, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { paramsKey, type ParamArgs } from "../db/Params.ts";
 import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
@@ -28,7 +28,7 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export const useQuery = <C extends Catalog.Any, R, P = never, Out = readonly R[]>(
+export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>(
   db: ReadDb<C>,
   query: QueryObject<R, P, Out>,
   ...params: ParamArgs<P>
@@ -61,7 +61,7 @@ export const useQuery = <C extends Catalog.Any, R, P = never, Out = readonly R[]
     );
 
     void db
-      .q(query, ...(params as ParamArgs<P>))
+      .query(query, ...(params as ParamArgs<P>))
       .then((rows) => {
         land(() => ({ data: rows as Out, error: undefined, loading: false }));
       })

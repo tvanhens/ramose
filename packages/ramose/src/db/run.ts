@@ -3,7 +3,7 @@
  */
 
 import * as Effect from "effect/Effect";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import type { Db, Wire } from "./Db.ts";
 import { makeEid } from "./Eid.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
@@ -45,10 +45,10 @@ const asPrincipal = (
   claims: {},
 });
 
-const reportOf = <C extends AnyCatalog, O>(
+const reportOf = <C extends AnySchema, O>(
   wire: Wire,
   name: string,
-  catalog: C,
+  schema: C,
   view: RunView,
   ack: {
     readonly t: number;
@@ -56,25 +56,25 @@ const reportOf = <C extends AnyCatalog, O>(
     readonly datomCount: number;
     readonly output: O;
   },
-  make: (wire: Wire, name: string, catalog: C, view: RunView) => Db<C>,
+  make: (wire: Wire, name: string, schema: C, view: RunView) => Db<C>,
 ): OpReport<O, C> => ({
   t: ack.t,
   txEid: makeEid<C>(ack.txEid),
   datomCount: ack.datomCount,
   output: ack.output,
-  dbAfter: make(wire, name, catalog, view),
+  dbAfter: make(wire, name, schema, view),
 });
 
-export const runOperation = <C extends AnyCatalog, O>(
+export const runOperation = <C extends AnySchema, O>(
   wire: Wire,
   name: string,
-  catalog: C,
+  schema: C,
   view: RunView,
   bad: InvalidRequest | undefined,
   operation: AnyOperation,
   entityArg: unknown,
   inputArg: unknown,
-  make: (wire: Wire, name: string, catalog: C, view: RunView) => Db<C>,
+  make: (wire: Wire, name: string, schema: C, view: RunView) => Db<C>,
 ): Effect.Effect<OpReport<O, C>, DbError> => {
   if (bad !== undefined) return Effect.fail(bad);
   return Effect.gen(function* () {
@@ -101,7 +101,7 @@ export const runOperation = <C extends AnyCatalog, O>(
       const ack = yield* overlay.run({
         invocation,
         operation,
-        catalog,
+        schema,
         principal: asPrincipal(who),
         db: name,
       });
@@ -109,7 +109,7 @@ export const runOperation = <C extends AnyCatalog, O>(
       return reportOf<C, O>(
         wire,
         name,
-        catalog,
+        schema,
         view,
         { ...ack, output },
         make,
@@ -124,7 +124,7 @@ export const runOperation = <C extends AnyCatalog, O>(
     return reportOf<C, O>(
       wire,
       name,
-      catalog,
+      schema,
       { ...view, minT: t },
       {
         t,

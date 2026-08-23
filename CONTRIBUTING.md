@@ -11,6 +11,29 @@ Recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
 brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
 [`website/public/brand/`](website/public/brand/).
 
+## Public vocabulary
+
+The app surface uses the words the docs teach. Recorded here so a rename
+happens once (part of #204, tracker #205). Wire protocol and `:db/*`
+internals stay Datomic-shaped.
+
+| Public name | Was | Notes |
+|---|---|---|
+| `Entity` | `Namespace` | Record type. `Eid` is an id of one. |
+| `Field` | `Attr` / `Attribute` | Value and type. |
+| `Schema` | `Catalog` | Composition of entities. `db.schema`, `Database({ schema })`. |
+| `set` / `remove` / `delete` | `add` / `retract` / `retractEntity` | Cardinality-one `set` replaces. Wire stays `:db/add` etc. |
+| `unique: "upsert" \| "strict"` | `"identity" \| "value"` | Named for what they do. Wire stays `:db.unique/identity` etc. |
+| `owned` | `isComponent` | Wire stays `:db/isComponent`. |
+| `valueType: "string"` | `":db.type/string"` | Lowered internally. |
+| `ServerAuth` / `createServer` / `ServerOptions` | `PeerAuth` / `createPeer` / `PeerOptions` | |
+| `db.query` | `db.q` | Hatch is `db.effect.query`. `Query.q` is the constructor (#208). |
+| `Claims` / `claims()` / `P.claim` | `MintedClaims`, `Policy.Claims`, `P.claims` | One token-payload type; no new JWT fields. |
+
+The Effect hatch's tx handle is `TxHandle` (`tx.entity()`), not `Entity`.
+Value-type helpers `Long` / `Instant` / `Uuid` stay until #207. `Query.q` +
+`pipe` stay until #208.
+
 ## Local checks
 
 ```sh

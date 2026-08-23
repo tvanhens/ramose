@@ -58,7 +58,7 @@ describe("the handshake", () => {
       token: Effect.succeed(Redacted.make("s3cret")),
     });
     await run(
-      c.ramose.db("a.b-c_1", Movies).q(eids),
+      c.ramose.db("a.b-c_1", Movies).query(eids),
     );
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/a.b-c_1/session?token=s3cret",
@@ -70,7 +70,7 @@ describe("the handshake", () => {
     const peer = fakePeer({ answer: () => rows([]) });
     const c = client(peer, { url: "http://localhost:8787" });
     await run(
-      c.ramose.db("movies", Movies).q(eids),
+      c.ramose.db("movies", Movies).query(eids),
     );
     expect(peer.sockets[0].url).toBe("ws://localhost:8787/db/movies/session");
     await c.dispose();
@@ -80,9 +80,9 @@ describe("the handshake", () => {
     const peer = fakePeer({ answer: () => rows([]) });
     const c = client(peer);
 
-    await run(c.ramose.db("movies", Movies).q(names));
-    await run(c.ramose.db("movies", Movies).q(names));
-    await run(c.ramose.db("other", Movies).q(names));
+    await run(c.ramose.db("movies", Movies).query(names));
+    await run(c.ramose.db("movies", Movies).query(names));
+    await run(c.ramose.db("other", Movies).query(names));
 
     expect(peer.sockets).toHaveLength(2);
     expect(peer.sockets.map((s) => s.url)).toEqual([
@@ -104,9 +104,9 @@ describe("reads become frames", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.asOf(2).q(eids));
+    await run(db.asOf(2).query(eids));
     await run(db.asOf(3).history.pull({ id: 17 }, { name: User.name }));
-    await run(db.history.q(names));
+    await run(db.history.query(names));
 
     expect(peer.frames).toEqual([
       {
@@ -170,8 +170,8 @@ describe("reads become frames", () => {
         pipe(Query.entities(User), Query.is(User.name, n), Query.select({ name: User.name })),
       );
 
-    const first = run(db.asOf(1).q(build("a")));
-    const second = run(db.asOf(1).q(build("b")));
+    const first = run(db.asOf(1).query(build("a")));
+    const second = run(db.asOf(1).query(build("b")));
     await settle(5);
     expect(peer.frames.map((f) => f.id)).toEqual([1, 2]);
 
@@ -197,7 +197,7 @@ describe("reads become frames", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ramose.db("movies", Movies).asOf(2).q(eids),
+      c.ramose.db("movies", Movies).asOf(2).query(eids),
     );
     expect(e._tag).toBe("QueryBudgetExceeded");
     if (e._tag === "QueryBudgetExceeded") {
@@ -223,7 +223,7 @@ describe("a socket that goes away", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ramose.db("movies", Movies).asOf(2).q(eids))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).asOf(2).query(eids))).toEqual([
       { id: 1001 },
     ]);
     // one frame per socket: the first died with its socket, the retry landed
@@ -239,7 +239,7 @@ describe("a socket that goes away", () => {
     async () => {
       const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
       const c = client(peer);
-      expect((await runFail(c.ramose.db("movies", Movies).asOf(2).q(eids)))._tag).toBe(
+      expect((await runFail(c.ramose.db("movies", Movies).asOf(2).query(eids)))._tag).toBe(
         "NetworkError",
       );
       expect(peer.sockets).toHaveLength(6);
@@ -256,9 +256,9 @@ describe("a socket that goes away", () => {
     });
     const db = c.ramose.db("movies", Movies);
 
-    expect(await run(db.asOf(2).q(names))).toEqual([{ name: "Ada" }]);
+    expect(await run(db.asOf(2).query(names))).toEqual([{ name: "Ada" }]);
     peer.drop();
-    expect(await run(db.asOf(2).q(names))).toEqual([{ name: "Ada" }]);
+    expect(await run(db.asOf(2).query(names))).toEqual([{ name: "Ada" }]);
 
     expect(peer.sockets.map((s) => s.url)).toEqual([
       "wss://peer.example.com/db/movies/session?token=token-1",
@@ -272,7 +272,7 @@ describe("a socket that goes away", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await db.q(names)).toEqual([]);
+    expect(await db.query(names)).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
     expect(peer.frames).toHaveLength(1);
     await c.dispose();
@@ -302,7 +302,7 @@ describe("Unauthorized is handled in place", () => {
         c.ramose
           .db("movies", Movies)
           .asOf(2)
-          .q(names),
+          .query(names),
       ),
     ).toEqual([{ name: "Ada" }]);
 
@@ -322,7 +322,7 @@ describe("Unauthorized is handled in place", () => {
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
     const e = await runFail(
-      c.ramose.db("movies", Movies).q(names),
+      c.ramose.db("movies", Movies).query(names),
     );
     expect(e._tag).toBe("Unauthorized");
     if (e._tag === "Unauthorized") {
@@ -338,7 +338,7 @@ describe("Unauthorized is handled in place", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ramose.db("movies", Movies).asOf(2).q(eids),
+      c.ramose.db("movies", Movies).asOf(2).query(eids),
     );
     expect(e._tag).toBe("Unauthorized");
     expect(peer.frames.map((f) => f.op)).toEqual(["q"]);
@@ -352,13 +352,13 @@ describe("the layer's scope owns the socket", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await db.q(names);
+    await db.query(names);
     expect(peer.sockets).toHaveLength(1);
 
     await c.dispose();
     // ...and a closed client does not walk the retry ladder: nothing reopens
     const started = Date.now();
-    expect((await runFail(db.q(names)))._tag).toBe("NetworkError");
+    expect((await runFail(db.query(names)))._tag).toBe("NetworkError");
     expect(Date.now() - started).toBeLessThan(500);
     expect(peer.sockets).toHaveLength(1);
   });

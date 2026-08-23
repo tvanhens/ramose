@@ -5,24 +5,24 @@
  */
 
 import * as Effect from "effect/Effect";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import { type DbError, InternalError, InvalidRequest, isDatabaseError } from "./Errors.ts";
 import {
   type AnyOperation,
   type EffectThunk,
   type Op,
-  type OpEntity,
+  type OpHandle,
   type OpPrincipal,
   type RuntimeOp,
-  type RuntimeOpEntity,
+  type RuntimeOpHandle,
   PrefixHalt,
 } from "./Operation.ts";
 import { asPromise } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
-import { isEntity, txBuilder, type Entity } from "./Tx.ts";
+import { isTxHandle, txBuilder, type TxHandle } from "./Tx.ts";
 
 export interface OpHandleOptions {
-  readonly catalog: AnyCatalog;
+  readonly schema: AnySchema;
   readonly db: string;
   readonly principal: OpPrincipal;
   readonly self?: unknown;
@@ -44,7 +44,7 @@ export interface OpHandleOptions {
     readonly env: unknown;
     readonly databases: {
       install(
-        catalog: AnyCatalog,
+        schema: AnySchema,
         name?: string,
       ): Effect.Effect<unknown, DbError>;
     };
@@ -56,10 +56,10 @@ export interface BuiltOp {
   readonly ops: () => readonly unknown[];
 }
 
-const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): Entity => {
+const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): TxHandle => {
   // Worker catalogs are empty; `tx.entity` is catalog-typed. The runtime
   // already accepts eid / tempid / lookup / handle via `resolveEntity`.
-  const bind = tx.entity as (id?: unknown) => Effect.Effect<Entity>;
+  const bind = tx.entity as (id?: unknown) => Effect.Effect<TxHandle>;
   return Effect.runSync(bind(self));
 };
 
@@ -68,7 +68,7 @@ export const entityRefOf = (
   subject: unknown,
 ): number | string | [string, unknown] => {
   if (typeof subject === "number" || typeof subject === "string") return subject;
-  if (isEntity(subject)) {
+  if (isTxHandle(subject)) {
     const eid = subject.eid;
     if (typeof eid === "number" || typeof eid === "string") return eid;
     if (Array.isArray(eid) && eid.length === 2 && typeof eid[0] === "string") {
@@ -108,7 +108,7 @@ const asEffectCause = <E>(cause: unknown): E | DbError | InternalError => {
 };
 
 export const buildOp = (options: OpHandleOptions): BuiltOp => {
-  const tx = txBuilder(options.catalog);
+  const tx = txBuilder(options.schema);
   const self =
     options.self === undefined ? undefined : wrapSelf(tx, options.self);
   const prefix = { halted: false };
@@ -128,7 +128,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
         readonly principal: OpPrincipal;
         readonly databases: {
           install(
-            catalog: AnyCatalog,
+            schema: AnySchema,
             name?: string,
           ): Effect.Effect<unknown, DbError>;
         };
@@ -162,7 +162,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     _effects: options.effects,
     _prefix: prefix,
     _haltPrefix: haltPrefix,
-    q: options.q,
+    query: options.q,
     pull: options.pull,
     effect,
   };
@@ -173,17 +173,17 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   };
 };
 
-const promiseEntity = (entity: RuntimeOpEntity): OpEntity => ({
-  _tag: "Entity",
+const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
+  _tag: "TxHandle",
   eid: entity.eid,
-  add: (attr, value) => {
-    Effect.runSync(entity.add(attr, value));
+  set: (field, value) => {
+    Effect.runSync(entity.set(field, value));
   },
-  retract: (attr, value) => {
-    Effect.runSync(entity.retract(attr, value));
+  remove: (field, value) => {
+    Effect.runSync(entity.remove(field, value));
   },
-  retractEntity: () => {
-    Effect.runSync(entity.retractEntity());
+  delete: () => {
+    Effect.runSync(entity.delete());
   },
 });
 
@@ -199,17 +199,17 @@ export const asPromiseOp = (op: RuntimeOp): Op<any> => {
     principal: op.principal,
     db: op.db,
     entity,
-    add: (e, attr, value) => {
-      Effect.runSync(op.add(e, attr, value));
+    set: (e, field, value) => {
+      Effect.runSync(op.set(e, field, value));
     },
-    retract: (e, attr, value) => {
-      Effect.runSync(op.retract(e, attr, value));
+    remove: (e, field, value) => {
+      Effect.runSync(op.remove(e, field, value));
     },
-    retractEntity: (e) => {
-      Effect.runSync(op.retractEntity(e));
+    delete: (e) => {
+      Effect.runSync(op.delete(e));
     },
-    q: ((input: AnyQueryObject, params?: Readonly<Record<string, unknown>>) =>
-      asPromise(op.q(input, params))) as Op["q"],
+    query: ((input: AnyQueryObject, params?: Readonly<Record<string, unknown>>) =>
+      asPromise(op.query(input, params))) as Op["query"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),
     effect: <A>(name: string, run: EffectThunk<A>): Promise<A> => {
       if (op._effects === "halt") {

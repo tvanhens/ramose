@@ -75,8 +75,8 @@ export const provisionWorkspaceOp = Ramose.Operation(
     });
     for (const seed of SEED_LABELS) {
       const label = op.entity();
-      label.add(Label.name, seed.name);
-      label.add(Label.color, seed.color);
+      label.set(Label.name, seed.name);
+      label.set(Label.color, seed.color);
     }
     return { ready: true };
   },
@@ -93,8 +93,8 @@ export const moveIssueOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, Issue.status, input.status);
-    op.add(op.self, Issue.rank, input.rank);
+    op.set(op.self, Issue.status, input.status);
+    op.set(op.self, Issue.rank, input.rank);
     return {};
   },
 );
@@ -107,7 +107,7 @@ export const setStatusOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, Issue.status, input.status);
+    op.set(op.self, Issue.status, input.status);
     return {};
   },
 );
@@ -121,10 +121,10 @@ export const addCommentOp = Ramose.Operation(
   },
   (op, input) => {
     const comment = op.entity();
-    comment.add(Comment.body, input.body);
-    comment.add(Comment.at, new Date());
-    comment.add(Comment.author, input.authorId);
-    comment.add(Comment.issue, op.self);
+    comment.set(Comment.body, input.body);
+    comment.set(Comment.at, new Date());
+    comment.set(Comment.author, input.authorId);
+    comment.set(Comment.issue, op.self);
     return {};
   },
 );
@@ -137,7 +137,7 @@ export const deleteIssueOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op) => {
-    op.retractEntity(op.self);
+    op.delete(op.self);
     return {};
   },
 );
@@ -159,20 +159,20 @@ export const createIssueOp = Ramose.Operation(
   },
   (op, input) => {
     const issue = op.entity();
-    issue.add(Issue.title, input.title);
+    issue.set(Issue.title, input.title);
     if (input.description != null && input.description !== "") {
-      issue.add(Issue.description, input.description);
+      issue.set(Issue.description, input.description);
     }
-    issue.add(Issue.status, input.status);
-    issue.add(Issue.priority, input.priority);
-    issue.add(Issue.rank, input.rank);
-    issue.add(Issue.createdAt, new Date());
-    issue.add(Issue.creator, input.creatorId);
+    issue.set(Issue.status, input.status);
+    issue.set(Issue.priority, input.priority);
+    issue.set(Issue.rank, input.rank);
+    issue.set(Issue.createdAt, new Date());
+    issue.set(Issue.creator, input.creatorId);
     if (input.assigneeId != null) {
-      issue.add(Issue.assignee, input.assigneeId);
+      issue.set(Issue.assignee, input.assigneeId);
     }
     for (const labelId of input.labelIds ?? []) {
-      issue.add(Issue.labels, labelId);
+      issue.set(Issue.labels, labelId);
     }
     return {};
   },
@@ -186,7 +186,7 @@ export const setTitleOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, Issue.title, input.title);
+    op.set(op.self, Issue.title, input.title);
     return {};
   },
 );
@@ -199,8 +199,8 @@ export const setDescriptionOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    if (input.text === "") op.retract(op.self, Issue.description);
-    else op.add(op.self, Issue.description, input.text);
+    if (input.text === "") op.remove(op.self, Issue.description);
+    else op.set(op.self, Issue.description, input.text);
     return {};
   },
 );
@@ -213,7 +213,7 @@ export const setPriorityOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, Issue.priority, input.priority);
+    op.set(op.self, Issue.priority, input.priority);
     return {};
   },
 );
@@ -226,8 +226,8 @@ export const setAssigneeOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    if (input.assigneeId == null) op.retract(op.self, Issue.assignee);
-    else op.add(op.self, Issue.assignee, input.assigneeId);
+    if (input.assigneeId == null) op.remove(op.self, Issue.assignee);
+    else op.set(op.self, Issue.assignee, input.assigneeId);
     return {};
   },
 );
@@ -240,8 +240,8 @@ export const toggleLabelOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    if (input.on) op.add(op.self, Issue.labels, input.labelId);
-    else op.retract(op.self, Issue.labels, input.labelId);
+    if (input.on) op.set(op.self, Issue.labels, input.labelId);
+    else op.remove(op.self, Issue.labels, input.labelId);
     return {};
   },
 );
@@ -254,8 +254,8 @@ export const setPrivateNoteOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    if (input.note === "") op.retract(op.self, Issue.privateNote);
-    else op.add(op.self, Issue.privateNote, input.note);
+    if (input.note === "") op.remove(op.self, Issue.privateNote);
+    else op.set(op.self, Issue.privateNote, input.note);
     return {};
   },
 );
@@ -268,7 +268,7 @@ export const deleteCommentOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op) => {
-    op.retractEntity(op.self);
+    op.delete(op.self);
     return {};
   },
 );
@@ -291,19 +291,19 @@ export const seedSampleIssuesOp = Ramose.Operation(
       const rank = rankAfter(nextRank[sample.status]);
       nextRank[sample.status] = rank;
       const issue = op.entity();
-      issue.add(Issue.title, sample.title);
+      issue.set(Issue.title, sample.title);
       if (sample.description !== undefined) {
-        issue.add(Issue.description, sample.description);
+        issue.set(Issue.description, sample.description);
       }
-      issue.add(Issue.status, sample.status);
-      issue.add(Issue.priority, sample.priority);
-      issue.add(Issue.rank, rank);
-      issue.add(Issue.createdAt, new Date());
-      issue.add(Issue.creator, input.creatorId);
-      if (sample.assign) issue.add(Issue.assignee, input.creatorId);
+      issue.set(Issue.status, sample.status);
+      issue.set(Issue.priority, sample.priority);
+      issue.set(Issue.rank, rank);
+      issue.set(Issue.createdAt, new Date());
+      issue.set(Issue.creator, input.creatorId);
+      if (sample.assign) issue.set(Issue.assignee, input.creatorId);
       for (const name of sample.labels) {
         const id = labelIds.get(name);
-        if (id !== undefined) issue.add(Issue.labels, id);
+        if (id !== undefined) issue.set(Issue.labels, id);
       }
     }
     return {};

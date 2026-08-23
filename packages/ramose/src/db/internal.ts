@@ -3,13 +3,13 @@
  *
  * Not a package `exports` entry: the public surface is `./index.ts`
  * (`ramose/db`). This module exists so sibling modules and the tests
- * can reach the inferred / internal names — `AnyCatalog`, `NamespaceMap`,
+ * can reach the inferred / internal names — `AnySchema`, `EntityMap`,
  * `lowerQueryObject`, `makeDatabases`, `Expect`/`Equal` — without each of them
  * naming a dozen files.
  */
 
-export * from "./Attribute.ts";
-export * from "./Catalog.ts";
+export * from "./Field.ts";
+export * from "./Schema.ts";
 export * from "./connect.ts";
 export * from "./Databases.ts";
 export * from "./Db.ts";
@@ -21,7 +21,7 @@ export * from "./Errors.ts";
 export * from "./SchemaErrors.ts";
 export * from "./http.ts";
 export * from "./idents.ts";
-export * from "./Namespace.ts";
+export * from "./Entity.ts";
 export * from "./shapes.ts";
 export * from "./Params.ts";
 export * from "./Eid.ts";

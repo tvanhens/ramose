@@ -81,7 +81,7 @@ examples/reef/
 
 | file | what it is |
 |---|---|
-| `src/domain/schema.ts` | the catalog: `user`, `issue`, `comment`, `label` namespaces |
+| `src/domain/schema.ts` | the schema: `user`, `issue`, `comment`, `label` namespaces |
 | `src/domain/policy.ts` | `Ramose.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |

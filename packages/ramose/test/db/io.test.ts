@@ -214,19 +214,19 @@ describe("install → transact → q → pull", () => {
     const report = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
-        yield* ada.add(User.age, 36);
-        yield* ada.add(Meta.source, "import");
+        yield* ada.set(User.name, "Ada");
+        yield* ada.set(User.age, 36);
+        yield* ada.set(Meta.source, "import");
 
         const alonzo = yield* tx.entity();
-        yield* alonzo.add(User.name, "Alonzo");
-        yield* alonzo.add(User.age, 40);
-        yield* ada.add(User.friends, alonzo.eid as never);
-        yield* ada.add(User.bestFriend, alonzo.eid as never);
+        yield* alonzo.set(User.name, "Alonzo");
+        yield* alonzo.set(User.age, 40);
+        yield* ada.set(User.friends, alonzo.eid as never);
+        yield* ada.set(User.bestFriend, alonzo.eid as never);
 
         const arrival = yield* tx.entity();
-        yield* arrival.add(Movie.title, "Arrival");
-        yield* arrival.add(Movie.year, 2016);
+        yield* arrival.set(Movie.title, "Arrival");
+        yield* arrival.set(Movie.year, 2016);
       }),
     );
     expect(report.t).toBeGreaterThan(installed.t);
@@ -234,7 +234,7 @@ describe("install → transact → q → pull", () => {
     expect(report.datomCount).toBeGreaterThan(0);
 
     // read-your-writes with no second round trip
-    const rows = await run(report.dbAfter.q(adaId));
+    const rows = await run(report.dbAfter.query(adaId));
     expect(rows).toHaveLength(1);
     const ada = rows[0]!;
     expect(ada.id).toBeGreaterThan(0);
@@ -285,10 +285,10 @@ describe("install → transact → q → pull", () => {
     await run(
       db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
-        yield* e.add(User.name, "Ada");
+        yield* e.set(User.name, "Ada");
       }),
     );
-    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
+    expect(await db.query(names)).toEqual([{ name: "Ada" }]);
     await peer.dispose();
   });
 
@@ -299,14 +299,14 @@ describe("install → transact → q → pull", () => {
     const { dbAfter } = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
         const bob = yield* tx.entity();
-        yield* bob.add(User.name, "Bob");
+        yield* bob.set(User.name, "Bob");
       }),
     );
 
     const rows = await run(
-      dbAfter.q(
+      dbAfter.query(
         Query.q(() =>
           pipe(Query.entities(User), Query.select({ id: User.id, name: User.name })),
         ),
@@ -329,17 +329,17 @@ describe("views", () => {
     const first = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
 
-    const before = await run(db.asOf(first.t - 1).q(names));
+    const before = await run(db.asOf(first.t - 1).query(names));
     expect(before).toEqual([]);
 
-    const now = await run(first.dbAfter.q(names));
+    const now = await run(first.dbAfter.query(names));
     expect(now).toEqual([{ name: "Ada" }]);
 
-    const hist = await run(db.history.q(adaId));
+    const hist = await run(db.history.query(adaId));
     expect(hist.length).toBeGreaterThanOrEqual(1);
 
     expect("transact" in db.asOf(1)).toBe(false);
@@ -352,8 +352,8 @@ describe("views", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const past = db.asOf(1);
-    await db.q(names);
-    await run(past.q(names));
+    await db.query(names);
+    await run(past.query(names));
     expect(peer.frames.filter((f) => f.op === "q").map((f) => f.asOf)).toEqual([1]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
@@ -368,13 +368,13 @@ describe("the read fence is what dbAfter carries", () => {
     const report = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
 
-    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
-    expect(await run(report.dbAfter.q(names))).toEqual([{ name: "Ada" }]);
-    expect(await run(db.asOf(1).q(names))).toEqual([]);
+    expect(await db.query(names)).toEqual([{ name: "Ada" }]);
+    expect(await run(report.dbAfter.query(names))).toEqual([{ name: "Ada" }]);
+    expect(await run(db.asOf(1).query(names))).toEqual([]);
     await peer.dispose();
   });
 });
@@ -386,7 +386,7 @@ describe("failures", () => {
     // note: no install() — the overlay knows the catalog, the peer does not
 
     expect(await db.pull({ id: 1 }, { name: User.name })).toBeNull();
-    expect(await db.q(names)).toEqual([]);
+    expect(await db.query(names)).toEqual([]);
     await peer.dispose();
   });
 
@@ -398,7 +398,7 @@ describe("failures", () => {
     const caught = await run(
       db
         .effect.transact(function* (tx) {
-          yield* tx.add(1, ":user/nope" as never, "x" as never);
+          yield* tx.set(1, ":user/nope" as never, "x" as never);
         })
         .pipe(
           Effect.catchTags({
@@ -427,13 +427,13 @@ describe("failures", () => {
     const e = await runFail(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
       }),
     );
     expect(e).toBe("nope");
     expect(peer.calls).toHaveLength(writes);
-    expect(await db.q(names)).toEqual([]);
+    expect(await db.query(names)).toEqual([]);
     await peer.dispose();
   });
 
@@ -444,16 +444,16 @@ describe("failures", () => {
     const { dbAfter } = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
         const alonzo = yield* tx.entity();
-        yield* alonzo.add(User.name, "Alonzo");
-        yield* ada.add(User.friends, alonzo.eid as never);
+        yield* alonzo.set(User.name, "Alonzo");
+        yield* ada.set(User.friends, alonzo.eid as never);
         const ghost = yield* tx.entity();
-        yield* ghost.add(User.age, 1);
-        yield* ada.add(User.friends, ghost.eid as never);
+        yield* ghost.set(User.age, 1);
+        yield* ada.set(User.friends, ghost.eid as never);
       }),
     );
-    const rows = await run(dbAfter.q(adaId));
+    const rows = await run(dbAfter.query(adaId));
     const ada = rows[0]!;
 
     expect(await run(dbAfter.pull(ada, { name: User.name, age: User.age }))).toBeNull();
@@ -495,7 +495,7 @@ describe("failures", () => {
     const { dbAfter } = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     expect(

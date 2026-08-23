@@ -25,7 +25,7 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
-import { Attr, Catalog, type Db, Namespace, Query } from "../src/db/internal.ts";
+import { Field, Schema as DbSchema, type Db, Entity, Query } from "../src/db/internal.ts";
 import { toWireDatom, type LogEntry, type RootRecord } from "../src/internal/core/index.ts";
 import { MemoryBucket } from "../src/internal/storage/memory.ts";
 import type { RamoseEnv } from "../src/internal/transactor/index.ts";
@@ -128,12 +128,12 @@ const bootReplica = async (watermark: number) => {
   return { replica, attach };
 };
 
-const Issue = Namespace("issue", {
-  title: Attr(Schema.String),
-  status: Attr(Schema.String),
-  rank: Attr(Schema.Number),
+const Issue = Entity("issue", {
+  title: Field(Schema.String),
+  status: Field(Schema.String),
+  rank: Field(Schema.Number),
 });
-const Board = Catalog({ issue: Issue });
+const Board = DbSchema({ issue: Issue });
 const boardQuery = Query.q(() =>
   pipe(
     Query.entities(Issue),
@@ -195,8 +195,8 @@ const waitBoards = async (
 
 const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
   db.effect.transact(function* (tx) {
-    yield* tx.add(id, Issue.status, status);
-    yield* tx.add(id, Issue.rank, rank);
+    yield* tx.set(id, Issue.status, status);
+    yield* tx.set(id, Issue.rank, rank);
   });
 
 /**
@@ -290,8 +290,8 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
   const phone = phoneC.ramose.db("reef", Board);
   const browser = browserC.ramose.db("reef", Board);
 
-  await run(phone.q(boardQuery));
-  await run(browser.q(boardQuery));
+  await run(phone.query(boardQuery));
+  await run(browser.query(boardQuery));
   phonePeer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   browserPeer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   wrapPush(phonePeer, "phone");
@@ -374,11 +374,11 @@ describe("two clients move two existing issues", () => {
     expect(browserLive.seen.length).toBeGreaterThan(browserEmissions);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
-    expect(statusesOf(await run(world.phone.q(boardQuery)))).toEqual({
+    expect(statusesOf(await run(world.phone.query(boardQuery)))).toEqual({
       One: "doing",
       Two: "done",
     });
-    expect(statusesOf(await run(world.browser.q(boardQuery)))).toEqual({
+    expect(statusesOf(await run(world.browser.query(boardQuery)))).toEqual({
       One: "doing",
       Two: "done",
     });

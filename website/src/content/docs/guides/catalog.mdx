@@ -5,15 +5,15 @@ description: Your data model in one TypeScript file — record types, fields, re
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-This page is everything about the **schema** — your data model as one TypeScript value (Ramose calls it a *catalog* — [glossary](/concepts/glossary/#schema)). It is for anyone who has built the first app and wants to model real data.
+This page is everything about the **schema** — your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)). It is for anyone who has built the first app and wants to model real data.
 
 <Learn learn={["The three constructors and what each means", "Every value type and option", "What is safe to change later"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }]} minutes={8} />
 
 ## Three pieces, and that is the whole vocabulary
 
-- **`Ramose.Attr`** declares one **field** — a named, typed slot ([glossary](/concepts/glossary/#field)) — and the values it accepts.
-- **`Ramose.Namespace`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`.
-- **`Ramose.Catalog`** collects record types into the schema a database installs.
+- **`Ramose.Field`** declares one **field** — a named, typed slot ([glossary](/concepts/glossary/#field)) — and the values it accepts.
+- **`Ramose.Entity`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`.
+- **`Ramose.Schema`** collects record types into the schema a database installs.
 
 Value types come from [Effect Schema](https://effect.website), plus a few of Ramose's own.
 
@@ -22,47 +22,47 @@ Value types come from [Effect Schema](https://effect.website), plus a few of Ram
 Reef's whole data model is 76 lines. The parts that matter:
 
 ```ts title="examples/reef/src/domain/schema.ts:15-27"
-export const User = Ramose.Namespace("user", {
-  sub: Ramose.Attr(Schema.String, {
-    unique: "identity",
+export const User = Ramose.Entity("user", {
+  sub: Ramose.Field(Schema.String, {
+    unique: "upsert",
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
-  name: Ramose.Attr(Schema.String),
-  email: Ramose.Attr(Schema.String),
+  name: Ramose.Field(Schema.String),
+  email: Ramose.Field(Schema.String),
 });
 
-export const Label = Ramose.Namespace("label", {
-  name: Ramose.Attr(Schema.String, { unique: "identity" }),
-  color: Ramose.Attr(Schema.String),
+export const Label = Ramose.Entity("label", {
+  name: Ramose.Field(Schema.String, { unique: "upsert" }),
+  color: Ramose.Field(Schema.String),
 });
 ```
 
 ```ts title="examples/reef/src/domain/schema.ts:29-46"
-export const Issue = Ramose.Namespace("issue", {
-  title: Ramose.Attr(Schema.String),
-  description: Ramose.Attr(Schema.String),
+export const Issue = Ramose.Entity("issue", {
+  title: Ramose.Field(Schema.String),
+  description: Ramose.Field(Schema.String),
   /** One of {@link STATUSES}. */
-  status: Ramose.Attr(Schema.String),
+  status: Ramose.Field(Schema.String),
   /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-  priority: Ramose.Attr(Ramose.Long),
+  priority: Ramose.Field(Ramose.Long),
   /** Fractional order inside a column; drag-and-drop writes midpoints. */
-  rank: Ramose.Attr(Schema.Number),
-  createdAt: Ramose.Attr(Ramose.Instant),
-  creator: Ramose.Attr(Ramose.Ref(() => User)),
-  assignee: Ramose.Attr(Ramose.Ref(() => User)),
-  labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
+  rank: Ramose.Field(Schema.Number),
+  createdAt: Ramose.Field(Ramose.Instant),
+  creator: Ramose.Field(Ramose.Ref(() => User)),
+  assignee: Ramose.Field(Ramose.Ref(() => User)),
+  labels: Ramose.Field(Ramose.Ref(() => Label), { cardinality: "many" }),
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
-  privateNote: Ramose.Attr(Schema.String, {
+  privateNote: Ramose.Field(Schema.String, {
     doc: "visible to the admin class only",
   }),
 });
 ```
 
-`Comment` (`schema.ts:48-53`) has the same shape, and `Reef = Ramose.Catalog({ user, label, issue, comment })` (`schema.ts:55-60`) collects the four.
+`Comment` (`schema.ts:48-53`) has the same shape, and `Reef = Ramose.Schema({ user, label, issue, comment })` (`schema.ts:55-60`) collects the four.
 
 | field | what it means |
 | --- | --- |
-| `user.sub` | The account id from the sign-in system. `unique: "identity"` = one **record** ([glossary](/concepts/glossary/#record)) per person, and you can look a user up by it. Used by permissions later. |
+| `user.sub` | The account id from the sign-in system. `unique: "upsert"` = one **record** ([glossary](/concepts/glossary/#record)) per person, and you can look a user up by it. Used by permissions later. |
 | `issue.priority`, `issue.rank` | A whole number (`Ramose.Long`); a double (`Schema.Number`). |
 | `issue.creator` → `user` | A **reference** — a typed foreign key ([glossary](/concepts/glossary/#reference)). Permissions fill it in for you. |
 | `issue.labels` → `label` | A *set* of references — no join table. |
@@ -83,7 +83,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.UuidString` · `Ramose.Uuid` | a UUID as a string · as a structured value object (not a string) |
 | `Ramose.Bytes` | binary data (`Uint8Array`) |
 
-`String`, `Number`, and `Boolean` are inferred; anything else — a `Schema.Literal`, say — needs `{ valueType: ":db.type/string" }`, or installing the schema fails with `ramose/schema: cannot infer :db.type/*`.
+`String`, `Number`, and `Boolean` are inferred; anything else — a `Schema.Literal`, say — needs `{ valueType: "string" }`, or installing the schema fails with `ramose/schema: cannot infer :db.type/*`.
 
 ## Options
 
@@ -92,7 +92,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `unique` | none | `"identity"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up |
 | `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
-| `isComponent` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
+| `owned` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
 | `doc` | none | a description stored with the field |
 | `valueType` | inferred | the stored type, when it cannot be inferred |
 
@@ -118,7 +118,7 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 At deploy, for a database you know up front (the todos app):
 
 ```ts title="examples/todos/alchemy.run.ts:34"
-export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
 ```
 
 From the app, for names created at runtime — how Reef makes a workspace:

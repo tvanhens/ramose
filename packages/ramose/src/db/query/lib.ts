@@ -12,7 +12,7 @@
  * one vocabulary serves both spellings.
  */
 
-import type { AnyNamespace } from "../Namespace.ts";
+import type { AnyEntity } from "../Entity.ts";
 import type { AnyParam } from "../Params.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
@@ -32,7 +32,7 @@ import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
 const addStage = <Row>(p: Pipeline<any>, stage: PipeStage): Pipeline<Row> =>
   makePipeline(p.ns, [...p.stages, stage]);
 
-const makePipeline = <Row>(ns: AnyNamespace, stages: readonly PipeStage[]): Pipeline<Row> => ({
+const makePipeline = <Row>(ns: AnyEntity, stages: readonly PipeStage[]): Pipeline<Row> => ({
   _tag: "Pipeline",
   ns,
   stages,
@@ -60,8 +60,8 @@ export type IdRow = { readonly id: number };
  * the pipeline already constrains the focus through a namespace attr, the
  * rule is entailed and lowering emits nothing.
  */
-export const entities = <N extends AnyNamespace>(ns: N): Pipeline<IdRow> => {
-  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Namespace") {
+export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow> => {
+  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
     throw new Error("ramose/query: entities(...) takes a namespace");
   }
   return makePipeline(ns, []);

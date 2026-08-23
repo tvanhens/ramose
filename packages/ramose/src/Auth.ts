@@ -16,6 +16,8 @@
 import type { CompiledPolicy } from "./internal/core/policy/ast.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./db/DatabaseName.ts";
 import { InvalidRequest } from "./db/Errors.ts";
+import type { Claims } from "./db/token.ts";
+export type { Claims } from "./db/token.ts";
 
 /**
  * The pinned verifier/minter contract. Declare once; hand it to
@@ -46,25 +48,6 @@ export interface ClaimsInput {
   readonly attrs?: Readonly<Record<string, unknown>> | undefined;
   /** The mint instant; `iat` is this in whole seconds. @default new Date() */
   readonly now?: Date | undefined;
-}
-
-/**
- * The payload the peer verifies (https://ramose.ai/guides/sign-in/), as built — every
- * field present. The client-side `Claims` on `ramose/db` is the
- * same shape *decoded but unverified* (all-optional, UI hints only); this is
- * the minted original.
- */
-export interface MintedClaims {
-  readonly iss: string;
-  readonly aud: string;
-  readonly sub: string;
-  readonly iat: number;
-  readonly exp: number;
-  readonly ramose: {
-    readonly db: string;
-    readonly class: string;
-    readonly attrs?: Readonly<Record<string, unknown>>;
-  };
 }
 
 /** `classes` out of a compiled policy, parsed or still the wire JSON. */
@@ -109,7 +92,7 @@ export const claims = (
   auth: AuthConfig,
   input: ClaimsInput,
   policy?: CompiledPolicy | string,
-): MintedClaims => {
+): Claims => {
   // JWT NumericDate is whole seconds, so a fractional ttl would mint a
   // fractional `exp` — reject it rather than round it.
   if (!Number.isInteger(auth.ttl) || auth.ttl <= 0) {

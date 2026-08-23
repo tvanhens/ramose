@@ -1,7 +1,7 @@
 /**
  * @internal The one context this package carries: the `Client` the nearest
  * `RamoseProvider` owns. Deliberately not exported from the package — the
- * public way in is `useRamose()`, and the public way to put one in the tree
+ * public way in is `useDb()`, and the public way to put one in the tree
  * is `<RamoseProvider>`.
  */
 

@@ -21,7 +21,7 @@
  * ```typescript
  * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
- * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+ * export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
  * ```
  *
  * One resource is not one tenant: db-per-tenant is `ramose.db(tenant, Todos)`
@@ -34,7 +34,7 @@ import * as Provider from "alchemy/Provider";
 import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import type { Catalog } from "./db/index.ts";
+import type { Schema } from "./db/index.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import { globalFetch, makeDatabases } from "./db/internal.ts";
 import type { Providers } from "./Providers.ts";
@@ -48,8 +48,8 @@ export const isDatabase = (value: unknown): value is Database =>
 export type DatabaseProps = {
   /** The server that serves this name. */
   server: Server;
-  /** The catalog to install. `Ramose.Catalog({ … })`, shared with the app. */
-  catalog: Catalog.Any;
+  /** The catalog to install. `Ramose.Schema({ … })`, shared with the app. */
+  schema: Schema.Any;
   /** The database name. @default the resource's logical id */
   name?: string;
   /**
@@ -90,7 +90,7 @@ const DatabaseResource = Resource<Database>("Ramose.Database");
  * reconcile.
  */
 export const Database = Object.assign(
-  (id: string, props: InputProps<DatabaseProps, "catalog">) =>
+  (id: string, props: InputProps<DatabaseProps, "schema">) =>
     DatabaseResource(
       id,
       Effect.gen(function* () {
@@ -162,7 +162,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
     fetch: globalFetch,
   });
   const report = yield* Effect.ensuring(
-    databases.db(name, props.catalog).effect.install(),
+    databases.db(name, props.schema).effect.install(),
     Effect.sync(close),
   ).pipe(
     Effect.timeoutOrElse({

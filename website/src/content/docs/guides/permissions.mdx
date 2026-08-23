@@ -41,7 +41,7 @@ const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.autho
 ```ts title="examples/reef/src/domain/policy.ts:34-53"
 export const policy = Ramose.policy(
   {
-    catalog: Reef,
+    schema: Reef,
     principal: User.sub,
     classes: CLASSES,
   },
@@ -66,7 +66,7 @@ export const policy = Ramose.policy(
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
     comment: {

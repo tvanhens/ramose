@@ -16,7 +16,7 @@ const conc = Number(process.argv[2] ?? 64);
 const seconds = Number(process.argv[3] ?? 10);
 const client = new Peer(url, { token: process.env.RAMOSE_TOKEN });
 const db = client.db(`bench-${Date.now().toString(36)}`);
-await db.transact([attrMap(":k/id", "long", { unique: "identity" }), attrMap(":k/v", "string")]);
+await db.transact([attrMap(":k/id", "long", { unique: "upsert" }), attrMap(":k/v", "string")]);
 
 let done = 0, errors = 0;
 const lat: number[] = [];

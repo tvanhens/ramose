@@ -1,7 +1,7 @@
 /** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
-import type { ValueOf } from "./Attribute.ts";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { ValueOf } from "./Field.ts";
+import type { AnySchema } from "./Schema.ts";
 
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 
@@ -9,35 +9,35 @@ export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
  * Every ident in a catalog, as a union of string literals.
  * `CatalogIdent<typeof Movies>` → `":user/name" | ":movie/title" | …`
  */
-export type CatalogIdent<C extends AnyCatalog> = {
-  [K in keyof C["namespaces"]]: {
-    [A in keyof C["namespaces"][K]["attributes"] & string]: Ident<
-      C["namespaces"][K]["ns"],
+export type CatalogIdent<C extends AnySchema> = {
+  [K in keyof C["entities"]]: {
+    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+      C["entities"][K]["ns"],
       A
     >;
-  }[keyof C["namespaces"][K]["attributes"] & string];
-}[keyof C["namespaces"]];
+  }[keyof C["entities"][K]["fields"] & string];
+}[keyof C["entities"]];
 
 /**
  * The attribute at ident `I`. `never` when the ident is not in the catalog
  * — that is what turns an unknown attr into a type error.
  */
-export type AttrAtIdent<C extends AnyCatalog, I extends string> = {
-  [K in keyof C["namespaces"]]: {
-    [A in keyof C["namespaces"][K]["attributes"] & string]: Ident<
-      C["namespaces"][K]["ns"],
+export type AttrAtIdent<C extends AnySchema, I extends string> = {
+  [K in keyof C["entities"]]: {
+    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+      C["entities"][K]["ns"],
       A
     > extends I
-      ? C["namespaces"][K]["attributes"][A]
+      ? C["entities"][K]["fields"][A]
       : never;
-  }[keyof C["namespaces"][K]["attributes"] & string];
-}[keyof C["namespaces"]];
+  }[keyof C["entities"][K]["fields"] & string];
+}[keyof C["entities"]];
 
-export type ValueAtIdent<C extends AnyCatalog, I extends string> = ValueOf<
+export type ValueAtIdent<C extends AnySchema, I extends string> = ValueOf<
   AttrAtIdent<C, I>
 >;
 
-export type CardAtIdent<C extends AnyCatalog, I extends string> =
+export type CardAtIdent<C extends AnySchema, I extends string> =
   AttrAtIdent<C, I>["cardinality"];
 
 /**
@@ -46,12 +46,12 @@ export type CardAtIdent<C extends AnyCatalog, I extends string> =
  *
  * List-form `:db/add` always takes one value (one datom), even for many.
  */
-export type WriteAtIdent<C extends AnyCatalog, I extends string> =
+export type WriteAtIdent<C extends AnySchema, I extends string> =
   CardAtIdent<C, I> extends "many"
     ? ReadonlyArray<ValueAtIdent<C, I>>
     : ValueAtIdent<C, I>;
 
-export type ReadAtIdent<C extends AnyCatalog, I extends string> =
+export type ReadAtIdent<C extends AnySchema, I extends string> =
   WriteAtIdent<C, I>;
 
 /**
@@ -62,7 +62,7 @@ export type ReadAtIdent<C extends AnyCatalog, I extends string> =
  * wire form is the ident either way (`lowerSubject` in `Db.ts`,
  * `resolveEntity` in `Tx.ts`).
  */
-export type LookupRef<C extends AnyCatalog> = {
+export type LookupRef<C extends AnySchema> = {
   [I in CatalogIdent<C>]: AttrAtIdent<C, I>["unique"] extends undefined
     ? never
     :
@@ -71,4 +71,4 @@ export type LookupRef<C extends AnyCatalog> = {
 }[CatalogIdent<C>];
 
 /** eid | tempid/ident string | typed lookup ref. */
-export type EntityRef<C extends AnyCatalog> = number | string | LookupRef<C>;
+export type EntityRef<C extends AnySchema> = number | string | LookupRef<C>;

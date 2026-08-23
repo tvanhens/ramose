@@ -31,7 +31,7 @@ import { Todos } from "./schema.ts";
  * resource, ordered after the server it names. `db.install()` is an ordinary
  * idempotent transaction, so a redeploy costs one no-op tx.
  */
-export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
 
 /**
  * The app's dev server, as a stack resource. `Command.Dev` is a long-lived

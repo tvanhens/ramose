@@ -21,11 +21,11 @@ The entire write vocabulary — no update, no merge:
 | call | does |
 | --- | --- |
 | `tx.entity()` | hands back a handle for a brand-new **record** ([glossary](/concepts/glossary/#record)) |
-| `tx.add(e, field, value)` | states a **fact** — this record's field has this value ([glossary](/concepts/glossary/#fact)) |
-| `tx.retract(e, field, value?)` | takes one value back, or every value of that field |
-| `tx.retractEntity(e)` | deletes the record — every fact about it, and any records it owns |
+| `tx.set(e, field, value)` | states a **fact** — this record's field has this value ([glossary](/concepts/glossary/#fact)) |
+| `tx.remove(e, field, value?)` | takes one value back, or every value of that field |
+| `tx.delete(e)` | deletes the record — every fact about it, and any records it owns |
 
-The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.add(…)`, `issue.retract(…)`, `issue.retractEntity()`. Values are checked against the schema as you type.
+The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.add(…)`, `issue.retract(…)`, `issue.delete()`. Values are checked against the schema as you type.
 
 ## Create a record
 
@@ -40,16 +40,16 @@ export const createIssue = (
 ) =>
   db.transact(function* (tx) {
     const issue = yield* tx.entity();
-    yield* issue.add(Issue.title, draft.title);
+    yield* issue.set(Issue.title, draft.title);
     // …
-    yield* issue.add(Issue.status, draft.status);
-    yield* issue.add(Issue.priority, draft.priority);
-    yield* issue.add(Issue.rank, rankAfter(lastRankInColumn));
-    yield* issue.add(Issue.createdAt, new Date());
-    yield* issue.add(Issue.creator, myEid);
+    yield* issue.set(Issue.status, draft.status);
+    yield* issue.set(Issue.priority, draft.priority);
+    yield* issue.set(Issue.rank, rankAfter(lastRankInColumn));
+    yield* issue.set(Issue.createdAt, new Date());
+    yield* issue.set(Issue.creator, myEid);
     // …
     for (const labelId of draft.labelIds ?? []) {
-      yield* issue.add(Issue.labels, labelId);
+      yield* issue.set(Issue.labels, labelId);
     }
   });
 ```
@@ -68,8 +68,8 @@ export const moveIssue = (
   rank: number,
 ) =>
   db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.status, status);
-    yield* tx.add(issueId, Issue.rank, rank);
+    yield* tx.set(issueId, Issue.status, status);
+    yield* tx.set(issueId, Issue.rank, rank);
   });
 ```
 
@@ -84,15 +84,15 @@ Clearing a field is `retract` with no value; deleting a record is `retractEntity
 ```ts title="examples/reef/src/app/mutations.ts:99-103"
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   db.transact(function* (tx) {
-    if (text === "") yield* tx.retract(issueId, Issue.description);
-    else yield* tx.add(issueId, Issue.description, text);
+    if (text === "") yield* tx.remove(issueId, Issue.description);
+    else yield* tx.set(issueId, Issue.description, text);
   });
 ```
 
 ```ts title="examples/reef/src/app/mutations.ts:138-141"
 export const deleteIssue = (db: ReefDb, issueId: number) =>
   db.transact(function* (tx) {
-    yield* tx.retractEntity(issueId);
+    yield* tx.delete(issueId);
   });
 ```
 
@@ -110,14 +110,14 @@ export const toggleLabel = (
   on: boolean,
 ) =>
   db.transact(function* (tx) {
-    if (on) yield* tx.add(issueId, Issue.labels, labelId);
-    else yield* tx.retract(issueId, Issue.labels, labelId);
+    if (on) yield* tx.set(issueId, Issue.labels, labelId);
+    else yield* tx.remove(issueId, Issue.labels, labelId);
   });
 ```
 
 ## Ids, unique keys and lookups
 
-The first argument of `tx.add` names the record. It can be:
+The first argument of `tx.set` names the record. It can be:
 
 - **an id as a number.** A query that selects `id: Issue.id` gives you `row.id` as a `number` — pass it straight in (that is `issueId` above). A query with no `.select` returns `{ id }` objects — pass `row.id` then too.
 - **a handle** from `tx.entity()` in the same write.

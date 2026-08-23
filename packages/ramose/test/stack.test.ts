@@ -18,7 +18,7 @@ import { Database } from "../src/Database.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
-import { Attr, Catalog, Namespace } from "../src/db/internal.ts";
+import { Field, Schema as DbSchema, Entity } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 
 interface Transaction {
@@ -265,7 +265,7 @@ describe("Ramose.Database", () => {
   test.provider("installs the catalog on the name, at deploy", (stack) =>
     Effect.gen(function* () {
       const db = yield* stack.deploy(
-        Database("movies", { server: server(), catalog: Movies }),
+        Database("movies", { server: server(), schema: Movies }),
       );
 
       expect(db.name).toBe("movies");
@@ -286,7 +286,7 @@ describe("Ramose.Database", () => {
   test.provider("the name defaults to the logical id, and `name` overrides it", (stack) =>
     Effect.gen(function* () {
       const db = yield* stack.deploy(
-        Database("Todos", { server: server(), catalog: Movies, name: "todos-prod" }),
+        Database("Todos", { server: server(), schema: Movies, name: "todos-prod" }),
       );
       expect(db.name).toBe("todos-prod");
       expect(transactions.map((c) => c.name)).toEqual(["todos-prod"]);
@@ -303,7 +303,7 @@ describe("Ramose.Database", () => {
             probe: false,
             token: Redacted.make("s3cret"),
           }),
-          catalog: Movies,
+          schema: Movies,
         }),
       );
       expect(transactions[0].authorization).toBe("Bearer s3cret");
@@ -313,10 +313,10 @@ describe("Ramose.Database", () => {
 
   test.provider("a redeploy is a no-op, and an update re-installs idempotently", (stack) =>
     Effect.gen(function* () {
-      const declare = (catalog: typeof Movies) =>
+      const declare = (schema: typeof Movies) =>
         Effect.gen(function* () {
           const s = yield* server();
-          return yield* Database("movies", { server: s, catalog });
+          return yield* Database("movies", { server: s, schema });
         });
 
       yield* stack.deploy(declare(Movies));
@@ -330,8 +330,8 @@ describe("Ramose.Database", () => {
       expect(transactions).toHaveLength(1);
 
       // a grown catalog is an ordinary update: install() upserts it
-      const Extra = Namespace("extra", { note: Attr(Schema.String) });
-      const grown = Catalog({ ...Movies.namespaces, extra: Extra }) as typeof Movies;
+      const Extra = Entity("extra", { note: Field(Schema.String) });
+      const grown = DbSchema({ ...Movies.entities, extra: Extra }) as typeof Movies;
       yield* stack.deploy(declare(grown));
       expect(transactions).toHaveLength(2);
       expect(idents(transactions[1].tx)).toContain(":extra/note");
@@ -342,7 +342,7 @@ describe("Ramose.Database", () => {
 
   test.provider("destroying it writes nothing — a database is a name", (stack) =>
     Effect.gen(function* () {
-      yield* stack.deploy(Database("movies", { server: server(), catalog: Movies }));
+      yield* stack.deploy(Database("movies", { server: server(), schema: Movies }));
       expect(transactions).toHaveLength(1);
 
       yield* stack.destroy();
@@ -355,7 +355,7 @@ describe("Ramose.Database", () => {
     Effect.gen(function* () {
       const result = yield* Effect.result(
         stack.deploy(
-          Database("bad", { server: server(), catalog: Movies, name: "has/slash" }),
+          Database("bad", { server: server(), schema: Movies, name: "has/slash" }),
         ),
       );
       expect(result._tag).toBe("Failure");
@@ -381,7 +381,7 @@ describe("Ramose.Database", () => {
             // `probe: false` isolates the install: this is the Database's own
             // deadline, not the Server's.
             server: Server("Ramose", { worker: silentPeerUrl, probe: false }),
-            catalog: Movies,
+            schema: Movies,
             timeoutMs: 500,
           }),
         ),

@@ -36,7 +36,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 
 - **After your own write** — the overlay applies it locally and the query re-runs in the window that wrote, before the HTTPS POST returns.
 - **After anyone else's write.** Other windows receive a filtered transaction over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run locally. Writes always go over HTTPS. A write this caller cannot read does not arrive on the connection. If their access itself changes (they gain or lose a record), the connection says so and the next run sees the new view.
-- **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.q`.
+- **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.query`.
 - **Only news is emitted.** Identical results are not emitted again, so a write the query does not see is not a re-render.
 - **Dropped connections recover on their own** — retries back off from 250 ms to 5 s and the connection reconnects in place.
 - **A pinned view emits once and completes.** `useLive(db.asOf(t), query)` has no news to deliver; `rows` stays.
@@ -63,7 +63,7 @@ A live query needs a WebSocket connection — that is how filtered transactions 
 
 ### Outside React
 
-`db.live(query)` returns a **stream** of results, not a single value, so `Effect.runPromise` cannot run it — that rule is for one-shot calls like `db.q`. Consume it with `Stream.runForEach`:
+`db.live(query)` returns a **stream** of results, not a single value, so `Effect.runPromise` cannot run it — that rule is for one-shot calls like `db.query`. Consume it with `Stream.runForEach`:
 
 ```ts title="watch.ts"
 import * as Effect from "effect/Effect";

@@ -1,5 +1,5 @@
 /**
- * `db.live` — a standing `db.q` as a `Stream`.
+ * `db.live` — a standing `db.query` as a `Stream`.
  *
  * Session clients run the engine against the overlay. The stream re-runs
  * when that overlay mutates: apply is the notify (pending, ack,
@@ -115,7 +115,7 @@ describe("q and live are two terminals over one query", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
+    expect(await db.query(names)).toEqual([{ name: "Ada" }]);
     const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
@@ -178,7 +178,7 @@ describe("paint is the wake", () => {
     await run(
       db.effect.transact(function* (tx) {
         const bob = yield* tx.entity();
-        yield* bob.add(User.name, "Bob");
+        yield* bob.set(User.name, "Bob");
       }),
     );
     await settle();

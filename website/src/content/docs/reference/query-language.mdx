@@ -78,7 +78,7 @@ typo is a compile error.
 
 The declared params record is the query's binding type — a collision is a
 compile error at the merge site, and the public interface moves only when
-the head moves. `db.q(q, bindings)` validates bindings at run time.
+the head moves. `db.query(q, bindings)` validates bindings at run time.
 `Ramose.EidOf(N)` declares an entity-valued hole. Output goes the other
 way: it is the type of the body's one return expression — `Q.pull(focus,
 shape)` for one root, `Q.rows({ … })` (or a plain record of handles) for
@@ -141,7 +141,7 @@ post-processing for the outermost query; strip it with `q.logic()`.
 ## Effect stops at the boundary
 
 Query building is synchronous, pure, and total; Effect appears where
-computation becomes real — `db.q` returns an Effect with typed failures,
+computation becomes real — `db.query` returns an Effect with typed failures,
 `db.live` is a Stream. Because built queries are inert data they are
 hashable for live-query identity and stable as hook dependencies; the
 same wire form runs on the peer and on the local session overlay.

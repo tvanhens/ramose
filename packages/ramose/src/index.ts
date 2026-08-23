@@ -12,14 +12,14 @@
  * import * as Schema from "effect/Schema";
  * import * as Layer from "effect/Layer";
  *
- * export const User = Ramose.Namespace("user", {
- *   name: Ramose.Attr(Schema.String, { unique: "identity" }),
+ * export const User = Ramose.Entity("user", {
+ *   name: Ramose.Field(Schema.String, { unique: "upsert" }),
  * });
- * export const Movies = Ramose.Catalog({ user: User });
+ * export const Movies = Ramose.Schema({ user: User });
  *
  * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("ramose/worker") });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
- * export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
+ * export const MoviesDb = Ramose.Database("movies", { server: Server, schema: Movies });
  *
  * export default Alchemy.Stack("app", {
  *   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
@@ -38,10 +38,9 @@ export { policy } from "./db/Policy.ts";
 export * as Policy from "./db/Policy.ts";
 
 // ── the verifier/minter contract ─────────────────────────────────────────
-// (`MintedClaims`, not `Claims`: the portable barrel already exports `Claims`
-// as the decoded-but-unverified payload of a `TokenSource` — same shape,
-// different trust level — and a shadow would silently change its meaning.)
-export { type AuthConfig, claims, type ClaimsInput, type MintedClaims } from "./Auth.ts";
+// `Claims` (the token payload) lives on `ramose/db`. `claims()` mints that
+// same shape. Do not re-export a second Claims from here.
+export { type AuthConfig, claims, type ClaimsInput } from "./Auth.ts";
 
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
@@ -50,7 +49,7 @@ export {
   authEnv,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
-  type PeerAuth,
+  type ServerAuth,
   Server,
 } from "./Server.ts";
 

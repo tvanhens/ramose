@@ -7,7 +7,7 @@
 import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
-export const User = Ramose.Namespace("user", {
-  name: Ramose.Attr(Schema.String, { unique: "identity" }),
+export const User = Ramose.Entity("user", {
+  name: Ramose.Field(Schema.String, { unique: "upsert" }),
 });
-export const Movies = Ramose.Catalog({ user: User });
+export const Movies = Ramose.Schema({ user: User });

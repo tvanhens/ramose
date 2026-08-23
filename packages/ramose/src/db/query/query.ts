@@ -17,14 +17,14 @@
  * whole closed query as a subquery), and `Query.rule` (engine-expanded,
  * which is what makes recursion work). Effect appears nowhere here: a
  * built query is inert data — hashable for live identity, stable as a
- * hook dependency — and computation starts at `db.q`.
+ * hook dependency — and computation starts at `db.query`.
  */
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid } from "../Eid.ts";
 import { NotOne } from "../Errors.ts";
-import type { AnyNamespace } from "../Namespace.ts";
+import type { AnyEntity } from "../Entity.ts";
 import {
   lowerOrderPath,
   requiredClauses,
@@ -142,7 +142,7 @@ export type PipeStage =
  */
 export interface Pipeline<Row = unknown> {
   readonly _tag: "Pipeline";
-  readonly ns: AnyNamespace;
+  readonly ns: AnyEntity;
   readonly stages: readonly PipeStage[];
   readonly _row?: Row;
   [Symbol.iterator](): Iterator<never, Var<EidCell>, any>;
@@ -181,7 +181,7 @@ interface OpenCommand<Row> extends SpliceCommand {
 }
 
 /**
- * A closed query value: `(params, body)`, runnable by `db.q` / `db.live`
+ * A closed query value: `(params, body)`, runnable by `db.query` / `db.live`
  * and delegable into other builds via {@link QueryObject.open}. `Row` is
  * the inferred row; `PB` the declared bindings record; `Out` is what a
  * terminal resolves to — the rows array by default, one row (or `null`)
@@ -226,7 +226,7 @@ export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
   one(): QueryObject<Row, PB, Row | null>;
   /**
    * Exactly one row. Lowering forces `limit 2` so a second match is
-   * witnessed without pulling a whole page, and `db.q` fails with `NotOne`
+   * witnessed without pulling a whole page, and `db.query` fails with `NotOne`
    * when the peer answers zero or two.
    */
   oneOrFail(): QueryObject<Row, PB, Row>;
@@ -263,7 +263,7 @@ export type AnyQueryObject = QueryObject<any, any, any>;
  */
 export type Row<Q> = Q extends QueryObject<infer R, any, any> ? R : never;
 
-/** The readonly array of {@link Row} — what `db.q` resolves an unpaged,
+/** The readonly array of {@link Row} — what `db.query` resolves an unpaged,
  * untaken query to. */
 export type Rows<Q> = readonly Row<Q>[];
 
@@ -747,7 +747,7 @@ export const lowerQueryObject = (
     readonly hasRet: boolean;
   }
   const byRule = new Map<RuleValue, RuleEntry>();
-  const byNs = new Map<AnyNamespace, RuleEntry>();
+  const byNs = new Map<AnyEntity, RuleEntry>();
   const takenNames = new Map<string, unknown>();
   const ruleDefs: unknown[] = [];
 
@@ -773,7 +773,7 @@ export const lowerQueryObject = (
     return entry;
   };
 
-  const registerMembership = (ns: AnyNamespace): RuleEntry => {
+  const registerMembership = (ns: AnyEntity): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
     const wireName = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(/[^A-Za-z0-9_]/g, "_");
@@ -781,7 +781,7 @@ export const lowerQueryObject = (
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    const idents = Object.values(ns.attributes).map((a) => (a as { ident: string }).ident);
+    const idents = Object.values(ns.fields).map((a) => (a as { ident: string }).ident);
     ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
     return entry;
   };
@@ -1404,7 +1404,7 @@ export const lowerQueryObject = (
         } satisfies Page;
       }
       // `one()` picks the cell; `oneOrFail()` names the miss. The NotOne is
-      // returned (not thrown) so `db.q` fails its Effect with it.
+      // returned (not thrown) so `db.query` fails its Effect with it.
       if (take !== undefined) {
         if (take === "one") return rows[0] ?? null;
         if (rows.length === 1) return rows[0];

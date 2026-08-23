@@ -27,7 +27,7 @@ import {
 } from "../internal/core/query/pull.ts";
 import { processTx, TxError } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import { schemaTx } from "./ensure.ts";
 import { lowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
@@ -80,7 +80,7 @@ export interface Overlay {
 export interface OverlayRunArgs {
   readonly invocation: OperationInvocation;
   readonly operation: AnyOperation;
-  readonly catalog: AnyCatalog;
+  readonly schema: AnySchema;
   readonly principal: { readonly eid: number | null; readonly class: string };
   readonly db: string;
 }
@@ -101,7 +101,7 @@ export interface OverlayOptions {
     invocation: OperationInvocation,
   ) => Effect.Effect<unknown, DbError>;
   /** Installs catalog attrs locally so processTx / q can resolve idents. */
-  readonly catalog?: AnyCatalog | undefined;
+  readonly schema?: AnySchema | undefined;
 }
 
 interface PendingLayer {
@@ -405,8 +405,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const replaceConfirmed = async (datoms: readonly Datom[], t: number): Promise<void> => {
     const next = await Connection.fromDatoms(datoms);
-    if (options.catalog !== undefined) {
-      await next.transact(schemaTx(options.catalog) as unknown[]);
+    if (options.schema !== undefined) {
+      await next.transact(schemaTx(options.schema) as unknown[]);
     }
     conn = next;
     confirmedT = t;
@@ -492,8 +492,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const ensureConn = async (): Promise<void> => {
     if (conn !== undefined) return;
     conn = await Connection.create();
-    if (options.catalog !== undefined) {
-      await conn.transact(schemaTx(options.catalog) as unknown[]);
+    if (options.schema !== undefined) {
+      await conn.transact(schemaTx(options.schema) as unknown[]);
     }
   };
 
@@ -723,7 +723,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         Effect.gen(function* () {
           let collected: () => readonly unknown[] = () => [];
           const built = buildOp({
-            catalog: args.catalog,
+            schema: args.schema,
             db: args.db,
             principal: {
               eid: args.principal.eid,

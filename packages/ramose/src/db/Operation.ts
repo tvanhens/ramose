@@ -13,12 +13,12 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
-import type { AnyNamespace } from "./Namespace.ts";
+import type { AnyEntity } from "./Entity.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
-import { isEntity } from "./Tx.ts";
+import { isTxHandle } from "./Tx.ts";
 
 /** Schema for an entity id in operation input / output. */
 export const EntityId: typeof Schema.Number = Schema.Number;
@@ -53,7 +53,7 @@ export interface OperationEffectContext {
      * Idempotent catalog upsert on `name` (defaults to the operation's db).
      * Runs as its own transaction — an effect, not a prefix step.
      */
-    install(catalog: AnyCatalog, name?: string): Promise<unknown>;
+    install(schema: AnySchema, name?: string): Promise<unknown>;
   };
 }
 
@@ -63,15 +63,15 @@ export type EffectThunk<A = unknown> = (
 
 /**
  * Entity handle a body writes through. Catalog-generic: operations are
- * defined against imported attr refs, not a `Tx<AnyCatalog>` (that bound
+ * defined against imported attr refs, not a `Tx<AnySchema>` (that bound
  * turns every value into `never`).
  */
-export interface OpEntity {
-  readonly _tag: "Entity";
+export interface OpHandle {
+  readonly _tag: "TxHandle";
   readonly eid: unknown;
-  add(attr: unknown, value: unknown): void;
-  retract(attr: unknown, value?: unknown): void;
-  retractEntity(): void;
+  set(field: unknown, value: unknown): void;
+  remove(field: unknown, value?: unknown): void;
+  delete(): void;
 }
 
 /**
@@ -79,28 +79,28 @@ export interface OpEntity {
  * commit; reads see the speculative view (confirmed + pending + ops so
  * far). Writes accept any attr ref — the catalog is bound at `db.run`.
  */
-export interface Op<N extends AnyNamespace | undefined = undefined> {
+export interface Op<N extends AnyEntity | undefined = undefined> {
   /**
-   * The entity a contextual operation is bound to (`on: Namespace`).
+   * The entity a contextual operation is bound to (`on: Entity`).
    * Absent on a non-contextual operation.
    */
-  readonly self: [N] extends [AnyNamespace] ? OpEntity : undefined;
+  readonly self: [N] extends [AnyEntity] ? OpHandle : undefined;
   /** The authenticated caller. On the client this is `db.principal()`. */
   readonly principal: OpPrincipal;
   /** Database name this invocation is bound to. */
   readonly db: string;
 
-  entity(): OpEntity;
-  entity(id: unknown): OpEntity;
-  add(e: unknown, attr: unknown, value: unknown): void;
-  retract(e: unknown, attr: unknown, value?: unknown): void;
-  retractEntity(e: unknown): void;
+  entity(): OpHandle;
+  entity(id: unknown): OpHandle;
+  set(e: unknown, field: unknown, value: unknown): void;
+  remove(e: unknown, field: unknown, value?: unknown): void;
+  delete(e: unknown): void;
 
-  q<Row, P = never, Out = readonly Row[]>(
+  query<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
     params?: P extends never ? never : P,
   ): Promise<Out>;
-  q(
+  query(
     input: AnyQueryObject,
     params?: Readonly<Record<string, unknown>>,
   ): Promise<unknown>;
@@ -119,7 +119,7 @@ export interface Operation<
   Name extends string = string,
   I = unknown,
   O = unknown,
-  N extends AnyNamespace | undefined = undefined,
+  N extends AnyEntity | undefined = undefined,
 > {
   readonly _tag: "Operation";
   readonly name: Name;
@@ -137,16 +137,16 @@ export type AnyOperation = Operation<string, any, any, any>;
  *
  * `self` is set only when the operation is contextual.
  */
-export interface RuntimeOpEntity {
-  readonly _tag: "Entity";
+export interface RuntimeOpHandle {
+  readonly _tag: "TxHandle";
   readonly eid: unknown;
-  add(attr: unknown, value: unknown): Effect.Effect<void>;
-  retract(attr: unknown, value?: unknown): Effect.Effect<void>;
-  retractEntity(): Effect.Effect<void>;
+  set(field: unknown, value: unknown): Effect.Effect<void>;
+  remove(field: unknown, value?: unknown): Effect.Effect<void>;
+  delete(): Effect.Effect<void>;
 }
 
 export interface RuntimeOp {
-  readonly self: RuntimeOpEntity | undefined;
+  readonly self: RuntimeOpHandle | undefined;
   readonly principal: OpPrincipal;
   readonly db: string;
   readonly _effects: "halt" | "run";
@@ -154,12 +154,12 @@ export interface RuntimeOp {
   readonly _prefix: { halted: boolean };
   /** Snapshot ops at the first halt so later writes are not guessed. */
   readonly _haltPrefix: () => void;
-  entity(): Effect.Effect<RuntimeOpEntity>;
-  entity(id: unknown): Effect.Effect<RuntimeOpEntity>;
-  add(e: unknown, attr: unknown, value: unknown): Effect.Effect<void>;
-  retract(e: unknown, attr: unknown, value?: unknown): Effect.Effect<void>;
-  retractEntity(e: unknown): Effect.Effect<void>;
-  q(
+  entity(): Effect.Effect<RuntimeOpHandle>;
+  entity(id: unknown): Effect.Effect<RuntimeOpHandle>;
+  set(e: unknown, field: unknown, value: unknown): Effect.Effect<void>;
+  remove(e: unknown, field: unknown, value?: unknown): Effect.Effect<void>;
+  delete(e: unknown): Effect.Effect<void>;
+  query(
     input: AnyQueryObject,
     params?: Readonly<Record<string, unknown>>,
   ): Effect.Effect<unknown, DbError>;
@@ -172,7 +172,7 @@ export interface RuntimeOp {
         readonly principal: OpPrincipal;
         readonly databases: {
           install(
-            catalog: AnyCatalog,
+            schema: AnySchema,
             name?: string,
           ): Effect.Effect<unknown, DbError>;
         };
@@ -195,7 +195,7 @@ export type AnyOperations = Operations<Record<string, AnyOperation>>;
 export interface OperationSchemas<
   I,
   O,
-  N extends AnyNamespace | undefined = undefined,
+  N extends AnyEntity | undefined = undefined,
 > {
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
@@ -207,7 +207,7 @@ export const Operation = <
   Name extends string,
   I,
   O,
-  N extends AnyNamespace | undefined = undefined,
+  N extends AnyEntity | undefined = undefined,
 >(
   name: Name,
   schemas: OperationSchemas<I, O, N>,
@@ -236,7 +236,7 @@ export const Operations = <const M extends Record<string, AnyOperation>>(
 });
 
 /** What `db.run` reports back — a {@link TxReport} plus the encoded output. */
-export interface OpReport<O = unknown, C extends AnyCatalog = AnyCatalog>
+export interface OpReport<O = unknown, C extends AnySchema = AnySchema>
   extends TxReport<C> {
   readonly output: O;
 }
@@ -254,7 +254,7 @@ export const lowerEntityArg = (entity: unknown): unknown => {
   if (entity === undefined || entity === null) return undefined;
   if (typeof entity === "number" || typeof entity === "string") return entity;
   if (isEntityLike(entity)) return entity.id;
-  if (isEntity(entity)) return entity.eid;
+  if (isTxHandle(entity)) return entity.eid;
   return entity;
 };
 
@@ -272,7 +272,7 @@ export const materializeOutput = (
   value: unknown,
   tempids: Readonly<Record<string, number>>,
 ): unknown => {
-  if (isEntity(value)) {
+  if (isTxHandle(value)) {
     const ref = value.eid;
     if (typeof ref === "string") return tempids[ref] ?? ref;
     return ref;

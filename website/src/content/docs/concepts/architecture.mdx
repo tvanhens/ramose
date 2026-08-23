@@ -26,7 +26,7 @@ The five numbered arrows are the five steps below, in the same order.
 
 ## A write, step by step
 
-Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of changes; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). Here is its journey:
+Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). Here is its journey:
 
 1. The writing tab applies the change on its local overlay and the live query re-runs there. Then the app sends the write over HTTPS to **the Ramose server** — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer ([glossary](/concepts/glossary/#server)).
 2. The server verifies the sign-in token, then checks the rules in the policy (the writer checks them again before committing). A viewer moving a card is refused here; the overlay drops the pending layer and the card snaps back.

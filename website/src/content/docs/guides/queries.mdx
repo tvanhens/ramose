@@ -28,7 +28,7 @@ export const boardQuery = Query.q(() =>
 
 ## Run it
 
-`db.q(query)` runs it once. `db.principal()` is who the peer says you are — the row it upserts at session establishment (`sub`, `role`, and `ramose.attrs`) — so finding your own eid does not need a query:
+`db.query(query)` runs it once. `db.principal()` is who the peer says you are — the row it upserts at session establishment (`sub`, `role`, and `ramose.attrs`) — so finding your own eid does not need a query:
 
 ```ts
 const who = yield* db.principal();
@@ -37,7 +37,7 @@ const myEid = who.eid?.id;
 
 A lookup by any other field is an ordinary query — the changing value is a declared **param**, bound at the call. A param is declared from an attribute reference (`User.sub` — the hole takes that attribute's type) or any Effect Schema; `Ramose.EidOf(N)` declares an entity-valued hole, and `Ramose.optional(…)` one that may stay unbound. The query object never changes identity — only the bindings do.
 
-In React, `useQuery(db, query, params?)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.q(query))`.
+In React, `useQuery(db, query, params?)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await Effect.runPromise(db.query(query))`.
 
 ## Filter
 
@@ -77,8 +77,8 @@ const board = Query.q({ owner: Ramose.optional(Ramose.EidOf(User)) }, (p) =>
     Query.select({ id: Issue.id, title: Issue.title }),
   ),
 );
-// db.q(board, {})                 — every issue
-// db.q(board, { owner: adaId })   — Ada's issues
+// db.query(board, {})                 — every issue
+// db.query(board, { owner: adaId })   — Ada's issues
 ```
 
 ## Choose the fields
@@ -103,7 +103,7 @@ export const boardShape = {
 - `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
 - `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
-- A **reference** also reads backwards in a shape with `.reverse` — `Issue.creator.reverse.select({ … })` from a user is "the issues that point at me", many-valued unless the reference is `{ isComponent: true }` (a component has at most one owner).
+- A **reference** also reads backwards in a shape with `.reverse` — `Issue.creator.reverse.select({ … })` from a user is "the issues that point at me", many-valued unless the reference is `{ owned: true }` (a component has at most one owner).
 
 The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A query with no `select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
 
@@ -227,10 +227,10 @@ const byEmail = Query.q({ email: User.email }, (p) =>
   pipe(Query.entities(User), Query.is(User.email, p.email), Query.select({ name: User.name })),
 );
 
-const ada = yield* db.q(byEmail.one(), { email: "ada@example" });
+const ada = yield* db.query(byEmail.one(), { email: "ada@example" });
 // { name: string } | null — null when nobody matches
 
-const theAda = yield* db.q(byEmail.oneOrFail(), { email: "ada@example" });
+const theAda = yield* db.query(byEmail.oneOrFail(), { email: "ada@example" });
 // { name: string } — fails with NotOne if there are zero or two matches
 ```
 
@@ -239,8 +239,8 @@ const theAda = yield* db.q(byEmail.oneOrFail(), { email: "ada@example" });
 `after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
 
 ```ts
-const page1 = yield* db.q(boardQuery.after(null));
-const page2 = yield* db.q(boardQuery.after(page1.cursor));
+const page1 = yield* db.query(boardQuery.after(null));
+const page2 = yield* db.query(boardQuery.after(page1.cursor));
 // page.cursor is null when the page came back short — nothing past it
 ```
 
@@ -254,7 +254,7 @@ const openCount = Query.q(function* () {
   yield* Query.is(Todo.done, false)(todo);
   return { n: Q.count(todo) };
 });
-const rows = yield* db.q(openCount);
+const rows = yield* db.query(openCount);
 const open = rows[0]!.n; // an ungrouped aggregate always answers one row — 0 over no matches
 
 const perOwner = Query.q(function* () {

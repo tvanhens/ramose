@@ -11,7 +11,7 @@ Every error a call can fail with, what it means, and what to do about it. This p
 Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. `.oneOrFail()` can also fail with `NotOne`, and a parameterized query can fail with `ParamError` — neither is a `DbError`. Match by name with `Effect.catchTags`.
 
 ```ts
-const rows = yield* db.q(query).pipe(
+const rows = yield* db.query(query).pipe(
   Effect.catchTags({
     QueryBudgetExceeded: () => Effect.succeed([]),
     Unavailable: () => Effect.succeed([]), // the writer is restarting; try later

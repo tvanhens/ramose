@@ -4,9 +4,9 @@ import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { Connection, Index, filterDb, parsePolicy, type CompiledPolicy, type Principal } from "../../src/internal/core/index.ts";
 import {
-  Attr,
-  Catalog,
-  Namespace,
+  Field,
+  Schema as DbSchema,
+  Entity,
   Policy as P,
   PolicyError,
   Q,
@@ -14,16 +14,16 @@ import {
   Ref,
 } from "../../src/db/internal.ts";
 
-const User = Namespace("user", { sub: Attr(Schema.String, { unique: "identity" }) });
-const Org = Namespace("org", { members: Attr(Ref, { cardinality: "many" }) });
-const Project = Namespace("project", { org: Attr(Ref) });
-const Doc = Namespace("doc", {
-  title: Attr(Schema.String),
-  owner: Attr(Ref),
-  project: Attr(Ref),
-  audit: Attr(Schema.String),
+const User = Entity("user", { sub: Field(Schema.String, { unique: "upsert" }) });
+const Org = Entity("org", { members: Field(Ref(() => User), { cardinality: "many" }) });
+const Project = Entity("project", { org: Field(Ref(() => Org)) });
+const Doc = Entity("doc", {
+  title: Field(Schema.String),
+  owner: Field(Ref(() => User)),
+  project: Field(Ref(() => Project)),
+  audit: Field(Schema.String),
 });
-const App = Catalog({ user: User, org: Org, project: Project, doc: Doc });
+const App = DbSchema({ user: User, org: Org, project: Project, doc: Doc });
 
 /** doc → project → org → members contains the caller. */
 const inOrg = (me: P.Me<typeof User>) =>
@@ -49,7 +49,7 @@ const inProjectOrg = (me: P.Me<typeof User>) =>
 /** The policy reference's example, rewritten as fragments. */
 const specPolicy = P.policy(
   {
-    catalog: App,
+    schema: App,
     principal: User.sub,
     classes: ["anonymous", "member", "admin"],
     claims: Schema.Struct({ org: Schema.String }),
@@ -62,7 +62,7 @@ const specPolicy = P.policy(
       retract: ownDoc,
       retractEntity: ownDoc,
       preset: [P.preset(Doc.owner, P.principal)],
-      attrs: [P.attr(Doc.audit, { read: P.class("admin") })],
+      attrs: [P.field(Doc.audit, { read: P.class("admin") })],
     },
     project: { read: inProjectOrg },
     org: { read: (me) => Query.is(Org.members, me) },
@@ -149,9 +149,9 @@ describe("compile", () => {
     expect(JSON.stringify(c.claims)).toContain("org");
   });
 
-  test("P.claims.attrs.<key> is a claim under attrs", () => {
-    expect(P.claims.attrs.org).toEqual({ _tag: "claim", path: ["attrs", "org"] });
-    expect(P.claimsOf(Schema.Struct({ org: Schema.String })).attrs.org).toEqual({
+  test("P.claim.attrs.<key> is a claim under attrs", () => {
+    expect(P.claim.attrs.org).toEqual({ _tag: "claim", path: ["attrs", "org"] });
+    expect(P.claimOf(Schema.Struct({ org: Schema.String })).attrs.org).toEqual({
       _tag: "claim",
       path: ["attrs", "org"],
     });
@@ -159,7 +159,7 @@ describe("compile", () => {
 
   test("true is the empty fragment — public, no rule emitted", () => {
     const only = P.policy(
-      { catalog: App, principal: User.sub, classes: ["member"] },
+      { schema: App, principal: User.sub, classes: ["member"] },
       { doc: { read: true } },
     );
     const c = compiled(only);
@@ -169,7 +169,7 @@ describe("compile", () => {
 
   test("a namespace with no rule is absent — deny by default", () => {
     const only = P.policy(
-      { catalog: App, principal: User.sub, classes: ["member"] },
+      { schema: App, principal: User.sub, classes: ["member"] },
       { doc: { read: ownDoc } },
     );
     const c = compiled(only);
@@ -183,40 +183,40 @@ describe("deploy-time errors", () => {
   test("an undeclared class is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { catalog: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"] },
         { doc: { read: P.class("admin") } },
       ),
     ).toThrow(/not a declared class/);
   });
 
   test("an attribute outside the catalog is a PolicyError", () => {
-    const Other = Namespace("other", { thing: Attr(Schema.String) });
+    const Other = Entity("other", { thing: Field(Schema.String) });
     expect(() =>
       P.policy(
-        { catalog: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"] },
         { doc: { read: () => Query.is(Other.thing, "x") } },
       ),
-    ).toThrow(/not in the catalog/);
+    ).toThrow(/not in the schema/);
   });
 
   test("a namespace key outside the catalog is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { catalog: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"] },
         // @ts-expect-error — "nope" is not a catalog namespace key
         { nope: { read: P.class("member") } },
       ),
-    ).toThrow(/is not in the catalog/);
+    ).toThrow(/is not in the schema/);
   });
 
   test("an attribute rule outside its namespace is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { catalog: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"] },
         {
           doc: {
             read: P.class("member"),
-            attrs: [P.attr(Org.members, { read: P.class("member") })],
+            attrs: [P.field(Org.members, { read: P.class("member") })],
           },
         },
       ),
@@ -224,24 +224,24 @@ describe("deploy-time errors", () => {
   });
 
   test("a principal outside the catalog is a PolicyError", () => {
-    const Other = Namespace("other", { sub: Attr(Schema.String) });
+    const Other = Entity("other", { sub: Field(Schema.String) });
     expect(() =>
       P.policy(
         {
-          catalog: App,
+          schema: App,
           // @ts-expect-error — :other/sub is not a catalog ident
           principal: Other.sub,
           classes: ["member"],
         },
         {},
       ),
-    ).toThrow(/principal :other\/sub is not in the catalog/);
+    ).toThrow(/principal :other\/sub is not in the schema/);
   });
 
   test("an empty fragment is a PolicyError — public is `true`", () => {
     expect(() =>
       P.policy(
-        { catalog: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"] },
         {
           doc: {
             read: () =>
@@ -272,7 +272,7 @@ describe("masked attributes in pull patterns", () => {
     expect(() =>
       P.compile(specPolicy, { pulls: [{ org: Project.org.select({ members: Org.members }) }] }),
     ).not.toThrow();
-    const Wrapper = Namespace("wrap", { doc: Attr(Ref) });
+    const Wrapper = Entity("wrap", { doc: Field(Ref(() => Doc)) });
     expect(() =>
       P.compile(specPolicy, { pulls: [{ doc: Wrapper.doc.select({ audit: Doc.audit }) }] }),
     ).toThrow(/:doc\/audit/);

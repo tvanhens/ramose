@@ -1,11 +1,11 @@
 /**
  * `connect` — the promise-land client handle.
  *
- * App callers get {@link Client} (`db.q`, `db.run`, `db.live`) without a
+ * App callers get {@link Client} (`db.query`, `db.run`, `db.live`) without a
  * `ManagedRuntime`. Effect's `layer` / `Databases` stay on `ramose/db/effect`.
  */
 
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import { openConnected } from "./Databases.ts";
 import type { Db } from "./Db.ts";
 import type { TokenInput } from "./token.ts";
@@ -29,12 +29,12 @@ export interface ClientOptions {
 /**
  * The handle {@link connect} returns: the same `db` as the hatch's
  * `Databases`, plus the close `layer` performs as its finalizer. Methods
- * on `db` are promises (`db.q`, `db.run`); Effect variants live on
+ * on `db` are promises (`db.query`, `db.run`); Effect variants live on
  * `db.effect`.
  */
 export interface Client {
   /** Pure — the same call as `Databases.db`: no network, no ensure, no socket. */
-  db<C extends AnyCatalog>(name: string, catalog: C): Db<C>;
+  db<C extends AnySchema>(name: string, schema: C): Db<C>;
   /**
    * Close every session socket this client opened; resolves once they are.
    * Idempotent, and after `close` reads fail rather than silently changing

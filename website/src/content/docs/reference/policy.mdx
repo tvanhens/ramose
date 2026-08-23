@@ -15,7 +15,7 @@ The exact rules language and token contract. This page is for people who have re
 ```ts
 const policy = Ramose.policy(
   {
-    catalog: Catalog,
+    schema: Schema,
     principal: User.sub,          // the field whose value is the token's `sub`
     classes: ["admin", "member", "viewer"],
     claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
@@ -35,7 +35,7 @@ const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.autho
 ```ts title="examples/reef/src/domain/policy.ts:37-61"
 export const policy = Ramose.policy(
   {
-    catalog: Reef,
+    schema: Reef,
     principal: User.sub,
     classes: CLASSES,
   },
@@ -54,7 +54,7 @@ export const policy = Ramose.policy(
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
 ```
@@ -130,12 +130,12 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 { doc: { read: [mine, inOrg] } }
 // 4. narrowed: everything above, except doc.audit, which is admins only
 { doc: { read: [mine, inOrg],
-         attrs: [P.attr(Doc.audit, { read: P.class("admin") })] } }
+         attrs: [P.field(Doc.audit, { read: P.class("admin") })] } }
 ```
 
 ## preset
 
-`P.preset(attr, P.principal | P.claims.x)` — a **server-filled field** ([glossary](/concepts/glossary/#preset)): on `create` the server sets it from the caller. A client value identical to the preset is a no-op; a different one is refused with `Unauthorized`. The operand is `P.principal` or a claim, never a literal.
+`P.preset(attr, P.principal | P.claim.x)` — a **server-filled field** ([glossary](/concepts/glossary/#preset)): on `create` the server sets it from the caller. A client value identical to the preset is a no-op; a different one is refused with `Unauthorized`. The operand is `P.principal` or a claim, never a literal.
 
 ```ts title="examples/reef/src/domain/policy.ts:56"
       preset: [P.preset(Issue.creator, P.principal)],
@@ -143,12 +143,12 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## Field rules narrow
 
-`P.attr(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
+`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
 
 ```ts title="examples/reef/src/domain/policy.ts:57-61"
       attrs: [
         // …
-        P.attr(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
 ```
 
@@ -204,7 +204,7 @@ export const compiledPolicy = (): string =>
 | `sub` | non-empty; matched to the `principal` field |
 | `ramose.db` | equals the database in the URL — else `Unauthorized` "token is not valid for this database" |
 | `ramose.class` | a class the policy declares |
-| `ramose.attrs` | optional; your own claims, readable as `P.claims.attrs.<key>` on a preset |
+| `ramose.attrs` | optional; your own claims, readable as `P.claim.attrs.<key>` on a preset |
 
 Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `ramose/better-auth`.
 

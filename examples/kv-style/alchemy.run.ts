@@ -30,7 +30,7 @@ import { Movies } from "./schema.ts";
 // Names invented per request (`/t/:tenant` in app.ts) are not resources: they
 // call `db.install()` at tenant-creation instead.
 
-export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
+export const MoviesDb = Ramose.Database("movies", { server: Server, schema: Movies });
 
 export default Alchemy.Stack(
   "ramose-example",

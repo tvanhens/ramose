@@ -22,11 +22,11 @@ export const registerDom = (): void => {
   });
 };
 
-export const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
-  slug: Ramose.Attr(Schema.String, { unique: "identity" }),
+export const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
+  slug: Ramose.Field(Schema.String, { unique: "upsert" }),
 });
-export const Todos = Ramose.Catalog({ todo: Todo });
+export const Todos = Ramose.Schema({ todo: Todo });
 export const titles = Ramose.Query.q(() =>
   pipe(Ramose.Query.entities(Todo), Ramose.Query.select({ title: Todo.title })),
 );

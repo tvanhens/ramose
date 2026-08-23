@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
-import type { AnyCatalog } from "./Catalog.ts";
+import type { AnySchema } from "./Schema.ts";
 import type { ClientOptions } from "./connect.ts";
 import { type Db, makeDb, type Wire } from "./Db.ts";
 import {
@@ -54,7 +54,7 @@ import {
 
 /** One method, because a database is a name. */
 export interface DatabasesShape {
-  db<C extends AnyCatalog>(name: string, catalog: C): Db<C>;
+  db<C extends AnySchema>(name: string, schema: C): Db<C>;
 }
 
 /**
@@ -135,7 +135,7 @@ export const makeDatabases = (
 ): { readonly databases: DatabasesShape; readonly close: () => void } => {
   const sessions = new Map<string, Session>();
   const overlays = new Map<string, Overlay>();
-  const catalogs = new Map<string, AnyCatalog>();
+  const catalogs = new Map<string, AnySchema>();
   let closed = false;
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
@@ -176,7 +176,7 @@ export const makeDatabases = (
         session: socket,
         post: (tx, clientTxId) => postTx(name, tx, clientTxId),
         postOp: (invocation) => postOp(name, invocation),
-        catalog: catalogs.get(name),
+        schema: catalogs.get(name),
       });
       overlays.set(name, existing);
     }
@@ -361,7 +361,7 @@ export const makeDatabases = (
 
   const wire: Wire = {
     session,
-    bindCatalog: (name, catalog) => {
+    bindSchema: (name, catalog) => {
       catalogs.set(name, catalog);
     },
     overlay: overlayOf,
@@ -384,8 +384,8 @@ export const makeDatabases = (
 
   return {
     databases: {
-      db: <C extends AnyCatalog>(name: string, catalog: C) =>
-        makeDb(wire, name, catalog),
+      db: <C extends AnySchema>(name: string, schema: C) =>
+        makeDb(wire, name, schema),
     },
     close: () => {
       closed = true;

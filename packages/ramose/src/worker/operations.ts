@@ -17,7 +17,7 @@ import {
 } from "../internal/core/index.ts";
 import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts";
 import * as Effect from "effect/Effect";
-import type { AnyCatalog } from "../db/Catalog.ts";
+import type { AnySchema } from "../db/Schema.ts";
 import { schemaTx } from "../db/ensure.ts";
 import {
   InternalError,
@@ -41,7 +41,7 @@ import { checkWrite, viewDb } from "./auth.ts";
 import { BadRequest, OperationRejected } from "./errors.ts";
 import { fetchBasisWithStats, invalidateBasis, segmentSource } from "./peer.ts";
 
-export interface PeerOptions {
+export interface ServerOptions {
   readonly operations?: AnyOperations;
   readonly writes?: "all" | "operations";
 }
@@ -117,7 +117,7 @@ const entityNamespaceOk = async (
 const installOn = (
   env: RamoseEnv,
   db: string,
-  catalog: AnyCatalog,
+  schema: AnySchema,
   principal: Principal,
 ): Effect.Effect<unknown, InternalError> =>
   Effect.tryPromise({
@@ -128,7 +128,7 @@ const installOn = (
         {
           method: "POST",
           headers: { "content-type": "application/json", ...internalHeaders(env) },
-          body: JSON.stringify({ tx: toJson(schemaTx(catalog)), principal }),
+          body: JSON.stringify({ tx: toJson(schemaTx(schema)), principal }),
         },
       );
       if (!res.ok) {
@@ -220,7 +220,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
 
   let collected: () => readonly unknown[] = () => [];
   const built = buildOp({
-    catalog: { _tag: "Catalog", namespaces: {} },
+    schema: { _tag: "Schema", entities: {} },
     db: args.db,
     principal: {
       eid: args.principal.eid ?? null,

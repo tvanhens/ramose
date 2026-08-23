@@ -52,7 +52,7 @@ import { Server } from "./resources.ts";
 import { Todos } from "./schema.ts";
 
 // …
-export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
 
 // …
 export default Alchemy.Stack(
@@ -122,7 +122,7 @@ Until you add a policy there is no authentication: every caller has full rights 
 Spread `Ramose.authEnv(auth)` into the server Worker's `env` and pass the same `auth` to `Ramose.Server`:
 
 ```ts title="alchemy.run.ts"
-const auth: Ramose.PeerAuth = {
+const auth: Ramose.ServerAuth = {
   policy: process.env.RAMOSE_POLICY, // Ramose.Policy.compile(policy, { pulls })
   jwksUrl: process.env.RAMOSE_JWKS_URL,
   issuers: process.env.RAMOSE_JWT_ISS,
@@ -159,7 +159,7 @@ export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 | `Ramose.ServerBinding` | how calls travel — a **service binding**, Worker to Worker, no URL ([glossary](/concepts/glossary/#service-binding)). A `Layer<ReadWriteDatabases \| ReadDatabases, never, WorkerEnvironment>`; needs `worker` to be a `Cloudflare.Worker`. No live queries. |
 | `Ramose.ServerHttp` | the same over the server's public URL. A `Layer<ReadWriteDatabases \| ReadDatabases>`. |
 | `Ramose.providers()` | merge into your stack's `providers` next to `Cloudflare.providers()` |
-| `Ramose.authEnv(auth)` | turns a `PeerAuth` (`policy`, `jwksUrl`, `issuers`, `aud`, `maxTtl`, `auth`, `allowedOrigins`, `internalSecret`) into the server Worker's environment variables |
+| `Ramose.authEnv(auth)` | turns a `ServerAuth` (`policy`, `jwksUrl`, `issuers`, `aud`, `maxTtl`, `auth`, `allowedOrigins`, `internalSecret`) into the server Worker's environment variables |
 
 Using a capability inside a Worker is on [Use it from a Worker](/guides/workers/).
 

@@ -1,7 +1,7 @@
 /**
  * The provider contract:
  *
- * - `useRamose` outside a provider throws, and the message says what to do.
+ * - `useDb` outside a provider throws, and the message says what to do.
  * - `useDb` identity is stable across renders and changes with `name`.
  * - A provider prop change closes the old client (the fake peer records the
  *   close on the session socket the old client had opened).
@@ -16,7 +16,7 @@ import { pipe } from "effect/Function";
 import { type ReactNode, StrictMode, useEffect } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { fakePeer, type FakePeer } from "./peer.ts";
-import { RamoseProvider, useDb, useRamose } from "../../src/react/index.ts";
+import { RamoseProvider, useDb } from "../../src/react/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -28,10 +28,10 @@ afterAll(() => {
   if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
 });
 
-const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
+const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
 });
-const Todos = Ramose.Catalog({ todo: Todo });
+const Todos = Ramose.Schema({ todo: Todo });
 const titles = Ramose.Query.q(() =>
   pipe(Ramose.Query.entities(Todo), Ramose.Query.select({ title: Todo.title })),
 );
@@ -48,25 +48,23 @@ const ReadOnce = () => {
   useEffect(() => {
     // a q on a closed client rejects (StrictMode's churn) — that is the
     // provider's job to recover from, not this probe's job to observe
-    db.q(titles).catch(() => {});
+    db.query(titles).catch(() => {});
   }, [db]);
   return null;
 };
 
-describe("useRamose", () => {
+describe("useDb", () => {
   test("outside a provider it throws, and the message names RamoseProvider", () => {
     const noisy = console.error;
     console.error = () => {};
     try {
-      expect(() => renderHook(() => useRamose())).toThrow(/RamoseProvider/);
-      expect(() => renderHook(() => useRamose())).toThrow(/useRamose/);
+      expect(() => renderHook(() => useDb("todos", Todos))).toThrow(/RamoseProvider/);
+      expect(() => renderHook(() => useDb("todos", Todos))).toThrow(/useDb/);
     } finally {
       console.error = noisy;
     }
   });
-});
 
-describe("useDb", () => {
   test("identity is stable across renders, and changes with name", () => {
     const peer = fakePeer();
     const wrapper = ({ children }: { children?: ReactNode }) => (
@@ -142,10 +140,10 @@ describe("RamoseProvider", () => {
 
   test("StrictMode double-mount ends with an open client", async () => {
     const peer = fakePeer();
-    const seen: Ramose.Client[] = [];
+    const seen: ReturnType<typeof useDb<typeof Todos>>[] = [];
     const Probe = () => {
-      const client = useRamose();
-      if (seen[seen.length - 1] !== client) seen.push(client);
+      const db = useDb("todos", Todos);
+      if (seen[seen.length - 1] !== db) seen.push(db);
       return <ReadOnce />;
     };
 
@@ -160,8 +158,8 @@ describe("RamoseProvider", () => {
     // the client the tree ended with answers a read — the proof it is open,
     // because a read on a closed client fails rather than falling back
     await waitFor(async () => {
-      const client = seen[seen.length - 1]!;
-      const rows = await client.db("todos", Todos).q(titles);
+      const db = seen[seen.length - 1]!;
+      const rows = await db.query(titles);
       expect(rows).toEqual([]);
     });
 

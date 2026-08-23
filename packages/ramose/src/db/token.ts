@@ -21,12 +21,12 @@ import { type DbError, isDatabaseError, NetworkError } from "./Errors.ts";
  * Trust nothing here for authorization; the peer verifies signatures.
  */
 export interface Claims {
-  readonly sub?: string;
-  readonly iss?: string;
-  readonly aud?: string | readonly string[];
-  readonly exp?: number;
-  readonly iat?: number;
-  readonly ramose?: {
+  readonly sub: string;
+  readonly iss: string;
+  readonly aud: string | readonly string[];
+  readonly exp: number;
+  readonly iat: number;
+  readonly ramose: {
     readonly db: string;
     readonly class: string;
     readonly attrs?: Record<string, unknown>;
@@ -86,7 +86,7 @@ const base64UrlBytes = (input: string): Uint8Array => {
 /** The payload of a compact JWT, or `{}` for anything that is not one. */
 const decodeClaims = (value: string): Claims => {
   const parts = value.split(".");
-  if (parts.length !== 3) return {};
+  if (parts.length !== 3) return {} as Claims;
   try {
     const payload: unknown = JSON.parse(
       new TextDecoder().decode(base64UrlBytes(parts[1]!)),
@@ -95,9 +95,9 @@ const decodeClaims = (value: string): Claims => {
       payload !== null &&
       !Array.isArray(payload)
       ? (payload as Claims)
-      : {};
+      : ({} as Claims);
   } catch {
-    return {};
+    return {} as Claims;
   }
 };
 

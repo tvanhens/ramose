@@ -59,7 +59,7 @@ const inProcessPeer = async () => {
         return { status: 400, body: { error: `unknown operation: ${body.name}` } };
       }
       const built = buildOp({
-        catalog: Todos,
+        schema: Todos,
         db: "todos",
         principal: { eid: null, class: "admin", claims: {} },
         self: body.entity,
@@ -316,7 +316,7 @@ describe("the app's writes move the app's live stream", () => {
     const report = await addTodo(peer.db, "pull me");
 
     // `dbAfter` is floored at the write, so this reads its own write
-    const rows = await report.dbAfter.q(
+    const rows = await report.dbAfter.query(
       Ramose.Query.q(() =>
         pipe(
           Ramose.Query.entities(Todo),

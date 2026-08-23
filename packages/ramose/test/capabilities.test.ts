@@ -91,7 +91,7 @@ const fetcher = (calls: Call[]) => (url: string, init: any) => {
 
 function* write(tx: Tx<typeof Movies>) {
   const ada = yield* tx.entity();
-  yield* ada.add(User.name, "Ada");
+  yield* ada.set(User.name, "Ada");
 }
 
 const realFetch = globalThis.fetch;
@@ -203,7 +203,7 @@ describe("ReadDatabases", () => {
     const dbs = [await read(ServerHttp), await read(ServerBinding)];
 
     for (const db of dbs) {
-      expect(typeof db.q).toBe("function");
+      expect(typeof db.query).toBe("function");
       expect(typeof db.pull).toBe("function");
       expect(typeof db.live).toBe("function");
       expect(typeof db.asOf).toBe("function");
@@ -238,7 +238,7 @@ describe("ReadDatabases", () => {
         const ramose = yield* ReadDatabases(server());
         return yield* ramose
           .db("movies", Movies)
-          .effect.q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
+          .effect.query(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 

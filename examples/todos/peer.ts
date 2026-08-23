@@ -1,5 +1,5 @@
-import { createPeer } from "ramose/worker";
+import { createServer } from "ramose/worker";
 import { operations } from "./src/todos.ts";
 
-export default createPeer({ operations });
+export default createServer({ operations });
 export { QueryReplicaDO, TransactorDO } from "ramose/worker";

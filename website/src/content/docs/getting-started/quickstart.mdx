@@ -91,18 +91,18 @@ export default defineConfig({ plugins: [react()] });
 import * as Ramose from "ramose/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
-  done: Ramose.Attr(Schema.Boolean),
-  createdAt: Ramose.Attr(Ramose.Instant),
+export const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
+  done: Ramose.Field(Schema.Boolean),
+  createdAt: Ramose.Field(Ramose.Instant),
 });
 
-export const Todos = Ramose.Catalog({ todo: Todo });
+export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-- `Ramose.Namespace("todo", …)` — a **record type**, a kind of record like a table ([glossary](/concepts/glossary/#record-type)).
-- `Ramose.Attr(…)` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)). `Ramose.Instant` is a timestamp.
-- `Ramose.Catalog({ todo: Todo })` — the **schema**, your data model as one value; Ramose calls it a catalog ([glossary](/concepts/glossary/#schema)).
+- `Ramose.Entity("todo", …)` — a **record type**, a kind of record like a table ([glossary](/concepts/glossary/#record-type)).
+- `Ramose.Field(…)` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)). `Ramose.Instant` is a timestamp.
+- `Ramose.Schema({ todo: Todo })` — the **schema**, your data model as one value ([glossary](/concepts/glossary/#schema)).
 
 Every record type gets an `id` field for free: `Todo.id`. This one file is imported by your app, your rules and your deploy — there is no second copy to keep in sync.
 
@@ -154,7 +154,7 @@ import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
 import { Todos } from "./schema.ts";
 
-export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
+export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
 
 export const Ui = Command.Dev(
   "Ui",
@@ -243,25 +243,25 @@ export type TodoRow = Ramose.Row<typeof todoQuery>;
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {
     const t = yield* tx.entity();
-    yield* t.add(Todo.title, title);
-    yield* t.add(Todo.done, false);
-    yield* t.add(Todo.createdAt, new Date());
+    yield* t.set(Todo.title, title);
+    yield* t.set(Todo.done, false);
+    yield* t.set(Todo.createdAt, new Date());
   });
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
   db.transact(function* (tx) {
-    yield* tx.add(eid.id, Todo.done, done);
+    yield* tx.set(eid.id, Todo.done, done);
   });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.transact(function* (tx) {
-    yield* tx.retractEntity(eid.id);
+    yield* tx.delete(eid.id);
   });
 ```
 
 A query is a **value** — hoist it once and run it once, live, or in the past. `TodoRow` is read off the query, so adding a field to the shape changes the type everywhere it is used.
 
-Each write is one all-or-nothing change; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `add` sets a field, `retractEntity` deletes one.
+Each write is one all-or-nothing change ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `add` sets a field, `retractEntity` deletes one.
 
 :::note[Effect, in three rules]
 Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
@@ -380,8 +380,8 @@ If `:1337` or `:5173` is already busy, both fall back to the next free port and 
 
 Four edits, one per layer. Add the field to the record type in `schema.ts`:
 
-```ts title="schema.ts — inside Ramose.Namespace(\"todo\", { … })"
-  priority: Ramose.Attr(Ramose.Long),
+```ts title="schema.ts — inside Ramose.Entity(\"todo\", { … })"
+  priority: Ramose.Field(Ramose.Long),
 ```
 
 Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
@@ -389,7 +389,7 @@ Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
 ```ts title="src/todos.ts — one line into todoShape, one into addTodo"
   priority: Todo.priority.optional,   // in todoShape
 
-  yield* t.add(Todo.priority, 2);     // in addTodo, beside the other adds
+  yield* t.set(Todo.priority, 2);     // in addTodo, beside the other adds
 ```
 
 Then render it in `TodoRowView`, in `src/App.tsx`, next to the title:

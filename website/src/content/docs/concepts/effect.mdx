@@ -11,9 +11,9 @@ Ramose is built on [Effect](https://effect.website), a TypeScript library for de
 
 ## A Ramose call is a description, not a result
 
-`db.q(query)` does not fetch rows. It returns an *Effect value*: a description of a read, with the result type and the possible errors in its type. Nothing happens until something runs it. The same is true of `db.transact(…)`, `db.pull(…)` and `db.install()`.
+`db.query(query)` does not fetch rows. It returns an *Effect value*: a description of a read, with the result type and the possible errors in its type. Nothing happens until something runs it. The same is true of `db.transact(…)`, `db.pull(…)` and `db.install()`.
 
-A **write** is one all-or-nothing group of changes; Ramose calls it a transaction ([glossary](/concepts/glossary/#write)). That is why a write can be built in one place and run in another, and why a failed step stops the whole thing before anything is sent.
+A **write** is one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). That is why a write can be built in one place and run in another, and why a failed step stops the whole thing before anything is sent.
 
 ## In React, the hooks run it for you
 
@@ -64,8 +64,8 @@ export const moveIssue = (
   rank: number,
 ) =>
   db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.status, status);
-    yield* tx.add(issueId, Issue.rank, rank);
+    yield* tx.set(issueId, Issue.status, status);
+    yield* tx.set(issueId, Issue.rank, rank);
   });
 ```
 

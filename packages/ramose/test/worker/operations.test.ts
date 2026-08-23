@@ -20,7 +20,7 @@ const setTitle = Operation(
     output: Schema.Struct({ title: Schema.String }),
   },
   (op, input) => {
-    op.add(op.self, Movie.title, input.title);
+    op.set(op.self, Movie.title, input.title);
     return { title: input.title };
   },
 );
@@ -49,7 +49,7 @@ const createNamed = Operation(
   },
   (op, input) => {
     const e = op.entity();
-    e.add(User.name, input.name);
+    e.set(User.name, input.name);
     return {};
   },
 );

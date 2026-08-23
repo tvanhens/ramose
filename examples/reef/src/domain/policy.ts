@@ -32,7 +32,7 @@ const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.autho
 
 export const policy = Ramose.policy(
   {
-    catalog: Reef,
+    schema: Reef,
     principal: User.sub,
     classes: CLASSES,
     claims: Schema.Struct({
@@ -60,7 +60,7 @@ export const policy = Ramose.policy(
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.attr(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
     comment: {

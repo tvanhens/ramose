@@ -44,9 +44,9 @@ export const addTodoOp = Ramose.Operation(
   },
   (op, input) => {
     const t = op.entity();
-    t.add(Todo.title, input.title);
-    t.add(Todo.done, false);
-    t.add(Todo.createdAt, new Date());
+    t.set(Todo.title, input.title);
+    t.set(Todo.done, false);
+    t.set(Todo.createdAt, new Date());
     return {};
   },
 );
@@ -59,7 +59,7 @@ export const setDoneOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.add(op.self, Todo.done, input.done);
+    op.set(op.self, Todo.done, input.done);
     return {};
   },
 );
@@ -72,7 +72,7 @@ export const deleteTodoOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op) => {
-    op.retractEntity(op.self);
+    op.delete(op.self);
     return {};
   },
 );

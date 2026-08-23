@@ -60,7 +60,7 @@ describe("ramose.db(name, catalog) is pure", () => {
     expect(peer.calls).toEqual([]);
     expect(peer.sockets).toEqual([]);
     expect(db.name).toBe("movies");
-    expect(db.catalog).toBe(Movies);
+    expect(db.schema).toBe(Movies);
     expect(other.name).toBe("other");
     await c.dispose();
   });
@@ -72,7 +72,7 @@ describe("ramose.db(name, catalog) is pure", () => {
     await run(
       databases.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
 
@@ -95,11 +95,11 @@ describe("ramose.db(name, catalog) is pure", () => {
         const db = c.ramose.db(name, Movies);
 
         const operations: Array<Effect.Effect<unknown, DbError> | Promise<unknown>> = [
-          db.q(names),
+          db.query(names),
           db.pull({ id: 1 }, { name: User.name }),
           db.install(),
           db.effect.transact(function* (tx) {
-            yield* tx.retractEntity(1);
+            yield* tx.delete(1);
           }),
         ];
         for (const eff of operations) {
@@ -124,8 +124,8 @@ describe("writes are HTTPS, reads are not", () => {
     const report = await run(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
-        yield* ada.add(User.age, 36);
+        yield* ada.set(User.name, "Ada");
+        yield* ada.set(User.age, 36);
       }),
     );
 
@@ -149,7 +149,7 @@ describe("writes are HTTPS, reads are not", () => {
     const c = client(peer);
 
     expect(
-      await run(c.ramose.db("movies", Movies).q(names)),
+      await run(c.ramose.db("movies", Movies).query(names)),
     ).toEqual([]);
 
     expect(peer.calls).toEqual([]);
@@ -171,7 +171,7 @@ describe("writes are HTTPS, reads are not", () => {
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
 
-    const rows = await db.q(eids);
+    const rows = await db.query(eids);
     expect(rows).toEqual([{ id: 1001 }]);
     expect(await db.pull(rows[0]!, { name: User.name })).toEqual({
       name: "Ada",
@@ -197,12 +197,12 @@ describe("dbAfter is the read fence", () => {
     const { dbAfter } = await run(
       db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
 
-    await run(dbAfter.q(names));
-    await db.q(names);
+    await run(dbAfter.query(names));
+    await db.query(names);
 
     expect(peer.frameOps("q")).toEqual([]);
     expect(peer.frameOps("sync")).toHaveLength(1);
@@ -221,11 +221,11 @@ describe("dbAfter is the read fence", () => {
 
     const { dbAfter } = await run(
       db.effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
-    await run(dbAfter.q(names));
-    await db.q(names);
+    await run(dbAfter.query(names));
+    await db.query(names);
 
     expect(peer.calls[1].headers["x-ramose-min-t"]).toBe("30");
     expect(peer.calls[2].headers["x-ramose-min-t"]).toBeUndefined();
@@ -237,7 +237,7 @@ describe("dbAfter is the read fence", () => {
     const c = client(peer);
     const { dbAfter } = await run(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
     expect("transact" in dbAfter).toBe(false);
@@ -285,9 +285,9 @@ describe("the token", () => {
     });
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(1); }));
-    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(2); }));
-    await db.q(names);
+    await run(db.effect.transact(function* (tx) { yield* tx.delete(1); }));
+    await run(db.effect.transact(function* (tx) { yield* tx.delete(2); }));
+    await db.query(names);
 
     expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
       "Bearer token-2",
@@ -305,7 +305,7 @@ describe("the token", () => {
     const c = client(peer, { token: Effect.succeed(Redacted.make("")) });
     await run(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
     expect(peer.calls[0].headers.authorization).toBeUndefined();
@@ -334,7 +334,7 @@ describe("provisioning mistakes are defects", () => {
     const c = client(peer, { url: "https://peer.example.com/" });
     await run(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
     expect(peer.calls[0].url).toBe(
@@ -357,7 +357,7 @@ describe("failures arrive tagged, not thrown", () => {
     const c = client(peer);
     const e = await runFail(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
-        yield* tx.retractEntity(1);
+        yield* tx.delete(1);
       }),
     );
     expect(e._tag).toBe("TxRejected");
@@ -382,7 +382,7 @@ describe("failures arrive tagged, not thrown", () => {
     await run(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
       }),
     );
     expect(n).toBe(2);
@@ -405,7 +405,7 @@ describe("failures arrive tagged, not thrown", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ramose.db("movies", Movies).asOf(2).q(names))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).asOf(2).query(names))).toEqual([
       { name: "Ada" },
     ]);
     expect(n).toBe(2);
@@ -472,7 +472,7 @@ describe("failures arrive tagged, not thrown", () => {
     const e = await runFail(
       c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
+        yield* ada.set(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
       }),
     );
@@ -505,7 +505,7 @@ describe("the JSON transport", () => {
       c.ramose
         .db("movies", Movies)
         .asOf(1)
-        .q(Query.q(() => pipe(Query.entities(Movie), Query.is(Movie.released, when)))),
+        .query(Query.q(() => pipe(Query.entities(Movie), Query.is(Movie.released, when)))),
     );
 
     // on the wire: tagged, JSON-safe (pinned views still ride the socket)

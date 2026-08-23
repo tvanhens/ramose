@@ -11,20 +11,20 @@ import * as Schema from "effect/Schema";
 import type {
   Db,
   DbError,
-  Entity,
   Equal,
   Expect,
   Extends,
   ReadDb,
   Tx,
+  TxHandle,
   TxReport,
 } from "../../src/db/internal.ts";
-import { Attr, Namespace } from "../../src/db/internal.ts";
+import { Field, Entity } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
-const Tag = Namespace("tag", {
-  label: Attr(Schema.String),
+const Tag = Entity("tag", {
+  label: Field(Schema.String),
 });
 declare const db: Db<typeof Movies>;
 
@@ -32,11 +32,11 @@ declare const db: Db<typeof Movies>;
 
 const crossNs = db.effect.transact(function* (tx) {
   const ada = yield* tx.entity();
-  yield* ada.add(User.name, "Ada");
-  yield* ada.add(User.age, 36);
-  yield* ada.add(Meta.source, "import");
+  yield* ada.set(User.name, "Ada");
+  yield* ada.set(User.age, 36);
+  yield* ada.set(Meta.source, "import");
   // bag: Movie.title on a user handle is legal — do not close the world
-  yield* ada.add(Movie.title, "not a movie but types allow any ns");
+  yield* ada.set(Movie.title, "not a movie but types allow any ns");
 });
 type _crossNsReport = Expect<
   Equal<Effect.Success<typeof crossNs>, TxReport<typeof Movies>>
@@ -61,13 +61,13 @@ type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
 db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
   // @ts-expect-error unknown attr on the namespace
-  yield* e.add(User.nope, "x");
+  yield* e.set(User.nope, "x");
   // @ts-expect-error ident not in the catalog
-  yield* e.add({ ident: ":user/nope" } as const, "x");
+  yield* e.set({ ident: ":user/nope" } as const, "x");
   // @ts-expect-error namespace not in this catalog
-  yield* e.add(Tag.label, "x");
+  yield* e.set(Tag.label, "x");
   // @ts-expect-error unknown ident string
-  yield* tx.add(e, ":user/nope", "x");
+  yield* tx.set(e, ":user/nope", "x");
 });
 
 // ── wrong value type is a type error ───────────────────────────────────────
@@ -75,27 +75,27 @@ db.effect.transact(function* (tx) {
 db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
   // @ts-expect-error name is string, not number
-  yield* e.add(User.name, 42);
+  yield* e.set(User.name, 42);
   // @ts-expect-error year is number, not string
-  yield* e.add(Movie.year, "2016");
+  yield* e.set(Movie.year, "2016");
   // @ts-expect-error ident form: name is string, not number
-  yield* tx.add(e, ":user/name", 42);
+  yield* tx.set(e, ":user/name" as const, 42);
   // @ts-expect-error friends is a ref (number), not a string
-  yield* e.add(User.friends, "Ada");
+  yield* e.set(User.friends, "Ada");
 });
 
 // ── retract / retractEntity typecheck ──────────────────────────────────────
 
 const retracts = db.effect.transact(function* (tx) {
   const e = yield* tx.entity(1001);
-  yield* e.retract(User.age, 35);
-  yield* e.retract(User.name);
-  yield* e.retractEntity();
-  yield* tx.retract(e, User.friends, 1002);
-  yield* tx.retractEntity(e);
+  yield* e.remove(User.age, 35);
+  yield* e.remove(User.name);
+  yield* e.delete();
+  yield* tx.remove(e, User.friends, 1002);
+  yield* tx.delete(e);
   const byLookup = yield* tx.entity([User.name, "Ada"]);
-  yield* byLookup.add(Meta.source, "lookup");
-  yield* tx.add([":user/name", "Ada"], User.age, 36);
+  yield* byLookup.set(Meta.source, "lookup");
+  yield* tx.set([":user/name", "Ada"], User.age, 36);
 });
 type _retractReport = Expect<
   Equal<Effect.Success<typeof retracts>, TxReport<typeof Movies>>
@@ -119,10 +119,10 @@ type _dbNoTransact = Expect<
 type _hatchHasTransact = Expect<
   Equal<"transact" extends keyof (typeof db)["effect"] ? true : false, true>
 >;
-type _dbStillReads = Expect<Equal<"q" extends DbK ? true : false, true>>;
+type _dbStillReads = Expect<Equal<"query" extends DbK ? true : false, true>>;
 
 declare const view: ReadDb<typeof Movies>;
-void view.q;
+void view.query;
 // @ts-expect-error a read view has no transact
 view.transact;
 // @ts-expect-error a read view has no install
@@ -142,7 +142,7 @@ class ExtraLoad extends Data.TaggedError("ExtraLoad")<{}> {}
 
 const withExtra = db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
-  yield* e.add(User.name, "Ada");
+  yield* e.set(User.name, "Ada");
   return yield* Effect.fail(new ExtraLoad());
 });
 type _extraErr = Expect<Extends<ExtraLoad, Effect.Error<typeof withExtra>>>;
@@ -153,6 +153,6 @@ type _stillDb = Expect<Extends<DbError, Effect.Error<typeof withExtra>>>;
 type _handle = Expect<
   Extends<
     Effect.Success<ReturnType<Tx<typeof Movies>["entity"]>>,
-    Entity<typeof Movies>
+    TxHandle<typeof Movies>
   >
 >;

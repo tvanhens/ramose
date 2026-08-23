@@ -23,12 +23,12 @@ import {
   toWireDatom,
 } from "../../src/internal/core/index.ts";
 import {
-  Attr,
-  Catalog,
+  Field,
+  Schema as DbSchema,
   Databases,
   EidOf,
   Long,
-  Namespace,
+  Entity,
   NotOne,
   ParamError,
   Q,
@@ -161,32 +161,32 @@ const inProcessPeer = async () => {
 
 // ── the fixture catalog (the design record's running example) ──────────────
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  tags: Attr(Schema.String, { cardinality: "many" }),
+const User = Entity("user", {
+  name: Field(Schema.String, { unique: "upsert" }),
+  age: Field(Long),
+  tags: Field(Schema.String, { cardinality: "many" }),
 });
 
-const Issue = Namespace("issue", {
-  title: Attr(Schema.String),
-  done: Attr(Schema.Boolean),
-  rank: Attr(Long),
-  owner: Attr(Ref(() => User)),
+const Issue = Entity("issue", {
+  title: Field(Schema.String),
+  done: Field(Schema.Boolean),
+  rank: Field(Long),
+  owner: Field(Ref(() => User)),
 });
 
-const Comment = Namespace("comment", {
-  issue: Attr(Ref(() => Issue)),
-  author: Attr(Ref(() => User)),
-  text: Attr(Schema.String),
+const Comment = Entity("comment", {
+  issue: Field(Ref(() => Issue)),
+  author: Field(Ref(() => User)),
+  text: Field(Schema.String),
 });
 
-const Team = Namespace("team", {
-  name: Attr(Schema.String),
-  members: Attr(Ref(() => User), { cardinality: "many" }),
-  parent: Attr(Ref.self),
+const Team = Entity("team", {
+  name: Field(Schema.String),
+  members: Field(Ref(() => User), { cardinality: "many" }),
+  parent: Field(Ref.self),
 });
 
-const Tracker = Catalog({ user: User, issue: Issue, comment: Comment, team: Team });
+const Tracker = DbSchema({ user: User, issue: Issue, comment: Comment, team: Team });
 
 /** Seed the running example; answers the eids the tests bind. */
 const seed = async (db: Db<typeof Tracker>) => {
@@ -195,49 +195,49 @@ const seed = async (db: Db<typeof Tracker>) => {
   await run(
     db.effect.transact(function* (tx) {
       const ada = yield* tx.entity();
-      yield* ada.add(User.name, "Ada");
-      yield* ada.add(User.age, 36);
-      yield* ada.add(User.tags, "alpha");
-      yield* ada.add(User.tags, "beta");
-      yield* ada.add(User.tags, "azure");
+      yield* ada.set(User.name, "Ada");
+      yield* ada.set(User.age, 36);
+      yield* ada.set(User.tags, "alpha");
+      yield* ada.set(User.tags, "beta");
+      yield* ada.set(User.tags, "azure");
       const grace = yield* tx.entity();
-      yield* grace.add(User.name, "Grace");
-      yield* grace.add(User.age, 45);
-      yield* grace.add(User.tags, "gamma");
+      yield* grace.set(User.name, "Grace");
+      yield* grace.set(User.age, 45);
+      yield* grace.set(User.tags, "gamma");
 
       const ship = yield* tx.entity();
-      yield* ship.add(Issue.title, "ship the release");
-      yield* ship.add(Issue.done, false);
-      yield* ship.add(Issue.rank, 3);
-      yield* ship.add(Issue.owner, ada.eid as never);
+      yield* ship.set(Issue.title, "ship the release");
+      yield* ship.set(Issue.done, false);
+      yield* ship.set(Issue.rank, 3);
+      yield* ship.set(Issue.owner, ada.eid as never);
       const fix = yield* tx.entity();
-      yield* fix.add(Issue.title, "fix the flake");
-      yield* fix.add(Issue.done, false);
-      yield* fix.add(Issue.rank, 1);
-      yield* fix.add(Issue.owner, grace.eid as never);
+      yield* fix.set(Issue.title, "fix the flake");
+      yield* fix.set(Issue.done, false);
+      yield* fix.set(Issue.rank, 1);
+      yield* fix.set(Issue.owner, grace.eid as never);
       const docs = yield* tx.entity();
-      yield* docs.add(Issue.title, "archive the docs");
-      yield* docs.add(Issue.done, true);
-      yield* docs.add(Issue.rank, 2);
-      yield* docs.add(Issue.owner, ada.eid as never);
+      yield* docs.set(Issue.title, "archive the docs");
+      yield* docs.set(Issue.done, true);
+      yield* docs.set(Issue.rank, 2);
+      yield* docs.set(Issue.owner, ada.eid as never);
 
       // Ada commented on "fix the flake"; nobody commented on "ship"
       const c1 = yield* tx.entity();
-      yield* c1.add(Comment.issue, fix.eid as never);
-      yield* c1.add(Comment.author, ada.eid as never);
-      yield* c1.add(Comment.text, "on it");
+      yield* c1.set(Comment.issue, fix.eid as never);
+      yield* c1.set(Comment.author, ada.eid as never);
+      yield* c1.set(Comment.text, "on it");
 
       // Lin has no age — the `missing` combinator's witness
       const lin = yield* tx.entity();
-      yield* lin.add(User.name, "Lin");
+      yield* lin.set(User.name, "Lin");
 
       const root = yield* tx.entity();
-      yield* root.add(Team.name, "root");
-      yield* root.add(Team.members, ada.eid as never);
+      yield* root.set(Team.name, "root");
+      yield* root.set(Team.members, ada.eid as never);
       const eng = yield* tx.entity();
-      yield* eng.add(Team.name, "eng");
-      yield* eng.add(Team.parent, root.eid as never);
-      yield* eng.add(Team.members, grace.eid as never);
+      yield* eng.set(Team.name, "eng");
+      yield* eng.set(Team.parent, root.eid as never);
+      yield* eng.set(Team.members, grace.eid as never);
 
     }),
   );
@@ -253,7 +253,7 @@ const seed = async (db: Db<typeof Tracker>) => {
     [Issue.title, { "ship the release": "ship", "fix the flake": "fix", "archive the docs": "docs" }],
     [Team.name, { root: "root", eng: "eng" }],
   ] as const) {
-    const rows = (await db.q(byName(attr))) as unknown as readonly {
+    const rows = (await db.query(byName(attr))) as unknown as readonly {
       id: { id: number };
       name: string;
     }[];
@@ -408,7 +408,7 @@ describe("filter by entity id", () => {
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const rows = await db.q(byConst);
+    const rows = await db.query(byConst);
     expect(rows).toEqual([{ id: ids.ship!.id as never, title: "ship the release" }]);
 
     await peer.dispose();
@@ -433,14 +433,14 @@ describe("filter by entity id", () => {
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const isRows = await db.q(isParam, { id: ids.fix as never });
-    const byIdRows = await db.q(byIdParam, { id: ids.fix as never });
+    const isRows = await db.query(isParam, { id: ids.fix as never });
+    const byIdRows = await db.query(byIdParam, { id: ids.fix as never });
     expect(isRows).toEqual([{ id: ids.fix!.id as never, title: "fix the flake" }]);
     expect(byIdRows).toEqual(isRows);
 
     const commentId = (
       (await run(
-        db.q(
+        db.query(
           Query.q(function* () {
             const f = yield* Q.fact(Q._, Comment.text);
             return { id: f.e, text: f.v };
@@ -456,27 +456,27 @@ describe("filter by entity id", () => {
         Query.select({ id: Comment.id, text: Comment.text }),
       ),
     );
-    const comments = await db.q(byComment, { root: commentId as never });
+    const comments = await db.query(byComment, { root: commentId as never });
     expect(comments).toEqual([{ id: commentId.id as never, text: "on it" }]);
 
-    const miss = await db.q(byIdParam, { id: commentId as never });
+    const miss = await db.query(byIdParam, { id: commentId as never });
     expect(miss).toEqual([]);
 
     await peer.dispose();
   });
 });
 
-describe("db.q end to end", () => {
+describe("db.query end to end", () => {
   test("the inbox: quantifier, params, order, limit", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
     // Ada commented on "fix the flake", so her inbox is only "ship ..."
-    const ada = await db.q(inboxPipe, { me: ids.ada as never });
+    const ada = await db.query(inboxPipe, { me: ids.ada as never });
     expect(ada.map((r) => r.title)).toEqual(["ship the release"]);
     // Grace commented on nothing: both open issues, ordered by title
-    const grace = await db.q(inboxPipe, { me: ids.grace as never });
+    const grace = await db.query(inboxPipe, { me: ids.grace as never });
     expect(grace.map((r) => r.title)).toEqual(["fix the flake", "ship the release"]);
     // rows carry the branded id cell
     expect(ada[0]!.id).toBe(ids.ship!.id as never);
@@ -495,7 +495,7 @@ describe("db.q end to end", () => {
       const title = yield* Q.fact(owned.e, Issue.title);
       return { issue: owned.e, title: title.v, owner: name.v };
     });
-    const rows = await db.q(owners);
+    const rows = await db.query(owners);
     const byTitle = [...rows].sort((a, b) => String(a.title).localeCompare(String(b.title)));
     expect(byTitle.map((r) => [r.title, r.owner])).toEqual([
       ["archive the docs", "Ada"],
@@ -519,7 +519,7 @@ describe("db.q end to end", () => {
       yield* Q.or(Q.startsWith(t.v, "ship"), Q.startsWith(t.v, "fix"));
       return { title: t.v };
     });
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     expect(rows.map((r) => r.title).sort()).toEqual(["fix the flake", "ship the release"]);
 
     await peer.dispose();
@@ -538,7 +538,7 @@ describe("db.q end to end", () => {
         Query.select({ name: User.name }),
       ),
     );
-    const rows = await db.q(ownersOfOpen);
+    const rows = await db.query(ownersOfOpen);
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
 
     const commenters = Query.q({ issue: EidOf(Issue) }, function* (p) {
@@ -547,7 +547,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(author, User.name);
       return { name: name.v };
     });
-    const who = await db.q(commenters, { issue: ids.fix as never });
+    const who = await db.query(commenters, { issue: ids.fix as never });
     expect(who).toEqual([{ name: "Ada" }]);
 
     await peer.dispose();
@@ -568,7 +568,7 @@ describe("db.q end to end", () => {
     const q = Query.q(() =>
       pipe(Query.entities(Issue), rankAbove(1), Query.select({ title: Issue.title, rank: Issue.rank })),
     );
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     expect(rows.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
 
     await peer.dispose();
@@ -599,9 +599,9 @@ describe("db.q end to end", () => {
       return { name: name.v };
     });
 
-    const root = await db.q(membersOf, { team: ids.root as never });
+    const root = await db.query(membersOf, { team: ids.root as never });
     expect(root.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
-    const eng = await db.q(membersOf, { team: ids.eng as never });
+    const eng = await db.query(membersOf, { team: ids.eng as never });
     expect(eng.map((r) => r.name)).toEqual(["Grace"]);
 
     await peer.dispose();
@@ -625,7 +625,7 @@ describe("db.q end to end", () => {
     const def = (query.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === "issue/ownerOf")!;
     expect((def[0] as unknown[]).length).toBe(3);
 
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
 
     await peer.dispose();
@@ -646,7 +646,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return Q.row(cols, { owner: name.v });
     });
-    const rows = await db.q(withOwner);
+    const rows = await db.query(withOwner);
     const sorted = [...rows].sort((a, b) => String(a.title).localeCompare(String(b.title)));
     expect(sorted).toEqual([
       { title: "fix the flake", owner: "Grace" },
@@ -658,7 +658,7 @@ describe("db.q end to end", () => {
       const f = yield* Q.fact(e);
       return { lastUpdated: Q.max(f.t) };
     });
-    const enriched = await db.q(withLastUpdated(openIssues));
+    const enriched = await db.query(withLastUpdated(openIssues));
     expect(enriched).toHaveLength(2);
     for (const r of enriched) {
       expect(typeof r.lastUpdated).toBe("number");
@@ -691,9 +691,9 @@ describe("db.q end to end", () => {
       return Q.rows({ team: Q.pull(team, { name: Team.name }), esc: cols });
     });
 
-    const ada = await db.q(teamDigest, { me: ids.ada as never });
+    const ada = await db.query(teamDigest, { me: ids.ada as never });
     expect(ada).toEqual([{ team: { name: "root" }, esc: { title: "ship the release" } }] as never);
-    const grace = await db.q(teamDigest, { me: ids.grace as never });
+    const grace = await db.query(teamDigest, { me: ids.grace as never });
     expect(grace).toEqual([{ team: { name: "eng" }, esc: { title: "fix the flake" } }] as never);
 
     await peer.dispose();
@@ -711,7 +711,7 @@ describe("db.q end to end", () => {
       const owner = yield* Query.follow(Issue.owner)(e);
       yield* Q.fact(owner, User.name, "Ada");
     })(openIssues);
-    const rows = await db.q(adaOnly);
+    const rows = await db.query(adaOnly);
     expect(rows).toEqual([{ title: "ship the release" }] as never);
 
     await peer.dispose();
@@ -728,7 +728,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return { owner: name.v, n: Q.count(issue) };
     });
-    const rows = await db.q(perOwner);
+    const rows = await db.query(perOwner);
     const sorted = [...rows].sort((a, b) => String(a.owner).localeCompare(String(b.owner)));
     expect(sorted).toEqual([
       { owner: "Ada", n: 2 },
@@ -747,10 +747,10 @@ describe("db.q end to end", () => {
     await run(
       db.effect.transact(function* (tx) {
         const dupe = yield* tx.entity();
-        yield* dupe.add(Issue.title, "the duplicate rank");
-        yield* dupe.add(Issue.done, true);
-        yield* dupe.add(Issue.rank, 2);
-        yield* dupe.add(Issue.owner, ids.ada!.id as never);
+        yield* dupe.set(Issue.title, "the duplicate rank");
+        yield* dupe.set(Issue.done, true);
+        yield* dupe.set(Issue.rank, 2);
+        yield* dupe.set(Issue.owner, ids.ada!.id as never);
       }),
     );
 
@@ -760,7 +760,7 @@ describe("db.q end to end", () => {
       return { total: Q.sum(r.v), n: Q.count(r.v), distinct: Q.countDistinct(r.v) };
     });
     // ranks are 3, 1, 2, 2
-    expect(await db.q(totals)).toEqual([{ total: 8, n: 4, distinct: 3 }] as never);
+    expect(await db.query(totals)).toEqual([{ total: 8, n: 4, distinct: 3 }] as never);
 
     // the fact's e-position rides in :with; an aggregated entity var needs none
     const lowered = lowerQueryObject(totals);
@@ -780,7 +780,7 @@ describe("db.q end to end", () => {
       const r = yield* Q.fact(issue, Issue.rank);
       return { done: d.v, total: Q.sum(r.v) };
     });
-    const rows = await db.q(perDone);
+    const rows = await db.query(perDone);
     const sorted = [...rows].sort((a, b) => Number(a.done) - Number(b.done));
     expect(sorted).toEqual([
       { done: false, total: 4 },
@@ -802,7 +802,7 @@ describe("db.q end to end", () => {
       const r = yield* Q.fact(issue, Issue.rank);
       return { n: Q.count(issue), total: Q.sum(r.v), top: Q.max(r.v), mean: Q.avg(r.v) };
     });
-    expect(await db.q(stats)).toEqual([
+    expect(await db.query(stats)).toEqual([
       { n: 0, total: 0, top: null, mean: null },
     ] as never);
 
@@ -812,7 +812,7 @@ describe("db.q end to end", () => {
       yield* Query.is(Issue.title, "no such issue")(issue);
       return { n: Q.count(issue) };
     });
-    expect(await db.q(count.one())).toEqual({ n: 0 } as never);
+    expect(await db.query(count.one())).toEqual({ n: 0 } as never);
 
     // a projection with a group key correctly stays []: no rows, no groups
     const grouped = Query.q(function* () {
@@ -821,7 +821,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v, n: Q.count(issue) };
     });
-    expect(await db.q(grouped)).toEqual([]);
+    expect(await db.query(grouped)).toEqual([]);
 
     // a non-empty match set is untouched by the synthesis
     const open = Query.q(function* () {
@@ -829,7 +829,7 @@ describe("db.q end to end", () => {
       yield* Query.is(Issue.done, false)(issue);
       return { n: Q.count(issue) };
     });
-    expect(await db.q(open)).toEqual([{ n: 2 }] as never);
+    expect(await db.query(open)).toEqual([{ n: 2 }] as never);
 
     await peer.dispose();
   });
@@ -846,12 +846,12 @@ describe("db.q end to end", () => {
         Query.select({ title: Issue.title }),
       ),
     );
-    expect(await db.q(inList)).toEqual([{ title: "fix the flake" }] as never);
+    expect(await db.query(inList)).toEqual([{ title: "fix the flake" }] as never);
 
     const ageless = Query.q(() =>
       pipe(Query.entities(User), Query.missing(User.age), Query.select({ name: User.name })),
     );
-    expect(await db.q(ageless)).toEqual([{ name: "Lin" }] as never);
+    expect(await db.query(ageless)).toEqual([{ name: "Lin" }] as never);
 
     // every comment is Ada's — vacuously true of uncommented issues
     const allAda = Query.q(function* () {
@@ -865,7 +865,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    const rows = await db.q(allAda);
+    const rows = await db.query(allAda);
     expect(rows.map((r) => r.title).sort()).toEqual([
       "archive the docs",
       "fix the flake",
@@ -892,21 +892,21 @@ describe("db.q end to end", () => {
     expect(lowerQueryObject(byTitle.one(), { title: "x" }).query.limit).toBe(1);
     expect(lowerQueryObject(byTitle.oneOrFail(), { title: "x" }).query.limit).toBe(2);
 
-    const hit = await db.q(byTitle.one(), { title: "ship the release" });
+    const hit = await db.query(byTitle.one(), { title: "ship the release" });
     expect(hit).toEqual({ title: "ship the release", rank: 3 } as never);
-    expect(await db.q(byTitle.one(), { title: "nope" })).toBeNull();
+    expect(await db.query(byTitle.one(), { title: "nope" })).toBeNull();
 
-    const exact = await db.q(byTitle.oneOrFail(), { title: "fix the flake" });
+    const exact = await db.query(byTitle.oneOrFail(), { title: "fix the flake" });
     expect(exact.rank).toBe(1);
 
-    const missing = await runFail(db.q(byTitle.oneOrFail(), { title: "nope" }));
+    const missing = await runFail(db.query(byTitle.oneOrFail(), { title: "nope" }));
     expect(missing).toBeInstanceOf(NotOne);
     expect((missing as NotOne).found).toBe(0);
 
     const openIssues = Query.q(() =>
       pipe(Query.entities(Issue), Query.is(Issue.done, false), Query.select({ title: Issue.title })),
     );
-    const two = await runFail(db.q(openIssues.oneOrFail()));
+    const two = await runFail(db.query(openIssues.oneOrFail()));
     expect((two as NotOne).found).toBe(2);
 
     await peer.dispose();
@@ -926,11 +926,11 @@ describe("db.q end to end", () => {
       ),
     );
 
-    const p1 = await db.q(byRank.after(null));
+    const p1 = await db.query(byRank.after(null));
     expect(p1.rows.map((r) => r.rank)).toEqual([1, 2]);
     expect(p1.cursor).not.toBeNull();
 
-    const p2 = await db.q(byRank.after(p1.cursor));
+    const p2 = await db.query(byRank.after(p1.cursor));
     expect(p2.rows.map((r) => r.rank)).toEqual([3]);
     // shorter than its limit: the page is over
     expect(p2.cursor).toBeNull();
@@ -967,9 +967,9 @@ describe("db.q end to end", () => {
       ),
     );
 
-    const all = await db.q(board, {});
+    const all = await db.query(board, {});
     expect(all).toHaveLength(3);
-    const adas = await db.q(board, { owner: ids.ada as never });
+    const adas = await db.query(board, { owner: ids.ada as never });
     expect(adas.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
 
     // gate off, the clause lowers to nothing
@@ -983,8 +983,8 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    expect(await db.q(listing, { onlyOpen: true })).toHaveLength(2);
-    expect(await db.q(listing, { onlyOpen: false })).toHaveLength(3);
+    expect(await db.query(listing, { onlyOpen: true })).toHaveLength(2);
+    expect(await db.query(listing, { onlyOpen: false })).toHaveLength(3);
 
     // an unbound optional referenced outside its when is still a ParamError
     const loose = Query.q({ owner: optional(EidOf(User)) }, (p) =>
@@ -1013,10 +1013,10 @@ describe("db.q end to end", () => {
     const report = await run(
       db.effect.transact(function* (tx) {
         const late = yield* tx.entity();
-        yield* late.add(Issue.title, "the late arrival");
-        yield* late.add(Issue.done, false);
-        yield* late.add(Issue.rank, 9);
-        yield* late.add(Issue.owner, ids.ada!.id as never);
+        yield* late.set(Issue.title, "the late arrival");
+        yield* late.set(Issue.done, false);
+        yield* late.set(Issue.rank, 9);
+        yield* late.set(Issue.owner, ids.ada!.id as never);
       }),
     );
 
@@ -1026,7 +1026,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    const rows = await db.q(recent);
+    const rows = await db.query(recent);
     expect(rows.map((r) => r.title)).toEqual(["the late arrival"]);
 
     await peer.dispose();
@@ -1081,7 +1081,7 @@ describe("post-group filters (:having)", () => {
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    const rows = await db.q(busyOwners);
+    const rows = await db.query(busyOwners);
     expect(rows).toEqual([{ owner: ids.ada, n: 2 }] as never);
 
     // the same filter over a value group key
@@ -1093,7 +1093,7 @@ describe("post-group filters (:having)", () => {
       yield* Q.gt(n, 1);
       return { owner: name.v, n };
     });
-    expect(await db.q(byName)).toEqual([{ owner: "Ada", n: 2 }] as never);
+    expect(await db.query(byName)).toEqual([{ owner: "Ada", n: 2 }] as never);
 
     await peer.dispose();
   });
@@ -1110,8 +1110,8 @@ describe("post-group filters (:having)", () => {
       yield* Q.gte(n, p.min);
       return { owner, n };
     });
-    expect(await db.q(atLeast, { min: 2 })).toEqual([{ owner: ids.ada, n: 2 }] as never);
-    expect((await db.q(atLeast, { min: 1 })).length).toBe(2);
+    expect(await db.query(atLeast, { min: 2 })).toEqual([{ owner: ids.ada, n: 2 }] as never);
+    expect((await db.query(atLeast, { min: 1 })).length).toBe(2);
 
     await peer.dispose();
   });
@@ -1130,7 +1130,7 @@ describe("post-group filters (:having)", () => {
       return { n };
     });
     // count over the empty set is 0, and 0 < 5 keeps the one row
-    expect(await db.q(none)).toEqual([{ n: 0 }] as never);
+    expect(await db.query(none)).toEqual([{ n: 0 }] as never);
 
     const some = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
@@ -1140,7 +1140,7 @@ describe("post-group filters (:having)", () => {
       return { n };
     });
     // …and 0 > 0 drops it, exactly as the peer would have
-    expect(await db.q(some)).toEqual([]);
+    expect(await db.query(some)).toEqual([]);
 
     await peer.dispose();
   });
@@ -1264,9 +1264,9 @@ describe("per-element pull filters (select options)", () => {
     await run(
       db.effect.transact(function* (tx) {
         const c = yield* tx.entity();
-        yield* c.add(Comment.issue, ids.fix!.id as never);
-        yield* c.add(Comment.author, ids.grace!.id as never);
-        yield* c.add(Comment.text, "second take");
+        yield* c.set(Comment.issue, ids.fix!.id as never);
+        yield* c.set(Comment.author, ids.grace!.id as never);
+        yield* c.set(Comment.text, "second take");
       }),
     );
 
@@ -1287,7 +1287,7 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     const byTitle = new Map(rows.map((r) => [r.title, r.adaSays.map((c) => c.text)]));
     // the Grace comment is dropped from the collection, never the row
     expect(byTitle.get("fix the flake")).toEqual(["on it"]);
@@ -1312,7 +1312,7 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     const byName = new Map(rows.map((r) => [r.name, r.seniors.map((m) => m.name)]));
     expect(byName.get("root")).toEqual([]); // Ada is 36
     expect(byName.get("eng")).toEqual(["Grace"]); // Grace is 45
@@ -1332,7 +1332,7 @@ describe("per-element pull filters (select options)", () => {
         aTags: values(User.tags, { where: [(v) => Q.startsWith(v, "a")] }),
       });
     });
-    const rows = await db.q(q);
+    const rows = await db.query(q);
     const byName = new Map(rows.map((r) => [r.name, [...r.aTags].sort()]));
     expect(byName.get("Ada")).toEqual(["alpha", "azure"]);
     expect(byName.get("Grace")).toEqual([]);
@@ -1362,10 +1362,10 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await db.q(q, { who: ids.ada as never });
+    const rows = await db.query(q, { who: ids.ada as never });
     const fix = rows.find((r) => r.title === "fix the flake")!;
     expect(fix.theirs).toEqual([{ text: "on it" }] as never);
-    const grace = await db.q(q, { who: ids.grace as never });
+    const grace = await db.query(q, { who: ids.grace as never });
     expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
 
     await peer.dispose();

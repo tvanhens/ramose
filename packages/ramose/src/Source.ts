@@ -15,7 +15,7 @@
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import {
-  type AnyCatalog,
+  type AnySchema,
   type DatabasesShape,
   type Db,
   type FetchLike,
@@ -39,14 +39,14 @@ export interface ServerSource {
 
 /** @internal One method, because a database is a name — and this half cannot write. */
 export interface ReadDatabasesShape {
-  db<C extends AnyCatalog>(name: string, catalog: C): ReadDb<C>;
+  db<C extends AnySchema>(name: string, schema: C): ReadDb<C>;
 }
 
 /** @internal The client's read half: no `transact`, no `install`. */
-export const readOnly = <C extends AnyCatalog>(db: Db<C>): ReadDb<C> => ({
+export const readOnly = <C extends AnySchema>(db: Db<C>): ReadDb<C> => ({
   name: db.name,
-  catalog: db.catalog,
-  q: db.q,
+  schema: db.schema,
+  query: db.query,
   live: db.live,
   pull: db.pull,
   livePull: db.livePull,
@@ -56,8 +56,8 @@ export const readOnly = <C extends AnyCatalog>(db: Db<C>): ReadDb<C> => ({
   // read hatch only — strip `transact` / `install` / `run` / `principal`
   effect: {
     name: db.effect.name,
-    catalog: db.effect.catalog,
-    q: db.effect.q,
+    schema: db.effect.schema,
+    query: db.effect.query,
     live: db.effect.live,
     pull: db.effect.pull,
     livePull: db.effect.livePull,

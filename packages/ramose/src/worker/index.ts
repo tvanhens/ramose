@@ -40,8 +40,8 @@ import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { allowedOrigin, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
-import { type PeerOptions, prepareOperation } from "./operations.ts";
-export type { PeerOptions } from "./operations.ts";
+import { type ServerOptions, prepareOperation } from "./operations.ts";
+export type { ServerOptions } from "./operations.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
@@ -237,7 +237,7 @@ async function withProvisioned(
 }
 
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
-async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, peer: PeerOptions): Promise<Response> {
+async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, peer: ServerOptions): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
   const policy = authState(env).policy;
@@ -491,7 +491,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
 }
 
 /** The request, as one Effect: `Response` on success, a tagged failure otherwise. */
-const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo, peer: PeerOptions): Effect.Effect<Response, RamoseError> =>
+const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo, peer: ServerOptions): Effect.Effect<Response, RamoseError> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
@@ -534,7 +534,7 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo,
 const runFetch = (
   request: Request,
   env: RamoseEnv,
-  peer: PeerOptions,
+  peer: ServerOptions,
 ): Promise<Response> => {
   const t0 = Date.now();
   const info: RequestInfo = { db: "-", path: "-", route: "other" };
@@ -552,10 +552,10 @@ const runFetch = (
  * Build a peer Worker over a bundled operations registry.
  * `writes: "operations"` rejects raw `/transact` for non-admin tokens.
  */
-export const createPeer = (options: PeerOptions = {}) => ({
+export const createServer = (options: ServerOptions = {}) => ({
   async fetch(request: Request, env: RamoseEnv, _ctx?: ExecutionContext): Promise<Response> {
     return runFetch(request, env, options);
   },
 });
 
-export default createPeer();
+export default createServer();

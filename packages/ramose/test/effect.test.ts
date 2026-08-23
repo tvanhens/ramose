@@ -23,9 +23,9 @@ describe("ramose/effect", () => {
   });
 
   test("pipe from the escape hatch builds a Query.q value", () => {
-    const Todo = Ramose.Namespace("todo", {
-      title: Ramose.Attr(Schema.String),
-      done: Ramose.Attr(Schema.Boolean),
+    const Todo = Ramose.Entity("todo", {
+      title: Ramose.Field(Schema.String),
+      done: Ramose.Field(Schema.Boolean),
     });
     const todos = Ramose.Query.q(() =>
       pipe(

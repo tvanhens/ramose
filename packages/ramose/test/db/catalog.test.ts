@@ -6,9 +6,9 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
-  Attr,
-  Catalog,
-  Namespace,
+  Field,
+  Schema as DbSchema,
+  Entity,
   schemaTx,
   txBuilder,
   again,
@@ -18,18 +18,18 @@ import {
   Ref,
 } from "../../src/db/internal.ts";
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity", doc: "display name" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-  bestFriend: Attr(Ref),
+const User = Entity("user", {
+  name: Field(Schema.String, { unique: "upsert", doc: "display name" }),
+  age: Field(Long),
+  friends: Field(Ref.self, { cardinality: "many" }),
+  bestFriend: Field(Ref.self),
 });
 
-const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
+const Meta = Entity("meta", {
+  source: Field(Schema.String),
 });
 
-const Movies = Catalog({ user: User, meta: Meta });
+const Movies = DbSchema({ user: User, meta: Meta });
 
 describe("schemaTx", () => {
   test("lowers to ident datom maps (separate ensure tx)", () => {
@@ -72,14 +72,14 @@ describe("transaction builder", () => {
     Effect.runSync(
       Effect.gen(function* () {
         const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
-        yield* ada.add(User.age, 36);
-        yield* ada.add(Meta.source, "import");
-        yield* ada.retract(User.age, 35);
-        yield* tx.add(1001, User.friends, 1002);
-        yield* tx.retractEntity(1001);
+        yield* ada.set(User.name, "Ada");
+        yield* ada.set(User.age, 36);
+        yield* ada.set(Meta.source, "import");
+        yield* ada.remove(User.age, 35);
+        yield* tx.set(1001, User.friends, 1002);
+        yield* tx.delete(1001);
         const byLookup = yield* tx.entity([User.name, "Ada"]);
-        yield* byLookup.add(Meta.source, "lookup");
+        yield* byLookup.set(Meta.source, "lookup");
       }),
     );
     expect(tx.spec.ops).toEqual([
@@ -91,7 +91,7 @@ describe("transaction builder", () => {
       [":db/retractEntity", 1001],
       [":db/add", [":user/name", "Ada"], ":meta/source", "lookup"],
     ]);
-    expect(tx.catalog).toBe(Movies);
+    expect(tx.schema).toBe(Movies);
   });
 });
 
@@ -199,10 +199,10 @@ describe("reshapePullResult", () => {
     ).toEqual({ friends: [] });
   });
 
-  const Node = Namespace("node", {
-    label: Attr(Schema.String),
-    next: Attr(Ref.self),
-    kids: Attr(Ref.self, { cardinality: "many" }),
+  const Node = Entity("node", {
+    label: Field(Schema.String),
+    next: Field(Ref.self),
+    kids: Field(Ref.self, { cardinality: "many" }),
   });
 
   test("IR stub remaps to the shape's id key and is not dropped", () => {

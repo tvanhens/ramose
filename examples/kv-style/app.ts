@@ -71,10 +71,10 @@ export const App = Cloudflare.Worker(
 
         const { t, dbAfter } = yield* tenant.effect.transact(function* (tx) {
           const ada = yield* tx.entity();
-          yield* ada.add(User.name, "Ada");
+          yield* ada.set(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.effect.q(namesQuery);
+        const names = yield* dbAfter.effect.query(namesQuery);
         return yield* HttpServerResponse.json({
           tenant: tenantId,
           t,
@@ -103,22 +103,22 @@ export const App = Cloudflare.Worker(
 
         const report = yield* db.effect.transact(function* (tx) {
           const ada = yield* tx.entity();
-          yield* ada.add(User.name, "Ada");
+          yield* ada.set(User.name, "Ada");
         });
 
         // Read your own write: `dbAfter` is the same db floored at `report.t`,
         // so a replica that has not caught up refetches its basis. No `sync`,
         // no second round trip, no public `minT`.
-        const nameRows = yield* report.dbAfter.effect.q(namesQuery);
+        const nameRows = yield* report.dbAfter.effect.query(namesQuery);
         const names = nameRows.map((r) => r.name);
 
         // …and the same query as of a past transaction. `asOf` is pure.
-        const beforeRows = yield* db.asOf(report.t - 1).effect.q(namesQuery);
+        const beforeRows = yield* db.asOf(report.t - 1).effect.query(namesQuery);
         const before = beforeRows.map((r) => r.name);
 
         // Entity ids come back from `select({ id: User.id })`; pulling one is
         // `db.pull` — a missing required field is `null`.
-        const rows = yield* report.dbAfter.effect.q(idsQuery);
+        const rows = yield* report.dbAfter.effect.query(idsQuery);
         const ada =
           rows.length === 0
             ? null
