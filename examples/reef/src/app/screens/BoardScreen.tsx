@@ -17,7 +17,6 @@ import {
   useTransact,
 } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import * as Effect from "effect/Effect";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   boardQuery,
@@ -238,7 +237,7 @@ export const BoardScreen = ({
 
   useEffect(() => {
     let cancelled = false;
-    void Effect.runPromise(db.principal()).then(
+    void db.principal().then(
       (who) => {
         if (cancelled) return;
         setMyEid(who.eid?.id);

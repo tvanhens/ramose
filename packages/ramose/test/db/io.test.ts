@@ -42,9 +42,17 @@ const adaId = Query.q(function* () {
   return user;
 });
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 interface Reply {
   status: number;
@@ -199,12 +207,12 @@ describe("install → transact → q → pull", () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
 
-    const installed = await run(db.install());
+    const installed = await db.install();
     expect(installed.t).toBeGreaterThan(0);
     expect(peer.calls[0].url).toBe("https://peer.local/db/movies/transact");
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         yield* ada.add(User.age, 36);
@@ -251,7 +259,7 @@ describe("install → transact → q → pull", () => {
     expect(pulled!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 
     // the ident-keyed escape hatch
-    const soup = await run(db.pull(ada, [User.name, User.age] as const));
+    const soup = await db.pull(ada, [User.name, User.age] as const);
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
@@ -268,28 +276,28 @@ describe("install → transact → q → pull", () => {
   test("install is idempotent — the second one is the same upsert", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    const first = await run(db.install());
-    const second = await run(db.install());
+    const first = await db.install();
+    const second = await db.install();
     expect(second.t).toBeGreaterThan(first.t);
     expect(peer.calls[1].body.tx).toEqual(peer.calls[0].body.tx);
 
     // and the schema is usable either way round
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
     );
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
     await peer.dispose();
   });
 
   test("`.select` pulls in the query — one round trip, one row per entity", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const { dbAfter } = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         const bob = yield* tx.entity();
@@ -317,9 +325,9 @@ describe("views", () => {
   test("asOf pins the past, history sees the retraction, and neither can write", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const first = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -342,9 +350,9 @@ describe("views", () => {
   test("a view does not mutate the db it came from", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const past = db.asOf(1);
-    await run(db.q(names));
+    await db.q(names);
     await run(past.q(names));
     expect(peer.frames.filter((f) => f.op === "q").map((f) => f.asOf)).toEqual([1]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
@@ -356,15 +364,15 @@ describe("the read fence is what dbAfter carries", () => {
   test("a session overlay reads the write locally; asOf still pins the past", async () => {
     const peer = await inProcessPeer({ staleT: 1 });
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
     );
 
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
     expect(await run(report.dbAfter.q(names))).toEqual([{ name: "Ada" }]);
     expect(await run(db.asOf(1).q(names))).toEqual([]);
     await peer.dispose();
@@ -377,19 +385,19 @@ describe("failures", () => {
     const db = peer.ramose.db("movies", Movies);
     // note: no install() — the overlay knows the catalog, the peer does not
 
-    expect(await run(db.pull({ id: 1 }, { name: User.name }))).toBeNull();
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.pull({ id: 1 }, { name: User.name })).toBeNull();
+    expect(await db.q(names)).toEqual([]);
     await peer.dispose();
   });
 
   test("a rejected transaction is TxRejected, and catchTags is total", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
 
     const caught = await run(
       db
-        .transact(function* (tx) {
+        .effect.transact(function* (tx) {
           yield* tx.add(1, ":user/nope" as never, "x" as never);
         })
         .pipe(
@@ -413,11 +421,11 @@ describe("failures", () => {
   test("a generator body that fails does not submit", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const writes = peer.calls.length;
 
     const e = await runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
@@ -425,16 +433,16 @@ describe("failures", () => {
     );
     expect(e).toBe("nope");
     expect(peer.calls).toHaveLength(writes);
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.q(names)).toEqual([]);
     await peer.dispose();
   });
 
   test("required vs optional: missing required is null, optional is undefined", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const { dbAfter } = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         const alonzo = yield* tx.entity();
@@ -483,9 +491,9 @@ describe("failures", () => {
   test("a lookup ref resolves, and a miss is null", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    await run(db.install());
+    await db.install();
     const { dbAfter } = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),

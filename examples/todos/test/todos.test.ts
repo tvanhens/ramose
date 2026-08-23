@@ -121,7 +121,7 @@ const inProcessPeer = async () => {
     webSocket: WebSocketImpl as unknown as typeof WebSocket,
   });
   const db: TodosDb = ramose.db("todos", Todos);
-  await Effect.runPromise(db.install());
+  await db.install();
   return {
     conn,
     db,
@@ -172,13 +172,13 @@ const titles = (rows: readonly TodoRow[] | undefined) =>
 describe("the app's writes move the app's live stream", () => {
   test("add / toggle / delete, with no refetch and no invalidation call", async () => {
     const peer = await inProcessPeer();
-    const todos = live(peer.db.live(todoQuery));
+    const todos = live(peer.db.effect.live(todoQuery));
 
     expect(todos.rows).toBeUndefined();
     await awaitLive(todos);
     expect(todos.rows).toEqual([]);
 
-    await Effect.runPromise(addTodo(peer.db, "write the spec"));
+    await addTodo(peer.db, "write the spec");
     await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
     const added = todos.rows!;
     expect(titles(added)).toEqual(["write the spec"]);
@@ -188,20 +188,20 @@ describe("the app's writes move the app's live stream", () => {
     expect(todos.error).toBeUndefined();
 
     const first = { id: added[0]!.id };
-    await Effect.runPromise(setDone(peer.db, first, true));
+    await setDone(peer.db, first, true);
     await awaitLive(todos, () => todos.rows?.[0]?.done === true);
     expect(todos.rows!.map((r) => r.done)).toEqual([true]);
     expect(titles(todos.rows)).toEqual(["write the spec"]);
 
-    await Effect.runPromise(setDone(peer.db, first, false));
+    await setDone(peer.db, first, false);
     await awaitLive(todos, () => todos.rows?.[0]?.done === false);
     expect(todos.rows!.map((r) => r.done)).toEqual([false]);
 
-    await Effect.runPromise(addTodo(peer.db, "ship it"));
+    await addTodo(peer.db, "ship it");
     await awaitLive(todos, () => (todos.rows?.length ?? 0) === 2);
     expect(titles(todos.rows)).toEqual(["write the spec", "ship it"]);
 
-    await Effect.runPromise(deleteTodo(peer.db, first));
+    await deleteTodo(peer.db, first);
     await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
     expect(titles(todos.rows)).toEqual(["ship it"]);
 
@@ -211,7 +211,7 @@ describe("the app's writes move the app's live stream", () => {
 
   test("a write by someone else arrives as a t frame and re-runs the query", async () => {
     const peer = await inProcessPeer();
-    const todos = live(peer.db.live(todoQuery));
+    const todos = live(peer.db.effect.live(todoQuery));
     await awaitLive(todos);
     expect(todos.rows).toEqual([]);
 
@@ -231,21 +231,19 @@ describe("the app's writes move the app's live stream", () => {
 
   test("one row without a query: db.pull(eid, shape)", async () => {
     const peer = await inProcessPeer();
-    const report = await Effect.runPromise(addTodo(peer.db, "pull me"));
+    const report = await addTodo(peer.db, "pull me");
 
     // `dbAfter` is floored at the write, so this reads its own write
-    const rows = await Effect.runPromise(
-      report.dbAfter.q(
-        Ramose.Query.q(() =>
-          pipe(
-            Ramose.Query.entities(Todo),
-            Ramose.Query.is(Todo.title, "pull me"),
-            Ramose.Query.select({ id: Todo.id }),
-          ),
+    const rows = await report.dbAfter.q(
+      Ramose.Query.q(() =>
+        pipe(
+          Ramose.Query.entities(Todo),
+          Ramose.Query.is(Todo.title, "pull me"),
+          Ramose.Query.select({ id: Todo.id }),
         ),
       ),
     );
-    const row = await Effect.runPromise(pullTodo(peer.db, { id: rows[0]!.id }));
+    const row = await pullTodo(peer.db, { id: rows[0]!.id });
     expect(row).toMatchObject({ title: "pull me", done: false });
     expect(row?.createdAt).toBeInstanceOf(Date);
 
@@ -254,12 +252,12 @@ describe("the app's writes move the app's live stream", () => {
 
   test("interrupting the fiber is the whole teardown", async () => {
     const peer = await inProcessPeer();
-    const todos = live(peer.db.live(todoQuery));
+    const todos = live(peer.db.effect.live(todoQuery));
     await awaitLive(todos);
     const seen = todos.changes;
 
     await todos.stop();
-    await Effect.runPromise(addTodo(peer.db, "invisible"));
+    await addTodo(peer.db, "invisible");
     peer.pushTx([]);
     await settle();
 

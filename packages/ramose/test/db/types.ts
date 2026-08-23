@@ -190,7 +190,7 @@ type _histIsProperty = Expect<
 
 // ── the transaction is the generator, and reports a TxReport ───────────────
 
-const written = movies.transact(function* (tx) {
+const written = movies.effect.transact(function* (tx) {
   const ada = yield* tx.entity();
   yield* ada.add(User.name, "Ada");
   yield* ada.add(User.age, 36);
@@ -223,7 +223,7 @@ type _eidNoPull = Expect<Equal<"pull" extends keyof typeof eid ? true : false, f
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
 const caught = movies
-  .transact(function* (tx) {
+  .effect.transact(function* (tx) {
     const e = yield* tx.entity();
     yield* e.add(User.name, "Ada");
   })
@@ -256,9 +256,7 @@ type _optUrl = Expect<Equal<ClientOptions["url"], string>>;
 type _optToken = Expect<
   Equal<
     ClientOptions["token"],
-    | Effect.Effect<Redacted.Redacted<string>, DbError>
-    | TokenSource
-    | undefined
+    string | TokenSource | (() => string | Promise<string>) | undefined
   >
 >;
 type _optFetch = Expect<Equal<ClientOptions["fetch"], typeof fetch | undefined>>;
@@ -266,9 +264,7 @@ type _optWs = Expect<
   Equal<ClientOptions["webSocket"], typeof WebSocket | undefined>
 >;
 /** A static token is one expression, with nothing else to supply. */
-const _staticToken: ClientOptions["token"] = Effect.succeed(
-  Redacted.make("t"),
-);
+const _staticToken: ClientOptions["token"] = "t";
 void _staticToken;
 /** `token.jwt(mint)` is a `TokenSource`, and the layer takes both forms. */
 const _jwtToken: ClientOptions["token"] = token.jwt(async () => "jwt");
@@ -284,25 +280,25 @@ void _viaEffect;
 /** `Databases` — the key *is* the client, and it has exactly one method. */
 type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
 
-/** `Db<C>` is `ReadDb<C>` plus `principal`, `transact`, `install` and `run`. */
+/** `Db<C>` is `ReadDb<C>` plus `principal`, `install`, `run` and the hatch. */
 type _readDbKeys = Expect<
-  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "livePull" | "live" | "basis" | "asOf" | "history">
+  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "livePull" | "live" | "basis" | "asOf" | "history" | "effect">
 >;
 type _dbKeys = Expect<
-  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "principal" | "transact" | "install" | "run">
+  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "principal" | "install" | "run">
 >;
 type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 
 /** `db.install()` — an idempotent catalog upsert, reported like any tx. */
 const installed = movies.install();
 type _install = Expect<
-  Equal<typeof installed, Effect.Effect<TxReport<typeof Movies>, DbError>>
+  Equal<typeof installed, Promise<TxReport<typeof Movies>>>
 >;
 
 /** `db.principal()` — who am I; the eid is typed against this db's catalog. */
 const me = movies.principal();
 type _principal = Expect<
-  Equal<typeof me, Effect.Effect<DbPrincipal<typeof Movies>, DbError>>
+  Equal<typeof me, Promise<DbPrincipal<typeof Movies>>>
 >;
 type _principalEid = Expect<
   Equal<DbPrincipal<typeof Movies>["eid"], Eid<typeof Movies> | null>
@@ -311,15 +307,13 @@ type _principalEid = Expect<
 /** `db.pull` — `null` when a required field is missing, never `undefined`. */
 const pulled = movies.pull(eid, { name: User.name });
 type _pullOk = Expect<
-  Equal<Effect.Success<typeof pulled>, { readonly name: string } | null>
+  Equal<Awaited<typeof pulled>, { readonly name: string } | null>
 >;
-type _pullErr = Expect<Equal<Effect.Error<typeof pulled>, DbError>>;
-type _pullR = Expect<Equal<Effect.Services<typeof pulled>, never>>;
 
 /** …and a `LookupRef` on a unique attribute is the other subject form. */
 const byLookup = movies.pull([User.name, "Ada"], { name: User.name });
 type _lookupIsSubject = Expect<
-  Equal<Effect.Success<typeof byLookup>, Effect.Success<typeof pulled>>
+  Equal<Awaited<typeof byLookup>, Awaited<typeof pulled>>
 >;
 declare const lookup: LookupRef<typeof Movies>;
 type _lookupPair = Expect<Extends<typeof lookup, readonly [unknown, unknown]>>;

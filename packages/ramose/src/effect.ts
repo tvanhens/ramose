@@ -2,10 +2,10 @@
  * `ramose/effect` — the Effect modules Ramose's own API hands you, under one
  * import.
  *
- * Ramose's calls return Effect values, so a stack file needs `Effect` and
- * `Layer`, a schema file needs `Schema`, and a live query outside React is a
- * `Stream`. Naming them the ecosystem way — `import * as Effect from
- * "effect/Effect"` — is correct and is what the docs show: `effect` is a
+ * App code on `ramose/db` and `ramose/react` is promise-first. This subpath
+ * re-exports Effect's own modules for deploy files and for callers of
+ * `db.effect.*` / `ramose/db/effect`. Naming them the ecosystem way —
+ * `import * as Effect from "effect/Effect"` — is correct: `effect` is a
  * dependency of `ramose`, so it is in the tree either way. This subpath exists
  * for the two cases where that import does not resolve on its own — a resolver
  * that refuses undeclared dependencies (pnpm without hoisting, Yarn PnP), and

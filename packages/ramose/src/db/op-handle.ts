@@ -8,11 +8,16 @@ import * as Effect from "effect/Effect";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type DbError, InternalError, InvalidRequest } from "./Errors.ts";
 import {
-  type OpPrincipal,
+  type AnyOperation,
   type EffectThunk,
+  type Op,
+  type OpEntity,
+  type OpPrincipal,
   type RuntimeOp,
+  type RuntimeOpEntity,
   PrefixHalt,
 } from "./Operation.ts";
+import { asPromise } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
 import { isEntity, txBuilder, type Entity } from "./Tx.ts";
 
@@ -94,7 +99,18 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
 
   const effect = <A, E>(
     _name: string,
-    run: EffectThunk<A, E>,
+    run: (
+      ctx: {
+        readonly env: unknown;
+        readonly principal: OpPrincipal;
+        readonly databases: {
+          install(
+            catalog: AnyCatalog,
+            name?: string,
+          ): Effect.Effect<unknown, DbError>;
+        };
+      },
+    ) => Effect.Effect<A, E> | Promise<A>,
   ): Effect.Effect<A, E | InternalError> => {
     if (options.effects === "halt") {
       return Effect.die(new PrefixHalt());
@@ -122,6 +138,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     self,
     principal: options.principal,
     db: options.db,
+    _effects: options.effects,
     q: options.q,
     pull: options.pull,
     effect,
@@ -133,14 +150,80 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   };
 };
 
-/** Run a body, treating a {@link PrefixHalt} defect as a successful prefix stop. */
+const promiseEntity = (entity: RuntimeOpEntity): OpEntity => ({
+  _tag: "Entity",
+  eid: entity.eid,
+  add: (attr, value) => {
+    Effect.runSync(entity.add(attr, value));
+  },
+  retract: (attr, value) => {
+    Effect.runSync(entity.retract(attr, value));
+  },
+  retractEntity: () => {
+    Effect.runSync(entity.retractEntity());
+  },
+});
+
+/** Wrap the Effect runtime handle as the async `Op` a body sees. */
+export const asPromiseOp = (op: RuntimeOp): Op<any> => {
+  const entity = ((id?: unknown) =>
+    promiseEntity(
+      Effect.runSync(id === undefined ? op.entity() : op.entity(id)),
+    )) as Op["entity"];
+
+  return {
+    self: (op.self === undefined ? undefined : promiseEntity(op.self)) as Op<any>["self"],
+    principal: op.principal,
+    db: op.db,
+    entity,
+    add: (e, attr, value) => {
+      Effect.runSync(op.add(e, attr, value));
+    },
+    retract: (e, attr, value) => {
+      Effect.runSync(op.retract(e, attr, value));
+    },
+    retractEntity: (e) => {
+      Effect.runSync(op.retractEntity(e));
+    },
+    q: ((input: AnyQueryObject, params?: Readonly<Record<string, unknown>>) =>
+      asPromise(op.q(input, params))) as Op["q"],
+    pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),
+    effect: <A>(name: string, run: EffectThunk<A>): Promise<A> => {
+      if (op._effects === "halt") throw new PrefixHalt();
+      return asPromise(
+        op.effect(name, (ctx) =>
+          Promise.resolve(
+            run({
+              env: ctx.env,
+              principal: ctx.principal,
+              databases: {
+                install: (catalog, dbName) =>
+                  asPromise(ctx.databases.install(catalog, dbName)),
+              },
+            }),
+          ),
+        ),
+      );
+    },
+  };
+};
+
+/** Run a body, treating a {@link PrefixHalt} as a successful prefix stop. */
 export const runBody = (
-  body: (op: RuntimeOp, input: unknown) => Effect.Effect<unknown, unknown>,
+  operation: Pick<AnyOperation, "body">,
   op: RuntimeOp,
   input: unknown,
 ): Effect.Effect<{ output: unknown; halted: boolean }, unknown> =>
-  body(op, input).pipe(
+  Effect.tryPromise({
+    try: () => Promise.resolve(operation.body(asPromiseOp(op), input)),
+    catch: (cause) => cause,
+  }).pipe(
     Effect.map((output) => ({ output, halted: false })),
+    Effect.catch((cause) =>
+      cause instanceof PrefixHalt
+        ? Effect.succeed({ output: undefined, halted: true })
+        : Effect.fail(cause),
+    ),
     Effect.catchDefect((defect) =>
       defect instanceof PrefixHalt
         ? Effect.succeed({ output: undefined, halted: true })

@@ -24,8 +24,7 @@
  *
  * const ramose = Ramose.connect({ url, token });
  * export const db = ramose.db("todos", Todos);
- * // Effect users: `Ramose.layer({ url, token })` is the same client as a
- * // scoped Layer<Databases>.
+ * // Effect users: `db.effect.q` / `import { layer } from "ramose/db/effect"`.
  * ```
  */
 
@@ -74,10 +73,14 @@ export {
   type Client,
   type ClientOptions,
   connect,
-  Databases,
-  layer,
 } from "./Databases.ts";
-export { type Claims, token, type TokenSource } from "./token.ts";
+export {
+  type Claims,
+  token,
+  type TokenInput,
+  type TokenSource,
+} from "./token.ts";
+export type { Subscription } from "./subscription.ts";
 // the peer's database-name rule, so an app can validate a user-minted name
 // (multi-tenant "create workspace") before the peer does — not a slugify
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";

@@ -11,7 +11,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 import { type ReactNode, StrictMode, useEffect } from "react";
@@ -49,7 +48,7 @@ const ReadOnce = () => {
   useEffect(() => {
     // a q on a closed client rejects (StrictMode's churn) — that is the
     // provider's job to recover from, not this probe's job to observe
-    Effect.runPromise(db.q(titles)).catch(() => {});
+    db.q(titles).catch(() => {});
   }, [db]);
   return null;
 };
@@ -162,7 +161,7 @@ describe("RamoseProvider", () => {
     // because a read on a closed client fails rather than falling back
     await waitFor(async () => {
       const client = seen[seen.length - 1]!;
-      const rows = await Effect.runPromise(client.db("todos", Todos).q(titles));
+      const rows = await client.db("todos", Todos).q(titles);
       expect(rows).toEqual([]);
     });
 

@@ -114,7 +114,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         pull: () => Effect.succeed(null),
       });
       const prefix = await Effect.runPromise(
-        runBody(operation.body, built.op, body.input),
+        runBody(operation, built.op, body.input),
       );
       const ops = built.ops();
       if (ops.length === 0) {
@@ -294,16 +294,16 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   if (opts?.seed !== false) {
     const first = openClient();
     db = first.db;
-    await Effect.runPromise(db.install());
+    await db.install();
     const seeded = await Effect.runPromise(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const user = yield* tx.entity();
         yield* user.add(User.sub, "ada");
         yield* user.add(User.name, "Ada");
         yield* user.add(User.email, "ada@reef.test");
       }),
     );
-    const people = await Effect.runPromise(seeded.dbAfter.q(peopleQuery));
+    const people = await seeded.dbAfter.q(peopleQuery);
     myEid = people[0]!.id;
   }
 
@@ -389,20 +389,18 @@ const titles = (rows: readonly BoardRow[] | undefined) =>
 describe("the board's writes move the board's live stream", () => {
   test("create and move paint on the overlay before POST returns; no /query", async () => {
     const peer = await inProcessPeer();
-    const board = live(peer.db.live(boardQuery));
+    const board = live(peer.db.effect.live(boardQuery));
     await awaitLive(board);
     expect(board.rows).toEqual([]);
     const qBefore = peer.queryOps().length;
     const httpBefore = peer.httpPaths.filter((p) => p.endsWith("/query")).length;
 
     peer.holdTransact();
-    const created = Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "Ship the overlay",
-        status: "todo",
-        priority: 2,
-      }),
-    );
+    const created = createIssue(peer.db, peer.myEid, undefined, {
+      title: "Ship the overlay",
+      status: "todo",
+      priority: 2,
+    });
     await awaitLive(board, () => titles(board.rows).includes("Ship the overlay"));
     expect(titles(board.rows)).toEqual(["Ship the overlay"]);
     expect(board.rows![0]!.status).toBe("todo");
@@ -419,7 +417,7 @@ describe("the board's writes move the board's live stream", () => {
 
     const issueId = board.rows![0]!.id;
     peer.holdTransact();
-    const moved = Effect.runPromise(moveIssue(peer.db, issueId, "doing", 2048));
+    const moved = moveIssue(peer.db, issueId, "doing", 2048);
     await awaitLive(
       board,
       () =>
@@ -445,21 +443,19 @@ describe("the board's writes move the board's live stream", () => {
 
   test("an edit paints locally, and a 409 drops the pending create", async () => {
     const peer = await inProcessPeer();
-    const board = live(peer.db.live(boardQuery));
+    const board = live(peer.db.effect.live(boardQuery));
     await awaitLive(board);
 
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "Draft",
-        status: "todo",
-        priority: 1,
-      }),
-    );
+    await createIssue(peer.db, peer.myEid, undefined, {
+      title: "Draft",
+      status: "todo",
+      priority: 1,
+    });
     await awaitLive(board, () => titles(board.rows).includes("Draft"));
     const issueId = board.rows![0]!.id;
 
     peer.holdTransact();
-    const edited = Effect.runPromise(setTitle(peer.db, issueId, "Renamed"));
+    const edited = setTitle(peer.db, issueId, "Renamed");
     await awaitLive(board, () => titles(board.rows).includes("Renamed"));
     expect(titles(board.rows)).toEqual(["Renamed"]);
     peer.releaseTransact();
@@ -474,14 +470,15 @@ describe("the board's writes move the board's live stream", () => {
       tag: "TxRejected",
       code: "policy",
     });
-    const denied = Effect.runPromise(
-      Effect.flip(
-        createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
-          title: "Ghost",
-          status: "todo",
-          priority: 0,
-        }),
-      ),
+    const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
+      title: "Ghost",
+      status: "todo",
+      priority: 0,
+    }).then(
+      () => {
+        throw new Error("expected failure");
+      },
+      (error) => error,
     );
     await awaitLive(board, () => titles(board.rows).includes("Ghost"));
     expect(titles(board.rows)).toContain("Ghost");
@@ -499,7 +496,7 @@ describe("the board's writes move the board's live stream", () => {
 
   test("an inbound filtered tx frame updates the board without /query", async () => {
     const peer = await inProcessPeer();
-    const board = live(peer.db.live(boardQuery));
+    const board = live(peer.db.effect.live(boardQuery));
     await awaitLive(board);
     const qBefore = peer.queryOps().length;
 
@@ -527,20 +524,18 @@ describe("the board's writes move the board's live stream", () => {
   test("pinned asOf still reads the peer, not the overlay", async () => {
     const peer = await inProcessPeer();
     const seedT = peer.conn.t;
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "Only in the present",
-        status: "todo",
-        priority: 0,
-      }),
-    );
+    await createIssue(peer.db, peer.myEid, undefined, {
+      title: "Only in the present",
+      status: "todo",
+      priority: 0,
+    });
 
     const qBefore = peer.queryOps().length;
-    const past = await Effect.runPromise(peer.db.asOf(seedT).q(boardQuery));
+    const past = await peer.db.asOf(seedT).q(boardQuery);
     expect(past).toEqual([]);
     expect(peer.queryOps().length).toBeGreaterThan(qBefore);
 
-    const now = await Effect.runPromise(peer.db.q(boardQuery));
+    const now = await peer.db.q(boardQuery);
     expect(titles(now)).toEqual(["Only in the present"]);
     // current-view q is local — asOf was the only new socket `q`
     expect(peer.queryOps()).toHaveLength(qBefore + 1);
@@ -550,24 +545,20 @@ describe("the board's writes move the board's live stream", () => {
 
   test("two clients moving two existing issues both see both moves without refresh", async () => {
     const peer = await inProcessPeer();
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "One",
-        status: "todo",
-        priority: 2,
-      }),
-    );
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, 1024, {
-        title: "Two",
-        status: "todo",
-        priority: 2,
-      }),
-    );
+    await createIssue(peer.db, peer.myEid, undefined, {
+      title: "One",
+      status: "todo",
+      priority: 2,
+    });
+    await createIssue(peer.db, peer.myEid, 1024, {
+      title: "Two",
+      status: "todo",
+      priority: 2,
+    });
 
     const other = peer.openClient();
-    const phone = live(peer.db.live(boardQuery));
-    const computer = live(other.db.live(boardQuery));
+    const phone = live(peer.db.effect.live(boardQuery));
+    const computer = live(other.db.effect.live(boardQuery));
     await awaitLive(phone, () => titles(phone.rows).length === 2);
     await awaitLive(computer, () => titles(computer.rows).length === 2);
     const one = phone.rows!.find((r) => r.title === "One")!.id;
@@ -577,8 +568,8 @@ describe("the board's writes move the board's live stream", () => {
     const computerEmissions = computer.changes;
 
     await Promise.all([
-      Effect.runPromise(moveIssue(peer.db, one, "doing", 10)),
-      Effect.runPromise(moveIssue(other.db, two, "done", 20)),
+      moveIssue(peer.db, one, "doing", 10),
+      moveIssue(other.db, two, "done", 20),
     ]);
     await awaitLive(
       phone,
@@ -615,24 +606,20 @@ describe("the board's writes move the board's live stream", () => {
 
   test("two inbound { op: tx } frames (no local pending): both live boards show both moves", async () => {
     const peer = await inProcessPeer();
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "One",
-        status: "todo",
-        priority: 2,
-      }),
-    );
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, 1024, {
-        title: "Two",
-        status: "todo",
-        priority: 2,
-      }),
-    );
+    await createIssue(peer.db, peer.myEid, undefined, {
+      title: "One",
+      status: "todo",
+      priority: 2,
+    });
+    await createIssue(peer.db, peer.myEid, 1024, {
+      title: "Two",
+      status: "todo",
+      priority: 2,
+    });
 
     const other = peer.openClient();
-    const phone = live(peer.db.live(boardQuery));
-    const computer = live(other.db.live(boardQuery));
+    const phone = live(peer.db.effect.live(boardQuery));
+    const computer = live(other.db.effect.live(boardQuery));
     await awaitLive(phone, () => titles(phone.rows).length === 2);
     await awaitLive(computer, () => titles(computer.rows).length === 2);
     const one = phone.rows!.find((r) => r.title === "One")!.id;
@@ -684,8 +671,8 @@ describe("the board's writes move the board's live stream", () => {
 
   test("people and labels live on the same overlay as the board", async () => {
     const peer = await inProcessPeer();
-    const people = await Effect.runPromise(peer.db.q(peopleQuery));
-    const labels = await Effect.runPromise(peer.db.q(labelsQuery));
+    const people = await peer.db.q(peopleQuery);
+    const labels = await peer.db.q(labelsQuery);
     expect(people.map((p) => p.name)).toEqual(["Ada"]);
     expect(labels).toEqual([]);
     expect(peer.queryOps()).toEqual([]);
@@ -765,14 +752,14 @@ describe("refresh open is one session, not two", () => {
     });
     try {
       const db = client.db("coral-team", Reef);
-      const who = await Effect.runPromise(db.principal());
+      const who = await db.principal();
       expect(who.eid?.id).toBe(peer.myEid);
       expect(counted.connects).toBe(1);
       // principal() is GET /info — no replica session yet
       expect(peer.sockets()).toBe(0);
       expect(peer.resyncDumps()).toEqual([]);
 
-      const board = live(db.live(boardQuery));
+      const board = live(db.effect.live(boardQuery));
       await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
@@ -814,12 +801,12 @@ describe("refresh open is one session, not two", () => {
     });
     try {
       const db = client.db("coral-team", Reef);
-      const who = await Effect.runPromise(db.principal());
+      const who = await db.principal();
       expect(who.eid).toBeNull();
       expect(counted.connects).toBe(1);
       expect(peer.sockets()).toBe(0);
 
-      const board = live(db.live(boardQuery));
+      const board = live(db.effect.live(boardQuery));
       await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
@@ -871,12 +858,12 @@ describe("refresh open is one session, not two", () => {
     });
     try {
       const db = client.db("coral-team", Reef);
-      const who = await Effect.runPromise(db.principal());
+      const who = await db.principal();
       expect(who.eid?.id).toBeGreaterThan(0);
       expect(counted.connects).toBe(afterProvision + 1);
       expect(peer.sockets()).toBe(0);
 
-      const board = live(db.live(boardQuery));
+      const board = live(db.effect.live(boardQuery));
       await awaitLive(board);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);

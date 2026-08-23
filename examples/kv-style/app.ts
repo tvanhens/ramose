@@ -60,7 +60,7 @@ export const App = Cloudflare.Worker(
     /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
     const createTenant = (tenantId: string) =>
       Effect.gen(function* () {
-        const report = yield* ramose.db(tenantId, Movies).install();
+        const report = yield* ramose.db(tenantId, Movies).effect.install();
         return yield* HttpServerResponse.json({ tenant: tenantId, t: report.t });
       });
 
@@ -69,12 +69,12 @@ export const App = Cloudflare.Worker(
       Effect.gen(function* () {
         const tenant = ramose.db(tenantId, Movies);
 
-        const { t, dbAfter } = yield* tenant.transact(function* (tx) {
+        const { t, dbAfter } = yield* tenant.effect.transact(function* (tx) {
           const ada = yield* tx.entity();
           yield* ada.add(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.q(namesQuery);
+        const names = yield* dbAfter.effect.q(namesQuery);
         return yield* HttpServerResponse.json({
           tenant: tenantId,
           t,
@@ -101,7 +101,7 @@ export const App = Cloudflare.Worker(
         // alchemy.run.ts installed Movies on this name at deploy time.
         const db = ramose.db("movies", Movies);
 
-        const report = yield* db.transact(function* (tx) {
+        const report = yield* db.effect.transact(function* (tx) {
           const ada = yield* tx.entity();
           yield* ada.add(User.name, "Ada");
         });
@@ -109,20 +109,20 @@ export const App = Cloudflare.Worker(
         // Read your own write: `dbAfter` is the same db floored at `report.t`,
         // so a replica that has not caught up refetches its basis. No `sync`,
         // no second round trip, no public `minT`.
-        const nameRows = yield* report.dbAfter.q(namesQuery);
+        const nameRows = yield* report.dbAfter.effect.q(namesQuery);
         const names = nameRows.map((r) => r.name);
 
         // …and the same query as of a past transaction. `asOf` is pure.
-        const beforeRows = yield* db.asOf(report.t - 1).q(namesQuery);
+        const beforeRows = yield* db.asOf(report.t - 1).effect.q(namesQuery);
         const before = beforeRows.map((r) => r.name);
 
         // Entity ids come back from `select({ id: User.id })`; pulling one is
         // `db.pull` — a missing required field is `null`.
-        const rows = yield* report.dbAfter.q(idsQuery);
+        const rows = yield* report.dbAfter.effect.q(idsQuery);
         const ada =
           rows.length === 0
             ? null
-            : yield* report.dbAfter.pull({ id: rows[0]!.id }, { name: User.name });
+            : yield* report.dbAfter.effect.pull({ id: rows[0]!.id }, { name: User.name });
 
         return yield* HttpServerResponse.json({ t: report.t, names, before, ada });
       }).pipe(

@@ -8,8 +8,8 @@
  * Two rules the memo imposes on consumers:
  *
  * - `token` must be a **stable** `TokenSource` (`Ramose.token.jwt(...)` built
- *   once — module scope or a `useMemo`), not an Effect built inline in the
- *   render, or the client re-connects every render.
+ *   once — module scope or a `useMemo`) or a stable string, not a function
+ *   built inline in the render, or the client re-connects every render.
  * - Multi-tenant remount is React's own `key`: `<RamoseProvider key={slug}
  *   url={…}>` closes the old tenant's client and connects the new one.
  */

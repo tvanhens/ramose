@@ -42,7 +42,17 @@ import {
   type Db,
 } from "../../src/db/internal.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 // ── in-process peer (the nav harness, trimmed to q/pull/transact) ──────────
 
@@ -181,9 +191,9 @@ const Tracker = Catalog({ user: User, issue: Issue, comment: Comment, team: Team
 /** Seed the running example; answers the eids the tests bind. */
 const seed = async (db: Db<typeof Tracker>) => {
   const out: Record<string, { readonly id: number }> = {};
-  await run(db.install());
+  await db.install();
   await run(
-    db.transact(function* (tx) {
+    db.effect.transact(function* (tx) {
       const ada = yield* tx.entity();
       yield* ada.add(User.name, "Ada");
       yield* ada.add(User.age, 36);
@@ -243,7 +253,7 @@ const seed = async (db: Db<typeof Tracker>) => {
     [Issue.title, { "ship the release": "ship", "fix the flake": "fix", "archive the docs": "docs" }],
     [Team.name, { root: "root", eng: "eng" }],
   ] as const) {
-    const rows = (await run(db.q(byName(attr)))) as unknown as readonly {
+    const rows = (await db.q(byName(attr))) as unknown as readonly {
       id: { id: number };
       name: string;
     }[];
@@ -398,7 +408,7 @@ describe("filter by entity id", () => {
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const rows = await run(db.q(byConst));
+    const rows = await db.q(byConst);
     expect(rows).toEqual([{ id: ids.ship!.id as never, title: "ship the release" }]);
 
     await peer.dispose();
@@ -423,8 +433,8 @@ describe("filter by entity id", () => {
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const isRows = await run(db.q(isParam, { id: ids.fix as never }));
-    const byIdRows = await run(db.q(byIdParam, { id: ids.fix as never }));
+    const isRows = await db.q(isParam, { id: ids.fix as never });
+    const byIdRows = await db.q(byIdParam, { id: ids.fix as never });
     expect(isRows).toEqual([{ id: ids.fix!.id as never, title: "fix the flake" }]);
     expect(byIdRows).toEqual(isRows);
 
@@ -446,10 +456,10 @@ describe("filter by entity id", () => {
         Query.select({ id: Comment.id, text: Comment.text }),
       ),
     );
-    const comments = await run(db.q(byComment, { root: commentId as never }));
+    const comments = await db.q(byComment, { root: commentId as never });
     expect(comments).toEqual([{ id: commentId.id as never, text: "on it" }]);
 
-    const miss = await run(db.q(byIdParam, { id: commentId as never }));
+    const miss = await db.q(byIdParam, { id: commentId as never });
     expect(miss).toEqual([]);
 
     await peer.dispose();
@@ -463,10 +473,10 @@ describe("db.q end to end", () => {
     const ids = await seed(db);
 
     // Ada commented on "fix the flake", so her inbox is only "ship ..."
-    const ada = await run(db.q(inboxPipe, { me: ids.ada as never }));
+    const ada = await db.q(inboxPipe, { me: ids.ada as never });
     expect(ada.map((r) => r.title)).toEqual(["ship the release"]);
     // Grace commented on nothing: both open issues, ordered by title
-    const grace = await run(db.q(inboxPipe, { me: ids.grace as never }));
+    const grace = await db.q(inboxPipe, { me: ids.grace as never });
     expect(grace.map((r) => r.title)).toEqual(["fix the flake", "ship the release"]);
     // rows carry the branded id cell
     expect(ada[0]!.id).toBe(ids.ship!.id as never);
@@ -485,7 +495,7 @@ describe("db.q end to end", () => {
       const title = yield* Q.fact(owned.e, Issue.title);
       return { issue: owned.e, title: title.v, owner: name.v };
     });
-    const rows = await run(db.q(owners));
+    const rows = await db.q(owners);
     const byTitle = [...rows].sort((a, b) => String(a.title).localeCompare(String(b.title)));
     expect(byTitle.map((r) => [r.title, r.owner])).toEqual([
       ["archive the docs", "Ada"],
@@ -509,7 +519,7 @@ describe("db.q end to end", () => {
       yield* Q.or(Q.startsWith(t.v, "ship"), Q.startsWith(t.v, "fix"));
       return { title: t.v };
     });
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     expect(rows.map((r) => r.title).sort()).toEqual(["fix the flake", "ship the release"]);
 
     await peer.dispose();
@@ -528,7 +538,7 @@ describe("db.q end to end", () => {
         Query.select({ name: User.name }),
       ),
     );
-    const rows = await run(db.q(ownersOfOpen));
+    const rows = await db.q(ownersOfOpen);
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
 
     const commenters = Query.q({ issue: EidOf(Issue) }, function* (p) {
@@ -537,7 +547,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(author, User.name);
       return { name: name.v };
     });
-    const who = await run(db.q(commenters, { issue: ids.fix as never }));
+    const who = await db.q(commenters, { issue: ids.fix as never });
     expect(who).toEqual([{ name: "Ada" }]);
 
     await peer.dispose();
@@ -558,7 +568,7 @@ describe("db.q end to end", () => {
     const q = Query.q(() =>
       pipe(Query.entities(Issue), rankAbove(1), Query.select({ title: Issue.title, rank: Issue.rank })),
     );
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     expect(rows.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
 
     await peer.dispose();
@@ -589,9 +599,9 @@ describe("db.q end to end", () => {
       return { name: name.v };
     });
 
-    const root = await run(db.q(membersOf, { team: ids.root as never }));
+    const root = await db.q(membersOf, { team: ids.root as never });
     expect(root.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
-    const eng = await run(db.q(membersOf, { team: ids.eng as never }));
+    const eng = await db.q(membersOf, { team: ids.eng as never });
     expect(eng.map((r) => r.name)).toEqual(["Grace"]);
 
     await peer.dispose();
@@ -615,7 +625,7 @@ describe("db.q end to end", () => {
     const def = (query.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === "issue/ownerOf")!;
     expect((def[0] as unknown[]).length).toBe(3);
 
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
 
     await peer.dispose();
@@ -636,7 +646,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return Q.row(cols, { owner: name.v });
     });
-    const rows = await run(db.q(withOwner));
+    const rows = await db.q(withOwner);
     const sorted = [...rows].sort((a, b) => String(a.title).localeCompare(String(b.title)));
     expect(sorted).toEqual([
       { title: "fix the flake", owner: "Grace" },
@@ -648,7 +658,7 @@ describe("db.q end to end", () => {
       const f = yield* Q.fact(e);
       return { lastUpdated: Q.max(f.t) };
     });
-    const enriched = await run(db.q(withLastUpdated(openIssues)));
+    const enriched = await db.q(withLastUpdated(openIssues));
     expect(enriched).toHaveLength(2);
     for (const r of enriched) {
       expect(typeof r.lastUpdated).toBe("number");
@@ -681,9 +691,9 @@ describe("db.q end to end", () => {
       return Q.rows({ team: Q.pull(team, { name: Team.name }), esc: cols });
     });
 
-    const ada = await run(db.q(teamDigest, { me: ids.ada as never }));
+    const ada = await db.q(teamDigest, { me: ids.ada as never });
     expect(ada).toEqual([{ team: { name: "root" }, esc: { title: "ship the release" } }] as never);
-    const grace = await run(db.q(teamDigest, { me: ids.grace as never }));
+    const grace = await db.q(teamDigest, { me: ids.grace as never });
     expect(grace).toEqual([{ team: { name: "eng" }, esc: { title: "fix the flake" } }] as never);
 
     await peer.dispose();
@@ -701,7 +711,7 @@ describe("db.q end to end", () => {
       const owner = yield* Query.follow(Issue.owner)(e);
       yield* Q.fact(owner, User.name, "Ada");
     })(openIssues);
-    const rows = await run(db.q(adaOnly));
+    const rows = await db.q(adaOnly);
     expect(rows).toEqual([{ title: "ship the release" }] as never);
 
     await peer.dispose();
@@ -718,7 +728,7 @@ describe("db.q end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return { owner: name.v, n: Q.count(issue) };
     });
-    const rows = await run(db.q(perOwner));
+    const rows = await db.q(perOwner);
     const sorted = [...rows].sort((a, b) => String(a.owner).localeCompare(String(b.owner)));
     expect(sorted).toEqual([
       { owner: "Ada", n: 2 },
@@ -735,7 +745,7 @@ describe("db.q end to end", () => {
 
     // a second rank-2 issue: sum must see both rows, not one distinct 2
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const dupe = yield* tx.entity();
         yield* dupe.add(Issue.title, "the duplicate rank");
         yield* dupe.add(Issue.done, true);
@@ -750,7 +760,7 @@ describe("db.q end to end", () => {
       return { total: Q.sum(r.v), n: Q.count(r.v), distinct: Q.countDistinct(r.v) };
     });
     // ranks are 3, 1, 2, 2
-    expect(await run(db.q(totals))).toEqual([{ total: 8, n: 4, distinct: 3 }] as never);
+    expect(await db.q(totals)).toEqual([{ total: 8, n: 4, distinct: 3 }] as never);
 
     // the fact's e-position rides in :with; an aggregated entity var needs none
     const lowered = lowerQueryObject(totals);
@@ -770,7 +780,7 @@ describe("db.q end to end", () => {
       const r = yield* Q.fact(issue, Issue.rank);
       return { done: d.v, total: Q.sum(r.v) };
     });
-    const rows = await run(db.q(perDone));
+    const rows = await db.q(perDone);
     const sorted = [...rows].sort((a, b) => Number(a.done) - Number(b.done));
     expect(sorted).toEqual([
       { done: false, total: 4 },
@@ -792,7 +802,7 @@ describe("db.q end to end", () => {
       const r = yield* Q.fact(issue, Issue.rank);
       return { n: Q.count(issue), total: Q.sum(r.v), top: Q.max(r.v), mean: Q.avg(r.v) };
     });
-    expect(await run(db.q(stats))).toEqual([
+    expect(await db.q(stats)).toEqual([
       { n: 0, total: 0, top: null, mean: null },
     ] as never);
 
@@ -802,7 +812,7 @@ describe("db.q end to end", () => {
       yield* Query.is(Issue.title, "no such issue")(issue);
       return { n: Q.count(issue) };
     });
-    expect(await run(db.q(count.one()))).toEqual({ n: 0 } as never);
+    expect(await db.q(count.one())).toEqual({ n: 0 } as never);
 
     // a projection with a group key correctly stays []: no rows, no groups
     const grouped = Query.q(function* () {
@@ -811,7 +821,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v, n: Q.count(issue) };
     });
-    expect(await run(db.q(grouped))).toEqual([]);
+    expect(await db.q(grouped)).toEqual([]);
 
     // a non-empty match set is untouched by the synthesis
     const open = Query.q(function* () {
@@ -819,7 +829,7 @@ describe("db.q end to end", () => {
       yield* Query.is(Issue.done, false)(issue);
       return { n: Q.count(issue) };
     });
-    expect(await run(db.q(open))).toEqual([{ n: 2 }] as never);
+    expect(await db.q(open)).toEqual([{ n: 2 }] as never);
 
     await peer.dispose();
   });
@@ -836,12 +846,12 @@ describe("db.q end to end", () => {
         Query.select({ title: Issue.title }),
       ),
     );
-    expect(await run(db.q(inList))).toEqual([{ title: "fix the flake" }] as never);
+    expect(await db.q(inList)).toEqual([{ title: "fix the flake" }] as never);
 
     const ageless = Query.q(() =>
       pipe(Query.entities(User), Query.missing(User.age), Query.select({ name: User.name })),
     );
-    expect(await run(db.q(ageless))).toEqual([{ name: "Lin" }] as never);
+    expect(await db.q(ageless)).toEqual([{ name: "Lin" }] as never);
 
     // every comment is Ada's — vacuously true of uncommented issues
     const allAda = Query.q(function* () {
@@ -855,7 +865,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    const rows = await run(db.q(allAda));
+    const rows = await db.q(allAda);
     expect(rows.map((r) => r.title).sort()).toEqual([
       "archive the docs",
       "fix the flake",
@@ -882,21 +892,21 @@ describe("db.q end to end", () => {
     expect(lowerQueryObject(byTitle.one(), { title: "x" }).query.limit).toBe(1);
     expect(lowerQueryObject(byTitle.oneOrFail(), { title: "x" }).query.limit).toBe(2);
 
-    const hit = await run(db.q(byTitle.one(), { title: "ship the release" }));
+    const hit = await db.q(byTitle.one(), { title: "ship the release" });
     expect(hit).toEqual({ title: "ship the release", rank: 3 } as never);
-    expect(await run(db.q(byTitle.one(), { title: "nope" }))).toBeNull();
+    expect(await db.q(byTitle.one(), { title: "nope" })).toBeNull();
 
-    const exact = await run(db.q(byTitle.oneOrFail(), { title: "fix the flake" }));
+    const exact = await db.q(byTitle.oneOrFail(), { title: "fix the flake" });
     expect(exact.rank).toBe(1);
 
-    const missing = await run(Effect.flip(db.q(byTitle.oneOrFail(), { title: "nope" })));
+    const missing = await runFail(db.q(byTitle.oneOrFail(), { title: "nope" }));
     expect(missing).toBeInstanceOf(NotOne);
     expect((missing as NotOne).found).toBe(0);
 
     const openIssues = Query.q(() =>
       pipe(Query.entities(Issue), Query.is(Issue.done, false), Query.select({ title: Issue.title })),
     );
-    const two = await run(Effect.flip(db.q(openIssues.oneOrFail())));
+    const two = await runFail(db.q(openIssues.oneOrFail()));
     expect((two as NotOne).found).toBe(2);
 
     await peer.dispose();
@@ -916,11 +926,11 @@ describe("db.q end to end", () => {
       ),
     );
 
-    const p1 = await run(db.q(byRank.after(null)));
+    const p1 = await db.q(byRank.after(null));
     expect(p1.rows.map((r) => r.rank)).toEqual([1, 2]);
     expect(p1.cursor).not.toBeNull();
 
-    const p2 = await run(db.q(byRank.after(p1.cursor)));
+    const p2 = await db.q(byRank.after(p1.cursor));
     expect(p2.rows.map((r) => r.rank)).toEqual([3]);
     // shorter than its limit: the page is over
     expect(p2.cursor).toBeNull();
@@ -957,9 +967,9 @@ describe("db.q end to end", () => {
       ),
     );
 
-    const all = await run(db.q(board, {}));
+    const all = await db.q(board, {});
     expect(all).toHaveLength(3);
-    const adas = await run(db.q(board, { owner: ids.ada as never }));
+    const adas = await db.q(board, { owner: ids.ada as never });
     expect(adas.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
 
     // gate off, the clause lowers to nothing
@@ -973,8 +983,8 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    expect(await run(db.q(listing, { onlyOpen: true }))).toHaveLength(2);
-    expect(await run(db.q(listing, { onlyOpen: false }))).toHaveLength(3);
+    expect(await db.q(listing, { onlyOpen: true })).toHaveLength(2);
+    expect(await db.q(listing, { onlyOpen: false })).toHaveLength(3);
 
     // an unbound optional referenced outside its when is still a ParamError
     const loose = Query.q({ owner: optional(EidOf(User)) }, (p) =>
@@ -1001,7 +1011,7 @@ describe("db.q end to end", () => {
     const ids = await seed(db);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const late = yield* tx.entity();
         yield* late.add(Issue.title, "the late arrival");
         yield* late.add(Issue.done, false);
@@ -1016,7 +1026,7 @@ describe("db.q end to end", () => {
       const t = yield* Q.fact(issue, Issue.title);
       return { title: t.v };
     });
-    const rows = await run(db.q(recent));
+    const rows = await db.q(recent);
     expect(rows.map((r) => r.title)).toEqual(["the late arrival"]);
 
     await peer.dispose();
@@ -1071,7 +1081,7 @@ describe("post-group filters (:having)", () => {
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    const rows = await run(db.q(busyOwners));
+    const rows = await db.q(busyOwners);
     expect(rows).toEqual([{ owner: ids.ada, n: 2 }] as never);
 
     // the same filter over a value group key
@@ -1083,7 +1093,7 @@ describe("post-group filters (:having)", () => {
       yield* Q.gt(n, 1);
       return { owner: name.v, n };
     });
-    expect(await run(db.q(byName))).toEqual([{ owner: "Ada", n: 2 }] as never);
+    expect(await db.q(byName)).toEqual([{ owner: "Ada", n: 2 }] as never);
 
     await peer.dispose();
   });
@@ -1100,8 +1110,8 @@ describe("post-group filters (:having)", () => {
       yield* Q.gte(n, p.min);
       return { owner, n };
     });
-    expect(await run(db.q(atLeast, { min: 2 }))).toEqual([{ owner: ids.ada, n: 2 }] as never);
-    expect((await run(db.q(atLeast, { min: 1 }))).length).toBe(2);
+    expect(await db.q(atLeast, { min: 2 })).toEqual([{ owner: ids.ada, n: 2 }] as never);
+    expect((await db.q(atLeast, { min: 1 })).length).toBe(2);
 
     await peer.dispose();
   });
@@ -1120,7 +1130,7 @@ describe("post-group filters (:having)", () => {
       return { n };
     });
     // count over the empty set is 0, and 0 < 5 keeps the one row
-    expect(await run(db.q(none))).toEqual([{ n: 0 }] as never);
+    expect(await db.q(none)).toEqual([{ n: 0 }] as never);
 
     const some = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
@@ -1130,7 +1140,7 @@ describe("post-group filters (:having)", () => {
       return { n };
     });
     // …and 0 > 0 drops it, exactly as the peer would have
-    expect(await run(db.q(some))).toEqual([]);
+    expect(await db.q(some)).toEqual([]);
 
     await peer.dispose();
   });
@@ -1252,7 +1262,7 @@ describe("per-element pull filters (select options)", () => {
     const ids = await seed(db);
     // a second comment, so the filter has something to drop
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const c = yield* tx.entity();
         yield* c.add(Comment.issue, ids.fix!.id as never);
         yield* c.add(Comment.author, ids.grace!.id as never);
@@ -1277,7 +1287,7 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     const byTitle = new Map(rows.map((r) => [r.title, r.adaSays.map((c) => c.text)]));
     // the Grace comment is dropped from the collection, never the row
     expect(byTitle.get("fix the flake")).toEqual(["on it"]);
@@ -1302,7 +1312,7 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     const byName = new Map(rows.map((r) => [r.name, r.seniors.map((m) => m.name)]));
     expect(byName.get("root")).toEqual([]); // Ada is 36
     expect(byName.get("eng")).toEqual(["Grace"]); // Grace is 45
@@ -1322,7 +1332,7 @@ describe("per-element pull filters (select options)", () => {
         aTags: values(User.tags, { where: [(v) => Q.startsWith(v, "a")] }),
       });
     });
-    const rows = await run(db.q(q));
+    const rows = await db.q(q);
     const byName = new Map(rows.map((r) => [r.name, [...r.aTags].sort()]));
     expect(byName.get("Ada")).toEqual(["alpha", "azure"]);
     expect(byName.get("Grace")).toEqual([]);
@@ -1352,10 +1362,10 @@ describe("per-element pull filters (select options)", () => {
         ),
       });
     });
-    const rows = await run(db.q(q, { who: ids.ada as never }));
+    const rows = await db.q(q, { who: ids.ada as never });
     const fix = rows.find((r) => r.title === "fix the flake")!;
     expect(fix.theirs).toEqual([{ text: "on it" }] as never);
-    const grace = await run(db.q(q, { who: ids.grace as never }));
+    const grace = await db.q(q, { who: ids.grace as never });
     expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
 
     await peer.dispose();

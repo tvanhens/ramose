@@ -2,9 +2,9 @@
  * Explicitly defined, schema-checked operations — the typed write path.
  *
  * An operation is a named value: input/output are `effect/Schema`, the body
- * is `(op, input) => Effect`. Transaction verbs accumulate one commit;
- * `op.effect` is a server-side side-effect step. The client runs the same
- * body as a fiber and stops at the first effect (the optimistic prefix).
+ * is an async function. Transaction verbs accumulate one commit; `op.effect`
+ * is a server-side side-effect step. The client runs the same body and
+ * stops at the first `op.effect` (the optimistic prefix).
  *
  * Portable: this module is on `ramose/db` and must not import the Worker
  * or the engine barrel.
@@ -42,7 +42,7 @@ export interface OpPrincipal {
 
 /**
  * What an `op.effect` thunk receives on the server. The client never
- * evaluates the thunk — `op.effect` interrupts the prefix fiber instead.
+ * evaluates the thunk — `op.effect` throws {@link PrefixHalt} instead.
  */
 export interface OperationEffectContext {
   /** Worker env (bindings, secrets). Opaque on the portable surface. */
@@ -54,16 +54,13 @@ export interface OperationEffectContext {
      * Idempotent catalog upsert on `name` (defaults to the operation's db).
      * Runs as its own transaction — an effect, not a prefix step.
      */
-    install(
-      catalog: AnyCatalog,
-      name?: string,
-    ): Effect.Effect<unknown, DbError>;
+    install(catalog: AnyCatalog, name?: string): Promise<unknown>;
   };
 }
 
-export type EffectThunk<A = unknown, E = unknown> = (
+export type EffectThunk<A = unknown> = (
   ctx: OperationEffectContext,
-) => Effect.Effect<A, E> | Promise<A>;
+) => Promise<A> | A;
 
 /**
  * Entity handle a body writes through. Catalog-generic: operations are
@@ -73,15 +70,15 @@ export type EffectThunk<A = unknown, E = unknown> = (
 export interface OpEntity {
   readonly _tag: "Entity";
   readonly eid: unknown;
-  add(attr: unknown, value: unknown): Effect.Effect<void>;
-  retract(attr: unknown, value?: unknown): Effect.Effect<void>;
-  retractEntity(): Effect.Effect<void>;
+  add(attr: unknown, value: unknown): void;
+  retract(attr: unknown, value?: unknown): void;
+  retractEntity(): void;
 }
 
 /**
- * The handle a body yields through. Transaction verbs match {@link Tx}
- * at runtime; reads see the speculative view (confirmed + pending + ops
- * so far). Writes accept any attr ref — the catalog is bound at `db.run`.
+ * The handle a body awaits through. Transaction verbs accumulate one
+ * commit; reads see the speculative view (confirmed + pending + ops so
+ * far). Writes accept any attr ref — the catalog is bound at `db.run`.
  */
 export interface Op<N extends AnyNamespace | undefined = undefined> {
   /**
@@ -94,32 +91,29 @@ export interface Op<N extends AnyNamespace | undefined = undefined> {
   /** Database name this invocation is bound to. */
   readonly db: string;
 
-  entity(): Effect.Effect<OpEntity>;
-  entity(id: unknown): Effect.Effect<OpEntity>;
-  add(e: unknown, attr: unknown, value: unknown): Effect.Effect<void>;
-  retract(e: unknown, attr: unknown, value?: unknown): Effect.Effect<void>;
-  retractEntity(e: unknown): Effect.Effect<void>;
+  entity(): OpEntity;
+  entity(id: unknown): OpEntity;
+  add(e: unknown, attr: unknown, value: unknown): void;
+  retract(e: unknown, attr: unknown, value?: unknown): void;
+  retractEntity(e: unknown): void;
 
   q<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
     params?: P extends never ? never : P,
-  ): Effect.Effect<Out, DbError>;
+  ): Promise<Out>;
   q(
     input: AnyQueryObject,
     params?: Readonly<Record<string, unknown>>,
-  ): Effect.Effect<unknown, DbError>;
+  ): Promise<unknown>;
 
-  pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
+  pull(subject: unknown, pattern: unknown): Promise<unknown>;
 
   /**
    * A named side-effect step. On the server, `run` executes immediately
-   * with {@link OperationEffectContext}. On the client this interrupts the
-   * body — later steps are never guessed.
+   * with {@link OperationEffectContext}. On the client this throws
+   * {@link PrefixHalt} — later steps are never guessed.
    */
-  effect<A, E = never>(
-    name: string,
-    run: EffectThunk<A, E>,
-  ): Effect.Effect<A, E | DbError>;
+  effect<A>(name: string, run: EffectThunk<A>): Promise<A>;
 }
 
 export interface Operation<
@@ -133,18 +127,56 @@ export interface Operation<
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on: N | undefined;
-  readonly body: (op: RuntimeOp, input: I) => Effect.Effect<O, unknown>;
+  readonly body: (op: Op<N>, input: I) => Promise<O> | O;
 }
 
 export type AnyOperation = Operation<string, any, any, any>;
 
 /**
- * Runtime handle the overlay and Worker actually build. `self` is set only
- * when the operation is contextual — {@link Op} narrows that at the body.
+ * Runtime handle the overlay and Worker actually build. Effect-flavored —
+ * {@link asPromiseOp} is what an operation body sees.
+ *
+ * `self` is set only when the operation is contextual.
  */
-export type RuntimeOp = Omit<Op<AnyNamespace>, "self"> & {
-  readonly self: OpEntity | undefined;
-};
+export interface RuntimeOpEntity {
+  readonly _tag: "Entity";
+  readonly eid: unknown;
+  add(attr: unknown, value: unknown): Effect.Effect<void>;
+  retract(attr: unknown, value?: unknown): Effect.Effect<void>;
+  retractEntity(): Effect.Effect<void>;
+}
+
+export interface RuntimeOp {
+  readonly self: RuntimeOpEntity | undefined;
+  readonly principal: OpPrincipal;
+  readonly db: string;
+  readonly _effects: "halt" | "run";
+  entity(): Effect.Effect<RuntimeOpEntity>;
+  entity(id: unknown): Effect.Effect<RuntimeOpEntity>;
+  add(e: unknown, attr: unknown, value: unknown): Effect.Effect<void>;
+  retract(e: unknown, attr: unknown, value?: unknown): Effect.Effect<void>;
+  retractEntity(e: unknown): Effect.Effect<void>;
+  q(
+    input: AnyQueryObject,
+    params?: Readonly<Record<string, unknown>>,
+  ): Effect.Effect<unknown, DbError>;
+  pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
+  effect<A, E = never>(
+    name: string,
+    run: (
+      ctx: {
+        readonly env: unknown;
+        readonly principal: OpPrincipal;
+        readonly databases: {
+          install(
+            catalog: AnyCatalog,
+            name?: string,
+          ): Effect.Effect<unknown, DbError>;
+        };
+      },
+    ) => Effect.Effect<A, E> | Promise<A>,
+  ): Effect.Effect<A, E | DbError>;
+}
 
 export interface Operations<
   M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
@@ -176,16 +208,14 @@ export const Operation = <
 >(
   name: Name,
   schemas: OperationSchemas<I, O, N>,
-  body: (op: Op<N>, input: I) => Effect.Effect<O, unknown>,
+  body: (op: Op<N>, input: I) => Promise<O> | O,
 ): Operation<Name, I, O, N> => ({
   _tag: "Operation",
   name,
   input: schemas.input,
   output: schemas.output,
   on: schemas.on,
-  // Contextual bodies see `op.self: OpEntity`. The runtime handle leaves
-  // `self` unset for non-contextual ops; the Worker validates `on` first.
-  body: (op, input) => body(op as Op<N>, input),
+  body,
 });
 
 /** A deploy-time / client registry of operations. */

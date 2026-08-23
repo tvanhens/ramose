@@ -17,6 +17,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
+import * as RamoseEffect from "../../packages/ramose/src/db/effect.ts";
 import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
 const { Query, Q } = Ramose;
@@ -245,16 +246,16 @@ d("ramose session socket e2e", () => {
         url,
         token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
       };
-      const a = ManagedRuntime.make(Ramose.layer(options));
-      const b = ManagedRuntime.make(Ramose.layer(options));
+      const a = ManagedRuntime.make(RamoseEffect.layer(options));
+      const b = ManagedRuntime.make(RamoseEffect.layer(options));
       try {
-        const dbA = a.runSync(Ramose.Databases).db(sessionDb, SessionCatalog);
-        const dbB = b.runSync(Ramose.Databases).db(sessionDb, SessionCatalog);
+        const dbA = a.runSync(RamoseEffect.Databases).db(sessionDb, SessionCatalog);
+        const dbB = b.runSync(RamoseEffect.Databases).db(sessionDb, SessionCatalog);
 
-        await a.runPromise(absorb(dbA.install()));
+        await a.runPromise(absorb(dbA.effect.install()));
         const report = await a.runPromise(
           absorb(
-            dbA.transact(function* (tx) {
+            dbA.effect.transact(function* (tx) {
               const ada = yield* tx.entity();
               yield* ada.add(Session.name, "Ada");
               yield* ada.add(Session.n, 1);
@@ -265,13 +266,13 @@ d("ramose session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          absorb(report.dbAfter.q(sessionNames)),
+          absorb(report.dbAfter.effect.q(sessionNames)),
         );
         expect(names).toEqual([{ name: "Ada" }]);
 
         const pulled = await a.runPromise(
           absorb(
-            report.dbAfter.pull([":s/name", "Ada"], {
+            report.dbAfter.effect.pull([":s/name", "Ada"], {
               name: Session.name,
               n: Session.n,
             }),
@@ -283,7 +284,7 @@ d("ramose session socket e2e", () => {
         const seen: number[] = [];
         const fiber = a.runFork(
           Stream.runForEach(
-            dbA.live(sessionNames),
+            dbA.effect.live(sessionNames),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
         );
@@ -291,7 +292,7 @@ d("ramose session socket e2e", () => {
 
         await b.runPromise(
           absorb(
-            dbB.transact(function* (tx) {
+            dbB.effect.transact(function* (tx) {
               const bob = yield* tx.entity();
               yield* bob.add(Session.name, "Bob");
               yield* bob.add(Session.n, 2);
@@ -302,7 +303,7 @@ d("ramose session socket e2e", () => {
         let count = 0;
         for (let i = 0; i < 40 && count < 2; i++) {
           count = (
-            await a.runPromise(absorb(dbA.q(sessionNames)))
+            await a.runPromise(absorb(dbA.effect.q(sessionNames)))
           ).length;
           if (count < 2) await Bun.sleep(250);
         }
@@ -326,19 +327,19 @@ d("ramose session socket e2e", () => {
     "aggregates, groupBy and `.after` paging over the wire",
     async () => {
       const rt = ManagedRuntime.make(
-        Ramose.layer({
+        RamoseEffect.layer({
           url,
           token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
         }),
       );
       try {
         const db = rt
-          .runSync(Ramose.Databases)
+          .runSync(RamoseEffect.Databases)
           .db(`${dbName}-agg`, SessionCatalog);
-        await rt.runPromise(absorb(db.install()));
+        await rt.runPromise(absorb(db.effect.install()));
         const report = await rt.runPromise(
           absorb(
-            db.transact(function* (tx) {
+            db.effect.transact(function* (tx) {
               for (const [name, n] of [
                 ["a", 1],
                 ["b", 2],
@@ -360,14 +361,14 @@ d("ramose session socket e2e", () => {
           const e = yield* Query.entities(Session);
           return { n: Q.count(e) };
         });
-        const countRows = await rt.runPromise(absorb(view.q(countQ)));
+        const countRows = await rt.runPromise(absorb(view.effect.q(countQ)));
         expect(countRows[0]?.n ?? 0).toBe(4);
         const sumQ = Query.q(function* () {
           const e = yield* Query.entities(Session);
           const f = yield* Q.fact(e, Session.n);
           return { total: Q.sum(f.v) };
         });
-        const sumRows = await rt.runPromise(absorb(view.q(sumQ)));
+        const sumRows = await rt.runPromise(absorb(view.effect.q(sumQ)));
         expect(sumRows[0]?.total ?? 0).toBe(5);
 
         // groupBy/aggregate → a record projection: the bound cell is the
@@ -377,7 +378,7 @@ d("ramose session socket e2e", () => {
           const f = yield* Q.fact(e, Session.n);
           return { n: f.v, rows: Q.count(e) };
         });
-        const groups = await rt.runPromise(absorb(view.q(perN)));
+        const groups = await rt.runPromise(absorb(view.effect.q(perN)));
         expect([...groups].sort((a, b) => a.n - b.n)).toEqual([
           { n: 1, rows: 1 },
           { n: 2, rows: 2 },
@@ -397,10 +398,10 @@ d("ramose session socket e2e", () => {
           ),
         );
         const pageQ = (after: Ramose.Cursor | null) => paged.after(after);
-        const p1 = await rt.runPromise(absorb(view.q(pageQ(null))));
+        const p1 = await rt.runPromise(absorb(view.effect.q(pageQ(null))));
         expect(p1.rows.map((r) => r.name)).toEqual(["a", "b", "c"]);
         expect(p1.cursor).not.toBeNull();
-        const p2 = await rt.runPromise(absorb(view.q(pageQ(p1.cursor))));
+        const p2 = await rt.runPromise(absorb(view.effect.q(pageQ(p1.cursor))));
         expect(p2.rows.map((r) => r.name)).toEqual(["d"]);
         expect(p2.cursor).toBeNull();
       } finally {
@@ -545,17 +546,17 @@ d("ramose session socket e2e", () => {
         url,
         token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
       };
-      const phoneRt = ManagedRuntime.make(Ramose.layer(options));
-      const computerRt = ManagedRuntime.make(Ramose.layer(options));
+      const phoneRt = ManagedRuntime.make(RamoseEffect.layer(options));
+      const computerRt = ManagedRuntime.make(RamoseEffect.layer(options));
       const boardDb = `${dbName}-reef-two`;
       try {
-        const phone = phoneRt.runSync(Ramose.Databases).db(boardDb, ReefBoard);
-        const computer = computerRt.runSync(Ramose.Databases).db(boardDb, ReefBoard);
+        const phone = phoneRt.runSync(RamoseEffect.Databases).db(boardDb, ReefBoard);
+        const computer = computerRt.runSync(RamoseEffect.Databases).db(boardDb, ReefBoard);
 
-        await phoneRt.runPromise(absorb(phone.install()));
+        await phoneRt.runPromise(absorb(phone.effect.install()));
         const person = await phoneRt.runPromise(
           absorb(
-            phone.transact(function* (tx) {
+            phone.effect.transact(function* (tx) {
               const ada = yield* tx.entity();
               yield* ada.add(ReefUser.name, "Ada");
             }),
@@ -563,7 +564,7 @@ d("ramose session socket e2e", () => {
         );
         const people = await phoneRt.runPromise(
           absorb(
-            person.dbAfter.q(
+            person.dbAfter.effect.q(
               Query.q(() =>
                 pipe(
                   Query.entities(ReefUser),
@@ -576,7 +577,7 @@ d("ramose session socket e2e", () => {
         const adaId = people[0]!.id;
         const seeded = await phoneRt.runPromise(
           absorb(
-            phone.transact(function* (tx) {
+            phone.effect.transact(function* (tx) {
               const one = yield* tx.entity();
               yield* one.add(ReefIssue.title, "One");
               yield* one.add(ReefIssue.status, "todo");
@@ -595,12 +596,12 @@ d("ramose session socket e2e", () => {
         const phoneSeen: Array<readonly ReefBoardRow[]> = [];
         const computerSeen: Array<readonly ReefBoardRow[]> = [];
         const phoneFiber = phoneRt.runFork(
-          Stream.runForEach(phone.live(reefBoardQuery), (rows) =>
+          Stream.runForEach(phone.effect.live(reefBoardQuery), (rows) =>
             Effect.sync(() => phoneSeen.push(rows)),
           ),
         );
         const computerFiber = computerRt.runFork(
-          Stream.runForEach(computer.live(reefBoardQuery), (rows) =>
+          Stream.runForEach(computer.effect.live(reefBoardQuery), (rows) =>
             Effect.sync(() => computerSeen.push(rows)),
           ),
         );
@@ -632,7 +633,7 @@ d("ramose session socket e2e", () => {
         await Promise.all([
           phoneRt.runPromise(
             absorb(
-              phone.transact(function* (tx) {
+              phone.effect.transact(function* (tx) {
                 yield* tx.add(one!.id, ReefIssue.status, "doing");
                 yield* tx.add(one!.id, ReefIssue.rank, 10);
               }),
@@ -640,7 +641,7 @@ d("ramose session socket e2e", () => {
           ),
           computerRt.runPromise(
             absorb(
-              computer.transact(function* (tx) {
+              computer.effect.transact(function* (tx) {
                 yield* tx.add(two!.id, ReefIssue.status, "done");
                 yield* tx.add(two!.id, ReefIssue.rank, 20);
               }),

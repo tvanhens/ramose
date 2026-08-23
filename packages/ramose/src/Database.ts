@@ -162,7 +162,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
     fetch: globalFetch,
   });
   const report = yield* Effect.ensuring(
-    databases.db(name, props.catalog).install(),
+    databases.db(name, props.catalog).effect.install(),
     Effect.sync(close),
   ).pipe(
     Effect.timeoutOrElse({

@@ -1,7 +1,7 @@
 /**
  * `ramose` — the Alchemy 2 + Effect interface to Ramose.
  *
- * Everything on `ramose/db` (schema, `Databases`, `Db<C>`, the eight
+ * Everything on `ramose/db` (schema, `connect`, `Db<C>`, the tagged
  * errors), plus the deploy-time half: the `Server` and `Database` resources,
  * the two capabilities and the two transport layers.
  *

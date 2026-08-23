@@ -148,7 +148,8 @@ const boardQuery = Query.q(() =>
 
 type BoardRow = { title: string; status: string; rank: number };
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
 
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   const seen: A[] = [];
@@ -193,7 +194,7 @@ const waitBoards = async (
 };
 
 const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
-  db.transact(function* (tx) {
+  db.effect.transact(function* (tx) {
     yield* tx.add(id, Issue.status, status);
     yield* tx.add(id, Issue.rank, rank);
   });
@@ -335,8 +336,8 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
 describe("two clients move two existing issues", () => {
   test("after simultaneous non-conflicting updates, both live boards show both moves from { op: tx } frames alone", async () => {
     const world = await twoBoards({ walk: "after-acks" });
-    const phoneLive = collect(world.phone.live(boardQuery));
-    const browserLive = collect(world.browser.live(boardQuery));
+    const phoneLive = collect(world.phone.effect.live(boardQuery));
+    const browserLive = collect(world.browser.effect.live(boardQuery));
     await settle();
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
@@ -390,8 +391,8 @@ describe("two clients move two existing issues", () => {
 
   test("after simultaneous non-conflicting updates, both live boards show both moves (walk on each commit)", async () => {
     const world = await twoBoards({ walk: "on-commit" });
-    const phoneLive = collect(world.phone.live(boardQuery));
-    const browserLive = collect(world.browser.live(boardQuery));
+    const phoneLive = collect(world.phone.effect.live(boardQuery));
+    const browserLive = collect(world.browser.effect.live(boardQuery));
     await settle();
 
     await Promise.all([
@@ -411,8 +412,8 @@ describe("two clients move two existing issues", () => {
 
   test("two inbound { op: tx } frames (no local pending): both live boards show both moves", async () => {
     const world = await twoBoards({ walk: "after-acks" });
-    const phoneLive = collect(world.phone.live(boardQuery));
-    const browserLive = collect(world.browser.live(boardQuery));
+    const phoneLive = collect(world.phone.effect.live(boardQuery));
+    const browserLive = collect(world.browser.effect.live(boardQuery));
     await settle();
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });

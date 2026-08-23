@@ -19,7 +19,8 @@ import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
 
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   const seen: A[] = [];
@@ -111,8 +112,8 @@ describe("pull and livePull are two terminals over one shape", () => {
     const db = c.ramose.db("movies", Movies);
     const ada = { id: world.eid };
 
-    expect(await run(db.pull(ada, shape))).toEqual({ name: "Ada", age: 36 });
-    const live = collect(db.livePull(ada, shape));
+    expect(await db.pull(ada, shape)).toEqual({ name: "Ada", age: 36 });
+    const live = collect(db.effect.livePull(ada, shape));
     await settle();
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
@@ -131,7 +132,7 @@ describe("the basis is the wake", () => {
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const ada = { id: world.eid };
-    const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
+    const live = collect(c.ramose.db("movies", Movies).effect.livePull(ada, shape));
     await settle();
     expect(live.seen).toHaveLength(1);
 
@@ -156,12 +157,12 @@ describe("the basis is the wake", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const ada = { id: world.eid };
-    const live = collect(db.livePull(ada, shape));
+    const live = collect(db.effect.livePull(ada, shape));
     await settle();
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
 
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         yield* tx.retractEntity(world.eid);
       }),
     );
@@ -188,7 +189,7 @@ describe("livePull survives the network like live", () => {
     const peer = peerAt(state);
     const c = client(peer);
     const ada = { id: world.eid };
-    const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
+    const live = collect(c.ramose.db("movies", Movies).effect.livePull(ada, shape));
     await settle();
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
@@ -229,7 +230,7 @@ describe("livePull survives the network like live", () => {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
     const live = collect(
-      c.ramose.db("movies", Movies).livePull({ id: world.eid }, shape),
+      c.ramose.db("movies", Movies).effect.livePull({ id: world.eid }, shape),
     );
     await settle();
 
@@ -249,7 +250,7 @@ describe("livePull survives the network like live", () => {
       answer: () => ({ status: 401, body: { error: "no" } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const live = collect(c.ramose.db("movies", Movies).livePull({ id: 17 }, shape));
+    const live = collect(c.ramose.db("movies", Movies).effect.livePull({ id: 17 }, shape));
     await settle();
 
     expect(live.done).toBe(true);
@@ -265,7 +266,7 @@ describe("a pinned view has no news", () => {
     });
     const c = client(peer);
     const live = collect(
-      c.ramose.db("movies", Movies).asOf(3).livePull({ id: 17 }, shape),
+      c.ramose.db("movies", Movies).asOf(3).effect.livePull({ id: 17 }, shape),
     );
     await settle();
 
@@ -285,7 +286,7 @@ describe("a pinned view has no news", () => {
     });
     const c = client(peer);
     const live = collect(
-      c.ramose.db("movies", Movies).history.livePull({ id: 17 }, shape),
+      c.ramose.db("movies", Movies).history.effect.livePull({ id: 17 }, shape),
     );
     await settle();
 

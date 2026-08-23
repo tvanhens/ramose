@@ -45,7 +45,11 @@ import {
   type SessionPrincipal,
   type SocketFactory,
 } from "./session.ts";
-import type { TokenSource } from "./token.ts";
+import {
+  isTokenSource,
+  type TokenInput,
+  wrapTokenCause,
+} from "./token.ts";
 
 /** One method, because a database is a name. */
 export interface DatabasesShape {
@@ -69,14 +73,11 @@ export interface ClientOptions {
   readonly url: string;
   /**
    * The bearer credential. It is re-read on every (re)connect and every
-   * `/transact`, so a refresh needs no API of its own. Static:
-   * `Effect.succeed(Redacted.make(t))` or `token.static(t)`; a refreshing
-   * JWT: `token.jwt(mint)` — a {@link TokenSource} is read via its `.token`.
+   * write, so a refresh needs no API of its own. A plain string, a
+   * `() => string | Promise<string>`, or a {@link TokenInput} source
+   * (`token.jwt` / `token.static`).
    */
-  readonly token?:
-    | Effect.Effect<Redacted.Redacted<string>, DbError>
-    | TokenSource
-    | undefined;
+  readonly token?: TokenInput | undefined;
   /** Injection seam — defaults to the ambient `fetch`. */
   readonly fetch?: typeof fetch | undefined;
   /** Injection seam — defaults to the ambient `WebSocket`. */
@@ -408,9 +409,43 @@ export const makeDatabases = (
   };
 };
 
+/**
+ * @internal Token the hatch / Worker transports still accept — a plain
+ * {@link TokenInput} or an Effect of a redacted string.
+ */
+export type InternalToken =
+  | TokenInput
+  | Effect.Effect<Redacted.Redacted<string>, DbError>;
+
+/** @internal */
+export interface InternalClientOptions extends Omit<ClientOptions, "token"> {
+  readonly token?: InternalToken;
+}
+
+const resolveClientToken = (
+  token: InternalToken | undefined,
+): Effect.Effect<Redacted.Redacted<string>, DbError> | undefined => {
+  if (token === undefined) return undefined;
+  if (typeof token === "string") return Effect.succeed(Redacted.make(token));
+  if (typeof token === "function") {
+    return Effect.tryPromise({
+      try: async () => Redacted.make(await token()),
+      catch: wrapTokenCause,
+    });
+  }
+  if (Effect.isEffect(token)) return token;
+  if (isTokenSource(token)) {
+    return Effect.tryPromise({
+      try: async () => Redacted.make(await token.token()),
+      catch: wrapTokenCause,
+    });
+  }
+  return undefined;
+};
+
 /** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
 const configure = (
-  options: ClientOptions,
+  options: InternalClientOptions,
 ): Effect.Effect<DatabasesConfig> =>
   Effect.suspend(() => {
     try {
@@ -433,11 +468,7 @@ const configure = (
       options.webSocket === undefined
         ? globalWebSocket()
         : (url) => new options.webSocket!(url) as never;
-    // a TokenSource is its `.token` Effect; the layer never sees the rest
-    const token =
-      options.token === undefined || Effect.isEffect(options.token)
-        ? options.token
-        : options.token.token;
+    const token = resolveClientToken(options.token);
     return Effect.succeed({
       url: Effect.succeed(options.url.replace(/\/+$/, "")),
       token,
@@ -452,7 +483,7 @@ const configure = (
  * the layer's scope closes (a `ManagedRuntime` disposed with the page, a
  * `Layer.launch`, a test).
  */
-export const layer = (options: ClientOptions): Layer.Layer<Databases> =>
+export const layer = (options: InternalClientOptions): Layer.Layer<Databases> =>
   Layer.effect(
     Databases,
     Effect.gen(function* () {
@@ -480,10 +511,10 @@ export interface Client {
 }
 
 /**
- * A `Client` for non-Effect callers — a browser app, a script — so nothing
+ * A `Client` for app callers — a browser app, a script — so nothing
  * outside Effect land needs a `ManagedRuntime` just to build the client and
  * close its sockets. A thin wrapper over the factory `layer` uses, not a
- * second client; `layer` stays the Effect-native entry.
+ * second client; `layer` lives on `ramose/db/effect`.
  *
  * A provisioning mistake (malformed URL, no `fetch`) throws synchronously:
  * the same defects `layer` dies with.

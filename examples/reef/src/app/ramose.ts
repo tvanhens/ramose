@@ -9,7 +9,6 @@
  * establishment; screens read it with `db.principal()`.
  */
 import * as Ramose from "ramose/db";
-import * as Effect from "effect/Effect";
 import { Reef } from "../domain/schema.ts";
 import type { RamoseClass } from "../domain/shared.ts";
 import { provisionWorkspace } from "./mutations.ts";
@@ -64,9 +63,7 @@ export const openWorkspace = async (
       webSocket: options?.webSocket,
     });
     try {
-      await Effect.runPromise(
-        provisionWorkspace(ramose.db(slug, Reef)),
-      );
+      await provisionWorkspace(ramose.db(slug, Reef));
     } finally {
       await ramose.close();
     }

@@ -1,12 +1,11 @@
 /**
- * Every write the app makes. Each is one `db.transact` generator — the
- * session overlay applies it locally, then the peer commits it or the
- * policy rejects it with `Unauthorized` / `TxRejected`. A denial drops
+ * Every write the app makes. Each is a named operation — the session overlay
+ * applies the optimistic prefix locally, then the peer commits it or the
+ * policy rejects it with `Unauthorized` / `OperationRejected`. A denial drops
  * the pending layer; the UI surfaces the error as a toast (enforcement
  * is server-side; the buttons are merely polite).
  */
 
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
@@ -51,40 +50,40 @@ export const provisionWorkspaceOp = Ramose.Operation(
     input: Schema.Struct({}),
     output: Schema.Struct({ ready: Schema.Boolean }),
   },
-  (op) =>
-    Effect.gen(function* () {
-      yield* op.effect("db/install", ({ databases }) => databases.install(Reef, op.db));
-      yield* op.effect("org/register", ({ env, principal }) => {
-        const register = authFetch(env);
-        if (register === undefined) return Effect.void;
-        const name =
-          typeof principal.name === "string" && principal.name.length > 0
-            ? principal.name
-            : op.db;
-        return Effect.tryPromise({
-          try: () =>
-            register("https://auth/api/auth/organization/create", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ name, slug: op.db }),
-            }),
-          catch: (cause) =>
-            new Ramose.InternalError({
-              message: cause instanceof Error ? cause.message : String(cause),
-            }),
-        }).pipe(Effect.asVoid);
-      });
-      for (const seed of SEED_LABELS) {
-        const label = yield* op.entity();
-        yield* label.add(Label.name, seed.name);
-        yield* label.add(Label.color, seed.color);
+  async (op) => {
+    await op.effect("db/install", ({ databases }) =>
+      databases.install(Reef, op.db),
+    );
+    await op.effect("org/register", async ({ env, principal }) => {
+      const register = authFetch(env);
+      if (register === undefined) return;
+      const name =
+        typeof principal.name === "string" && principal.name.length > 0
+          ? principal.name
+          : op.db;
+      try {
+        await register("https://auth/api/auth/organization/create", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name, slug: op.db }),
+        });
+      } catch (cause) {
+        throw new Ramose.InternalError({
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
       }
-      return { ready: true };
-    }),
+    });
+    for (const seed of SEED_LABELS) {
+      const label = op.entity();
+      label.add(Label.name, seed.name);
+      label.add(Label.color, seed.color);
+    }
+    return { ready: true };
+  },
 );
 
 export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).pipe(Effect.asVoid);
+  db.run(provisionWorkspaceOp, {}).then(() => undefined);
 
 export const moveIssueOp = Ramose.Operation(
   "issue/move",
@@ -93,12 +92,11 @@ export const moveIssueOp = Ramose.Operation(
     input: Schema.Struct({ status: StatusSchema, rank: Schema.Number }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      yield* op.add(op.self, Issue.status, input.status);
-      yield* op.add(op.self, Issue.rank, input.rank);
-      return {};
-    }),
+  (op, input) => {
+    op.add(op.self, Issue.status, input.status);
+    op.add(op.self, Issue.rank, input.rank);
+    return {};
+  },
 );
 
 export const setStatusOp = Ramose.Operation(
@@ -108,11 +106,10 @@ export const setStatusOp = Ramose.Operation(
     input: Schema.Struct({ status: StatusSchema }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      yield* op.add(op.self, Issue.status, input.status);
-      return {};
-    }),
+  (op, input) => {
+    op.add(op.self, Issue.status, input.status);
+    return {};
+  },
 );
 
 export const addCommentOp = Ramose.Operation(
@@ -122,15 +119,14 @@ export const addCommentOp = Ramose.Operation(
     input: Schema.Struct({ body: Schema.String, authorId: Schema.Number }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      const comment = yield* op.entity();
-      yield* comment.add(Comment.body, input.body);
-      yield* comment.add(Comment.at, new Date());
-      yield* comment.add(Comment.author, input.authorId);
-      yield* comment.add(Comment.issue, op.self);
-      return {};
-    }),
+  (op, input) => {
+    const comment = op.entity();
+    comment.add(Comment.body, input.body);
+    comment.add(Comment.at, new Date());
+    comment.add(Comment.author, input.authorId);
+    comment.add(Comment.issue, op.self);
+    return {};
+  },
 );
 
 export const deleteIssueOp = Ramose.Operation(
@@ -140,11 +136,178 @@ export const deleteIssueOp = Ramose.Operation(
     input: Schema.Struct({}),
     output: Schema.Struct({}),
   },
-  (op) =>
-    Effect.gen(function* () {
-      yield* op.retractEntity(op.self);
-      return {};
+  (op) => {
+    op.retractEntity(op.self);
+    return {};
+  },
+);
+
+export const createIssueOp = Ramose.Operation(
+  "issue/create",
+  {
+    input: Schema.Struct({
+      title: Schema.String,
+      description: Schema.optional(Schema.String),
+      status: StatusSchema,
+      priority: Schema.Number,
+      rank: Schema.Number,
+      creatorId: Schema.Number,
+      assigneeId: Schema.optional(Schema.Number),
+      labelIds: Schema.optional(Schema.Array(Schema.Number)),
     }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    const issue = op.entity();
+    issue.add(Issue.title, input.title);
+    if (input.description !== undefined && input.description !== "") {
+      issue.add(Issue.description, input.description);
+    }
+    issue.add(Issue.status, input.status);
+    issue.add(Issue.priority, input.priority);
+    issue.add(Issue.rank, input.rank);
+    issue.add(Issue.createdAt, new Date());
+    issue.add(Issue.creator, input.creatorId);
+    if (input.assigneeId !== undefined) {
+      issue.add(Issue.assignee, input.assigneeId);
+    }
+    for (const labelId of input.labelIds ?? []) {
+      issue.add(Issue.labels, labelId);
+    }
+    return {};
+  },
+);
+
+export const setTitleOp = Ramose.Operation(
+  "issue/set-title",
+  {
+    on: Issue,
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.add(op.self, Issue.title, input.title);
+    return {};
+  },
+);
+
+export const setDescriptionOp = Ramose.Operation(
+  "issue/set-description",
+  {
+    on: Issue,
+    input: Schema.Struct({ text: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    if (input.text === "") op.retract(op.self, Issue.description);
+    else op.add(op.self, Issue.description, input.text);
+    return {};
+  },
+);
+
+export const setPriorityOp = Ramose.Operation(
+  "issue/set-priority",
+  {
+    on: Issue,
+    input: Schema.Struct({ priority: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.add(op.self, Issue.priority, input.priority);
+    return {};
+  },
+);
+
+export const setAssigneeOp = Ramose.Operation(
+  "issue/set-assignee",
+  {
+    on: Issue,
+    input: Schema.Struct({ assigneeId: Schema.optional(Schema.Number) }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    if (input.assigneeId === undefined) op.retract(op.self, Issue.assignee);
+    else op.add(op.self, Issue.assignee, input.assigneeId);
+    return {};
+  },
+);
+
+export const toggleLabelOp = Ramose.Operation(
+  "issue/toggle-label",
+  {
+    on: Issue,
+    input: Schema.Struct({ labelId: Schema.Number, on: Schema.Boolean }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    if (input.on) op.add(op.self, Issue.labels, input.labelId);
+    else op.retract(op.self, Issue.labels, input.labelId);
+    return {};
+  },
+);
+
+export const setPrivateNoteOp = Ramose.Operation(
+  "issue/set-private-note",
+  {
+    on: Issue,
+    input: Schema.Struct({ note: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    if (input.note === "") op.retract(op.self, Issue.privateNote);
+    else op.add(op.self, Issue.privateNote, input.note);
+    return {};
+  },
+);
+
+export const deleteCommentOp = Ramose.Operation(
+  "comment/delete",
+  {
+    on: Comment,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.retractEntity(op.self);
+    return {};
+  },
+);
+
+export const seedSampleIssuesOp = Ramose.Operation(
+  "workspace/seed-sample",
+  {
+    input: Schema.Struct({
+      creatorId: Schema.Number,
+      labels: Schema.Array(
+        Schema.Struct({ id: Schema.Number, name: Schema.String }),
+      ),
+    }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    const labelIds = new Map(input.labels.map((l) => [l.name, l.id] as const));
+    const nextRank: Partial<Record<Status, number>> = {};
+    for (const sample of SAMPLE_ISSUES) {
+      const rank = rankAfter(nextRank[sample.status]);
+      nextRank[sample.status] = rank;
+      const issue = op.entity();
+      issue.add(Issue.title, sample.title);
+      if (sample.description !== undefined) {
+        issue.add(Issue.description, sample.description);
+      }
+      issue.add(Issue.status, sample.status);
+      issue.add(Issue.priority, sample.priority);
+      issue.add(Issue.rank, rank);
+      issue.add(Issue.createdAt, new Date());
+      issue.add(Issue.creator, input.creatorId);
+      if (sample.assign) issue.add(Issue.assignee, input.creatorId);
+      for (const name of sample.labels) {
+        const id = labelIds.get(name);
+        if (id !== undefined) issue.add(Issue.labels, id);
+      }
+    }
+    return {};
+  },
 );
 
 export const operations = Ramose.Operations({
@@ -153,6 +316,15 @@ export const operations = Ramose.Operations({
   setStatusOp,
   addCommentOp,
   deleteIssueOp,
+  createIssueOp,
+  setTitleOp,
+  setDescriptionOp,
+  setPriorityOp,
+  setAssigneeOp,
+  toggleLabelOp,
+  setPrivateNoteOp,
+  deleteCommentOp,
+  seedSampleIssuesOp,
 });
 
 export interface NewIssue {
@@ -171,23 +343,15 @@ export const createIssue = (
   lastRankInColumn: number | undefined,
   draft: NewIssue,
 ) =>
-  db.transact(function* (tx) {
-    const issue = yield* tx.entity();
-    yield* issue.add(Issue.title, draft.title);
-    if (draft.description !== undefined && draft.description !== "") {
-      yield* issue.add(Issue.description, draft.description);
-    }
-    yield* issue.add(Issue.status, draft.status);
-    yield* issue.add(Issue.priority, draft.priority);
-    yield* issue.add(Issue.rank, rankAfter(lastRankInColumn));
-    yield* issue.add(Issue.createdAt, new Date());
-    yield* issue.add(Issue.creator, myEid);
-    if (draft.assigneeId !== undefined) {
-      yield* issue.add(Issue.assignee, draft.assigneeId);
-    }
-    for (const labelId of draft.labelIds ?? []) {
-      yield* issue.add(Issue.labels, labelId);
-    }
+  db.run(createIssueOp, {
+    title: draft.title,
+    description: draft.description,
+    status: draft.status,
+    priority: draft.priority,
+    rank: rankAfter(lastRankInColumn),
+    creatorId: myEid,
+    assigneeId: draft.assigneeId,
+    labelIds: draft.labelIds,
   });
 
 /** Drag-and-drop: one status datom + one rank datom. */
@@ -203,48 +367,30 @@ export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
   db.run(setStatusOp, issueId, { status });
 
 export const setTitle = (db: ReefDb, issueId: number, title: string) =>
-  db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.title, title);
-  });
+  db.run(setTitleOp, issueId, { title });
 
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.transact(function* (tx) {
-    if (text === "") yield* tx.retract(issueId, Issue.description);
-    else yield* tx.add(issueId, Issue.description, text);
-  });
+  db.run(setDescriptionOp, issueId, { text });
 
 export const setPriority = (db: ReefDb, issueId: number, priority: number) =>
-  db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.priority, priority);
-  });
+  db.run(setPriorityOp, issueId, { priority });
 
 export const setAssignee = (
   db: ReefDb,
   issueId: number,
   assigneeId: number | undefined,
-) =>
-  db.transact(function* (tx) {
-    if (assigneeId === undefined) yield* tx.retract(issueId, Issue.assignee);
-    else yield* tx.add(issueId, Issue.assignee, assigneeId);
-  });
+) => db.run(setAssigneeOp, issueId, { assigneeId });
 
 export const toggleLabel = (
   db: ReefDb,
   issueId: number,
   labelId: number,
   on: boolean,
-) =>
-  db.transact(function* (tx) {
-    if (on) yield* tx.add(issueId, Issue.labels, labelId);
-    else yield* tx.retract(issueId, Issue.labels, labelId);
-  });
+) => db.run(toggleLabelOp, issueId, { labelId, on });
 
 /** Admin-only by policy: everyone else gets `Unauthorized` from the peer. */
 export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
-  db.transact(function* (tx) {
-    if (note === "") yield* tx.retract(issueId, Issue.privateNote);
-    else yield* tx.add(issueId, Issue.privateNote, note);
-  });
+  db.run(setPrivateNoteOp, issueId, { note });
 
 export const deleteIssue = (db: ReefDb, issueId: number) =>
   db.run(deleteIssueOp, issueId, {});
@@ -257,9 +403,7 @@ export const addComment = (
 ) => db.run(addCommentOp, issueId, { body, authorId: myEid });
 
 export const deleteComment = (db: ReefDb, commentId: number) =>
-  db.transact(function* (tx) {
-    yield* tx.retractEntity(commentId);
-  });
+  db.run(deleteCommentOp, commentId, {});
 
 // ── sample data ──────────────────────────────────────────────────────────────
 
@@ -335,7 +479,7 @@ const SAMPLE_ISSUES: readonly {
 ];
 
 /**
- * Seed the sample board in one transaction. Ranks are spaced by column so
+ * Seed the sample board in one operation. Ranks are spaced by column so
  * later drags have room in between; issues are created by (and, when marked,
  * assigned to) the caller.
  */
@@ -343,27 +487,4 @@ export const seedSampleIssues = (
   db: ReefDb,
   myEid: number,
   labels: readonly { id: number; name: string }[],
-) =>
-  db.transact(function* (tx) {
-    const labelIds = new Map(labels.map((l) => [l.name, l.id] as const));
-    const nextRank: Partial<Record<Status, number>> = {};
-    for (const sample of SAMPLE_ISSUES) {
-      const rank = rankAfter(nextRank[sample.status]);
-      nextRank[sample.status] = rank;
-      const issue = yield* tx.entity();
-      yield* issue.add(Issue.title, sample.title);
-      if (sample.description !== undefined) {
-        yield* issue.add(Issue.description, sample.description);
-      }
-      yield* issue.add(Issue.status, sample.status);
-      yield* issue.add(Issue.priority, sample.priority);
-      yield* issue.add(Issue.rank, rank);
-      yield* issue.add(Issue.createdAt, new Date());
-      yield* issue.add(Issue.creator, myEid);
-      if (sample.assign) yield* issue.add(Issue.assignee, myEid);
-      for (const name of sample.labels) {
-        const id = labelIds.get(name);
-        if (id !== undefined) yield* issue.add(Issue.labels, id);
-      }
-    }
-  });
+) => db.run(seedSampleIssuesOp, { creatorId: myEid, labels });

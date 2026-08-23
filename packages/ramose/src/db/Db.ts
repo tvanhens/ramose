@@ -14,6 +14,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import type { EffectDb, EffectReadDb } from "./effect-types.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
@@ -27,6 +28,7 @@ import type {
   Operation,
   OperationInvocation,
 } from "./Operation.ts";
+import { asPromise, fromStream } from "./promise.ts";
 import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
@@ -49,12 +51,8 @@ import {
   type ValidatePull,
 } from "./Pull.ts";
 import type { Session } from "./session.ts";
-import {
-  type Tx,
-  txBuilder,
-  type YieldContext,
-  type YieldError,
-} from "./Tx.ts";
+import type { Subscription } from "./subscription.ts";
+import { txBuilder } from "./Tx.ts";
 
 /**
  * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
@@ -195,14 +193,13 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   q<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
     ...params: ParamArgs<P>
-  ): Effect.Effect<Out, QueryError<Out, P>>;
+  ): Promise<Out>;
 
   /**
    * Stand a query up. On an overlay session, re-run when that overlay
-   * mutates (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`) —
+   * mutates (`{ op: "tx" }` / `{ op: "resync" }` / local write) —
    * apply is the notify. HTTPS live (no overlay) still re-runs when the
-   * session's `t` moves. Requirements are `never` — teardown is fiber
-   * interruption — and a pinned view (`asOf` / `history`) emits once and
+   * session's `t` moves. A pinned view (`asOf` / `history`) emits once and
    * completes. A pass that returns the rows already emitted is not
    * emitted again: a write this query does not see is not a re-render.
    * Bind params as the second argument.
@@ -210,7 +207,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   live<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
     ...params: ParamArgs<P>
-  ): Stream.Stream<Out, QueryError<Out, P>>;
+  ): Subscription<Out, QueryError<Out, P>>;
 
   /**
    * Project one entity. `null` when a required field is missing. The subject
@@ -220,7 +217,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   pull<const P>(
     subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
-  ): Effect.Effect<Pull<C, P> | null, DbError>;
+  ): Promise<Pull<C, P> | null>;
 
   /**
    * Stand a pull up: `live`'s exact contract over one entity. Overlay
@@ -233,20 +230,26 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   livePull<const P>(
     subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
-  ): Stream.Stream<Pull<C, P> | null, DbError>;
+  ): Subscription<Pull<C, P> | null, DbError>;
 
   /**
    * The basis this view reads at: for a live db, the peer's current `t`
    * (one `GET /db/:name/info`); for `asOf(t)`, `t` with no I/O. Observing a
    * newer basis bumps the session, so a standing `live` that missed a tick
-   * re-runs — the same rule as `transact`.
+   * re-runs — the same rule as a write.
    */
-  basis(): Effect.Effect<{ readonly t: number }, DbError>;
+  basis(): Promise<{ readonly t: number }>;
 
   /** Read-only view as of transaction `t`. Pure. */
   asOf(t: number): ReadDb<C>;
   /** History view — asserts *and* retracts. Pure. */
   readonly history: ReadDb<C>;
+
+  /**
+   * Effect-returning variants of these methods (`Effect` / `Stream`).
+   * Import `ramose/db/effect` for `layer` / `Databases`.
+   */
+  readonly effect: EffectReadDb<C>;
 }
 
 export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
@@ -258,22 +261,10 @@ export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
    * A non-`null` answer is cached per session generation and re-read on
    * reconnect.
    */
-  principal(): Effect.Effect<DbPrincipal<C>, DbError>;
-
-  /**
-   * The one write. The generator's yielded Effects compose as they do in
-   * `Effect.gen`, so a failure in the body aborts before anything is sent.
-   */
-  transact<Eff extends Effect.Effect<any, any, any>, A = unknown>(
-    body: (tx: Tx<C>) => Generator<Eff, A, never>,
-  ): Effect.Effect<
-    TxReport<C>,
-    DbError | YieldError<Eff>,
-    YieldContext<Eff>
-  >;
+  principal(): Promise<DbPrincipal<C>>;
 
   /** Idempotent catalog upsert, as an ordinary transaction. */
-  install(): Effect.Effect<TxReport<C>, DbError>;
+  install(): Promise<TxReport<C>>;
 
   /**
    * Run a named operation. Decode input, apply the optimistic prefix (steps
@@ -284,12 +275,14 @@ export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
   run<I, O>(
     operation: Operation<string, I, O, undefined>,
     input: I,
-  ): Effect.Effect<OpReport<O, C>, DbError>;
+  ): Promise<OpReport<O, C>>;
   run<I, O, N extends AnyNamespace>(
     operation: Operation<string, I, O, N>,
     entity: unknown,
     input: I,
-  ): Effect.Effect<OpReport<O, C>, DbError>;
+  ): Promise<OpReport<O, C>>;
+
+  readonly effect: EffectDb<C>;
 }
 
 // ── implementation ─────────────────────────────────────────────────────────
@@ -435,7 +428,7 @@ const makeRead = <C extends AnyCatalog>(
   catalog: C,
   view: View,
   bad: InvalidRequest | undefined,
-): ReadDb<C> => {
+): EffectReadDb<C> => {
   const fenced = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
     bad === undefined ? effect : Effect.fail(bad as E);
 
@@ -604,7 +597,7 @@ const makeRead = <C extends AnyCatalog>(
       ),
     );
 
-  const read: ReadDb<C> = {
+  const read: EffectReadDb<C> = {
     name,
     catalog,
 
@@ -618,7 +611,7 @@ const makeRead = <C extends AnyCatalog>(
             Effect.map((r) => r.rows),
           ),
         ),
-      )) as ReadDb<C>["q"],
+      )) as EffectReadDb<C>["q"],
 
     live: ((
       input: AnyQueryObject,
@@ -633,7 +626,7 @@ const makeRead = <C extends AnyCatalog>(
             viewed: pass.viewed,
           })),
         ),
-      )) as ReadDb<C>["live"],
+      )) as EffectReadDb<C>["live"],
 
     pull: ((subject: unknown, pattern: unknown) =>
       fenced(
@@ -642,10 +635,10 @@ const makeRead = <C extends AnyCatalog>(
             Effect.map((pass) => pass.value),
           ),
         ),
-      )) as ReadDb<C>["pull"],
+      )) as EffectReadDb<C>["pull"],
 
     livePull: ((subject: unknown, pattern: unknown) =>
-      standing((minT) => pullOne(subject, pattern, minT))) as ReadDb<
+      standing((minT) => pullOne(subject, pattern, minT))) as EffectReadDb<
       C
     >["livePull"],
 
@@ -756,6 +749,75 @@ const awaitWake = (
     });
   });
 
+const copySeam = (from: object, to: object): void => {
+  const seam = (from as Record<symbol, unknown>)[DB_SEAM];
+  if (seam !== undefined) (to as Record<symbol, unknown>)[DB_SEAM] = seam;
+};
+
+const wrapRead = <C extends AnyCatalog>(inner: EffectReadDb<C>): ReadDb<C> => {
+  const read = {
+    name: inner.name,
+    catalog: inner.catalog,
+    q: ((
+      input: AnyQueryObject,
+      bindings?: Readonly<Record<string, unknown>>,
+    ) =>
+      asPromise(
+        (
+          inner.q as (
+            q: AnyQueryObject,
+            p?: Readonly<Record<string, unknown>>,
+          ) => Effect.Effect<unknown, QueryError>
+        )(input, bindings),
+      )) as ReadDb<C>["q"],
+    live: ((
+      input: AnyQueryObject,
+      bindings?: Readonly<Record<string, unknown>>,
+    ) =>
+      fromStream(
+        (
+          inner.live as (
+            q: AnyQueryObject,
+            p?: Readonly<Record<string, unknown>>,
+          ) => Stream.Stream<unknown, QueryError>
+        )(input, bindings),
+      )) as ReadDb<C>["live"],
+    pull: ((subject: unknown, pattern: unknown) =>
+      asPromise(inner.pull(subject as never, pattern as never))) as ReadDb<
+      C
+    >["pull"],
+    livePull: ((subject: unknown, pattern: unknown) =>
+      fromStream(
+        inner.livePull(subject as never, pattern as never),
+      )) as ReadDb<C>["livePull"],
+    basis: () => asPromise(inner.basis()),
+    asOf: (t: number) => wrapRead(inner.asOf(t)),
+    get history() {
+      return wrapRead(inner.history);
+    },
+    effect: inner,
+  } as ReadDb<C>;
+  copySeam(inner, read);
+  return read;
+};
+
+const wrapDb = <C extends AnyCatalog>(inner: EffectDb<C>): Db<C> => {
+  const db = {
+    ...wrapRead(inner),
+    principal: () => asPromise(inner.principal()),
+    install: () => asPromise(inner.install()),
+    run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
+      asPromise(
+        operation.on !== undefined
+          ? inner.run(operation as never, a, b as never)
+          : inner.run(operation as never, a as never),
+      )) as Db<C>["run"],
+    effect: inner,
+  } as Db<C>;
+  copySeam(inner, db);
+  return db;
+};
+
 /** @internal `ramose.db(name, catalog)`. Pure: no request, no ensure, no socket. */
 export const makeDb = <C extends AnyCatalog>(
   wire: Wire,
@@ -810,7 +872,7 @@ export const makeDb = <C extends AnyCatalog>(
     );
   };
 
-  return {
+  const effectDb: EffectDb<C> = {
     ...makeRead(wire, name, catalog, view, bad),
 
     principal: () =>
@@ -825,7 +887,7 @@ export const makeDb = <C extends AnyCatalog>(
             ),
           ),
 
-    transact: ((body: (tx: Tx<C>) => unknown) =>
+    transact: ((body: (tx: unknown) => unknown) =>
       Effect.suspend(() => {
         const tx = txBuilder(catalog);
         const out = body(tx);
@@ -835,7 +897,7 @@ export const makeDb = <C extends AnyCatalog>(
         return run.pipe(
           Effect.andThen(() => submit(tx.spec.ops as readonly unknown[])),
         );
-      })) as Db<C>["transact"],
+      })) as EffectDb<C>["transact"],
 
     install: () => submit(schemaTx(catalog)),
 
@@ -853,6 +915,7 @@ export const makeDb = <C extends AnyCatalog>(
           contextual ? b : a,
           makeDb,
         );
-      })) as Db<C>["run"],
-  } as Db<C>;
+      })) as EffectDb<C>["run"],
+  };
+  return wrapDb(effectDb);
 };

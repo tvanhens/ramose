@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * `useQuery` — one-shot `db.q(query)` as React state.
  *
@@ -15,9 +13,6 @@
 
 import type { Catalog, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { paramsKey, type ParamArgs } from "../db/Params.ts";
-import * as Cause from "effect/Cause";
-import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
 
@@ -26,7 +21,7 @@ export interface Async<A, E = DbError> {
   /** The last completed run's rows — kept while the next run is in flight. */
   readonly data: A | undefined;
   /** The last completed run's failure. Cleared when a new run starts. */
-  readonly error: Cause.Cause<E> | undefined;
+  readonly error: E | undefined;
   /** `true` from mount / input change until that run settles. */
   readonly loading: boolean;
 }
@@ -63,27 +58,18 @@ export const useQuery = <C extends Catalog.Any, R, P = never, Out = readonly R[]
         : { data: prev.data, error: undefined, loading: true },
     );
 
-    const fiber = Effect.runFork(
-      db.q(query, ...(params as ParamArgs<P>)).pipe(
-        Effect.flatMap((rows) =>
-          Effect.sync(() =>
-            land(() => ({ data: rows as Out, error: undefined, loading: false })),
-          ),
-        ),
-        Effect.catchCause((error) =>
-          // the cleanup's own interrupt is not a failure to surface
-          Cause.hasInterruptsOnly(error)
-            ? Effect.void
-            : Effect.sync(() =>
-                land((prev) => ({ data: prev.data, error, loading: false })),
-              ),
-        ),
-      ),
-    );
+    void db
+      .q(query, ...(params as ParamArgs<P>))
+      .then((rows) => {
+        land(() => ({ data: rows as Out, error: undefined, loading: false }));
+      })
+      .catch((error: QueryError<Out, P>) => {
+        if (disposed) return;
+        land((prev) => ({ data: prev.data, error, loading: false }));
+      });
 
     return () => {
       disposed = true;
-      Effect.runFork(Fiber.interrupt(fiber));
     };
     // the view is a structural dependency; `db` itself may be a fresh object
     // every render (`db.asOf(t)` is pure and unmemoised by design). Params

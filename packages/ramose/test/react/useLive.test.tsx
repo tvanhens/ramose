@@ -1,16 +1,13 @@
 /**
  * The `useLive` contract. Session current-view reads run on the overlay;
- * pinned `asOf` still rides the peer. The stream form needs no db at all.
+ * pinned `asOf` still rides the peer. The subscription form needs no db.
  */
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
-import * as Cause from "effect/Cause";
 import { pipe } from "effect/Function";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import { type ReactNode, StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
@@ -258,9 +255,7 @@ describe("useLive (query form)", () => {
       peer.drop();
       await waitFor(() => expect(result.current.error).toBeDefined());
 
-      const failure = Cause.findErrorOption(result.current.error!);
-      expect(Option.isSome(failure)).toBe(true);
-      expect((Option.getOrThrow(failure) as { _tag: string })._tag).toBe(
+      expect((result.current.error as { _tag: string })._tag).toBe(
         "Unauthorized",
       );
       expect(result.current.rows).toEqual(ids(...world.eids));
@@ -336,36 +331,35 @@ describe("useLive (query form)", () => {
   });
 });
 
-describe("useLive (stream form)", () => {
-  test("drains any stream — no db, no provider", async () => {
-    const stream = Stream.make("a", "b", "c");
-    const { result } = renderHook(() => useLive(stream));
+const immediate = <A,>(values: readonly A[]): Ramose.Subscription<A> => ({
+  subscribe(onValue) {
+    for (const value of values) onValue(value);
+    return () => {};
+  },
+  async *[Symbol.asyncIterator]() {
+    yield* values;
+  },
+  close() {},
+});
+
+describe("useLive (subscription form)", () => {
+  test("drains any subscription — no db, no provider", async () => {
+    const { result } = renderHook(() => useLive(immediate(["a", "b", "c"])));
     await waitFor(() => expect(result.current.rows).toBe("c"));
-    // three emissions: two after the first
     expect(result.current.ticks).toBe(2);
     expect(result.current.error).toBeUndefined();
   });
 
-  test("an interrupt cause is teardown, not news — error stays undefined", async () => {
-    // `catchCause` in Effect 4 recovers from interruption too; the hook must
-    // not surface an Interrupt as a terminal failure
-    const stream: Stream.Stream<number> = Stream.failCause(Cause.interrupt());
-    const { result } = renderHook(() => useLive(stream));
-    await settle();
-    expect(result.current.error).toBeUndefined();
-    expect(result.current.rows).toBeUndefined();
-  });
-
-  test("re-subscribes when the stream identity changes", async () => {
-    const first: Stream.Stream<number> = Stream.make(1);
-    const second: Stream.Stream<number> = Stream.make(2);
+  test("re-subscribes when the subscription identity changes", async () => {
+    const first = immediate([1]);
+    const second = immediate([2]);
     const { result, rerender } = renderHook(
-      ({ stream }: { stream: Stream.Stream<number> }) => useLive(stream),
-      { initialProps: { stream: first } },
+      ({ sub }: { sub: Ramose.Subscription<number> }) => useLive(sub),
+      { initialProps: { sub: first } },
     );
     await waitFor(() => expect(result.current.rows).toBe(1));
 
-    rerender({ stream: second });
+    rerender({ sub: second });
     await waitFor(() => expect(result.current.rows).toBe(2));
     expect(result.current.ticks).toBe(0);
   });

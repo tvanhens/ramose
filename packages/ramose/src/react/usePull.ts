@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * `usePull` — a standing `db.livePull(subject, pattern)` as `Live` state:
  * `rows` is the projection or `null` (a retract is an emission, not an end),
@@ -19,9 +17,9 @@ import type {
   LookupRef,
   Pull,
   ReadDb,
+  Subscription,
   ValidatePull,
 } from "../db/index.ts";
-import type * as Stream from "effect/Stream";
 import { useMemo } from "react";
 import { type Live, useLive } from "./useLive.ts";
 import { viewDep } from "./seam.ts";
@@ -55,12 +53,9 @@ export const usePull = <C extends Catalog.Any, const P>(
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);
   const key = subjectKey(subject);
-  const stream: Stream.Stream<Pull<C, P> | null, DbError> = useMemo(
+  const sub: Subscription<Pull<C, P> | null, DbError> = useMemo(
     () => db.livePull<P>(subject, pattern),
-    // `db` and `subject` enter through their structural stand-ins: a fresh
-    // but equal view or `{ id }` literal must not tear the subscription down
     [view, key, pattern],
   );
-  // `useLive`'s stream form is the package's one subscription engine
-  return useLive(stream);
+  return useLive(sub);
 };

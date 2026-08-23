@@ -184,6 +184,15 @@ describe("ramose/db is portable", () => {
 });
 
 describe("the `/db` barrel's public names", () => {
+  test("the Effect hatch is not on the app barrel", async () => {
+    const db = await import("../src/db/index.ts");
+    const hatch = await import("../src/db/effect.ts");
+    expect("layer" in db).toBe(false);
+    expect("Databases" in db).toBe(false);
+    expect("layer" in hatch).toBe(true);
+    expect("Databases" in hatch).toBe(true);
+  });
+
   test("schema, connecting, and the tagged errors — and nothing else", async () => {
     const db = await import("../src/db/index.ts");
     expect(Object.keys(db).sort()).toEqual(
@@ -210,8 +219,6 @@ describe("the `/db` barrel's public names", () => {
         "Query",
         // connecting
         "connect",
-        "layer",
-        "Databases",
         "token",
         // the database-name rule (issue #37)
         "DATABASE_NAME_RE",

@@ -22,7 +22,8 @@ import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
 
 /** Drain a stream into an array on its own fiber, as `useLive` would. */
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
@@ -114,8 +115,8 @@ describe("q and live are two terminals over one query", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
-    const live = collect(db.live(names));
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
+    const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(peer.frameOps("q")).toEqual([]);
@@ -129,7 +130,7 @@ describe("q and live are two terminals over one query", () => {
     const world = await users("Ada", "Cy");
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
 
     expect(live.seen[0]).toEqual([{ name: "Ada" }, { name: "Cy" }]);
@@ -147,7 +148,7 @@ describe("paint is the wake", () => {
     const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
@@ -170,12 +171,12 @@ describe("paint is the wake", () => {
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const bob = yield* tx.entity();
         yield* bob.add(User.name, "Bob");
       }),
@@ -194,7 +195,7 @@ describe("paint is the wake", () => {
     const world = await users("Ada");
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
     const frames = peer.frames.length;
 
@@ -214,7 +215,7 @@ describe("live survives the network", () => {
     const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
@@ -247,7 +248,7 @@ describe("live survives the network", () => {
     };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
 
     await settle();
     expect(live.seen).toHaveLength(0);
@@ -281,7 +282,7 @@ describe("live survives the network", () => {
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
 
     expect(peer.sockets).toHaveLength(1);
@@ -300,7 +301,7 @@ describe("live survives the network", () => {
       answer: () => ({ status: 401, body: { error: "no" } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -315,7 +316,7 @@ describe("live survives the network", () => {
       answer: () => ({ status: 400, body: { error: "unknown attribute" } }),
     });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).asOf(5).live(names));
+    const live = collect(c.ramose.db("movies", Movies).asOf(5).effect.live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -331,7 +332,7 @@ describe("a pinned view has no news", () => {
       answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).asOf(3).live(names));
+    const live = collect(c.ramose.db("movies", Movies).asOf(3).effect.live(names));
     await settle();
 
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
@@ -349,7 +350,7 @@ describe("a pinned view has no news", () => {
       answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).history.live(names));
+    const live = collect(c.ramose.db("movies", Movies).history.effect.live(names));
     await settle();
 
     expect(live.seen).toHaveLength(1);

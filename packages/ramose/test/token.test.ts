@@ -21,9 +21,17 @@ import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -72,8 +80,7 @@ const jwtOf = (claims: Record<string, unknown>): string =>
 /** A `Date.now` epoch round in seconds, so `exp * 1000` math is exact. */
 const BASE = 1_700_000_000_000;
 
-const read = (source: { token: Effect.Effect<Redacted.Redacted<string>, unknown> }) =>
-  run(source.token.pipe(Effect.map(Redacted.value)));
+const read = (source: { token: () => Promise<string> }) => source.token();
 
 describe("token.jwt mints lazily and caches", () => {
   test("nothing is minted until the first read, and one mint serves many", async () => {
@@ -91,7 +98,7 @@ describe("token.jwt mints lazily and caches", () => {
     expect(mints).toBe(0);
 
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -100,7 +107,7 @@ describe("token.jwt mints lazily and caches", () => {
     expect(peer.calls[0]!.headers.authorization).toBe(`Bearer ${jwt}`);
 
     await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const bob = yield* tx.entity();
         yield* bob.add(User.name, "Bob");
       }),
@@ -206,7 +213,7 @@ describe("token.jwt refreshes on the payload's exp", () => {
           mints += 1;
           return jwtOf({ exp: (BASE + 600_000) / 1000 + mints });
         },
-        { refreshMargin: "5 minutes" },
+        { refreshMarginMs: 5 * 60 * 1000 },
       );
 
       await read(source);
@@ -332,7 +339,7 @@ describe("failure typing on the wire", () => {
     const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -356,7 +363,7 @@ describe("failure typing on the wire", () => {
     const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -388,7 +395,7 @@ describe("failure typing on the wire", () => {
           : { body: { t: 5, result: [[{ name: "Ada" }]] } },
     });
     const c = client(peer, { token: source });
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
 
     // the wire's transient ladder retries the failed connect in place
     await settle(600);
@@ -407,7 +414,7 @@ describe("failure typing on the wire", () => {
     });
     const peer = fakePeer();
     const c = client(peer, { token: source });
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -422,7 +429,7 @@ describe("failure typing on the wire", () => {
 });
 
 describe("both token forms typecheck on the layer", () => {
-  test("a TokenSource and a bare Effect are both ClientOptions", () => {
+  test("a TokenSource and a bare Effect are both hatch tokens", () => {
     const source = token.jwt(async () => "jwt");
     // the layers are values; building them opens nothing
     const viaSource = layer({ url: "https://peer.example.com", token: source });

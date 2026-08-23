@@ -17,9 +17,17 @@ import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const rows = (result: unknown[], t = 2) => ({ body: { t, root: t, result } });
 
@@ -264,7 +272,7 @@ describe("a socket that goes away", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.q(names)).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
     expect(peer.frames).toHaveLength(1);
     await c.dispose();
@@ -344,7 +352,7 @@ describe("the layer's scope owns the socket", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.q(names));
+    await db.q(names);
     expect(peer.sockets).toHaveLength(1);
 
     await c.dispose();

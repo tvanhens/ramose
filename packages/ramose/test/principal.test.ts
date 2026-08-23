@@ -17,9 +17,17 @@ import { Movies, User } from "./db/fixture.ts";
 import { pipe } from "effect/Function";
 import { Query } from "../src/db/internal.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -55,7 +63,7 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("s3cret")) });
     const db = c.ramose.db("movies", Movies);
 
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
     });
@@ -63,7 +71,7 @@ describe("db.principal()", () => {
     expect(peer.calls[0]!.headers.authorization).toBe("Bearer s3cret");
 
     // a resolved entity is stable: the second ask is the cache
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
     });
@@ -83,17 +91,17 @@ describe("db.principal()", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
-    expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
+    expect(await db.principal()).toEqual({ eid: null, class: "member" });
+    expect(await db.principal()).toEqual({ eid: null, class: "member" });
     expect(infoCalls(peer)).toBe(2); // no row yet: every ask goes to the peer
 
     // the row lands (the peer provisioned it); the very next ask resolves
     state.principal = { eid: 9, class: "member" };
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 9 },
       class: "member",
     });
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 9 },
       class: "member",
     });
@@ -108,8 +116,8 @@ describe("db.principal()", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.q(names)); // opens the socket: generation moves
-    expect(await run(db.principal())).toEqual({
+    await db.q(names); // opens the socket: generation moves
+    expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
     });
@@ -117,10 +125,10 @@ describe("db.principal()", () => {
 
     peer.drop(); // the socket dies; the token may differ on the next connect
     await settle();
-    await run(db.q(names)); // reconnects
+    await db.q(names); // reconnects
     expect(peer.sockets).toHaveLength(2);
 
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
     });
@@ -146,10 +154,10 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.q(names)); // 401 → auth frame → retried on the same socket
+    await db.q(names); // 401 → auth frame → retried on the same socket
     expect(peer.frameOps("auth")).toHaveLength(1);
 
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 21 },
       class: "member",
     });
@@ -188,8 +196,8 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.q(names));
-    expect(await run(db.principal())).toEqual({
+    await db.q(names);
+    expect(await db.principal()).toEqual({
       eid: { id: 7 },
       class: "member",
     });
@@ -202,16 +210,16 @@ describe("db.principal()", () => {
 
     // the old eid must not be served: the swapped principal has no row yet
     state.principal = { eid: null, class: "member" };
-    expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
+    expect(await db.principal()).toEqual({ eid: null, class: "member" });
     expect(infoCalls(peer)).toBe(2);
 
     // …until it does; the fresh answer is cached against this ack
     state.principal = { eid: 33, class: "member" };
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 33 },
       class: "member",
     });
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 33 },
       class: "member",
     });
@@ -231,11 +239,11 @@ describe("db.principal()", () => {
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
 
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 5 },
       class: "admin",
     });
-    expect(await run(db.principal())).toEqual({
+    expect(await db.principal()).toEqual({
       eid: { id: 5 },
       class: "admin",
     });

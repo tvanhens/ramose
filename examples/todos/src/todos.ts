@@ -1,6 +1,7 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
 import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
 import { Todo, type Todos } from "../schema.ts";
@@ -35,20 +36,58 @@ export const pullTodo = (db: TodosDb, eid: TodoEid) =>
     createdAt: Todo.createdAt,
   });
 
+export const addTodoOp = Ramose.Operation(
+  "todo/add",
+  {
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    const t = op.entity();
+    t.add(Todo.title, input.title);
+    t.add(Todo.done, false);
+    t.add(Todo.createdAt, new Date());
+    return {};
+  },
+);
+
+export const setDoneOp = Ramose.Operation(
+  "todo/set-done",
+  {
+    on: Todo,
+    input: Schema.Struct({ done: Schema.Boolean }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.add(op.self, Todo.done, input.done);
+    return {};
+  },
+);
+
+export const deleteTodoOp = Ramose.Operation(
+  "todo/delete",
+  {
+    on: Todo,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.retractEntity(op.self);
+    return {};
+  },
+);
+
+export const operations = Ramose.Operations({
+  addTodoOp,
+  setDoneOp,
+  deleteTodoOp,
+});
+
 export const addTodo = (db: TodosDb, title: string) =>
-  db.transact(function* (tx) {
-    const t = yield* tx.entity();
-    yield* t.add(Todo.title, title);
-    yield* t.add(Todo.done, false);
-    yield* t.add(Todo.createdAt, new Date());
-  });
+  db.run(addTodoOp, { title });
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
-  db.transact(function* (tx) {
-    yield* tx.add(eid.id, Todo.done, done);
-  });
+  db.run(setDoneOp, eid.id, { done });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
-  db.transact(function* (tx) {
-    yield* tx.retractEntity(eid.id);
-  });
+  db.run(deleteTodoOp, eid.id, {});

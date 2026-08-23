@@ -53,6 +53,20 @@ export const readOnly = <C extends AnyCatalog>(db: Db<C>): ReadDb<C> => ({
   basis: db.basis,
   asOf: db.asOf,
   history: db.history,
+  // read hatch only — strip `transact` / `install` / `run` / `principal`
+  effect: {
+    name: db.effect.name,
+    catalog: db.effect.catalog,
+    q: db.effect.q,
+    live: db.effect.live,
+    pull: db.effect.pull,
+    livePull: db.effect.livePull,
+    basis: db.effect.basis,
+    asOf: (t) => db.asOf(t).effect,
+    get history() {
+      return db.history.effect;
+    },
+  },
 });
 
 /**

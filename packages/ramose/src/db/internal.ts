@@ -12,6 +12,8 @@ export * from "./Attribute.ts";
 export * from "./Catalog.ts";
 export * from "./Databases.ts";
 export * from "./Db.ts";
+export * from "./effect.ts";
+export type { Subscription } from "./subscription.ts";
 export * from "./ensure.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";

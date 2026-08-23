@@ -1,60 +1,40 @@
-"use client";
-
 /**
- * `useTransact` — run an Effect from an event handler, and know whether it
+ * `useTransact` — run a promise from an event handler, and know whether it
  * is running and whether it failed.
  *
- * Deliberately not tied to the provider: it runs whatever Effect the caller
+ * Deliberately not tied to the provider: it runs whatever promise the caller
  * built (`run(moveIssue(db, id, status, rank))`), so it composes with a
  * module-singleton `Db` just as well as with `useDb`.
  */
 
-import * as Cause from "effect/Cause";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export interface Transact {
   /**
-   * Runs the effect; resolves to the outcome instead of throwing, so
-   * handlers stay `void`-safe.
+   * Runs the work; rejects with the tagged error, so handlers that `void`
+   * the promise stay `void`-safe while `error` / `onError` still fire.
    */
-  readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<Exit.Exit<A, E>>;
+  readonly run: <A>(work: Promise<A> | (() => Promise<A>)) => Promise<A>;
   /** In-flight count > 0. */
   readonly pending: boolean;
   /**
-   * The last-settled failure's error (not the cause) — cleared when a run
-   * settles successfully.
+   * The last-settled failure — cleared when a run settles successfully.
    */
   readonly error: unknown | undefined;
   readonly clearError: () => void;
 }
 
-/** The failure's error when there is one; the squashed cause (a defect) otherwise. */
-const causeError = (cause: Cause.Cause<unknown>): unknown => {
-  const failure = Cause.findErrorOption(cause);
-  return Option.isSome(failure) ? failure.value : Cause.squash(cause);
-};
-
 /**
- * One hook for running writes (any Effect with `R = never`, really) from
- * event handlers.
+ * One hook for running writes from event handlers.
  *
- * - `run` resolves to the `Exit` — inspect it, or ignore it and read
- *   `error` / wire `onError` instead.
+ * - `run` resolves or rejects with the work's value / tagged error.
  * - `pending` counts concurrent runs: true while any run is in flight.
  * - `onError` fires per failure (the toast hook); `error` also lands on the
  *   return for inline rendering, and clears on the next successful run (or
  *   `clearError`).
- * - Concurrent runs settle independently and the last settler wins `error`:
- *   a failure that lands after a later-started success re-sets `error`.
- *   "Cleared on the next successful run" is about settle order, not start
- *   order.
- * - After unmount the effect still runs to completion, but no state is
- *   touched (guarded with a ref), so late settles never warn. `onError`
- *   still fires — the failure is real, and the toast host usually outlives
- *   the form that ran the write (toast after navigate-away is the point).
+ * - Concurrent runs settle independently and the last settler wins `error`.
+ * - After unmount the work still runs to completion, but no state is
+ *   touched. `onError` still fires.
  */
 export const useTransact = (options?: {
   onError?: (error: unknown) => void;
@@ -70,24 +50,23 @@ export const useTransact = (options?: {
     };
   }, []);
 
-  // a ref so `run` stays referentially stable when the caller passes an
-  // inline `onError` closure (the common spelling)
   const onErrorRef = useRef(options?.onError);
   onErrorRef.current = options?.onError;
 
   const run = useCallback(
-    async <A, E>(effect: Effect.Effect<A, E>): Promise<Exit.Exit<A, E>> => {
+    async <A>(work: Promise<A> | (() => Promise<A>)): Promise<A> => {
       if (mounted.current) setInFlight((n) => n + 1);
-      const exit = await Effect.runPromiseExit(effect);
-      if (Exit.isFailure(exit)) {
-        const failure = causeError(exit.cause);
+      try {
+        const value = await (typeof work === "function" ? work() : work);
+        if (mounted.current) setError(undefined);
+        return value;
+      } catch (failure) {
         if (mounted.current) setError(failure);
         onErrorRef.current?.(failure);
-      } else if (mounted.current) {
-        setError(undefined);
+        throw failure;
+      } finally {
+        if (mounted.current) setInFlight((n) => n - 1);
       }
-      if (mounted.current) setInFlight((n) => n - 1);
-      return exit;
     },
     [],
   );

@@ -42,9 +42,17 @@ const secretNotes = Query.q(() => pipe(Query.entities(Secret), Query.select({ no
 const noteTitles = Query.q(() => pipe(Query.entities(Note), Query.select({ title: Note.title })));
 const noteAudits = Query.q(() => pipe(Query.entities(Note), Query.select({ audit: Note.audit })));
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -94,10 +102,10 @@ const moviesWorld = async () => {
 
 const seedClient = async (
   peer: { socket: { push: (f: unknown) => void }; sockets: { push: (f: unknown) => void }[] },
-  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> },
+  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
   conn: Connection,
 ) => {
-  await run(db.q(names));
+  await db.q(names);
   const snap = await snapshotOf(conn);
   peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   await settle();
@@ -136,15 +144,15 @@ describe("optimistic transact", () => {
     await seedClient(adaPeer, ada, server);
     await seedClient(beaPeer, bea, server);
 
-    const adaLive = collect(ada.live(names));
-    const beaLive = collect(bea.live(names));
+    const adaLive = collect(ada.effect.live(names));
+    const beaLive = collect(bea.effect.live(names));
     await settle();
     expect(adaLive.seen.at(-1)).toEqual([]);
     expect(beaLive.seen.at(-1)).toEqual([]);
 
     const writes = adaPeer.calls.filter((c) => c.url.endsWith("/transact")).length;
     const pending = Effect.runPromise(
-      ada.transact(function* (tx) {
+      ada.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
@@ -194,7 +202,7 @@ describe("optimistic transact", () => {
     await seedClient(adaPeer, db, server);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity("ada");
         yield* e.add(User.name, "Ada");
       }),
@@ -232,11 +240,11 @@ describe("optimistic transact", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
 
     const failed = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
@@ -295,14 +303,14 @@ describe("optimistic transact", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
     const namesOf = (rows: readonly { name: string }[] | undefined) =>
       (rows ?? []).map((r) => r.name).sort();
     expect(namesOf(live.seen.at(-1))).toEqual(["Ada"]);
 
     const denied = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Bob");
       }),
@@ -311,7 +319,7 @@ describe("optimistic transact", () => {
     expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob"]);
 
     const kept = run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Cy");
       }),
@@ -353,7 +361,7 @@ describe("optimistic transact", () => {
     await seedClient(peer, db, server);
 
     const e = await runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const row = yield* tx.entity();
         yield* row.add(Doc.slug, "ada");
       }),
@@ -384,12 +392,12 @@ describe("optimistic transact", () => {
     const db = c.ramose.db("movies", WithSecret);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(secretNotes));
+    const live = collect(db.effect.live(secretNotes));
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Secret.note, "classified");
       }),
@@ -398,7 +406,7 @@ describe("optimistic transact", () => {
     expect(report.datomCount).toBe(0);
     expect(report.t).toBe(server.t + 1);
     expect(live.seen.at(-1)).toEqual([]);
-    expect(await run(db.q(secretNotes))).toEqual([]);
+    expect(await db.q(secretNotes)).toEqual([]);
 
     await live.stop();
     await c.dispose();
@@ -424,11 +432,11 @@ describe("optimistic transact", () => {
     const db = c.ramose.db("movies", WithSecret);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(secretNotes));
+    const live = collect(db.effect.live(secretNotes));
     await settle();
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Secret.note, "classified");
       }),
@@ -436,7 +444,7 @@ describe("optimistic transact", () => {
     await settle();
     expect(report.datomCount).toBe(4);
     expect(live.seen.at(-1)).toEqual([]);
-    expect(await run(db.q(secretNotes))).toEqual([]);
+    expect(await db.q(secretNotes)).toEqual([]);
 
     await live.stop();
     await c.dispose();
@@ -471,14 +479,14 @@ describe("optimistic transact", () => {
     await seedClient(peer, db, server);
 
     const first = Effect.runPromise(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity("new");
         yield* e.add(User.name, "Ada");
       }),
     );
     await settle();
     const second = Effect.runPromise(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Movie.title, "new");
       }),
@@ -520,18 +528,18 @@ describe("confirmed follower", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
 
     const first = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
     );
     await settle();
     const second = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Bea");
       }),
@@ -575,20 +583,20 @@ describe("confirmed follower", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
     );
     const allUsers = Query.q(() => Query.entities(User));
-    const before = await run(db.q(allUsers));
+    const before = await db.q(allUsers);
     const ackCall = peer.calls.filter((call) => call.url.endsWith("/transact")).at(-1)!;
     void ackCall;
 
     const datoms = (await snapshotOf(server)).datoms.filter((d) => d[4] === report.t);
     peer.push({ op: "tx", t: report.t, datoms });
     await settle();
-    expect(await run(db.q(allUsers))).toEqual(before);
+    expect(await db.q(allUsers)).toEqual(before);
     await c.dispose();
   });
 
@@ -665,14 +673,14 @@ describe("confirmed follower", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
 
     const other = await moviesWorld();
     await other.transact([{ ":user/name": "Bea" }]);
     const snap = await snapshotOf(other);
     peer.push({ op: "resync", t: snap.t, datoms: snap.datoms });
     await settle();
-    expect(await run(db.q(names))).toEqual([{ name: "Bea" }]);
+    expect(await db.q(names)).toEqual([{ name: "Bea" }]);
     await c.dispose();
   });
 });
@@ -944,12 +952,12 @@ describe("two-writer races", () => {
     const db = c.ramose.db("movies", WithNotes);
     await seedClient(peer, db, server);
 
-    const titles = collect(db.live(noteTitles));
-    const audits = collect(db.live(noteAudits));
+    const titles = collect(db.effect.live(noteTitles));
+    const audits = collect(db.effect.live(noteAudits));
     await settle();
 
     const pending = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Note.title, "Q3");
         yield* e.add(Note.audit, "classified");
@@ -975,7 +983,7 @@ describe("two-writer races", () => {
     await settle();
     expect(titles.seen.at(-1)).toEqual([{ title: "Q3" }]);
     expect(audits.seen.at(-1)).toEqual([]);
-    expect(await run(db.q(noteAudits))).toEqual([]);
+    expect(await db.q(noteAudits)).toEqual([]);
 
     release();
     await pending;
@@ -1004,11 +1012,11 @@ describe("two-writer races", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
 
     const pending = runFail(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
@@ -1069,13 +1077,13 @@ describe("two-writer races", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Secret.note, "classified");
       }),
     );
     await settle();
-    expect(await run(db.q(secretNotes))).toEqual([]);
+    expect(await db.q(secretNotes)).toEqual([]);
 
     const noteA = server.db().schema.requireAttr(":secret/note").id;
     peer.push({
@@ -1093,7 +1101,7 @@ describe("two-writer races", () => {
       ],
     });
     await settle();
-    expect(await run(db.q(secretNotes))).toEqual([{ note: "from-log" }]);
+    expect(await db.q(secretNotes)).toEqual([{ note: "from-log" }]);
     await c.dispose();
   });
 
@@ -1121,14 +1129,14 @@ describe("two-writer races", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Secret.note, "classified");
       }),
     );
     await settle();
     expect(report.datomCount).toBe(4);
-    expect(await run(db.q(secretNotes))).toEqual([]);
+    expect(await db.q(secretNotes)).toEqual([]);
 
     const noteA = server.db().schema.requireAttr(":secret/note").id;
     peer.push({
@@ -1146,7 +1154,7 @@ describe("two-writer races", () => {
       ],
     });
     await settle();
-    expect(await run(db.q(secretNotes))).toEqual([{ note: "from-log" }]);
+    expect(await db.q(secretNotes)).toEqual([{ note: "from-log" }]);
     await c.dispose();
   });
 });
@@ -1193,13 +1201,13 @@ describe("filtered tx frames (#112 sieve)", () => {
     await seedClient(adaPeer, ada, server);
     await seedClient(calPeer, cal, server);
 
-    const adaTitles = collect(ada.live(noteTitles));
-    const adaAudits = collect(ada.live(noteAudits));
-    const calTitles = collect(cal.live(noteTitles));
+    const adaTitles = collect(ada.effect.live(noteTitles));
+    const adaAudits = collect(ada.effect.live(noteAudits));
+    const calTitles = collect(cal.effect.live(noteTitles));
     await settle();
 
     const pending = Effect.runPromise(
-      ada.transact(function* (tx) {
+      ada.effect.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(Note.title, "Q3");
         yield* e.add(Note.audit, "classified");
@@ -1313,7 +1321,7 @@ describe("HTTPS-only is unchanged", () => {
     });
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
     expect(peer.sockets).toEqual([]);
     expect(peer.calls.map((c) => c.url)).toEqual([
       "https://peer.example.com/db/movies/query",

@@ -1,11 +1,11 @@
 /**
- * `token` — shipped token sources for `Ramose.layer({ token })`.
+ * `token` — shipped token sources for `Ramose.connect({ token })`.
  *
- * The layer re-reads its `token` Effect on every (re)connect and every
- * `/transact`, so refresh needs no client API: a source only has to *return
- * the current token* each time it is read. `token.jwt(mint)` is that source
- * for the common case — fetch a JWT from your auth endpoint, cache it, and
- * re-mint once the cached token is inside a margin of its `exp`. Refresh is
+ * The client re-reads its token on every (re)connect and every write, so
+ * refresh needs no client API: a source only has to *return the current
+ * token* each time it is read. `token.jwt(mint)` is that source for the
+ * common case — fetch a JWT from your auth endpoint, cache it, and re-mint
+ * once the cached token is inside a margin of its `exp`. Refresh is
  * entirely client-side; the peer sees nothing but bearer tokens.
  *
  * Failure typing: `mint` is a plain promise, so callers throw what they like.
@@ -14,9 +14,6 @@
  * `NetworkError`, which the transports treat as transient and retry.
  */
 
-import * as Duration from "effect/Duration";
-import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import { type DbError, isDatabaseError, NetworkError } from "./Errors.ts";
 
 /**
@@ -37,10 +34,10 @@ export interface Claims {
   readonly [claim: string]: unknown;
 }
 
-/** A credential `Ramose.layer({ token })` accepts in place of a bare Effect. */
+/** A credential `Ramose.connect({ token })` accepts besides a bare string. */
 export interface TokenSource {
-  /** What the layer reads — on every (re)connect and every `/transact`. */
-  readonly token: Effect.Effect<Redacted.Redacted<string>, DbError>;
+  /** Current bearer token — re-read on every (re)connect and every write. */
+  readonly token: () => Promise<string>;
   /**
    * The current payload, decoded, NOT verified — UI hints only
    * (`ramose.class`, `sub`, `exp`). Mints if nothing is cached; otherwise it
@@ -51,6 +48,12 @@ export interface TokenSource {
   /** Drop the cache: sign-out, tenant switch. The next read mints. */
   readonly invalidate: () => void;
 }
+
+/** What `connect` / the provider accept as a bearer credential. */
+export type TokenInput =
+  | string
+  | TokenSource
+  | (() => string | Promise<string>);
 
 // ── base64url, by hand ──────────────────────────────────────────────────────
 
@@ -101,7 +104,7 @@ const decodeClaims = (value: string): Claims => {
 // ── the sources ─────────────────────────────────────────────────────────────
 
 /** `DbError` passes through (a thrown `Unauthorized` stays terminal); the rest is transport. */
-const wrap = (cause: unknown): DbError =>
+export const wrapTokenCause = (cause: unknown): DbError =>
   isDatabaseError(cause)
     ? cause
     : new NetworkError({
@@ -130,9 +133,9 @@ const unwrap = (minted: Minted): string =>
 
 const jwt = (
   mint: () => Promise<Minted>,
-  options?: { readonly refreshMargin?: Duration.Input },
+  options?: { readonly refreshMarginMs?: number },
 ): TokenSource => {
-  const marginMs = Duration.toMillis(options?.refreshMargin ?? "2 minutes");
+  const marginMs = options?.refreshMarginMs ?? 2 * 60 * 1000;
 
   let cached: Cached | undefined;
   let inflight: Promise<Cached> | undefined;
@@ -174,7 +177,7 @@ const jwt = (
           return entry;
         },
         (cause) => {
-          throw wrap(cause);
+          throw wrapTokenCause(cause);
         },
       )
       .finally(() => {
@@ -196,9 +199,7 @@ const jwt = (
   };
 
   return {
-    token: Effect.tryPromise({ try: current, catch: wrap }).pipe(
-      Effect.map(Redacted.make),
-    ),
+    token: current,
     claims: () =>
       cached !== undefined
         ? Promise.resolve(cached.claims)
@@ -211,9 +212,9 @@ const jwt = (
   };
 };
 
-/** A fixed credential — `Effect.succeed(Redacted.make(value))`, as a `TokenSource`. */
+/** A fixed credential, as a {@link TokenSource}. */
 const staticSource = (value: string): TokenSource => ({
-  token: Effect.succeed(Redacted.make(value)),
+  token: () => Promise.resolve(value),
   claims: () => Promise.resolve(decodeClaims(value)),
   invalidate: () => {},
 });
@@ -225,21 +226,29 @@ const staticSource = (value: string): TokenSource => ({
  * const source = Ramose.token.jwt(() =>
  *   fetch("/api/ramose-token", { method: "POST" }).then((r) => r.json()),
  * );
- * const runtime = ManagedRuntime.make(Ramose.layer({ url, token: source }));
+ * const ramose = Ramose.connect({ url, token: source });
  * ```
  */
 export const token: {
   /**
    * A refreshing JWT source. `mint` is called lazily on the first read,
-   * single-flight, and again once the cached token is within `refreshMargin`
-   * (default 2 minutes) of its `exp`. A payload with no `exp` is static:
-   * minted once, refreshed only by `invalidate()`. `mint` may resolve to the
-   * JWT or to `{ token }` — a mint route's JSON body passes through.
+   * single-flight, and again once the cached token is within
+   * `refreshMarginMs` (default 2 minutes) of its `exp`. A payload with no
+   * `exp` is static: minted once, refreshed only by `invalidate()`. `mint`
+   * may resolve to the JWT or to `{ token }` — a mint route's JSON body
+   * passes through.
    */
   readonly jwt: (
     mint: () => Promise<Minted>,
-    options?: { readonly refreshMargin?: Duration.Input },
+    options?: { readonly refreshMarginMs?: number },
   ) => TokenSource;
   /** Sugar for a fixed credential. */
   readonly static: (value: string) => TokenSource;
 } = { jwt, static: staticSource };
+
+/** Whether `value` is a {@link TokenSource} (has a `token()` reader). */
+export const isTokenSource = (value: unknown): value is TokenSource =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as TokenSource).token === "function" &&
+  typeof (value as TokenSource).claims === "function";

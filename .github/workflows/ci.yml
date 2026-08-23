@@ -20,3 +20,4 @@ jobs:
       # time, when a bad version number has already been burned.
       - run: bun run build
       - run: bun run scripts/check-release.ts --built
+      - run: bun run scripts/check-client-dts.ts

@@ -94,7 +94,7 @@ describe("ramoseTokenClient", () => {
       attrs: { name: "owner@wave.test", email: "owner@wave.test" },
     });
 
-    const token = Redacted.value(await Effect.runPromise(source.token));
+    const token = await source.token();
     expect(token.split(".")).toHaveLength(3);
   });
 

@@ -24,9 +24,17 @@ import { client, fakePeer, httpsClient, type Call } from "./peer.ts";
 
 import { Movie, Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 /** The two queries these tests run; only the transport is under test. */
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
@@ -62,7 +70,7 @@ describe("ramose.db(name, catalog) is pure", () => {
     const { databases, close } = httpsClient(peer);
 
     await run(
-      databases.db("movies", Movies).transact(function* (tx) {
+      databases.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -86,11 +94,11 @@ describe("ramose.db(name, catalog) is pure", () => {
         const c = client(peer);
         const db = c.ramose.db(name, Movies);
 
-        const operations: Effect.Effect<unknown, DbError>[] = [
+        const operations: Array<Effect.Effect<unknown, DbError> | Promise<unknown>> = [
           db.q(names),
           db.pull({ id: 1 }, { name: User.name }),
           db.install(),
-          db.transact(function* (tx) {
+          db.effect.transact(function* (tx) {
             yield* tx.retractEntity(1);
           }),
         ];
@@ -114,7 +122,7 @@ describe("writes are HTTPS, reads are not", () => {
     const c = client(peer);
 
     const report = await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         yield* ada.add(User.age, 36);
@@ -163,9 +171,9 @@ describe("writes are HTTPS, reads are not", () => {
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
 
-    const rows = await run(db.q(eids));
+    const rows = await db.q(eids);
     expect(rows).toEqual([{ id: 1001 }]);
-    expect(await run(db.pull(rows[0]!, { name: User.name }))).toEqual({
+    expect(await db.pull(rows[0]!, { name: User.name })).toEqual({
       name: "Ada",
     });
 
@@ -187,14 +195,14 @@ describe("dbAfter is the read fence", () => {
     const db = c.ramose.db("movies", Movies);
 
     const { dbAfter } = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
     );
 
     await run(dbAfter.q(names));
-    await run(db.q(names));
+    await db.q(names);
 
     expect(peer.frameOps("q")).toEqual([]);
     expect(peer.frameOps("sync")).toHaveLength(1);
@@ -212,12 +220,12 @@ describe("dbAfter is the read fence", () => {
     const db = databases.db("movies", Movies);
 
     const { dbAfter } = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
     await run(dbAfter.q(names));
-    await run(db.q(names));
+    await db.q(names);
 
     expect(peer.calls[1].headers["x-ramose-min-t"]).toBe("30");
     expect(peer.calls[2].headers["x-ramose-min-t"]).toBeUndefined();
@@ -228,11 +236,12 @@ describe("dbAfter is the read fence", () => {
     const peer = fakePeer({ http: () => ({ body: ack(11) }) });
     const c = client(peer);
     const { dbAfter } = await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
-    expect(typeof dbAfter.transact).toBe("function");
+    expect("transact" in dbAfter).toBe(false);
+    expect(typeof dbAfter.effect.transact).toBe("function");
     expect(typeof dbAfter.install).toBe("function");
     // asOf / history are pure narrowings with no write half
     expect("transact" in dbAfter.asOf(3)).toBe(false);
@@ -247,8 +256,8 @@ describe("install", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    const first = await run(db.install());
-    const second = await run(db.install());
+    const first = await db.install();
+    const second = await db.install();
 
     expect(first.t).toBe(2);
     expect(second.t).toBe(2);
@@ -276,9 +285,9 @@ describe("the token", () => {
     });
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.transact(function* (tx) { yield* tx.retractEntity(1); }));
-    await run(db.transact(function* (tx) { yield* tx.retractEntity(2); }));
-    await run(db.q(names));
+    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(1); }));
+    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(2); }));
+    await db.q(names);
 
     expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
       "Bearer token-2",
@@ -295,7 +304,7 @@ describe("the token", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { token: Effect.succeed(Redacted.make("")) });
     await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -324,7 +333,7 @@ describe("provisioning mistakes are defects", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { url: "https://peer.example.com/" });
     await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -347,7 +356,7 @@ describe("failures arrive tagged, not thrown", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -371,7 +380,7 @@ describe("failures arrive tagged, not thrown", () => {
     });
     const c = client(peer);
     await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -461,7 +470,7 @@ describe("failures arrive tagged, not thrown", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer);
     const e = await runFail(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
@@ -522,7 +531,7 @@ describe("live needs the socket", () => {
       Stream.runCollect(
         databases
           .db("movies", Movies)
-          .live(names),
+          .effect.live(names),
       ),
     );
     expect(Exit.isFailure(exit)).toBe(true);
@@ -540,7 +549,7 @@ describe("live needs the socket", () => {
     const { databases, close } = httpsClient(peer);
     const rows = await Effect.runPromise(
       Stream.runCollect(
-        databases.db("movies", Movies).asOf(1).live(names),
+        databases.db("movies", Movies).asOf(1).effect.live(names),
       ),
     );
     expect(rows).toEqual([[{ name: "Ada" }]]);

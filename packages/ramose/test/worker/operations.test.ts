@@ -19,11 +19,10 @@ const setTitle = Operation(
     input: Schema.Struct({ title: Schema.String }),
     output: Schema.Struct({ title: Schema.String }),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      yield* op.add(op.self, Movie.title, input.title);
-      return { title: input.title };
-    }),
+  (op, input) => {
+    op.add(op.self, Movie.title, input.title);
+    return { title: input.title };
+  },
 );
 
 let effectRuns = 0;
@@ -33,14 +32,13 @@ const ping = Operation(
     input: Schema.Struct({}),
     output: Schema.Struct({ n: Schema.Number }),
   },
-  (op) =>
-    Effect.gen(function* () {
-      const n = yield* op.effect("count", () => {
-        effectRuns += 1;
-        return Effect.succeed(effectRuns);
-      });
-      return { n };
-    }),
+  async (op) => {
+    const n = await op.effect("count", () => {
+      effectRuns += 1;
+      return effectRuns;
+    });
+    return { n };
+  },
 );
 
 const createNamed = Operation(
@@ -49,12 +47,11 @@ const createNamed = Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      const e = yield* op.entity();
-      yield* e.add(User.name, input.name);
-      return {};
-    }),
+  (op, input) => {
+    const e = op.entity();
+    e.add(User.name, input.name);
+    return {};
+  },
 );
 
 const operations = Operations({ setTitle, ping, createNamed });

@@ -21,9 +21,17 @@ import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -36,8 +44,8 @@ describe("the credential on the wire", () => {
     const c = client(peer, { token: Effect.succeed(Redacted.make("s3cret")) });
     const db = c.ramose.db("movies", Movies);
 
-    await run(db.q(names));
-    await run(db.transact(function* (tx) { yield* tx.retractEntity(1); }));
+    await db.q(names);
+    await run(db.effect.transact(function* (tx) { yield* tx.retractEntity(1); }));
 
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/movies/session?token=s3cret",
@@ -57,7 +65,7 @@ describe("the credential on the wire", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -117,7 +125,7 @@ describe("a token swap is not a reconnect", () => {
 
     const seen: unknown[] = [];
     const fiber = Effect.runFork(
-      Stream.runForEach(c.ramose.db("movies", Movies).live(names), (rows) =>
+      Stream.runForEach(c.ramose.db("movies", Movies).effect.live(names), (rows) =>
         Effect.sync(() => {
           seen.push(rows);
         }),

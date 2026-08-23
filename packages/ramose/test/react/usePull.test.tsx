@@ -6,7 +6,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Cause from "effect/Cause";
 import { StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import type * as Ramose from "../../src/db/index.ts";
@@ -164,8 +163,9 @@ describe("usePull", () => {
     peer.drop();
     await waitFor(() => expect(result.current.error).toBeDefined());
     expect(result.current.rows).toEqual({ title: "A" });
-    const squashed = Cause.squash(result.current.error!) as { _tag?: string };
-    expect(squashed._tag).toBe("Unauthorized");
+    expect((result.current.error as { _tag?: string })._tag).toBe(
+      "Unauthorized",
+    );
   });
 
   test("StrictMode holds exactly one subscription at steady state", async () => {

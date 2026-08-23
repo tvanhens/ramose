@@ -35,7 +35,7 @@ describe("the view key is structural", () => {
     const b = client(fakePeer());
     const db = a.ramose.db("movies", Movies);
     const report = await Effect.runPromise(
-      db.transact(function* () {}),
+      db.effect.transact(function* () {}),
     );
 
     const keys = [
@@ -53,7 +53,7 @@ describe("the view key is structural", () => {
     const https = httpsClient(fakePeer());
     const httpsDb = https.databases.db("movies", Movies);
     const httpsReport = await Effect.runPromise(
-      httpsDb.transact(function* () {}),
+      httpsDb.effect.transact(function* () {}),
     );
     expect(seamOf(httpsReport.dbAfter).key).not.toBe(seamOf(httpsDb).key);
     https.close();
@@ -86,7 +86,7 @@ describe("the wake", () => {
     expect(off).toBeDefined();
 
     // unsolicited frames ride the session socket, which a first read opens
-    await Effect.runPromise(db.q(Query.q(() => Query.entities(User))).pipe(Effect.ignore));
+    await db.q(Query.q(() => Query.entities(User)));
     peer.push({ op: "tx", t: 9, datoms: [] });
     await settle();
     expect(wakes).toBeGreaterThan(0);

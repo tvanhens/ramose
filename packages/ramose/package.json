@@ -39,8 +39,9 @@
     "semver admits the other 4.0.0 prereleases; `<5.0.0` keeps the next major",
     "out.",
     "",
-    "Effect types cross the public API boundary (a `Db` is parameterised by",
-    "`Schema`s, a live query is a `Stream`), so two copies of `effect` in one",
+    "Schema types still cross the public API (attrs / operation codecs).",
+    "App `Db` methods are promises and subscriptions; Effect / Stream live",
+    "on `db.effect.*` and `ramose/db/effect`. Two copies of `effect` in one",
     "tree do not merely duplicate bytes — they produce two mutually unassignable",
     "sets of types and nothing typechecks. The mitigation is that a consumer",
     "never has to name `effect` at all: it arrives under `ramose`, and the",
@@ -74,6 +75,11 @@
       "bun": "./src/db/index.ts",
       "types": "./dist/db/index.d.ts",
       "default": "./dist/db/index.js"
+    },
+    "./db/effect": {
+      "bun": "./src/db/effect.ts",
+      "types": "./dist/db/effect.d.ts",
+      "default": "./dist/db/effect.js"
     },
     "./worker": {
       "bun": "./src/worker/index.ts",

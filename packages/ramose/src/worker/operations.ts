@@ -273,7 +273,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
   let result: { output: unknown; halted: boolean };
   try {
     result = await Effect.runPromise(
-      runBody(operation.body, built.op, decoded),
+      runBody(operation, built.op, decoded),
     );
   } catch (err) {
     const tag = tagOf(err);

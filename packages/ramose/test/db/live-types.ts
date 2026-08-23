@@ -28,7 +28,7 @@ declare const eid: Eid<typeof Movies>;
 
 // ── the stream's element is the query's row type ───────────────────────────
 
-const named = db.live(
+const named = db.effect.live(
   Query.q(() =>
     pipe(
       Query.entities(User),
@@ -46,7 +46,7 @@ type _namedR = Expect<Equal<Stream.Services<typeof named>, never>>;
 type _namedErr = Expect<Equal<Stream.Error<typeof named>, DbError>>;
 
 // nested selects come through the same as `db.pull`
-const friends = db.live(
+const friends = db.effect.live(
   Query.q(() =>
     pipe(
       Query.entities(User),
@@ -62,7 +62,7 @@ type _friends = Expect<
 // ── no `select` is a stream of bare `{ id }` rows ──────────────────────────
 
 /** the generator spelling returns the focus var, so the row is `{ id }` */
-const eids = db.live(
+const eids = db.effect.live(
   Query.q(function* () {
     const user = yield* Query.entities(User);
     yield* Query.has(User.name)(user);
@@ -83,7 +83,7 @@ const ada = Query.q(() =>
   ),
 );
 
-const oneLive = db.live(ada.one());
+const oneLive = db.effect.live(ada.one());
 type _oneLive = Expect<
   Equal<
     typeof oneLive,
@@ -92,7 +92,7 @@ type _oneLive = Expect<
 >;
 
 /** `oneOrFail()` adds `NotOne` to the error channel; the element is the row. */
-const failLive = db.live(ada.oneOrFail());
+const failLive = db.effect.live(ada.oneOrFail());
 type _failLive = Expect<
   Equal<
     typeof failLive,
@@ -103,7 +103,7 @@ type _failLive = Expect<
 // ── aggregate cells group by the record's other cells ──────────────────────
 
 /** a record projection with an aggregate cell: one row per group */
-const grouped = db.live(
+const grouped = db.effect.live(
   Query.q(function* () {
     const user = yield* Query.entities(User);
     const name = yield* Q.fact(user, User.name);
@@ -126,7 +126,7 @@ const byName = Query.q({ name: User.name }, (p) =>
     Query.select({ age: User.age }),
   ),
 );
-const bound = db.live(byName, { name: "Ada" });
+const bound = db.effect.live(byName, { name: "Ada" });
 type _bound = Expect<
   Equal<
     typeof bound,
@@ -135,43 +135,43 @@ type _bound = Expect<
 >;
 
 // @ts-expect-error `name` binds the attribute's value type, not a number
-db.live(byName, { name: 42 });
+db.effect.live(byName, { name: 42 });
 
 // @ts-expect-error a declared head must be bound at the terminal
-db.live(byName);
+db.effect.live(byName);
 
 // ── a pinned view still gives a Stream ─────────────────────────────────────
 
 const namesQ = Query.q(() =>
   pipe(Query.entities(User), Query.select({ name: User.name })),
 );
-const past = db.asOf(3).live(namesQ);
+const past = db.asOf(3).effect.live(namesQ);
 type Names = readonly { readonly name: string }[];
 type _past = Expect<Equal<typeof past, Stream.Stream<Names, DbError>>>;
-const hist = db.history.live(namesQ);
+const hist = db.history.effect.live(namesQ);
 type _hist = Expect<Equal<typeof hist, Stream.Stream<Names, DbError>>>;
 
 // ── basis() requires nothing: `R = never`, on every view ──────────────────
 
-const basis = db.basis();
+const basis = db.effect.basis();
 type _basis = Expect<
   Equal<typeof basis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
 type _basisR = Expect<Equal<Effect.Services<typeof basis>, never>>;
 type _basisErr = Expect<Equal<Effect.Error<typeof basis>, DbError>>;
 
-const pinnedBasis = db.asOf(3).basis();
+const pinnedBasis = db.asOf(3).effect.basis();
 type _pinnedBasis = Expect<
   Equal<typeof pinnedBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
-const historyBasis = db.history.basis();
+const historyBasis = db.history.effect.basis();
 type _historyBasis = Expect<
   Equal<typeof historyBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
 
 // ── livePull: the live terminal for pull ───────────────────────────────────
 
-const projected = db.livePull(eid, {
+const projected = db.effect.livePull(eid, {
   name: User.name,
   age: User.age.optional,
 });
@@ -187,7 +187,7 @@ type _projectedR = Expect<Equal<Stream.Services<typeof projected>, never>>;
 type _projectedErr = Expect<Equal<Stream.Error<typeof projected>, DbError>>;
 
 // nested `.select` and a lookup-ref subject come through as in `db.pull`
-const bestOf = db.livePull([User.name, "Ada"], {
+const bestOf = db.effect.livePull([User.name, "Ada"], {
   bestFriend: User.bestFriend.optional.select({ name: User.name }),
 });
 type BestOf = NonNullable<Stream.Success<typeof bestOf>>;
@@ -196,7 +196,7 @@ type _bestOf = Expect<
 >;
 
 // a pinned view still gives a Stream
-const pastPull = db.asOf(3).livePull(eid, { name: User.name });
+const pastPull = db.asOf(3).effect.livePull(eid, { name: User.name });
 type _pastPull = Expect<
   Equal<
     typeof pastPull,
@@ -205,9 +205,9 @@ type _pastPull = Expect<
 >;
 
 // @ts-expect-error unknown attr on the namespace
-db.livePull(eid, { name: User.nope });
+db.effect.livePull(eid, { name: User.nope });
 
 // ── only a query value stands up ───────────────────────────────────────────
 
 // @ts-expect-error the legacy callback builder is gone
-db.live((q) => q.find("?e"));
+db.effect.live((q) => q.find("?e"));

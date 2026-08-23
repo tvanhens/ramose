@@ -21,9 +21,17 @@ import {
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() =>
   pipe(Query.entities(User), Query.select({ name: User.name })),
@@ -35,15 +43,14 @@ const createUser = Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      const e = yield* op.entity();
-      yield* e.add(User.name, input.name);
-      yield* op.effect("audit", () => Effect.succeed("logged"));
-      const extra = yield* op.entity();
-      yield* extra.add(User.name, "AFTER");
-      return {};
-    }),
+  async (op, input) => {
+    const e = op.entity();
+    e.add(User.name, input.name);
+    await op.effect("audit", () => "logged");
+    const extra = op.entity();
+    extra.add(User.name, "AFTER");
+    return {};
+  },
 );
 
 const setName = Operation(
@@ -53,11 +60,10 @@ const setName = Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      yield* op.add(op.self, User.name, input.name);
-      return {};
-    }),
+  (op, input) => {
+    op.add(op.self, User.name, input.name);
+    return {};
+  },
 );
 
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
@@ -117,10 +123,10 @@ const moviesWorld = async () => {
 
 const seedClient = async (
   peer: { socket: { push: (f: unknown) => void } },
-  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> },
+  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
   conn: Connection,
 ) => {
-  await run(db.q(names));
+  await db.q(names);
   const snap = await snapshotOf(conn);
   peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   await settle();
@@ -179,11 +185,11 @@ describe("optimistic prefix", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
 
-    const pending = Effect.runPromise(db.run(createUser, { name: "Ada" }));
+    const pending = db.run(createUser, { name: "Ada" });
     await settle();
     expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
     expect(live.seen.at(-1)).not.toEqual(
@@ -198,7 +204,7 @@ describe("optimistic prefix", () => {
     const report = await pending;
     expect(report.output).toEqual({});
     expect(ack?.t).toBe(report.t);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
 
     await live.stop();
     await c.dispose();
@@ -231,7 +237,7 @@ describe("optimistic prefix", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
 
     const pending = runFail(db.run(createUser, { name: "Ada" }));
@@ -244,7 +250,7 @@ describe("optimistic prefix", () => {
     expect((err as OperationRejected)._tag).toBe("OperationRejected");
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.q(names)).toEqual([]);
 
     await live.stop();
     await c.dispose();
@@ -298,13 +304,13 @@ describe("optimistic prefix", () => {
     await seedClient(peer, db, server);
 
     const first = Effect.runPromise(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity("new");
         yield* e.add(User.name, "Ada");
       }),
     );
     await settle();
-    const second = Effect.runPromise(db.run(setName, "new", { name: "Ada Lovelace" }));
+    const second = db.run(setName, "new", { name: "Ada Lovelace" });
     await settle();
     expect(opBodies).toHaveLength(0);
 
@@ -316,7 +322,7 @@ describe("optimistic prefix", () => {
     expect(typeof opBodies[0]!.entity).toBe("number");
     expect(opBodies[0]!.entity).not.toBe("new");
     expect(created.t).toBeLessThanOrEqual(renamed.t);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada Lovelace" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada Lovelace" }]);
 
     await c.dispose();
   });

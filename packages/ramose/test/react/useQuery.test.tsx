@@ -7,11 +7,10 @@
  *   previous `data` (no flash to `undefined` on scrub);
  * - a slower answer to an older run is dropped — last-write-wins by issue
  *   order, not by resolution order;
- * - a terminal failure lands as the `Cause`, with the last `data` kept.
+ * - a terminal failure lands as the tagged error, with the last `data` kept.
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Cause from "effect/Cause";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
   registerDom,
@@ -107,7 +106,7 @@ describe("useQuery", () => {
     expect(peer.frameOps("q").map((f) => f.asOf)).toEqual([2, 1, 3]);
   });
 
-  test("a terminal failure lands as the Cause, over the last data", async () => {
+  test("a terminal failure lands as the tagged error, over the last data", async () => {
     const peer = scrubPeer({
       2: { title: "two" },
       4: { title: "bad basis", status: 400 },
@@ -125,8 +124,9 @@ describe("useQuery", () => {
     await waitFor(() => expect(result.current.error).toBeDefined());
     expect(result.current.loading).toBe(false);
     expect(result.current.data).toEqual([{ title: "two" }]);
-    const squashed = Cause.squash(result.current.error!) as { _tag?: string };
-    expect(squashed._tag).toBe("InvalidRequest");
+    expect((result.current.error as { _tag?: string })._tag).toBe(
+      "InvalidRequest",
+    );
 
     // a new run clears the error
     rerender({ t: 2 });

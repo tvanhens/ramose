@@ -16,9 +16,17 @@ import { fakePeer, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -40,7 +48,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
     const c = ramose(peer);
     const db = c.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.q(names)).toEqual([]);
     expect(peer.calls).toEqual([]);
     expect(peer.frames[0]).toEqual({
       id: 1,
@@ -49,7 +57,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
     });
 
     const report = await run(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -117,7 +125,7 @@ describe("close()", () => {
     });
     const c = ramose(peer);
     const db = c.db("movies", Movies);
-    await run(db.q(names));
+    await db.q(names);
 
     await c.close();
 
@@ -127,6 +135,45 @@ describe("close()", () => {
     const onFreshName = await runFail(c.db("fresh", Movies).q(names));
     expect(onFreshName._tag).toBe("NetworkError");
     expect(peer.calls).toEqual([]);
+  });
+});
+
+describe("the promise / subscription surface", () => {
+  test("a failed q rejects with the tagged error, not a FiberFailure", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+    });
+    const c = ramose(peer);
+    const db = c.db("movies", Movies);
+    await db.q(names);
+    await c.close();
+    try {
+      await db.q(names);
+      throw new Error("expected failure");
+    } catch (error) {
+      const e = error as { _tag?: string; name?: string };
+      expect(e._tag).toBe("NetworkError");
+      expect(e.name).not.toBe("FiberFailure");
+    }
+  });
+
+  test("db.live is a subscription handle — subscribe / async iterate / close", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+    });
+    const c = ramose(peer);
+    const live = c.db("movies", Movies).live(names);
+    expect(typeof live.subscribe).toBe("function");
+    expect(typeof live.close).toBe("function");
+    expect(typeof live[Symbol.asyncIterator]).toBe("function");
+    expect("pipe" in live).toBe(false);
+
+    const first = await new Promise<readonly { name: string }[]>((resolve, reject) => {
+      live.subscribe(resolve, reject);
+    });
+    expect(first).toEqual([]);
+    live.close();
+    await c.close();
   });
 });
 

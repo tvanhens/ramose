@@ -30,7 +30,7 @@ declare const db: Db<typeof Movies>;
 
 // ── generator transact is the only write ───────────────────────────────────
 
-const crossNs = db.transact(function* (tx) {
+const crossNs = db.effect.transact(function* (tx) {
   const ada = yield* tx.entity();
   yield* ada.add(User.name, "Ada");
   yield* ada.add(User.age, 36);
@@ -58,7 +58,7 @@ type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
 
 // ── unknown attr is a type error ───────────────────────────────────────────
 
-db.transact(function* (tx) {
+db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
   // @ts-expect-error unknown attr on the namespace
   yield* e.add(User.nope, "x");
@@ -72,7 +72,7 @@ db.transact(function* (tx) {
 
 // ── wrong value type is a type error ───────────────────────────────────────
 
-db.transact(function* (tx) {
+db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
   // @ts-expect-error name is string, not number
   yield* e.add(User.name, 42);
@@ -86,7 +86,7 @@ db.transact(function* (tx) {
 
 // ── retract / retractEntity typecheck ──────────────────────────────────────
 
-const retracts = db.transact(function* (tx) {
+const retracts = db.effect.transact(function* (tx) {
   const e = yield* tx.entity(1001);
   yield* e.retract(User.age, 35);
   yield* e.retract(User.name);
@@ -110,11 +110,14 @@ type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
 type _readNoInstall = Expect<
   Equal<"install" extends ReadK ? true : false, false>
 >;
-type _dbHasBoth = Expect<
-  Equal<
-    "transact" extends DbK ? ("install" extends DbK ? true : false) : false,
-    true
-  >
+type _dbHasInstall = Expect<
+  Equal<"install" extends DbK ? true : false, true>
+>;
+type _dbNoTransact = Expect<
+  Equal<"transact" extends DbK ? true : false, false>
+>;
+type _hatchHasTransact = Expect<
+  Equal<"transact" extends keyof (typeof db)["effect"] ? true : false, true>
 >;
 type _dbStillReads = Expect<Equal<"q" extends DbK ? true : false, true>>;
 
@@ -127,7 +130,7 @@ view.install;
 
 // ── install is an ordinary transaction that reports the same way ───────────
 
-const installed = db.install();
+const installed = db.effect.install();
 type _installReport = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
@@ -137,7 +140,7 @@ type _installErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
 
 class ExtraLoad extends Data.TaggedError("ExtraLoad")<{}> {}
 
-const withExtra = db.transact(function* (tx) {
+const withExtra = db.effect.transact(function* (tx) {
   const e = yield* tx.entity();
   yield* e.add(User.name, "Ada");
   return yield* Effect.fail(new ExtraLoad());

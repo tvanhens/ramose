@@ -19,7 +19,17 @@ import { type Call, client, fakePeer, redacted, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 /** Drain a stream into an array on its own fiber, as `useLive` would. */
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
@@ -110,9 +120,7 @@ describe("db.basis()", () => {
     });
     const c = client(peer);
 
-    const failure = await run(
-      Effect.flip(c.ramose.db("movies", Movies).basis()),
-    );
+    const failure = await runFail(c.ramose.db("movies", Movies).basis());
     expect(failure._tag).toBe("DatabaseNotFound");
 
     await c.dispose();
@@ -136,14 +144,14 @@ describe("db.basis()", () => {
     });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
 
     // the peer moved; basis() bumps the session. Overlay data is unchanged,
     // so digest-dedup keeps a single emission and no /query is sent.
     state.t = 9;
-    expect(await run(db.basis())).toEqual({ t: 9 });
+    expect(await db.basis()).toEqual({ t: 9 });
     await settle();
 
     expect(live.seen).toEqual([[{ name: "Ada" }]]);

@@ -108,7 +108,7 @@ describe("ReadWriteDatabases under ServerBinding", () => {
         const ramose = yield* ReadWriteDatabases(server("s3cret"));
         // pure: naming a database costs no request
         expect(calls).toEqual([]);
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -132,7 +132,7 @@ describe("ReadWriteDatabases under ServerBinding", () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* ReadWriteDatabases(server());
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -165,7 +165,7 @@ describe("ReadWriteDatabases under ServerHttp", () => {
     const report = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* ReadWriteDatabases(server("s3cret"));
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 
@@ -237,7 +237,7 @@ describe("ReadDatabases", () => {
         const ramose = yield* ReadDatabases(server());
         return yield* ramose
           .db("movies", Movies)
-          .q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
+          .effect.q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 

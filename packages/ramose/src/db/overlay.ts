@@ -764,7 +764,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           collected = built.ops;
 
           yield* runBody(
-            args.operation.body,
+            args.operation,
             built.op,
             args.invocation.input,
           ).pipe(
