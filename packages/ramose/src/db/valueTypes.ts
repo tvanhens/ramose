@@ -103,18 +103,19 @@ type RefFn = {
  * Entity reference. `Ref(User)` (eager) or `Ref(() => User)` (thunk, for
  * cycles) so navigational paths (`Todo.owner.name`) have a target.
  */
+/** Untargeted ref — the branded schema `Field(Ref)` / `Field(Ramose.Ref)` uses. */
+export const untargetedRef = asVt(
+  Schema.Number.annotate({ identifier: "ramose/ref" }),
+  "ref",
+);
+
 export const Ref: RefFn = Object.assign(
   <const N extends EntityLike>(
     target: N | (() => N),
-  ): TargetedRef<N["fields"], N["ns"]> => {
-    const schema = asVt(
-      Schema.Number.annotate({ identifier: "ramose/ref" }),
-      "ref",
-    );
-    return Object.assign(schema, {
+  ): TargetedRef<N["fields"], N["ns"]> =>
+    Object.assign(asVt(Schema.Number.annotate({ identifier: "ramose/ref" }), "ref"), {
       _resolve: resolveRefTarget(target),
-    }) as TargetedRef<N["fields"], N["ns"]>;
-  },
+    }) as TargetedRef<N["fields"], N["ns"]>,
   {
     self: Object.assign(
       asVt(
@@ -190,8 +191,12 @@ export const enumSchema = <
   const L extends readonly [string, ...string[]],
 >(
   values: L,
-): Schema.Literals<L> & RamoseVt<"string"> =>
-  asVt(Schema.Literals(values), "string");
+): Schema.Literals<L> & RamoseVt<"string"> => {
+  if (values.length === 0) {
+    throw new Error("ramose/schema: Enum([...]) needs at least one value");
+  }
+  return asVt(Schema.Literals(values), "string");
+};
 
 export const tryInferDbValueType = (
   schema: SchemaNS.Top,

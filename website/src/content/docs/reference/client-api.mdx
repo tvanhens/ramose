@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Database, Policy,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `params` · `optional` · `EidOf` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, the eight `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `ParamError` · `OperationRejected`, the eight `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -52,7 +52,7 @@ They re-export the module instances `effect` itself exports, so the two spelling
 
 The **schema** — your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)) — is built from three constructors.
 
-```ts title="examples/todos/schema.ts:1-10"
+```ts title="examples/todos/schema.ts:1-9"
 import * as Ramose from "ramose/db";
 
 export const Todo = Ramose.Entity("todo", {
@@ -111,9 +111,9 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `Ramose.Ref.self` | a reference to the same record type | ref |
 | `Ramose.Ref` (bare) | `number`, untargeted | ref |
 
-`Long` / `Instant` / `Uuid` / `UuidString` / `Bytes` remain as hatch aliases of the shorthand schemas for one release.
+Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form vocabulary (`Field(Ramose.Uuid)`). `UuidString` is deprecated for `Uuid`. `Field(Ramose.Uuid)` row types are `string`.
 
-```ts title="examples/reef/src/domain/schema.ts:42-50"
+```ts title="examples/reef/src/domain/schema.ts:43-49"
   priority: Ramose.int(),
   // …
   createdAt: Ramose.timestamp(),

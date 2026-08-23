@@ -173,6 +173,29 @@ type _shortTags = Expect<Equal<(typeof Short)["tags"]["cardinality"], "many">>;
 type _shortSlug = Expect<Equal<(typeof Short)["slug"]["unique"], "upsert">>;
 type _shortNamed = Expect<Equal<(typeof Short)["named"]["unique"], "upsert">>;
 
+// composition merge — types match mergeFieldOptions (valueType stays; owned both ways)
+const manyOwned = Field.many(string(), { owned: true });
+type _manyOwned = Expect<Equal<(typeof manyOwned)["owned"], true>>;
+type _manyOwnedVt = Expect<Equal<(typeof manyOwned)["valueType"], "string">>;
+const uniqueOwned = Field.unique(string(), "upsert", { owned: true });
+type _uniqueOwned = Expect<Equal<(typeof uniqueOwned)["owned"], true>>;
+const ownedCleared = Field(string({ owned: true }), { owned: false });
+type _ownedCleared = Expect<Equal<(typeof ownedCleared)["owned"], false>>;
+const ownedKept = Field(string({ owned: true }), { doc: "keep" });
+type _ownedKept = Expect<Equal<(typeof ownedKept)["owned"], true>>;
+const composedVt = Field(string(), { unique: "upsert" });
+type _composedVt = Expect<Equal<(typeof composedVt)["valueType"], "string">>;
+const schemaOverride = Field(Schema.String, { valueType: "uuid" });
+type _schemaOverride = Expect<Equal<(typeof schemaOverride)["valueType"], "uuid">>;
+const bareRef = Field(Ref);
+type _bareRefVt = Expect<Equal<(typeof bareRef)["valueType"], "ref">>;
+// @ts-expect-error composition cannot override valueType
+Field(string(), { valueType: "long" });
+// @ts-expect-error composition cannot override valueType
+Field.many(string(), { valueType: "long" });
+// @ts-expect-error composition cannot override valueType
+Field.unique(string(), "upsert", { valueType: "long" });
+
 /**
  * Componenthood is inferred as a *type*, not just a flag: `attr.reverse` reads
  * it to decide whether the backlink is one entity or a collection.

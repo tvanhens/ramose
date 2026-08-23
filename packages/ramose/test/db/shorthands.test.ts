@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   Enum,
   Field,
+  type FieldOptions,
   Ref,
   Schema as DbSchema,
   Entity,
@@ -20,6 +21,8 @@ import {
   timestamp,
   uuid,
 } from "../../src/db/internal.ts";
+import { query } from "../../src/internal/core/index.ts";
+import { attribute, Harness } from "../internal/transactor/harness.ts";
 
 const User = Entity("user", {
   name: string({ unique: "upsert", doc: "display name" }),
@@ -175,5 +178,54 @@ describe("uuid public type", () => {
   test("is a string schema, not a { vt, v } struct", () => {
     expect(User.token.valueType).toBe("uuid");
     expect(User.token.schema.ast._tag).toBe("String");
+  });
+});
+
+describe("Field composition merge", () => {
+  test("composition does not override valueType; Field(schema, { valueType }) still does", () => {
+    const override = { valueType: "long" } as FieldOptions;
+    expect(Field(string(), override).valueType).toBe("string");
+    expect(Field.many(string(), override).valueType).toBe("string");
+    expect(Field.unique(string(), "upsert", override).valueType).toBe("string");
+    expect(Field(Schema.String, { valueType: "uuid" }).valueType).toBe("uuid");
+  });
+
+  test("owned merges both ways through Field / Field.many / Field.unique", () => {
+    expect(Field.many(string(), { owned: true }).owned).toBe(true);
+    expect(Field.unique(string(), "upsert", { owned: true }).owned).toBe(true);
+    expect(Field(string({ owned: true }), { owned: false }).owned).toBe(false);
+    expect(Field(string({ owned: true }), { doc: "keep" }).owned).toBe(true);
+  });
+
+  test("Field.unique always indexes; index: false is discarded", () => {
+    expect(Field.unique(string({ index: false }), "upsert").index).toBe(true);
+  });
+
+  test("bare Field(Ref) is an untargeted ref", () => {
+    expect(Field(Ref).valueType).toBe("ref");
+  });
+
+  test("Enum([]) throws before a schema is built", () => {
+    expect(() => Enum([] as never)).toThrow(
+      "ramose/schema: Enum([...]) needs at least one value",
+    );
+  });
+});
+
+describe("uuid through the server", () => {
+  test("a plain string writes and a string comes back from query", async () => {
+    const h = new Harness();
+    await h.transactor.init();
+    await h.transactor.transact([attribute(":item/uid", "uuid")]);
+    const ack = await h.transactor.transact([
+      { ":db/id": "item", ":item/uid": "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" },
+    ]);
+    const uid = await query(
+      h.transactor.connection.db(),
+      `[:find ?uid . :in $ ?e :where [?e :item/uid ?uid]]`,
+      [ack.tempids.item],
+    );
+    expect(uid).toBe("3f333df6-90a4-4fda-8dd3-9485d27cee36");
+    expect(typeof uid).toBe("string");
   });
 });

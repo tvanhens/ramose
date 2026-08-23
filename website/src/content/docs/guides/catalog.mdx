@@ -21,14 +21,21 @@ A raw [Effect Schema](https://effect.website) is still accepted as the advanced 
 
 Reef's whole data model is 76 lines. The parts that matter:
 
-```ts title="examples/reef/src/domain/schema.ts:15-27"
+```ts title="examples/reef/src/domain/schema.ts:14-33"
 export const User = Ramose.Entity("user", {
   sub: Ramose.string({
     unique: "upsert",
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
-  name: Ramose.string(),
-  email: Ramose.string(),
+  role: Ramose.string({
+    doc: "Policy class, materialized by the peer from the JWT at session establishment",
+  }),
+  name: Ramose.string({
+    doc: "Display name, stamped by the peer from ramose.attrs.name",
+  }),
+  email: Ramose.string({
+    doc: "Email, stamped by the peer from ramose.attrs.email",
+  }),
 });
 
 export const Label = Ramose.Entity("label", {
@@ -37,7 +44,7 @@ export const Label = Ramose.Entity("label", {
 });
 ```
 
-```ts title="examples/reef/src/domain/schema.ts:39-54"
+```ts title="examples/reef/src/domain/schema.ts:38-54"
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string(),
@@ -83,7 +90,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
 
-Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must pass `{ valueType }` or the field types `valueType` as `undefined` (install then fails). `Long` / `Instant` / `Uuid` remain as aliases of `int` / `timestamp` / `uuid` for one release.
+Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must pass `{ valueType }` or the field types `valueType` as `undefined` (install then fails). Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`. `UuidString` is deprecated for `Uuid`.
 
 ## Options
 
