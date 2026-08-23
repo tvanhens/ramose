@@ -10,14 +10,12 @@
  * `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
  *
  * ```ts
- * const q = Query.q(
- *   {
- *     issueId: Ramose.EidOf(Issue),          // Param<Eid<typeof Issue>>
- *     term:    Schema.String,                // Param<string>
- *     owner:   Ramose.optional(User.id),     // may be unbound
- *   },
- *   (p) => pipe(Query.entities(Comment), Query.is(Comment.issue, p.issueId), …),
- * );
+ * const p = Ramose.params({
+ *   issueId: Issue.id,                       // Param<Eid<typeof Issue>>
+ *   term:    Schema.String,                  // Param<string>
+ *   owner:   Ramose.optional(User.id),       // may be unbound
+ * });
+ * const q = Query.from(Comment).where({ issue: p.issueId });
  * ```
  *
  * Substitution happens at lowering time (`lowerQueryObject`), never via the
@@ -218,13 +216,14 @@ export type ParamArgs<B> = [B] extends [never]
 /**
  * `Ramose.params({...})` — declare a query's value holes, by attribute
  * reference or Effect Schema. Declared, not inferred-from-use: the set is
- * what `Query.q(params, body)` declares as its head, what the terminal binds, and what a
- * mistyped binding is checked against.
+ * what a fluent chain accumulates via `ScopeOf`, what `Query.q(params, body)`
+ * declares as its head, what the terminal binds, and what a mistyped
+ * binding is checked against.
  */
 export const params = <const Spec extends ParamsSpec>(
   spec: Spec,
 ): ParamsOf<Spec> => {
-  const set = {};
+  const set: Record<string, AnyParam> = {};
   const out: Record<string, AnyParam> = {};
   for (const [key, decl] of Object.entries(spec)) {
     assertDecl(decl, `params({ ${key}: … })`);
@@ -235,6 +234,9 @@ export const params = <const Spec extends ParamsSpec>(
       set,
     } as AnyParam;
   }
+  // The identity object *is* the full set, so a single token (`p.issueId`)
+  // still types and binds the whole record — accepted looseness of #208.
+  Object.assign(set, out);
   return out as ParamsOf<Spec>;
 };
 

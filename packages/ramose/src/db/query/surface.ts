@@ -1,7 +1,8 @@
 /**
- * `Ramose.Query` — the query language's named surface. `Query.q` builds,
- * `Query.rule` names, the stdlib combinators pipe, and `Query.enrich` /
- * `Query.refine` transform closed queries. (`Ramose.Q` is the kernel.)
+ * `Ramose.Query` — the query language's named surface. `Query.from` is the
+ * primary app spelling; `Query.q` is the generator/kernel constructor;
+ * `Query.rule` names; the stdlib combinators stay one tier down. (`Ramose.Q`
+ * is the kernel.)
  */
 
 export { enrich, isCursor, q, refine, rule } from "./query.ts";
@@ -18,6 +19,9 @@ export type {
   RuleValue,
 } from "./query.ts";
 
+export { from } from "./fluent.ts";
+export type { EntityRow, FluentQuery, WhereEq } from "./fluent.ts";
+
 export {
   assertedBy,
   backlink,
@@ -26,8 +30,10 @@ export {
   every,
   follow,
   has,
+  ids,
   is,
   limit,
+  matching,
   missing,
   none,
   offset,
@@ -37,7 +43,6 @@ export {
   stage,
   updatedSince,
   when,
-  where,
 } from "./lib.ts";
 export type { FilterStage, IdRow, TraversalStage } from "./lib.ts";
 

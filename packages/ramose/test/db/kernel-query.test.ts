@@ -27,6 +27,7 @@ import {
   Schema as DbSchema,
   Databases,
   EidOf,
+  Instant,
   Long,
   Entity,
   NotOne,
@@ -178,6 +179,7 @@ const Comment = Entity("comment", {
   issue: Field(Ref(() => Issue)),
   author: Field(Ref(() => User)),
   text: Field(Schema.String),
+  at: Field(Instant),
 });
 
 const Team = Entity("team", {
@@ -226,6 +228,7 @@ const seed = async (db: Db<typeof Tracker>) => {
       yield* c1.set(Comment.issue, fix.eid as never);
       yield* c1.set(Comment.author, ada.eid as never);
       yield* c1.set(Comment.text, "on it");
+      yield* c1.set(Comment.at, new Date("2026-01-01T00:00:00.000Z"));
 
       // Lin has no age — the `missing` combinator's witness
       const lin = yield* tx.entity();
@@ -842,7 +845,7 @@ describe("db.query end to end", () => {
     const inList = Query.q(() =>
       pipe(
         Query.entities(Issue),
-        Query.where(Issue.title, (t) => Q.in(t, ["fix the flake", "not a title"])),
+        Query.matching(Issue.title, (t) => Q.in(t, ["fix the flake", "not a title"])),
         Query.select({ title: Issue.title }),
       ),
     );
@@ -1308,7 +1311,7 @@ describe("per-element pull filters (select options)", () => {
         name: Team.name,
         seniors: Team.members.select(
           { name: User.name },
-          { where: [Query.where(User.age, (a) => Q.gt(a, 40))] },
+          { where: [Query.matching(User.age, (a) => Q.gt(a, 40))] },
         ),
       });
     });
@@ -1465,6 +1468,127 @@ describe("per-element pull filters (select options)", () => {
       threw = e;
     }
     expect(String(threw)).toContain("reached db.pull");
+    await peer.dispose();
+  });
+});
+
+describe("Query.from — fluent app spelling", () => {
+  const commentShape = {
+    id: Comment.id,
+    text: Comment.text,
+    at: Comment.at,
+    issue: Comment.issue.select({ id: Issue.id }),
+  } as const;
+
+  test("header example compiles and runs as written", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    const p = params({ issueId: Issue.id });
+    const commentsQuery = Query.from(Comment)
+      .where({ issue: p.issueId })
+      .orderBy(Comment.at, "asc");
+    const commentTitles = Query.from(Comment)
+      .where({ issue: p.issueId })
+      .select(commentShape)
+      .orderBy(Comment.at, "asc");
+
+    const rows = await db.query(commentsQuery, { issueId: ids.fix as never });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.text).toBe("on it");
+    expect(rows[0]!.issue).toEqual({ id: ids.fix.id });
+    expect(typeof rows[0]!.id).toBe("number");
+
+    const titled = await db.query(commentTitles, { issueId: ids.fix as never });
+    expect(titled).toEqual([
+      {
+        id: expect.any(Number),
+        text: "on it",
+        at: new Date("2026-01-01T00:00:00.000Z"),
+        issue: { id: ids.fix.id },
+      },
+    ]);
+    await peer.dispose();
+  });
+
+  test("select-less fluent query serializes the expanded entity shape, not [*]", async () => {
+    const p = params({ issueId: Issue.id });
+    const q = Query.from(Comment).where({ issue: p.issueId }).orderBy(Comment.at, "asc");
+    const { query } = lowerQueryObject(q, { issueId: { id: 1 } });
+    const wire = JSON.parse(JSON.stringify(query)) as { find: unknown[] };
+    expect(JSON.stringify(wire)).not.toContain("[*]");
+    expect(JSON.stringify(wire)).toContain(":comment/text");
+    expect(JSON.stringify(wire)).toContain(":comment/issue");
+    expect(JSON.stringify(wire)).toContain(":comment/at");
+    expect(JSON.stringify(wire)).toContain(":comment/author");
+    const pull = JSON.stringify(wire.find);
+    expect(pull).toContain("\"id\"");
+    expect(pull).toContain("\"text\"");
+  });
+
+  test("fluent serializes, JSON-round-trips, and evaluates identically to pipe", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const bindings = { issueId: ids.fix as never };
+
+    const p = params({ issueId: Issue.id });
+    const fluent = Query.from(Comment)
+      .where({ issue: p.issueId })
+      .select(commentShape)
+      .orderBy(Comment.at, "asc");
+    const piped = Query.q({ issueId: Issue.id }, (pp) =>
+      pipe(
+        Query.entities(Comment),
+        Query.is(Comment.issue, pp.issueId),
+        Query.select(commentShape),
+        Query.orderBy(Comment.at, "asc"),
+      ),
+    );
+
+    const fluentWire = lowerQueryObject(fluent, bindings).query;
+    const pipedWire = lowerQueryObject(piped, bindings).query;
+    const fluentRound = JSON.parse(JSON.stringify(fluentWire));
+    const pipedRound = JSON.parse(JSON.stringify(pipedWire));
+    expect(fluentRound).toEqual(fluentWire);
+    expect(pipedRound).toEqual(pipedWire);
+    expect(fluentRound).toEqual(pipedRound);
+
+    expect(await db.query(fluent, bindings)).toEqual(await db.query(piped, bindings));
+    await peer.dispose();
+  });
+
+  test("object-literal where is a conjunction; fragments still compose", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const open = Query.from(Issue)
+      .where({ done: false })
+      .select({ title: Issue.title })
+      .orderBy(Issue.rank, "asc");
+    expect(await db.query(open)).toEqual([
+      { title: "fix the flake" },
+      { title: "ship the release" },
+    ]);
+
+    const viaFrag = Query.from(Issue)
+      .where(Query.is(Issue.done, false))
+      .select({ title: Issue.title })
+      .orderBy(Issue.rank, "asc");
+    expect(await db.query(viaFrag)).toEqual(await db.query(open));
+    await peer.dispose();
+  });
+
+  test(".ids() is today's id-only projection", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    const rows = await db.query(Query.from(User).ids());
+    const got = new Set(rows.map((r) => r.id));
+    expect(got.has(ids.ada.id)).toBe(true);
+    expect(got.has(ids.grace.id)).toBe(true);
     await peer.dispose();
   });
 });

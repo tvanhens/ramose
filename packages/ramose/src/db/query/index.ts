@@ -1,8 +1,8 @@
 /**
  * The query language: kernel (`Q`), constructor and composition (`Query`),
- * and the pipeable stdlib. One kind of object — every query is a rule —
- * with two spellings (pipe, generator) and one composition mechanism
- * (generator delegation, at three altitudes: fragment, `q.open`, rule).
+ * the fluent app spelling (`Query.from`), and the pipeable stdlib. One
+ * kind of object — every query is a rule — with two advanced spellings
+ * (pipe, generator) under the fluent chain.
  */
 
 export {
@@ -52,6 +52,9 @@ export {
   type RuleValue,
 } from "./query.ts";
 
+export { from } from "./fluent.ts";
+export type { EntityRow, FluentQuery, WhereEq } from "./fluent.ts";
+
 export {
   assertedBy,
   backlink,
@@ -60,8 +63,10 @@ export {
   every,
   follow,
   has,
+  ids,
   is,
   limit,
+  matching,
   missing,
   none,
   offset,
@@ -71,7 +76,6 @@ export {
   stage,
   updatedSince,
   when,
-  where,
   type FilterStage,
   type IdRow,
   type TraversalStage,

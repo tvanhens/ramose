@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fluent query builder (part of #208, tracker #205)
+
+`Query.from(Entity).where({…}).select(…).orderBy(…)` is the primary app
+spelling — immutable, hoistable, no `pipe`. Object-literal `.where` is a
+conjunction of equality filters; fragments (`Query.some`, `Query.matching`)
+pass to the same method. Hoist `Ramose.params({ issueId: Issue.id })`;
+`Issue.id` is a branded `Eid` (no recased `idOf`). A select-less fluent
+query returns the full entity (friendly keys, refs as `{ id }` cells) and
+serializes that expanded shape, not `[*]`. `.ids()` is today's cheap
+id-only subscription. `Query.q` + pipe remain the generator/kernel
+spelling. Bind-attr `Query.where` is renamed `Query.matching`.
+
 ### Schema value shorthands (part of #207, tracker #205)
 
 App schemas use `Ramose.string()`, `boolean()`, `int()`, `float()`,

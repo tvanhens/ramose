@@ -58,16 +58,18 @@ export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
 // gate clauses with `when`; `EidOf(N)` declares an entity-valued hole
 export { EidOf, optional, params } from "./Params.ts";
 
-// ── the query language (kernel + pipe surface) ─────────────────────────────
+// ── the query language (fluent + kernel) ───────────────────────────────────
 // `Q` is the kernel (fact, comparisons, or/not, projections); `Query` is
-// the constructor, named rules, transformers and the pipeable stdlib —
-// `Ramose.Query.q({...}, (p) => pipe(Query.entities(Issue), ...))`. The
-// same names are importable flat from `ramose/query`.
+// the constructor. App spelling: `Query.from(Issue).where({…}).orderBy(…)`.
+// `Query.q` remains the generator-tier constructor. The same names are
+// importable flat from `ramose/query`.
 export { Q } from "./query/index.ts";
 export * as Query from "./query/surface.ts";
 export type {
   AnyQueryObject,
   Cursor,
+  EntityRow,
+  FluentQuery,
   OpenArgs,
   OpenResult,
   Page,

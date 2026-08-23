@@ -6,7 +6,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
-import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
 import { type ReactNode, StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
@@ -26,11 +25,9 @@ const Todo = Ramose.Entity("todo", {
 });
 const Todos = Ramose.Schema({ todo: Todo });
 
-/** No `select`, so rows are entity ids — the peer's `[[eid], …]` unwrapped. */
-const allTodos = Ramose.Query.q(() => Ramose.Query.entities(Todo));
-const oneTodo = Ramose.Query.q(() =>
-  pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(1)),
-);
+/** `.ids()` is today's cheap live-subscription shape — `{ id }` rows. */
+const allTodos = Ramose.Query.from(Todo).ids();
+const oneTodo = Ramose.Query.from(Todo).ids().limit(1);
 
 /** Every pass is a handful of microtasks; a beat is plenty. */
 const settle = (ms = 25) => Bun.sleep(ms);
@@ -328,9 +325,8 @@ describe("useLive (query form)", () => {
   });
 
   test("a params-only change re-runs without a new query object and does not blank rows", async () => {
-    const limited = Ramose.Query.q({ n: Schema.Number }, (p) =>
-      pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(p.n)),
-    );
+    const p = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
     const object = limited;
 
     const world = await todoWorld(2);

@@ -13,9 +13,10 @@
  * number, so it still works as a React key, a `tx.set(id, …)` subject or a
  * predicate value — but the cells do not mix: a `User` id is not a `Todo`
  * id, and a bare `number` is not a cell. Hand it to the next query
- * (`N.id.is(cell)`) or to `db.pull` with no cast. A query with **no**
- * `.select` still yields the wrapped, catalog-branded `{ id }` form — a bare
- * query names no field, so there is no namespace to brand its rows with.
+ * (`N.id.is(cell)`) or to `db.pull` with no cast. `Query.from(N)` without
+ * `.select` yields the full entity (`id` is `Eid<N>`). `.ids()` — and a
+ * select-less pipe / generator that returns the focus var — still yields
+ * the wrapped, catalog-branded `{ id }` form.
  */
 
 import type { AnySchema } from "./Schema.ts";

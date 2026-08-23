@@ -71,6 +71,8 @@ export {
   isRuleValue,
   lowerQueryObject,
   type AnyQueryObject,
+  type EntityRow,
+  type FluentQuery,
   type LoweredKernelQuery,
   type QueryObject,
   type RuleValue,

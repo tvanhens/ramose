@@ -131,7 +131,8 @@ export type PipeStage =
       readonly empty: OrderEmpty;
     }
   | { readonly kind: "limit"; readonly n: number | AnyParam }
-  | { readonly kind: "offset"; readonly n: number | AnyParam };
+  | { readonly kind: "offset"; readonly n: number | AnyParam }
+  | { readonly kind: "ids" };
 
 /**
  * The pipe surface's incremental builder for the same `(params, body)`
@@ -337,6 +338,7 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   let focus: AnyVar = root;
   let select: Shape | undefined;
   let selectFocus: AnyVar = root;
+  let projectIds = false;
   const order: BuiltOrder[] = [];
   let limit: number | AnyParam | undefined;
   let offset: number | AnyParam | undefined;
@@ -356,6 +358,9 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
         select = st.shape;
         selectFocus = focus;
         break;
+      case "ids":
+        projectIds = true;
+        break;
       case "orderBy":
         order.push(resolveOrderKey(st, select));
         break;
@@ -374,8 +379,11 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   }
   return {
     clauses: ctx.clauses,
-    proj: select !== undefined ? { _tag: "pullSpec", focus: selectFocus, shape: select } : { _tag: "idsSpec", v: focus },
-    focus: select !== undefined ? selectFocus : focus,
+    proj:
+      select !== undefined && !projectIds
+        ? { _tag: "pullSpec", focus: selectFocus, shape: select }
+        : { _tag: "idsSpec", v: focus },
+    focus: select !== undefined && !projectIds ? selectFocus : focus,
     order,
     limit,
     offset,
@@ -427,7 +435,7 @@ type RowFromBody<B> = B extends (p: never) => infer Out
       : never
   : never;
 
-const makeQueryObject = <Row, PB>(
+export const makeQueryObject = <Row, PB>(
   paramsSpec: ParamsSpec | undefined,
   paramSet: AnyParamSet | undefined,
   body: (p: never) => unknown,

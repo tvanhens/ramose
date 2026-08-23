@@ -4,7 +4,7 @@
  * The `where` entries of a cardinality-many collection's options record
  * (`.select(shape, { where: [ … ] })`, or `values(attr, { where: [ … ] })`
  * for a scalar) are the same filter fragments the pipe uses (`is`, `has`,
- * `Q.not`, a `where(attr, pred)`, any userland combinator built from the
+ * `Q.not`, a `matching(attr, pred)`, any userland combinator built from the
  * kernel). Each fragment runs against a
  * synthetic *element* var, and the recorded clauses — both sides inert data —
  * compile into the engine's per-element predicate tree ({@link PullElemPred}):

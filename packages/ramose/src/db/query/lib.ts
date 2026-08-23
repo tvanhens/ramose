@@ -13,7 +13,7 @@
  */
 
 import type { AnyEntity } from "../Entity.ts";
-import type { AnyParam } from "../Params.ts";
+import { isParam, type AnyParam } from "../Params.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
   Q,
@@ -26,6 +26,21 @@ import {
   type Var,
 } from "./kernel.ts";
 import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
+
+/** Params closed over by a dual stage — fluent `where`/`limit` collect these. */
+const STAGE_PARAMS = new WeakMap<object, AnyParam[]>();
+
+const trackParams = <T extends object>(stage: T, ...values: unknown[]): T => {
+  const found = values.filter(isParam);
+  if (found.length > 0) {
+    STAGE_PARAMS.set(stage, [...(STAGE_PARAMS.get(stage) ?? []), ...found]);
+  }
+  return stage;
+};
+
+/** @internal Params a dual stage closed over. */
+export const paramsOfStage = (stage: object): readonly AnyParam[] =>
+  STAGE_PARAMS.get(stage) ?? [];
 
 // ── the pipeline value ──────────────────────────────────────────────────────
 
@@ -84,8 +99,10 @@ export interface TraversalStage {
 }
 
 const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
-  ((x: unknown) =>
-    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage;
+  trackParams(
+    ((x: unknown) =>
+      isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage,
+  );
 
 const traversal = (frag: (focus: AnyVar) => QueryGen<Var<EidCell>>): TraversalStage =>
   ((x: unknown) =>
@@ -110,9 +127,12 @@ type ValueIn<A> = AttrValue<A> | AnyParam | AnyVar | { readonly id: number };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
 export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
-    yield* Q.fact(e, attr, value);
-  });
+  trackParams(
+    filter(function* (e) {
+      yield* Q.fact(e, attr, value);
+    }),
+    value,
+  );
 
 /**
  * `byId(id)`: the focus is this entity. The blessed spelling of a filter by
@@ -122,7 +142,7 @@ export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage 
  * an attribute).
  */
 export const byId = (id: number | AnyParam | AnyVar | { readonly id: number }): FilterStage =>
-  is({ ident: ":db/id" }, id);
+  trackParams(is({ ident: ":db/id" }, id), id);
 
 /** `has(A)`: the focus carries some `A` fact. */
 export const has = (attr: AttrLike): FilterStage =>
@@ -137,11 +157,14 @@ export const missing = (attr: AttrLike): FilterStage =>
   });
 
 /**
- * `where(A, (v) => cmp)`: bind the attr's value and constrain it —
- * `where(Issue.title, (t) => Q.startsWith(t, "re:"))`. The callback may
+ * `matching(A, (v) => cmp)`: bind the attr's value and constrain it —
+ * `matching(Issue.title, (t) => Q.startsWith(t, "re:"))`. The callback may
  * return one comparison or a whole generator of clauses.
+ *
+ * Renamed from `where` so the general filter is `.where` / object-literal
+ * equality on the fluent chain (#204, #208).
  */
-export const where = <A extends AttrLike>(
+export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
 ): FilterStage =>
@@ -170,10 +193,13 @@ type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
 /** `some(R, ps…)`: ∃ other. `[other R e]` ∧ ps(other). */
 export const some = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
-    const other = yield* backlink(ref)(e);
-    for (const p of ps) yield* p(other) as QueryGen<unknown>;
-  });
+  trackParams(
+    filter(function* (e) {
+      const other = yield* backlink(ref)(e);
+      for (const p of ps) yield* p(other) as QueryGen<unknown>;
+    }),
+    ...ps,
+  );
 
 /** `none(R, ps…)`: ¬∃ other. `[other R e]` ∧ ps(other). */
 export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
@@ -214,20 +240,27 @@ export const when = <G extends AnyParam>(
   gate: G & ValidGate<G>,
   ...ps: readonly ElemPred[]
 ): FilterStage =>
-  filter(function* (e) {
-    yield* Q.when(gate as never, function* () {
-      for (const p of ps) yield* p(e) as QueryGen<unknown>;
-    });
-  });
+  trackParams(
+    filter(function* (e) {
+      yield* Q.when(gate as never, function* () {
+        for (const p of ps) yield* p(e) as QueryGen<unknown>;
+      });
+    }),
+    gate,
+    ...ps,
+  );
 
 // ── time — generic over every namespace ─────────────────────────────────────
 
 /** Some fact about the focus was asserted at basis `t >= since`. */
 export const updatedSince = (since: number | AnyParam): FilterStage =>
-  filter(function* (e) {
-    const f = yield* Q.fact(e);
-    yield* Q.gte(f.t, since);
-  });
+  trackParams(
+    filter(function* (e) {
+      const f = yield* Q.fact(e);
+      yield* Q.gte(f.t, since);
+    }),
+    since,
+  );
 
 /** Some fact about the focus rides a transaction whose entity carries
  * `[tx A who]` — provenance as an ordinary clause. */
@@ -264,13 +297,27 @@ export const orderBy =
     });
 
 /** Keep at most `n` rows. */
-export const limit =
-  (n: number | AnyParam) =>
-  <Row>(q: Pipeline<Row>): Pipeline<Row> =>
-    addStage(assertPipeline(q, "limit"), { kind: "limit", n });
+export const limit = (n: number | AnyParam) =>
+  trackParams(
+    <Row>(q: Pipeline<Row>): Pipeline<Row> =>
+      addStage(assertPipeline(q, "limit"), { kind: "limit", n }),
+    n,
+  );
 
 /** Drop `n` rows from the front of the (ordered) result. */
-export const offset =
-  (n: number | AnyParam) =>
-  <Row>(q: Pipeline<Row>): Pipeline<Row> =>
-    addStage(assertPipeline(q, "offset"), { kind: "offset", n });
+export const offset = (n: number | AnyParam) =>
+  trackParams(
+    <Row>(q: Pipeline<Row>): Pipeline<Row> =>
+      addStage(assertPipeline(q, "offset"), { kind: "offset", n }),
+    n,
+  );
+
+/**
+ * Project only the matched entity ids — today's cheap-subscription shape
+ * (`{ id }` rows). On a select-less pipe this is already the default; on
+ * the fluent chain it opts out of the full-entity default.
+ */
+export const ids =
+  () =>
+  (q: Pipeline<any>): Pipeline<IdRow> =>
+    addStage(assertPipeline(q, "ids"), { kind: "ids" });

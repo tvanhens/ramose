@@ -46,7 +46,7 @@
  *   yield* ada.set(User.name, "Ada");
  * });
  * const rows = yield* dbAfter.query(
- *   Ramose.Query.q(() => pipe(Ramose.Query.entities(User), Ramose.Query.select({ name: User.name }))),
+ *   Ramose.Query.from(User).select({ name: User.name }),
  * );
  * ```
  *
