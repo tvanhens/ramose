@@ -29,6 +29,23 @@ describe("fromStream close() wakes parked iterators", () => {
     await timed(done, 500);
   });
 
+  test("two concurrent for-await consumers both end when close() runs", async () => {
+    const sub = fromStream(Stream.never);
+    const first = (async () => {
+      for await (const _ of sub) {
+        /* Stream.never emits nothing */
+      }
+    })();
+    const second = (async () => {
+      for await (const _ of sub) {
+        /* Stream.never emits nothing */
+      }
+    })();
+    await Bun.sleep(50);
+    sub.close();
+    await timed(Promise.all([first, second]), 500);
+  });
+
   test("close() after a value still ends a parked iterator", async () => {
     const sub = fromStream(Stream.make(1).pipe(Stream.concat(Stream.never)));
     const seen: number[] = [];

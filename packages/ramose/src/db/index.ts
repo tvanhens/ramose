@@ -73,7 +73,7 @@ export {
   type Client,
   type ClientOptions,
   connect,
-} from "./Databases.ts";
+} from "./connect.ts";
 export {
   type Claims,
   token,

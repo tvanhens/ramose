@@ -246,7 +246,9 @@ describe("errorMessage", () => {
   });
 
   test("a _tag-only error falls back to the tag", () => {
-    expect(errorMessage({ _tag: "TxRejected" })).toBe("TxRejected");
+    expect(errorMessage({ _tag: "OperationRejected" })).toBe(
+      "OperationRejected",
+    );
   });
 
   test("anything else goes through String", () => {

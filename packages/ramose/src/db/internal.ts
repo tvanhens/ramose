@@ -10,6 +10,7 @@
 
 export * from "./Attribute.ts";
 export * from "./Catalog.ts";
+export * from "./connect.ts";
 export * from "./Databases.ts";
 export * from "./Db.ts";
 export * from "./effect.ts";
