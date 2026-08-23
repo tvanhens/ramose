@@ -30,19 +30,19 @@ import * as Ramose from "ramose";    // the same, plus Server, Database, Policy,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `params` · `optional` · `EidOf` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, the eight `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `params` · `optional` · `EidOf` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, the eight `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
 
 ### Effect comes with Ramose
 
-`effect` is a dependency of `ramose`, not something you install beside it, so `import * as Schema from "effect/Schema"` resolves in a project whose only dependency is `ramose`. That is deliberate: Effect types cross Ramose's public API — a `Db` is parameterised by your schemas, a live query is a `Stream` — so two copies of `effect` in one tree are two mutually unassignable sets of types, and nothing typechecks. Declare `effect` in your own `package.json` only at a version that agrees with Ramose's.
+App schemas use `Ramose.string()` and the other shorthands — they do not import Effect. The hatch path (`ramose/db/effect`, `Ramose.Field(schema)`, operation codecs) still uses Effect Schema. `effect` is a dependency of `ramose`, not something you install beside it; two copies in one tree produce mutually unassignable types. Declare `effect` in your own `package.json` only at a version that agrees with Ramose's.
 
 Two subpaths let you avoid naming it at all, which is what a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) needs:
 
 ```ts
-import * as Schema from "ramose/schema";        // === effect/Schema
+import * as Schema from "ramose/schema";        // === effect/Schema — advanced / hatch
 import { Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
 ```
 
@@ -54,12 +54,11 @@ The **schema** — your data model as one TypeScript value ([glossary](/concepts
 
 ```ts title="examples/todos/schema.ts:1-10"
 import * as Ramose from "ramose/db";
-import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Entity("todo", {
-  title: Ramose.Field(Schema.String),
-  done: Ramose.Field(Schema.Boolean),
-  createdAt: Ramose.Field(Ramose.Instant),
+  title: Ramose.string(),
+  done: Ramose.boolean(),
+  createdAt: Ramose.timestamp(),
 });
 
 export const Todos = Ramose.Schema({ todo: Todo });
@@ -67,12 +66,23 @@ export const Todos = Ramose.Schema({ todo: Todo });
 
 **`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`.
 
-**`Ramose.Field(schema, options?)`** — one **field** ([glossary](/concepts/glossary/#field)).
+**Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag and composes with `Field.many` / `Field.unique`.
 
 ```ts
-Ramose.Field(Schema.String)                                   // one string
-Ramose.Field(Schema.String, { unique: "upsert" })           // a unique key: look records up by it
-Ramose.Field(Ramose.Ref(() => Label), { cardinality: "many" }) // a set of references
+Ramose.string()
+Ramose.string({ unique: "upsert" })
+Ramose.Field.unique(Ramose.string(), "upsert")
+Ramose.Field.many(Ramose.Ref(Label))
+Ramose.Enum(["low", "med", "high"])
+```
+
+**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). `valueType` is required when the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST.
+
+```ts
+import * as Schema from "ramose/schema";
+Ramose.Field(Schema.String)
+Ramose.Field(Schema.Literals(["todo", "done"]), { valueType: "string" })
+Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 ```
 
 | option | values | default |
@@ -86,26 +96,30 @@ Ramose.Field(Ramose.Ref(() => Label), { cardinality: "many" }) // a set of refer
 
 **`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key (`todo`) is what a policy's `ns: { todo: … }` refers to. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
 
-**Value helpers** — plain `Schema.String`, `Schema.Number` (stored as a double) and `Schema.Boolean` need no helper. For everything else:
-
-| helper | TypeScript value | stored as |
+| shorthand | TypeScript value | stored as |
 | --- | --- | --- |
-| `Ramose.Instant` | `Date` | instant |
-| `Ramose.Long` | a whole `number` (a JavaScript double, so nothing above 2⁵³ is exact) | long |
-| `Ramose.Bytes` | `Uint8Array` | bytes |
-| `Ramose.UuidString` | canonical uuid `string` | uuid |
-| `Ramose.Uuid` | `{ vt: 6, v: string }` (not a string, not bytes) | uuid |
-| `Ramose.Ref(() => User)` | `number` (the target's id); enables nested `.select({ … })` and `.reverse` in shapes, `Query.follow` / `Query.backlink` in queries | ref |
+| `Ramose.string()` | `string` | string |
+| `Ramose.boolean()` | `boolean` | boolean |
+| `Ramose.float()` | `number` | double |
+| `Ramose.int()` | a whole `number` (a JavaScript double, so nothing above 2⁵³ is exact) | long |
+| `Ramose.timestamp()` | `Date` | instant |
+| `Ramose.uuid()` | canonical uuid `string` | uuid |
+| `Ramose.bytes()` | `Uint8Array` | bytes |
+| `Ramose.Enum(["low", "med"])` | `"low" \| "med"` | string |
+| `Ramose.Ref(User)` | `number` (the target's id); enables nested `.select({ … })` and `.reverse` in shapes, `Query.follow` / `Query.backlink` in queries | ref |
+| `Ramose.Ref(() => Other)` | the same, thunk form for cycles | ref |
 | `Ramose.Ref.self` | a reference to the same record type | ref |
 | `Ramose.Ref` (bare) | `number`, untargeted | ref |
 
-```ts title="examples/reef/src/domain/schema.ts:35-41"
-  priority: Ramose.Field(Ramose.Long),
+`Long` / `Instant` / `Uuid` / `UuidString` / `Bytes` remain as hatch aliases of the shorthand schemas for one release.
+
+```ts title="examples/reef/src/domain/schema.ts:42-50"
+  priority: Ramose.int(),
   // …
-  createdAt: Ramose.Field(Ramose.Instant),
-  creator: Ramose.Field(Ramose.Ref(() => User)),
-  assignee: Ramose.Field(Ramose.Ref(() => User)),
-  labels: Ramose.Field(Ramose.Ref(() => Label), { cardinality: "many" }),
+  createdAt: Ramose.timestamp(),
+  creator: Ramose.Ref(User),
+  assignee: Ramose.Ref(User),
+  labels: Ramose.Field.many(Ramose.Ref(Label)),
 ```
 
 ## Client

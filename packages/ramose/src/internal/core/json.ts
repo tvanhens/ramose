@@ -2,7 +2,8 @@
  * JSON transport encoding for values that JSON cannot represent natively:
  *   Date        ⇄ { "$inst": <epoch ms> }
  *   Uint8Array  ⇄ { "$bytes": <base64> }
- *   uuid values ⇄ { "$uuid": "<canonical>" }   (tagged values, see datom.ts)
+ *   uuid values ⇄ { "$uuid": "<canonical>" } on the wire; the public value is a string.
+ *   Incoming `{ vt: 6, v }` tagged values still encode as `$uuid`.
  *   bigint      →  number
  * Used by the HTTP API (worker ⇄ client) and the DO RPC bodies.
  */
@@ -41,7 +42,7 @@ export function fromJson(v: unknown): unknown {
   if (keys.length === 1) {
     if ("$inst" in o) return new Date(typeof o.$inst === "number" ? o.$inst : Date.parse(String(o.$inst)));
     if ("$bytes" in o) return base64ToBytes(String(o.$bytes));
-    if ("$uuid" in o) return { vt: ValueTag.Uuid, v: String(o.$uuid).toLowerCase() };
+    if ("$uuid" in o) return String(o.$uuid).toLowerCase();
   }
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(o)) out[k] = fromJson(x);

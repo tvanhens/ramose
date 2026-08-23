@@ -63,13 +63,13 @@ import Shot from "../../components/Shot.astro";
 
 ```ts title="examples/reef/src/domain/schema.ts:29-46 (annotated)"
 export const Issue = Ramose.Entity("issue", {
-  title: Ramose.Field(Schema.String),
-  status: Ramose.Field(Schema.String),
-  priority: Ramose.Field(Ramose.Long),
+  title: Ramose.string(),
+  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
+  priority: Ramose.int(),
   // …
-  assignee: Ramose.Field(Ramose.Ref(() => User)),
-  labels: Ramose.Field(Ramose.Ref(() => Label), { cardinality: "many" }),
-  privateNote: Ramose.Field(Schema.String, {
+  assignee: Ramose.Ref(User),
+  labels: Ramose.Field.many(Ramose.Ref(Label)),
+  privateNote: Ramose.string({
     doc: "visible to the admin class only",
   }),
 });

@@ -41,6 +41,14 @@ import {
   Uuid,
   UuidString,
   type ValueAtIdent,
+  Enum,
+  boolean,
+  bytes,
+  float,
+  int,
+  string,
+  timestamp,
+  uuid,
   layer,
 } from "../../src/db/internal.ts";
 
@@ -122,6 +130,48 @@ type _byVt = Expect<Equal<(typeof Typed)["by"]["valueType"], "bytes">>;
 type _overrideVt = Expect<
   Equal<(typeof Typed)["override"]["valueType"], "uuid">
 >;
+type _uuidIsString = Expect<
+  Equal<Schema.Schema.Type<(typeof Typed)["u"]["schema"]>, string>
+>;
+
+// fail-closed: a literal union does not silently become "string"
+// @ts-expect-error Schema.Literals is not a String AST — pass valueType
+Field(Schema.Literals(["todo", "done"]));
+const literalsOk = Field(Schema.Literals(["todo", "done"]), {
+  valueType: "string",
+});
+type _literalsVt = Expect<Equal<(typeof literalsOk)["valueType"], "string">>;
+
+// shorthands + composition
+const Short = Entity("short", {
+  title: string(),
+  done: boolean(),
+  n: int(),
+  rank: float(),
+  at: timestamp(),
+  uid: uuid(),
+  blob: bytes(),
+  pri: Enum(["low", "med", "high"]),
+  owner: Ref(User),
+  tags: Field.many(Ref(User)),
+  slug: Field.unique(string(), "upsert"),
+  named: string({ unique: "upsert", doc: "display" }),
+});
+type _shortTitle = Expect<Equal<(typeof Short)["title"]["valueType"], "string">>;
+type _shortDone = Expect<Equal<(typeof Short)["done"]["valueType"], "boolean">>;
+type _shortN = Expect<Equal<(typeof Short)["n"]["valueType"], "long">>;
+type _shortRank = Expect<Equal<(typeof Short)["rank"]["valueType"], "double">>;
+type _shortAt = Expect<Equal<(typeof Short)["at"]["valueType"], "instant">>;
+type _shortId = Expect<Equal<(typeof Short)["uid"]["valueType"], "uuid">>;
+type _shortBlob = Expect<Equal<(typeof Short)["blob"]["valueType"], "bytes">>;
+type _shortPri = Expect<Equal<(typeof Short)["pri"]["valueType"], "string">>;
+type _shortPriType = Expect<
+  Equal<Schema.Schema.Type<(typeof Short)["pri"]["schema"]>, "low" | "med" | "high">
+>;
+type _shortOwner = Expect<Equal<(typeof Short)["owner"]["valueType"], "ref">>;
+type _shortTags = Expect<Equal<(typeof Short)["tags"]["cardinality"], "many">>;
+type _shortSlug = Expect<Equal<(typeof Short)["slug"]["unique"], "upsert">>;
+type _shortNamed = Expect<Equal<(typeof Short)["named"]["unique"], "upsert">>;
 
 /**
  * Componenthood is inferred as a *type*, not just a flag: `attr.reverse` reads

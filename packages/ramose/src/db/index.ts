@@ -14,25 +14,37 @@
  *
  * ```typescript
  * import * as Ramose from "ramose/db";
- * import * as Schema from "effect/Schema";
  *
  * export const Todo = Ramose.Entity("todo", {
- *   title: Ramose.Field(Schema.String),
- *   done: Ramose.Field(Schema.Boolean),
+ *   title: Ramose.string(),
+ *   done: Ramose.boolean(),
+ *   createdAt: Ramose.timestamp(),
  * });
  * export const Todos = Ramose.Schema({ todo: Todo });
  *
  * const ramose = Ramose.connect({ url, token });
  * export const db = ramose.db("todos", Todos);
  * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
+ * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema.
  * ```
  */
 
 // ── schema ─────────────────────────────────────────────────────────────────
-export { Field } from "./Field.ts";
+export {
+  Enum,
+  Field,
+  Ref,
+  boolean,
+  bytes,
+  float,
+  int,
+  string,
+  timestamp,
+  uuid,
+} from "./Field.ts";
 export { Schema } from "./Schema.ts";
 export { Entity } from "./Entity.ts";
-export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
+export { Bytes, Instant, Long, Uuid, UuidString } from "./valueTypes.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";

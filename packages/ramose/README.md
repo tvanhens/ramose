@@ -26,22 +26,20 @@ Ramose is pre-release: expect the API to change between minor versions.
 | `ramose/react` | `RamoseProvider`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
 | `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. |
 
-Two conveniences: `ramose/schema` re-exports `effect/Schema` and
-`ramose/effect` re-exports the Effect modules Ramose's own API hands you, so a
-project can name one package instead of two. They are re-exports of the same
-module instances, not copies — `effect/Schema` and `ramose/schema` are
-interchangeable.
+App schemas use `Ramose.string()` / `boolean()` / `Enum([...])` and do not
+import Effect. Two conveniences for the hatch path: `ramose/schema` re-exports
+`effect/Schema` and `ramose/effect` re-exports the Effect modules Ramose's own
+API hands you. They are re-exports of the same module instances, not copies.
 
 ## A first look
 
 ```ts
 // schema.ts
 import * as Ramose from "ramose/db";
-import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Entity("todo", {
-  title: Ramose.Field(Schema.String),
-  done: Ramose.Field(Schema.Boolean),
+  title: Ramose.string(),
+  done: Ramose.boolean(),
 });
 
 export const Todos = Ramose.Schema({ todo: Todo });

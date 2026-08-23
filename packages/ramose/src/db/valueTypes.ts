@@ -27,17 +27,20 @@ export type RamoseVt<VT extends DbValueType> = {
 
 /**
  * `:db.type/*` inferred from a value Schema, as a public name. Helper brands
- * win; then decoded `string` / `number` / `boolean` → string / double / boolean.
- * Anything else is `undefined` (pass `valueType` on `Field`).
+ * win; then the AST tag of the common primitives (`String` / `Number` /
+ * `Boolean`). Anything else — literals, unions, structs, refinements — is
+ * `undefined` (pass `valueType` on `Field`). Mirrors
+ * {@link tryInferDbValueType}: unknown shapes do not silently become the
+ * wrong value type.
  */
 export type InferDbValueType<S> = S extends RamoseVt<infer V>
   ? V
-  : S extends { readonly Type: infer T }
-    ? [T] extends [string]
+  : S extends { readonly ast: { readonly _tag: infer Tag } }
+    ? Tag extends "String"
       ? "string"
-      : [T] extends [number]
+      : Tag extends "Number"
         ? "double"
-        : [T] extends [boolean]
+        : Tag extends "Boolean"
           ? "boolean"
           : undefined
     : undefined;
@@ -52,22 +55,19 @@ const asVt = <S extends Schema.Top, const VT extends DbValueType>(
   return schema as S & RamoseVt<VT>;
 };
 
-/** Uuid as the engine currently reads it: `{ vt: 6, v: "…" }`, not a string. */
+/**
+ * UUID as a canonical string. Lowers to `:db.type/uuid`. The `{ vt: 6, v }`
+ * tagged form is wire-internal — the public type is `string`.
+ */
 export const Uuid = asVt(
-  Schema.Struct({
-    vt: Schema.Literal(6),
-    v: Schema.String,
-  }),
+  Schema.String.annotate({ identifier: "ramose/uuid" }),
   "uuid",
 );
 export type Uuid = Schema.Schema.Type<typeof Uuid>;
 
-/** Write-side uuid: a canonical string. Lowers to `:db.type/uuid`. */
-export const UuidString = asVt(
-  Schema.String.annotate({ identifier: "ramose/uuid-string" }),
-  "uuid",
-);
-export type UuidString = Schema.Schema.Type<typeof UuidString>;
+/** @deprecated Use {@link Uuid}. Same string type; kept as a one-release alias. */
+export const UuidString = Uuid;
+export type UuidString = Uuid;
 
 /** Targeted ref schema — carries the target entity's field map. */
 export type TargetedRef<
@@ -81,29 +81,38 @@ export type TargetedRef<
 
 export type SelfMarker = { readonly [SelfRef]: true };
 
+type EntityLike = { readonly fields: object; readonly ns: string };
+
+const resolveRefTarget = <const N extends EntityLike>(
+  target: N | (() => N),
+): (() => N) => (typeof target === "function" ? target : () => target);
+
 type RefFn = {
-  /** Targeted ref: `Field(Ref(() => User))`. */
-  <const N extends { readonly fields: object; readonly ns: string }>(
-    target: () => N,
+  /**
+   * Targeted ref. Prefer the entity itself (`Ref(User)`); pass a thunk only
+   * when the target is declared later (`Ref(() => Other)`).
+   */
+  <const N extends EntityLike>(
+    target: N | (() => N),
   ): TargetedRef<N["fields"], N["ns"]>;
   /** Self-ref; `Entity` substitutes the enclosing field map. */
   readonly self: TargetedRef<SelfMarker>;
 } & RamoseVt<"ref">;
 
 /**
- * Entity reference. Use `Ref(() => User)` or `Ref.self` so navigational
- * paths (`Todo.owner.name`) have a target.
+ * Entity reference. `Ref(User)` (eager) or `Ref(() => User)` (thunk, for
+ * cycles) so navigational paths (`Todo.owner.name`) have a target.
  */
 export const Ref: RefFn = Object.assign(
-  <const N extends { readonly fields: object; readonly ns: string }>(
-    target: () => N,
+  <const N extends EntityLike>(
+    target: N | (() => N),
   ): TargetedRef<N["fields"], N["ns"]> => {
     const schema = asVt(
       Schema.Number.annotate({ identifier: "ramose/ref" }),
       "ref",
     );
     return Object.assign(schema, {
-      _resolve: target,
+      _resolve: resolveRefTarget(target),
     }) as TargetedRef<N["fields"], N["ns"]>;
   },
   {
@@ -119,6 +128,14 @@ export const Ref: RefFn = Object.assign(
 
 known.set(Ref, "ref");
 known.set(Ref.self, "ref");
+
+/** Stamp a schema object so {@link tryInferDbValueType} sees it. */
+export const rememberValueType = (
+  schema: object,
+  vt: DbValueType,
+): void => {
+  known.set(schema, vt);
+};
 
 export type Ref = number;
 
@@ -164,6 +181,17 @@ export const Bytes = asVt(
   "bytes",
 );
 export type Bytes = Schema.Schema.Type<typeof Bytes>;
+
+/**
+ * String-literal union branded as `:db.type/string`. Used by
+ * {@link import("./Field.ts").Enum}.
+ */
+export const enumSchema = <
+  const L extends readonly [string, ...string[]],
+>(
+  values: L,
+): Schema.Literals<L> & RamoseVt<"string"> =>
+  asVt(Schema.Literals(values), "string");
 
 export const tryInferDbValueType = (
   schema: SchemaNS.Top,

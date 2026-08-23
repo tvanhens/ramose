@@ -89,19 +89,18 @@ export default defineConfig({ plugins: [react()] });
 
 ```ts title="schema.ts"
 import * as Ramose from "ramose/db";
-import * as Schema from "effect/Schema";
 
 export const Todo = Ramose.Entity("todo", {
-  title: Ramose.Field(Schema.String),
-  done: Ramose.Field(Schema.Boolean),
-  createdAt: Ramose.Field(Ramose.Instant),
+  title: Ramose.string(),
+  done: Ramose.boolean(),
+  createdAt: Ramose.timestamp(),
 });
 
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
 - `Ramose.Entity("todo", …)` — a **record type**, a kind of record like a table ([glossary](/concepts/glossary/#record-type)).
-- `Ramose.Field(…)` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)). `Ramose.Instant` is a timestamp.
+- `Ramose.string()` / `boolean()` / `timestamp()` — a **field**, one named, typed slot on it ([glossary](/concepts/glossary/#field)).
 - `Ramose.Schema({ todo: Todo })` — the **schema**, your data model as one value ([glossary](/concepts/glossary/#schema)).
 
 Every record type gets an `id` field for free: `Todo.id`. This one file is imported by your app, your rules and your deploy — there is no second copy to keep in sync.
@@ -381,7 +380,7 @@ If `:1337` or `:5173` is already busy, both fall back to the next free port and 
 Four edits, one per layer. Add the field to the record type in `schema.ts`:
 
 ```ts title="schema.ts — inside Ramose.Entity(\"todo\", { … })"
-  priority: Ramose.Field(Ramose.Long),
+  priority: Ramose.int(),
 ```
 
 Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:

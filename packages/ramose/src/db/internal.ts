@@ -80,3 +80,7 @@ export * from "./token.ts";
 export * from "./Tx.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
+// Field-returning `Ref` (eager entity / thunk / self) wins over the
+// schema helper of the same name. `Field(Ref(User))` still works because
+// `Field` accepts a Field.
+export { Ref } from "./Field.ts";

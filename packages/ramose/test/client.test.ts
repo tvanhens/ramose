@@ -10,7 +10,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { ValueTag } from "../src/internal/core/datom.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -515,10 +514,7 @@ describe("the JSON transport", () => {
     });
     // back off the wire: the original types
     expect(rows[0]).toBeInstanceOf(Date);
-    expect(rows[1]).toEqual({
-      vt: ValueTag.Uuid,
-      v: "3f333df6-90a4-4fda-8dd3-9485d27cee36",
-    });
+    expect(rows[1]).toBe("3f333df6-90a4-4fda-8dd3-9485d27cee36");
     await c.dispose();
   });
 });

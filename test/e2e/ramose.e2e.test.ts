@@ -14,7 +14,6 @@ import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import * as RamoseEffect from "../../packages/ramose/src/db/effect.ts";
@@ -187,8 +186,8 @@ d("ramose e2e", () => {
  * promise path (`connect`, `db.run`, `db.query`, a `Subscription`) is covered separately.
  */
 const Session = Ramose.Entity("s", {
-  name: Ramose.Field(Schema.String, { unique: "upsert" }),
-  n: Ramose.Field(Ramose.Long),
+  name: Ramose.string({ unique: "upsert" }),
+  n: Ramose.int(),
 });
 const SessionCatalog = Ramose.Schema({ s: Session });
 const sessionNames = Query.q(() =>
@@ -197,13 +196,13 @@ const sessionNames = Query.q(() =>
 
 /** Reef-shaped card-one issue: title / status / rank + required creator join. */
 const ReefUser = Ramose.Entity("user", {
-  name: Ramose.Field(Schema.String),
+  name: Ramose.string(),
 });
 const ReefIssue = Ramose.Entity("issue", {
-  title: Ramose.Field(Schema.String),
-  status: Ramose.Field(Schema.String),
-  rank: Ramose.Field(Schema.Number),
-  creator: Ramose.Field(Ramose.Ref(() => ReefUser)),
+  title: Ramose.string(),
+  status: Ramose.string(),
+  rank: Ramose.float(),
+  creator: Ramose.Ref(ReefUser),
 });
 const ReefBoard = Ramose.Schema({ user: ReefUser, issue: ReefIssue });
 const reefBoardQuery = Query.q(() =>

@@ -27,11 +27,10 @@ A schema, a live query, and a typed write — that is the whole app:
 import * as Ramose from "ramose/db";
 import { useLive, useTransact } from "ramose/react";
 import { pipe } from "ramose/effect";
-import * as Schema from "effect/Schema";
 
 const Todo = Ramose.Entity("todo", {
-  title: Ramose.Field(Schema.String),
-  done: Ramose.Field(Schema.Boolean),
+  title: Ramose.string(),
+  done: Ramose.boolean(),
 });
 
 const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });

@@ -5,9 +5,8 @@
  */
 
 import * as Ramose from "ramose/db";
-import * as Schema from "effect/Schema";
 
 export const User = Ramose.Entity("user", {
-  name: Ramose.Field(Schema.String, { unique: "upsert" }),
+  name: Ramose.string({ unique: "upsert" }),
 });
 export const Movies = Ramose.Schema({ user: User });

@@ -9,11 +9,10 @@
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ramose from "ramose";
- * import * as Schema from "effect/Schema";
  * import * as Layer from "effect/Layer";
  *
  * export const User = Ramose.Entity("user", {
- *   name: Ramose.Field(Schema.String, { unique: "upsert" }),
+ *   name: Ramose.string({ unique: "upsert" }),
  * });
  * export const Movies = Ramose.Schema({ user: User });
  *
