@@ -6,16 +6,18 @@
  * Two rules for callers:
  *
  * - The view is structural: `useQuery(db.asOf(t), q)` built inline re-runs
- *   per `t`, not per render. Put changing values in the query
- *   (`where({ issue: issueId })`). The leftover bindings argument is
- *   still accepted. `query` is compared by identity here — hoist a
- *   stable value, or accept a re-run when the object is new.
+ *   per `t`, not per render. The query is structural too (canonical
+ *   serialization of the lowered AST), the same key `useLive` uses. Put
+ *   changing values in the query (`where({ issue: issueId })`). A
+ *   render-fresh factory with the same literals does not re-run. The
+ *   leftover bindings argument is still accepted.
  * - The in-flight state is `loading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.
  */
 
 import type { Schema, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
+import { queryAstKey } from "../db/astKey.ts";
 import { paramsKey, type ParamArgs } from "../db/Params.ts";
 import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
@@ -36,6 +38,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
   ...params: ParamArgs<P>
 ): Async<Out, QueryError<Out, P>> => {
   const bindings = params[0];
+  const astKey = queryAstKey(query);
   const [state, set] = useState<Async<Out, QueryError<Out, P>>>({
     data: undefined,
     error: undefined,
@@ -75,10 +78,10 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     return () => {
       disposed = true;
     };
-    // the view is a structural dependency; `db` itself may be a fresh object
-    // every render (`db.asOf(t)` is pure and unmemoised by design). Params
-    // are structural too — `{ issueId }` inline is fine.
-  }, [viewDep(db), query, paramsKey(bindings)]);
+    // view + query + params are all structural: `db.asOf(t)` and a
+    // render-fresh factory query (`commentsQuery(id)`) re-run only when
+    // the lowered AST or bindings change, not on object identity.
+  }, [viewDep(db), astKey, paramsKey(bindings)]);
 
   return state;
 };

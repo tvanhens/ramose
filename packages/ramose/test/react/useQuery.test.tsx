@@ -15,11 +15,13 @@ import { renderHook, waitFor } from "@testing-library/react";
 import {
   registerDom,
   sleep,
+  Todo,
   Todos,
   titles,
   wrapperFor,
 } from "./harness.tsx";
 import { fakePeer, type Frame } from "./peer.ts";
+import * as Ramose from "../../src/db/index.ts";
 import { useDb, useQuery } from "../../src/react/index.ts";
 
 registerDom();
@@ -70,6 +72,29 @@ describe("useQuery", () => {
     rerender();
     await sleep(20);
     expect(peer.frameOps("q")).toHaveLength(1);
+  });
+
+  test("a render-fresh factory query does not loop after the first result", async () => {
+    const peer = scrubPeer({ 1: { title: "one" } });
+    const byTitle = (title: string) =>
+      Ramose.Query.from(Todo).where({ title }).select({ title: Todo.title });
+    const { result, rerender } = renderHook(
+      () => {
+        const db = useDb("todos", Todos);
+        return useQuery(db.asOf(1), byTitle("one"));
+      },
+      { wrapper: wrapperFor(peer) },
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toEqual([{ title: "one" }]);
+    expect(peer.frameOps("q")).toHaveLength(1);
+
+    rerender();
+    rerender();
+    await sleep(250);
+    expect(peer.frameOps("q")).toHaveLength(1);
+    expect(result.current.loading).toBe(false);
   });
 
   test("a scrub keeps the previous data while loading, and drops the stale slower answer", async () => {
