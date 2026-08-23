@@ -264,3 +264,23 @@ describe("reshapePullResult", () => {
   });
 });
 
+describe("again through a targeted forward ref", () => {
+  const Project = Entity("project", { name: Field(Schema.String) });
+  const Todo = Entity("todo", {
+    title: Field(Schema.String),
+    project: Field(Ref(() => Project)),
+  });
+
+  test("a :todo/… shape recurring through Todo.project throws the cross-entity again error", () => {
+    expect(() =>
+      lowerPullPattern({
+        id: Todo.id,
+        title: Todo.title,
+        project: Todo.project.select(again(1)),
+      }),
+    ).toThrow(
+      /select field "project": Todo\.project\.select\(Ramose\.again\(1\)\) is a :project\/… edge — again re-applies this shape, which is a :todo\/… row/,
+    );
+  });
+});
+

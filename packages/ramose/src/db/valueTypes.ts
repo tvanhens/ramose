@@ -129,18 +129,18 @@ export const isSelfRefSchema = (schema: unknown): boolean =>
 
 export const refTargetOf = (
   schema: unknown,
-): (() => { readonly fields: object }) | undefined => {
+): (() => { readonly fields: object; readonly ns?: string }) | undefined => {
   // Effect Schemas are often functions (`typeof` !== "object").
   if ((typeof schema !== "object" && typeof schema !== "function") || schema === null) {
     return undefined;
   }
   const resolve = (schema as {
-    _resolve?: () => { readonly fields?: object };
+    _resolve?: () => { readonly fields?: object; readonly ns?: string };
   })._resolve;
   if (resolve === undefined) return undefined;
   return () => {
     const target = resolve();
-    return { fields: target.fields ?? {} };
+    return { fields: target.fields ?? {}, ns: target.ns };
   };
 };
 
