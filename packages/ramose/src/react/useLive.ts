@@ -117,9 +117,11 @@ export const useLiveSubscription = <A, E>(
   return state;
 };
 
-// Bundlers replace `process.env.NODE_ENV`; the published build has no Node types.
-declare const process: { readonly env: { readonly NODE_ENV?: string } };
-const DEV = process.env.NODE_ENV !== "production";
+// Bundlers replace `process.env.NODE_ENV`. `typeof` is safe when `process`
+// is missing (unbundled ESM / Deno); an unguarded `process.env` throws.
+declare const process: { readonly env?: { readonly NODE_ENV?: string } } | undefined;
+const DEV =
+  typeof process === "undefined" || process.env?.NODE_ENV !== "production";
 
 const CHURN_WARNING =
   "ramose/react: useLive subscription key changed between renders. " +
@@ -127,7 +129,12 @@ const CHURN_WARNING =
   "each render (e.g. where({ at: new Date() })) tears the subscription " +
   "down. Hoist the query or keep bound values stable.";
 
-/** Dev-only: warn once per hook site when the cache key churns. */
+/**
+ * Dev-only: warn once per hook site when the **query-half** (`astKey`)
+ * churns. Params and view (`asOf(t)`) changes are the documented path and
+ * stay silent. Once per site means a component that alternates two queries
+ * warns only on the first switch.
+ */
 const useKeyChurnWarning = (key: string): void => {
   const prev = useRef<string | undefined>(undefined);
   const warned = useRef(false);
@@ -157,7 +164,7 @@ export function useLive(
   const cacheKey = owned
     ? liveSubscriptionKey(viewKey, query, params)
     : "";
-  useKeyChurnWarning(owned ? cacheKey : "");
+  useKeyChurnWarning(owned ? astKey : "");
 
   return useLiveSubscription(
     () =>

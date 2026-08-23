@@ -11,7 +11,7 @@ import { memo, type ReactNode, StrictMode } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
-import { useLive } from "../../src/react/useLive.ts";
+import { useLive } from "../../src/react/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -561,6 +561,31 @@ describe("useLive shared subscription cache", () => {
       rerender({ n: 1 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(warnings).toHaveLength(1);
+    } finally {
+      console.warn = orig;
+      await close();
+    }
+  });
+
+  test("a params-only change does not warn", async () => {
+    const p = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const warnings: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const { result, rerender } = renderHook(
+        ({ n }: { n: number }) => useLive(db, limited, { n }),
+        { initialProps: { n: 1 } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      rerender({ n: 2 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      expect(warnings).toHaveLength(0);
     } finally {
       console.warn = orig;
       await close();
