@@ -16,6 +16,7 @@ import { paramsKey } from "./Params.ts";
 import { lowerQueryAst, type AnyQueryObject } from "./query/index.ts";
 
 const astKeyMemo = new WeakMap<object, string>();
+let nextErrorKey = 1;
 
 /** Sort own keys at every object so `JSON.stringify` is canonical. */
 const sortKeys = (v: unknown): unknown => {
@@ -42,8 +43,10 @@ export const queryAstKey = (query: AnyQueryObject): string => {
   let key: string;
   try {
     key = canonicalAstKey(lowerQueryAst(query));
-  } catch (e) {
-    key = `\0error:${e instanceof Error ? e.message : String(e)}`;
+  } catch {
+    // Per-object token: two broken queries with the same message must not
+    // share a retainLive entry. The WeakMap keeps the token stable per object.
+    key = `\0error:${nextErrorKey++}`;
   }
   astKeyMemo.set(query, key);
   return key;

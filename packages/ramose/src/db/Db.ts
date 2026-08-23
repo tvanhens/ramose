@@ -363,14 +363,12 @@ const attachSeam = (
 };
 
 /**
- * One pass of a standing read: the emission, the raw wire result (kept
- * for overlay / HTTPS fences, not for change detection), the basis `t`
- * the peer answered at, and — on an overlay — the overlay epoch captured
- * in the same turn as `view()`.
+ * One pass of a standing read: the emission, the basis `t` the peer
+ * answered at (HTTPS wake fence), and — on an overlay — the overlay epoch
+ * captured in the same turn as `view()`.
  */
 interface Pass<A> {
   readonly value: A;
-  readonly raw: unknown;
   readonly t: number;
   readonly viewed?: number;
 }
@@ -459,7 +457,6 @@ const makeRead = <C extends AnySchema>(
           const rec = record(body);
           return {
             value: reshapePullResult(pattern, rec.result),
-            raw: rec.result,
             t: typeof rec.t === "number" ? rec.t : 0,
             viewed: typeof rec.epoch === "number" ? rec.epoch : undefined,
           };
@@ -474,7 +471,6 @@ const makeRead = <C extends AnySchema>(
     {
       readonly rows: unknown;
       readonly t: number;
-      readonly raw: unknown;
       readonly viewed?: number;
     },
     DbError | NotOne | ParamError
@@ -507,7 +503,6 @@ const makeRead = <C extends AnySchema>(
       return {
         rows,
         t: typeof reply.t === "number" ? reply.t : 0,
-        raw: reply.result,
         viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
       };
     });
@@ -630,7 +625,6 @@ const makeRead = <C extends AnySchema>(
         runQuery(input, minT, bindings).pipe(
           Effect.map((pass) => ({
             value: pass.rows,
-            raw: pass.raw,
             t: pass.t,
             viewed: pass.viewed,
           })),

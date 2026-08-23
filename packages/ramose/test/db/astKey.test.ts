@@ -13,6 +13,7 @@ import {
   liveSubscriptionKey,
   lowerQueryAst,
   params,
+  paramsKey,
   queryAstKey,
 } from "../../src/db/internal.ts";
 
@@ -33,6 +34,9 @@ describe("canonicalAstKey", () => {
   test("Date and insertion-order objects canonicalize", () => {
     const at = new Date("2026-01-01T00:00:00.000Z");
     expect(canonicalAstKey({ at, n: 1 })).toBe(canonicalAstKey({ n: 1, at }));
+    expect(canonicalAstKey({ at })).not.toBe(
+      canonicalAstKey({ at: new Date("2026-01-02T00:00:00.000Z") }),
+    );
   });
 });
 
@@ -65,6 +69,17 @@ describe("queryAstKey", () => {
     expect(JSON.stringify(lowerQueryAst(inline))).not.toContain("$param");
     expect(queryAstKey(inline)).toBe(canonicalAstKey(lowerQueryAst(inline)));
   });
+
+  test("two unlowerable queries with the same message do not share a key", () => {
+    const a = Query.q(() => Query.entities(Todo)).after(null);
+    const b = Query.q(() => Query.entities(Todo)).after(null);
+    const ka = queryAstKey(a);
+    const kb = queryAstKey(b);
+    expect(ka).toMatch(/^\0error:/);
+    expect(kb).toMatch(/^\0error:/);
+    expect(ka).not.toBe(kb);
+    expect(queryAstKey(a)).toBe(ka);
+  });
 });
 
 describe("liveSubscriptionKey", () => {
@@ -84,6 +99,15 @@ describe("liveSubscriptionKey", () => {
     const view = "1/todos?asOf=&history=false&minT=";
     expect(liveSubscriptionKey(view, allTodos)).toBe(
       liveSubscriptionKey(view, Query.from(Todo).ids()),
+    );
+  });
+
+  test("an empty params object is omitted — same key as no params", () => {
+    expect(paramsKey({})).toBe("");
+    expect(paramsKey(undefined)).toBe("");
+    const view = "1/todos?asOf=&history=false&minT=";
+    expect(liveSubscriptionKey(view, allTodos)).toBe(
+      liveSubscriptionKey(view, allTodos, {}),
     );
   });
 

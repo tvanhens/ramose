@@ -373,8 +373,10 @@ export const paramsKey = (params: unknown): string => {
     return stringifyJson(params);
   }
   const rec = params as Record<string, unknown>;
+  const keys = Object.keys(rec);
+  if (keys.length === 0) return "";
   const canon: Record<string, unknown> = {};
-  for (const k of Object.keys(rec).sort()) {
+  for (const k of keys.sort()) {
     canon[k] = rec[k] === undefined ? { $unbound: true } : rec[k];
   }
   return stringifyJson(canon);
