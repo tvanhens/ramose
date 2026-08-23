@@ -428,28 +428,27 @@ describe("useLive shared subscription cache", () => {
   test("different params do not share; unmount of one does not close the other", async () => {
     const p = Ramose.params({ n: Schema.Number });
     const limited = Ramose.Query.from(Todo).ids().limit(p.n);
-    const world = await todoWorld(2);
+    const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
     const spy = spyLive(db);
     try {
       const one = renderHook(() => useLive(db, limited, { n: 1 }));
       const two = renderHook(() => useLive(db, limited, { n: 2 }));
       await waitFor(() => expect(one.result.current.rows).toEqual(ids(world.eids[0]!)));
-      await waitFor(() => expect(two.result.current.rows).toEqual(ids(...world.eids)));
+      await waitFor(() => expect(two.result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(spy.calls).toBe(2);
+      expect(one.result.current.rows).not.toBe(two.result.current.rows);
 
       one.unmount();
       await settle();
       expect(spy.closed).toBe(1);
 
       const extra = txSnap(
-        await world.conn.transact([{ ":db/id": "t2", ":todo/title": "t2" }]),
+        await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]),
       );
       peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
       await waitFor(() =>
-        expect(two.result.current.rows).toEqual(
-          ids(world.eids[0]!, world.eids[1]!, extra.tempids.t2),
-        ),
+        expect(two.result.current.rows).toEqual(ids(world.eids[0]!, extra.tempids.t1)),
       );
       expect(spy.closed).toBe(1);
 
