@@ -37,7 +37,7 @@ describe("claims", () => {
       exp: Math.floor(now.getTime() / 1000) + 900,
       ramose: { db: "acme", class: "member" },
     });
-    expect(payload.exp - payload.iat).toBe(AUTH.ttl);
+    expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
   });
 
   test("iat defaults to now, in whole seconds", () => {
@@ -47,7 +47,7 @@ describe("claims", () => {
     expect(payload.iat).toBeGreaterThanOrEqual(before);
     expect(payload.iat).toBeLessThanOrEqual(after);
     expect(Number.isInteger(payload.iat)).toBe(true);
-    expect(payload.exp - payload.iat).toBe(AUTH.ttl);
+    expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
   });
 
   test("attrs ride under ramose.attrs, and are absent when not given", () => {
@@ -57,9 +57,9 @@ describe("claims", () => {
       class: "member",
       attrs: { org: "org_42" },
     });
-    expect(withAttrs.ramose.attrs).toEqual({ org: "org_42" });
+    expect(withAttrs.ramose?.attrs).toEqual({ org: "org_42" });
     const without = claims(AUTH, { sub: "u", db: "acme", class: "member" });
-    expect("attrs" in without.ramose).toBe(false);
+    expect("attrs" in (without.ramose ?? {})).toBe(false);
   });
 
   test("an invalid database name throws — the peer would reject it anyway", () => {
@@ -81,11 +81,11 @@ describe("claims", () => {
   });
 
   test("…and passes without one; a declared class always passes", () => {
-    expect(claims(AUTH, { sub: "u", db: "acme", class: "superuser" }).ramose.class).toBe(
+    expect(claims(AUTH, { sub: "u", db: "acme", class: "superuser" }).ramose?.class).toBe(
       "superuser",
     );
     expect(
-      claims(AUTH, { sub: "u", db: "acme", class: "viewer" }, POLICY).ramose.class,
+      claims(AUTH, { sub: "u", db: "acme", class: "viewer" }, POLICY).ramose?.class,
     ).toBe("viewer");
   });
 

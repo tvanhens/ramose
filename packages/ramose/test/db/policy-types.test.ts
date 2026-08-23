@@ -38,14 +38,14 @@ const Other = Entity("other", { sub: Field(Schema.String) });
 type _claimSub = Expect<Equal<typeof P.claim.sub, P.ClaimOperand>>;
 type _claimsShape = Expect<
   Extends<
-    Claims,
     {
-      readonly iss: string;
-      readonly sub: string;
-      readonly aud: string | readonly string[];
-      readonly exp: number;
-      readonly ramose: { readonly db: string; readonly class: string };
-    }
+      readonly iss?: string;
+      readonly sub?: string;
+      readonly aud?: string | readonly string[];
+      readonly exp?: number;
+      readonly ramose?: { readonly db?: string; readonly class?: string };
+    },
+    Claims
   >
 >;
 

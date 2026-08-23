@@ -323,7 +323,7 @@ describe("claims() is the decoded payload, UI hints only", () => {
     // not a JWT: no claims, but the credential still flows
     const opaque = token.static("s3cret");
     expect(await read(opaque)).toBe("s3cret");
-    expect(await opaque.claims()).toEqual({} as Awaited<ReturnType<typeof opaque.claims>>);
+    expect(await opaque.claims()).toEqual({});
     opaque.invalidate(); // a no-op, not an error
     expect(await read(opaque)).toBe("s3cret");
   });
