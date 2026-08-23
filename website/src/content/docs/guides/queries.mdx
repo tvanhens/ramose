@@ -61,12 +61,15 @@ export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
 
 `Q.or(…)` and `Q.not(…)` combine clauses in the generator spelling; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
 
-**Conditional filters.** The builder is immutable, so a clause that depends on a local is ordinary JavaScript — reassign, or skip the call:
+**Conditional filters.** The builder is immutable, so a clause that depends on a local is ordinary JavaScript — reassign, or skip the call. Filter stages come before `select`:
 
 ```ts
-let board = Query.from(Issue).select({ id: Issue.id, title: Issue.title });
+let board = Query.from(Issue);
 if (assignee) board = board.where({ assignee });
+const q = board.select({ id: Issue.id, title: Issue.title });
 ```
+
+Consecutive `.where({…})` objects are assembled in field-key order, so `if (done) q = q.where({ done }); if (rank) q = q.where({ rank })` shares a cache key with the reverse. A fragment (`.where(Query.some(…))`) between them is left in place.
 
 ## Choose the fields
 

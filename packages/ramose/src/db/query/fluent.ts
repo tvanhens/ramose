@@ -234,17 +234,35 @@ const adoptValue = (
   return next;
 };
 
+/**
+ * Equality clauses `applyEq` just appended — used to peel a trailing run of
+ * them so chained `.where({ done }).where({ rank })` re-sorts with the new
+ * keys. A fragment in between is left in place.
+ */
+const EQ_CLAUSE = new WeakMap<object, { readonly key: string; readonly value: unknown }>();
+
 const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pipeline => {
-  let next = pipe;
-  // Sort so `where({ done: false, rank: 3 })` and `where({ rank: 3, done: false })`
-  // lower to the same clause order — construction-order independent cache keys.
-  for (const key of Object.keys(eq).sort()) {
-    const value = eq[key];
+  const kept = [...pipe.stages];
+  const prior: { key: string; value: unknown }[] = [];
+  while (kept.length > 0) {
+    const last = kept[kept.length - 1]!;
+    const clause = EQ_CLAUSE.get(last);
+    if (clause === undefined) break;
+    kept.pop();
+    prior.unshift(clause);
+  }
+  const added = Object.keys(eq).map((key) => ({ key, value: eq[key] }));
+  const all = [...prior, ...added].sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+  );
+  let next: Pipeline = kept.length === pipe.stages.length ? pipe : { ...pipe, stages: kept };
+  for (const { key, value } of all) {
     const attr = key === "id" ? entityId(ns) : ns.fields[key];
     if (attr === undefined) {
       throw new Error(`ramose/query: where({ ${key} }) — "${ns.ns}" has no field "${key}"`);
     }
     next = is(attr, value as never)(next);
+    EQ_CLAUSE.set(next.stages[next.stages.length - 1]!, { key, value });
   }
   return next;
 };

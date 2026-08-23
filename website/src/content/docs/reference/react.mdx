@@ -71,7 +71,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
-`useQuery(db, query): { data, error, loading }` — one `db.query` per `db` / `query` pair. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. The leftover bindings argument is still accepted.
+`useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. The leftover bindings argument is still accepted.
 
 ## usePull
 
@@ -118,7 +118,7 @@ errorMessage(e); // e.message ?? e._tag ?? String(e)
 ## Rules
 
 - **Stable token source.** Build it once per sign-in, not per render.
-- **Inline query values.** `useLive` keys on the lowered AST — `useLive(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription; a changed literal resubscribes. Hoist shapes for `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
+- **Inline query values.** `useLive` and `useQuery` key on the lowered AST — `useLive(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. Hoist shapes for `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
 - **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
 - **`key={row.id}`** in lists; the id is a `number`.
 - **`error` is not the same shape in every hook.** `useLive`, `useQuery` and `usePull` report an Effect `Cause`; `useTransact` reports the failure itself. So a toast is `errorMessage(Cause.squash(error))` from a read hook and `errorMessage(error)` from `useTransact`.

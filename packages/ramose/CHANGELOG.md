@@ -6,10 +6,12 @@
 
 App queries put changing values in `.where` (`where({ issue: issueId })`).
 `useLive(db, q)` and `db.query(q)` are documented without a bindings
-argument; the argument stays accepted. `Ramose.params`, `optional`,
-`EidOf`, and `Query.when` stay exported. `where({ done, rank })` and
-`where({ rank, done })` now lower to the same clause order so #227 cache
-keys are construction-order independent.
+argument; the argument stays accepted. `useQuery` keys on the lowered AST
+the same way `useLive` does, so a render-fresh factory query does not
+loop. `Ramose.params`, `optional`, `EidOf`, and `Query.when` stay
+exported. Consecutive equality `.where({…})` objects (one object or
+chained) lower in field-key order so #227 cache keys are
+construction-order independent.
 
 ### Dependency hygiene (part of #202, tracker #205)
 

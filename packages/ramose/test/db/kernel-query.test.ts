@@ -1626,6 +1626,22 @@ describe("Query.from — fluent app spelling", () => {
     await peer.dispose();
   });
 
+  test("conditional where before select assembles (docs spelling)", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+    let board = Query.from(Issue);
+    const owner = ids.ada;
+    if (owner) board = board.where({ owner });
+    const q = board.select({ id: Issue.id, title: Issue.title });
+    const rows = await db.query(q);
+    expect(rows.map((r) => r.title).sort()).toEqual([
+      "archive the docs",
+      "ship the release",
+    ]);
+    await peer.dispose();
+  });
+
   test(".ids() is today's id-only projection", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);

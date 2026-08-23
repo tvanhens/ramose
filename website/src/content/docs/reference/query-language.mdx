@@ -12,16 +12,18 @@ aggregates, and disjunction.
 
 ## One kind of object
 
-A query is a rule: a **head** (optional declared holes) plus a **body** (its
-clauses and its projection). Everyday code puts values in the fluent
-chain (`Query.from(Issue).where({ done: false })`). One constructor
-builds the kernel form — `Query.q(body)` — and the body has two spellings
-of the same value:
+A query is a body of clauses plus a projection. Everyday code puts values
+in the fluent chain (`Query.from(Issue).where({ done: false })`). The
+kernel constructor `Query.q(body)` has two spellings of the same value
+(a leftover `Query.q(holes, body)` form still accepts declared holes):
 
 ```ts
 import { pipe } from "effect/Function";
 import { Q, Query } from "ramose/db";
 const { entities, is, none, select, orderBy, limit, updatedSince } = Query;
+
+declare const me: Ramose.Eid<typeof User>;
+declare const since: number;
 
 // pipe spelling — most everyday kernel code
 export const inbox = Query.q(() => pipe(
@@ -33,7 +35,7 @@ export const inbox = Query.q(() => pipe(
   orderBy("title"), limit(50),
 ));
 
-// generator spelling — the same (head, body) value, written directly
+// generator spelling — the same value, written directly
 export const inbox = Query.q(function* () {
   const issue = yield* entities(Issue);
   yield* is(Issue.done, false)(issue);
@@ -74,7 +76,13 @@ typo is a compile error.
 
 ## Output is inferred
 
-The fluent spelling binds values at the clause — `where({ owner: me })` —
+The fluent spelling binds values at the clause:
+
+```ts
+declare const me: Ramose.Eid<typeof User>;
+Query.from(Issue).where({ owner: me });
+```
+
 so `db.query(q)` takes no bindings argument. Output is the type of the
 body's one return expression — `Q.pull(focus, shape)` for one root,
 `Q.rows({ … })` (or a plain record of handles) for several, a bare focus

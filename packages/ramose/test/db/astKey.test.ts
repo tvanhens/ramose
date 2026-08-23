@@ -81,6 +81,23 @@ describe("queryAstKey", () => {
     expect(liveSubscriptionKey(view, a)).toBe(liveSubscriptionKey(view, b));
   });
 
+  test("chained equality where() calls sort the same as one object", () => {
+    const chained = Query.from(Todo).where({ done: false }).where({ rank: 3 });
+    const reversed = Query.from(Todo).where({ rank: 3 }).where({ done: false });
+    const one = Query.from(Todo).where({ rank: 3, done: false });
+    expect(queryAstKey(chained)).toBe(queryAstKey(reversed));
+    expect(queryAstKey(chained)).toBe(queryAstKey(one));
+  });
+
+  test("docs conditional spelling: where before select assembles", () => {
+    let board = Query.from(Todo);
+    const title = "one";
+    if (title) board = board.where({ title });
+    const q = board.select({ title: Todo.title });
+    expect(() => lowerQueryAst(q)).not.toThrow();
+    expect(JSON.stringify(lowerQueryAst(q))).toContain(":todo/title");
+  });
+
   test("two unlowerable queries with the same message do not share a key", () => {
     const a = Query.q(() => Query.entities(Todo)).after(null);
     const b = Query.q(() => Query.entities(Todo)).after(null);
