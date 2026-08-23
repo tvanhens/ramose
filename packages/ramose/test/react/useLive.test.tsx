@@ -11,7 +11,7 @@ import { memo, type ReactNode, StrictMode } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
-import { CHURN_WARNING, useLive } from "../../src/react/useLive.ts";
+import { useLive } from "../../src/react/useLive.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -554,7 +554,9 @@ describe("useLive shared subscription cache", () => {
       rerender({ n: 2 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(warnings).toHaveLength(1);
-      expect(String(warnings[0]![0])).toBe(CHURN_WARNING);
+      expect(String(warnings[0]![0])).toContain(
+        "useLive subscription key changed between renders",
+      );
 
       rerender({ n: 1 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));

@@ -117,6 +117,8 @@ export const useLiveSubscription = <A, E>(
   return state;
 };
 
+// Bundlers replace `process.env.NODE_ENV`; the published build has no Node types.
+declare const process: { readonly env: { readonly NODE_ENV?: string } };
 const DEV = process.env.NODE_ENV !== "production";
 
 const CHURN_WARNING =
@@ -179,5 +181,3 @@ export function useLive(
     owned ? [viewKey, astKey] : [source],
   );
 }
-
-export { CHURN_WARNING };
