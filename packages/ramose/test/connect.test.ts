@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
-import { connect, Query } from "../src/db/internal.ts";
+import { connect, NetworkError, Query } from "../src/db/internal.ts";
 import { fakePeer, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -151,9 +151,13 @@ describe("the promise / subscription surface", () => {
       await db.query(names);
       throw new Error("expected failure");
     } catch (error) {
-      const e = error as { _tag?: string; name?: string };
-      expect(e._tag).toBe("NetworkError");
-      expect(e.name).not.toBe("FiberFailure");
+      expect(error).toBeInstanceOf(NetworkError);
+      expect((error as NetworkError)._tag).toBe("NetworkError");
+      expect((error as NetworkError).name).toBe("NetworkError");
+      expect((error as { name?: string }).name).not.toBe("FiberFailure");
+      expect((error as { constructor?: { name?: string } }).constructor?.name).not.toBe(
+        "FiberFailure",
+      );
     }
   });
 

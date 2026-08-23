@@ -33,6 +33,11 @@ const ADDS = [
   "DEFAULT_JWT_MAX_TTL",
   // the verifier/minter contract (`AuthConfig` is a type; `claims` builds the payload)
   "claims",
+  // app-Worker HTTP mapping (not on `ramose/db`)
+  "errorToHttp",
+  "errorResponse",
+  "statusOf",
+  "toDbError",
 ];
 
 /** Names the kill-list retired: internal, deleted, or renamed. */
@@ -47,7 +52,6 @@ const KILLED = [
   "ProviderLocal",
   "SystemProvider",
   "ProviderRequirements",
-  "PolicyError",
   "ReadSystem",
   "WriteSystem",
   "ReadWriteSystem",

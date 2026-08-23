@@ -34,3 +34,5 @@ export * as Redacted from "effect/Redacted";
 export * as Schema from "effect/Schema";
 export * as Stream from "effect/Stream";
 export { pipe } from "effect/Function";
+/** Hatch-only unwrap: Promise rejects with the tagged error, not a FiberFailure. */
+export { runPromise } from "./db/promise.ts";

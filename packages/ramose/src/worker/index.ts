@@ -39,6 +39,7 @@ import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { allowedOrigin, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
+import { isDatabaseName } from "../db/DatabaseName.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { type ServerOptions, prepareOperation } from "./operations.ts";
 export type { ServerOptions } from "./operations.ts";
@@ -48,6 +49,8 @@ import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
 export type { RamoseEnv };
+export { type ErrorHttp, errorResponse, errorToHttp, statusOf, toDbError } from "../errorHttp.ts";
+export { toHttp, fromThrown, isRamoseError } from "./errors.ts";
 
 // ---- peer metrics (per isolate) --------------------------------------------
 const plog = componentLogger("peer");
@@ -127,9 +130,7 @@ function withCors(env: RamoseEnv, request: Request, res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-function validDbName(name: string): boolean {
-  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name);
-}
+const validDbName = isDatabaseName;
 
 /** What the request turned out to be — filled in as it is routed; used by the error log and the AE point. */
 interface RequestInfo {

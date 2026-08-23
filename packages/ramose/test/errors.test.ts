@@ -18,6 +18,10 @@ import {
   Unauthorized,
   OperationRejected,
 } from "../src/db/Errors.ts";
+import {
+  isDatabaseError as isDatabaseErrorFromBarrel,
+  PolicyError,
+} from "../src/db/index.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
@@ -186,6 +190,20 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
   });
 });
 
+describe("fromResponse — TxRejected attr", () => {
+  test("409 TxRejected keeps a policy attr", () => {
+    const e = fromResponse(409, {
+      error: "set denied on :doc/owner",
+      tag: "TxRejected",
+      code: "policy",
+      attr: ":doc/owner",
+    }) as TxRejected;
+    expect(e).toBeInstanceOf(TxRejected);
+    expect(e.code).toBe("policy");
+    expect(e.attr).toBe(":doc/owner");
+  });
+});
+
 describe("isDatabaseError", () => {
   test("accepts every member of the union", () => {
     const all = [
@@ -207,5 +225,11 @@ describe("isDatabaseError", () => {
     expect(isDatabaseError({ _tag: "SomethingElse" })).toBe(false);
     expect(isDatabaseError(null)).toBe(false);
     expect(isDatabaseError("TxRejected")).toBe(false);
+  });
+
+  test("isDatabaseError and PolicyError are on the ramose/db barrel", () => {
+    expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
+    expect(new PolicyError({ message: "bad rule" })._tag).toBe("PolicyError");
+    expect(isDatabaseError(new PolicyError({ message: "bad rule" }))).toBe(false);
   });
 });

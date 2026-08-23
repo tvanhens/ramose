@@ -30,8 +30,8 @@ import * as Ramose from "ramose";    // the same, plus Server, Database, Policy,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `ParamError` · `OperationRejected`, the eight `DbError`s below, and `NotOne` |
-| `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
 
@@ -465,9 +465,11 @@ export const issueExtraShape = {
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
 | `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
-| `Ramose.DbError` | the union of the eight request errors |
+| `Ramose.DbError` | the union of the nine request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
 | `Ramose.ParamError` | a required param is missing, a key is unknown, or a hole failed to normalize |
+| `Ramose.PolicyError` | a policy did not compile against its schema — deploy time, not a request |
+| `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
 | `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row, plus `ParamError` when the query declares params |
 
 ```ts title="examples/reef/src/domain/queries.ts:112"
@@ -476,12 +478,15 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 ## Errors
 
-Eight tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). Match by name with `Effect.catchTags`; each is described on [Errors](/reference/errors/).
+Nine tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError` `OperationRejected`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). A policy that does not compile throws `PolicyError`. Match with `try/catch` and `instanceof` / `_tag`; `Ramose.isDatabaseError(e)` is the guard. Each is described on [Errors](/reference/errors/).
 
 ```ts
-db.query(query).pipe(
-  Effect.catchTags({ QueryBudgetExceeded: () => Effect.succeed([]) }),
-);
+try {
+  await db.query(query);
+} catch (e) {
+  if (e instanceof Ramose.QueryBudgetExceeded) return [];
+  throw e;
+}
 ```
 
 <Next links={[

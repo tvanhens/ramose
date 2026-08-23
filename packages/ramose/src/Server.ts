@@ -64,8 +64,10 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import type { AuthConfig } from "./Auth.ts";
+import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
+export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
+import { trimSlashes } from "./db/http.ts";
 import type { Providers } from "./Providers.ts";
 
 /** @internal */
@@ -203,9 +205,6 @@ export const AUTH_ENV_KEYS = {
   internalSecret: "RAMOSE_INTERNAL_SECRET",
   // `auth` is not a key: it lowers onto issuers / aud / maxTtl.
 } as const satisfies Record<Exclude<keyof ServerAuth, "auth">, string>;
-
-/** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
-export const DEFAULT_JWT_MAX_TTL = 900;
 
 /**
  * Fold an {@link AuthConfig} into the three loose keys it stands in for.
@@ -377,8 +376,6 @@ export const resolveWorker = (
   };
   return { url: resolved?.url, workerName: resolved?.workerName ?? "" };
 };
-
-const trimSlashes = (url: string): string => url.replace(/\/+$/, "");
 
 const redact = (
   token: Redacted.Redacted<string> | string | undefined,

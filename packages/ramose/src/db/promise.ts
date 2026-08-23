@@ -26,6 +26,13 @@ export const asPromise = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
   });
 
 /**
+ * Hatch-only: run an Effect from `db.effect.*` so the Promise rejects with
+ * the tagged error itself (not a FiberFailure). App-path methods already
+ * do this — use `try/catch` there. Documented on the Effect hatch page.
+ */
+export const runPromise = asPromise;
+
+/**
  * Drive a Stream as a {@link Subscription}. Interrupt on `close()`. A
  * completion (pinned `asOf` / `history`) ends iteration without error.
  */

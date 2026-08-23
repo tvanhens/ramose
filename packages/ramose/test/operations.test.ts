@@ -20,11 +20,12 @@ import {
   OperationRejected,
   PrefixHalt,
   Query,
+  TxRejected,
   Unauthorized,
   txBuilder,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
-import { client, fakePeer, settle, type Call } from "./peer.ts";
+import { client, fakePeer, httpsClient, settle, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
@@ -426,6 +427,79 @@ describe("db.run wire", () => {
     const err = await runFail(db.run(setName, undefined, { name: "x" }));
     expect((err as { _tag: string })._tag).toBe("InvalidRequest");
     await c.dispose();
+  });
+});
+
+describe("db.run / db.query promise rejection identity", () => {
+  test("await db.run rejects with OperationRejected itself, not a FiberFailure", async () => {
+    const peer = fakePeer({
+      http: (call) => {
+        if (call.url.endsWith("/op")) {
+          return {
+            status: 409,
+            body: {
+              error: "denied",
+              tag: "OperationRejected",
+              message: "denied",
+              name: "user/create",
+              reason: "policy",
+            },
+          };
+        }
+        return { body: { t: 1 } };
+      },
+    });
+    const { databases, close } = httpsClient(peer);
+    const db = databases.db("movies", Movies);
+    try {
+      await db.run(createUser, { name: "Ada" });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OperationRejected);
+      expect((error as OperationRejected)._tag).toBe("OperationRejected");
+      expect((error as OperationRejected).name).toBe("user/create");
+      expect((error as Error).name).not.toBe("FiberFailure");
+      expect((error as { constructor?: { name?: string } }).constructor?.name).not.toBe(
+        "FiberFailure",
+      );
+    }
+    close();
+  });
+
+  test("await db.run rejects with TxRejected itself, not a FiberFailure", async () => {
+    const peer = fakePeer({
+      http: (call) => {
+        if (call.url.endsWith("/op")) {
+          return {
+            status: 409,
+            body: {
+              error: "unique conflict",
+              tag: "TxRejected",
+              message: "unique conflict",
+              code: "tx/unique-conflict",
+              attr: ":user/name",
+            },
+          };
+        }
+        return { body: { t: 1 } };
+      },
+    });
+    const { databases, close } = httpsClient(peer);
+    const db = databases.db("movies", Movies);
+    try {
+      await db.run(createUser, { name: "Ada" });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TxRejected);
+      expect((error as TxRejected)._tag).toBe("TxRejected");
+      expect((error as TxRejected).code).toBe("tx/unique-conflict");
+      expect((error as TxRejected).attr).toBe(":user/name");
+      expect((error as Error).name).not.toBe("FiberFailure");
+      expect((error as { constructor?: { name?: string } }).constructor?.name).not.toBe(
+        "FiberFailure",
+      );
+    }
+    close();
   });
 });
 

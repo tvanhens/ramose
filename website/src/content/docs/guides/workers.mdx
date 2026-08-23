@@ -61,28 +61,16 @@ Provide one with `Effect.provide` around the whole Worker; nothing inside change
 
 ## Handling failures
 
-Errors are tagged, so mapping them to HTTP is one `Effect.catchTags`:
+Errors are tagged classes. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself — `try/catch` and `instanceof`. Mapping them to HTTP is `Ramose.errorToHttp`:
 
-```ts title="examples/kv-style/app.ts:128-143"
-        Effect.catchTags({
-          TxRejected: (e) =>
-            HttpServerResponse.json({ error: e.message, code: e.code }, { status: 409 }),
-          Unavailable: (e) =>
-            HttpServerResponse.json(
-              { error: e.message },
-              { status: 503, headers: { "retry-after": String(Math.ceil(e.retryAfterMs / 1000)) } },
-            ),
-          QueryBudgetExceeded: (e) =>
-            HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
-          InvalidRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
-          Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
-          DatabaseNotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
-          InternalError: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
-          NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
+```ts title="examples/kv-style/app.ts"
+        Effect.catch((e) => {
+          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
+          return HttpServerResponse.json(body, { status, headers });
         }),
 ```
 
-Configuration mistakes are not in that list on purpose: a missing binding or a malformed URL fails at start-up, not on some unlucky request. `Unavailable` and `NetworkError` are tried 6 times before you see them.
+`errorToHttp` lives on `ramose` and `ramose/worker`, not `ramose/db` — it is an HTTP helper, not a browser export. Configuration mistakes are not in that list on purpose: a missing binding or a malformed URL fails at start-up, not on some unlucky request. `Unavailable` and `NetworkError` are tried 6 times before you see them.
 
 ## Live queries need a browser
 

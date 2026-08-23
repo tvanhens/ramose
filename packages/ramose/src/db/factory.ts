@@ -27,6 +27,7 @@ import {
   record,
   retryTransient,
   send,
+  trimSlashes,
 } from "./http.ts";
 import { openOverlay, type Overlay } from "./overlay.ts";
 import type { OperationInvocation } from "./Operation.ts";
@@ -36,6 +37,7 @@ import {
   globalWebSocket,
   openSession,
   type Session,
+  parsePrincipal,
   type SessionPrincipal,
   type SocketFactory,
 } from "./session.ts";
@@ -86,13 +88,6 @@ const networkError = (cause: unknown): NetworkError =>
     message: cause instanceof Error ? cause.message : String(cause),
     cause,
   });
-
-/** `/info`'s `principal` field, parsed; `undefined` when the peer sent none. */
-const parsePrincipal = (raw: unknown): SessionPrincipal | undefined => {
-  const p = record(raw);
-  if (typeof p.class !== "string") return undefined;
-  return { eid: typeof p.eid === "number" ? p.eid : null, class: p.class };
-};
 
 /**
  * @internal Build a client over an arbitrary transport, plus the finalizer
@@ -392,7 +387,7 @@ export const resolveTransport = (
       ? globalWebSocket()
       : (url) => new options.webSocket!(url) as never;
   return {
-    url: Effect.succeed(options.url.replace(/\/+$/, "")),
+    url: Effect.succeed(trimSlashes(options.url)),
     fetch: options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
     webSocket: socket,
   };

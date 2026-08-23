@@ -2,7 +2,7 @@
  * @internal The HTTPS half of the transport.
  *
  * One request: JSON in (`toJson`, so instants / bytes / uuids survive), the
- * body out through `fromJson`, and a non-2xx classified into one of the eight
+ * body out through `fromJson`, and a non-2xx classified into one of the nine
  * tagged failures by {@link fromResponse}. Writes always come through here —
  * `POST /db/:name/transact` is the one writer — and reads fall back to it when
  * the client was given no `WebSocket`.
@@ -52,6 +52,9 @@ export const compact = (
   for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
   return out;
 };
+
+/** Strip trailing slashes from a URL / origin. One definition for every transport. */
+export const trimSlashes = (url: string): string => url.replace(/\/+$/, "");
 
 export const record = (value: unknown): Record<string, unknown> =>
   (typeof value === "object" && value !== null ? value : {}) as Record<

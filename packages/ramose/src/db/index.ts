@@ -156,6 +156,7 @@ export {
   type DbError,
   InternalError,
   InvalidRequest,
+  isDatabaseError,
   NetworkError,
   NotOne,
   OperationRejected,
@@ -165,3 +166,4 @@ export {
   Unauthorized,
   Unavailable,
 } from "./Errors.ts";
+export { PolicyError } from "./SchemaErrors.ts";

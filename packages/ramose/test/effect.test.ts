@@ -4,11 +4,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
 import { pipe as effectPipe } from "effect/Function";
 import * as EffectFunction from "effect/Function";
 import * as EffectRedacted from "effect/Redacted";
 import * as Ramose from "ramose/db";
-import { Function, pipe, Redacted, Schema } from "ramose/effect";
+import { Function, pipe, Redacted, runPromise, Schema } from "ramose/effect";
 
 describe("ramose/effect", () => {
   test("re-exports pipe as effect/Function.pipe", () => {
@@ -26,6 +27,19 @@ describe("ramose/effect", () => {
     const secret = Redacted.make("s3cret");
     expect(Redacted.value(secret)).toBe("s3cret");
     expect(String(secret)).not.toContain("s3cret");
+  });
+
+  test("runPromise rejects with the tagged error, not a FiberFailure", async () => {
+    try {
+      await runPromise(
+        Effect.fail(new Ramose.TxRejected({ message: "unique", code: "tx/unique-conflict" })),
+      );
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Ramose.TxRejected);
+      expect((error as Ramose.TxRejected)._tag).toBe("TxRejected");
+      expect((error as Error).name).not.toBe("FiberFailure");
+    }
   });
 
   test("pipe from the escape hatch builds a Query.q value", () => {

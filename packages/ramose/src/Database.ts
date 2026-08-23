@@ -37,6 +37,7 @@ import * as Redacted from "effect/Redacted";
 import type { Schema } from "./db/index.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import { globalFetch, makeDatabases } from "./db/internal.ts";
+import { trimSlashes } from "./db/http.ts";
 import type { Providers } from "./Providers.ts";
 import type { Server } from "./Server.ts";
 
@@ -157,7 +158,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   }
   const timeoutMs = Math.max(1, props.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
   const { databases, close } = makeDatabases({
-    url: Effect.succeed(url.replace(/\/+$/, "")),
+    url: Effect.succeed(trimSlashes(url)),
     token: token === undefined ? undefined : Effect.succeed(token),
     fetch: globalFetch,
   });

@@ -14,7 +14,10 @@
  */
 
 import * as Data from "effect/Data";
+import { TxRejected } from "../../db/Errors.ts";
 import { TxError } from "../core/index.ts";
+
+export { TxRejected };
 
 /** The transactor aborted: in-memory and durable state may have diverged. */
 export class TransactorDeadError extends Error {
@@ -23,9 +26,7 @@ export class TransactorDeadError extends Error {
   }
 }
 
-/** A transaction was rejected by validation / tempid / unique resolution → 409. */
-export class TxRejected extends Data.TaggedError("TxRejected")<{ message: string; code: string; attr?: string }> {}
-/** This instance is dead and is being rebuilt from durable state → 503. */
+/** This instance is dead and is being rebuilt from durable state → 503. Maps to `Unavailable` at the client boundary. */
 export class TransactorDead extends Data.TaggedError("TransactorDead")<{ message: string; retryAfterMs: number }> {}
 /** Malformed request → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}

@@ -248,6 +248,8 @@ describe("the `/db` barrel's public names", () => {
         "QueryBudgetExceeded",
         "InternalError",
         "NetworkError",
+        "isDatabaseError",
+        "PolicyError",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
         "OperationRejected",

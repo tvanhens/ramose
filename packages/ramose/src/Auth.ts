@@ -19,6 +19,9 @@ import { InvalidRequest } from "./db/Errors.ts";
 import type { Claims } from "./db/token.ts";
 export type { Claims } from "./db/token.ts";
 
+/** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
+export const DEFAULT_JWT_MAX_TTL = 900;
+
 /**
  * The pinned verifier/minter contract. Declare once; hand it to
  * `authEnv` (`{ auth }`) and to {@link claims}.

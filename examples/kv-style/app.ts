@@ -121,25 +121,10 @@ export const App = Cloudflare.Worker(
 
         return yield* HttpServerResponse.json({ t: report.t, names, before, ada });
       }).pipe(
-        // The client's failures are tagged, so the HTTP mapping is a total
-        // match rather than status-code sniffing.
-        Effect.catchTags({
-          TxRejected: (e) =>
-            HttpServerResponse.json({ error: e.message, code: e.code }, { status: 409 }),
-          Unavailable: (e) =>
-            HttpServerResponse.json(
-              { error: e.message },
-              { status: 503, headers: { "retry-after": String(Math.ceil(e.retryAfterMs / 1000)) } },
-            ),
-          QueryBudgetExceeded: (e) =>
-            HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
-          InvalidRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
-          Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
-          DatabaseNotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
-          InternalError: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
-          NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
-          OperationRejected: (e) =>
-            HttpServerResponse.json({ error: e.message, name: e.name }, { status: 409 }),
+        // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
+        Effect.catch((e) => {
+          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
+          return HttpServerResponse.json(body, { status, headers });
         }),
       ),
     };

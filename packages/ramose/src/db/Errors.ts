@@ -1,11 +1,43 @@
 /**
- * Tagged failures for the Ramose database capabilities.
+ * Tagged failures for the Ramose database capabilities — the one shared
+ * error module. The peer Worker and the Transactor import the public
+ * classes from here (`Unauthorized`, `OperationRejected`,
+ * `QueryBudgetExceeded`, `TxRejected`) instead of declaring a second copy.
+ * Worker-only HTTP tags (`NotFound`, `BadRequest`, `Internal`,
+ * `UpstreamError`) and the transactor-internal `TransactorDead` stay at
+ * those boundaries and map onto this union on the way out.
  *
- * These mirror, one-for-one, the error surface the peer Worker already
- * speaks over HTTP (packages/ramose/src/worker/errors.ts,
- * packages/ramose/src/internal/transactor/errors.ts, packages/ramose/src/internal/replica/errors.ts) so a
- * caller can `Effect.catchTag("TxRejected", …)` on exactly the condition the
- * database reported — no status-code sniffing.
+ * App-path calls (`db.run`, `db.query`, `db.pull`) reject with the class
+ * itself: `_tag` intact, `instanceof` works, `.name` / `.message` stable.
+ * Match in `try/catch` with `instanceof` or `_tag`. `isDatabaseError` is
+ * the type guard for the union. Effect matching (`catchTags`) is hatch-only
+ * (`db.effect.*` / `ramose/effect`).
+ *
+ * ## `DbError` — nine request errors
+ *
+ * Members are named for the condition they report (`TxRejected`,
+ * `Unavailable`, `Unauthorized`, `OperationRejected`, `InvalidRequest`,
+ * `DatabaseNotFound`, `QueryBudgetExceeded`). `InternalError` and
+ * `NetworkError` keep the `-Error` suffix because the bare words are too
+ * generic. That is the convention; do not mix a third pattern into this
+ * union.
+ *
+ * | tag                   | means                                      |
+ * | --------------------- | ------------------------------------------ |
+ * | `TxRejected`          | write refused by validation / unique / policy (409) |
+ * | `Unavailable`         | writer restarting; retry after `retryAfterMs` (503) |
+ * | `InvalidRequest`      | malformed request (400)                    |
+ * | `DatabaseNotFound`    | no such route (404)                        |
+ * | `Unauthorized`        | missing/wrong credential, or a policy denial (401 / 403) |
+ * | `QueryBudgetExceeded` | planner memory budget (413)                |
+ * | `InternalError`       | anything else the server reported (500)    |
+ * | `NetworkError`        | the request never produced a response      |
+ * | `OperationRejected`   | named operation refused (409)              |
+ *
+ * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
+ * {@link ParamError} (bad query bindings), `PolicyError` (policy failed
+ * to compile — deploy time). A runtime policy denial is
+ * {@link Unauthorized} or {@link TxRejected} with `code: "policy"`.
  *
  * Wire shapes the classifier understands:
  *
@@ -14,14 +46,17 @@
  *
  * `NetworkError` is the only failure with no server side: the request never
  * produced a response (DNS, service binding down, aborted body).
+ * `TransactorDead` on the wire becomes {@link Unavailable} here.
  */
 
 import * as Data from "effect/Data";
 
-/** A transaction was rejected by validation / tempid / unique resolution (409). */
+/** A transaction was rejected by validation / tempid / unique / policy (409). */
 export class TxRejected extends Data.TaggedError("TxRejected")<{
   readonly message: string;
   readonly code: string;
+  /** Field ident a policy denial tripped on — never the value. */
+  readonly attr?: string;
 }> {}
 
 /** The transactor aborted and is rebuilding from durable state (503); retry after `retryAfterMs`. */
@@ -47,7 +82,9 @@ export class DatabaseNotFound extends Data.TaggedError("DatabaseNotFound")<{
  * tripped on (`attr: ":doc/owner"`) — never the value.
  */
 export class Unauthorized extends Data.TaggedError("Unauthorized")<{
-  readonly message: string;
+  readonly message?: string;
+  /** 403 when the caller is known but the policy refused; omit for 401. */
+  readonly status?: 401 | 403;
   readonly code?: string;
   readonly attr?: string;
 }> {}
@@ -204,7 +241,11 @@ export const fromResponse = (
         ...opt("reason", b.reason),
       });
     case "TxRejected":
-      return new TxRejected({ message, code: str(b.code, "tx/rejected") });
+      return new TxRejected({
+        message,
+        code: str(b.code, "tx/rejected"),
+        ...opt("attr", b.attr),
+      });
     case "TransactorDead": {
       const header = headers?.get("retry-after");
       const retryAfterMs = num(
@@ -253,7 +294,11 @@ export const fromResponse = (
           ...opt("reason", b.reason),
         });
       }
-      return new TxRejected({ message, code: str(b.code, "tx/rejected") });
+      return new TxRejected({
+        message,
+        code: str(b.code, "tx/rejected"),
+        ...opt("attr", b.attr),
+      });
     case 413:
       return budget();
     case 503:

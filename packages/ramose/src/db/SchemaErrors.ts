@@ -10,7 +10,7 @@ import * as Data from "effect/Data";
  *
  * Provisioning mistakes elsewhere are defects, not failures: a malformed URL,
  * a missing binding, a `db.install()` that cannot reach the peer all surface
- * as `Effect.die` or one of the eight `DbError`s.
+ * as `Effect.die` or one of the nine `DbError`s.
  */
 export class PolicyError extends Data.TaggedError("PolicyError")<{
   readonly message: string;

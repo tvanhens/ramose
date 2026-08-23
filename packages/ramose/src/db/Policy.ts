@@ -27,6 +27,7 @@ import type { AnyEntity } from "./Entity.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import { Q, lowerQueryObject, q, rule, type Fragment, type QueryGen, type Var } from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
+export { PolicyError };
 
 // ── shapes ─────────────────────────────────────────────────────────────────
 

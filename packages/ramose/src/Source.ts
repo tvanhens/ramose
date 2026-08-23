@@ -22,6 +22,7 @@ import {
   makeDatabases,
   type ReadDb,
 } from "./db/internal.ts";
+import { trimSlashes } from "./db/http.ts";
 
 export interface ServerEndpoint {
   /** Base URL, no trailing slash (e.g. `https://ramose.example.workers.dev`). */
@@ -77,7 +78,7 @@ export const readOnly = <C extends AnySchema>(db: Db<C>): ReadDb<C> => ({
 export const databasesOf = (source: ServerSource): DatabasesShape =>
   makeDatabases({
     url: source.endpoint.pipe(
-      Effect.map((endpoint) => endpoint.url.replace(/\/+$/, "")),
+      Effect.map((endpoint) => trimSlashes(endpoint.url)),
     ),
     token: source.endpoint.pipe(
       Effect.map((endpoint) =>

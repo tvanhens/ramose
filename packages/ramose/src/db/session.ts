@@ -24,6 +24,7 @@
  */
 
 import * as Redacted from "effect/Redacted";
+import { trimSlashes } from "./http.ts";
 
 /**
  * The slice of `WebSocket` a session uses — so a test can hand in a fake, and
@@ -65,8 +66,8 @@ export interface SessionPrincipal {
   readonly class: string;
 }
 
-/** The ack's `principal` field, parsed; `undefined` when the peer sent none. */
-const sessionPrincipal = (raw: unknown): SessionPrincipal | undefined => {
+/** The ack's / `/info` `principal` field, parsed; `undefined` when the peer sent none. */
+export const parsePrincipal = (raw: unknown): SessionPrincipal | undefined => {
   if (typeof raw !== "object" || raw === null) return undefined;
   const p = raw as { eid?: unknown; class?: unknown };
   if (typeof p.class !== "string") return undefined;
@@ -148,7 +149,7 @@ export const sessionUrl = (
   name: string,
   token?: string | undefined,
 ): string =>
-  `${url.replace(/\/+$/, "").replace(/^http/, "ws")}/db/${encodeURIComponent(
+  `${trimSlashes(url).replace(/^http/, "ws")}/db/${encodeURIComponent(
     name,
   )}/session${token === undefined ? "" : `?token=${encodeURIComponent(token)}`}`;
 
@@ -231,7 +232,7 @@ export const openSession = (options: SessionOptions): Session => {
       // an `auth` ack is `{ id, ok: true, principal? }` — no status, and not a
       // refusal; the principal it names supersedes anything read before it
       if (frame.ok === true) {
-        const who = sessionPrincipal(frame.principal);
+        const who = parsePrincipal(frame.principal);
         if (who !== undefined) principal = who;
       }
       p.resolve({

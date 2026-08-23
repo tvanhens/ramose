@@ -31,6 +31,7 @@ import type { TokenInput } from "./token.ts";
 
 export type { EffectDb, EffectReadDb } from "./effect-types.ts";
 export type { DatabasesShape } from "./client-shape.ts";
+export { runPromise } from "./promise.ts";
 
 /**
  * The capability. Yield it to get the client:

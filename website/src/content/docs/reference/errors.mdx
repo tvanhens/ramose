@@ -1,6 +1,6 @@
 ---
 title: Errors
-description: The eight request errors, plus NotOne and ParamError — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
+description: The nine request errors, plus NotOne, ParamError and PolicyError — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -8,15 +8,17 @@ Every error a call can fail with, what it means, and what to do about it. This p
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
-Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, and a parameterized query can fail with `ParamError` — neither is a `DbError`. Match by name with `Effect.catchTags`.
+Every error is a tagged class and `DbError` is the union of the nine request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, a parameterized query can fail with `ParamError`, and a policy that does not compile throws `PolicyError` — none of those three is a `DbError`. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself. Match with `try/catch`, `instanceof`, or `_tag`. `Ramose.isDatabaseError(e)` is the type guard.
 
 ```ts
-const rows = yield* db.query(query).pipe(
-  Effect.catchTags({
-    QueryBudgetExceeded: () => Effect.succeed([]),
-    Unavailable: () => Effect.succeed([]), // the writer is restarting; try later
-  }),
-);
+try {
+  const rows = await db.query(query);
+} catch (e) {
+  if (e instanceof Ramose.QueryBudgetExceeded || e instanceof Ramose.Unavailable) {
+    return [];
+  }
+  throw e;
+}
 ```
 
 ## The errors
@@ -31,8 +33,10 @@ const rows = yield* db.query(query).pipe(
 | `QueryBudgetExceeded` | the query went over the server's per-query memory limit ([glossary](/concepts/glossary/#query-budget)) (413) | too wide a query; carries `clause`, `cells`, `limit`, and `spentBy` (`caller` or `policy`) |
 | `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
 | `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |
+| `OperationRejected` | a named operation was refused (409) | dangling / foreign entity, a body-thrown rejection |
 | `NotOne` | `.oneOrFail()` did not see exactly one row | zero matches, or two (the server is asked for two so a second row is seen); `found` is `0` or `2` |
 | `ParamError` | the query's params were bound wrong | a required param missing or `undefined`, an unknown key, or a deferred check (flagged `RegExp`, a non-entity for `is`) |
+| `PolicyError` | a policy did not compile against its schema | undeclared ident, a pull that requires a read-masked field; deploy time, not a request |
 
 ## What the user sees
 
@@ -44,7 +48,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
   });
 ```
 
-`useTransact` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLive`, `useQuery`, `usePull` — report an Effect `Cause` instead, so unwrap it first: `errorMessage(Cause.squash(error))`, with `Cause` from `effect/Cause`.
+`useTransact` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLive`, `useQuery`, `usePull` — report the same tagged error.
 
 | tag | what to show | what to do |
 | --- | --- | --- |
@@ -54,6 +58,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | `Unavailable` / `NetworkError` | "offline — retrying" or "try again" | already tried 6 times for you; if it still surfaces, the whole write may be retried — nothing landed |
 | `InvalidRequest` / `DatabaseNotFound` | a generic error | fix the app: name, field, URL |
 | `QueryBudgetExceeded` | a generic error | narrow the query; not retried |
+| `OperationRejected` | the server's message | nothing to retry; the operation was refused |
 | `InternalError` | "something went wrong" | try later |
 | `NotOne` | a generic error | the filter matched zero or several records; tighten it |
 | `ParamError` | a generic error | fix the binding: every required hole, no extra keys |
@@ -73,7 +78,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | 400 | `InvalidRequest` |
 | 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule) |
 | 404 | `DatabaseNotFound` (unknown route) |
-| 409 | `TxRejected` (`{ error, tag, code }`) |
+| 409 | `TxRejected` (`{ error, tag, code }`) or `OperationRejected` (`{ error, tag, name }`) |
 | 413 | `QueryBudgetExceeded` |
 | 503 (+ `retry-after`) | `Unavailable` |
 | other 5xx | `InternalError` |

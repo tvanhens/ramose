@@ -73,7 +73,11 @@ export const moveIssue = (
 
 ## Handling errors by name
 
-Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`. `Effect.catchTags` handles the ones you care about by name:
+On the app path, `await db.query(…)` / `db.run(…)` reject with the tagged class itself. Match with `try/catch` and `instanceof` / `_tag` — see [Errors](/reference/errors/).
+
+The hatch (`db.effect.*`) still produces Effects. `runPromise` from `ramose/effect` (or `ramose/db/effect`) unwraps them so the Promise rejects with that same class, not a FiberFailure. Do not use `Effect.runPromise` on a Ramose Effect if you need `_tag` / `instanceof` to work.
+
+Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`, `OperationRejected`. Hatch code can still `Effect.catchTags`:
 
 ```ts title="examples/kv-style/app.ts:128-143"
         Effect.catchTags({

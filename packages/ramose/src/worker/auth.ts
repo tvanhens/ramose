@@ -29,12 +29,13 @@ import {
 import { type Basis, dbFromBasis } from "../internal/replica/basis.ts";
 import { type RamoseEnv, envInt, policyOf } from "../internal/transactor/index.ts";
 import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, customFetch, jwtVerify } from "jose";
+import { DEFAULT_JWT_MAX_TTL } from "../Auth.ts";
 import { Unauthorized } from "./errors.ts";
+
+export { DEFAULT_JWT_MAX_TTL };
 
 /** Verifier algorithms, explicit — never whatever the token's header asks for. */
 const ALGS = ["RS256", "ES256", "EdDSA"];
-/** Cap on `exp - iat` when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
-export const DEFAULT_JWT_MAX_TTL = 900;
 /** Per-isolate memo lifetime for a verified principal. */
 export const PRINCIPAL_MEMO_MS = 60_000;
 /** The class a policy must declare for tokenless callers to get in. */

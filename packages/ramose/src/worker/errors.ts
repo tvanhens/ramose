@@ -1,6 +1,10 @@
 /**
  * Tagged failures for the peer Worker's request Effect.
  *
+ * Shared public classes (`Unauthorized`, `QueryBudgetExceeded`,
+ * `OperationRejected`) come from `db/Errors.ts`. Worker-only HTTP tags
+ * stay here: `NotFound`, `BadRequest`, `Internal`, `UpstreamError`.
+ *
  * The HTTP boundary in index.ts runs one `Effect` per request; everything that
  * is not a 2xx is a `Data.TaggedError` in its error channel, mapped back to a
  * response with `Effect.catchTags`. The status codes and body fields here are
@@ -17,27 +21,19 @@
 
 import { QueryBudgetError } from "../internal/core/index.ts";
 import * as Data from "effect/Data";
+import {
+  OperationRejected,
+  QueryBudgetExceeded,
+  Unauthorized,
+} from "../db/Errors.ts";
+
+export { OperationRejected, QueryBudgetExceeded, Unauthorized };
 
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly message?: string }> {}
 export class BadRequest extends Data.TaggedError("BadRequest")<{ readonly message: string; readonly trace?: string }> {}
-/** 401 by default; 403 when the caller is known but the policy refused (`code`/`attr`). */
-export class Unauthorized extends Data.TaggedError("Unauthorized")<{
-  readonly message?: string;
-  readonly status?: 401 | 403;
-  readonly code?: string;
-  readonly attr?: string;
-}> {}
 /** A Transactor/Replica DO answered with a non-2xx; passed through verbatim. */
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly status: number; readonly body: string; readonly headers?: Record<string, string> }> {}
-export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number; readonly spentBy?: "caller" | "policy" }> {}
 export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string }> {}
-/** An operation was refused (dangling / foreign entity, body rejection). */
-export class OperationRejected extends Data.TaggedError("OperationRejected")<{
-  readonly message: string;
-  readonly name: string;
-  readonly step?: string;
-  readonly reason?: string;
-}> {}
 
 export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal | OperationRejected;
 
