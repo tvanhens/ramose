@@ -3,11 +3,15 @@
  *
  * App callers get {@link Client} (`db.query`, `db.run`, `db.live`) without a
  * `ManagedRuntime`. Effect's `layer` / `Databases` stay on `ramose/db/effect`.
+ *
+ * This module is scanned by `scripts/check-client-dts.ts` with no allowlist
+ * exemption: do not add `effect` to any exported type (`Client`,
+ * `ClientOptions`, `connect`).
  */
 
 import type { AnySchema } from "./Schema.ts";
-import { openConnected } from "./Databases.ts";
 import type { Db } from "./Db.ts";
+import { configFromClientOptions, makeDatabases } from "./factory.ts";
 import type { TokenInput } from "./token.ts";
 
 export interface ClientOptions {
@@ -53,7 +57,7 @@ export interface Client {
  * the same defects `layer` dies with.
  */
 export const connect = (options: ClientOptions): Client => {
-  const { databases, close } = openConnected(options);
+  const { databases, close } = makeDatabases(configFromClientOptions(options));
   return {
     db: (name, catalog) => databases.db(name, catalog),
     close: () => {

@@ -11,9 +11,16 @@
 export * from "./Field.ts";
 export * from "./Schema.ts";
 export * from "./connect.ts";
-export * from "./Databases.ts";
+export * from "./factory.ts";
 export * from "./Db.ts";
-export * from "./effect.ts";
+export {
+  Databases,
+  layer,
+  type EffectClientOptions,
+  type EffectDb,
+  type EffectReadDb,
+  type EffectToken,
+} from "./effect.ts";
 export type { Subscription } from "./subscription.ts";
 export * from "./ensure.ts";
 export * from "./equal.ts";

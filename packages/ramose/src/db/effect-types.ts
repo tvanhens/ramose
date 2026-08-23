@@ -6,10 +6,13 @@
  */
 
 import type * as Effect from "effect/Effect";
+import type * as Redacted from "effect/Redacted";
 import type * as Stream from "effect/Stream";
 
 /** Re-export so `Db.d.ts` can name Effect without importing `effect`. */
 export type EffectOf<A, E = never, R = never> = Effect.Effect<A, E, R>;
+/** Re-export so the hatch factory can name a redacted token without `effect`. */
+export type RedactedOf<A> = Redacted.Redacted<A>;
 import type { AnySchema } from "./Schema.ts";
 import type { DbPrincipal, QueryError, TxReport } from "./Db.ts";
 import type { DbError } from "./Errors.ts";

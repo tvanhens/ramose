@@ -191,6 +191,7 @@ describe("the `/db` barrel's public names", () => {
     expect("Databases" in db).toBe(false);
     expect("layer" in hatch).toBe(true);
     expect("Databases" in hatch).toBe(true);
+    expect("connect" in hatch).toBe(false);
   });
 
   test("schema, connecting, and the tagged errors — and nothing else", async () => {

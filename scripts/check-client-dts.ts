@@ -4,6 +4,11 @@
  * token) or `ramose/react` imports `effect`. Schema, errors, and the
  * `ramose/db/effect` hatch may still mention Effect.
  *
+ * `connect.d.ts` is on the scanned list with **no** allowlist exemption —
+ * a leak into `connect` / `ClientOptions` themselves fails the gate.
+ * Mutation: adding `import type { Effect } from "effect/Effect"` to
+ * `connect.ts` (or any exported type there) must fail this script.
+ *
  * Follows relative imports one hop so a new module cannot smuggle Effect
  * onto the surface. Allowed hops are paths relative to `dist/db` — a new
  * file that happens to share a basename (`session.ts` in a subdirectory)
@@ -27,6 +32,9 @@ const RELATIVE_FROM =
  * (schema codecs, tagged errors, session internals, the hatch alias).
  * A *new* relative module is not on this list and fails the gate if it
  * imports `effect`.
+ *
+ * App-surface modules (`connect`, `Db`, `token`, `index`) are not on
+ * this list — they are scanned directly.
  */
 const ALLOWED_HOPS = new Set([
   "effect-types.d.ts",
@@ -38,10 +46,7 @@ const ALLOWED_HOPS = new Set([
   "Entity.d.ts",
   "Schema.d.ts",
   "valueTypes.d.ts",
-  // hatch file — `layer` / `Databases` / `makeDatabases`. Its own Effect
-  // imports are expected; we still scan *its* hops below.
-  "Databases.d.ts",
-  // hatch HTTPS transport, reached from Databases.d.ts
+  // HTTPS transport, reached from Db / factory hops
   "http.d.ts",
 ]);
 
@@ -57,6 +62,7 @@ const hopFile = (from: string, spec: string): string => {
 const hopKey = (file: string): string =>
   relative(DB_DIST, file).replaceAll("\\", "/");
 
+/** App-surface declarations — scanned directly, no exemption. */
 const files: string[] = [
   join(ROOT, "db/index.d.ts"),
   join(ROOT, "db/Db.d.ts"),
@@ -101,13 +107,10 @@ for (const file of files) {
   if (EFFECT_IMPORT.test(src)) leaks.push(file);
 }
 
-// Hop-follow the client handles *and* the schema barrel (so `connect` /
-// `ClientOptions` in `connect.d.ts` are not hidden by skipping `index.d.ts`)
-// *and* the hatch file's children (`effect-types` is the allowlisted alias).
-const hopSources = [...files, join(ROOT, "db/Databases.d.ts")];
+// Hop-follow every scanned file. `connect.d.ts` is in `files` so a leak
+// into `connect` / `ClientOptions` is not hidden by skipping `index.d.ts`.
 const seenHops = new Set<string>();
-for (const file of hopSources) {
-  if (!existsSync(file)) continue;
+for (const file of files) {
   for (const hop of hopsOf(file)) {
     const key = `${file} → ${hop}`;
     if (seenHops.has(key)) continue;
@@ -116,6 +119,15 @@ for (const file of hopSources) {
     const hopSrc = withoutComments(readFileSync(hop, "utf8"));
     if (EFFECT_IMPORT.test(hopSrc)) leaks.push(key);
   }
+}
+
+// Mutation probe: the regex must catch an Effect type on ClientOptions.
+const MUTATION = 'import type { Effect } from "effect/Effect";\nexport interface ClientOptions { token?: Effect.Effect<string>; }\n';
+if (!EFFECT_IMPORT.test(MUTATION)) {
+  console.error(
+    "check-client-dts: EFFECT_IMPORT regex failed its mutation probe (a ClientOptions Effect leak would pass)",
+  );
+  process.exit(1);
 }
 
 if (leaks.length > 0) {

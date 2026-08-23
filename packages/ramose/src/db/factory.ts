@@ -1,26 +1,17 @@
 /**
- * `Databases` — the client, as a Context service.
- *
- * The key *is* the client: `yield* Ramose.Databases` hands back something with
- * one method, `db(name, catalog)`, and that call is pure — no network, no
- * ensure, no socket. A Worker binding therefore does zero network per request,
- * and a browser never installs schema.
- *
- * `layer(options)` is the portable way to get one: a scoped layer whose
- * finalizer closes whatever sockets were opened. Getting a `Databases` cannot
- * fail (`Layer<Databases, never, never>`) — a malformed URL or a missing
- * `fetch` is a provisioning mistake, so it is a defect, not a `DbError`.
+ * @internal Shared client factory — one `makeDatabases` for `connect` and
+ * `layer`. Hatch types (`layer`, `Databases`, `EffectToken`) live on
+ * `ramose/db/effect`. This file's emitted `.d.ts` names Effect only through
+ * `effect-types`, so a hop from `connect.d.ts` is not an `effect` import.
  */
 
 import { fromJson, toJson } from "../internal/core/json.ts";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
-import type { AnySchema } from "./Schema.ts";
 import type { ClientOptions } from "./connect.ts";
 import { type Db, makeDb, type Wire } from "./Db.ts";
+import type { EffectOf, RedactedOf } from "./effect-types.ts";
 import {
   type DbError,
   fromResponse,
@@ -39,6 +30,7 @@ import {
 } from "./http.ts";
 import { openOverlay, type Overlay } from "./overlay.ts";
 import type { OperationInvocation } from "./Operation.ts";
+import type { AnySchema } from "./Schema.ts";
 import {
   globalWebSocket,
   openSession,
@@ -58,20 +50,6 @@ export interface DatabasesShape {
 }
 
 /**
- * The capability. Yield it to get the client:
- *
- * ```typescript
- * const ramose = yield* Ramose.Databases;
- * const db = ramose.db("todos", Todos);
- * ```
- */
-export class Databases extends Context.Service<Databases, DatabasesShape>()(
-  "Ramose.Databases",
-) {}
-
-// ── the internal factory ───────────────────────────────────────────────────
-
-/**
  * @internal What {@link makeDatabases} needs. Deliberately looser than
  * {@link ClientOptions}: the Worker-side transports resolve their URL and
  * token from bound Alchemy Outputs, so both are Effects, and a service binding
@@ -79,10 +57,8 @@ export class Databases extends Context.Service<Databases, DatabasesShape>()(
  */
 export interface DatabasesConfig {
   /** Where to send. An Effect, so a deploy-time Output can be read per call. */
-  readonly url: Effect.Effect<string>;
-  readonly token?:
-    | Effect.Effect<Redacted.Redacted<string>, DbError>
-    | undefined;
+  readonly url: EffectOf<string>;
+  readonly token?: EffectOf<RedactedOf<string>, DbError> | undefined;
   /** `env.Peer.fetch` in a Worker, the ambient `fetch` everywhere else. */
   readonly fetch: FetchLike;
   /** Omit for an HTTPS-only client: reads fall back to POST, `live` is unavailable. */
@@ -394,22 +370,40 @@ export const makeDatabases = (
   };
 };
 
+/** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
+const resolveTransport = (
+  options: Pick<ClientOptions, "url" | "fetch" | "webSocket">,
+): Pick<DatabasesConfig, "url" | "fetch" | "webSocket"> => {
+  try {
+    new URL(options.url);
+  } catch {
+    throw new Error(`ramose: malformed url ${JSON.stringify(options.url)}`);
+  }
+  const ambient = typeof fetch === "undefined" ? undefined : fetch;
+  const chosen = options.fetch ?? ambient;
+  if (chosen === undefined) {
+    throw new Error(
+      "ramose: no global fetch — pass `fetch` to Ramose.connect({ … }) or Ramose.layer({ … })",
+    );
+  }
+  const socket: SocketFactory | undefined =
+    options.webSocket === undefined
+      ? globalWebSocket()
+      : (url) => new options.webSocket!(url) as never;
+  return {
+    url: Effect.succeed(options.url.replace(/\/+$/, "")),
+    fetch: options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
+    webSocket: socket,
+  };
+};
+
 /**
- * Token the hatch / Worker transports still accept — a plain
- * {@link TokenInput} or an Effect of a redacted string.
+ * Resolve a plain {@link TokenInput} (string / source / thunk). Effect-valued
+ * tokens are resolved on `ramose/db/effect` before they reach the factory.
  */
-export type EffectToken =
-  | TokenInput
-  | Effect.Effect<Redacted.Redacted<string>, DbError>;
-
-/** Options for {@link layer} — `ClientOptions` plus an Effect-valued token. */
-export interface EffectClientOptions extends Omit<ClientOptions, "token"> {
-  readonly token?: EffectToken;
-}
-
-const resolveClientToken = (
-  token: EffectToken | undefined,
-): Effect.Effect<Redacted.Redacted<string>, DbError> | undefined => {
+export const resolvePlainToken = (
+  token: TokenInput | undefined,
+): EffectOf<RedactedOf<string>, DbError> | undefined => {
   if (token === undefined) return undefined;
   if (typeof token === "string") return Effect.succeed(Redacted.make(token));
   if (typeof token === "function") {
@@ -418,7 +412,6 @@ const resolveClientToken = (
       catch: wrapTokenCause,
     });
   }
-  if (Effect.isEffect(token)) return token;
   if (isTokenSource(token)) {
     return Effect.tryPromise({
       try: async () => Redacted.make(await token.token()),
@@ -430,62 +423,18 @@ const resolveClientToken = (
   );
 };
 
-/** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
-const configure = (
-  options: EffectClientOptions,
-): Effect.Effect<DatabasesConfig> =>
-  Effect.suspend(() => {
-    try {
-      new URL(options.url);
-    } catch {
-      return Effect.die(
-        new Error(`ramose: malformed url ${JSON.stringify(options.url)}`),
-      );
-    }
-    const ambient = typeof fetch === "undefined" ? undefined : fetch;
-    const chosen = options.fetch ?? ambient;
-    if (chosen === undefined) {
-      return Effect.die(
-        new Error(
-          "ramose: no global fetch — pass `fetch` to Ramose.connect({ … }) or Ramose.layer({ … })",
-        ),
-      );
-    }
-    const socket: SocketFactory | undefined =
-      options.webSocket === undefined
-        ? globalWebSocket()
-        : (url) => new options.webSocket!(url) as never;
-    const token = resolveClientToken(options.token);
-    return Effect.succeed({
-      url: Effect.succeed(options.url.replace(/\/+$/, "")),
-      token,
-      fetch:
-        options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
-      webSocket: socket,
-    });
-  });
-
 /**
- * A `Databases` over a peer URL. Scoped: the sockets it opens are closed when
- * the layer's scope closes (a `ManagedRuntime` disposed with the page, a
- * `Layer.launch`, a test).
+ * @internal Build {@link DatabasesConfig} from {@link ClientOptions}.
+ * Provisioning mistakes throw — the same defects `layer` dies with.
  */
-export const layer = (options: EffectClientOptions): Layer.Layer<Databases> =>
-  Layer.effect(
-    Databases,
-    Effect.gen(function* () {
-      const { databases, close } = makeDatabases(yield* configure(options));
-      yield* Effect.addFinalizer(() => Effect.sync(close));
-      return databases;
-    }),
-  );
-
-/**
- * @internal The factory {@link connect} wraps. Stays next to `layer` so
- * the promise handle and the hatch share one `makeDatabases` call.
- */
-export const openConnected = (
+export const configFromClientOptions = (
   options: ClientOptions,
-): { readonly databases: DatabasesShape; readonly close: () => void } =>
-  // `configure` is synchronous — suspend + succeed/die — so `runSync` is honest
-  makeDatabases(Effect.runSync(configure(options)));
+): DatabasesConfig => ({
+  ...resolveTransport(options),
+  token: resolvePlainToken(options.token),
+});
+
+/**
+ * @internal Shared transport bits for the hatch's Effect-valued token path.
+ */
+export const transportFromClientOptions = resolveTransport;

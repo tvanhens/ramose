@@ -77,7 +77,7 @@ export type QueryError<R = unknown, P = never> =
 
 /**
  * @internal What a `Db` needs from the outside world. Supplied by
- * `Databases.ts`; deliberately not a public name — HTTP is Worker internals.
+ * the hatch factory; deliberately not a public name — HTTP is Worker internals.
  */
 export interface Wire {
   /** A read op: one session frame, or one HTTPS POST when there is no socket. */

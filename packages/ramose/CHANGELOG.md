@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Split the Effect hatch out of the connect module (part of #219, tracker #205)
+
+`connect` / `Client` / `ClientOptions` stay on `ramose/db`. Hatch types
+(`layer`, `Databases`, `DatabasesShape`, `EffectToken`,
+`EffectClientOptions`) live only on `ramose/db/effect`. The client `.d.ts`
+gate scans `connect.d.ts` with no allowlist exemption.
+
 ### Public vocabulary (part of #204, tracker #205)
 
 App surface names: `Entity` / `Field` / `Schema`, `set` / `remove` /
