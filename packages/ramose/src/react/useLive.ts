@@ -117,11 +117,14 @@ export const useLiveSubscription = <A, E>(
   return state;
 };
 
-// Bundlers replace `process.env.NODE_ENV`. `typeof` is safe when `process`
-// is missing (unbundled ESM / Deno); an unguarded `process.env` throws.
+// Bundlers replace the dotted `process.env.NODE_ENV` via define; `?.` is
+// not substituted. `typeof` guards both hops so unbundled ESM / Deno
+// never dereference a missing `process`.
 declare const process: { readonly env?: { readonly NODE_ENV?: string } } | undefined;
 const DEV =
-  typeof process === "undefined" || process.env?.NODE_ENV !== "production";
+  typeof process === "undefined" ||
+  typeof process.env === "undefined" ||
+  process.env.NODE_ENV !== "production";
 
 const CHURN_WARNING =
   "ramose/react: useLive subscription key changed between renders. " +
