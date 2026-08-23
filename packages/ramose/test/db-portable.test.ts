@@ -37,6 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 const SRC = resolve(here, "../src");
 const BARREL = resolve(SRC, "db/index.ts");
+const BROWSER = resolve(SRC, "browser.ts");
 const BETTER_AUTH = resolve(SRC, "better-auth/index.ts");
 const BETTER_AUTH_CLIENT = resolve(SRC, "better-auth/client.ts");
 const CORE_BARREL = resolve(SRC, "internal/core/index.ts");
@@ -284,6 +285,38 @@ describe("ramose/better-auth is portable", () => {
       entrypoints: [BETTER_AUTH],
       target: "browser",
       external: ["effect", "effect/*", "better-auth", "better-auth/*", "zod"],
+    });
+    expect(built.logs.filter((l) => l.level === "error")).toEqual([]);
+    expect(built.success).toBe(true);
+    const bundle = await built.outputs[0]!.text();
+    expect(bundle).not.toContain('from "alchemy');
+    expect(bundle).not.toContain('require("alchemy');
+  });
+});
+
+describe("the root `browser` condition is portable", () => {
+  const graph = walk(BROWSER);
+  const allowed = [...ALLOWED, "packages/ramose/src/browser.ts"];
+
+  test("no module in the graph imports `alchemy` or the deploy barrel", () => {
+    assertPortable(graph, allowed, effectBare);
+  });
+
+  test("the browser module is the db surface, not Server", async () => {
+    const browser = await import("../src/browser.ts");
+    const deploy = await import("../src/index.ts");
+    expect("Server" in browser).toBe(false);
+    expect("Database" in browser).toBe(false);
+    expect("providers" in browser).toBe(false);
+    expect("connect" in browser).toBe(true);
+    expect("Server" in deploy).toBe(true);
+  });
+
+  test("it bundles for the browser without alchemy", async () => {
+    const built = await Bun.build({
+      entrypoints: [BROWSER],
+      target: "browser",
+      external: ["effect", "effect/*"],
     });
     expect(built.logs.filter((l) => l.level === "error")).toEqual([]);
     expect(built.success).toBe(true);

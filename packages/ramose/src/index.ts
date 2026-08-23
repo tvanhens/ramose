@@ -5,6 +5,11 @@
  * errors), plus the deploy-time half: the `Server` and `Database` resources,
  * the two capabilities and the two transport layers.
  *
+ * Client bundlers that honor the `browser` export condition resolve this
+ * specifier to `src/browser.ts` (the `ramose/db` surface) so they do not
+ * pull Alchemy. App code should import `ramose/db` directly. Types stay
+ * on this file so `import type { AuthConfig } from "ramose"` still works.
+ *
  * ```typescript
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";

@@ -84,9 +84,11 @@ is a query the server keeps up to date, in every tab that is watching it.
 bun add ramose react react-dom
 ```
 
-One package. `effect`, `alchemy` and the two `@effect/platform-*` packages come
-with it at versions that resolve, so there is nothing else to pin. React is an
-optional peer — a server-only app installs `ramose` alone.
+One package. `effect` comes with it. `alchemy` is owned and pinned to the
+2.x beta this release tests (`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is
+bumped per release. React is an optional peer — a server-only app installs
+`ramose` alone. Apps using `ramose/better-auth` also need `better-auth` and
+`zod`.
 
 ## Learn more
 

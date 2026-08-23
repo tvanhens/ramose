@@ -299,13 +299,14 @@ There are no wildcard subpaths; `ramose/internal/*`, `ramose/query`,
 `ramose/schema`, and `ramose/workerEntry` do not resolve. Example test suites
 that need the engine use workspace-relative imports.
 
-`ramose/effect` is a re-export module, not code of ours: it exists so a
-consumer whose resolver refuses undeclared imports (pnpm without hoisting,
-Yarn PnP) never has to name `effect` in their own manifest. Two copies of
-`effect` in one tree would be two incompatible sets of types — Effect types
-cross the hatch and deploy surfaces — so the ranges in
-`packages/ramose/package.json` are load-bearing; the `//dependencies` key there
-explains each one.
+`ramose/effect` is the opt-in Effect escape hatch, not the app path: a
+re-export module so a consumer whose resolver refuses undeclared imports
+(pnpm without hoisting, Yarn PnP) never has to name `effect` in their own
+manifest. Two copies of `effect` in one tree would be two incompatible sets
+of types — that failure is confined to the hatch and the deploy surface —
+so the ranges in `packages/ramose/package.json` are load-bearing; the
+`//dependencies` key there explains each one. `alchemy` is pinned to the
+tested 2.x beta and bumped per release.
 
 ### Scripts
 

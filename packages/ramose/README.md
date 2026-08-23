@@ -10,9 +10,11 @@ bun add ramose react react-dom
 ```
 
 `npm install` and `pnpm add` work the same. React is optional — a server-only
-app needs neither it nor `react-dom`. Everything else Ramose runs on
-(`effect`, `alchemy`, the two `@effect/platform-*` packages) comes with this
-package at a version that resolves, so there is nothing else to pin.
+app needs neither it nor `react-dom`. `effect` comes with this package.
+`alchemy` is owned and pinned to the 2.x beta this release tests
+(`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is bumped per release. Apps
+using `ramose/better-auth` also need the optional peers `better-auth` and
+`zod`.
 
 Ramose is pre-release: expect the API to change between minor versions.
 
@@ -22,14 +24,15 @@ Ramose is pre-release: expect the API to change between minor versions.
 | --- | --- |
 | `ramose/db` | Schema, the client, `Db<C>`, the tagged errors. Portable — browser, Worker, Node, Bun, a test. |
 | `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
-| `ramose` | Everything on `ramose/db` plus the deploy-time half: the `Server` and `Database` resources, the capabilities, the transports, typed policy. |
+| `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to the `ramose/db` surface so they do not pull Alchemy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
 | `ramose/react` | `RamoseProvider`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
-| `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. |
-| `ramose/effect` | Effect escape hatch — re-exports the Effect modules Ramose's own API hands you. |
+| `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
+| `ramose/effect` | Opt-in Effect escape hatch — re-exports `Effect`, `Function`, `pipe`, `Redacted`, `Schema`, `Layer`, `Stream`, `Cause`, `Exit`. Not the app path. |
 
 App schemas use `Ramose.string()` / `boolean()` / `Enum([...])` and do not
-import Effect. `ramose/effect` re-exports the same `effect` module instances
+import Effect. `ramose/effect` is the hatch for deploy files and
+`db.effect.*` callers; it re-exports the same `effect` module instances
 (not copies) for resolvers that refuse undeclared dependencies.
 
 ## A first look

@@ -8,8 +8,9 @@
  *   `db.effect.transact` (the generator write, hatch-only).
  * - this module — `layer` / `Databases` for an Effect-native connect.
  *
- * `ramose/effect` remains the re-export of Effect's own modules (`Effect`,
- * `Schema`, `Stream`, …). Do not import those from here.
+ * `ramose/effect` remains the opt-in re-export of Effect's own modules
+ * (`Effect`, `Function`, `Schema`, `Stream`, `pipe`, …). Do not import
+ * those from here.
  */
 
 import * as Context from "effect/Context";

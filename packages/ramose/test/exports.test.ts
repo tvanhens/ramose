@@ -8,6 +8,19 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const manifest = JSON.parse(
+  readFileSync(join(here, "../package.json"), "utf8"),
+) as {
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  exports: Record<string, Record<string, unknown>>;
+};
 
 const PUBLIC = [
   "ramose",
@@ -52,5 +65,24 @@ describe("the `ramose` exports map", () => {
       }
     }
     expect(failed).toEqual([]);
+  });
+
+  test("root browser condition is the portable module, not the deploy barrel", () => {
+    const root = manifest.exports["."];
+    expect(root).toBeDefined();
+    const browser = root!.browser;
+    expect(browser).toBe("./dist/browser.js");
+    expect(root!.bun).toBeUndefined();
+    expect(root!.default).toBe("./dist/index.js");
+  });
+
+  test("platform-bun/node are gone; zod is an optional peer; alchemy is pinned inside 2.x beta", () => {
+    const deps = manifest.dependencies ?? {};
+    expect(deps["@effect/platform-bun"]).toBeUndefined();
+    expect(deps["@effect/platform-node"]).toBeUndefined();
+    expect(deps.zod).toBeUndefined();
+    expect(manifest.peerDependencies?.zod).toBe("^4.3.6");
+    expect(manifest.peerDependenciesMeta?.zod?.optional).toBe(true);
+    expect(deps.alchemy).toBe(">=2.0.0-beta.72 <2.0.0-beta.73");
   });
 });

@@ -29,15 +29,12 @@
     },
     "packages/ramose": {
       "name": "ramose",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@cloudflare/workers-types": "^4.20250101.0",
-        "@effect/platform-bun": ">=4.0.0-beta.105 <5.0.0",
-        "@effect/platform-node": ">=4.0.0-beta.105 <5.0.0",
-        "alchemy": ">=2.0.0-beta.72 <3.0.0",
+        "alchemy": ">=2.0.0-beta.72 <2.0.0-beta.73",
         "effect": ">=4.0.0-beta.105 <5.0.0",
         "jose": "^6.0.0",
-        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.0.0",
@@ -46,14 +43,17 @@
         "better-auth": "^1.6.30",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
+        "zod": "^4.3.6",
       },
       "peerDependencies": {
         "better-auth": ">=1.6.0",
         "react": ">=19",
+        "zod": "^4.3.6",
       },
       "optionalPeers": [
         "better-auth",
         "react",
+        "zod",
       ],
     },
     "website": {

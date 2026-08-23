@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Dependency hygiene (part of #202, tracker #205)
+
+`@effect/platform-bun` and `@effect/platform-node` are removed — nothing
+in the package imported them. `zod` is an optional peer next to
+`better-auth` (kept as a devDependency for tests); apps that import
+`ramose/better-auth` need `zod`. `alchemy` is pinned to the tested 2.x
+beta (`>=2.0.0-beta.72 <2.0.0-beta.73`), bumped per release, instead of
+`>=2.0.0-beta.72 <3.0.0` which admitted every future 2.x beta.
+
+The root `ramose` entry has a `browser` condition that resolves to
+`dist/browser.js` — the portable `ramose/db` surface — so
+`import * as Ramose from "ramose"` in a client bundle does not pull the
+Alchemy deploy engine. Types stay on the deploy barrel so an isomorphic
+`import type { AuthConfig } from "ramose"` still resolves. Worker / SSR
+deploy files keep the default target. No `bun` condition points at `src`.
+
+`ramose/effect` stays the opt-in Effect hatch (`pipe`, `Function`,
+`Redacted`, and the modules Ramose's API already handed you). Schema
+shorthands stay on `ramose/db`; `ramose/schema` stays cut.
+
 ### The `bun` export condition is gone — the tarball is importable under Bun
 
 Follow-up to the enumerated exports map below, which dropped `src` from
