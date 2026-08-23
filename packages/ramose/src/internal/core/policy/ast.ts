@@ -10,6 +10,10 @@ export const MAX_REF_DEPTH = 3;
 export type PolicyOp = "read" | "add" | "retract" | "retractEntity" | "create";
 export const POLICY_OPS: readonly PolicyOp[] = ["read", "add", "retract", "retractEntity", "create"];
 
+/** Denial / toast spelling. Wire ops stay `add` / `retract` / `retractEntity`. */
+export const publicPolicyOp = (op: string): string =>
+  op === "add" ? "set" : op === "retract" ? "remove" : op === "retractEntity" ? "delete" : op;
+
 /** Path into `Principal.claims`, e.g. ["sub"] or ["attrs", "org"]. */
 export type ClaimPath = readonly string[];
 

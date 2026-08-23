@@ -76,7 +76,7 @@ describe("useTransact", () => {
 
   test("failure calls onError with the Unauthorized instance and sets error", async () => {
     const denied = new Unauthorized({
-      message: "retract denied on :issue/status",
+      message: "remove denied on :issue/status",
       code: "policy",
       attr: ":issue/status",
     });
@@ -240,9 +240,9 @@ describe("useTransact", () => {
 describe("errorMessage", () => {
   test("a DbError's message wins", () => {
     const denied = new Unauthorized({
-      message: "retract denied on :issue/status",
+      message: "remove denied on :issue/status",
     });
-    expect(errorMessage(denied)).toBe("retract denied on :issue/status");
+    expect(errorMessage(denied)).toBe("remove denied on :issue/status");
   });
 
   test("a _tag-only error falls back to the tag", () => {

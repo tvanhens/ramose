@@ -121,7 +121,7 @@ examples/reef/
   (no + buttons, a `viewer` badge, the admin note tagged *masked*), but the
   proof is that a forced write — drag a card — applies locally, then comes
   back from the peer as `Unauthorized`; the pending layer drops, the card
-  snaps back, and the toast reads "retract denied on :issue/status".
+  snaps back, and the toast reads "remove denied on :issue/status".
 - **Time travel** — immutability. The slider re-renders the whole board via
   `useQuery(db.asOf(t), boardQuery)` — same query, one extra argument —
   `useBasis` is the slider's ceiling, and deleted issues are recovered from

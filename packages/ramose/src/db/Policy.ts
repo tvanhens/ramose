@@ -31,7 +31,12 @@ import { PolicyError } from "./SchemaErrors.ts";
 // ── shapes ─────────────────────────────────────────────────────────────────
 
 export type Operand = PolicyOperand;
-export type Op = PolicyOp;
+/** Public policy keys. Compile to wire `add` / `retract` / `retractEntity`. */
+export type Op = "read" | "set" | "remove" | "delete" | "create";
+export const PUBLIC_POLICY_OPS: readonly Op[] = ["read", "set", "remove", "delete", "create"];
+
+const toWireOp = (op: Op): PolicyOp =>
+  op === "set" ? "add" : op === "remove" ? "retract" : op === "delete" ? "retractEntity" : op;
 
 /** A stamped attribute (`User.sub`) — anything carrying `ident` + attr shape. */
 export type AttrRef = AnyField & { readonly ident: string };
@@ -432,12 +437,15 @@ export function policy<
     prefix: string,
   ): Record<string, readonly CompiledArm[]> => {
     const out: Record<string, CompiledArm[]> = {};
-    for (const op of POLICY_OPS) {
+    for (const op of PUBLIC_POLICY_OPS) {
       const v = spec[op];
       if (v === undefined) continue;
       const list = Array.isArray(v) ? (v as readonly ArmValue<unknown>[]) : [v as ArmValue<unknown>];
       if (list.length === 0) continue;
-      out[op] = list.map((arm, i) => compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, op));
+      const wire = toWireOp(op);
+      out[wire] = list.map((arm, i) =>
+        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire),
+      );
     }
     return out;
   };
@@ -459,7 +467,7 @@ export function policy<
       if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.field(...)`);
       if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the schema`, a.attr);
       if (!a.attr.startsWith(`:${prefix}/`)) {
-        fail(`${where}.attrs: ${a.attr} is not under the ${prefix} namespace`, a.attr);
+        fail(`${where}.attrs: ${a.attr} is not under the ${prefix} entity`, a.attr);
       }
       const r = compileSpec(a.rules, `${where}.attrs["${a.attr}"]`, `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`);
       attrs[a.attr] = r;
@@ -471,7 +479,7 @@ export function policy<
       if (p?._tag !== "Preset") fail(`${where}.preset expects P.preset(...)`);
       if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the schema`, p.attr);
       if (!p.attr.startsWith(`:${prefix}/`)) {
-        fail(`${where}.preset: ${p.attr} is not under the ${prefix} namespace`, p.attr);
+        fail(`${where}.preset: ${p.attr} is not under the ${prefix} entity`, p.attr);
       }
       presetMap[p.attr] = p.operand;
     }

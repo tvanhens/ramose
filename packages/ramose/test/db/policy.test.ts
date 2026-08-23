@@ -58,9 +58,9 @@ const specPolicy = P.policy(
     doc: {
       read: [ownDoc, inOrg],
       create: inOrg,
-      add: ownDoc,
-      retract: ownDoc,
-      retractEntity: ownDoc,
+      set: ownDoc,
+      remove: ownDoc,
+      delete: ownDoc,
       preset: [P.preset(Doc.owner, P.principal)],
       attrs: [P.field(Doc.audit, { read: P.class("admin") })],
     },
@@ -220,7 +220,7 @@ describe("deploy-time errors", () => {
           },
         },
       ),
-    ).toThrow(/not under the doc namespace/);
+    ).toThrow(/not under the doc entity/);
   });
 
   test("a principal outside the catalog is a PolicyError", () => {

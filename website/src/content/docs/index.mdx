@@ -73,7 +73,7 @@ export const Issue = Ramose.Entity("issue", {
     doc: "visible to the admin class only",
   }),
 });
-// issue.add(Issue.priority, "high") does not compile:
+// issue.set(Issue.priority, "high") does not compile:
 // priority is a number.
 ```
 
@@ -120,9 +120,9 @@ const board = useLive(db, boardQuery);
 issue: {
   read: true,
   create: P.class("member"),
-  add: { class: "member", rule: ownIssue },
-  retract: { class: "member", rule: ownIssue },
-  retractEntity: { class: "member", rule: ownIssue },
+  set: { class: "member", rule: ownIssue },
+  remove: { class: "member", rule: ownIssue },
+  delete: { class: "member", rule: ownIssue },
   preset: [P.preset(Issue.creator, P.principal)],
   attrs: [
     // Only admins receive this field; the server strips it for others.
@@ -131,7 +131,7 @@ issue: {
 },
 ```
 
-    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast retract denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
+    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast remove denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
 
   </div>
 </div>

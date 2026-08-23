@@ -4,7 +4,7 @@ description: Policy rules are query fragments — the head, the arms, how they c
 ---
 import Next from "../../../components/Next.astro";
 
-The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every operation, arm and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*.
+The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every operation, arm and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
@@ -21,7 +21,7 @@ const policy = Ramose.policy(
     claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
   },
   {
-    issue: { read, create, add, retract, retractEntity, preset?, attrs? },
+    issue: { read, create, set, remove, delete, preset?, attrs? },
   },
 );
 ```
@@ -48,9 +48,9 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("member"),
-      add: { class: "member", rule: ownIssue },
-      retract: { class: "member", rule: ownIssue },
-      retractEntity: { class: "member", rule: ownIssue },
+      set: { class: "member", rule: ownIssue },
+      remove: { class: "member", rule: ownIssue },
+      delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
@@ -72,13 +72,13 @@ Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …
 | operation | when it is checked |
 | --- | --- |
 | `read` | every query, pull and live query — including `asOf` and `history` views |
-| `create` | the first `add` to a record that has no facts yet |
-| `add` | writing a value to a field of an existing record |
-| `retract` | clearing a value from a field |
-| `retractEntity` | deleting a whole record |
+| `create` | the first `set` to a record that has no facts yet |
+| `set` | writing a value to a field of an existing record |
+| `remove` | clearing a value from a field |
+| `delete` | deleting a whole record |
 
 ```ts
-issue: { read: true, create: P.class("member"), add: { class: "member", rule: ownIssue } }
+issue: { read: true, create: P.class("member"), set: { class: "member", rule: ownIssue } }
 ```
 
 Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate.

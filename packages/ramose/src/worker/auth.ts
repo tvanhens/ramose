@@ -20,6 +20,7 @@ import {
   allows,
   anonymousPrincipal,
   checkTx,
+  publicPolicyOp,
   componentLogger,
   filterDb,
   isAdmin,
@@ -246,12 +247,12 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
     throw new Unauthorized({});
   }
   if (typeof payload.exp !== "number") throw new Unauthorized({});
-  if (typeof payload.iat === "number" && payload.exp - payload.iat > st.maxTtl) throw new Unauthorized({ message: "token lifetime exceeds this peer's cap" });
+  if (typeof payload.iat === "number" && payload.exp - payload.iat > st.maxTtl) throw new Unauthorized({ message: "token lifetime exceeds this server's cap" });
   if (typeof payload.sub !== "string" || payload.sub.length === 0) throw new Unauthorized({});
   const ramose = claimObject(payload.ramose);
   if (ramose === undefined || typeof ramose.db !== "string" || typeof ramose.class !== "string") throw new Unauthorized({});
   // an undeclared class grants nothing — and says so, rather than being an outage
-  if (!(st.policy as CompiledPolicy).classes.includes(ramose.class)) throw new Unauthorized({ message: "token class is not declared by this peer's policy" });
+  if (!(st.policy as CompiledPolicy).classes.includes(ramose.class)) throw new Unauthorized({ message: "token class is not declared by this server's policy" });
   const attrs = ramose.attrs === undefined ? undefined : claimObject(ramose.attrs);
   if (ramose.attrs !== undefined && attrs === undefined) throw new Unauthorized({});
 
@@ -424,7 +425,7 @@ export async function checkWrite(env: RamoseEnv, principal: Principal, store: No
 
   const p = await withEid(st.policy, principal, db);
   const res = await checkTx(tx as TxData, db, st.policy, p);
-  if (!res.ok) throw new Unauthorized({ status: 403, message: `${res.op} denied on ${res.attr}`, code: res.code, attr: res.attr });
+  if (!res.ok) throw new Unauthorized({ status: 403, message: `${publicPolicyOp(res.op)} denied on ${res.attr}`, code: res.code, attr: res.attr });
   return { kind: "send", tx: res.ops, principal: p };
 }
 

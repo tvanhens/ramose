@@ -8,7 +8,7 @@ Every error a call can fail with, what it means, and what to do about it. This p
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
-Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. `.oneOrFail()` can also fail with `NotOne`, and a parameterized query can fail with `ParamError` — neither is a `DbError`. Match by name with `Effect.catchTags`.
+Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, and a parameterized query can fail with `ParamError` — neither is a `DbError`. Match by name with `Effect.catchTags`.
 
 ```ts
 const rows = yield* db.query(query).pipe(
@@ -48,7 +48,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 
 | tag | what to show | what to do |
 | --- | --- | --- |
-| `Unauthorized` (policy) | the server's message as a toast — in Reef a viewer who drags a card sees `retract denied on :issue/status` | nothing to retry; the button was only a hint |
+| `Unauthorized` (policy) | the server's message as a toast — in Reef a viewer who drags a card sees `remove denied on :issue/status` | nothing to retry; the button was only a hint |
 | `Unauthorized` (token) | "sign in again" | refresh the sign-in; a live query stops on it |
 | `TxRejected` | "someone changed this; try again" | re-read, then retry with fresh data |
 | `Unavailable` / `NetworkError` | "offline — retrying" or "try again" | already tried 6 times for you; if it still surfaces, the whole write may be retried — nothing landed |

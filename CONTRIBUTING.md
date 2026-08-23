@@ -22,7 +22,7 @@ internals stay Datomic-shaped.
 | `Entity` | `Namespace` | Record type. `Eid` is an id of one. |
 | `Field` | `Attr` / `Attribute` | Value and type. |
 | `Schema` | `Catalog` | Composition of entities. `db.schema`, `Database({ schema })`. |
-| `set` / `remove` / `delete` | `add` / `retract` / `retractEntity` | Cardinality-one `set` replaces. Wire stays `:db/add` etc. |
+| `set` / `remove` / `delete` | `add` / `retract` / `retractEntity` | Tx verbs and policy arm keys. Cardinality-one `set` replaces. Wire stays `:db/add` etc.; compiled policy JSON stays `add` / `retract` / `retractEntity`. |
 | `unique: "upsert" \| "strict"` | `"identity" \| "value"` | Named for what they do. Wire stays `:db.unique/identity` etc. |
 | `owned` | `isComponent` | Wire stays `:db/isComponent`. |
 | `valueType: "string"` | `":db.type/string"` | Lowered internally. |
@@ -32,7 +32,8 @@ internals stay Datomic-shaped.
 
 The Effect hatch's tx handle is `TxHandle` (`tx.entity()`), not `Entity`.
 Value-type helpers `Long` / `Instant` / `Uuid` stay until #207. `Query.q` +
-`pipe` stay until #208.
+`pipe` stay until #208. The casing pass (`EidOf`, `./workerEntry`, error
+suffixes) is deferred — do not bikeshed it on this pass.
 
 ## Local checks
 

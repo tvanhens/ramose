@@ -49,6 +49,7 @@ import {
   RateMeter,
   TxError,
   checkTx,
+  publicPolicyOp,
   componentLogger,
   filterDb,
   isAdmin,
@@ -564,7 +565,7 @@ export class Transactor {
       if (eid !== undefined) who = { ...who, eid };
     }
     const res = await checkTx(p.tx, db, policy, who);
-    if (!res.ok) throw new TxRejected({ message: `${res.op} denied on ${res.attr}`, code: res.code, attr: res.attr });
+    if (!res.ok) throw new TxRejected({ message: `${publicPolicyOp(res.op)} denied on ${res.attr}`, code: res.code, attr: res.attr });
     return res.ops as TxData;
   }
 

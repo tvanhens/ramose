@@ -53,9 +53,9 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("member"),
-      add: { class: "member", rule: ownIssue },
-      retract: { class: "member", rule: ownIssue },
-      retractEntity: { class: "member", rule: ownIssue },
+      set: { class: "member", rule: ownIssue },
+      remove: { class: "member", rule: ownIssue },
+      delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
@@ -66,8 +66,8 @@ export const policy = Ramose.policy(
     comment: {
       read: true,
       create: P.class("member"),
-      retract: { class: "member", rule: ownComment },
-      retractEntity: { class: "member", rule: ownComment },
+      remove: { class: "member", rule: ownComment },
+      delete: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },

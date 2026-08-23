@@ -60,9 +60,9 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("member"),
-      add: { class: "member", rule: ownIssue },
-      retract: { class: "member", rule: ownIssue },
-      retractEntity: { class: "member", rule: ownIssue },
+      set: { class: "member", rule: ownIssue },
+      remove: { class: "member", rule: ownIssue },
+      delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // …
@@ -72,8 +72,8 @@ export const policy = Ramose.policy(
     comment: {
       read: true,
       create: P.class("member"),
-      retract: { class: "member", rule: ownComment },
-      retractEntity: { class: "member", rule: ownComment },
+      remove: { class: "member", rule: ownComment },
+      delete: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },
@@ -87,9 +87,9 @@ Read it as:
 | `principal: User.sub` · `classes: CLASSES` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
 | `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; admins never reach the rules. |
 | `issue.read: true` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
-| `issue.add / retract / retractEntity: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `retract denied on :issue/status`. |
+| `issue.set / remove / delete: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
 | `preset: creator = principal` | The server stamps `creator` to the caller on create. |
-| (nothing) | Anything not mentioned is denied: no `add` arm on `label`, so members cannot recolour labels. |
+| (nothing) | Anything not mentioned is denied: no `set` arm on `label`, so members cannot recolour labels. |
 
 **Deny by default.** A record type or operation with no rule is invisible and unwritable ([glossary](/concepts/glossary/#deny-by-default)). You never have to remember to lock something down; you have to remember to open it. Field rules narrow the record type's rule, never widen it.
 
@@ -100,9 +100,9 @@ Reef's buttons are polite; the proof is the server. Try it:
 1. `bun run dev:reef`, sign up, create a workspace, add the sample issues.
 2. **Invite** a second email as *viewer*.
 3. In a private window, sign up with that email, accept, open the board.
-4. Drag a card. It snaps back; a red toast reads `retract denied on :issue/status`.
+4. Drag a card. It snaps back; a red toast reads `remove denied on :issue/status`.
 
-<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says retract denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
+<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says remove denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
 
 What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":issue/status"`; Reef's `useTransact({ onError })` turns it into the toast. Writes are checked twice: on arrival, where a refusal is `Unauthorized`, and again before a version number is assigned, where a refusal is `TxRejected`. The second check runs inside **the writer**, the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)), and it is the authority — handle both. Both are in [Errors](/reference/errors/).
 
@@ -142,7 +142,7 @@ The check is opt-in: `compile(policy)` with no `pulls` skips it. Keep every shap
 
 ## The three server modes
 
-**The Ramose server** picks its mode from two environment variables. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
+**The Ramose server** picks its mode from two environment variables. (The server is the one Cloudflare Worker that serves all your databases — [glossary](/concepts/glossary/#server).)
 
 | mode | environment | who gets in |
 | --- | --- | --- |
