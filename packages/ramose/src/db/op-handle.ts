@@ -92,7 +92,7 @@ const missingInstall = (): Effect.Effect<unknown, InternalError> =>
     }),
   );
 
-const asEffectCause = <E>(cause: unknown): E | InternalError => {
+const asEffectCause = <E>(cause: unknown): E | DbError | InternalError => {
   if (isDatabaseError(cause)) return cause;
   if (
     cause !== null &&
@@ -134,7 +134,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
         };
       },
     ) => Effect.Effect<A, E> | Promise<A>,
-  ): Effect.Effect<A, E | InternalError> => {
+  ): Effect.Effect<A, E | DbError | InternalError> => {
     if (options.effects === "halt") {
       haltPrefix();
       return Effect.die(new PrefixHalt());

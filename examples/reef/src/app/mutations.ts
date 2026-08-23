@@ -160,7 +160,7 @@ export const createIssueOp = Ramose.Operation(
   (op, input) => {
     const issue = op.entity();
     issue.add(Issue.title, input.title);
-    if (input.description !== undefined && input.description !== "") {
+    if (input.description != null && input.description !== "") {
       issue.add(Issue.description, input.description);
     }
     issue.add(Issue.status, input.status);
@@ -168,7 +168,7 @@ export const createIssueOp = Ramose.Operation(
     issue.add(Issue.rank, input.rank);
     issue.add(Issue.createdAt, new Date());
     issue.add(Issue.creator, input.creatorId);
-    if (input.assigneeId !== undefined) {
+    if (input.assigneeId != null) {
       issue.add(Issue.assignee, input.assigneeId);
     }
     for (const labelId of input.labelIds ?? []) {
@@ -226,7 +226,7 @@ export const setAssigneeOp = Ramose.Operation(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    if (input.assigneeId === undefined) op.retract(op.self, Issue.assignee);
+    if (input.assigneeId == null) op.retract(op.self, Issue.assignee);
     else op.add(op.self, Issue.assignee, input.assigneeId);
     return {};
   },
@@ -345,13 +345,15 @@ export const createIssue = (
 ) =>
   db.run(createIssueOp, {
     title: draft.title,
-    description: draft.description,
+    ...(draft.description != null && draft.description !== ""
+      ? { description: draft.description }
+      : {}),
     status: draft.status,
     priority: draft.priority,
     rank: rankAfter(lastRankInColumn),
     creatorId: myEid,
-    assigneeId: draft.assigneeId,
-    labelIds: draft.labelIds,
+    ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
+    ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
   });
 
 /** Drag-and-drop: one status datom + one rank datom. */

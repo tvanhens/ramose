@@ -39,7 +39,7 @@ describe("useTransact", () => {
     expect(result.current.pending).toBe(false);
 
     const g = gate<number>();
-    let outcome!: Promise<number>;
+    let outcome!: Promise<number | undefined>;
     act(() => {
       outcome = result.current.run(g.promise);
     });
@@ -191,7 +191,7 @@ describe("useTransact", () => {
     const { result, unmount } = renderHook(() => useTransact());
 
     const g = gate<string>();
-    let outcome!: Promise<string>;
+    let outcome!: Promise<string | undefined>;
     act(() => {
       outcome = result.current.run(g.promise);
     });

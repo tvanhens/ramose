@@ -19,8 +19,19 @@ const EFFECT_IMPORT =
 const RELATIVE_FROM =
   /(?:^|\n)\s*(?:import|export)[\s\S]*?\sfrom\s*["'](\.[^"']+)["']/g;
 
-/** Hatch aliases so `Db.d.ts` can name Effect without importing `effect`. */
-const ALLOWED_HOPS = new Set(["effect-types"]);
+/**
+ * Relative modules `Db.d.ts` / `token.d.ts` may name that already mention
+ * Effect (schema codecs, tagged errors, session internals). `effect-types`
+ * is the hatch alias file. A *new* relative module is not on this list and
+ * fails the gate if it imports `effect`.
+ */
+const ALLOWED_HOPS = new Set([
+  "effect-types",
+  "Errors",
+  "Operation",
+  "session",
+  "Pull",
+]);
 
 /** Drop comments so JSDoc samples (`from "effect/Schema"`) are not imports. */
 const withoutComments = (src: string): string =>

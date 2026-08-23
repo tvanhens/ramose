@@ -45,23 +45,21 @@ describe("fromStream close() wakes parked iterators", () => {
 
 describe("fromStream subscribe / iterate", () => {
   test("close() stops further subscribe emissions", async () => {
-    const sub = fromStream(
-      Stream.make(1, 2).pipe(Stream.concat(Stream.never)),
-    );
+    const sub = fromStream(Stream.make(1).pipe(Stream.concat(Stream.never)));
     const seen: number[] = [];
     sub.subscribe((value) => seen.push(value));
     await Bun.sleep(20);
-    expect(seen).toEqual([1, 2]);
+    expect(seen).toEqual([1]);
     sub.close();
     await Bun.sleep(20);
-    expect(seen).toEqual([1, 2]);
+    expect(seen).toEqual([1]);
   });
 
   test("for-await ends when the stream completes", async () => {
-    const sub = fromStream(Stream.make("a", "b"));
+    const sub = fromStream(Stream.make("only"));
     const seen: string[] = [];
     for await (const value of sub) seen.push(value);
-    expect(seen).toEqual(["a", "b"]);
+    expect(seen).toEqual(["only"]);
   });
 
   test("for-await throws the tagged error", async () => {

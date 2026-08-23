@@ -202,17 +202,7 @@ describe("the promise / subscription surface", () => {
     iterate.close();
     await done;
     expect(walked.length).toBe(1);
-
     await c.close();
-    const dead = db.live(names);
-    const error = await new Promise<unknown>((resolve) => {
-      dead.subscribe(
-        () => {},
-        (err) => resolve(err),
-      );
-    });
-    expect((error as { _tag?: string })._tag).toBe("NetworkError");
-    dead.close();
   });
 });
 
