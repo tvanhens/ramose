@@ -39,14 +39,13 @@ Two more entries carry the server Worker and the React hooks: `ramose/worker` is
 
 App schemas use `Ramose.string()` and the other shorthands — they do not import Effect. The hatch path (`ramose/db/effect`, `Ramose.Field(schema)`, operation codecs) still uses Effect Schema. `effect` is a dependency of `ramose`, not something you install beside it; two copies in one tree produce mutually unassignable types. Declare `effect` in your own `package.json` only at a version that agrees with Ramose's.
 
-Two subpaths let you avoid naming it at all, which is what a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) needs:
+One subpath lets you avoid naming it at all, which is what a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) needs:
 
 ```ts
-import * as Schema from "ramose/schema";        // === effect/Schema — advanced / hatch
-import { Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
+import { Schema, Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
 ```
 
-They re-export the module instances `effect` itself exports, so the two spellings are interchangeable — in the same file, and across a package boundary.
+It re-exports the module instances `effect` itself exports, so the two spellings are interchangeable — in the same file, and across a package boundary.
 
 ## Schema
 
@@ -79,7 +78,7 @@ Ramose.Enum(["low", "med", "high"])
 **`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). `valueType` is required when the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST.
 
 ```ts
-import * as Schema from "ramose/schema";
+import { Schema } from "ramose/effect";
 Ramose.Field(Schema.String)
 Ramose.Field(Schema.Literals(["todo", "done"]), { valueType: "string" })
 Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })

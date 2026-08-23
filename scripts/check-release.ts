@@ -88,10 +88,27 @@ for (const group of ["dependencies", "peerDependencies"] as const) {
   }
 }
 
+// --- every exports target actually ships ------------------------------------
+// `files` decides what npm puts in the tarball. A target outside it resolves
+// in this checkout and is absent from the published package, so the break only
+// shows up for a consumer after publishing — and only for whichever resolver
+// picks that condition. Bun is the sharp edge: it always applies the `bun`
+// condition and does not fall back to `default` when the target is missing, so
+// a `bun`-condition path outside `files` makes the tarball unimportable under
+// Bun while Node stays perfectly happy. This is a manifest check, not a build
+// check: it runs without `--built`.
+for (const target of exportTargets(manifest.exports)) {
+  if (!shipsInTarball(target, (manifest.files ?? []) as string[])) {
+    errors.push(
+      `${label} exports "${target}" but "files" does not ship it — ` +
+        `the tarball would resolve that specifier to a file that is not there`,
+    );
+  }
+}
+
 // --- exports resolve --------------------------------------------------------
 if (checkBuilt) {
   for (const target of exportTargets(manifest.exports)) {
-    // The `bun` condition points at TypeScript source, which ships too.
     if (!existsSync(`${PACKAGE_DIR}/${target}`)) {
       errors.push(`${label} exports "${target}" but ${PACKAGE_DIR}/${target} does not exist`);
     }
@@ -113,6 +130,19 @@ if (errors.length > 0) {
 }
 
 console.log(`release checks passed — ${label} at ${version}${tag ? ` (tag ${tag})` : ""}`);
+
+/**
+ * Is `target` inside something `files` ships? npm always includes
+ * `package.json` whether or not it is listed, so that one is free.
+ */
+function shipsInTarball(target: string, files: string[]): boolean {
+  const path = target.replace(/^\.\//, "");
+  if (path === "package.json") return true;
+  return files.some((entry) => {
+    const root = entry.replace(/^\.\//, "").replace(/\/+$/, "");
+    return path === root || path.startsWith(`${root}/`);
+  });
+}
 
 /** Every concrete file path named in an `exports` map, ignoring `*` patterns. */
 function exportTargets(exports: unknown): string[] {

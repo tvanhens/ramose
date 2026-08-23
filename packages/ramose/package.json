@@ -56,9 +56,6 @@
     "— and so does `better-auth`, which only `ramose/better-auth` touches."
   ],
   "sideEffects": [
-    "./src/worker/**",
-    "./src/internal/transactor/**",
-    "./src/internal/replica/**",
     "./dist/worker/**",
     "./dist/internal/transactor/**",
     "./dist/internal/replica/**"
@@ -67,42 +64,34 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "bun": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./db": {
-      "bun": "./src/db/index.ts",
       "types": "./dist/db/index.d.ts",
       "default": "./dist/db/index.js"
     },
     "./db/effect": {
-      "bun": "./src/db/effect.ts",
       "types": "./dist/db/effect.d.ts",
       "default": "./dist/db/effect.js"
     },
     "./worker": {
-      "bun": "./src/worker/index.ts",
       "types": "./dist/worker/index.d.ts",
       "default": "./dist/worker/index.js"
     },
     "./react": {
-      "bun": "./src/react/index.ts",
       "types": "./dist/react/index.d.ts",
       "default": "./dist/react/index.js"
     },
     "./better-auth": {
-      "bun": "./src/better-auth/index.ts",
       "types": "./dist/better-auth/index.d.ts",
       "default": "./dist/better-auth/index.js"
     },
     "./better-auth/client": {
-      "bun": "./src/better-auth/client.ts",
       "types": "./dist/better-auth/client.d.ts",
       "default": "./dist/better-auth/client.js"
     },
     "./effect": {
-      "bun": "./src/effect.ts",
       "types": "./dist/effect.d.ts",
       "default": "./dist/effect.js"
     },

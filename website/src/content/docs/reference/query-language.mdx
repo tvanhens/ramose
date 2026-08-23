@@ -18,7 +18,8 @@ body)` — and the body has two spellings of the same value:
 
 ```ts
 import { pipe } from "effect/Function";
-import { Q, Query, entities, is, none, select, orderBy, limit, updatedSince } from "ramose/query";
+import { Q, Query } from "ramose/db";
+const { entities, is, none, select, orderBy, limit, updatedSince } = Query;
 
 // pipe spelling — most everyday code
 export const inbox = Query.q(

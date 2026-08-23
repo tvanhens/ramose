@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### The `bun` export condition is gone — the tarball is importable under Bun
+
+Follow-up to the enumerated exports map below, which dropped `src` from
+`files` while every `exports` entry still led with `"bun": "./src/**/*.ts"`.
+Bun always applies the `bun` condition and does not fall back to `default`
+when the target is missing, so the published package could not be imported
+under Bun at all — `import "ramose"` included — while Node resolved fine.
+
+Every entry now resolves to `dist`. The checkout keeps resolving to source
+through the `paths` block in the root `tsconfig.json`, which Bun honors at
+runtime for both `import` and `Bun.resolveSync`, so `bun test` stays instant.
+
+`scripts/check-release.ts` now fails on any `exports` target that `files`
+does not ship — a manifest check that needs no build. `sideEffects` no longer
+lists `./src/**` globs. Docs that still imported the cut `ramose/schema` and
+`ramose/query` subpaths now use `ramose/effect` and `ramose/db`.
+
 ### Enumerated exports map (part of #201, tracker #205)
 
 Wildcard subpaths (`./*`, `./*.ts`, `./*.js`) are gone. The public set is

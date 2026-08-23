@@ -281,13 +281,23 @@ The source imports relative modules with explicit `.ts` extensions
 rewrites those to `.js` on the way out. Emit is unbundled so the file layout —
 and therefore the subpath exports — survives the build.
 
-The `exports` map serves both audiences: the `bun` condition points at
-TypeScript source in this workspace (so `bun test` stays instant), everything
-else resolves to `dist`. The published tarball ships `dist` only — the `bun`
-condition is for the checkout, not the npm package. There are no wildcard
-subpaths; `ramose/internal/*`, `ramose/query`, `ramose/schema`, and
-`ramose/workerEntry` do not resolve. Example test suites that need the engine
-use workspace-relative imports.
+Every `exports` entry resolves to `dist`, and the published tarball ships
+`dist` only. There is no `bun` condition: one manifest goes to both audiences
+(`scripts/release.ts` does not rewrite it on the way out), so a condition
+pointing at `src` would resolve here and be absent from the tarball. Bun is
+the sharp edge — it always applies the `bun` condition and does not fall back
+to `default` when the target is missing, so such an entry makes the package
+unimportable under Bun while Node stays happy. `scripts/check-release.ts`
+now fails on any `exports` target that `files` does not ship.
+
+What keeps `bun test` instant in the checkout is the `paths` block in the root
+`tsconfig.json`: Bun honors it at runtime, ahead of `node_modules`, for both
+`import` and `Bun.resolveSync`. It mirrors the public subpath set one-for-one,
+so adding an entry to `exports` means adding it there too.
+
+There are no wildcard subpaths; `ramose/internal/*`, `ramose/query`,
+`ramose/schema`, and `ramose/workerEntry` do not resolve. Example test suites
+that need the engine use workspace-relative imports.
 
 `ramose/effect` is a re-export module, not code of ours: it exists so a
 consumer whose resolver refuses undeclared imports (pnpm without hoisting,
