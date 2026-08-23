@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import * as RamoseEffect from "../../packages/ramose/src/db/effect.ts";
+import { addSession } from "../../e2e-ops.ts";
 import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
 const { Query, Q } = Ramose;
@@ -183,7 +184,7 @@ d("ramose e2e", () => {
  * The session client: reads and `t` ticks ride the socket, writes are
  * HTTPS, and a write on *another* connection shows up here as a standing
  * `db.live` re-running. Hatch tests use `ramose/db/effect`; the public
- * promise path (`connect`, `db.q`, a `Subscription`) is covered separately.
+ * promise path (`connect`, `db.run`, `db.q`, a `Subscription`) is covered separately.
  */
 const Session = Ramose.Namespace("s", {
   name: Ramose.Attr(Schema.String, { unique: "identity" }),
@@ -345,21 +346,23 @@ d("ramose session socket e2e", () => {
       try {
         const pdb = ramose.db(name, SessionCatalog);
         await retry(() => pdb.install());
-        const raw = new Peer(url, { token, retryTransientMs: 30_000 });
-        await retry(() =>
-          raw.db(name).transact([{ ":s/name": "Ada", ":s/n": 1 }]),
-        );
-        const rows = await retry(() => pdb.q(sessionNames));
-        expect(rows).toEqual([{ name: "Ada" }]);
+
+        // Same connect() overlay as the public reads. A raw Peer.transact
+        // (or a hatch write on another runtime) can commit before this
+        // session has followed, so `pdb.q` would see [].
+        await retry(() => pdb.run(addSession, { name: "Ada", n: 1 }));
 
         const live = pdb.live(sessionNames);
-        const first = await retry(
-          () =>
-            new Promise<readonly { name: string }[]>((resolve, reject) => {
-              live.subscribe(resolve, reject);
-            }),
-        );
-        expect(first).toEqual([{ name: "Ada" }]);
+        let latest: readonly { name: string }[] | undefined;
+        live.subscribe((rows) => {
+          latest = rows;
+        });
+        for (let i = 0; i < 90 && (latest?.length ?? 0) < 1; i++) {
+          await Bun.sleep(500);
+        }
+        expect(latest).toEqual([{ name: "Ada" }]);
+        const rows = await retry(() => pdb.q(sessionNames));
+        expect(rows).toEqual([{ name: "Ada" }]);
         live.close();
       } finally {
         await ramose.close();

@@ -70,11 +70,10 @@ export const Transactor = Cloudflare.DurableObject("TransactorDO", { className: 
 export const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
 export const Worker = Cloudflare.Worker("Worker", {
-  // `main` is a path, not a specifier — Alchemy `realpath`s it — so the peer
-  // Worker is named the same way a consumer names it, through the package's
-  // `ramose/worker` export. In this repo that resolves through the workspace
-  // symlink to packages/ramose/src/worker/index.ts.
-  main: import.meta.resolve("ramose/worker"),
+  // `main` is a path, not a specifier — Alchemy `realpath`s it. The published
+  // default is `ramose/worker` (`createPeer()` with an empty registry). This
+  // stack registers the e2e operations so `db.run` works in test/e2e.
+  main: import.meta.resolve("./e2e-peer.ts"),
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: {
     STORE: Store,
