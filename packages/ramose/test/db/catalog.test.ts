@@ -142,7 +142,7 @@ describe("transaction builder", () => {
         yield* tx.put(User, { name: "Ada", bestFriend: { id: 1002 } });
         yield* tx.put(User, { name: "Bea", bestFriend: { eid: 1003, class: "user" } });
         yield* tx.put(User, { name: "Cam", bestFriend: { eid: null, class: "user" } });
-        yield* tx.put(User, { id: 1001 }, { age: 36 });
+        yield* tx.put(User, 1001, { age: 36 });
       }),
     );
     expect(tx.spec.ops).toEqual([
