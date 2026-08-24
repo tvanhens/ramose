@@ -228,26 +228,33 @@ export function useLive(
         };
       }
       if (DEV) assertLoweringPurity(query, params);
-      let finalize: ((result: unknown) => unknown) | undefined;
-      try {
-        finalize = lowerQueryObject(query, bindingsOf(params)).finalize;
-      } catch {
-        // liveRaw / live will surface the same lowering failure
-      }
       const seam = seamOf(source as ReadDb);
+      // `finalize` is only correct on the raw wire result. A hand-rolled
+      // ReadDb without `liveRaw` already emits shaped rows from `live()`.
+      if (seam?.liveRaw !== undefined) {
+        let finalize: ((result: unknown) => unknown) | undefined;
+        try {
+          finalize = lowerQueryObject(query, bindingsOf(params)).finalize;
+        } catch {
+          // liveRaw will surface the same lowering failure
+        }
+        return {
+          sub: retainLive(
+            cacheKey,
+            () => seam.liveRaw!(query, params),
+            finalize,
+          ),
+          owned: true,
+        };
+      }
       return {
-        sub: retainLive(
-          cacheKey,
-          () =>
-            seam?.liveRaw !== undefined
-              ? seam.liveRaw(query, params)
-              : params === undefined
-                ? (source as ReadDb).live(query)
-                : (source as ReadDb).live(
-                    query as QueryObject<unknown, Record<string, unknown>>,
-                    params as Record<string, unknown>,
-                  ),
-          finalize,
+        sub: retainLive(cacheKey, () =>
+          params === undefined
+            ? (source as ReadDb).live(query)
+            : (source as ReadDb).live(
+                query as QueryObject<unknown, Record<string, unknown>>,
+                params as Record<string, unknown>,
+              ),
         ),
         owned: true,
       };

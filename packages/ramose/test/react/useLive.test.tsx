@@ -444,6 +444,36 @@ describe("useLive (query form)", () => {
       await close();
     }
   });
+
+  test("a ReadDb double without liveRaw does not re-finalize already-shaped rows", async () => {
+    const shaped = ids(7);
+    const one = { id: 7 };
+    const live = (value: unknown): Ramose.Subscription<unknown> => ({
+      subscribe(onValue) {
+        onValue(value);
+        return () => {};
+      },
+      async *[Symbol.asyncIterator]() {
+        yield value;
+      },
+      close() {},
+    });
+    // no DB_SEAM / liveRaw — `live()` already returns the query's terminal
+    const db = {
+      name: "todos",
+      schema: Todos,
+      live: (query: Ramose.QueryObject) =>
+        query.take === "one" ? live(one) : live(shaped),
+    } as unknown as Ramose.ReadDb<typeof Todos>;
+
+    const rows = renderHook(() => useLive(db, allTodos));
+    await waitFor(() => expect(rows.result.current.rows).toEqual(shaped));
+    expect(rows.result.current.rows).not.toEqual([undefined]);
+
+    const taken = renderHook(() => useLive(db, allTodos.one()));
+    await waitFor(() => expect(taken.result.current.rows).toEqual(one));
+    expect(taken.result.current.rows).not.toBeUndefined();
+  });
 });
 
 describe("useLive shared subscription cache", () => {
