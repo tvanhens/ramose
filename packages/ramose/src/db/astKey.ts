@@ -1,25 +1,22 @@
 /**
  * Canonical structural keys for standing reads.
  *
- * The key is a deterministic serialization of the **post-binding** lowered
- * query AST — the same JSON that goes on the wire (`POST /db/:name/query`)
- * — not a second IR. Object keys are sorted so insertion order cannot fork
- * the key. A params spelling and its inline equivalent share an entry when
- * the bound forms match; {@link paramsKey} is not part of the identity.
+ * The key is a deterministic serialization of the lowered query AST — the
+ * same JSON that goes on the wire (`POST /db/:name/query`) — not a second
+ * IR. Object keys are sorted so insertion order cannot fork the key.
  *
- * `queryAstKey` is memoized on the query object when there are no bindings
- * (hoisted queries lower once; a render-fresh object lowers again). An
- * impure generator body (`Date.now()`, captured mutable state) is hidden
- * by that memo: the key freezes on first lower while `db.live` re-lowers
- * every pass. Dev-mode double-lowers at subscription setup
- * ({@link assertLoweringPurity}) and warns on mismatch; keep bodies pure.
+ * `queryAstKey` is memoized on the query object (hoisted queries lower
+ * once; a render-fresh object lowers again). An impure generator body
+ * (`Date.now()`, captured mutable state) is hidden by that memo: the key
+ * freezes on first lower while `db.live` re-lowers every pass. Dev-mode
+ * double-lowers at subscription setup ({@link assertLoweringPurity}) and
+ * warns on mismatch; keep bodies pure.
  */
 
 import { toJson } from "../internal/core/json.ts";
-import { lowerQueryAst, lowerQueryObject, type AnyQueryObject } from "./query/index.ts";
+import { lowerQueryObject, type AnyQueryObject } from "./query/index.ts";
 
 const astKeyMemo = new WeakMap<object, string>();
-const structureKeyMemo = new WeakMap<object, string>();
 let nextErrorKey = 1;
 
 /** Sort own keys at every object so `JSON.stringify` is canonical. */
@@ -36,81 +33,47 @@ const sortKeys = (v: unknown): unknown => {
 export const canonicalAstKey = (ast: unknown): string =>
   JSON.stringify(sortKeys(toJson(ast)));
 
-const bindingsOf = (
-  params?: unknown,
-): Readonly<Record<string, unknown>> | undefined => {
-  if (params === undefined || params === null) return undefined;
-  if (typeof params !== "object" || Array.isArray(params)) return undefined;
-  return params as Readonly<Record<string, unknown>>;
-};
-
-const hasBindings = (params?: unknown): boolean => {
-  const bound = bindingsOf(params);
-  return bound !== undefined && Object.keys(bound).length > 0;
-};
-
 const ERROR_PREFIX = "\0error:";
 
-/** Always compute a post-binding key — used by the purity guard. */
-export const computeAstKey = (query: AnyQueryObject, params?: unknown): string => {
+/** Always compute a key — used by the purity guard. */
+export const computeAstKey = (query: AnyQueryObject): string => {
   try {
-    return canonicalAstKey(lowerQueryObject(query, bindingsOf(params)).query);
+    return canonicalAstKey(lowerQueryObject(query).query);
   } catch {
-    // Bindings skip the WeakMap, so a per-call token would be a new cache
-    // key every render and tear the subscription down in a loop. Two
-    // independently constructed broken queries still must not share an
-    // entry — the no-bindings path keeps a per-object token.
-    if (hasBindings(params)) {
-      return `${ERROR_PREFIX}${queryStructureKey(query)}\0${canonicalAstKey(bindingsOf(params))}`;
-    }
+    // Two independently constructed broken queries still must not share an
+    // entry — keep a per-object token.
     return `${ERROR_PREFIX}${nextErrorKey++}`;
   }
 };
 
 /**
- * Structural identity of a query: the post-binding lowered AST. Memoized
- * on the query object when there are no bindings — hoisted queries lower
- * once; a render-fresh object lowers again (small ASTs). Bindings re-lower
- * so a params spelling and its inline equivalent collide when the bound
- * forms match.
+ * Structural identity of a query: the lowered AST. Memoized on the query
+ * object — hoisted queries lower once; a render-fresh object lowers again
+ * (small ASTs).
  */
-export const queryAstKey = (query: AnyQueryObject, params?: unknown): string => {
-  if (hasBindings(params)) return computeAstKey(query, params);
+export const queryAstKey = (query: AnyQueryObject): string => {
   const cached = astKeyMemo.get(query);
   if (cached !== undefined) return cached;
-  const key = computeAstKey(query, params);
+  const key = computeAstKey(query);
   astKeyMemo.set(query, key);
   return key;
 };
 
 /**
- * Holed / pre-binding AST — resetKeys and the churn warning watch this so a
- * params-only change does not blank rows or look like query-shape churn.
- * Becomes the same as {@link queryAstKey} once declared params go away.
+ * Same as {@link queryAstKey}. Kept so resetKeys / the churn warning keep
+ * a stable name for "the query half of the subscription identity".
  */
-export const queryStructureKey = (query: AnyQueryObject): string => {
-  const cached = structureKeyMemo.get(query);
-  if (cached !== undefined) return cached;
-  let key: string;
-  try {
-    key = canonicalAstKey(lowerQueryAst(query));
-  } catch {
-    key = `${ERROR_PREFIX}${nextErrorKey++}`;
-  }
-  structureKeyMemo.set(query, key);
-  return key;
-};
+export const queryStructureKey = (query: AnyQueryObject): string =>
+  queryAstKey(query);
 
 /**
- * Full live-subscription identity: `(viewKey, post-binding astKey)`.
- * `viewKey` is {@link DbSeam.key}. A params query and an already-substituted
- * / inline-value query share one cache entry when the bound forms match.
+ * Full live-subscription identity: `(viewKey, astKey)`.
+ * `viewKey` is {@link DbSeam.key}.
  */
 export const liveSubscriptionKey = (
   viewKey: string,
   query: AnyQueryObject,
-  params?: unknown,
-): string => `${viewKey}\0${queryAstKey(query, params)}`;
+): string => `${viewKey}\0${queryAstKey(query)}`;
 
 const PURITY_WARNING =
   "ramose/react: query body is not pure — two lowerings produced different " +
@@ -122,12 +85,9 @@ const PURITY_WARNING =
  * impure body from the key (and from the churn warning); a mismatch here
  * is that footgun.
  */
-export const assertLoweringPurity = (
-  query: AnyQueryObject,
-  params?: unknown,
-): void => {
-  const memoized = queryAstKey(query, params);
-  const fresh = computeAstKey(query, params);
+export const assertLoweringPurity = (query: AnyQueryObject): void => {
+  const memoized = queryAstKey(query);
+  const fresh = computeAstKey(query);
   if (
     memoized !== fresh &&
     !memoized.startsWith(ERROR_PREFIX) &&

@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -171,7 +171,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 `ramose.db(name, schema)` returns a `Db`. `db.asOf(t)` and `db.history` return a `ReadDb` — everything below except `principal`, `run` and `install`.
 
-**`db.query(query): Promise<Out>`** — run a query once. Put values in the query (`where({ title })`). The leftover bindings argument is still accepted. The result is the query's terminal: the rows array, one row (or `null`) after `q.one()` / `q.oneOrFail()` (`oneOrFail` fails with `NotOne`), a `{ rows, cursor }` page after `q.after(cursor)`. The hatch is `db.effect.query`.
+**`db.query(query): Promise<Out>`** — run a query once. Put values in the query (`where({ title })`). The result is the query's terminal: the rows array, one row (or `null`) after `q.one()` / `q.oneOrFail()` (`oneOrFail` fails with `NotOne`), a `{ rows, cursor }` page after `q.after(cursor)`. The hatch is `db.effect.query`.
 
 ```ts
 const who = await db.principal();
@@ -179,7 +179,7 @@ const myEid = who.eid?.id;
 const people = await db.query(peopleQuery);
 ```
 
-**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
+**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
 
 ```ts
 const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
@@ -463,7 +463,7 @@ export const issueExtraShape = {
 | `Ramose.ParamError` | a required param is missing, a key is unknown, or a hole failed to normalize |
 | `Ramose.PolicyError` | a policy did not compile against its schema — deploy time, not a request |
 | `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
-| `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row, plus `ParamError` when the query declares params |
+| `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
 
 ```ts title="examples/reef/src/domain/queries.ts:112"
 export type BoardRow = Ramose.Row<typeof boardQuery>;

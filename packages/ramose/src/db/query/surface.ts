@@ -42,7 +42,6 @@ export {
   some,
   stage,
   updatedSince,
-  when,
 } from "./lib.ts";
 export type { FilterStage, IdRow, TraversalStage } from "./lib.ts";
 

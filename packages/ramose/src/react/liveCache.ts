@@ -1,7 +1,7 @@
 /**
- * Refcounted standing-query cache for `useLive(db, q[, params])`.
+ * Refcounted standing-query cache for `useLive(db, q)`.
  *
- * Two hook sites with the same `(viewKey, post-binding astKey)` share one
+ * Two hook sites with the same `(viewKey, astKey)` share one
  * raw `liveRaw` handle. The cache entry holds the un-finalized wire result;
  * each retain wrapper applies that subscriber's `finalize` (take-unwrap /
  * page-wrap / reshape) on read. The last `close()` tears the handle down.

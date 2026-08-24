@@ -1,8 +1,8 @@
 /**
- * The redesigned query surface: `Query.q(params, body)` over the kernel
- * (`Q.fact`, comparisons, `Q.or`/`Q.not`, rules), the pipeable stdlib, and
- * whole-query delegation — lowering shape and end-to-end against the real
- * engine through an in-process peer.
+ * The redesigned query surface: `Query.q(body)` over the kernel (`Q.fact`,
+ * comparisons, `Q.or`/`Q.not`, rules), the pipeable stdlib, and whole-query
+ * delegation — lowering shape and end-to-end against the real engine
+ * through an in-process peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -26,19 +26,15 @@ import {
   Field,
   Schema as DbSchema,
   Databases,
-  EidOf,
   Instant,
   Long,
   Entity,
   NotOne,
-  ParamError,
   Q,
   Query,
   Ref,
   layer,
   lowerQueryObject,
-  optional,
-  params,
   values,
   type Db,
 } from "../../src/db/internal.ts";
@@ -271,27 +267,29 @@ const seed = async (db: Db<typeof Tracker>) => {
 
 // ── the design record's inbox, both spellings ──────────────────────────────
 
-const inboxPipe = Query.q({ me: EidOf(User) }, (p) =>
-  pipe(
-    Query.entities(Issue),
-    Query.is(Issue.done, false),
-    Query.none(Comment.issue, Query.is(Comment.author, p.me)),
-    Query.select({ id: Issue.id, title: Issue.title }),
-    Query.orderBy("title"),
-    Query.limit(50),
-  ),
-);
+const inboxPipe = (me: number) =>
+  Query.q(() =>
+    pipe(
+      Query.entities(Issue),
+      Query.is(Issue.done, false),
+      Query.none(Comment.issue, Query.is(Comment.author, me)),
+      Query.select({ id: Issue.id, title: Issue.title }),
+      Query.orderBy("title"),
+      Query.limit(50),
+    ),
+  );
 
-const inboxGen = Query.q({ me: EidOf(User) }, function* (p) {
-  const issue = yield* Query.entities(Issue);
-  yield* Query.is(Issue.done, false)(issue);
-  yield* Query.none(Comment.issue, Query.is(Comment.author, p.me))(issue);
-  return Q.pull(issue, { id: Issue.id, title: Issue.title });
-});
+const inboxGen = (me: number) =>
+  Query.q(function* () {
+    const issue = yield* Query.entities(Issue);
+    yield* Query.is(Issue.done, false)(issue);
+    yield* Query.none(Comment.issue, Query.is(Comment.author, me))(issue);
+    return Q.pull(issue, { id: Issue.id, title: Issue.title });
+  });
 
 describe("lowering", () => {
-  test("the inbox pipe: entailment skips membership, cursor lowers, params substitute", () => {
-    const { query } = lowerQueryObject(inboxPipe, { me: { id: 42 } });
+  test("the inbox pipe: entailment skips membership, cursor lowers, literals substitute", () => {
+    const { query } = lowerQueryObject(inboxPipe(42));
     // membership is entailed by [?e :issue/done false] — no rules section
     expect(query.rules).toBeUndefined();
     const where = query.where as unknown[];
@@ -308,16 +306,31 @@ describe("lowering", () => {
   });
 
   test("both spellings lower to the same logic", () => {
-    const p = lowerQueryObject(inboxPipe.logic(), { me: { id: 7 } });
-    const g = lowerQueryObject(inboxGen, { me: { id: 7 } });
+    const p = lowerQueryObject(inboxPipe(7).logic());
+    const g = lowerQueryObject(inboxGen(7));
     expect(g.query.where).toEqual(p.query.where);
     expect(g.query.find).toEqual(p.query.find);
   });
 
-  test("lowering is deterministic — the same value lowers to the same wire", () => {
-    const a = JSON.stringify(lowerQueryObject(inboxPipe, { me: { id: 7 } }).query);
-    const b = JSON.stringify(lowerQueryObject(inboxPipe, { me: { id: 7 } }).query);
+  test("lowering is deterministic — two constructions of the same inline-literal chain share a wire", () => {
+    const a = JSON.stringify(lowerQueryObject(inboxPipe(7)).query);
+    const b = JSON.stringify(lowerQueryObject(inboxPipe(7)).query);
     expect(a).toBe(b);
+    const fluentA = Query.from(Issue)
+      .where({ done: false })
+      .where(Query.none(Comment.issue, Query.is(Comment.author, 7)))
+      .select({ id: Issue.id, title: Issue.title })
+      .orderBy("title")
+      .limit(50);
+    const fluentB = Query.from(Issue)
+      .where({ done: false })
+      .where(Query.none(Comment.issue, Query.is(Comment.author, 7)))
+      .select({ id: Issue.id, title: Issue.title })
+      .orderBy("title")
+      .limit(50);
+    expect(JSON.stringify(lowerQueryObject(fluentA).query)).toBe(
+      JSON.stringify(lowerQueryObject(fluentB).query),
+    );
   });
 
   test("the unfiltered listing carries the membership rule", () => {
@@ -333,23 +346,18 @@ describe("lowering", () => {
     expect(or).toContainEqual(["?qm0", ":issue/owner", "_"]);
   });
 
-  test("a required param is checked at lowering", () => {
-    expect(() => lowerQueryObject(inboxPipe, {})).toThrow(ParamError);
-    expect(() => lowerQueryObject(inboxPipe, { me: { id: 1 }, extra: 2 } as never)).toThrow(ParamError);
-  });
-
   test("open refuses a cursor; logic() strips it", () => {
-    const outer = Query.q({ me: EidOf(User) }, function* (p) {
-      const { focus } = yield* inboxPipe.open({ me: p.me });
+    const outer = Query.q(function* () {
+      const { focus } = yield* inboxPipe(1).open();
       return Q.pull(focus, { title: Issue.title });
     });
-    expect(() => lowerQueryObject(outer, { me: { id: 1 } })).toThrow(/does not delegate/);
+    expect(() => lowerQueryObject(outer)).toThrow(/does not delegate/);
 
-    const stripped = Query.q({ me: EidOf(User) }, function* (p) {
-      const { focus } = yield* inboxPipe.logic().open({ me: p.me });
+    const stripped = Query.q(function* () {
+      const { focus } = yield* inboxPipe(1).logic().open();
       return Q.pull(focus, { title: Issue.title });
     });
-    const { query } = lowerQueryObject(stripped, { me: { id: 1 } });
+    const { query } = lowerQueryObject(stripped);
     expect(query.limit).toBeUndefined();
     expect(query.order).toBeUndefined();
   });
@@ -364,11 +372,11 @@ describe("lowering", () => {
     expect(where.some((c) => Array.isArray(c) && c[1] === ":db/id")).toBe(false);
   });
 
-  test("is(N.id, param) substitutes the binding and unifies", () => {
-    const q = Query.q({ id: EidOf(Issue) }, (p) =>
-      pipe(Query.entities(Issue), Query.is(Issue.id, p.id), Query.select({ title: Issue.title })),
+  test("is(N.id, literal) substitutes and unifies", () => {
+    const q = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, 42), Query.select({ title: Issue.title })),
     );
-    const { query } = lowerQueryObject(q, { id: { id: 42 } });
+    const { query } = lowerQueryObject(q);
     const where = query.where as unknown[];
     expect(where).toContainEqual([["ground", 42], "?q0"]);
     expect(where.some((c) => Array.isArray(c) && c[1] === ":db/id")).toBe(false);
@@ -381,14 +389,13 @@ describe("lowering", () => {
     );
     expect(lowerQueryObject(byConst).query).toEqual(lowerQueryObject(isConst).query);
 
-    const byParam = Query.q({ id: EidOf(Issue) }, (p) =>
-      pipe(Query.entities(Issue), Query.byId(p.id), Query.select({ title: Issue.title })),
+    const byLit = Query.q(() =>
+      pipe(Query.entities(Issue), Query.byId(42), Query.select({ title: Issue.title })),
     );
-    const isParam = Query.q({ id: EidOf(Issue) }, (p) =>
-      pipe(Query.entities(Issue), Query.is(Issue.id, p.id), Query.select({ title: Issue.title })),
+    const isLit = Query.q(() =>
+      pipe(Query.entities(Issue), Query.is(Issue.id, 42), Query.select({ title: Issue.title })),
     );
-    const bindings = { id: { id: 42 } };
-    expect(lowerQueryObject(byParam, bindings).query).toEqual(lowerQueryObject(isParam, bindings).query);
+    expect(lowerQueryObject(byLit).query).toEqual(lowerQueryObject(isLit).query);
   });
 });
 
@@ -418,27 +425,27 @@ describe("filter by entity id", () => {
     await peer.dispose();
   });
 
-  test("is(N.id, param) and byId(param) agree against the engine", async () => {
+  test("is(N.id, literal) and byId(literal) agree against the engine", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    const isParam = Query.q({ id: EidOf(Issue) }, (p) =>
+    const isLit = Query.q(() =>
       pipe(
         Query.entities(Issue),
-        Query.is(Issue.id, p.id),
+        Query.is(Issue.id, ids.fix!.id),
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const byIdParam = Query.q({ id: EidOf(Issue) }, (p) =>
+    const byIdLit = Query.q(() =>
       pipe(
         Query.entities(Issue),
-        Query.byId(p.id),
+        Query.byId(ids.fix!.id),
         Query.select({ id: Issue.id, title: Issue.title }),
       ),
     );
-    const isRows = await db.query(isParam, { id: ids.fix as never });
-    const byIdRows = await db.query(byIdParam, { id: ids.fix as never });
+    const isRows = await db.query(isLit);
+    const byIdRows = await db.query(byIdLit);
     expect(isRows).toEqual([{ id: ids.fix!.id as never, title: "fix the flake" }]);
     expect(byIdRows).toEqual(isRows);
 
@@ -453,17 +460,25 @@ describe("filter by entity id", () => {
       )) as readonly { id: { id: number }; text: string }[]
     ).find((r) => r.text === "on it")!.id;
 
-    const byComment = Query.q({ root: EidOf(Comment) }, (p) =>
+    const byComment = Query.q(() =>
       pipe(
         Query.entities(Comment),
-        Query.byId(p.root),
+        Query.byId(commentId.id),
         Query.select({ id: Comment.id, text: Comment.text }),
       ),
     );
-    const comments = await db.query(byComment, { root: commentId as never });
+    const comments = await db.query(byComment);
     expect(comments).toEqual([{ id: commentId.id as never, text: "on it" }]);
 
-    const miss = await db.query(byIdParam, { id: commentId as never });
+    const miss = await db.query(
+      Query.q(() =>
+        pipe(
+          Query.entities(Issue),
+          Query.byId(commentId.id),
+          Query.select({ id: Issue.id, title: Issue.title }),
+        ),
+      ),
+    );
     expect(miss).toEqual([]);
 
     await peer.dispose();
@@ -471,16 +486,16 @@ describe("filter by entity id", () => {
 });
 
 describe("db.query end to end", () => {
-  test("the inbox: quantifier, params, order, limit", async () => {
+  test("the inbox: quantifier, inline values, order, limit", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
     // Ada commented on "fix the flake", so her inbox is only "ship ..."
-    const ada = await db.query(inboxPipe, { me: ids.ada as never });
+    const ada = await db.query(inboxPipe(ids.ada!.id));
     expect(ada.map((r) => r.title)).toEqual(["ship the release"]);
     // Grace commented on nothing: both open issues, ordered by title
-    const grace = await db.query(inboxPipe, { me: ids.grace as never });
+    const grace = await db.query(inboxPipe(ids.grace!.id));
     expect(grace.map((r) => r.title)).toEqual(["fix the flake", "ship the release"]);
     // rows carry the branded id cell
     expect(ada[0]!.id).toBe(ids.ship!.id as never);
@@ -545,13 +560,13 @@ describe("db.query end to end", () => {
     const rows = await db.query(ownersOfOpen);
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
 
-    const commenters = Query.q({ issue: EidOf(Issue) }, function* (p) {
-      const comment = yield* Query.backlink(Comment.issue)(p.issue as never);
-      const author = yield* Query.follow(Comment.author)(comment);
+    const commenters = Query.q(function* () {
+      const comment = yield* Q.fact(Q._, Comment.issue, ids.fix!.id);
+      const author = yield* Query.follow(Comment.author)(comment.e);
       const name = yield* Q.fact(author, User.name);
       return { name: name.v };
     });
-    const who = await db.query(commenters, { issue: ids.fix as never });
+    const who = await db.query(commenters);
     expect(who).toEqual([{ name: "Ada" }]);
 
     await peer.dispose();
@@ -596,16 +611,17 @@ describe("db.query end to end", () => {
       );
     });
 
-    const membersOf = Query.q({ team: EidOf(Team) }, function* (p) {
-      const user = yield* Query.entities(User);
-      yield* inTeam(user, p.team);
-      const name = yield* Q.fact(user, User.name);
-      return { name: name.v };
-    });
+    const membersOf = (teamId: number) =>
+      Query.q(function* () {
+        const user = yield* Query.entities(User);
+        yield* inTeam(user, teamId);
+        const name = yield* Q.fact(user, User.name);
+        return { name: name.v };
+      });
 
-    const root = await db.query(membersOf, { team: ids.root as never });
+    const root = await db.query(membersOf(ids.root!.id));
     expect(root.map((r) => r.name).sort()).toEqual(["Ada", "Grace"]);
-    const eng = await db.query(membersOf, { team: ids.eng as never });
+    const eng = await db.query(membersOf(ids.eng!.id));
     expect(eng.map((r) => r.name)).toEqual(["Grace"]);
 
     await peer.dispose();
@@ -679,25 +695,23 @@ describe("db.query end to end", () => {
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    // open issues owned by a member of the given team
-    const escalations = Query.q({ team: EidOf(Team) }, function* (p) {
-      const issue = yield* Query.entities(Issue);
-      yield* Query.is(Issue.done, false)(issue);
-      const owner = yield* Query.follow(Issue.owner)(issue);
-      yield* Q.fact(p.team, Team.members, owner);
-      return Q.pull(issue, { title: Issue.title });
-    });
+    const teamDigest = (me: number) =>
+      Query.q(function* () {
+        const team = yield* Query.entities(Team);
+        yield* Q.fact(team, Team.members, me);
+        const issue = yield* Query.entities(Issue);
+        yield* Query.is(Issue.done, false)(issue);
+        const owner = yield* Query.follow(Issue.owner)(issue);
+        yield* Q.fact(team, Team.members, owner);
+        return Q.rows({
+          team: Q.pull(team, { name: Team.name }),
+          esc: Q.pull(issue, { title: Issue.title }),
+        });
+      });
 
-    const teamDigest = Query.q({ me: EidOf(User) }, function* (p) {
-      const team = yield* Query.entities(Team);
-      yield* Q.fact(team, Team.members, p.me);
-      const { cols } = yield* escalations.open({ team });
-      return Q.rows({ team: Q.pull(team, { name: Team.name }), esc: cols });
-    });
-
-    const ada = await db.query(teamDigest, { me: ids.ada as never });
+    const ada = await db.query(teamDigest(ids.ada!.id));
     expect(ada).toEqual([{ team: { name: "root" }, esc: { title: "ship the release" } }] as never);
-    const grace = await db.query(teamDigest, { me: ids.grace as never });
+    const grace = await db.query(teamDigest(ids.grace!.id));
     expect(grace).toEqual([{ team: { name: "eng" }, esc: { title: "fix the flake" } }] as never);
 
     await peer.dispose();
@@ -884,26 +898,27 @@ describe("db.query end to end", () => {
     const db = peer.ramose.db("tracker", Tracker);
     await seed(db);
 
-    const byTitle = Query.q({ title: Issue.title }, (p) =>
-      pipe(
-        Query.entities(Issue),
-        Query.is(Issue.title, p.title),
-        Query.select({ title: Issue.title, rank: Issue.rank }),
-      ),
-    );
+    const byTitle = (title: string) =>
+      Query.q(() =>
+        pipe(
+          Query.entities(Issue),
+          Query.is(Issue.title, title),
+          Query.select({ title: Issue.title, rank: Issue.rank }),
+        ),
+      );
 
     // lowering forces the limit: one row for one(), two so a second match is witnessed
-    expect(lowerQueryObject(byTitle.one(), { title: "x" }).query.limit).toBe(1);
-    expect(lowerQueryObject(byTitle.oneOrFail(), { title: "x" }).query.limit).toBe(2);
+    expect(lowerQueryObject(byTitle("x").one()).query.limit).toBe(1);
+    expect(lowerQueryObject(byTitle("x").oneOrFail()).query.limit).toBe(2);
 
-    const hit = await db.query(byTitle.one(), { title: "ship the release" });
+    const hit = await db.query(byTitle("ship the release").one());
     expect(hit).toEqual({ title: "ship the release", rank: 3 } as never);
-    expect(await db.query(byTitle.one(), { title: "nope" })).toBeNull();
+    expect(await db.query(byTitle("nope").one())).toBeNull();
 
-    const exact = await db.query(byTitle.oneOrFail(), { title: "fix the flake" });
+    const exact = await db.query(byTitle("fix the flake").oneOrFail());
     expect(exact.rank).toBe(1);
 
-    const missing = await runFail(db.query(byTitle.oneOrFail(), { title: "nope" }));
+    const missing = await runFail(db.query(byTitle("nope").oneOrFail()));
     expect(missing).toBeInstanceOf(NotOne);
     expect((missing as NotOne).found).toBe(0);
 
@@ -957,54 +972,19 @@ describe("db.query end to end", () => {
     await peer.dispose();
   });
 
-  test("when: a param-gated clause group splices or drops at lowering", async () => {
+  test("conditional clauses are ordinary JS with the immutable builder", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    // an optional param gates on being bound; inside the body it is bound
-    const board = Query.q({ owner: optional(EidOf(User)) }, (p) =>
-      pipe(
-        Query.entities(Issue),
-        Query.when(p.owner, Query.is(Issue.owner, p.owner)),
-        Query.select({ title: Issue.title }),
-      ),
-    );
-
-    const all = await db.query(board, {});
-    expect(all).toHaveLength(3);
-    const adas = await db.query(board, { owner: ids.ada as never });
+    let board = Query.from(Issue);
+    const owner = ids.ada;
+    if (owner) board = board.where({ owner });
+    const adas = await db.query(board.select({ title: Issue.title }));
     expect(adas.map((r) => r.title).sort()).toEqual(["archive the docs", "ship the release"]);
 
-    // gate off, the clause lowers to nothing
-    const off = lowerQueryObject(board, {});
-    expect(JSON.stringify(off.query.where)).not.toContain(":issue/owner");
-
-    // a required boolean param gates on its value — the generator spelling
-    const listing = Query.q({ onlyOpen: Schema.Boolean }, function* (p) {
-      const issue = yield* Query.entities(Issue);
-      yield* Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue));
-      const t = yield* Q.fact(issue, Issue.title);
-      return { title: t.v };
-    });
-    expect(await db.query(listing, { onlyOpen: true })).toHaveLength(2);
-    expect(await db.query(listing, { onlyOpen: false })).toHaveLength(3);
-
-    // an unbound optional referenced outside its when is still a ParamError
-    const loose = Query.q({ owner: optional(EidOf(User)) }, (p) =>
-      pipe(Query.entities(Issue), Query.is(Issue.owner, p.owner), Query.select({ title: Issue.title })),
-    );
-    expect(() => lowerQueryObject(loose, {})).toThrow(ParamError);
-
-    // when does not nest into or/not: an off gate would blank the branch
-    const inOr = Query.q({ onlyOpen: Schema.Boolean }, function* (p) {
-      const issue = yield* Query.entities(Issue);
-      // the type system rejects this too — the cast exercises the runtime guard
-      yield* Q.or(Q.when(p.onlyOpen, Query.is(Issue.done, false)(issue)) as never);
-      const t = yield* Q.fact(issue, Issue.title);
-      return { title: t.v };
-    });
-    expect(() => lowerQueryObject(inOr, { onlyOpen: true })).toThrow(/cannot appear inside/);
+    const all = await db.query(Query.from(Issue).select({ title: Issue.title }));
+    expect(all).toHaveLength(3);
 
     await peer.dispose();
   });
@@ -1102,20 +1082,21 @@ describe("post-group filters (:having)", () => {
     await peer.dispose();
   });
 
-  test("e2e: params substitute into the post-group comparison", async () => {
+  test("e2e: inline values substitute into the post-group comparison", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    const atLeast = Query.q({ min: Long }, function* (p) {
-      const issue = yield* Query.entities(Issue);
-      const owner = yield* Query.follow(Issue.owner)(issue);
-      const n = Q.count(issue);
-      yield* Q.gte(n, p.min);
-      return { owner, n };
-    });
-    expect(await db.query(atLeast, { min: 2 })).toEqual([{ owner: ids.ada, n: 2 }] as never);
-    expect((await db.query(atLeast, { min: 1 })).length).toBe(2);
+    const atLeast = (min: number) =>
+      Query.q(function* () {
+        const issue = yield* Query.entities(Issue);
+        const owner = yield* Query.follow(Issue.owner)(issue);
+        const n = Q.count(issue);
+        yield* Q.gte(n, min);
+        return { owner, n };
+      });
+    expect(await db.query(atLeast(2))).toEqual([{ owner: ids.ada, n: 2 }] as never);
+    expect((await db.query(atLeast(1))).length).toBe(2);
 
     await peer.dispose();
   });
@@ -1351,25 +1332,26 @@ describe("per-element pull filters (select options)", () => {
     await peer.dispose();
   });
 
-  test("e2e: params substitute into nested filter values at query lowering", async () => {
+  test("e2e: inline values substitute into nested filter values at query lowering", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
 
-    const q = Query.q({ who: EidOf(User) }, function* (p) {
-      const issue = yield* Query.entities(Issue);
-      return Q.pull(issue, {
-        title: Issue.title,
-        theirs: Comment.issue.reverse.select(
-          { text: Comment.text },
-          { where: [Query.is(Comment.author, p.who)] },
-        ),
+    const q = (who: number) =>
+      Query.q(function* () {
+        const issue = yield* Query.entities(Issue);
+        return Q.pull(issue, {
+          title: Issue.title,
+          theirs: Comment.issue.reverse.select(
+            { text: Comment.text },
+            { where: [Query.is(Comment.author, who)] },
+          ),
+        });
       });
-    });
-    const rows = await db.query(q, { who: ids.ada as never });
+    const rows = await db.query(q(ids.ada!.id));
     const fix = rows.find((r) => r.title === "fix the flake")!;
     expect(fix.theirs).toEqual([{ text: "on it" }] as never);
-    const grace = await db.query(q, { who: ids.grace as never });
+    const grace = await db.query(q(ids.grace!.id));
     expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
 
     await peer.dispose();
@@ -1400,17 +1382,6 @@ describe("per-element pull filters (select options)", () => {
         ],
       }),
     ).toThrow(/entities\(\.\.\.\) does not lower/);
-
-    // Q.when gates on params, which bind after shapes are built
-    expect(() =>
-      values(User.tags, {
-        where: [
-          function* (v) {
-            yield* Q.when(params({ on: optional(Schema.Boolean) }).on, Q.startsWith(v as never, "a"));
-          },
-        ],
-      }),
-    ).toThrow(/Q\.when\(\.\.\.\) does not lower/);
 
     // two values bound by different clauses cannot be compared per element
     expect(() =>
@@ -1451,25 +1422,6 @@ describe("per-element pull filters (select options)", () => {
       ),
     ).toThrow(/unknown select option "order"/);
 
-    // db.pull has no params to bind into a nested filter
-    const peer = await inProcessPeer();
-    const db = peer.ramose.db("tracker", Tracker);
-    const ids = await seed(db);
-    const hole = params({ who: EidOf(User) }).who;
-    let threw: unknown;
-    try {
-      await run(
-        db.pull(ids.fix!.id as never, {
-          c: Comment.issue.reverse.select(commentShape, {
-            where: [Query.is(Comment.author, hole)],
-          }),
-        } as never),
-      );
-    } catch (e) {
-      threw = e;
-    }
-    expect(String(threw)).toContain("reached db.pull");
-    await peer.dispose();
   });
 });
 
@@ -1515,23 +1467,23 @@ describe("Query.from — fluent app spelling", () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
+    const issueId = ids.fix;
 
-    const p = params({ issueId: Issue.id });
     const commentsQuery = Query.from(Comment)
-      .where({ issue: p.issueId })
+      .where({ issue: issueId })
       .orderBy(Comment.at, "asc");
     const commentTitles = Query.from(Comment)
-      .where({ issue: p.issueId })
+      .where({ issue: issueId })
       .select(commentShape)
       .orderBy(Comment.at, "asc");
 
-    const rows = await db.query(commentsQuery, { issueId: ids.fix as never });
+    const rows = await db.query(commentsQuery);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.text).toBe("on it");
     expect(rows[0]!.issue.id as number).toBe(ids.fix.id);
     expect(typeof rows[0]!.id).toBe("number");
 
-    const titled = await db.query(commentTitles, { issueId: ids.fix as never });
+    const titled = await db.query(commentTitles);
     expect(titled).toEqual([
       {
         id: expect.any(Number),
@@ -1558,9 +1510,8 @@ describe("Query.from — fluent app spelling", () => {
   });
 
   test("select-less fluent query serializes the expanded entity shape, not [*]", async () => {
-    const p = params({ issueId: Issue.id });
-    const q = Query.from(Comment).where({ issue: p.issueId }).orderBy(Comment.at, "asc");
-    const { query } = lowerQueryObject(q, { issueId: { id: 1 } });
+    const q = Query.from(Comment).where({ issue: { id: 1 } }).orderBy(Comment.at, "asc");
+    const { query } = lowerQueryObject(q);
     const wire = JSON.parse(JSON.stringify(query)) as { find: unknown[] };
     expect(JSON.stringify(wire)).not.toContain("[*]");
     expect(JSON.stringify(wire)).toContain(":comment/text");
@@ -1576,31 +1527,30 @@ describe("Query.from — fluent app spelling", () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
-    const bindings = { issueId: ids.fix as never };
+    const issueId = ids.fix;
 
-    const p = params({ issueId: Issue.id });
     const fluent = Query.from(Comment)
-      .where({ issue: p.issueId })
+      .where({ issue: issueId })
       .select(commentShape)
       .orderBy(Comment.at, "asc");
-    const piped = Query.q({ issueId: Issue.id }, (pp) =>
+    const piped = Query.q(() =>
       pipe(
         Query.entities(Comment),
-        Query.is(Comment.issue, pp.issueId),
+        Query.is(Comment.issue, issueId),
         Query.select(commentShape),
         Query.orderBy(Comment.at, "asc"),
       ),
     );
 
-    const fluentWire = lowerQueryObject(fluent, bindings).query;
-    const pipedWire = lowerQueryObject(piped, bindings).query;
+    const fluentWire = lowerQueryObject(fluent).query;
+    const pipedWire = lowerQueryObject(piped).query;
     const fluentRound = JSON.parse(JSON.stringify(fluentWire));
     const pipedRound = JSON.parse(JSON.stringify(pipedWire));
     expect(fluentRound).toEqual(fluentWire);
     expect(pipedRound).toEqual(pipedWire);
     expect(fluentRound).toEqual(pipedRound);
 
-    expect(await db.query(fluent, bindings)).toEqual(await db.query(piped, bindings));
+    expect(await db.query(fluent)).toEqual(await db.query(piped));
     await peer.dispose();
   });
 
@@ -1664,71 +1614,70 @@ describe("Query.from — fluent app spelling", () => {
     await peer.dispose();
   });
 
-  test("params inside Query.none bind (module docstring spelling)", async () => {
+  test("inline values inside Query.none bind (module docstring spelling)", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
-    const p = params({ me: User.id });
-    const inbox = Query.from(Issue)
-      .where({ done: false })
-      .where(Query.none(Comment.issue, Query.is(Comment.author, p.me)))
-      .select({ title: Issue.title })
-      .orderBy(Issue.title, "asc");
-    expect((await db.query(inbox, { me: ids.ada as never })).map((r) => r.title)).toEqual([
+    const inbox = (me: number) =>
+      Query.from(Issue)
+        .where({ done: false })
+        .where(Query.none(Comment.issue, Query.is(Comment.author, me)))
+        .select({ title: Issue.title })
+        .orderBy(Issue.title, "asc");
+    expect((await db.query(inbox(ids.ada.id))).map((r) => r.title)).toEqual([
       "ship the release",
     ]);
-    expect((await db.query(inbox, { me: ids.grace as never })).map((r) => r.title)).toEqual([
+    expect((await db.query(inbox(ids.grace.id))).map((r) => r.title)).toEqual([
       "fix the flake",
       "ship the release",
     ]);
     await peer.dispose();
   });
 
-  test("params inside Query.some bind", async () => {
+  test("inline values inside Query.some bind", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
-    const p = params({ me: User.id });
-    const commented = Query.from(Issue)
-      .where(Query.some(Comment.issue, Query.is(Comment.author, p.me)))
-      .select({ title: Issue.title });
-    expect((await db.query(commented, { me: ids.ada as never })).map((r) => r.title)).toEqual([
+    const commented = (me: number) =>
+      Query.from(Issue)
+        .where(Query.some(Comment.issue, Query.is(Comment.author, me)))
+        .select({ title: Issue.title });
+    expect((await db.query(commented(ids.ada.id))).map((r) => r.title)).toEqual([
       "fix the flake",
     ]);
-    expect(await db.query(commented, { me: ids.grace as never })).toEqual([]);
+    expect(await db.query(commented(ids.grace.id))).toEqual([]);
     await peer.dispose();
   });
 
-  test("params inside Query.matching bind", async () => {
+  test("inline values inside Query.matching bind", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     await seed(db);
-    const p = params({ term: Issue.title });
     const q = Query.from(Issue)
-      .where(Query.matching(Issue.title, (t) => Q.startsWith(t, p.term)))
+      .where(Query.matching(Issue.title, (t) => Q.startsWith(t, "fix")))
       .select({ title: Issue.title })
       .orderBy(Issue.title, "asc");
-    expect((await db.query(q, { term: "fix" })).map((r) => r.title)).toEqual(["fix the flake"]);
+    expect((await db.query(q)).map((r) => r.title)).toEqual(["fix the flake"]);
     await peer.dispose();
   });
 
-  test("params inside a nested select where bind", async () => {
+  test("inline values inside a nested select where bind", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);
     const ids = await seed(db);
-    const p = params({ who: User.id });
-    const q = Query.from(Issue)
-      .select({
-        title: Issue.title,
-        theirs: Comment.issue.reverse.select(
-          { text: Comment.text },
-          { where: [Query.is(Comment.author, p.who)] },
-        ),
-      })
-      .orderBy(Issue.title, "asc");
-    const rows = await db.query(q, { who: ids.ada as never });
+    const q = (who: number) =>
+      Query.from(Issue)
+        .select({
+          title: Issue.title,
+          theirs: Comment.issue.reverse.select(
+            { text: Comment.text },
+            { where: [Query.is(Comment.author, who)] },
+          ),
+        })
+        .orderBy(Issue.title, "asc");
+    const rows = await db.query(q(ids.ada.id));
     expect(rows.find((r) => r.title === "fix the flake")!.theirs).toEqual([{ text: "on it" }]);
-    const grace = await db.query(q, { who: ids.grace as never });
+    const grace = await db.query(q(ids.grace.id));
     expect(grace.find((r) => r.title === "fix the flake")!.theirs).toEqual([]);
     await peer.dispose();
   });

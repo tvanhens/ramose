@@ -3,8 +3,7 @@
  *
  * Pins the fluent app spelling: header example (row is
  * `{ id: Eid<Comment>, text: string, at: Date, issue: { id: Eid<Issue> } }`),
- * object-literal `where` with inline values, leftover `params({ issueId })`
- * bindings, and foreign-set tokens.
+ * and object-literal `where` with inline values.
  */
 
 import type {
@@ -13,10 +12,9 @@ import type {
   EntityRow,
   Equal,
   Expect,
-  Param,
   Row,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Instant, Long, Query, Ref, params, stored } from "../../src/db/internal.ts";
+import { Entity, Field, Instant, Long, Query, Ref, stored } from "../../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 
 import { Movies, User } from "./fixture.ts";
@@ -35,27 +33,16 @@ const Comment = Entity("comment", {
 
 declare const db: Db<typeof Movies>;
 
-// ── Decision 4: Issue.id produces branded Eid — no recased idOf ────────────
-
-const p = params({ issueId: Issue.id });
-type IssueIdValue = (typeof p)["issueId"] extends Param<infer T, any, any> ? T : never;
-type _issueIdIsEid = Expect<Equal<IssueIdValue, Eid<typeof Issue>>>;
-
-// ── header example (inline values — documented spelling) ───────────────────
+// ── header example (inline values) ─────────────────────────────────────────
 
 declare const issueId: Eid<typeof Issue>;
-const commentsInline = Query.from(Comment)
+const commentsQuery = Query.from(Comment)
   .where({ issue: issueId })
   .orderBy(Comment.at, "asc");
-const _inlineRun = db.query(commentsInline);
+const _inlineRun = db.query(commentsQuery);
 type _inlineOk = Expect<
   Equal<typeof _inlineRun, Promise<readonly EntityRow<typeof Comment>[]>>
 >;
-
-// leftover params path — still accepted
-const commentsQuery = Query.from(Comment)
-  .where({ issue: p.issueId })
-  .orderBy(Comment.at, "asc");
 
 type HeaderRow = Row<typeof commentsQuery>;
 type _headerEntity = Expect<Equal<HeaderRow, EntityRow<typeof Comment>>>;
@@ -71,46 +58,23 @@ const commentShape = {
   text: Comment.text,
 } as const;
 const commentTitles = Query.from(Comment)
-  .where({ issue: p.issueId })
+  .where({ issue: issueId })
   .select(commentShape)
   .orderBy(Comment.at, "asc");
 type _selectRow = Expect<
   Equal<Row<typeof commentTitles>, { readonly id: Eid<typeof Comment>; readonly text: string }>
 >;
 
-const _bound = db.query(commentsQuery, { issueId: 1 as Eid<typeof Issue> });
-type _boundOk = Expect<Equal<typeof _bound, Promise<readonly EntityRow<typeof Comment>[]>>>;
-
-// @ts-expect-error a declared head must be bound at the terminal
-db.query(commentsQuery);
-
-// @ts-expect-error issueId is an Eid, not a string
-db.query(commentsQuery, { issueId: "nope" });
-
 // ── object-literal where is typechecked ────────────────────────────────────
 
 Query.from(Comment).where({ text: "ok" });
-Query.from(Comment).where({ issue: p.issueId, text: "ok" });
+Query.from(Comment).where({ issue: issueId, text: "ok" });
 
 // @ts-expect-error unknown field is not a where key
 Query.from(Comment).where({ nope: true });
 
 // @ts-expect-error text is a string, not a number
 Query.from(Comment).where({ text: 42 });
-
-// ── foreign-set token is a type error ──────────────────────────────────────
-
-const other = params({ title: Issue.title });
-Query.from(Comment).where({ issue: p.issueId });
-// @ts-expect-error token from a different params() set
-Query.from(Comment).where({ issue: p.issueId }).where({ text: other.title });
-
-// unused keys of the same set still type the whole record
-const wide = params({ issueId: Issue.id, extra: User.name });
-const partial = Query.from(Comment).where({ issue: wide.issueId });
-// @ts-expect-error the set still requires `extra`
-db.query(partial, { issueId: 1 as Eid<typeof Issue> });
-db.query(partial, { issueId: 1 as Eid<typeof Issue>, extra: "Ada" });
 
 // ── .ids() is today's { id } row ───────────────────────────────────────────
 

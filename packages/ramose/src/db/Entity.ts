@@ -106,8 +106,8 @@ export type Entity<
   readonly ns: Name;
   readonly fields: StampedMap<Name, Fields>;
   /**
-   * Pseudo-field `:db/id`, usable in `select` shapes and as an `EidOf`
-   * declaration. Typed as a stamped field so it is a valid shape field, and
+   * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
+   * field so it is a valid shape field, and
    * as a number so comparisons over it take the id they compare against.
    * The `_ns` phantom is the entity itself: it is what brands the
    * `select({ id: N.id })` row cell as `Eid<N>` (see `IdCell` in Pull.ts).

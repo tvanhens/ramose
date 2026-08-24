@@ -67,10 +67,6 @@ export { pick } from "./Pull.ts";
 // collection with pull-phase constraints; refs take the same record in
 // `.select(shape, opts)`
 export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
-// value holes: declare with `params`, mark unbound-ok with `optional`,
-// gate clauses with `when`; `EidOf(N)` declares an entity-valued hole
-export { EidOf, optional, params } from "./Params.ts";
-
 // ── the query language (fluent + kernel) ───────────────────────────────────
 // `Q` is the kernel (fact, comparisons, or/not, projections); `Query` is
 // the constructor. App spelling: `Query.from(Issue).where({…}).orderBy(…)`.
@@ -93,7 +89,6 @@ export type {
   RuleValue,
 } from "./query/index.ts";
 export type { EidLike, Shape } from "./shapes.ts";
-export type { Param, ParamBindings, ParamsOf } from "./Params.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────
 export {

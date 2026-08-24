@@ -56,7 +56,7 @@ const TodoList = () => {
 };
 ```
 
-`useLive(db, query): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes. The leftover bindings argument is still accepted — a params-only change keeps the last `rows`.
+`useLive(db, query): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes.
 
 - `rows` is `undefined` until the first answer, and again right after `db` or `query` change.
 - `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the rows stay.
@@ -71,7 +71,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
-`useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. The leftover bindings argument is still accepted.
+`useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
 
 ## usePull
 

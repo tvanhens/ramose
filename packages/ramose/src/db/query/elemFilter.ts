@@ -16,7 +16,7 @@
  * What cannot translate is rejected, never approximated: a pull-phase filter
  * runs per element after the row set is fixed, so it cannot correlate with
  * the enclosing query's vars, join two chains on a shared var, call an
- * engine rule, read time positions, or gate on `Q.when`.
+ * engine rule, or read time positions.
  */
 
 import type {
@@ -24,7 +24,6 @@ import type {
   PullElemOp,
   PullElemPred,
 } from "../../internal/core/query/ast.ts";
-import { isParam } from "../Params.ts";
 import { refTargetNs } from "../Pull.ts";
 import {
   collectBody,
@@ -90,9 +89,8 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
-/** A comparison operand as an elem-pred `value`: eids unwrap, params ride
- * through verbatim (substituted at query lowering, rejected by `db.pull`). */
-const lowerValue = (v: unknown): unknown => (isParam(v) ? v : unwrapEidLike(v));
+/** A comparison operand as an elem-pred `value`: eids unwrap. */
+const lowerValue = (v: unknown): unknown => unwrapEidLike(v);
 
 const isCmpPred = (p: PullElemPred): p is PullElemCmp =>
   typeof (p as PullElemCmp).op === "string" && Array.isArray((p as PullElemCmp).path);
@@ -132,7 +130,6 @@ const collectVarIds = (list: readonly BClause[], into: Set<number>): void => {
         c.branches.forEach((b) => collectVarIds(b, into));
         break;
       case "notGroup":
-      case "whenGroup":
         collectVarIds(c.clauses, into);
         break;
     }
@@ -217,10 +214,6 @@ export const lowerElemFilter = (
       case "ruleCall":
         return err(
           `a named rule does not lower to a pull filter on ${attr.ident} — the pull phase has no rule engine; inline the fragment instead`,
-        );
-      case "whenGroup":
-        return err(
-          `Q.when(...) does not lower to a pull filter on ${attr.ident} — a nested filter is lowered when the shape is built, before params bind; filter unconditionally, or fork the shape`,
         );
       default:
         return err(
@@ -317,7 +310,7 @@ export const lowerElemFilter = (
     const other = args.find((a) => !(isVar(a) && a.id === v.id));
     if (isVar(other)) {
       err(
-        `the where filter on ${attr.ident} compares two bound values — a pull-phase filter compares each reached value against a constant or param`,
+        `the where filter on ${attr.ident} compares two bound values — a pull-phase filter compares each reached value against a constant`,
       );
     }
     if (op === "re-find?") {
@@ -331,7 +324,7 @@ export const lowerElemFilter = (
       return {
         path: [],
         op: "re-find?",
-        value: isParam(pattern) ? pattern : regexSource(pattern as RegExp | string),
+        value: regexSource(pattern as RegExp | string),
       };
     }
     const first = args[0];
@@ -344,11 +337,9 @@ export const lowerElemFilter = (
       return {
         path: [],
         op: "in",
-        value: isParam(values)
-          ? values
-          : Array.isArray(values)
-            ? values.map(unwrapEidLike)
-            : err(`Q.in takes an array of values, got ${String(values)}`),
+        value: Array.isArray(values)
+          ? values.map(unwrapEidLike)
+          : err(`Q.in takes an array of values, got ${String(values)}`),
       };
     }
     const mapped = subjectFirst ? OPS[op] : FLIPPED[op];
@@ -374,7 +365,6 @@ export const lowerElemFilter = (
         return { not: andOf(predsOfList(c.clauses, v)) };
       case "memberOf":
       case "ruleCall":
-      case "whenGroup":
         return rejectClause(c);
     }
   };

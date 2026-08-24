@@ -17,7 +17,6 @@ import type {
   Equal,
   Expect,
   NotOne,
-  ParamError,
   Subscription,
 } from "../../src/db/internal.ts";
 import { Q, Query } from "../../src/db/internal.ts";
@@ -136,28 +135,19 @@ type _grouped = Expect<
   >
 >;
 
-// ── params: the declared head is the binding type ──────────────────────────
+// ── inline values: the query carries its own literals ──────────────────────
 
-const byName = Query.q({ name: User.name }, (p) =>
+const byName = Query.q(() =>
   pipe(
     Query.entities(User),
-    Query.is(User.name, p.name),
+    Query.is(User.name, "Ada"),
     Query.select({ age: User.age }),
   ),
 );
-const bound = db.effect.live(byName, { name: "Ada" });
+const bound = db.effect.live(byName);
 type _bound = Expect<
-  Equal<
-    typeof bound,
-    Stream.Stream<readonly { readonly age: number }[], DbError | ParamError>
-  >
+  Equal<typeof bound, Stream.Stream<readonly { readonly age: number }[], DbError>>
 >;
-
-// @ts-expect-error `name` binds the attribute's value type, not a number
-db.effect.live(byName, { name: 42 });
-
-// @ts-expect-error a declared head must be bound at the terminal
-db.effect.live(byName);
 
 // ── a pinned view still gives a Stream ─────────────────────────────────────
 

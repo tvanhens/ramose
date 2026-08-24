@@ -27,7 +27,6 @@ interface DbSeam {
    */
   readonly liveRaw?: (
     query: QueryObject<unknown, unknown, unknown>,
-    params?: unknown,
   ) => Subscription<unknown, unknown>;
 }
 

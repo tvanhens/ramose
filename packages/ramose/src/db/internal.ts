@@ -30,7 +30,6 @@ export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Entity.ts";
 export * from "./shapes.ts";
-export * from "./Params.ts";
 export {
   assertLoweringPurity,
   canonicalAstKey,

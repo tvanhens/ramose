@@ -79,9 +79,9 @@ const spyRawLive = (db: Ramose.ReadDb) => {
     throw new Error("spyRawLive: db has no liveRaw seam");
   }
   const orig = seam.liveRaw;
-  (seam as { liveRaw: typeof orig }).liveRaw = ((query, params) => {
+  (seam as { liveRaw: typeof orig }).liveRaw = ((query) => {
     calls += 1;
-    const sub = orig(query, params);
+    const sub = orig(query);
     const innerClose = sub.close.bind(sub);
     sub.close = () => {
       closed += 1;
@@ -355,24 +355,22 @@ describe("useLive (query form)", () => {
     }
   });
 
-  test("a params-only change re-runs without a new query object and does not blank rows", async () => {
-    const p = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
-    const object = limited;
-
+  test("changing an inline value resubscribes", async () => {
     const world = await todoWorld(2);
     const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
     try {
       const { result, rerender } = renderHook(
-        ({ n }: { n: number }) => useLive(db, limited, { n }),
+        ({ n }: { n: number }) => useLive(db, Ramose.Query.from(Todo).ids().limit(n)),
         { initialProps: { n: 1 } },
       );
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(spy.calls).toBe(1);
 
       rerender({ n: 2 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(result.current.error).toBeUndefined();
-      expect(limited).toBe(object);
+      expect(spy.calls).toBe(2);
     } finally {
       await close();
     }
@@ -524,15 +522,13 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
-  test("different params do not share; unmount of one does not close the other", async () => {
-    const p = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+  test("different inline values do not share; unmount of one does not close the other", async () => {
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
     const spy = spyRawLive(db);
     try {
-      const one = renderHook(() => useLive(db, limited, { n: 1 }));
-      const two = renderHook(() => useLive(db, limited, { n: 2 }));
+      const one = renderHook(() => useLive(db, Ramose.Query.from(Todo).ids().limit(1)));
+      const two = renderHook(() => useLive(db, Ramose.Query.from(Todo).ids().limit(2)));
       await waitFor(() => expect(one.result.current.rows).toEqual(ids(world.eids[0]!)));
       await waitFor(() => expect(two.result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(spy.calls).toBe(2);
@@ -750,16 +746,17 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
-  test("a params binding and its inline equivalent share one subscription", async () => {
-    const p = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
-    const inline = Ramose.Query.from(Todo).ids().limit(1);
+  test("two independently built identical inline queries share one subscription", async () => {
     const world = await todoWorld(1);
     const { db, close } = overlaySetup(world);
     const spy = spyRawLive(db);
     try {
-      const a = renderHook(() => useLive(db, limited, { n: 1 }));
-      const b = renderHook(() => useLive(db, inline));
+      const a = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).ids().limit(1)),
+      );
+      const b = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).ids().limit(1)),
+      );
       await waitFor(() => expect(a.result.current.rows).toEqual(ids(world.eids[0]!)));
       await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(spy.calls).toBe(1);
@@ -794,22 +791,16 @@ describe("useLive shared subscription cache", () => {
   });
 
   test("a throwing lowering does not resubscribe per render", async () => {
-    const p = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+    const broken = Ramose.Query.q(() => Ramose.Query.entities(Todo)).after(null);
     const world = await todoWorld(1);
     const { db, close } = overlaySetup(world);
     const spy = spyRawLive(db);
     try {
-      const { result, rerender } = renderHook(
-        ({ extra }: { extra: number }) =>
-          useLive(db, limited, { extra } as never),
-        { initialProps: { extra: 1 } },
-      );
+      const { result, rerender } = renderHook(() => useLive(db, broken));
       await waitFor(() => expect(result.current.error).toBeDefined());
-      expect((result.current.error as { _tag: string })._tag).toBe("ParamError");
       expect(spy.calls).toBe(1);
-      rerender({ extra: 1 });
-      rerender({ extra: 1 });
+      rerender();
+      rerender();
       await settle();
       expect(spy.calls).toBe(1);
     } finally {
@@ -817,9 +808,7 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
-  test("a params-only change does not warn", async () => {
-    const p = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+  test("a single inline-value change does not warn", async () => {
     const world = await todoWorld(2);
     const { db, close } = overlaySetup(world);
     const warnings: unknown[][] = [];
@@ -829,7 +818,7 @@ describe("useLive shared subscription cache", () => {
     };
     try {
       const { result, rerender } = renderHook(
-        ({ n }: { n: number }) => useLive(db, limited, { n }),
+        ({ n }: { n: number }) => useLive(db, Ramose.Query.from(Todo).ids().limit(n)),
         { initialProps: { n: 1 } },
       );
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));

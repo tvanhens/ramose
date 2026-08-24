@@ -9,12 +9,6 @@
 
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
-import {
-  isParam,
-  type AnyParam,
-  type AnyParamSet,
-  type ScopeOf,
-} from "../Params.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, SelectResult, Shape, ValidShape } from "../shapes.ts";
 import {
   entities,
@@ -23,7 +17,6 @@ import {
   limit as limitStage,
   offset as offsetStage,
   orderBy as orderByStage,
-  paramsOfStage,
   select as selectStage,
   type FilterStage,
   type IdRow,
@@ -146,12 +139,9 @@ const withDefaultShape = (pipe: Pipeline): Pipeline => {
 
 // ── where object ────────────────────────────────────────────────────────────
 
-/** Covariant in `T` so `Param<Eid<N>>` is accepted where a number/ref is. */
-type ParamLike<T> = { readonly _tag: "Param"; readonly _type?: T };
-
 type EqValue<A> = IsRef<A> extends true
-  ? AttrValue<A> | { readonly id: number } | ParamLike<AttrValue<A>> | ParamLike<Eid<AnyEntity>>
-  : AttrValue<A> | ParamLike<AttrValue<A>>;
+  ? AttrValue<A> | { readonly id: number }
+  : AttrValue<A>;
 
 /**
  * Object-literal equality filters. Keys are the entity's fields (plus `id`);
@@ -160,78 +150,7 @@ type EqValue<A> = IsRef<A> extends true
 export type WhereEq<N extends AnyEntity> = {
   readonly [K in keyof N["fields"]]?: EqValue<N["fields"][K]>;
 } & {
-  readonly id?: Eid<N> | number | { readonly id: number } | ParamLike<Eid<N>> | ParamLike<number>;
-};
-
-type ScopeOfWhere<W> = ScopeOf<W[keyof W]>;
-
-/** Accumulate `ScopeOf` from a value; foreign-set tokens collapse to `never`. */
-export type MergeScope<PB, V> = [ScopeOf<V>] extends [never]
-  ? PB
-  : [PB] extends [never]
-    ? ScopeOf<V>
-    : [ScopeOf<V>] extends [PB]
-      ? [PB] extends [ScopeOf<V>]
-        ? PB
-        : never
-      : never;
-
-type ForeignSet = {
-  readonly "ramose/query": "this param belongs to a different set than the query is scoped to";
-};
-
-type CompatibleWhere<PB, W> = [ScopeOfWhere<W>] extends [never]
-  ? W
-  : [PB] extends [never]
-    ? W
-    : [ScopeOfWhere<W>] extends [PB]
-      ? [PB] extends [ScopeOfWhere<W>]
-        ? W
-        : ForeignSet
-      : ForeignSet;
-
-type CompatibleValue<PB, V> = [ScopeOf<V>] extends [never]
-  ? V
-  : [PB] extends [never]
-    ? V
-    : [ScopeOf<V>] extends [PB]
-      ? [PB] extends [ScopeOf<V>]
-        ? V
-        : ForeignSet
-      : ForeignSet;
-
-// ── param set ───────────────────────────────────────────────────────────────
-
-const setOf = (p: AnyParam): AnyParamSet => p.set as AnyParamSet;
-
-const adoptParam = (current: AnyParamSet | undefined, p: AnyParam): AnyParamSet => {
-  const set = setOf(p);
-  if (current === undefined || current === set) return set;
-  if (current[p.key] !== p) {
-    throw new Error(
-      `ramose/params: the param "${p.key}" belongs to a different set than the one this query is scoped to`,
-    );
-  }
-  return current;
-};
-
-const adoptValue = (
-  current: AnyParamSet | undefined,
-  value: unknown,
-  seen = new Set<object>(),
-): AnyParamSet | undefined => {
-  if (isParam(value)) return adoptParam(current, value);
-  if (typeof value === "function") {
-    let next = current;
-    for (const p of paramsOfStage(value)) next = adoptParam(next, p);
-    return next;
-  }
-  if (value === null || typeof value !== "object") return current;
-  if (seen.has(value)) return current;
-  seen.add(value);
-  let next = current;
-  for (const child of Object.values(value)) next = adoptValue(next, child, seen);
-  return next;
+  readonly id?: Eid<N> | number | { readonly id: number };
 };
 
 /**
@@ -282,66 +201,54 @@ const applyStages = (pipe: Pipeline, stages: readonly FilterStage[]): Pipeline =
 export interface FluentQuery<
   N extends AnyEntity = AnyEntity,
   Row = unknown,
-  PB = never,
   Out = readonly Row[],
-> extends QueryObject<Row, PB, Out> {
+> extends QueryObject<Row, never, Out> {
   /**
    * Conjunction of equality filters, keys typechecked from the entity's
    * fields; or one-or-more stage fragments (`Query.some`, `Query.matching`, …).
    */
-  where<const W extends WhereEq<N>>(
-    eq: W & CompatibleWhere<PB, W>,
-  ): FluentQuery<N, Row, MergeScope<PB, W[keyof W]>, Out>;
-  where(...stages: readonly FilterStage[]): FluentQuery<N, Row, PB, Out>;
+  where<const W extends WhereEq<N>>(eq: W): FluentQuery<N, Row, Out>;
+  where(...stages: readonly FilterStage[]): FluentQuery<N, Row, Out>;
 
   /** Narrow / reshape the row. Without this, the default is the full entity. */
   select<const S extends Shape>(
     shape: S & ValidShape<S>,
-  ): FluentQuery<N, SelectResult<S>, PB>;
+  ): FluentQuery<N, SelectResult<S>>;
 
   orderBy(
     key: (string & keyof Row) | PathCarrier,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
-  ): FluentQuery<N, Row, PB, Out>;
+  ): FluentQuery<N, Row, Out>;
 
-  limit<V extends number | AnyParam>(
-    n: V & CompatibleValue<PB, V>,
-  ): FluentQuery<N, Row, MergeScope<PB, V>, Out>;
+  limit(n: number): FluentQuery<N, Row, Out>;
 
-  offset<V extends number | AnyParam>(
-    n: V & CompatibleValue<PB, V>,
-  ): FluentQuery<N, Row, MergeScope<PB, V>, Out>;
+  offset(n: number): FluentQuery<N, Row, Out>;
 
   /**
    * Id-only projection — today's cheap live-subscription workhorse.
    * Default-full-entity widens invalidation; `.select` / `.ids` are the levers.
    */
-  ids(): FluentQuery<N, IdRow, PB>;
+  ids(): FluentQuery<N, IdRow>;
 }
 
-const makeFluent = <N extends AnyEntity, Row, PB>(
+const makeFluent = <N extends AnyEntity, Row>(
   ns: N,
   pipe: Pipeline,
-  paramSet: AnyParamSet | undefined,
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
-): FluentQuery<N, Row, PB> => {
-  const qv = makeQueryObject<Row, PB>(
-    undefined,
-    paramSet,
+): FluentQuery<N, Row> => {
+  const qv = makeQueryObject<Row, never>(
     () => withDefaultShape(pipe),
     stripCursor,
     take,
     seek,
   );
-  const next = (
-    nextPipe: Pipeline,
-    nextSet: AnyParamSet | undefined = paramSet,
-  ): FluentQuery<N, any, any> => makeFluent(ns, nextPipe, nextSet, stripCursor, take, seek);
+  const next = (nextPipe: Pipeline): FluentQuery<N, any> =>
+    makeFluent(ns, nextPipe, stripCursor, take, seek);
 
-  const fluent = qv as FluentQuery<N, Row, PB>;
+  const fluent = qv as FluentQuery<N, Row>;
   fluent.where = ((arg: WhereEq<N> | FilterStage, ...rest: FilterStage[]) => {
     if (arg === undefined && rest.length === 0) {
       throw new Error(
@@ -349,24 +256,16 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
       );
     }
     if (typeof arg === "function") {
-      const stages = [arg, ...rest];
-      let set = paramSet;
-      for (const stage of stages) set = adoptValue(set, stage);
-      return next(applyStages(pipe, stages), set);
+      return next(applyStages(pipe, [arg, ...rest]));
     }
-    const eq = arg as Record<string, unknown>;
-    let set = paramSet;
-    for (const value of Object.values(eq)) set = adoptValue(set, value);
-    return next(applyEq(pipe, ns, eq), set);
-  }) as FluentQuery<N, Row, PB>["where"];
+    return next(applyEq(pipe, ns, arg as Record<string, unknown>));
+  }) as FluentQuery<N, Row>["where"];
   fluent.select = ((shape: Shape & ValidShape<Shape>) =>
-    next(selectStage(shape)(pipe), adoptValue(paramSet, shape))) as FluentQuery<N, Row, PB>["select"];
+    next(selectStage(shape)(pipe))) as FluentQuery<N, Row>["select"];
   fluent.orderBy = (key, dir, opts) => next(orderByStage(key, dir, opts)(pipe));
-  fluent.limit = ((n: number | AnyParam) =>
-    next(limitStage(n)(pipe), adoptValue(paramSet, n))) as FluentQuery<N, Row, PB>["limit"];
-  fluent.offset = ((n: number | AnyParam) =>
-    next(offsetStage(n)(pipe), adoptValue(paramSet, n))) as FluentQuery<N, Row, PB>["offset"];
-  fluent.ids = () => makeFluent(ns, idsStage()(pipe), paramSet, stripCursor, take, seek);
+  fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
+  fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
+  fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek);
   // terminals stay on the same object so `.where(…).one()` typechecks
   const baseOne = qv.one.bind(qv);
   const baseFail = qv.oneOrFail.bind(qv);
@@ -374,17 +273,17 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
   const baseLogic = qv.logic.bind(qv);
   fluent.one = () => {
     const taken = baseOne();
-    return makeFluent(ns, pipe, paramSet, taken.stripCursor, taken.take, taken.seek) as never;
+    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek) as never;
   };
   fluent.oneOrFail = () => {
     const taken = baseFail();
-    return makeFluent(ns, pipe, paramSet, taken.stripCursor, taken.take, taken.seek) as never;
+    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek) as never;
   };
   fluent.after = (cursor) => {
     const paged = baseAfter(cursor);
-    return makeFluent(ns, pipe, paramSet, paged.stripCursor, paged.take, paged.seek) as never;
+    return makeFluent(ns, pipe, paged.stripCursor, paged.take, paged.seek) as never;
   };
-  fluent.logic = () => makeFluent(ns, pipe, paramSet, true) as never;
+  fluent.logic = () => makeFluent(ns, pipe, true) as never;
   return fluent;
 };
 
@@ -394,9 +293,9 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
  * cheap subscription. Put changing values in `.where` — two independently
  * built queries with the same literals share a live subscription.
  */
-export const from = <N extends AnyEntity>(ns: N): FluentQuery<N, EntityRow<N>, never> => {
+export const from = <N extends AnyEntity>(ns: N): FluentQuery<N, EntityRow<N>> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
     throw new Error("ramose/query: Query.from(...) takes an entity");
   }
-  return makeFluent(ns, entities(ns), undefined, false);
+  return makeFluent(ns, entities(ns), false);
 };

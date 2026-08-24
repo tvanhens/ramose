@@ -25,7 +25,6 @@ import type {
   Operation,
   RunEntity,
 } from "./Operation.ts";
-import type { ParamArgs } from "./Params.ts";
 import type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
 import type { Page, QueryObject } from "./query/index.ts";
 import type { Tx, YieldContext, YieldError } from "./Tx.ts";
@@ -40,12 +39,10 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
 
   query<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
-    ...params: ParamArgs<P>
   ): Effect.Effect<Out, QueryError<Out, P>>;
 
   live<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
-    ...params: ParamArgs<P>
   ): Stream.Stream<Out, QueryError<Out, P>>;
 
   pull<const P>(

@@ -120,12 +120,10 @@ charged against the existing query budget, so a runaway recursion is a
    makes pipe thread. `Query.stage(frag)` lifts a userland fragment with
    the same adapter the shipped combinators use, so a userland combinator
    is indistinguishable from a shipped one.
-2. `yield* q.open(p)` — a whole closed query as a subquery: clauses
-   inline, declared params rebind from `p` (a bound handle correlates, an
-   outer token forwards, a literal fixes), and `{ focus, cols }` comes
-   back to keep constraining. Cursor terminals don't delegate — extend
-   then order, or strip explicitly with `q.logic()`. `Query.enrich` /
-   `Query.refine` are derived from `open`.
+2. `yield* q.open()` — a whole closed query as a subquery: clauses
+   inline, and `{ focus, cols }` comes back to keep constraining. Cursor
+   terminals don't delegate — extend then order, or strip explicitly with
+   `q.logic()`. `Query.enrich` / `Query.refine` are derived from `open`.
 3. `Query.rule` — engine-expanded, recursive, budgeted; serializes with
    the query.
 

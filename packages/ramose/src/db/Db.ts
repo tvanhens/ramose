@@ -21,7 +21,7 @@ import type { AnySchema } from "./Schema.ts";
 import { type SchemaEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
-import { NotOne, ParamError } from "./Errors.ts";
+import { NotOne } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
@@ -36,7 +36,6 @@ import { shareEqualDeep } from "./shareEqualDeep.ts";
 import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
-import type { ParamArgs } from "./Params.ts";
 import {
   lowerQueryObject,
   type AnyQueryObject,
@@ -46,11 +45,9 @@ import {
 } from "./query/index.ts";
 import type { SessionPrincipal } from "./session.ts";
 import {
-  bindPullParams,
   type IdentPullPattern,
   lowerPullPattern,
   type Pull,
-  rejectPullParams,
   reshapePullResult,
   type ValidatePull,
 } from "./Pull.ts";
@@ -60,13 +57,12 @@ import { txBuilder } from "./Tx.ts";
 
 /**
  * What `db.query` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
- * when the peer answers zero or two rows; a parameterized query adds
- * {@link ParamError} for a missing / unknown / ill-typed binding. Every
- * other query — a rows array, `.one()`'s `row | null`, a cursor
- * {@link Page}, a scalar aggregate — is {@link DbError} only.
+ * when the peer answers zero or two rows. Every other query — a rows array,
+ * `.one()`'s `row | null`, a cursor {@link Page}, a scalar aggregate — is
+ * {@link DbError} only. The unused second type parameter stays so existing
+ * `QueryError<Out, P>` mentions still resolve.
  */
-export type QueryError<R = unknown, P = never> =
-  | ([P] extends [never] ? never : ParamError)
+export type QueryError<R = unknown, _P = never> =
   | ([R] extends [readonly unknown[]]
       ? DbError
       : [null] extends [R]
@@ -192,12 +188,11 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
   readonly schema: C;
 
   /** Run a {@link QueryObject} once. Put values in the query
-   * (`where({ title })`); the leftover bindings argument is still accepted.
-   * The result is the query's terminal: the rows array, one row (or `null`)
-   * after `one()` / `oneOrFail()`, a `Page` after `after(cursor)`. */
+   * (`where({ title })`). The result is the query's terminal: the rows
+   * array, one row (or `null`) after `one()` / `oneOrFail()`, a `Page`
+   * after `after(cursor)`. */
   query<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
-    ...params: ParamArgs<P>
   ): Promise<Out>;
 
   /**
@@ -207,11 +202,10 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
    * session's `t` moves. A pinned view (`asOf` / `history`) emits once and
    * completes. A pass that returns the rows already emitted is not
    * emitted again: a write this query does not see is not a re-render.
-   * Put values in the query; the leftover bindings argument is still accepted.
+   * Put values in the query.
    */
   live<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
-    ...params: ParamArgs<P>
   ): Subscription<Out, QueryError<Out, P>>;
 
   /**
@@ -322,7 +316,7 @@ export interface DbSeam {
   /**
    * Equal iff two views read the same coordinates over the same client.
    * This is the view half of a live subscription key:
-   * `(viewKey, post-binding astKey)`.
+   * `(viewKey, astKey)`.
    */
   readonly key: string;
   /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
@@ -346,7 +340,6 @@ export interface DbSeam {
    */
   readonly liveRaw: (
     query: AnyQueryObject,
-    params?: unknown,
   ) => Subscription<unknown, unknown>;
 }
 
@@ -408,7 +401,6 @@ const terminal = (e: { readonly _tag: string }): boolean =>
   e._tag === "Unauthorized" ||
   e._tag === "QueryBudgetExceeded" ||
   e._tag === "NotOne" ||
-  e._tag === "ParamError" ||
   e._tag === "OperationRejected";
 
 const isGenerator = (
@@ -466,7 +458,7 @@ const makeRead = <C extends AnySchema>(
         "pull",
         compact({
           eid: lowerSubject(subject),
-          pattern: bindPullParams(lowerPullPattern(pattern), rejectPullParams),
+          pattern: lowerPullPattern(pattern),
           asOf: view.asOf,
           history: view.history === true ? true : undefined,
         }),
@@ -486,7 +478,6 @@ const makeRead = <C extends AnySchema>(
   const runQuery = (
     input: AnyQueryObject,
     minT: number | undefined,
-    bindings: Readonly<Record<string, unknown>> | undefined,
     raw = false,
   ): Effect.Effect<
     {
@@ -494,16 +485,10 @@ const makeRead = <C extends AnySchema>(
       readonly t: number;
       readonly viewed?: number;
     },
-    DbError | NotOne | ParamError
+    DbError | NotOne
   > =>
     Effect.gen(function* () {
-      let lowered: LoweredKernelQuery;
-      try {
-        lowered = lowerQueryObject(input, bindings);
-      } catch (e) {
-        if (e instanceof ParamError) return yield* Effect.fail(e);
-        throw e;
-      }
+      const lowered: LoweredKernelQuery = lowerQueryObject(input);
       const reply = record(
         yield* wire.read(
           name,
@@ -625,11 +610,10 @@ const makeRead = <C extends AnySchema>(
 
   const liveStanding = (
     input: AnyQueryObject,
-    bindings: Readonly<Record<string, unknown>> | undefined,
     raw: boolean,
   ) =>
-    standing<unknown, DbError | NotOne | ParamError>((minT) =>
-      runQuery(input, minT, bindings, raw).pipe(
+    standing<unknown, DbError | NotOne>((minT) =>
+      runQuery(input, minT, raw).pipe(
         Effect.map((pass) => ({
           value: pass.rows,
           t: pass.t,
@@ -642,22 +626,17 @@ const makeRead = <C extends AnySchema>(
     name,
     schema,
 
-    query: ((
-      input: AnyQueryObject,
-      bindings?: Readonly<Record<string, unknown>>,
-    ) =>
+    query: ((input: AnyQueryObject) =>
       fenced(
         Effect.suspend(() =>
-          runQuery(input, undefined, bindings).pipe(
+          runQuery(input, undefined).pipe(
             Effect.map((r) => r.rows),
           ),
         ),
       )) as EffectReadDb<C>["query"],
 
-    live: ((
-      input: AnyQueryObject,
-      bindings?: Readonly<Record<string, unknown>>,
-    ) => liveStanding(input, bindings, false)) as EffectReadDb<C>["live"],
+    live: ((input: AnyQueryObject) =>
+      liveStanding(input, false)) as EffectReadDb<C>["live"],
 
     pull: ((subject: unknown, pattern: unknown) =>
       fenced(
@@ -702,14 +681,8 @@ const makeRead = <C extends AnySchema>(
     },
   };
   // enumerable, so `makeDb`'s spread carries it onto the writable db too
-  attachSeam(read, wire, name, view, (query, params) =>
-    fromStream(
-      liveStanding(
-        query,
-        params as Readonly<Record<string, unknown>> | undefined,
-        true,
-      ),
-    ),
+  attachSeam(read, wire, name, view, (query) =>
+    fromStream(liveStanding(query, true)),
   );
   return read;
 };
@@ -797,29 +770,17 @@ const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
   const read = {
     name: inner.name,
     schema: inner.schema,
-    query: ((
-      input: AnyQueryObject,
-      bindings?: Readonly<Record<string, unknown>>,
-    ) =>
+    query: ((input: AnyQueryObject) =>
       asPromise(
-        (
-          inner.query as (
-            q: AnyQueryObject,
-            p?: Readonly<Record<string, unknown>>,
-          ) => Effect.Effect<unknown, QueryError>
-        )(input, bindings),
+        (inner.query as (q: AnyQueryObject) => Effect.Effect<unknown, QueryError>)(
+          input,
+        ),
       )) as ReadDb<C>["query"],
-    live: ((
-      input: AnyQueryObject,
-      bindings?: Readonly<Record<string, unknown>>,
-    ) =>
+    live: ((input: AnyQueryObject) =>
       fromStream(
-        (
-          inner.live as (
-            q: AnyQueryObject,
-            p?: Readonly<Record<string, unknown>>,
-          ) => Stream.Stream<unknown, QueryError>
-        )(input, bindings),
+        (inner.live as (q: AnyQueryObject) => Stream.Stream<unknown, QueryError>)(
+          input,
+        ),
       )) as ReadDb<C>["live"],
     pull: ((subject: unknown, pattern: unknown) =>
       asPromise(inner.pull(subject as never, pattern as never))) as ReadDb<

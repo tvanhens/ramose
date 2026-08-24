@@ -76,7 +76,6 @@ export {
   some,
   stage,
   updatedSince,
-  when,
   type FilterStage,
   type IdRow,
   type TraversalStage,

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Params infrastructure removed (tracker #205)
+
+`Ramose.params`, `EidOf`, `optional` (the param marker), and `Query.when`
+/ `Q.when` are deleted. There is no deprecation window. App queries put
+changing values in `.where` as literals (`where({ issue: issueId })`).
+Conditional clauses are ordinary JS on the immutable builder
+(`if (assignee) q = q.where({ assignee })`).
+
+**Breaking:**
+- Bindings arguments are gone: `db.query(q)`, `db.live(q)`,
+  `useLive(db, q)`, `useQuery(db, q)`.
+- `Query.q` is single-arg only (`Query.q(body)`). The two-arg
+  `Query.q(spec, body)` overload is deleted.
+- `EidOf` is gone (also the leftover #204 casing item).
+- Subscription identity is the lowered AST. Two independently built
+  identical inline queries share one `useLive` subscription; changing a
+  literal resubscribes. Permuted `where({ done, rank })` objects share a
+  key because `applyEq` sorts field keys.
+
 ### `stored()` rejects re-branding an already-branded schema
 
 `PairableSchema` now fails a helper (or a previous `stored`) branded

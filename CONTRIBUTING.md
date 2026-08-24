@@ -33,7 +33,7 @@ internals stay Datomic-shaped.
 The Effect hatch's tx handle is `TxHandle` (`tx.entity()`), not `Entity`.
 Value-type helpers `Long` / `Instant` / `Uuid` stay as the advanced-form
 vocabulary (#207). `Query.q` + `pipe` remain the generator/kernel spelling
-under `Query.from`. The casing pass (`EidOf`, `./workerEntry`, error
+under `Query.from`. The remaining casing pass (`./workerEntry`, error
 suffixes) is deferred — do not bikeshed it on this pass.
 
 ## Local checks
