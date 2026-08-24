@@ -57,7 +57,7 @@ import {
 } from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
-import { type WritesMode, WRITES_ENV_KEY, resolveWrites } from "./writes.ts";
+import { type WritesMode, WRITES_ENV_KEY, isUnrecognizedWrites, resolveWrites } from "./writes.ts";
 export type { WritesMode } from "./writes.ts";
 export { resolveWrites, WRITES_ENV_KEY } from "./writes.ts";
 
@@ -145,25 +145,37 @@ export type AuthEnvValue = string | object;
  * fail the deploy on divergence — do not configure auth only on the Worker.
  */
 export interface ServerAuth {
-  /** Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is what arms enforcement. */
+  /**
+   * Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is
+   * what arms enforcement. A verifier without this fails the deploy.
+   */
   readonly policy?: string | undefined;
-  /** Where the issuer's public keys live. Required once `policy` is set. */
+  /**
+   * Where the issuer's public keys live. Required once `policy` is set;
+   * setting it without a policy fails the deploy.
+   */
   readonly jwksUrl?: AuthEnvValue | undefined;
   /**
    * Name of a service binding on the server Worker to fetch `jwksUrl`
    * through. Required when the issuer is another Worker on the same account.
    */
   readonly jwksService?: string | undefined;
-  /** Accepted `iss` values — one, or a comma-separated set. Required once `policy` is set. */
+  /**
+   * Accepted `iss` values — one, or a comma-separated set. Required once
+   * `policy` is set; setting it without a policy fails the deploy.
+   */
   readonly issuers?: readonly string[] | AuthEnvValue | undefined;
-  /** The `aud` every token must carry. Required once `policy` is set. */
+  /**
+   * The `aud` every token must carry. Required once `policy` is set;
+   * setting it without a policy fails the deploy.
+   */
   readonly aud?: string | undefined;
   /** Cap on `exp - iat`, in seconds. @default 900 */
   readonly maxTtl?: number | undefined;
   /**
    * The pinned verifier/minter contract ({@link import("./Auth.ts").claims}
    * builds the matching payload). Stands in for `issuers`, `aud` and
-   * `maxTtl`.
+   * `maxTtl`. Setting it without a policy fails the deploy.
    */
   readonly jwt?: AuthConfig | undefined;
   /** Origins the server answers CORS for once a policy narrows it. */
@@ -382,12 +394,22 @@ export const ownedPeerEnv = (
   ...writesEnv(writes),
 });
 
-/** @internal Completeness: policy implies jwksUrl + issuers + aud. */
+/**
+ * @internal Completeness: policy implies jwksUrl + issuers + aud, and a
+ * bound verifier implies policy. Binding nothing stays open.
+ */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
-  if (peerAuth === undefined || !isBound(peerAuth.policy)) {
-    return undefined;
-  }
+  if (peerAuth === undefined) return undefined;
   const auth = withAuthConfig(peerAuth);
+  const verifier: string[] = [];
+  if (isBound(auth.jwksUrl)) verifier.push(AUTH_ENV_KEYS.jwksUrl);
+  if (isBound(auth.jwksService)) verifier.push(AUTH_ENV_KEYS.jwksService);
+  if (list(auth.issuers) !== undefined) verifier.push(AUTH_ENV_KEYS.issuers);
+  if (isBound(auth.aud)) verifier.push(AUTH_ENV_KEYS.aud);
+  if (!isBound(peerAuth.policy)) {
+    if (verifier.length === 0) return undefined;
+    return `ramose: ${verifier.join(", ")} ${verifier.length === 1 ? "is" : "are"} set but auth.policy is not — a bound verifier without a policy leaves the server open to everyone`;
+  }
   const missing: string[] = [];
   if (!isBound(auth.jwksUrl)) missing.push(AUTH_ENV_KEYS.jwksUrl);
   if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
@@ -510,6 +532,10 @@ export const compareWritesToWorker = (
 export const WRITES_ALL_POLICY_WARNING =
   'ramose: writes is "all" while a policy is installed — raw /transact stays open for app-class tokens. Set writes: "operations" (the default) or RAMOSE_WRITES=operations to close it; "all" is the explicit opt-out for admin/seed tooling.';
 
+/** @internal Match the Worker's `writes.unrecognized` startup log. */
+export const unrecognizedWritesWarningMessage = (value: unknown): string =>
+  `ramose: RAMOSE_WRITES=${JSON.stringify(value)} is not "all" or "operations"; using "operations"`;
+
 const workerWritesOf = (worker: unknown): unknown => {
   if (typeof worker === "string") return undefined;
   return workerEnvOf(worker)?.[WRITES_ENV_KEY];
@@ -542,6 +568,25 @@ export const warnWritesAllPolicy = (
   worker: unknown,
 ): string | undefined => {
   const message = writesAllPolicyWarning(writes, peerAuth, worker);
+  if (message !== undefined) console.warn(message);
+  return message;
+};
+
+/**
+ * @internal Warning (not a deploy error) when `RAMOSE_WRITES` is set to
+ * something other than `"all"` or `"operations"`. Fail-closed is already
+ * correct (`resolveWrites` treats it as `"operations"`); name the value
+ * so an operator who typed `ALL` sees why raw writes stayed closed.
+ */
+export const unrecognizedWritesWarning = (worker: unknown): string | undefined => {
+  const got = workerWritesOf(worker);
+  if (!isUnrecognizedWrites(got)) return undefined;
+  return unrecognizedWritesWarningMessage(got);
+};
+
+/** @internal Emit {@link unrecognizedWritesWarning} at deploy. */
+export const warnUnrecognizedWrites = (worker: unknown): string | undefined => {
+  const message = unrecognizedWritesWarning(worker);
   if (message !== undefined) console.warn(message);
   return message;
 };
@@ -762,6 +807,7 @@ const attributes = Effect.fn(function* (
       }
     }
     warnWritesAllPolicy(props.writes, props.auth, props.worker);
+    warnUnrecognizedWrites(props.worker);
   }
   const worker = resolveWorker(props.worker as ServerWorker);
   const chosen = props.url ?? worker.url;

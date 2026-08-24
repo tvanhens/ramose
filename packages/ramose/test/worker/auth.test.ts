@@ -171,6 +171,24 @@ describe("policy configured", () => {
     }
   });
 
+  test("a bound verifier with no policy denies every /db/* and leaves /health alone", async () => {
+    const from = events.length;
+    const peer = makePeer("acme", {
+      env: { RAMOSE_JWKS_JSON: JWKS, RAMOSE_JWT_ISS: ISS, RAMOSE_JWT_AUD: AUD },
+    });
+    await peer.seed(SCHEMA);
+    expect((await peer.json("/health")).status).toBe(200);
+    const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
+    expect((await peer.json("/db/acme/query", q)).status).toBe(401);
+    expect((await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "open?" }] }))).status).toBe(401);
+    expect((await peer.json("/db/acme/info")).status).toBe(401);
+    expect((await peer.fetch("/")).status).toBe(404);
+    const closed = events.slice(from).filter((e) => e.event === "auth.fail-closed");
+    expect(closed).toHaveLength(1);
+    expect(String(closed[0]!.reason)).toMatch(/RAMOSE_POLICY is not/);
+    peer.close();
+  });
+
   /**
    * Deployed, the issuer is usually another Worker on the same account, and
    * Cloudflare answers a Worker→Worker subrequest over `*.workers.dev` with

@@ -107,7 +107,7 @@ The API token also needs `Account / D1 / Edit` for Better Auth's database.
 Until you add a policy there is no authentication: every caller has full rights on every database. Set one before you point real users at a deployed server, and walk [Before production](/guides/before-production/) first.
 :::
 
-Pass `auth` and `token` on `Ramose.Server` — that is the only configuration path. Owned form writes them onto the Worker. A policy with no `jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every request at run time. A policy that never reaches the Worker as `RAMOSE_POLICY` also fails the deploy (fail closed). Do not also hand-copy `RAMOSE_*` onto a Worker.
+Pass `auth` and `token` on `Ramose.Server` — that is the only configuration path. Owned form writes them onto the Worker. A policy with no `jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every request at run time. A verifier (`jwksUrl`, `issuers`, `aud`, or `jwt`) with no policy also fails the deploy — that is not an open server. A policy that never reaches the Worker as `RAMOSE_POLICY` also fails the deploy (fail closed). Do not also hand-copy `RAMOSE_*` onto a Worker. Binding nothing — no policy, no verifier — stays open, which is the honest spelling of a new server.
 
 ```ts title="alchemy.run.ts"
 export const Server = Ramose.Server("Ramose", {

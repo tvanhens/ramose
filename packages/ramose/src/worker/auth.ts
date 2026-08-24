@@ -5,10 +5,13 @@
  *   set    JWT only; `RAMOSE_TOKEN` is not a data-plane principal on `/db/:name`
  *
  * A configured policy makes verification mandatory: a missing JWKS / issuer /
- * audience denies every `/db/*` and logs once, never falls open. Keys come from
- * `RAMOSE_JWKS_URL`, or `RAMOSE_JWKS_JSON` for offline runs; when the issuer is
- * a sibling Worker, `RAMOSE_JWKS_SERVICE` names the service binding the fetch
- * is dispatched through (see {@link jwksFetch}).
+ * audience denies every `/db/*` and logs once, never falls open. A bound
+ * verifier (`RAMOSE_JWKS_*` / `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD`) with no
+ * policy is the same fail-closed: that is not an open server. Binding
+ * nothing stays open. Keys come from `RAMOSE_JWKS_URL`, or `RAMOSE_JWKS_JSON`
+ * for offline runs; when the issuer is a sibling Worker, `RAMOSE_JWKS_SERVICE`
+ * names the service binding the fetch is dispatched through (see
+ * {@link jwksFetch}).
  */
 
 import {
@@ -124,10 +127,28 @@ function keySetOf(env: AuthEnv): JWTVerifyGetKey {
   return createLocalJWKSet(JSON.parse(env.RAMOSE_JWKS_JSON as string));
 }
 
+function verifierBindings(env: AuthEnv): string[] {
+  const set: string[] = [];
+  if (env.RAMOSE_JWKS_URL) set.push("RAMOSE_JWKS_URL");
+  if (env.RAMOSE_JWKS_JSON) set.push("RAMOSE_JWKS_JSON");
+  if (env.RAMOSE_JWKS_SERVICE) set.push("RAMOSE_JWKS_SERVICE");
+  if (csv(env.RAMOSE_JWT_ISS).length > 0) set.push("RAMOSE_JWT_ISS");
+  if (env.RAMOSE_JWT_AUD) set.push("RAMOSE_JWT_AUD");
+  return set;
+}
+
 function build(env: AuthEnv): AuthState {
   const parsed = policyOf(env);
   const maxTtl = envInt(env.RAMOSE_JWT_MAX_TTL, DEFAULT_JWT_MAX_TTL);
-  if (!parsed.configured) return { configured: false, maxTtl };
+  if (!parsed.configured) {
+    const verifier = verifierBindings(env);
+    if (verifier.length === 0) return { configured: false, maxTtl };
+    return {
+      configured: true,
+      broken: `${verifier.join(", ")} ${verifier.length === 1 ? "is" : "are"} set but RAMOSE_POLICY is not — a bound verifier without a policy leaves the server open to everyone`,
+      maxTtl,
+    };
+  }
   const issuers = csv(env.RAMOSE_JWT_ISS);
   const missing: string[] = [];
   if (parsed.error !== undefined) missing.push(`RAMOSE_POLICY is malformed (${parsed.error})`);
