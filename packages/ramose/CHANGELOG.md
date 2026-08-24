@@ -14,14 +14,20 @@ Conditional clauses are ordinary JS on the immutable builder
 - Bindings arguments are gone: `db.query(q)`, `db.live(q)`,
   `useLive(db, q)`, `useQuery(db, q)`. A query that cannot lower
   (`after(null)` with no `orderBy`, a bad `limit`, …) fails as
-  `InvalidRequest` — bindings used to be `ParamError`.
+  `InvalidRequest` on `db.query`, `db.live`, and an operation's `q`
+  handle. Bindings used to be `ParamError`.
+- `ParamError` is deleted (export, docs, portable pin). Nothing can
+  construct it.
 - `Query.q` is single-arg only (`Query.q(body)`). The two-arg
   `Query.q(spec, body)` overload is deleted.
 - `EidOf` is gone (also the leftover #204 casing item).
 - Subscription identity is the lowered AST. Two independently built
   identical inline queries share one `useLive` subscription; changing a
   literal resubscribes. Permuted `where({ done, rank })` objects share a
-  key because `applyEq` sorts field keys.
+  key because `applyEq` sorts field keys. An unlowerable query keys on
+  the lowering error message, so a render-fresh
+  `useLive(db, Query.from(Todo).after(null))` does not resubscribe every
+  render.
 
 ### `stored()` rejects re-branding an already-branded schema
 

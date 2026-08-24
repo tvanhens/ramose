@@ -35,9 +35,9 @@
  * | `OperationRejected`   | named operation refused (409)              |
  *
  * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link ParamError} (bad query bindings), {@link PolicyError} (policy
- * failed to compile — deploy time). A runtime policy denial is
- * {@link Unauthorized} or {@link TxRejected} with `code: "policy"`.
+ * {@link PolicyError} (policy failed to compile — deploy time). A runtime
+ * policy denial is {@link Unauthorized} or {@link TxRejected} with
+ * `code: "policy"`. A query that cannot lower is {@link InvalidRequest}.
  *
  * Wire shapes the classifier understands:
  *
@@ -116,20 +116,6 @@ export class InternalError extends Data.TaggedError("InternalError")<{
 export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly message: string;
   readonly cause?: unknown;
-}> {}
-
-/**
- * A query's params were bound wrong: a required param is missing (or bound to
- * `undefined` — only `Ramose.optional` params may be), the bindings name a key
- * the set never declared, or a normalization the builder defers for a hole
- * failed at bind time (a flagged `RegExp` for `matches`, a non-entity for
- * `is`). Client-side — the request was never sent. Not a {@link DbError}: a
- * query with no params cannot produce it.
- */
-export class ParamError extends Data.TaggedError("ParamError")<{
-  readonly message: string;
-  /** The offending param's key, when the failure names one. */
-  readonly key?: string;
 }> {}
 
 /**

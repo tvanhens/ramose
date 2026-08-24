@@ -250,7 +250,6 @@ describe("the `/db` barrel's public names", () => {
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
         "OperationRejected",
-        "ParamError",
       ].sort(),
     );
   });

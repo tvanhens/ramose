@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -460,7 +460,6 @@ export const issueExtraShape = {
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
 | `Ramose.DbError` | the union of the nine request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
-| `Ramose.ParamError` | a required param is missing, a key is unknown, or a hole failed to normalize |
 | `Ramose.PolicyError` | a policy did not compile against its schema — deploy time, not a request |
 | `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
 | `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |

@@ -156,7 +156,6 @@ export {
   NetworkError,
   NotOne,
   OperationRejected,
-  ParamError,
   PolicyError,
   QueryBudgetExceeded,
   TxRejected,
