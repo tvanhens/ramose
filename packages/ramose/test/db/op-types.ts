@@ -6,6 +6,7 @@
  */
 
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import type {
   Db,
   Eid,
@@ -15,6 +16,7 @@ import type {
   Op,
   OpHandle,
   OpReport,
+  Row,
   Tempid,
   TxHandle,
 } from "../../src/db/internal.ts";
@@ -186,6 +188,33 @@ db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
 db.run(setUserName, [":user/name", "Ada"] as const, { name: "Ada" });
 declare const userRow: { readonly id: Eid<typeof User> };
 db.run(setUserName, userRow, { name: "Ada" });
+
+const pipeIdsQ = Query.q(() => pipe(Query.entities(User), Query.ids()));
+type PipeIdRow = Row<typeof pipeIdsQ>;
+type _pipeIdRow = Expect<Equal<PipeIdRow, { readonly id: Eid<typeof User> }>>;
+declare const pipeIdRow: PipeIdRow;
+db.pull(pipeIdRow, { name: User.name });
+db.pull(pipeIdRow.id, { name: User.name });
+db.run(setUserName, pipeIdRow, { name: "Ada" });
+db.run(setUserName, pipeIdRow.id, { name: "Ada" });
+const pipeFilterIdsQ = Query.q(() =>
+  pipe(Query.entities(User), Query.has(User.name), Query.ids()),
+);
+type _pipeFilterIds = Expect<
+  Equal<Row<typeof pipeFilterIdsQ>, { readonly id: Eid<typeof User> }>
+>;
+const pipeFollowQ = Query.q(() =>
+  pipe(Query.entities(User), Query.follow(User.bestFriend)),
+);
+type _pipeFollowRow = Expect<
+  Equal<Row<typeof pipeFollowQ>, { readonly id: Eid<typeof User> }>
+>;
+declare const followRow: Row<typeof pipeFollowQ>;
+db.pull(followRow, { name: User.name });
+db.pull(followRow.id, { name: User.name });
+db.run(setUserName, followRow, { name: "Ada" });
+db.run(setUserName, followRow.id, { name: "Ada" });
+
 declare const idsRow: { readonly id: number };
 // @ts-expect-error an unbranded .ids() row is not a branded user cell
 db.run(setUserName, idsRow, { name: "Ada" });

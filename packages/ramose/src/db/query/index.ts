@@ -77,6 +77,8 @@ export {
   stage,
   updatedSince,
   type FilterStage,
+  type FollowStage,
+  type HatchIdRow,
   type IdRow,
   type TraversalStage,
 } from "./lib.ts";

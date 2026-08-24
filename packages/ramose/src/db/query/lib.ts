@@ -14,6 +14,7 @@
 
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
+import type { UnbrandedId } from "../idents.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
   Q,
@@ -27,10 +28,15 @@ import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
 
 // ── the pipeline value ──────────────────────────────────────────────────────
 
-const addStage = <Row>(p: Pipeline<any>, stage: PipeStage): Pipeline<Row> =>
-  makePipeline(p.ns, [...p.stages, stage]);
+const addStage = <Row, N extends AnyEntity>(
+  p: Pipeline<unknown, N>,
+  stage: PipeStage,
+): Pipeline<Row, N> => makePipeline(p.ns, [...p.stages, stage]);
 
-const makePipeline = <Row>(ns: AnyEntity, stages: readonly PipeStage[]): Pipeline<Row> => ({
+const makePipeline = <Row, N extends AnyEntity>(
+  ns: N,
+  stages: readonly PipeStage[],
+): Pipeline<Row, N> => ({
   _tag: "Pipeline",
   ns,
   stages,
@@ -58,7 +64,7 @@ export type IdRow<N extends AnyEntity = AnyEntity> = { readonly id: Eid<N> };
  * the pipeline already constrains the focus through a namespace attr, the
  * rule is entailed and lowering emits nothing.
  */
-export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>> => {
+export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
     throw new Error("ramose/query: entities(...) takes an entity");
   }
@@ -67,19 +73,63 @@ export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>> => {
 
 // ── the dual stage adapter ──────────────────────────────────────────────────
 
-/** A filter: keeps the pipeline's focus; as a fragment, contributes
- * clauses. (The fragment overload comes first: `pipe` matches arrow
- * compatibility against the last overload, the pipeline one.) */
-export interface FilterStage {
-  (focus: AnyVar): QueryGen<void>;
-  <Row>(q: Pipeline<Row>): Pipeline<Row>;
+/**
+ * Dual stage output: a pipeline keeps its row and focus namespace;
+ * anything else is the generator fragment. One generic (not an
+ * overload) so `pipe` infers `N` from the argument instead of
+ * defaulting it to {@link AnyEntity}.
+ */
+type FilterOut<X> = [X] extends [never]
+  ? QueryGen<void>
+  : [X] extends [Pipeline<infer Row, infer N>]
+    ? [N] extends [AnyEntity]
+      ? Pipeline<Row, N>
+      : QueryGen<void>
+    : QueryGen<void>;
+
+/** A filter: keeps the pipeline's focus; as a fragment, contributes clauses. */
+export type FilterStage = <X>(x: X) => FilterOut<X>;
+
+/**
+ * The entity a `Ref(User)` field points at. Self-refs / untargeted refs
+ * resolve to the pipeline's current focus. Optional `_target` infers
+ * `T | undefined`; strip that before the `AnyEntity` test (same as
+ * {@link import("../idents.ts").FieldTargetEntity}).
+ */
+type RefTarget<A, Enclosing extends AnyEntity> = A extends {
+  readonly schema: { readonly _target?: infer T };
 }
+  ? Exclude<T, undefined> extends AnyEntity
+    ? Exclude<T, undefined>
+    : Enclosing
+  : Enclosing;
+
+type FollowOut<A extends AttrLike, X> = [X] extends [never]
+  ? QueryGen<Var<EidCell>>
+  : [X] extends [Pipeline<infer _Row, infer N>]
+    ? [N] extends [AnyEntity]
+      ? Pipeline<IdRow<RefTarget<A, N>>, RefTarget<A, N>>
+      : QueryGen<Var<EidCell>>
+    : QueryGen<Var<EidCell>>;
+
+/** `follow(A)` as a dual stage: pipeline in keeps a branded target row. */
+export type FollowStage<A extends AttrLike> = <X>(x: X) => FollowOut<A, X>;
+
+/**
+ * `{ id }` row when a traversal's target namespace is not known
+ * statically (`backlink`, `stage`). `row.id` is the documented
+ * unbranded-number hatch; the row itself is not a branded cell.
+ */
+export type HatchIdRow = { readonly id: UnbrandedId };
+
+type TraversalOut<X> = [X] extends [never]
+  ? QueryGen<Var<EidCell>>
+  : [X] extends [Pipeline<any, any>]
+    ? Pipeline<HatchIdRow>
+    : QueryGen<Var<EidCell>>;
 
 /** A traversal: refocuses the pipeline; as a fragment, returns the new focus. */
-export interface TraversalStage {
-  (focus: AnyVar): QueryGen<Var<EidCell>>;
-  (q: Pipeline<any>): Pipeline<IdRow<AnyEntity>>;
-}
+export type TraversalStage = <X>(x: X) => TraversalOut<X>;
 
 const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
   ((x: unknown) =>
@@ -154,10 +204,10 @@ export const matching = <A extends AttrLike>(
 // ── traversals ──────────────────────────────────────────────────────────────
 
 /** `follow(A)`: `p(e) → other := [e A other]` — refocus on the target. */
-export const follow = (attr: AttrLike): TraversalStage =>
+export const follow = <A extends AttrLike>(attr: A): FollowStage<A> =>
   traversal(function* (e) {
     return (yield* Q.fact(e, attr)).v as Var<EidCell>;
-  });
+  }) as unknown as FollowStage<A>;
 
 /** `backlink(A)`: same clause, opposite mode — refocus on the referrer. */
 export const backlink = (attr: AttrLike): TraversalStage =>
@@ -216,23 +266,26 @@ export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): Filter
 
 // ── terminals: they close the query, not compose it ─────────────────────────
 
-const assertPipeline = (x: unknown, what: string): Pipeline<any> => {
+const assertPipeline = <N extends AnyEntity = AnyEntity>(
+  x: unknown,
+  what: string,
+): Pipeline<any, N> => {
   if (!isPipeline(x)) {
     throw new Error(`ramose/query: ${what}(...) is a pipeline terminal — it closes a pipe, it is not a fragment`);
   }
-  return x;
+  return x as Pipeline<any, N>;
 };
 
 /** Contribute the projection — what a generator body says with its return. */
 export const select =
   <const S extends Shape>(shape: S & ValidShape<S>) =>
-  (q: Pipeline<any>): Pipeline<SelectResult<S>> =>
+  <N extends AnyEntity>(q: Pipeline<any, N>): Pipeline<SelectResult<S>, N> =>
     addStage(assertPipeline(q, "select"), { kind: "select", shape: shape as Shape });
 
 /** Contribute a sort key: a selected column's name, or an attr path. */
 export const orderBy =
   (key: string | PathCarrier, dir: OrderDir = "asc", opts?: { readonly empty?: OrderEmpty }) =>
-  <Row>(q: Pipeline<Row>): Pipeline<Row> =>
+  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "orderBy"), {
       kind: "orderBy",
       key,
@@ -243,21 +296,22 @@ export const orderBy =
 /** Keep at most `n` rows. */
 export const limit =
   (n: number) =>
-  <Row>(q: Pipeline<Row>): Pipeline<Row> =>
+  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "limit"), { kind: "limit", n });
 
 /** Drop `n` rows from the front of the (ordered) result. */
 export const offset =
   (n: number) =>
-  <Row>(q: Pipeline<Row>): Pipeline<Row> =>
+  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "offset"), { kind: "offset", n });
 
 /**
  * Project only the matched entity ids — today's cheap-subscription shape
- * (`{ id }` rows). On a select-less pipe this is already the default; on
- * the fluent chain it opts out of the full-entity default.
+ * (`{ id }` rows). The focus namespace is the pipeline's `N`, so a
+ * `pipe(entities(User), ids())` row is `IdRow<User>` and a valid
+ * {@link import("../idents.ts").EntityRef}.
  */
 export const ids =
   () =>
-  (q: Pipeline<any>): Pipeline<IdRow<AnyEntity>> =>
+  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<IdRow<N>, N> =>
     addStage(assertPipeline(q, "ids"), { kind: "ids" });

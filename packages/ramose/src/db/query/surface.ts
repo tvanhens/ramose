@@ -42,6 +42,6 @@ export {
   stage,
   updatedSince,
 } from "./lib.ts";
-export type { FilterStage, IdRow, TraversalStage } from "./lib.ts";
+export type { FilterStage, FollowStage, HatchIdRow, IdRow, TraversalStage } from "./lib.ts";
 
 export type { Fragment, QueryGen, Var } from "./kernel.ts";
