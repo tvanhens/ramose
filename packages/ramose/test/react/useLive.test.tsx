@@ -790,6 +790,28 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
+  test("an inline unlowerable query does not resubscribe per render", async () => {
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    try {
+      const { result, rerender } = renderHook(() =>
+        useLive(db, Ramose.Query.from(Todo).after(null)),
+      );
+      await waitFor(() => expect(result.current.error).toBeDefined());
+      expect((result.current.error as { _tag: string })._tag).toBe(
+        "InvalidRequest",
+      );
+      expect(spy.calls).toBe(1);
+      rerender();
+      rerender();
+      await settle();
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
   test("a throwing lowering does not resubscribe per render", async () => {
     const broken = Ramose.Query.q(() => Ramose.Query.entities(Todo)).after(null);
     const world = await todoWorld(1);

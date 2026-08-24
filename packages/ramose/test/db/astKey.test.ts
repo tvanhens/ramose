@@ -106,15 +106,22 @@ describe("queryAstKey", () => {
     expect(JSON.stringify(lowerQueryAst(q))).toContain(":todo/title");
   });
 
-  test("two unlowerable queries with the same message do not share a key", () => {
+  test("two unlowerable queries with the same message share a key", () => {
     const a = Query.q(() => Query.entities(Todo)).after(null);
     const b = Query.q(() => Query.entities(Todo)).after(null);
     const ka = queryAstKey(a);
     const kb = queryAstKey(b);
     expect(ka).toMatch(/^\0error:/);
-    expect(kb).toMatch(/^\0error:/);
-    expect(ka).not.toBe(kb);
-    expect(queryAstKey(a)).toBe(ka);
+    expect(kb).toBe(ka);
+    expect(queryAstKey(Query.from(Todo).after(null))).toBe(ka);
+  });
+
+  test("unlowerable queries with different messages do not share a key", () => {
+    const after = Query.from(Todo).after(null);
+    const badLimit = Query.from(Todo).limit(-1);
+    expect(queryAstKey(after)).toMatch(/^\0error:/);
+    expect(queryAstKey(badLimit)).toMatch(/^\0error:/);
+    expect(queryAstKey(after)).not.toBe(queryAstKey(badLimit));
   });
 
   test("WeakMap memo hides an impure body; assertLoweringPurity warns", () => {

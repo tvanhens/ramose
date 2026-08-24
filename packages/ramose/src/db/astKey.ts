@@ -17,7 +17,6 @@ import { toJson } from "../internal/core/json.ts";
 import { lowerQueryObject, type AnyQueryObject } from "./query/index.ts";
 
 const astKeyMemo = new WeakMap<object, string>();
-let nextErrorKey = 1;
 
 /** Sort own keys at every object so `JSON.stringify` is canonical. */
 const sortKeys = (v: unknown): unknown => {
@@ -39,10 +38,14 @@ const ERROR_PREFIX = "\0error:";
 export const computeAstKey = (query: AnyQueryObject): string => {
   try {
     return canonicalAstKey(lowerQueryObject(query).query);
-  } catch {
-    // Two independently constructed broken queries still must not share an
-    // entry — keep a per-object token.
-    return `${ERROR_PREFIX}${nextErrorKey++}`;
+  } catch (e) {
+    // Render-fresh inline construction is the documented spelling. A
+    // per-call token would change the hook key every render and loop
+    // (teardown → InvalidRequest → setState → re-render). Key on the
+    // message so two independently built queries with the same failure
+    // share a subscription, the same as a successful AST.
+    const message = e instanceof Error ? e.message : String(e);
+    return `${ERROR_PREFIX}${message}`;
   }
 };
 
