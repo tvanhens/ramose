@@ -73,16 +73,37 @@ type JsOfVt<VT extends DbValueType> = VT extends "string" | "uuid"
           : never;
 
 /**
- * Accept `Schema.optional(String)` with `"string"`; reject
- * `Schema.Boolean` with `"string"`. The brand key names the mismatch
- * so the diagnostic is not `not assignable to 'never'`.
+ * Type↔vt pairing, as a brand-key error instead of `never`.
+ * `Schema.optional(String)` with `"string"` is fine; `Schema.Boolean`
+ * with `"string"` is not.
  */
-type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
+type PairableType<S extends Schema.Top, VT extends DbValueType> =
   Exclude<Schema.Schema.Type<S>, null | undefined> extends JsOfVt<VT>
     ? S
     : S & {
         readonly "stored(schema, vt): this Schema's Type does not match the value type": true;
       };
+
+/**
+ * Accept a matching Type↔vt pair; reject a schema already branded
+ * with a *different* vt. Re-branding (`stored(Uuid, "string")`)
+ * intersects the two `RamoseVt` keys (`"uuid" & "string"` → `never`),
+ * which collapses the field to `Field<never, …>` and types its row
+ * cell as a ref while runtime still installs the requested vt.
+ * Same-vt re-brands (`stored(Uuid, "uuid")`) are a no-op.
+ */
+type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
+  S extends RamoseVt<infer V>
+    ? [V] extends [VT]
+      ? [VT] extends [V]
+        ? PairableType<S, VT>
+        : S & {
+            readonly "stored(schema, vt): already branded — pass the unbranded Schema": true;
+          }
+      : S & {
+          readonly "stored(schema, vt): already branded — pass the unbranded Schema": true;
+        }
+    : PairableType<S, VT>;
 
 /**
  * Brand a raw Effect Schema with its storage form so {@link Field} can
@@ -96,7 +117,9 @@ type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
  *
  * The pair is checked: `"instant"` needs a `Date`-typed schema,
  * `"string"` / `"uuid"` a string-typed one, and so on. A mismatch
- * (`stored(Schema.Boolean, "string")`) is a type error.
+ * (`stored(Schema.Boolean, "string")`) is a type error. An already
+ * branded helper (`Uuid`, `Long`, a previous `stored`) may only
+ * re-brand with the same vt — pass the unbranded Schema to change it.
  */
 export const stored = <S extends Schema.Top, const VT extends DbValueType>(
   schema: PairableSchema<S, VT>,

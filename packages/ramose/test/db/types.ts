@@ -152,10 +152,20 @@ type _storedOk = Expect<Equal<(typeof storedOk) extends { readonly ast: unknown 
 const storedUuid = stored(Schema.String, "uuid");
 const storedLiterals = stored(Schema.Literals(["on", "off"]), "string");
 const storedOptional = stored(Schema.optional(Schema.String), "string");
+// same-vt re-brand is a no-op; a different vt (or a second stored) is not
+const sameVtRebrand = Field(stored(Uuid, "uuid"));
+type _sameVtRebrand = Expect<Equal<(typeof sameVtRebrand)["valueType"], "uuid">>;
+// @ts-expect-error Uuid is already branded — pass the unbranded Schema
+Field(stored(Uuid, "string"));
+// @ts-expect-error Long is already branded — pass the unbranded Schema
+stored(Long, "double");
+// @ts-expect-error stored() output is already branded
+stored(stored(Schema.String, "uuid"), "string");
 void storedOk;
 void storedUuid;
 void storedLiterals;
 void storedOptional;
+void sameVtRebrand;
 
 // shorthands + composition
 const Short = Entity("short", {

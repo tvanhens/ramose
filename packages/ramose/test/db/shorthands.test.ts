@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   Enum,
   Field,
+  type FieldOptions,
   Ref,
   Schema as DbSchema,
   Entity,
@@ -189,7 +190,25 @@ describe("Field composition merge", () => {
       "string",
     );
     expect(Field(stored(Schema.String, "uuid")).valueType).toBe("uuid");
+  });
+
+  test("stored() does not mutate the shared Schema.String", () => {
     expect(Field(Schema.String).valueType).toBe("string");
+    expect(Field(stored(Schema.String, "uuid")).valueType).toBe("uuid");
+    expect(Field(Schema.String).valueType).toBe("string");
+  });
+
+  test("a valueType key in the options bag throws", () => {
+    const bag = { valueType: "uuid" } as FieldOptions;
+    expect(() => Field(Schema.String, bag)).toThrow(
+      "ramose/schema: valueType is not a field option. Brand the schema with stored(schema, vt).",
+    );
+    expect(() => Field(string(), bag)).toThrow(
+      "ramose/schema: valueType is not a field option. Brand the schema with stored(schema, vt).",
+    );
+    expect(() => string(bag)).toThrow(
+      "ramose/schema: valueType is not a field option. Brand the schema with stored(schema, vt).",
+    );
   });
 
   test("owned merges both ways through Field / Field.many / Field.unique", () => {

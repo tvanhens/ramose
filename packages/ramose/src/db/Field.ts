@@ -119,16 +119,28 @@ export const isField = (value: unknown): value is AnyField =>
   (value as { readonly _tag?: unknown })._tag === "Field" &&
   "schema" in value;
 
-const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => ({
-  _tag: "Field" as const,
-  schema,
-  cardinality: options?.cardinality ?? "one",
-  unique: options?.unique,
-  index: options?.index ?? options?.unique !== undefined,
-  owned: options?.owned ?? false,
-  doc: options?.doc,
-  valueType: tryInferDbValueType(schema),
-});
+/** Plain-JS leftover of the retired FieldOptions `valueType` key. */
+const rejectRetiredValueType = (options?: object): void => {
+  if (options != null && "valueType" in options) {
+    throw new Error(
+      "ramose/schema: valueType is not a field option. Brand the schema with stored(schema, vt).",
+    );
+  }
+};
+
+const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => {
+  rejectRetiredValueType(options);
+  return {
+    _tag: "Field" as const,
+    schema,
+    cardinality: options?.cardinality ?? "one",
+    unique: options?.unique,
+    index: options?.index ?? options?.unique !== undefined,
+    owned: options?.owned ?? false,
+    doc: options?.doc,
+    valueType: tryInferDbValueType(schema),
+  };
+};
 
 const fieldSchema = (input: AnyField | SchemaNS.Top): SchemaNS.Top =>
   isField(input) ? input.schema : input;
@@ -137,6 +149,7 @@ const mergeFieldOptions = (
   input: AnyField | SchemaNS.Top,
   extra?: FieldOptions,
 ): FieldOptions => {
+  rejectRetiredValueType(extra);
   if (!isField(input)) return extra ?? {};
   return {
     cardinality: extra?.cardinality ?? input.cardinality,

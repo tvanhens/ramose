@@ -90,7 +90,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
 
-Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must be wrapped with `stored(schema, vt)` or the field types `valueType` as `undefined` (install then fails). Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
+Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must be wrapped with `Ramose.stored(schema, vt)`. Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
 
 ## Options
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `stored()` rejects re-branding an already-branded schema
+
+`PairableSchema` now fails a helper (or a previous `stored`) branded
+with a different vt. `Field(stored(Uuid, "string"))` used to compile
+as `Field<never, …>` and type the row cell as a ref while runtime
+installed `:db.type/string`. Same-vt re-brands (`stored(Uuid, "uuid")`)
+are unchanged. A leftover `{ valueType }` key in the Field options bag
+throws at runtime.
+
 ### A bound verifier without a policy fails closed (#242)
 
 `checkAuth` and the Worker's auth `build` now treat verifier fields
