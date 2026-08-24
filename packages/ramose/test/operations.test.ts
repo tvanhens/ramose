@@ -26,7 +26,7 @@ import {
   type Op,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
-import { client, fakePeer, httpsClient, settle, type Call } from "./peer.ts";
+import { client, fakePeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
@@ -194,11 +194,15 @@ describe("optimistic prefix", () => {
     await seedClient(peer, db, server);
 
     const live = collect(db.effect.live(names));
-    await settle();
+    await until(() => live.seen.length >= 1);
     expect(live.seen.at(-1)).toEqual([]);
 
     const pending = db.run(createUser, { name: "Ada" });
-    await settle();
+    await until(() =>
+      (live.seen.at(-1) as readonly { name: string }[] | undefined)?.some(
+        (r) => r.name === "Ada",
+      ) === true,
+    );
     expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
     expect(live.seen.at(-1)).not.toEqual(
       expect.arrayContaining([{ name: "AFTER" }]),
@@ -246,17 +250,23 @@ describe("optimistic prefix", () => {
     await seedClient(peer, db, server);
 
     const live = collect(db.effect.live(names));
-    await settle();
+    await until(() => live.seen.length >= 1);
 
     const pending = runFail(db.run(createUser, { name: "Ada" }));
-    await settle();
+    await until(() =>
+      (live.seen.at(-1) as readonly { name: string }[] | undefined)?.some(
+        (r) => r.name === "Ada",
+      ) === true,
+    );
     expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
 
     release();
     const err = await pending;
     expect(err).toBeInstanceOf(OperationRejected);
     expect((err as OperationRejected)._tag).toBe("OperationRejected");
-    await settle();
+    await until(() =>
+      Array.isArray(live.seen.at(-1)) && (live.seen.at(-1) as unknown[]).length === 0,
+    );
     expect(live.seen.at(-1)).toEqual([]);
     expect(await db.query(names)).toEqual([]);
 

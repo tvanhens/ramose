@@ -13,7 +13,7 @@ import {
   Query,
   type ReadDb,
 } from "../src/db/internal.ts";
-import { client, fakePeer, httpsClient, settle } from "./peer.ts";
+import { client, fakePeer, httpsClient, settle, until } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const seamOf = (db: ReadDb): DbSeam =>
@@ -88,7 +88,7 @@ describe("the wake", () => {
     // unsolicited frames ride the session socket, which a first read opens
     await db.query(Query.q(() => Query.entities(User)));
     peer.push({ op: "tx", t: 9, datoms: [] });
-    await settle();
+    await until(() => wakes > 0);
     expect(wakes).toBeGreaterThan(0);
 
     // the seam reads the session's basis, so a waker can tell a wake that

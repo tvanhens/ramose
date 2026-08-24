@@ -15,7 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
 import { Query } from "../src/db/internal.ts";
-import { type Call, client, fakePeer, redacted, settle } from "./peer.ts";
+import { type Call, client, fakePeer, redacted, settle, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -145,7 +145,7 @@ describe("db.basis()", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const live = collect(db.effect.live(names));
-    await settle();
+    await until(() => live.seen.length >= 1);
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
 
     // the peer moved; basis() bumps the session. Overlay data is unchanged,

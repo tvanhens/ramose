@@ -31,7 +31,7 @@ import { MemoryBucket } from "../src/internal/storage/memory.ts";
 import type { RamoseEnv } from "../src/internal/transactor/index.ts";
 import { sqliteLike } from "./internal/transactor/harness.ts";
 import { openSession, type Session, type SocketLike } from "../src/worker/session.ts";
-import { client, fakePeer, settle, type Call, type FakePeer } from "./peer.ts";
+import { client, fakePeer, settle, until, type Call, type FakePeer } from "./peer.ts";
 import { catalogWorld, snapshotOf } from "./overlay-seed.ts";
 
 mock.module("cloudflare:workers", () => ({
@@ -187,10 +187,7 @@ const waitBoards = async (
   phone: { readonly seen: ReadonlyArray<readonly { title: string; status: string }[]> },
   browser: { readonly seen: ReadonlyArray<readonly { title: string; status: string }[]> },
 ) => {
-  for (let i = 0; i < 40; i++) {
-    if (bothMoves(phone.seen.at(-1)) && bothMoves(browser.seen.at(-1))) return;
-    await settle();
-  }
+  await until(() => bothMoves(phone.seen.at(-1)) && bothMoves(browser.seen.at(-1)));
 };
 
 const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
@@ -338,7 +335,7 @@ describe("two clients move two existing issues", () => {
     const world = await twoBoards({ walk: "after-acks" });
     const phoneLive = collect(world.phone.effect.live(boardQuery));
     const browserLive = collect(world.browser.effect.live(boardQuery));
-    await settle();
+    await until(() => phoneLive.seen.length >= 1 && browserLive.seen.length >= 1);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     const phoneEmissions = phoneLive.seen.length;
@@ -393,7 +390,7 @@ describe("two clients move two existing issues", () => {
     const world = await twoBoards({ walk: "on-commit" });
     const phoneLive = collect(world.phone.effect.live(boardQuery));
     const browserLive = collect(world.browser.effect.live(boardQuery));
-    await settle();
+    await until(() => phoneLive.seen.length >= 1 && browserLive.seen.length >= 1);
 
     await Promise.all([
       run(move(world.phone, world.one, "doing", 10)),
@@ -414,7 +411,7 @@ describe("two clients move two existing issues", () => {
     const world = await twoBoards({ walk: "after-acks" });
     const phoneLive = collect(world.phone.effect.live(boardQuery));
     const browserLive = collect(world.browser.effect.live(boardQuery));
-    await settle();
+    await until(() => phoneLive.seen.length >= 1 && browserLive.seen.length >= 1);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     const phoneEmissions = phoneLive.seen.length;

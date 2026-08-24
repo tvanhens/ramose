@@ -17,7 +17,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
 import { layer, Query, token, Unauthorized } from "../src/db/internal.ts";
-import { client, fakePeer, settle } from "./peer.ts";
+import { client, fakePeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -398,7 +398,7 @@ describe("failure typing on the wire", () => {
     const live = collect(c.ramose.db("movies", Movies).effect.live(names));
 
     // the wire's transient ladder retries the failed connect in place
-    await settle(600);
+    await until(() => live.seen.length >= 1);
     expect(live.error).toBeUndefined();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
     // the fresh mint authenticated the (re)connect
@@ -415,7 +415,7 @@ describe("failure typing on the wire", () => {
     const peer = fakePeer();
     const c = client(peer, { token: source });
     const live = collect(c.ramose.db("movies", Movies).effect.live(names));
-    await settle();
+    await until(() => live.done);
 
     expect(live.done).toBe(true);
     expect((live.error as { _tag?: string })?._tag).toBe("Unauthorized");
