@@ -260,15 +260,22 @@ export const AUTH_ENV_KEYS = {
 /** @internal Env key `token` lowers onto. */
 export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const satisfies keyof RamoseEnv;
 
+/**
+ * Hatch compare keys. `RAMOSE_JWKS_JSON` has no `ServerAuth` field (offline
+ * / test JWKS) but the Worker `build` counts it as a verifier, so a hatch
+ * carrying only that key must diverge the same way the other verifier vars
+ * do.
+ */
 const AUTH_COMPARE_KEYS = [
   AUTH_ENV_KEYS.policy,
   AUTH_ENV_KEYS.jwksUrl,
+  "RAMOSE_JWKS_JSON",
   AUTH_ENV_KEYS.jwksService,
   AUTH_ENV_KEYS.issuers,
   AUTH_ENV_KEYS.aud,
   AUTH_ENV_KEYS.maxTtl,
   AUTH_ENV_KEYS.allowedOrigins,
-] as const;
+] as const satisfies readonly (keyof RamoseEnv)[];
 
 const withAuthConfig = (auth: ServerAuth): ServerAuth =>
   auth.jwt === undefined

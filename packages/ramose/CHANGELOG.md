@@ -11,6 +11,15 @@ docs' deploy sample — `jwt` + `jwksUrl` next to
 `policy: process.env.RAMOSE_POLICY` — no longer ships a silently open
 database when that variable is missing. Binding nothing still stays
 open. Partial verifiers still 401 `/db/*` with `/health` 200 (#238).
+The hatch compare includes `RAMOSE_JWKS_JSON` with the other verifier
+vars, so a `worker:` hatch carrying only that key fails the deploy as
+divergence.
+
+A deploy that previously succeeded with `jwksUrl` / `jwt` and no
+policy now fails — drop the verifier fields to stay open, or supply
+the policy.
+
+The demo `/` page now 404s in the broken-auth state (previously 200).
 
 An unrecognized `RAMOSE_WRITES` (`ALL`, typos) still fails closed to
 `"operations"`, and now warns at deploy with the same wording as the

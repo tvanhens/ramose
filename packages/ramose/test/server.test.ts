@@ -497,6 +497,19 @@ describe("hatch form compares auth / token against the Worker env", () => {
     ).toBeUndefined();
   });
 
+  test("hatch-only RAMOSE_JWKS_JSON diverges like the other verifier vars", () => {
+    expect(
+      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_JSON: '{"keys":[]}' })),
+    ).toMatch(/diverge on RAMOSE_JWKS_JSON/);
+    expect(
+      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_URL: "https://auth.example/jwks" })),
+    ).toMatch(/diverge on RAMOSE_JWKS_URL/);
+    expect(
+      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWT_ISS: "https://auth.example" })),
+    ).toMatch(/diverge on RAMOSE_JWT_ISS/);
+    expect(compareAuthToWorker(undefined, undefined, hatch({}))).toBeUndefined();
+  });
+
   test("the same Output instance on both sides matches; a different instance does not", () => {
     const jwksUrl = { interpolate: "https://auth.example/jwks" };
     const deferred = { ...auth, jwksUrl };
