@@ -187,11 +187,13 @@ const Root = () => {
   if (wantedSlug !== null) {
     if (open !== null && open.workspace.slug === wantedSlug) {
       return (
+        {/* docs:ramose-provider */}
         <RamoseProvider
           key={open.workspace.slug}
           url={RAMOSE_URL}
           token={open.workspace.token}
         >
+        {/* enddocs:ramose-provider */}
           <BoardScreen
             workspace={open.workspace}
             name={open.name}

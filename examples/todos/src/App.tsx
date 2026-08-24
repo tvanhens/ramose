@@ -11,6 +11,7 @@ export const App = () => (
   </main>
 );
 
+// docs:todo-list
 const TodoList = () => {
   const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
@@ -23,9 +24,12 @@ const TodoList = () => {
     </ul>
   );
 };
+// enddocs:todo-list
 
 const TodoRowView = ({ row }: { row: TodoRow }) => {
+  // docs:todo-row-transact
   const { run } = useTransact();
+  // enddocs:todo-row-transact
   return (
     <li>
       <label>

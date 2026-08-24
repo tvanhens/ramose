@@ -14,9 +14,7 @@ A live query answers itself: hand it the query you would run once, and you get t
 
 Reef's board is one **live query** — a query that re-runs itself whenever the database changes and hands your screen new rows ([glossary](/concepts/glossary/#live-query)):
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:234-238"
-  const db = useDb(slug, Reef);
-
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
   const board = useLive(db, boardQuery);
   const people = useLive(db, peopleQuery);
   const labels = useLive(db, labelsQuery);
@@ -45,7 +43,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 
 `usePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:258"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
 ```
 
@@ -86,7 +84,7 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 `useLive` keys its subscription on the lowered query AST, not object identity. Two components that build the same query share one subscription. Put changing values in `.where` — no bindings argument:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:267"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#comments-live"
   const comments = useLive(db, commentsQuery(issueId));
 ```
 

@@ -2,6 +2,7 @@
 title: The query language
 description: The kernel query surface — Query.q, the pipeable stdlib, named rules, and composition by delegation — under the fluent Query.from app spelling.
 ---
+import Next from "../../../components/Next.astro";
 
 The minimum set of ideas behind the query language: what a query is, what
 the kernel is made of, and why every larger construct is derived rather
@@ -9,6 +10,8 @@ than primitive. This is the one constraint language — the fluent spelling
 taught in [Read data](/guides/queries/) wraps the same pipeline AST; the
 pipe and generator spellings below remain one tier down for joins,
 aggregates, and disjunction.
+
+*New here? Start with [Read data](/guides/queries/).*
 
 ## One kind of object
 
@@ -18,7 +21,7 @@ kernel constructor `Query.q(body)` has two spellings of the same value
 (a leftover `Query.q(holes, body)` form still accepts declared holes):
 
 ```ts
-import { pipe } from "effect/Function";
+import { pipe } from "ramose/effect";
 import { Q, Query } from "ramose/db";
 const { entities, is, none, select, orderBy, limit, updatedSince } = Query;
 
@@ -145,3 +148,8 @@ computation becomes real — `db.query` returns an Effect with typed failures,
 `db.live` is a Stream. Because built queries are inert data they are
 hashable for live-query identity and stable as hook dependencies; the
 same wire form runs on the peer and on the local session overlay.
+
+<Next links={[
+  { href: "/guides/queries/", label: "Read data", why: "the fluent app spelling these ideas compile to" },
+  { href: "/reference/client-api/", label: "Client API", why: "db.query, live, and pull" },
+]} />

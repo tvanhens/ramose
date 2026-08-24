@@ -51,7 +51,7 @@ It re-exports the module instances `effect` itself exports, so the two spellings
 
 The **schema** — your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)) — is built from three constructors.
 
-```ts title="examples/todos/schema.ts:1-9"
+```ts title="examples/todos/schema.ts#todo-schema"
 import * as Ramose from "ramose/db";
 
 export const Todo = Ramose.Entity("todo", {
@@ -111,13 +111,24 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 
 Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form vocabulary (`Field(Ramose.Uuid)`). `Field(Ramose.Uuid)` row types are `string`. `stored(schema, vt)` brands a custom Schema with a matching storage form.
 
-```ts title="examples/reef/src/domain/schema.ts:43-49"
+```ts title="examples/reef/src/domain/schema.ts#issue-entity"
+export const Issue = Ramose.Entity("issue", {
+  title: Ramose.string(),
+  description: Ramose.string(),
+  status: Ramose.Enum(STATUSES),
+  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
   priority: Ramose.int(),
-  // …
+  /** Fractional order inside a column; drag-and-drop writes midpoints. */
+  rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
   creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
+  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
+  privateNote: Ramose.string({
+    doc: "visible to the admin class only",
+  }),
+});
 ```
 
 ## Client
@@ -137,10 +148,14 @@ interface Client {
 }
 ```
 
-```ts title="examples/reef/src/app/ramose.ts:38-40"
-  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+```ts title="examples/reef/src/app/ramose.ts#open-workspace-token"
+  const token =
+    options?.token ??
+    Ramose.token.jwt(async () => {
+      const { authClient } = await import("./auth.ts");
+      return authClient.ramose.token({ db: slug });
+    });
   const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
-  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
 ```
 
 **`Ramose.token.static(value)`** and **`Ramose.token.jwt(mint, options?)`** — the two **token sources** ([glossary](/concepts/glossary/#token-source)). `jwt` calls `mint` on first use, shares one in-flight mint, and re-mints within `refreshMargin` (default 2 minutes) of the token's `exp`. `mint` may resolve to the token string or to `{ token }`. A thrown `Unauthorized` passes through; any other throw becomes `NetworkError`.
@@ -351,7 +366,7 @@ export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
 
 **Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ owned: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
-```ts title="examples/reef/src/domain/queries.ts:28-38"
+```ts title="examples/reef/src/domain/queries.ts#board-shape"
 export const boardShape = {
   id: Issue.id,
   title: Issue.title,
@@ -434,7 +449,7 @@ Result rules:
 - An unknown field in the shape is `InvalidRequest`.
 - `Ramose.Pull<typeof Todos, typeof shape>` names the result type.
 
-```ts title="examples/reef/src/domain/queries.ts:40-46"
+```ts title="examples/reef/src/domain/queries.ts#issue-extra-shape"
 export const issueExtraShape = {
   title: Issue.title,
   description: Issue.description.optional,
@@ -464,7 +479,7 @@ export const issueExtraShape = {
 | `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
 | `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
 
-```ts title="examples/reef/src/domain/queries.ts:112"
+```ts title="examples/reef/src/domain/queries.ts#board-row-type"
 export type BoardRow = Ramose.Row<typeof boardQuery>;
 ```
 

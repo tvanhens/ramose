@@ -31,26 +31,24 @@ The handle from `tx.entity()` carries the same three verbs without the first arg
 
 Reef's "New issue" dialog is one write; everything inside lands together or not at all:
 
-```ts title="examples/reef/src/app/mutations.ts:51-74"
+```ts title="examples/reef/src/app/mutations.ts#create-issue"
 export const createIssue = (
   db: ReefDb,
   myEid: number,
   lastRankInColumn: number | undefined,
   draft: NewIssue,
 ) =>
-  db.transact(function* (tx) {
-    const issue = yield* tx.entity();
-    yield* issue.set(Issue.title, draft.title);
-    // …
-    yield* issue.set(Issue.status, draft.status);
-    yield* issue.set(Issue.priority, draft.priority);
-    yield* issue.set(Issue.rank, rankAfter(lastRankInColumn));
-    yield* issue.set(Issue.createdAt, new Date());
-    yield* issue.set(Issue.creator, myEid);
-    // …
-    for (const labelId of draft.labelIds ?? []) {
-      yield* issue.set(Issue.labels, labelId);
-    }
+  db.run(createIssueOp, {
+    title: draft.title,
+    ...(draft.description != null && draft.description !== ""
+      ? { description: draft.description }
+      : {}),
+    status: draft.status,
+    priority: draft.priority,
+    rank: rankAfter(lastRankInColumn),
+    creatorId: myEid,
+    ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
+    ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
   });
 ```
 
@@ -60,40 +58,31 @@ A **reference** field takes the other record's id as a number: `issue.set(Issue.
 
 Dragging a card in Reef is one write of two facts — new column, new position:
 
-```ts title="examples/reef/src/app/mutations.ts:77-86"
+```ts title="examples/reef/src/app/mutations.ts#move-issue"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
   status: Status,
   rank: number,
-) =>
-  db.transact(function* (tx) {
-    yield* tx.set(issueId, Issue.status, status);
-    yield* tx.set(issueId, Issue.rank, rank);
-  });
+) => db.run(moveIssueOp, issueId, { status, rank });
 ```
 
 A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts:77-86" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts#move-issue" />
 
 ## Remove a value, delete a record
 
 Clearing a field is `remove` with no value; deleting a record is `delete`:
 
-```ts title="examples/reef/src/app/mutations.ts:99-103"
+```ts title="examples/reef/src/app/mutations.ts#set-description"
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.transact(function* (tx) {
-    if (text === "") yield* tx.remove(issueId, Issue.description);
-    else yield* tx.set(issueId, Issue.description, text);
-  });
+  db.run(setDescriptionOp, issueId, { text });
 ```
 
-```ts title="examples/reef/src/app/mutations.ts:138-141"
+```ts title="examples/reef/src/app/mutations.ts#delete-issue"
 export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.transact(function* (tx) {
-    yield* tx.delete(issueId);
-  });
+  db.run(deleteIssueOp, issueId, {});
 ```
 
 Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
@@ -102,17 +91,13 @@ Neither erases history — [Time travel](/concepts/time-travel/) can still show 
 
 A field declared `cardinality: "many"` is a set. One `set` per value; `remove` with the value takes one out:
 
-```ts title="examples/reef/src/app/mutations.ts:120-129"
+```ts title="examples/reef/src/app/mutations.ts#toggle-label"
 export const toggleLabel = (
   db: ReefDb,
   issueId: number,
   labelId: number,
   on: boolean,
-) =>
-  db.transact(function* (tx) {
-    if (on) yield* tx.set(issueId, Issue.labels, labelId);
-    else yield* tx.remove(issueId, Issue.labels, labelId);
-  });
+) => db.run(toggleLabelOp, issueId, { labelId, on });
 ```
 
 ## Ids, unique keys and lookups
@@ -150,7 +135,7 @@ Both are values you can match by name — see [Errors](/reference/errors/). Writ
 
 In React, `useTransact` runs the write and hands you the refusal:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:268-272"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({

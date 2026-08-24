@@ -1,6 +1,6 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import * as Schema from "effect/Schema";
+import { Schema } from "ramose/effect";
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
 import { Todo, type Todos } from "../schema.ts";

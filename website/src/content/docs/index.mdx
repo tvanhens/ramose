@@ -61,20 +61,24 @@ import Shot from "../../components/Shot.astro";
   </div>
   <div class="rg-moment-code">
 
-```ts title="examples/reef/src/domain/schema.ts:38-54 (annotated)"
+```ts title="examples/reef/src/domain/schema.ts#issue-entity"
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
-  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
+  description: Ramose.string(),
+  status: Ramose.Enum(STATUSES),
+  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
   priority: Ramose.int(),
-  // …
+  /** Fractional order inside a column; drag-and-drop writes midpoints. */
+  rank: Ramose.float(),
+  createdAt: Ramose.timestamp(),
+  creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
+  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
     doc: "visible to the admin class only",
   }),
 });
-// issue.set(Issue.priority, "high") does not compile:
-// priority is a number.
 ```
 
   </div>
@@ -88,15 +92,18 @@ export const Issue = Ramose.Entity("issue", {
     <p class="rg-cta"><a href="/guides/live-queries/">Live queries →</a></p>
   </div>
   <div class="rg-moment-code">
-    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:234-238" />
+    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board" />
 
-```ts title="examples/reef/src/domain/queries.ts:70-77 · app/screens/BoardScreen.tsx"
+```ts title="examples/reef/src/domain/queries.ts#board-query · examples/reef/src/app/screens/BoardScreen.tsx#use-db · examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
 export const boardQuery = Query.from(Issue)
   .select(boardShape)
   .orderBy(Issue.rank, "asc");
-// …
-const db = useDb(slug, Reef);
-const board = useLive(db, boardQuery);
+
+  const db = useDb(slug, Reef);
+
+  const board = useLive(db, boardQuery);
+  const people = useLive(db, peopleQuery);
+  const labels = useLive(db, labelsQuery);
 ```
 
   </div>
@@ -112,22 +119,23 @@ const board = useLive(db, boardQuery);
   </div>
   <div class="rg-moment-code">
 
-```ts title="examples/reef/src/domain/policy.ts:50-61 (comment simplified)"
-issue: {
-  read: true,
-  create: P.class("member"),
-  set: { class: "member", rule: ownIssue },
-  remove: { class: "member", rule: ownIssue },
-  delete: { class: "member", rule: ownIssue },
-  preset: [P.preset(Issue.creator, P.principal)],
-  attrs: [
-    // Only admins receive this field; the server strips it for others.
-    P.field(Issue.privateNote, { read: P.class("admin") }),
-  ],
-},
+```ts title="examples/reef/src/domain/policy.ts#policy-issue"
+    issue: {
+      read: true,
+      create: P.class("member"),
+      set: { class: "member", rule: ownIssue },
+      remove: { class: "member", rule: ownIssue },
+      delete: { class: "member", rule: ownIssue },
+      preset: [P.preset(Issue.creator, P.principal)],
+      attrs: [
+        // Narrows the namespace `read`: members and viewers never see this
+        // datom — pulls must ask for it as `.optional` (compile() checks).
+        P.field(Issue.privateNote, { read: P.class("admin") }),
+      ],
+    },
 ```
 
-    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast remove denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
+    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast remove denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
 
   </div>
 </div>
@@ -146,7 +154,7 @@ issue: {
   <div>
     <h3>Nothing is overwritten</h3>
     <p>Drag the slider and the board becomes what it was after write number <code>t</code>. Same query, one extra argument, nothing copied.</p>
-    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx:479-485" />
+    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
     <p class="rg-cta"><a href="/concepts/time-travel/">Time travel →</a></p>
   </div>
 </div>

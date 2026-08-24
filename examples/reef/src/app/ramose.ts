@@ -47,6 +47,7 @@ export const openWorkspace = async (
   provision: boolean,
   options?: OpenWorkspaceOptions,
 ): Promise<Workspace> => {
+  // docs:open-workspace-token
   const token =
     options?.token ??
     Ramose.token.jwt(async () => {
@@ -54,7 +55,9 @@ export const openWorkspace = async (
       return authClient.ramose.token({ db: slug });
     });
   const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  // enddocs:open-workspace-token
   if (provision) {
+    // docs:open-workspace-provision
     const connect = options?.connect ?? Ramose.connect;
     const ramose = connect({
       url: options?.url ?? RAMOSE_URL,
@@ -63,10 +66,13 @@ export const openWorkspace = async (
       webSocket: options?.webSocket,
     });
     try {
+      // docs:ramose-db-slug
       await provisionWorkspace(ramose.db(slug, Reef));
+      // enddocs:ramose-db-slug
     } finally {
       await ramose.close();
     }
+    // enddocs:open-workspace-provision
   }
   return { slug, cls, token };
 };

@@ -256,7 +256,10 @@ export const IssueDetail = ({
   // A standing pull: `{ id: issueId }` inline is fine (the subject is
   // structural), and every emission — an edit from any tab — resets the
   // drafts, so the panel updates in place.
+  // docs:issue-panel-reads
+  // docs:use-pull-extra
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  // enddocs:use-pull-extra
   useEffect(() => {
     if (extra === null) return;
     setTitleDraft(extra.title);
@@ -264,7 +267,10 @@ export const IssueDetail = ({
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
+  // docs:comments-live
   const comments = useLive(db, commentsQuery(issueId));
+  // enddocs:comments-live
+  // enddocs:issue-panel-reads
 
   const submitComment = () => {
     const body = commentDraft.trim();

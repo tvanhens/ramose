@@ -75,7 +75,7 @@ Consecutive `.where({…})` objects are assembled in field-key order, so `if (do
 
 `select` decides both the rows you get and their TypeScript type — the **shape** ([glossary](/concepts/glossary/#shape)). Reef's board shape follows two references and one set:
 
-```ts title="examples/reef/src/domain/queries.ts:28-38"
+```ts title="examples/reef/src/domain/queries.ts#board-shape"
 export const boardShape = {
   id: Issue.id,
   title: Issue.title,
@@ -95,7 +95,7 @@ export const boardShape = {
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
 - A **reference** also reads backwards in a shape with `.reverse` — `Issue.creator.reverse.select({ … })` from a user is "the issues that point at me", many-valued unless the reference is `{ owned: true }` (a component has at most one owner).
 
-The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A select-less `Query.from` returns the full entity; `.ids()` (and a select-less pipe) still returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
+The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A select-less `Query.from` returns `EntityRow`: every field under its friendly key (`title`, `status`), refs as `{ id }`. That is not `Ramose.all(Issue)`. `.ids()` (and a select-less pipe) still returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by ident (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
 
 When the same card repeats under itself — a comment thread, an org chart — write `ref.select(Ramose.again(n))` on that edge. `n` is a hop bound you name (`1` through `16`): the same shape, again, that many full hops, then a stub `{ id }`. A many-valued again edge needs an explicit width in its select options (`{ limit: n }` — the server will not pick a default for you). The shape must include `N.id`; a cycle or a hop that runs out of budget comes back as that id, still in the array, not dropped.
 
@@ -272,11 +272,11 @@ The compared cell must reach the projection (that is what names it on the row), 
 
 When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:259"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
 ```
 
-```ts title="examples/reef/src/domain/queries.ts:44-50"
+```ts title="examples/reef/src/domain/queries.ts#issue-extra-shape"
 export const issueExtraShape = {
   title: Issue.title,
   description: Issue.description.optional,

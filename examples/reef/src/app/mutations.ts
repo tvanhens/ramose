@@ -84,8 +84,10 @@ export const provisionWorkspaceOp = Op(
   },
 );
 
+// docs:provision-workspace
 export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
+// enddocs:provision-workspace
 
 export const moveIssueOp = Op(
   "issue/move",
@@ -339,6 +341,7 @@ export interface NewIssue {
 }
 
 /** `creator` is preset by the peer; writing it explicitly is the same datom. */
+// docs:create-issue
 export const createIssue = (
   db: ReefDb,
   myEid: number,
@@ -357,14 +360,17 @@ export const createIssue = (
     ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
     ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
   });
+// enddocs:create-issue
 
 /** Drag-and-drop: one status datom + one rank datom. */
+// docs:move-issue
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
   status: Status,
   rank: number,
 ) => db.run(moveIssueOp, issueId, { status, rank });
+// enddocs:move-issue
 
 /** Status change from the detail panel — keeps the rank (column position). */
 export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
@@ -373,8 +379,10 @@ export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
 export const setTitle = (db: ReefDb, issueId: number, title: string) =>
   db.run(setTitleOp, issueId, { title });
 
+// docs:set-description
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   db.run(setDescriptionOp, issueId, { text });
+// enddocs:set-description
 
 export const setPriority = (db: ReefDb, issueId: number, priority: number) =>
   db.run(setPriorityOp, issueId, { priority });
@@ -385,19 +393,23 @@ export const setAssignee = (
   assigneeId: number | undefined,
 ) => db.run(setAssigneeOp, issueId, { assigneeId });
 
+// docs:toggle-label
 export const toggleLabel = (
   db: ReefDb,
   issueId: number,
   labelId: number,
   on: boolean,
 ) => db.run(toggleLabelOp, issueId, { labelId, on });
+// enddocs:toggle-label
 
 /** Admin-only by policy: everyone else gets `Unauthorized` from the peer. */
 export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
   db.run(setPrivateNoteOp, issueId, { note });
 
+// docs:delete-issue
 export const deleteIssue = (db: ReefDb, issueId: number) =>
   db.run(deleteIssueOp, issueId, {});
+// enddocs:delete-issue
 
 export const addComment = (
   db: ReefDb,

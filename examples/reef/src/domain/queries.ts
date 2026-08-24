@@ -25,6 +25,7 @@ export const labelShape = {
   color: Label.color,
 } as const;
 
+// docs:board-shape
 export const boardShape = {
   id: Issue.id,
   title: Issue.title,
@@ -36,11 +37,13 @@ export const boardShape = {
   assignee: Issue.assignee.select(personShape).optional,
   labels: Issue.labels.select(labelShape),
 } as const;
+// enddocs:board-shape
 
 /**
  * What the detail panel `db.pull`s on top of its live board row (the row
  * already carries status/priority/assignee/labels/creator).
  */
+// docs:issue-extra-shape
 export const issueExtraShape = {
   title: Issue.title,
   description: Issue.description.optional,
@@ -48,6 +51,7 @@ export const issueExtraShape = {
   // them the row survives and the field is simply absent.
   privateNote: Issue.privateNote.optional,
 } as const;
+// enddocs:issue-extra-shape
 
 export const commentShape = {
   id: Comment.id,
@@ -67,9 +71,11 @@ export const allShapes: readonly unknown[] = [
 
 // ── queries ──────────────────────────────────────────────────────────────────
 
+// docs:board-query
 export const boardQuery = Query.from(Issue)
   .select(boardShape)
   .orderBy(Issue.rank, "asc");
+// enddocs:board-query
 
 export const peopleQuery = Query.from(User)
   .select({ id: User.id, name: User.name, email: User.email })
@@ -79,20 +85,26 @@ export const labelsQuery = Query.from(Label)
   .select(labelShape)
   .orderBy(Label.name, "asc");
 
+// docs:comments-query
 export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
   Query.from(Comment)
     .where({ issue: issueId })
     .select(commentShape)
     .orderBy(Comment.at, "asc");
+// enddocs:comments-query
 
 /** Over `db.history` this also returns issues that no longer exist. */
+// docs:every-issue-ever-query
 export const everyIssueEverQuery = Query.from(Issue).select({
   id: Issue.id,
   title: Issue.title,
 });
+// enddocs:every-issue-ever-query
 
 /** One row of {@link boardQuery} — inferred from the query, never restated. */
+// docs:board-row-type
 export type BoardRow = Ramose.Row<typeof boardQuery>;
+// enddocs:board-row-type
 
 export type Person = BoardRow["creator"];
 export type LabelRow = Ramose.Row<typeof labelsQuery>;

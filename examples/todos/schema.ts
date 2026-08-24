@@ -1,3 +1,4 @@
+// docs:todo-schema
 import * as Ramose from "ramose/db";
 
 export const Todo = Ramose.Entity("todo", {
@@ -7,3 +8,4 @@ export const Todo = Ramose.Entity("todo", {
 });
 
 export const Todos = Ramose.Schema({ todo: Todo });
+// enddocs:todo-schema

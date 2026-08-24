@@ -18,12 +18,12 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## RamoseProvider
 
-```tsx title="examples/reef/src/app/App.tsx:191-195"
-      <RamoseProvider
-        key={open.workspace.slug}
-        url={RAMOSE_URL}
-        token={open.workspace.token}
-      >
+```tsx title="examples/reef/src/app/App.tsx#ramose-provider"
+        <RamoseProvider
+          key={open.workspace.slug}
+          url={RAMOSE_URL}
+          token={open.workspace.token}
+        >
 ```
 
 `RamoseProvider(props: ClientOptions & { children })` — owns one **client** ([glossary](/concepts/glossary/#client)) made with `Ramose.connect`, and closes it on unmount or when `url` / `token` / `fetch` / `webSocket` change.
@@ -33,15 +33,17 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## useDb
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:234"
-  const db = useDb(slug, Reef);
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
+  const board = useLive(db, boardQuery);
+  const people = useLive(db, peopleQuery);
+  const labels = useLive(db, labelsQuery);
 ```
 
 `useDb(name, schema): Db<C>` — `client.db(name, schema)` from the nearest provider, kept stable on `[client, name, schema]`. Pass a module-scope schema. Throws outside a provider.
 
 ## useLive
 
-```tsx title="examples/todos/src/App.tsx:14-25"
+```tsx title="examples/todos/src/App.tsx#todo-list"
 const TodoList = () => {
   const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
@@ -67,15 +69,15 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useQuery
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:484"
-  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis"
+  const maxT = useBasis(db);
 ```
 
 `useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
 
 ## usePull
 
-```tsx title="examples/reef/src/app/components/IssueDetail.tsx:258"
+```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
 ```
 
@@ -83,7 +85,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useBasis
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:479"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis"
   const maxT = useBasis(db);
 ```
 
@@ -91,14 +93,15 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useTransact
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:248-250"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
 ```
 
-```tsx title="examples/todos/src/App.tsx:27-28"
-const TodoRowView = ({ row }: { row: TodoRow }) => {
+```tsx title="examples/todos/src/App.tsx#todo-row-transact"
   const { run } = useTransact();
 ```
 
