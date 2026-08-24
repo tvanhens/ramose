@@ -29,7 +29,7 @@ try {
 | `Unavailable` | the server cannot serve right now (503) | the writer restarting after a failed storage write; carries `retryAfterMs` |
 | `InvalidRequest` | the request is malformed (400) | bad database name, unknown field, bad query or shape |
 | `DatabaseNotFound` | the route does not exist (404) | a wrong server URL or path — a database *name* always exists |
-| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies; carries `code: "policy"` and the field name, never a value. A live WebSocket handshake the peer refuses with 401/403 is this class too — the same as the HTTPS path — not `NetworkError` |
+| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies (`code: "policy"` and the field name, never a value), or an app-class raw `/transact` under the default (`code: "operations"` — use `db.run` / `POST /op`, or `writes: "all"`). A live WebSocket handshake the peer refuses with 401/403 is this class too — the same as the HTTPS path — not `NetworkError` |
 | `QueryBudgetExceeded` | the query went over the server's per-query memory limit ([glossary](/concepts/glossary/#query-budget)) (413) | too wide a query; carries `clause`, `cells`, `limit`, and `spentBy` (`caller` or `policy`) |
 | `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
 | `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |
@@ -53,6 +53,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | tag | what to show | what to do |
 | --- | --- | --- |
 | `Unauthorized` (policy) | the server's message as a toast — in Reef a viewer who drags a card sees `remove denied on :issue/status` | nothing to retry; the button was only a hint |
+| `Unauthorized` (operations) | the server's message — raw `/transact` is closed for app-class tokens | write through `db.run` / `POST /op`, or opt out with `writes: "all"` |
 | `Unauthorized` (token) | "sign in again" | refresh the sign-in; a live query stops on it |
 | `TxRejected` | "someone changed this; try again" | re-read, then retry with fresh data |
 | `Unavailable` / `NetworkError` | "offline — retrying" or "try again" | already tried 6 times for you; if it still surfaces, the whole write may be retried — nothing landed |
@@ -76,7 +77,7 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | status | error |
 | --- | --- |
 | 400 | `InvalidRequest` |
-| 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule) |
+| 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule; `{ error, code: "operations" }` when raw `/transact` is closed for this token) |
 | 404 | `DatabaseNotFound` (unknown route) |
 | 409 | `TxRejected` (`{ error, tag, code }`) or `OperationRejected` (`{ error, tag, operation }`) |
 | 413 | `QueryBudgetExceeded` |

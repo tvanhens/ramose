@@ -4,19 +4,24 @@
 
 ### `writes: "operations"` is the peer default (part of #173, tracker #205)
 
-Raw `POST /db/:name/transact` is closed for app-class tokens unless you
+Raw `POST /db/:name/transact` — HTTPS and the live-session
+`{ op: "transact" }` frame — is closed for app-class tokens unless you
 opt out. The previous default was `"all"` (raw `/transact` open) unless
 `RAMOSE_WRITES` was exactly `"operations"`. Existing deploys that relied
 on raw `/transact` for app tokens need `Server({ writes: "all" })` or
 `RAMOSE_WRITES=all`. Admin tokens and the seed token (`$token` /
-`RAMOSE_TOKEN` under a policy) still reach `/transact`. App writes go
-through `POST /op` (`db.run`).
+`RAMOSE_TOKEN` under a policy) still reach `/transact`. Schema-only txs
+(`ensure` / `db.install()` of maps that all carry `:db/ident`) are
+exempt: `checkWrite` already polices them. App data writes go through
+`POST /op` (`db.run`).
 
 `Server({ writes })` binds `RAMOSE_WRITES` on the owned Worker. On the
-`worker:` hatch, a passed `writes` must match the Worker env or the
-deploy fails — a silently-ignored `writes` prop is gone. The ignored
-`operations?: unknown` Server prop is deleted: consuming a registry
-here without injecting it into `ramose/worker` is #172.
+`worker:` hatch, a passed `writes` must match the Worker's effective
+mode — unset `RAMOSE_WRITES` means `"operations"`, so
+`writes: "operations"` against a Worker with no key matches.
+`writes: "all"` against an unset or mismatched key fails the deploy.
+The ignored `operations?: unknown` Server prop is deleted: consuming a
+registry here without injecting it into `ramose/worker` is #172.
 
 A policy plus `writes: "all"` logs a warning (deploy-time and at
 startup). It does not fail the deploy.

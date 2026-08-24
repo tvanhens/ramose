@@ -520,8 +520,8 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
   });
 
   test("hatch form: Server({ writes }) that disagrees with the Worker is a deploy error", () => {
-    expect(compareWritesToWorker("operations", hatch({}))).toMatch(
-      /Server writes is "operations" but the Worker has no RAMOSE_WRITES/,
+    expect(compareWritesToWorker("all", hatch({}))).toMatch(
+      /Server writes is "all" but the Worker has no RAMOSE_WRITES/,
     );
     expect(compareWritesToWorker("all", hatch({ RAMOSE_WRITES: "operations" }))).toMatch(
       /diverge on RAMOSE_WRITES/,
@@ -533,6 +533,7 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
   });
 
   test("hatch form: a matching writes still deploys", () => {
+    expect(compareWritesToWorker("operations", hatch({}))).toBeUndefined();
     expect(compareWritesToWorker("operations", hatch({ RAMOSE_WRITES: "operations" }))).toBeUndefined();
     expect(compareWritesToWorker("all", hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
     expect(compareWritesToWorker("operations", "https://peer.example.com")).toBeUndefined();

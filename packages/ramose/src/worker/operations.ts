@@ -38,12 +38,13 @@ import {
 import { lowerPullPattern } from "../db/Pull.ts";
 import { lowerQueryObject } from "../db/query/index.ts";
 import { checkWrite, viewDb } from "./auth.ts";
+import type { WritesMode } from "../writes.ts";
 import { BadRequest, OperationRejected } from "./errors.ts";
 import { fetchBasisWithStats, invalidateBasis, segmentSource } from "./peer.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
-  readonly writes?: "all" | "operations";
+  readonly writes?: WritesMode;
 }
 
 export const lookupOperation = (

@@ -3,9 +3,10 @@
  *
  * One request: JSON in (`toJson`, so instants / bytes / uuids survive), the
  * body out through `fromJson`, and a non-2xx classified into one of the nine
- * tagged failures by {@link fromResponse}. Writes always come through here —
- * `POST /db/:name/transact` is the one writer — and reads fall back to it when
- * the client was given no `WebSocket`.
+ * tagged failures by {@link fromResponse}. App writes go through
+ * `POST /db/:name/op`; raw `POST /db/:name/transact` is admin / seed /
+ * `writes: "all"`. Reads fall back here when the client was given no
+ * `WebSocket`.
  *
  * Nothing here is on the `ramose/db` barrel: HTTP is Worker
  * internals, not a second public API.

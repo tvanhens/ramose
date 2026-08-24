@@ -43,7 +43,7 @@ export const provisionWorkspace = (db: ReefDb) =>
   });
 ```
 
-`db.install()` is safe to run twice: an unchanged schema costs one empty write.
+`db.install()` is safe to run twice: an already-deployed schema is a silent no-op, including from a member token. A new ident still requires the `admin` class — Reef's first install runs under the creator's admin token.
 
 ## What that buys you
 

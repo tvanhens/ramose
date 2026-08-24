@@ -350,4 +350,25 @@ describe('writes: "operations" is the peer default', () => {
     expect(events.slice(from).filter((e) => e.event === "writes.all-with-policy")).toHaveLength(1);
     peer.close();
   });
+
+  test("unrecognized RAMOSE_WRITES warns and fails closed to operations", async () => {
+    const from = events.length;
+    const peer = makePeer("movies", {
+      operations,
+      env: { ...envOf(), RAMOSE_WRITES: "All" },
+    });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const member = await token("movies", "member");
+    const denied = await peer.json(
+      "/db/movies/transact",
+      post({ tx: [{ ":movie/title": "typo-opt-out" }] }, member),
+    );
+    expect(denied.status).toBe(403);
+    expect(denied.body.code).toBe("operations");
+    const warned = events.slice(from).filter((e) => e.event === "writes.unrecognized");
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.level).toBe("warn");
+    expect(String(warned[0]?.message)).toMatch(/not "all" or "operations"/);
+    peer.close();
+  });
 });

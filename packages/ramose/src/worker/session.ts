@@ -1,7 +1,11 @@
 /** Session socket protocol: inbound frames + the apply-then-push walk. */
 
 import type { Principal, WireDatom } from "../internal/core/index.ts";
+import type { WritesMode } from "../writes.ts";
+import { WRITES_HEADER } from "../writes.ts";
 import type { SessionLog, SessionLogEntry, SessionTxDecision } from "./session-sync.ts";
+
+export { WRITES_HEADER };
 
 // ---- wire ------------------------------------------------------------------
 
@@ -92,6 +96,8 @@ export interface SessionState {
   readonly lastT: number;
   readonly watermark: number;
   readonly writerEcho?: { t: number; clientTxId: string };
+  /** Resolved write mode from the Worker upgrade (`x-ramose-writes`). */
+  readonly writes?: WritesMode;
 }
 
 export interface SessionOptions {
@@ -567,6 +573,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       lastT,
       watermark,
       ...(writerEcho !== undefined ? { writerEcho } : {}),
+      ...(seed?.writes !== undefined ? { writes: seed.writes } : {}),
     }),
     closed,
   };

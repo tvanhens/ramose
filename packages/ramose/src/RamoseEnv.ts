@@ -60,9 +60,11 @@ export interface RamoseEnv {
   /** structured log level for all components: debug | info | warn | error (default info) */
   RAMOSE_LOG_LEVEL?: string;
   /**
-   * Who may POST raw `/transact`. `"operations"` (the default, including
-   * unset) closes it for app-class tokens; admin and the seed token keep
-   * it. `"all"` is the explicit opt-out.
+   * Who may POST raw `/transact` (HTTPS and the session frame).
+   * `"operations"` (the default, including unset) closes it for app-class
+   * data writes; admin, the seed token, and schema-only txs keep it.
+   * `"all"` is the explicit opt-out. Unrecognized values fail closed and
+   * log `writes.unrecognized`.
    */
   RAMOSE_WRITES?: string;
   /** default replica location hint: wnam|enam|…|auto (auto = colo→hint); unset = continent default */

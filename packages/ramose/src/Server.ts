@@ -57,6 +57,9 @@ import {
 } from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
+import { type WritesMode, WRITES_ENV_KEY, resolveWrites } from "./writes.ts";
+export type { WritesMode } from "./writes.ts";
+export { resolveWrites, WRITES_ENV_KEY } from "./writes.ts";
 
 /** @internal */
 export const isServer = (value: unknown): value is Server =>
@@ -169,9 +172,6 @@ export interface ServerAuth {
   readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
 }
 
-/** Who may POST raw `/transact`. `"operations"` is the peer default. */
-export type WritesMode = "all" | "operations";
-
 /** @internal The public spelling is the argument of {@link Server}. */
 export type ServerProps = {
   /**
@@ -214,11 +214,12 @@ export type ServerProps = {
   auth?: ServerAuth;
   /**
    * Who may POST raw `/transact`. `"operations"` (the peer default) rejects
-   * it for app-class tokens; admin and the seed token keep it. `"all"` is
-   * the explicit opt-out. Owned form binds `RAMOSE_WRITES`; hatch form
-   * compares and fails the deploy on divergence. A typed-but-ignored
-   * `operations` registry prop is gone — injecting a registry into the
-   * default `ramose/worker` entry is #172.
+   * it for app-class tokens; admin, the seed token, and schema-only txs
+   * keep it. `"all"` is the explicit opt-out. Owned form binds
+   * `RAMOSE_WRITES`; hatch form compares the effective mode (unset Worker
+   * key means `"operations"`) and fails the deploy on a real mismatch. A
+   * typed-but-ignored `operations` registry prop is gone — injecting a
+   * registry into the default `ramose/worker` entry is #172.
    */
   writes?: WritesMode;
   /**
@@ -246,9 +247,6 @@ export const AUTH_ENV_KEYS = {
 
 /** @internal Env key `token` lowers onto. */
 export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const satisfies keyof RamoseEnv;
-
-/** @internal Env key `writes` lowers onto. */
-export const WRITES_ENV_KEY = "RAMOSE_WRITES" as const satisfies keyof RamoseEnv;
 
 const AUTH_COMPARE_KEYS = [
   AUTH_ENV_KEYS.policy,
@@ -485,8 +483,11 @@ export const compareAuthToWorker = (
 
 /**
  * @internal Hatch form: if `writes` is passed, the Worker must carry the
- * matching `RAMOSE_WRITES`. Divergence — including a set prop and an unset
- * Worker key — is a deploy error. URL workers have no env and are skipped.
+ * same effective mode. Unset `RAMOSE_WRITES` means `"operations"` — the
+ * peer default — so `Server({ writes: "operations" })` against a Worker
+ * with no key matches. `writes: "all"` against an unset/mismatched key
+ * fails: that opt-out would not take effect. URL workers have no env
+ * and are skipped.
  */
 export const compareWritesToWorker = (
   writes: WritesMode | undefined,
@@ -497,13 +498,12 @@ export const compareWritesToWorker = (
   const env = workerEnvOf(worker);
   if (env === undefined) return undefined;
   const got = env[WRITES_ENV_KEY];
+  const workerMode = resolveWrites(undefined, isBound(got) ? got : undefined);
+  if (resolveWrites(writes, undefined) === workerMode) return undefined;
   if (!isBound(got)) {
-    return `ramose: Server writes is ${JSON.stringify(writes)} but the Worker has no RAMOSE_WRITES — a writes setting that never reaches the Worker is ignored`;
+    return `ramose: Server writes is "all" but the Worker has no RAMOSE_WRITES — unset means "operations", so raw /transact would stay closed`;
   }
-  if (!sameBinding(writes, got)) {
-    return `ramose: Server writes and the Worker env diverge on RAMOSE_WRITES — Server({ writes }) is ${JSON.stringify(writes)}, the Worker has ${JSON.stringify(got)}`;
-  }
-  return undefined;
+  return `ramose: Server writes and the Worker env diverge on RAMOSE_WRITES — Server({ writes }) is ${JSON.stringify(writes)}, the Worker has ${JSON.stringify(got)}`;
 };
 
 /** @internal The pairing the issue asks to warn on, not fail the deploy. */
@@ -519,12 +519,6 @@ const workerPolicyOf = (worker: unknown): unknown => {
   if (typeof worker === "string") return undefined;
   return workerEnvOf(worker)?.[AUTH_ENV_KEYS.policy];
 };
-
-/** Effective write mode: Server prop, else Worker env, else `"operations"`. */
-export const resolveWrites = (
-  writes: WritesMode | undefined,
-  envWrites: unknown,
-): WritesMode => writes ?? (envWrites === "all" ? "all" : "operations");
 
 /**
  * @internal Warning (not a deploy error) when a policy is installed and

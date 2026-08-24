@@ -253,11 +253,17 @@ describe("Ramose.Server", () => {
           },
         },
       });
-      const missing = yield* Effect.result(
-        stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, writes: "operations" })),
+      const matchedUnset = yield* stack.deploy(
+        Server("Ramose", { worker: hatch({}), probe: false, writes: "operations" }),
       );
-      expect(missing._tag).toBe("Failure");
-      expect(String(missing)).toMatch(/Worker has no RAMOSE_WRITES/);
+      expect(matchedUnset.url).toBe(peerUrl);
+      yield* stack.destroy();
+
+      const missingAll = yield* Effect.result(
+        stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, writes: "all" })),
+      );
+      expect(missingAll._tag).toBe("Failure");
+      expect(String(missingAll)).toMatch(/unset means "operations"/);
 
       const diverged = yield* Effect.result(
         stack.deploy(

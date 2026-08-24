@@ -31,6 +31,7 @@ import { type RamoseEnv, envInt, policyOf } from "../internal/transactor/index.t
 import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 import { DEFAULT_JWT_MAX_TTL } from "../Auth.ts";
 import { Unauthorized } from "./errors.ts";
+import type { WritesMode } from "../writes.ts";
 
 export { DEFAULT_JWT_MAX_TTL };
 
@@ -384,17 +385,39 @@ export async function viewDb(
   return filterDb(data, current, st.policy, await withEid(st.policy, principal, current));
 }
 
+/**
+ * Every op is a map form carrying `:db/ident` — i.e. an `ensure`.
+ * Empty `tx` is not schema (nothing to ensure).
+ */
+export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[] {
+  if (!Array.isArray(tx) || tx.length === 0) return false;
+  for (const op of tx) {
+    if (typeof op !== "object" || op === null || Array.isArray(op)) return false;
+    if (typeof (op as Record<string, unknown>)[":db/ident"] !== "string") return false;
+  }
+  return true;
+}
+
 /** Every op is a map form carrying `:db/ident` — i.e. an `ensure`. */
 function schemaIdents(tx: readonly unknown[]): string[] | undefined {
-  if (tx.length === 0) return undefined;
-  const out: string[] = [];
-  for (const op of tx) {
-    if (typeof op !== "object" || op === null || Array.isArray(op)) return undefined;
-    const ident = (op as Record<string, unknown>)[":db/ident"];
-    if (typeof ident !== "string") return undefined;
-    out.push(ident);
-  }
-  return out;
+  if (!isSchemaTx(tx)) return undefined;
+  return tx.map((op) => (op as Record<string, unknown>)[":db/ident"] as string);
+}
+
+/**
+ * Raw `/transact` (HTTP or a session `{ op: "transact" }` frame).
+ * `"all"` is open. Admin and `$token` keep it under `"operations"`.
+ * Schema-only txs are exempt — `checkWrite` already polices them
+ * (unknown ident stays 403 admin-only; already-deployed subset is a skip).
+ */
+export function allowsRawTransact(
+  writes: WritesMode,
+  principal: Principal | undefined,
+  tx: unknown,
+): boolean {
+  if (writes === "all") return true;
+  if (principal !== undefined && (isAdmin(principal) || isTokenOnly(principal))) return true;
+  return isSchemaTx(tx);
 }
 
 /**

@@ -40,8 +40,9 @@ import {
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
 import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
-import { authState, describePrincipal, principalForToken, rememberProvisioned, shouldProvision, viewDb, withEid } from "../../worker/auth.ts";
-import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER } from "../../worker/session.ts";
+import { allowsRawTransact, authState, describePrincipal, principalForToken, rememberProvisioned, shouldProvision, viewDb, withEid } from "../../worker/auth.ts";
+import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, WRITES_HEADER } from "../../worker/session.ts";
+import { type WritesMode, parseWritesHeader, resolveWrites } from "../../writes.ts";
 import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
@@ -345,7 +346,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       listen: false,
       seed,
       principal: seed.principal,
-      dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p),
+      dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
       authenticate: (token) => principalForToken(this.env, token.length === 0 ? undefined : token, dbName),
       provision: (p) => this.provisionPrincipal(p),
       describe: async (p) => {
@@ -405,6 +406,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     rest: string,
     init: { method: string; headers: Record<string, string>; body?: string },
     principal?: Principal,
+    writes?: WritesMode,
   ): Promise<Response> {
     await this.sync();
     const dbName = this.dbName as string;
@@ -419,6 +421,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         const raw = JSON.parse(init.body) as { tx?: unknown; clientTxId?: unknown };
         tx = raw.tx;
         if (typeof raw.clientTxId === "string" && raw.clientTxId.length > 0) clientTxId = raw.clientTxId;
+      }
+      const mode = writes ?? resolveWrites(undefined, this.env.RAMOSE_WRITES);
+      if (!allowsRawTransact(mode, principal, tx)) {
+        return json({ error: "raw transact is disabled; use operations", code: "operations" }, 403);
       }
       const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));
       return stub.fetch(`https://transactor/transact?db=${encodeURIComponent(dbName)}`, {
@@ -481,7 +487,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.ctx.acceptWebSocket(server);
     const raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
     const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
-    const seed: SessionState = { ...(principal !== undefined ? { principal } : {}), lastT: 0, watermark: 0 };
+    const writes = parseWritesHeader(request.headers.get(WRITES_HEADER));
+    const seed: SessionState = {
+      ...(principal !== undefined ? { principal } : {}),
+      ...(writes !== undefined ? { writes } : {}),
+      lastT: 0,
+      watermark: 0,
+    };
     const session = this.createSession(server, seed);
     this.live.set(server, session);
     this.persist(server, session);
