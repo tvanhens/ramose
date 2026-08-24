@@ -18,6 +18,14 @@ on:
         required: true
         type: string
 
+# One review at a time per PR: near-simultaneous trigger events (an opened
+# plus a synchronize from the same push flow) were each starting a full
+# runner for the same head SHA. The newest event wins; the superseded run
+# is cancelled instead of burning ~90s discovering it's a duplicate.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
 jobs:
   claude-review:
     # Optional: Filter by PR author
