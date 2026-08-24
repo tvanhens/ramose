@@ -147,7 +147,18 @@ export function flattenTxData(txData: TxData): TxOp[] {
           break;
         case ":db/update":
           if (item.length !== 4) throw new TxError(":db/update needs [op e a v]");
-          ops.push({ kind: "update", e: e as EForm, a: a as string | number, v: isPlainObject(v) ? expandMap(v as Record<string, unknown>) : v, hasV: true });
+          {
+            const vals = Array.isArray(v) && !isLookupRef(v) ? v : [v];
+            for (const x of vals) {
+              ops.push({
+                kind: "update",
+                e: e as EForm,
+                a: a as string | number,
+                v: isPlainObject(x) ? expandMap(x as Record<string, unknown>) : x,
+                hasV: true,
+              });
+            }
+          }
           break;
         case ":db/retract":
           if (item.length !== 3 && item.length !== 4) throw new TxError(":db/retract needs [op e a v?]");
@@ -623,7 +634,7 @@ export async function expandTx(
   }
 
   for (const op of expanded) {
-    if (op.kind !== "retract" || op.implicit || op.fromRetractEntity) continue;
+    if (op.kind !== "retract" || op.implicit) continue;
     if (op.attr.cardinality !== "one" || op.attr.optional) continue;
     if (op.attr.ident.startsWith(":db/")) continue;
     if (retracted.has(op.e) || isTxEid(op.e) || op.e < FIRST_USER_EID) continue;

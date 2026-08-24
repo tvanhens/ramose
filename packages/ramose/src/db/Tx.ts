@@ -2,7 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
-import { lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
+import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
@@ -384,6 +384,13 @@ const isCardManyScalarField = (entity: unknown, key: string): boolean => {
   return field?.cardinality === "many" && field?.valueType !== "ref";
 };
 
+/** Card-many array to fan out as one op per item. A lookup ref is one value. */
+const isCardManyWrite = (entity: unknown, key: string, value: unknown): boolean => {
+  const field = fieldMeta(entity, key);
+  if (field?.cardinality !== "many" || !Array.isArray(value)) return false;
+  return field.valueType !== "ref" || asLookupRef(value) === undefined;
+};
+
 const resolveEntity = (e: unknown): unknown => lowerEntityArg(e);
 
 const fieldIdent = (entity: unknown, key: string): string => {
@@ -466,8 +473,8 @@ const lowerUpdate = (
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;
     const ident = fieldIdent(entity, key);
-    if (isCardManyScalarField(entity, key) && Array.isArray(value)) {
-      for (const item of value) {
+    if (isCardManyWrite(entity, key, value)) {
+      for (const item of value as readonly unknown[]) {
         const lowered = lowerWriteValue(item);
         if (lowered === undefined) continue;
         ops.push([":db/update", eid, ident, lowered]);

@@ -18,6 +18,7 @@ import {
   Schema as DbSchema,
   TxRejected,
   txBuilder,
+  type AnySchema,
 } from "../src/db/internal.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
@@ -38,7 +39,24 @@ const Movie = Entity("film", {
 });
 const Films = DbSchema({ person: Person, film: Movie });
 
-const setup = async (catalog = People) => {
+const Label = Entity("label", {
+  name: Field(Schema.String, { unique: "upsert" }),
+});
+const Doc = Entity("doc", {
+  slug: Field(Schema.String, { unique: "upsert" }),
+  title: Field(Schema.String),
+  labels: Field.many(Ref(Label)),
+});
+const Docs = DbSchema({ label: Label, doc: Doc });
+
+const Staff = Entity("staff", {
+  handle: Field(Schema.String, { unique: "upsert" }),
+  title: Field(Schema.String),
+  manager: Field(Ref.self),
+});
+const Staffs = DbSchema({ staff: Staff });
+
+const setup = async (catalog: AnySchema = People) => {
   const conn = await Connection.create();
   await conn.transact(schemaTx(catalog) as unknown[]);
   return conn;
@@ -101,6 +119,39 @@ describe("required-at-transact", () => {
     const noteGone = await conn.transact([[":db/retract", eid, ":person/note"]]);
     expect(noteGone.t).toBeGreaterThan(0);
   });
+
+  test("processTx: retractEntity cascade that clears a required ref is tx/required", async () => {
+    const conn = await setup(Staffs);
+    const seed = txBuilder(Staffs);
+    Effect.runSync(
+      seed.put(Staff, 1003, { handle: "boss", title: "Lead", manager: 1003 }),
+    );
+    Effect.runSync(
+      seed.put(Staff, 1004, { handle: "ada", title: "Eng", manager: 1003 }),
+    );
+    await conn.transact([...seed.spec.ops]);
+
+    await expect(
+      conn.transact([[":db/retract", 1004, ":staff/manager"]]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+
+    await expect(conn.transact([[":db/retractEntity", 1003]])).rejects.toMatchObject(
+      { code: "tx/required" },
+    );
+    expect((await conn.db().entity(1003))?.[":staff/handle"]).toBe("boss");
+    expect((await conn.db().entity(1004))?.[":staff/manager"]).toBe(1003);
+  });
+
+  test("processTx: retractEntity of a row with no incoming required refs passes", async () => {
+    const conn = await setup(Staffs);
+    const seed = txBuilder(Staffs);
+    Effect.runSync(
+      seed.put(Staff, 1003, { handle: "solo", title: "Lead", manager: 1003 }),
+    );
+    await conn.transact([...seed.spec.ops]);
+    await conn.transact([[":db/retractEntity", 1003]]);
+    expect(await conn.db().entity(1003)).toBeUndefined();
+  });
 });
 
 describe("op.update", () => {
@@ -158,6 +209,53 @@ describe("op.update", () => {
     expect(row?.[":person/title"]).toBe("Staff");
     expect(row?.[":person/note"]).toBe("hi");
     expect(Object.keys(await conn.db().entity(eid + 1) ?? {})).toEqual([]);
+  });
+
+  test("lowers card-many refs as one :db/update per item (not one array value)", () => {
+    const tx = txBuilder(Docs);
+    Effect.runSync(tx.update(Doc, 1006, { labels: [1004, 1005] }));
+    Effect.runSync(
+      tx.update(Doc, 1006, { labels: [[Label.name, "red"] as const] }),
+    );
+    expect(tx.spec.ops).toEqual([
+      [":db/update", 1006, ":doc/labels", 1004],
+      [":db/update", 1006, ":doc/labels", 1005],
+      [":db/update", 1006, ":doc/labels", [":label/name", "red"]],
+    ]);
+  });
+
+  test("processTx: update of a card-many ref array asserts each ref", async () => {
+    const conn = await setup(Docs);
+    const seed = txBuilder(Docs);
+    Effect.runSync(seed.put(Label, { name: "red" }));
+    Effect.runSync(seed.put(Label, { name: "blue" }));
+    Effect.runSync(seed.put(Doc, { slug: "roadmap", title: "Roadmap" }));
+    const { tempids } = await conn.transact([...seed.spec.ops]);
+    const red = tempids["tmp-1"]!;
+    const blue = tempids["tmp-2"]!;
+    const doc = tempids["tmp-3"]!;
+
+    const viaPut = txBuilder(Docs);
+    Effect.runSync(viaPut.put(Doc, doc, { labels: [red, blue] }));
+    await conn.transact([...viaPut.spec.ops]);
+    expect(
+      ((await conn.db().entity(doc))?.[":doc/labels"] as number[]).sort(),
+    ).toEqual([red, blue].sort());
+
+    const viaUpdate = txBuilder(Docs);
+    Effect.runSync(viaUpdate.update(Doc, doc, { labels: [red] }));
+    await conn.transact([...viaUpdate.spec.ops]);
+    const labels = (await conn.db().entity(doc))?.[":doc/labels"] as number[];
+    expect(labels).toContain(red);
+    expect(labels).toContain(blue);
+
+    const byLookup = txBuilder(Docs);
+    Effect.runSync(
+      byLookup.update(Doc, doc, { labels: [[Label.name, "blue"] as const] }),
+    );
+    await expect(conn.transact([...byLookup.spec.ops])).resolves.toMatchObject({
+      t: expect.any(Number),
+    });
   });
 
   test("processTx: update clearing a required field is tx/required", async () => {

@@ -10,8 +10,9 @@ assertion — must supply every required field. Cardinality-many is never
 a required key; mark a card-one field `optional: true` (or
 `Schema.optional`) to omit it. Runtime enforcement is in `processTx`:
 genuine creates missing required attrs, and retracts that clear a
-required field, reject with `TxRejected` `tx/required` on both the
-worker path and the optimistic overlay. A `put` whose tempid unified
+required field — including cascade retracts of incoming refs when
+another entity is `retractEntity`'d — reject with `TxRejected`
+`tx/required` on both the worker path and the optimistic overlay. A `put` whose tempid unified
 with an existing row is an update and passes.
 
 `op.update` (and `tx.update`) is the partial verb: addressed by eid /
