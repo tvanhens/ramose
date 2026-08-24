@@ -26,7 +26,7 @@
  * export const db = ramose.db("todos", Todos);
  * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
  * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema;
-// wrap with `stored(schema, vt)` when inference cannot name `:db.type/*`.
+ * // wrap with `stored(schema, vt)` when inference cannot name `:db.type/*`.
  * ```
  */
 
