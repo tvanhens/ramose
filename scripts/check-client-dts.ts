@@ -9,10 +9,14 @@
  * Mutation: adding `import type { Effect } from "effect/Effect"` to
  * `connect.ts` (or any exported type there) must fail this script.
  *
- * Follows relative imports one hop so a new module cannot smuggle Effect
- * onto the surface. Allowed hops are paths relative to `dist/db` — a new
- * file that happens to share a basename (`session.ts` in a subdirectory)
- * is not exempt.
+ * Follows relative imports **transitively** so a new module cannot smuggle
+ * Effect onto the surface. After #222 the query hover types sit two hops
+ * from the barrel (`query/index.d.ts` → `query/fluent.d.ts` /
+ * `query/query.d.ts`); one hop missed them. `query/fluent.d.ts` and
+ * `query/query.d.ts` are also on the scanned list so a leak into
+ * `FluentQuery` / `QueryObject` is not hidden if the barrel hop is edited.
+ * Allowed hops are paths relative to `dist/db` — a new file that happens
+ * to share a basename (`session.ts` in a subdirectory) is not exempt.
  *
  * Run after `bun run build`.
  */
@@ -22,7 +26,7 @@ import { dirname, join, relative } from "node:path";
 
 const ROOT = "packages/ramose/dist";
 const DB_DIST = join(ROOT, "db");
-const EFFECT_IMPORT =
+export const EFFECT_IMPORT =
   /(?:^|\n)\s*(?:import|export)[\s\S]*?\sfrom\s*["']effect(?:\/[^"']*)?["']|(?:^|\n)\s*import\s*["']effect(?:\/[^"']*)?["']|import\(\s*["']effect(?:\/[^"']*)?["']/;
 const RELATIVE_FROM =
   /(?:^|\n)\s*(?:import|export)[\s\S]*?\sfrom\s*["'](\.[^"']+)["']/g;
@@ -33,10 +37,10 @@ const RELATIVE_FROM =
  * A *new* relative module is not on this list and fails the gate if it
  * imports `effect`.
  *
- * App-surface modules (`connect`, `Db`, `token`, `index`) are not on
- * this list — they are scanned directly.
+ * App-surface modules (`connect`, `Db`, `token`, `index`, the query
+ * hover files) are not on this list — they are scanned directly.
  */
-const ALLOWED_HOPS = new Set([
+export const ALLOWED_HOPS = new Set([
   "effect-types.d.ts",
   "Errors.d.ts",
   "Operation.d.ts",
@@ -51,7 +55,7 @@ const ALLOWED_HOPS = new Set([
 ]);
 
 /** Drop comments so JSDoc samples (`from "effect/Schema"`) are not imports. */
-const withoutComments = (src: string): string =>
+export const withoutComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
 const hopFile = (from: string, spec: string): string => {
@@ -59,8 +63,8 @@ const hopFile = (from: string, spec: string): string => {
   return join(dirname(from), `${stripped}.d.ts`);
 };
 
-const hopKey = (file: string): string =>
-  relative(DB_DIST, file).replaceAll("\\", "/");
+export const hopKey = (file: string, dbDist: string = DB_DIST): string =>
+  relative(dbDist, file).replaceAll("\\", "/");
 
 /** App-surface declarations — scanned directly, no exemption. */
 const files: string[] = [
@@ -69,6 +73,10 @@ const files: string[] = [
   join(ROOT, "db/token.d.ts"),
   join(ROOT, "db/subscription.d.ts"),
   join(ROOT, "db/connect.d.ts"),
+  // Two hops from the barrel; listed so FluentQuery / QueryObject cannot
+  // slip the scan if someone later edits the query/index re-exports.
+  join(ROOT, "db/query/fluent.d.ts"),
+  join(ROOT, "db/query/query.d.ts"),
 ];
 
 const reactDir = join(ROOT, "react");
@@ -83,14 +91,7 @@ if (existsSync(reactDir)) {
   walk(reactDir);
 }
 
-const missing = files.filter((file) => !existsSync(file));
-if (missing.length > 0) {
-  console.error("check-client-dts: missing declaration files (run bun run build):");
-  for (const file of missing) console.error(`  ${file}`);
-  process.exit(1);
-}
-
-const hopsOf = (file: string): string[] => {
+export const hopsOf = (file: string): string[] => {
   const src = withoutComments(readFileSync(file, "utf8"));
   const hops: string[] = [];
   RELATIVE_FROM.lastIndex = 0;
@@ -101,43 +102,84 @@ const hopsOf = (file: string): string[] => {
   return hops;
 };
 
-const leaks: string[] = [];
-for (const file of files) {
-  const src = withoutComments(readFileSync(file, "utf8"));
-  if (EFFECT_IMPORT.test(src)) leaks.push(file);
-}
-
-// Hop-follow every scanned file. `connect.d.ts` is in `files` so a leak
-// into `connect` / `ClientOptions` is not hidden by skipping `index.d.ts`.
-const seenHops = new Set<string>();
-for (const file of files) {
-  for (const hop of hopsOf(file)) {
-    const key = `${file} → ${hop}`;
-    if (seenHops.has(key)) continue;
-    seenHops.add(key);
-    if (ALLOWED_HOPS.has(hopKey(hop))) continue;
-    const hopSrc = withoutComments(readFileSync(hop, "utf8"));
-    if (EFFECT_IMPORT.test(hopSrc)) leaks.push(key);
+/**
+ * Follow relative imports from `roots` through every reached
+ * non-allowlisted `.d.ts`. Allowlisted hops are terminals — they may
+ * mention Effect, and walking through them would scan implementation
+ * internals, not the hover surface.
+ */
+export const followHops = (
+  roots: readonly string[],
+  dbDist: string = DB_DIST,
+  allowed: ReadonlySet<string> = ALLOWED_HOPS,
+): { leaks: string[]; reached: string[] } => {
+  const leaks: string[] = [];
+  const reached: string[] = [];
+  const seenHops = new Set<string>();
+  const seenFiles = new Set<string>(roots);
+  const queue = [...roots];
+  for (let i = 0; i < queue.length; i++) {
+    const file = queue[i]!;
+    for (const hop of hopsOf(file)) {
+      const key = `${file} → ${hop}`;
+      if (seenHops.has(key)) continue;
+      seenHops.add(key);
+      if (allowed.has(hopKey(hop, dbDist))) continue;
+      reached.push(hop);
+      const hopSrc = withoutComments(readFileSync(hop, "utf8"));
+      if (EFFECT_IMPORT.test(hopSrc)) leaks.push(key);
+      if (!seenFiles.has(hop)) {
+        seenFiles.add(hop);
+        queue.push(hop);
+      }
+    }
   }
-}
+  return { leaks, reached };
+};
 
-// Mutation probe: the regex must catch an Effect type on ClientOptions.
-const MUTATION = 'import type { Effect } from "effect/Effect";\nexport interface ClientOptions { token?: Effect.Effect<string>; }\n';
-if (!EFFECT_IMPORT.test(MUTATION)) {
-  console.error(
-    "check-client-dts: EFFECT_IMPORT regex failed its mutation probe (a ClientOptions Effect leak would pass)",
+const run = (): void => {
+  const missing = files.filter((file) => !existsSync(file));
+  if (missing.length > 0) {
+    console.error("check-client-dts: missing declaration files (run bun run build):");
+    for (const file of missing) console.error(`  ${file}`);
+    process.exit(1);
+  }
+
+  const leaks: string[] = [];
+  for (const file of files) {
+    const src = withoutComments(readFileSync(file, "utf8"));
+    if (EFFECT_IMPORT.test(src)) leaks.push(file);
+  }
+
+  // Hop-follow every scanned file transitively. `connect.d.ts` is in `files`
+  // so a leak into `connect` / `ClientOptions` is not hidden by skipping
+  // `index.d.ts`. `query/fluent.d.ts` / `query/query.d.ts` are reached even
+  // if they are dropped from `files`.
+  const { leaks: hopLeaks } = followHops(files);
+  leaks.push(...hopLeaks);
+
+  // Mutation probe: the regex must catch an Effect type on ClientOptions.
+  const MUTATION = 'import type { Effect } from "effect/Effect";\nexport interface ClientOptions { token?: Effect.Effect<string>; }\n';
+  if (!EFFECT_IMPORT.test(MUTATION)) {
+    console.error(
+      "check-client-dts: EFFECT_IMPORT regex failed its mutation probe (a ClientOptions Effect leak would pass)",
+    );
+    process.exit(1);
+  }
+
+  if (leaks.length > 0) {
+    console.error(
+      "check-client-dts: these client/react declarations import `effect`:",
+    );
+    for (const file of leaks) console.error(`  ${file}`);
+    process.exit(1);
+  }
+
+  console.log(
+    `check-client-dts: ${files.length} files, no effect imports on ramose/db client or ramose/react`,
   );
-  process.exit(1);
-}
+};
 
-if (leaks.length > 0) {
-  console.error(
-    "check-client-dts: these client/react declarations import `effect`:",
-  );
-  for (const file of leaks) console.error(`  ${file}`);
-  process.exit(1);
+if (import.meta.main) {
+  run();
 }
-
-console.log(
-  `check-client-dts: ${files.length} files, no effect imports on ramose/db client or ramose/react`,
-);
