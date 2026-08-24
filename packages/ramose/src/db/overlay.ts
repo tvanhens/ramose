@@ -732,10 +732,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             },
             self: args.invocation.entity,
             effects: "halt",
-            q: (input, params) =>
+            q: (input) =>
               Effect.tryPromise({
                 try: async () => {
-                  const lowered = lowerQueryObject(input, params);
+                  const lowered = lowerQueryObject(input);
                   const db = await speculative(collected());
                   const result = await engineQuery(db, lowered.query, []);
                   const rows = lowered.finalize(result);

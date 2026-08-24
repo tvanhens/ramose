@@ -242,10 +242,10 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
           installOn(args.env, name ?? args.db, catalog, args.principal),
       },
     },
-    q: (input, params) =>
+    q: (input) =>
       Effect.tryPromise({
         try: async () => {
-          const lowered = lowerQueryObject(input, params);
+          const lowered = lowerQueryObject(input);
           const db = await withOps(dbv, collected());
           const result = await engineQuery(db, lowered.query, []);
           const rows = lowered.finalize(result);
