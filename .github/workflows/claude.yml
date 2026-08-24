@@ -30,6 +30,12 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Set up the same toolchain as CI so Claude can run typecheck, tests,
+      # and the build when responding to @claude requests.
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
@@ -43,8 +49,8 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          # Pre-approve the project's own verification commands (mirroring
+          # ci.yml) so Claude can run them without interactive approval,
+          # which is unavailable in Actions.
+          claude_args: '--allowedTools "Bash(bun install:*),Bash(bun run typecheck),Bash(bun run test),Bash(bun run test:*),Bash(bun test:*),Bash(bun run build),Bash(bun run scripts/check-release.ts:*),Bash(bun run scripts/check-client-dts.ts)"'
 
