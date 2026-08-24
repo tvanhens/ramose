@@ -97,8 +97,7 @@ export const moveIssueOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.set(op.self, Issue.status, input.status);
-    op.set(op.self, Issue.rank, input.rank);
+    op.update(Issue, op.self, { status: input.status, rank: input.rank });
     return {};
   },
 );
@@ -111,7 +110,7 @@ export const setStatusOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.set(op.self, Issue.status, input.status);
+    op.update(Issue, op.self, { status: input.status });
     return {};
   },
 );
@@ -191,7 +190,7 @@ export const setTitleOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.set(op.self, Issue.title, input.title);
+    op.update(Issue, op.self, { title: input.title });
     return {};
   },
 );
@@ -205,7 +204,7 @@ export const setDescriptionOp = Op(
   },
   (op, input) => {
     if (input.text === "") op.remove(op.self, Issue.description);
-    else op.set(op.self, Issue.description, input.text);
+    else op.update(Issue, op.self, { description: input.text });
     return {};
   },
 );
@@ -218,7 +217,7 @@ export const setPriorityOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    op.set(op.self, Issue.priority, input.priority);
+    op.update(Issue, op.self, { priority: input.priority });
     return {};
   },
 );
@@ -232,7 +231,7 @@ export const setAssigneeOp = Op(
   },
   (op, input) => {
     if (input.assigneeId == null) op.remove(op.self, Issue.assignee);
-    else op.set(op.self, Issue.assignee, input.assigneeId);
+    else op.update(Issue, op.self, { assignee: input.assigneeId });
     return {};
   },
 );
@@ -260,7 +259,7 @@ export const setPrivateNoteOp = Op(
   },
   (op, input) => {
     if (input.note === "") op.remove(op.self, Issue.privateNote);
-    else op.set(op.self, Issue.privateNote, input.note);
+    else op.update(Issue, op.self, { privateNote: input.note });
     return {};
   },
 );
@@ -362,7 +361,7 @@ export const createIssue = (
   });
 // enddocs:create-issue
 
-/** Drag-and-drop: one status datom + one rank datom. */
+/** Drag-and-drop: `update` of status and rank. */
 // docs:move-issue
 export const moveIssue = (
   db: ReefDb,
