@@ -20,8 +20,7 @@ import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnySchema } from "./Schema.ts";
 import { type SchemaEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
-import type { DbError, InvalidRequest } from "./Errors.ts";
-import { NotOne } from "./Errors.ts";
+import { type DbError, InvalidRequest, NotOne } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
@@ -488,7 +487,15 @@ const makeRead = <C extends AnySchema>(
     DbError | NotOne
   > =>
     Effect.gen(function* () {
-      const lowered: LoweredKernelQuery = lowerQueryObject(input);
+      let lowered: LoweredKernelQuery;
+      try {
+        lowered = lowerQueryObject(input);
+      } catch (e) {
+        // Construction failures used to be ParamError (bindings). There are
+        // no bindings now — a query that cannot lower is a bad request.
+        const message = e instanceof Error ? e.message : String(e);
+        return yield* Effect.fail(new InvalidRequest({ message }));
+      }
       const reply = record(
         yield* wire.read(
           name,

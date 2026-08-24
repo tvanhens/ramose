@@ -798,6 +798,9 @@ describe("useLive shared subscription cache", () => {
     try {
       const { result, rerender } = renderHook(() => useLive(db, broken));
       await waitFor(() => expect(result.current.error).toBeDefined());
+      expect((result.current.error as { _tag: string })._tag).toBe(
+        "InvalidRequest",
+      );
       expect(spy.calls).toBe(1);
       rerender();
       rerender();

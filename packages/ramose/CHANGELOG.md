@@ -12,7 +12,9 @@ Conditional clauses are ordinary JS on the immutable builder
 
 **Breaking:**
 - Bindings arguments are gone: `db.query(q)`, `db.live(q)`,
-  `useLive(db, q)`, `useQuery(db, q)`.
+  `useLive(db, q)`, `useQuery(db, q)`. A query that cannot lower
+  (`after(null)` with no `orderBy`, a bad `limit`, …) fails as
+  `InvalidRequest` — bindings used to be `ParamError`.
 - `Query.q` is single-arg only (`Query.q(body)`). The two-arg
   `Query.q(spec, body)` overload is deleted.
 - `EidOf` is gone (also the leftover #204 casing item).
