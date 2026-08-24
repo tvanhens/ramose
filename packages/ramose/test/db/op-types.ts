@@ -17,13 +17,28 @@ import type {
   OpReport,
   TxHandle,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Operation, Query } from "../../src/db/internal.ts";
+import {
+  Entity,
+  Field,
+  Operation,
+  Query,
+  Schema as DbSchema,
+} from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 const Tag = Entity("tag", {
   label: Field(Schema.String),
 });
+const Other = DbSchema({ tag: Tag });
+
+const Issue = Entity("issue", {
+  key: Field(Schema.String, { unique: "upsert" }),
+});
+const Comment = Entity("comment", {
+  slug: Field(Schema.String, { unique: "upsert" }),
+});
+const Board = DbSchema({ issue: Issue, comment: Comment });
 
 declare const db: Db<typeof Movies>;
 declare const op: Op<typeof Movies, typeof User>;
@@ -78,11 +93,33 @@ type _writesHandle = Expect<
   e.set(Movie.year, "2016");
   // @ts-expect-error ident form: name is string, not number
   op.set(e, ":user/name" as const, 42);
-  // @ts-expect-error friends is a ref (number), not a string
-  e.set(User.friends, "Ada");
+  // @ts-expect-error friends is a ref, not a boolean
+  e.set(User.friends, true);
   // @ts-expect-error name is string, not number
   op.self.set(User.name, 42);
 }
+
+// ── ref values name a not-yet-existing entity ──────────────────────────────
+
+{
+  const a = op.entity();
+  const b = op.entity();
+  a.set(User.bestFriend, b);
+  a.set(User.bestFriend, b.eid);
+  a.set(User.friends, b);
+  // @ts-expect-error name is a string, not a handle
+  a.set(User.name, b);
+  // @ts-expect-error age is a number, not a tempid
+  a.set(User.age, "tmp-1");
+}
+
+// ── self.eid is Eid | string (queued contextual path may pass a tempid) ────
+
+type SelfEid = (typeof op.self)["eid"];
+type _selfEidHasString = Expect<Extends<string, SelfEid>>;
+type _selfEidHasUser = Expect<Extends<Eid<typeof User>, SelfEid>>;
+// @ts-expect-error self.eid may be a queued tempid string
+const _selfEidAsNumber: number = op.self.eid;
 
 // ── db.run entity is the on namespace ──────────────────────────────────────
 
@@ -133,13 +170,73 @@ type _renamed = Expect<
   Equal<typeof renamed, Promise<OpReport<{}, typeof Movies>>>
 >;
 db.run(setUserName, 1001, { name: "Ada" });
+db.run(setUserName, "tmp-1", { name: "Ada" });
+db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
+db.run(setUserName, [":user/name", "Ada"] as const, { name: "Ada" });
+declare const idRow: { readonly id: number };
+db.run(setUserName, idRow, { name: "Ada" });
 db.run(createUser, { name: "Ada" });
 db.run(setMovieTitle, movieId, { title: "Arrival" });
 
-// @ts-expect-error a movie cell is not a user cell
+// @ts-expect-error a branded movie cell is not a user cell
 db.run(setUserName, movieId, { name: "Ada" });
-// @ts-expect-error a user cell is not a movie cell
+// @ts-expect-error a branded user cell is not a movie cell
 db.run(setMovieTitle, userId, { title: "Arrival" });
+
+const issueOp = Operation(
+  "issue/touch",
+  {
+    schema: Board,
+    on: Issue,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (body) => {
+    body.self.set(Issue.key, "i-1");
+    return {};
+  },
+);
+declare const boardDb: Db<typeof Board>;
+boardDb.run(issueOp, [Issue.key, "i-1"], {});
+boardDb.run(issueOp, [":issue/key", "i-1"] as const, {});
+boardDb.run(issueOp, "tmp-1", {});
+// @ts-expect-error a comment lookup is not an issue lookup
+boardDb.run(issueOp, [Comment.slug, "c-1"], {});
+// @ts-expect-error ident prefix must match the on entity
+boardDb.run(issueOp, [":comment/slug", "c-1"] as const, {});
+
+const schemaLess = Operation(
+  "user/set-name-loose",
+  {
+    on: User,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (body, input) => {
+    const e = body.entity();
+    e.set(":user/name", "Ada");
+    e.set(User.name, input.name);
+    return {};
+  },
+);
+db.run(schemaLess, userId, { name: "Ada" });
+declare const otherDb: Db<typeof Other>;
+otherDb.run(schemaLess, userId, { name: "Ada" });
+
+// @ts-expect-error a schema:-bound op does not run on a different catalog
+otherDb.run(setUserName, userId, { name: "Ada" });
+
+const _onNotInCatalog = Operation(
+  "tag/on-movies",
+  {
+    schema: Movies,
+    // @ts-expect-error Tag is not an entity of Movies
+    on: Tag,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  () => ({}),
+);
 
 // ── op.query / op.pull / op.effect keep their existing typing ──────────────
 

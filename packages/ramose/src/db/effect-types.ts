@@ -19,7 +19,12 @@ import type { DbError } from "./Errors.ts";
 import type { SchemaEid, Eid } from "./Eid.ts";
 import type { LookupRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { OpReport, Operation, RunEntity } from "./Operation.ts";
+import type {
+  OpCatalogFitsDb,
+  OpReport,
+  Operation,
+  RunEntity,
+} from "./Operation.ts";
 import type { ParamArgs } from "./Params.ts";
 import type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
 import type { Page, QueryObject } from "./query/index.ts";
@@ -76,11 +81,11 @@ export interface EffectDb<C extends AnySchema = AnySchema>
 
   run<I, O, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, undefined, OC>,
-    input: I,
+    input: OpCatalogFitsDb<C, OC> extends true ? I : never,
   ): Effect.Effect<OpReport<O, C>, DbError>;
   run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
-    entity: RunEntity<C, N>,
+    entity: OpCatalogFitsDb<C, OC> extends true ? RunEntity<C, N> : never,
     input: I,
   ): Effect.Effect<OpReport<O, C>, DbError>;
 }

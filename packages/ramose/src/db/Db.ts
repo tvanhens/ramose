@@ -25,6 +25,7 @@ import { NotOne, ParamError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
+  OpCatalogFitsDb,
   OpReport,
   Operation,
   OperationInvocation,
@@ -274,16 +275,20 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
    * Run a named operation. Decode input, apply the optimistic prefix (steps
    * before the first `op.effect`) as a pending layer, and POST the invocation.
    * A contextual operation (`on: Entity`) takes the entity as the second
-   * argument — an {@link Eid} of that entity, or the same forms {@link Tx}
-   * accepts for one. A comment cell is not an issue cell.
+   * argument. A *branded* cell of the wrong entity is rejected; an unbranded
+   * number and an opaque tempid string are deliberate hatches. Lookups must
+   * use a unique attr of the `on` entity.
+   *
+   * A schema-less operation runs on any db. An operation bound with
+   * `schema:` only runs on a db of that catalog.
    */
   run<I, O, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, undefined, OC>,
-    input: I,
+    input: OpCatalogFitsDb<C, OC> extends true ? I : never,
   ): Promise<OpReport<O, C>>;
   run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
-    entity: RunEntity<C, N>,
+    entity: OpCatalogFitsDb<C, OC> extends true ? RunEntity<C, N> : never,
     input: I,
   ): Promise<OpReport<O, C>>;
 
