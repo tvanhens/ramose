@@ -36,7 +36,7 @@ import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import {
-  lowerQueryObject,
+  tryLowerQueryObject,
   type AnyQueryObject,
   type LoweredKernelQuery,
   type Page,
@@ -489,12 +489,15 @@ const makeRead = <C extends AnySchema>(
     Effect.gen(function* () {
       let lowered: LoweredKernelQuery;
       try {
-        lowered = lowerQueryObject(input);
+        lowered = tryLowerQueryObject(input);
       } catch (e) {
-        // Construction failures used to be ParamError (bindings). There are
-        // no bindings now — a query that cannot lower is a bad request.
-        const message = e instanceof Error ? e.message : String(e);
-        return yield* Effect.fail(new InvalidRequest({ message }));
+        return yield* Effect.fail(
+          e instanceof InvalidRequest
+            ? e
+            : new InvalidRequest({
+                message: e instanceof Error ? e.message : String(e),
+              }),
+        );
       }
       const reply = record(
         yield* wire.read(

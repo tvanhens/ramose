@@ -35,6 +35,7 @@ export {
   isRuleValue,
   lowerQueryAst,
   lowerQueryObject,
+  tryLowerQueryObject,
   q,
   refine,
   rule,

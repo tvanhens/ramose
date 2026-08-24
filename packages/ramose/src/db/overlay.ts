@@ -29,9 +29,9 @@ import { processTx, TxError } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
 import type { AnySchema } from "./Schema.ts";
 import { schemaTx } from "./ensure.ts";
-import { lowerQueryObject } from "./query/index.ts";
+import { tryLowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
-import { NotOne, ParamError } from "./Errors.ts";
+import { NotOne } from "./Errors.ts";
 import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
 import type { AnyOperation, OperationInvocation } from "./Operation.ts";
 import {
@@ -253,8 +253,7 @@ const classifyQuery = (err: unknown): DbError => {
   if (
     err instanceof QueryParseError ||
     err instanceof QueryError ||
-    err instanceof NotOne ||
-    err instanceof ParamError
+    err instanceof NotOne
   ) {
     return new InvalidRequest({ message: err.message });
   }
@@ -735,13 +734,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             q: (input) =>
               Effect.tryPromise({
                 try: async () => {
-                  const lowered = lowerQueryObject(input);
+                  const lowered = tryLowerQueryObject(input);
                   const db = await speculative(collected());
                   const result = await engineQuery(db, lowered.query, []);
                   const rows = lowered.finalize(result);
-                  if (rows instanceof NotOne || rows instanceof ParamError) {
-                    throw rows;
-                  }
+                  if (rows instanceof NotOne) throw rows;
                   return rows;
                 },
                 catch: classifyQuery,

@@ -15,6 +15,7 @@ import { pipe } from "effect/Function";
 import * as Data from "effect/Data";
 import {
   InternalError,
+  InvalidRequest,
   Operation,
   Operations,
   OperationRejected,
@@ -425,7 +426,36 @@ describe("op.effect thunk rejections", () => {
   });
 });
 
+const brokenRead = Operation(
+  "user/broken-read",
+  {
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  async (op) => {
+    await op.query(Query.q(() => Query.entities(User)).after(null));
+    return {};
+  },
+);
+
 describe("db.run wire", () => {
+  test("an unlowerable query in op.query is InvalidRequest, not InternalError", async () => {
+    const server = await moviesWorld();
+    const peer = fakePeer({
+      http: (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        return { body: { t: server.t } };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+    const err = await runFail(db.run(brokenRead, {}));
+    expect(err).toBeInstanceOf(InvalidRequest);
+    expect((err as InvalidRequest).message).toMatch(/sorted query/);
+    await c.dispose();
+  });
+
   test("a contextual op without an entity is InvalidRequest", async () => {
     const peer = fakePeer();
     const c = client(peer);

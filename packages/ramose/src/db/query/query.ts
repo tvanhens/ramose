@@ -18,7 +18,7 @@
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid } from "../Eid.ts";
-import { NotOne } from "../Errors.ts";
+import { InvalidRequest, NotOne } from "../Errors.ts";
 import type { AnyEntity } from "../Entity.ts";
 import {
   lowerOrderPath,
@@ -684,6 +684,22 @@ const regexSource = (re: RegExp | string): string => {
 /** The lowered wire AST — the same JSON `db.query` sends. */
 export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
   lowerQueryObject(qv).query;
+
+/**
+ * Lower, or throw {@link InvalidRequest}. `db.query` / `db.live` / an
+ * operation's `q` handle share this so a query that cannot lower is a
+ * 400 everywhere, not a 500 on the op path.
+ */
+export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+  try {
+    return lowerQueryObject(qv);
+  } catch (e) {
+    if (e instanceof InvalidRequest) throw e;
+    throw new InvalidRequest({
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+};
 
 export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   resetGensym();
