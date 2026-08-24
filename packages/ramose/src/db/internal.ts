@@ -32,9 +32,12 @@ export * from "./Entity.ts";
 export * from "./shapes.ts";
 export * from "./Params.ts";
 export {
+  assertLoweringPurity,
   canonicalAstKey,
+  computeAstKey,
   liveSubscriptionKey,
   queryAstKey,
+  queryStructureKey,
 } from "./astKey.ts";
 export { shareEqualDeep } from "./shareEqualDeep.ts";
 export * from "./Eid.ts";

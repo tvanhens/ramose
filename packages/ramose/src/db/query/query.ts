@@ -741,8 +741,9 @@ const regexSource = (re: RegExp | string): string => {
 
 /**
  * The lowered wire AST with param holes left as `{ $param: key }` instead
- * of bound values. Subscription keys use this so a params query is
- * `astKey + paramsKey` and does not re-lower on every bindings change.
+ * of bound values. Reset / churn watch this structure key so a params-only
+ * change does not look like a new query. Live cache identity is the
+ * post-binding AST (`queryAstKey`), not this holed form plus `paramsKey`.
  */
 export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
   lowerQueryObject(qv, undefined, { holes: true }).query;

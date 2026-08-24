@@ -3,8 +3,8 @@
  * spelling is inline values in `.where` (`where({ issue: issueId })`);
  * this set stays exported so a stable AST plus bindings still typechecks.
  *
- * `useLive` keys on the lowered AST (plus {@link paramsKey} when bindings
- * are present). A param is the hole for the changing **value**: declared
+ * `useLive` keys on the post-binding lowered AST (a params spelling and
+ * its inline equivalent share an entry). A param is the hole for the changing **value**: declared
  * up front, referenced as an expression-tree leaf, and bound at the
  * terminal — `db.query(q, { issueId })` / `useLive(db, q, { issueId })`.
  *

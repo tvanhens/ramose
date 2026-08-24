@@ -5,6 +5,7 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
+import { pipe } from "effect/Function";
 import * as Ramose from "../../src/db/index.ts";
 import * as Schema from "effect/Schema";
 import { memo, type ReactNode, StrictMode } from "react";
@@ -12,6 +13,7 @@ import { render, renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
 import { useLive } from "../../src/react/index.ts";
+import { seamOf } from "../../src/react/seam.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -65,6 +67,35 @@ const setup = () => {
       respond = next;
     },
     qFrames: () => peer.frames.filter((f) => f.op === "q"),
+  };
+};
+
+/** Count shared raw standing reads (`seam.liveRaw`), not finalized `db.live`. */
+const spyRawLive = (db: Ramose.ReadDb) => {
+  let calls = 0;
+  let closed = 0;
+  const seam = seamOf(db);
+  if (seam?.liveRaw === undefined) {
+    throw new Error("spyRawLive: db has no liveRaw seam");
+  }
+  const orig = seam.liveRaw;
+  (seam as { liveRaw: typeof orig }).liveRaw = ((query, params) => {
+    calls += 1;
+    const sub = orig(query, params);
+    const innerClose = sub.close.bind(sub);
+    sub.close = () => {
+      closed += 1;
+      innerClose();
+    };
+    return sub;
+  }) as typeof orig;
+  return {
+    get calls() {
+      return calls;
+    },
+    get closed() {
+      return closed;
+    },
   };
 };
 
@@ -373,12 +404,7 @@ describe("useLive (query form)", () => {
   test("changing an inline literal changes the AST key and resubscribes", async () => {
     const world = await todoWorld(2);
     const { db, close } = overlaySetup(world);
-    let liveCalls = 0;
-    const orig = db.live.bind(db);
-    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
-      liveCalls += 1;
-      return orig(...args);
-    }) as typeof db.live;
+    const spy = spyRawLive(db);
     try {
       const { result, rerender } = renderHook(
         ({ title }: { title: string }) =>
@@ -386,12 +412,12 @@ describe("useLive (query form)", () => {
         { initialProps: { title: "t0" } },
       );
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
-      expect(liveCalls).toBe(1);
+      expect(spy.calls).toBe(1);
 
       rerender({ title: "t1" });
       expect(result.current.rows).toBeUndefined();
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[1]!)));
-      expect(liveCalls).toBe(2);
+      expect(spy.calls).toBe(2);
       expect(result.current.ticks).toBe(0);
     } finally {
       await close();
@@ -401,23 +427,18 @@ describe("useLive (query form)", () => {
   test("a render-fresh equivalent query does not re-subscribe", async () => {
     const world = await todoWorld(1);
     const { db, close } = overlaySetup(world);
-    let liveCalls = 0;
-    const orig = db.live.bind(db);
-    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
-      liveCalls += 1;
-      return orig(...args);
-    }) as typeof db.live;
+    const spy = spyRawLive(db);
     try {
       const { result, rerender } = renderHook(() =>
         useLive(db, Ramose.Query.from(Todo).ids()),
       );
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
-      expect(liveCalls).toBe(1);
+      expect(spy.calls).toBe(1);
 
       rerender();
       rerender();
       await settle();
-      expect(liveCalls).toBe(1);
+      expect(spy.calls).toBe(1);
       expect(result.current.ticks).toBe(0);
     } finally {
       await close();
@@ -426,34 +447,10 @@ describe("useLive (query form)", () => {
 });
 
 describe("useLive shared subscription cache", () => {
-  const spyLive = (db: Ramose.ReadDb) => {
-    let calls = 0;
-    let closed = 0;
-    const orig = db.live.bind(db);
-    (db as { live: typeof db.live }).live = ((...args: Parameters<typeof db.live>) => {
-      calls += 1;
-      const sub = orig(...args);
-      const innerClose = sub.close.bind(sub);
-      sub.close = () => {
-        closed += 1;
-        innerClose();
-      };
-      return sub;
-    }) as typeof db.live;
-    return {
-      get calls() {
-        return calls;
-      },
-      get closed() {
-        return closed;
-      },
-    };
-  };
-
   test("permuted where-objects share one live subscription", async () => {
     const world = await todoWorld(1);
     const { db, close } = overlaySetup(world);
-    const spy = spyLive(db);
+    const spy = spyRawLive(db);
     const id = world.eids[0]!;
     try {
       const a = renderHook(() =>
@@ -465,7 +462,7 @@ describe("useLive shared subscription cache", () => {
       await waitFor(() => expect(a.result.current.rows).toEqual(ids(id)));
       await waitFor(() => expect(b.result.current.rows).toEqual(ids(id)));
       expect(spy.calls).toBe(1);
-      expect(a.result.current.rows).toBe(b.result.current.rows);
+      expect(a.result.current.rows).toEqual(b.result.current.rows);
     } finally {
       await close();
     }
@@ -474,21 +471,21 @@ describe("useLive shared subscription cache", () => {
   test("two hooks with equal lowered AST share one subscription", async () => {
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
-    const spy = spyLive(db);
+    const spy = spyRawLive(db);
     try {
       const a = renderHook(() => useLive(db, allTodos));
       const b = renderHook(() => useLive(db, Ramose.Query.from(Todo).ids()));
       await waitFor(() => expect(a.result.current.rows).toEqual(ids(...world.eids)));
       await waitFor(() => expect(b.result.current.rows).toEqual(ids(...world.eids)));
       expect(spy.calls).toBe(1);
-      expect(a.result.current.rows).toBe(b.result.current.rows);
+      expect(a.result.current.rows).toEqual(b.result.current.rows);
 
       const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(a.result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
       );
-      expect(b.result.current.rows).toBe(a.result.current.rows);
+      expect(b.result.current.rows).toEqual(a.result.current.rows);
       expect(a.result.current.ticks).toBe(1);
       expect(b.result.current.ticks).toBe(1);
       expect(spy.calls).toBe(1);
@@ -502,7 +499,7 @@ describe("useLive shared subscription cache", () => {
     const limited = Ramose.Query.from(Todo).ids().limit(p.n);
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
-    const spy = spyLive(db);
+    const spy = spyRawLive(db);
     try {
       const one = renderHook(() => useLive(db, limited, { n: 1 }));
       const two = renderHook(() => useLive(db, limited, { n: 2 }));
@@ -535,7 +532,7 @@ describe("useLive shared subscription cache", () => {
   test("last unmount of a shared query closes the standing subscription", async () => {
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);
-    const spy = spyLive(db);
+    const spy = spyRawLive(db);
     try {
       const a = renderHook(() => useLive(db, allTodos));
       const b = renderHook(() => useLive(db, allTodos));
@@ -607,7 +604,7 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
-  test("dev-mode warns once when the subscription key churns", async () => {
+  test("a single key change does not warn; sustained churn does", async () => {
     const world = await todoWorld(2);
     const { db, close } = overlaySetup(world);
     const warnings: unknown[][] = [];
@@ -625,6 +622,14 @@ describe("useLive shared subscription cache", () => {
 
       rerender({ n: 2 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      expect(warnings).toHaveLength(0);
+
+      rerender({ n: 1 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(warnings).toHaveLength(0);
+
+      rerender({ n: 2 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(warnings).toHaveLength(1);
       expect(String(warnings[0]![0])).toContain(
         "useLive subscription key changed between renders",
@@ -633,6 +638,131 @@ describe("useLive shared subscription cache", () => {
       rerender({ n: 1 });
       await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(warnings).toHaveLength(1);
+    } finally {
+      console.warn = orig;
+      await close();
+    }
+  });
+
+  test("one() and limit(1) share a subscription; each keeps its own shape (one first)", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    const take = Ramose.Query.from(Todo).ids().one();
+    const limited = Ramose.Query.from(Todo).ids().limit(1);
+    try {
+      const a = renderHook(() => useLive(db, take));
+      const b = renderHook(() => useLive(db, limited));
+      await waitFor(() => expect(a.result.current.rows).toEqual({ id: world.eids[0]! }));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(Array.isArray(a.result.current.rows)).toBe(false);
+      expect(Array.isArray(b.result.current.rows)).toBe(true);
+      expect(spy.calls).toBe(1);
+      expect(a.result.current.error).toBeUndefined();
+      expect(b.result.current.error).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  test("one() and limit(1) share a subscription; each keeps its own shape (limit first)", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    const take = Ramose.Query.from(Todo).ids().one();
+    const limited = Ramose.Query.from(Todo).ids().limit(1);
+    try {
+      const b = renderHook(() => useLive(db, limited));
+      const a = renderHook(() => useLive(db, take));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
+      await waitFor(() => expect(a.result.current.rows).toEqual({ id: world.eids[0]! }));
+      expect(Array.isArray(a.result.current.rows)).toBe(false);
+      expect(Array.isArray(b.result.current.rows)).toBe(true);
+      expect(spy.calls).toBe(1);
+      expect(a.result.current.error).toBeUndefined();
+      expect(b.result.current.error).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  test("oneOrFail() raises only in its own hook (oneOrFail first)", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    const fail = Ramose.Query.from(Todo).ids().oneOrFail();
+    const limited = Ramose.Query.from(Todo).ids().limit(2);
+    try {
+      const a = renderHook(() => useLive(db, fail));
+      const b = renderHook(() => useLive(db, limited));
+      await waitFor(() => expect(a.result.current.error).toBeDefined());
+      expect((a.result.current.error as { _tag: string })._tag).toBe("NotOne");
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(...world.eids)));
+      expect(Array.isArray(b.result.current.rows)).toBe(true);
+      expect(b.result.current.error).toBeUndefined();
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("oneOrFail() raises only in its own hook (limit first)", async () => {
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    const fail = Ramose.Query.from(Todo).ids().oneOrFail();
+    const limited = Ramose.Query.from(Todo).ids().limit(2);
+    try {
+      const b = renderHook(() => useLive(db, limited));
+      const a = renderHook(() => useLive(db, fail));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(...world.eids)));
+      await waitFor(() => expect(a.result.current.error).toBeDefined());
+      expect((a.result.current.error as { _tag: string })._tag).toBe("NotOne");
+      expect(Array.isArray(b.result.current.rows)).toBe(true);
+      expect(b.result.current.error).toBeUndefined();
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a params binding and its inline equivalent share one subscription", async () => {
+    const p = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+    const inline = Ramose.Query.from(Todo).ids().limit(1);
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    try {
+      const a = renderHook(() => useLive(db, limited, { n: 1 }));
+      const b = renderHook(() => useLive(db, inline));
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(world.eids[0]!)));
+      await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("dev-mode warns when an impure generator body keys on a stale AST", async () => {
+    let n = 0;
+    const q = Ramose.Query.q(() =>
+      pipe(Ramose.Query.entities(Todo), Ramose.Query.limit((n += 1))),
+    );
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    const warnings: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      renderHook(() => useLive(db, q));
+      await waitFor(() =>
+        expect(
+          warnings.some((w) => String(w[0]).includes("query body is not pure")),
+        ).toBe(true),
+      );
     } finally {
       console.warn = orig;
       await close();

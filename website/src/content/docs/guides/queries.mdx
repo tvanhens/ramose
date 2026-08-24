@@ -69,7 +69,7 @@ if (assignee) board = board.where({ assignee });
 const q = board.select({ id: Issue.id, title: Issue.title });
 ```
 
-Consecutive `.where({…})` objects are assembled in field-key order, so `if (done) q = q.where({ done }); if (rank) q = q.where({ rank })` shares a cache key with the reverse. A fragment (`.where(Query.some(…))`) between them is left in place.
+Consecutive `.where({…})` objects are assembled in field-key order, so `if (done) q = q.where({ done }); if (rank) q = q.where({ rank })` shares a cache key with the reverse. A fragment (`.where(Query.some(…))`) or an `orderBy` between two `.where()` calls is left in place and blocks that sharing.
 
 ## Choose the fields
 

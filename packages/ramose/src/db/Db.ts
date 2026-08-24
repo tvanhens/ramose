@@ -322,7 +322,7 @@ export interface DbSeam {
   /**
    * Equal iff two views read the same coordinates over the same client.
    * This is the view half of a live subscription key:
-   * `(viewKey, astKey[, paramsKey])`.
+   * `(viewKey, post-binding astKey)`.
    */
   readonly key: string;
   /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
@@ -339,6 +339,15 @@ export interface DbSeam {
    * (observing the basis bumps the session).
    */
   readonly t: () => number | undefined;
+  /**
+   * Standing query that emits the raw wire result — no take-unwrap, no
+   * page-wrap. `useLive` shares this handle and applies each subscriber's
+   * `finalize`.
+   */
+  readonly liveRaw: (
+    query: AnyQueryObject,
+    params?: unknown,
+  ) => Subscription<unknown, QueryError>;
 }
 
 /** @internal The registry key {@link DbSeam} is attached under. */
@@ -353,6 +362,7 @@ const attachSeam = (
   wire: Wire,
   name: string,
   view: View,
+  liveRaw: DbSeam["liveRaw"],
 ): void => {
   let client = clientTokens.get(wire);
   if (client === undefined) {
@@ -367,6 +377,7 @@ const attachSeam = (
     asOf: view.asOf,
     onWake: (cb) => wire.session(name)?.onWake(cb),
     t: () => wire.session(name)?.t,
+    liveRaw,
   };
   (db as Record<symbol, unknown>)[DB_SEAM] = seam;
 };
@@ -476,6 +487,7 @@ const makeRead = <C extends AnySchema>(
     input: AnyQueryObject,
     minT: number | undefined,
     bindings: Readonly<Record<string, unknown>> | undefined,
+    raw = false,
   ): Effect.Effect<
     {
       readonly rows: unknown;
@@ -505,15 +517,16 @@ const makeRead = <C extends AnySchema>(
           minT ?? view.minT,
         ),
       );
+      const t = typeof reply.t === "number" ? reply.t : 0;
+      const viewed = typeof reply.epoch === "number" ? reply.epoch : undefined;
+      // Shared `useLive` cache holds this raw wire result; each subscriber
+      // applies its own `finalize` (take-unwrap / page-wrap / reshape).
+      if (raw) return { rows: reply.result, t, viewed };
       // `finalize` applies the query's terminal too: a page wraps, a take
       // unwraps — an `oneOrFail()` miss comes back as the NotOne to fail with
       const rows = lowered.finalize(reply.result);
       if (rows instanceof NotOne) return yield* Effect.fail(rows);
-      return {
-        rows,
-        t: typeof reply.t === "number" ? reply.t : 0,
-        viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
-      };
+      return { rows, t, viewed };
     });
 
   /**
@@ -610,6 +623,21 @@ const makeRead = <C extends AnySchema>(
       ),
     );
 
+  const liveStanding = (
+    input: AnyQueryObject,
+    bindings: Readonly<Record<string, unknown>> | undefined,
+    raw: boolean,
+  ) =>
+    standing<unknown, DbError | NotOne | ParamError>((minT) =>
+      runQuery(input, minT, bindings, raw).pipe(
+        Effect.map((pass) => ({
+          value: pass.rows,
+          t: pass.t,
+          viewed: pass.viewed,
+        })),
+      ),
+    );
+
   const read: EffectReadDb<C> = {
     name,
     schema,
@@ -629,16 +657,7 @@ const makeRead = <C extends AnySchema>(
     live: ((
       input: AnyQueryObject,
       bindings?: Readonly<Record<string, unknown>>,
-    ) =>
-      standing<unknown, DbError | NotOne | ParamError>((minT) =>
-        runQuery(input, minT, bindings).pipe(
-          Effect.map((pass) => ({
-            value: pass.rows,
-            t: pass.t,
-            viewed: pass.viewed,
-          })),
-        ),
-      )) as EffectReadDb<C>["live"],
+    ) => liveStanding(input, bindings, false)) as EffectReadDb<C>["live"],
 
     pull: ((subject: unknown, pattern: unknown) =>
       fenced(
@@ -683,7 +702,15 @@ const makeRead = <C extends AnySchema>(
     },
   };
   // enumerable, so `makeDb`'s spread carries it onto the writable db too
-  attachSeam(read, wire, name, view);
+  attachSeam(read, wire, name, view, (query, params) =>
+    fromStream(
+      liveStanding(
+        query,
+        params as Readonly<Record<string, unknown>> | undefined,
+        true,
+      ),
+    ),
+  );
   return read;
 };
 

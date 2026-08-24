@@ -18,7 +18,7 @@
 
 import type { Schema, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { queryAstKey } from "../db/astKey.ts";
-import { paramsKey, type ParamArgs } from "../db/Params.ts";
+import type { ParamArgs } from "../db/Params.ts";
 import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
 
@@ -38,7 +38,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
   ...params: ParamArgs<P>
 ): Async<Out, QueryError<Out, P>> => {
   const bindings = params[0];
-  const astKey = queryAstKey(query);
+  const astKey = queryAstKey(query, bindings);
   const [state, set] = useState<Async<Out, QueryError<Out, P>>>({
     data: undefined,
     error: undefined,
@@ -81,7 +81,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     // view + query + params are all structural: `db.asOf(t)` and a
     // render-fresh factory query (`commentsQuery(id)`) re-run only when
     // the lowered AST or bindings change, not on object identity.
-  }, [viewDep(db), astKey, paramsKey(bindings)]);
+  }, [viewDep(db), astKey]);
 
   return state;
 };

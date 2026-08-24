@@ -1,20 +1,24 @@
 /**
- * Canonical subscription keys: lowered AST, deterministic key order,
- * params vs already-substituted queries.
+ * Canonical subscription keys: post-binding lowered AST, deterministic
+ * key order, params vs already-substituted queries.
  */
 
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import {
   Entity,
   Field,
   Query,
+  assertLoweringPurity,
   canonicalAstKey,
   liveSubscriptionKey,
   lowerQueryAst,
+  lowerQueryObject,
   params,
   paramsKey,
   queryAstKey,
+  queryStructureKey,
 } from "../../src/db/internal.ts";
 
 const Todo = Entity("todo", {
@@ -56,14 +60,36 @@ describe("queryAstKey", () => {
     );
   });
 
-  test("a params query keys as the holed AST — bindings do not change astKey", () => {
+  test("a params query with bindings keys as the post-binding AST — same as the inline spelling", () => {
     const p = params({ n: Schema.Number });
     const limited = Query.from(Todo).ids().limit(p.n);
-    expect(queryAstKey(limited)).toBe(queryAstKey(limited));
+    const inline = Query.from(Todo).ids().limit(1);
+    expect(queryAstKey(limited, { n: 1 })).toBe(queryAstKey(inline));
+    expect(JSON.stringify(lowerQueryObject(limited, { n: 1 }).query)).not.toContain(
+      "$param",
+    );
+    const view = "1/todos?asOf=&history=false&minT=";
+    expect(liveSubscriptionKey(view, limited, { n: 1 })).toBe(
+      liveSubscriptionKey(view, inline),
+    );
+  });
+
+  test("different bindings are different post-binding keys", () => {
+    const p = params({ n: Schema.Number });
+    const limited = Query.from(Todo).ids().limit(p.n);
+    expect(queryAstKey(limited, { n: 1 })).not.toBe(queryAstKey(limited, { n: 2 }));
+  });
+
+  test("queryStructureKey is the holed AST — bindings do not change it", () => {
+    const p = params({ n: Schema.Number });
+    const limited = Query.from(Todo).ids().limit(p.n);
+    expect(queryStructureKey(limited)).toBe(queryStructureKey(limited));
     const ast = lowerQueryAst(limited);
     expect(JSON.stringify(ast)).toContain("$param");
     expect(JSON.stringify(ast)).toContain("\"n\"");
-    expect(queryAstKey(limited)).not.toBe(queryAstKey(Query.from(Todo).ids().limit(1)));
+    expect(queryStructureKey(limited)).not.toBe(
+      queryAstKey(Query.from(Todo).ids().limit(1)),
+    );
   });
 
   test("an already-substituted query keys as its own AST", () => {
@@ -79,6 +105,12 @@ describe("queryAstKey", () => {
     expect(queryAstKey(a)).toBe(queryAstKey(b));
     const view = "1/todos?asOf=&history=false&minT=";
     expect(liveSubscriptionKey(view, a)).toBe(liveSubscriptionKey(view, b));
+  });
+
+  test("orderBy between two where() calls blocks sorted-equality sharing", () => {
+    const a = Query.from(Todo).where({ done: false }).orderBy(Todo.rank).where({ rank: 3 });
+    const b = Query.from(Todo).where({ rank: 3 }).orderBy(Todo.rank).where({ done: false });
+    expect(queryAstKey(a)).not.toBe(queryAstKey(b));
   });
 
   test("chained equality where() calls sort the same as one object", () => {
@@ -107,6 +139,29 @@ describe("queryAstKey", () => {
     expect(kb).toMatch(/^\0error:/);
     expect(ka).not.toBe(kb);
     expect(queryAstKey(a)).toBe(ka);
+  });
+
+  test("WeakMap memo hides an impure body; assertLoweringPurity warns", () => {
+    let n = 0;
+    const q = Query.q(() => pipe(Query.entities(Todo), Query.limit((n += 1))));
+    const k1 = queryAstKey(q);
+    const k2 = queryAstKey(q);
+    expect(k1).toBe(k2);
+    const wire = canonicalAstKey(lowerQueryObject(q).query);
+    expect(k1).not.toBe(wire);
+
+    const warnings: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      assertLoweringPurity(q);
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0]![0])).toContain("query body is not pure");
+    } finally {
+      console.warn = orig;
+    }
   });
 });
 

@@ -6,20 +6,22 @@
  *
  * Two rules for consumers:
  *
- * - `useLive(db, query)` constructs `db.live(query)` inside the effect,
- *   keyed on the view and the lowered query AST. Neither needs a
- *   provider. The hook owns that handle and closes it on cleanup. Two
- *   sites with the same lowered AST share one standing subscription
- *   (refcount; last unmount tears it down).
+ * - `useLive(db, query)` constructs a shared raw standing read inside the
+ *   effect, keyed on the view and the post-binding lowered query AST.
+ *   Neither needs a provider. Two sites with the same bound AST share one
+ *   raw subscription (refcount; last unmount tears it down); each hook
+ *   applies its own `finalize` (take-unwrap / page-wrap) on read, so
+ *   `one()` and `.limit(1)` share the wire result without swapping shapes.
  * - The view is structural (`DbSeam.key`), the query is structural
- *   (canonical serialization of the lowered AST). `useLive(db.asOf(t), q)`
- *   built inline re-subscribes per `t`, not per render — the same rule as
- *   `useQuery` / `usePull`. Put changing values in the query
- *   (`where({ issue: issueId })`). Same literals → same key, even when
- *   the object is new every render. Changing an inline literal changes
- *   the AST key and resubscribes — that is the point. The leftover
- *   bindings argument is still accepted (stable AST + `paramsKey`); a
- *   params-only change re-runs without blanking `rows`.
+ *   (canonical serialization of the post-binding lowered AST).
+ *   `useLive(db.asOf(t), q)` built inline re-subscribes per `t`, not per
+ *   render — the same rule as `useQuery` / `usePull`. Put changing values
+ *   in the query (`where({ issue: issueId })`). Same literals → same key,
+ *   even when the object is new every render. Changing an inline literal
+ *   changes the AST key and resubscribes — that is the point. The leftover
+ *   bindings argument is still accepted; a params spelling and its inline
+ *   equivalent share an entry when the bound forms match. A params-only
+ *   change re-runs without blanking `rows`.
  *
  * Subscription form (`useLive(sub)`) keys on handle **identity**. The hook
  * never `close()`s a handle it did not create — only `off()`.
@@ -36,11 +38,16 @@ import type {
   ReadDb,
   Subscription,
 } from "../db/index.ts";
-import { liveSubscriptionKey, queryAstKey } from "../db/astKey.ts";
+import {
+  assertLoweringPurity,
+  liveSubscriptionKey,
+  queryStructureKey,
+} from "../db/astKey.ts";
 import type { ParamArgs } from "../db/Params.ts";
+import { lowerQueryObject } from "../db/query/index.ts";
 import { useEffect, useRef, useState } from "react";
 import { retainLive } from "./liveCache.ts";
-import { viewKeyOf } from "./seam.ts";
+import { seamOf, viewKeyOf } from "./seam.ts";
 
 /** What a standing read looks like from a component. */
 export interface Live<A, E = DbError> {
@@ -139,20 +146,43 @@ const CHURN_WARNING =
   "down. Hoist the query or keep bound values stable.";
 
 /**
- * Dev-only: warn once per hook site when the **query-half** (`astKey`)
- * churns. Params and view (`asOf(t)`) changes are the documented path and
- * stay silent. Once per site means a component that alternates two queries
- * warns only on the first switch.
+ * Consecutive query-half key changes before the dev warning fires.
+ * One legitimate navigation (`issueId` A → B) is silent; a `Date.now()`
+ * footgun changes every render and trips this.
+ */
+const CHURN_STREAK = 3;
+
+/**
+ * Dev-only: warn once per hook site when the **query-half** (holed
+ * structure key) churns for {@link CHURN_STREAK} consecutive renders.
+ * Params and view (`asOf(t)`) changes are the documented path and stay
+ * silent. A single A → B change does not warn.
  */
 const useKeyChurnWarning = (key: string): void => {
   const prev = useRef<string | undefined>(undefined);
+  const streak = useRef(0);
   const warned = useRef(false);
-  if (DEV && prev.current !== undefined && prev.current !== key && !warned.current) {
-    warned.current = true;
-    console.warn(CHURN_WARNING);
+  if (DEV && prev.current !== undefined && prev.current !== key) {
+    streak.current += 1;
+    if (streak.current >= CHURN_STREAK && !warned.current) {
+      warned.current = true;
+      console.warn(CHURN_WARNING);
+    }
+  } else {
+    streak.current = 0;
   }
   prev.current = key;
 };
+
+const bindingsOf = (
+  params?: unknown,
+): Readonly<Record<string, unknown>> | undefined =>
+  params !== undefined &&
+  params !== null &&
+  typeof params === "object" &&
+  !Array.isArray(params)
+    ? (params as Readonly<Record<string, unknown>>)
+    : undefined;
 
 /** Query form: `db.live(query, params)`, constructed inside the effect. */
 export function useLive<C extends Schema.Any, R, P = never, Out = readonly R[]>(
@@ -169,31 +199,46 @@ export function useLive(
 ): Live<unknown, unknown> {
   const owned = query !== undefined;
   const viewKey = owned ? viewKeyOf(source as ReadDb) : "";
-  const astKey = owned ? queryAstKey(query) : "";
+  const structureKey = owned ? queryStructureKey(query) : "";
   const cacheKey = owned
     ? liveSubscriptionKey(viewKey, query, params)
     : "";
-  useKeyChurnWarning(owned ? astKey : "");
+  useKeyChurnWarning(owned ? structureKey : "");
 
   return useLiveSubscription(
-    () =>
-      owned
-        ? {
-            sub: retainLive(cacheKey, () =>
-              params === undefined
+    () => {
+      if (!owned) {
+        return {
+          sub: source as Subscription<unknown, unknown>,
+          owned: false,
+        };
+      }
+      if (DEV) assertLoweringPurity(query, params);
+      let finalize: ((result: unknown) => unknown) | undefined;
+      try {
+        finalize = lowerQueryObject(query, bindingsOf(params)).finalize;
+      } catch {
+        // liveRaw / live will surface the same lowering failure
+      }
+      const seam = seamOf(source as ReadDb);
+      return {
+        sub: retainLive(
+          cacheKey,
+          () =>
+            seam?.liveRaw !== undefined
+              ? seam.liveRaw(query, params)
+              : params === undefined
                 ? (source as ReadDb).live(query)
                 : (source as ReadDb).live(
                     query as QueryObject<unknown, Record<string, unknown>>,
                     params as Record<string, unknown>,
                   ),
-            ),
-            owned: true,
-          }
-        : {
-            sub: source as Subscription<unknown, unknown>,
-            owned: false,
-          },
+          finalize,
+        ),
+        owned: true,
+      };
+    },
     owned ? [cacheKey] : [source],
-    owned ? [viewKey, astKey] : [source],
+    owned ? [viewKey, structureKey] : [source],
   );
 }

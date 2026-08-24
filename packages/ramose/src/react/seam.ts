@@ -8,7 +8,7 @@
  * dependency a hook actually means.
  */
 
-import type { Schema, ReadDb } from "../db/index.ts";
+import type { Schema, ReadDb, QueryObject, Subscription } from "../db/index.ts";
 
 const DB_SEAM = Symbol.for("ramose.db.seam");
 
@@ -21,6 +21,14 @@ interface DbSeam {
   readonly onWake: (cb: () => void) => (() => void) | undefined;
   /** The highest basis the session has seen; `undefined` without a session. */
   readonly t: () => number | undefined;
+  /**
+   * Standing query that emits the raw wire result. Optional on test
+   * doubles; every real client attaches it.
+   */
+  readonly liveRaw?: (
+    query: QueryObject<unknown, unknown, unknown>,
+    params?: unknown,
+  ) => Subscription<unknown, unknown>;
 }
 
 export const seamOf = <C extends Schema.Any>(
