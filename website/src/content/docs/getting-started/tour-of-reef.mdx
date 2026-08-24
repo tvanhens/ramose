@@ -72,14 +72,10 @@ A **workspace** is one customer's isolated data — one database ([glossary](/co
 
 *Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
 
-```ts title="examples/reef/src/app/mutations.ts:30-38"
-  Effect.gen(function* () {
-    yield* db.install();
-    yield* db.transact(function* (tx) {
-      for (const seed of SEED_LABELS) {
-        const label = yield* tx.entity();
-        yield* label.set(Label.name, seed.name);
-        yield* label.set(Label.color, seed.color);
+```ts title="examples/reef/src/app/mutations.ts:78-80"
+    for (const seed of SEED_LABELS) {
+      op.put(Label, { name: seed.name, color: seed.color });
+    }
 ```
 
 Opening one goes to `/:slug` and mounts a provider keyed by its name; switching swaps the connection:
@@ -130,17 +126,13 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
-```ts title="examples/reef/src/app/mutations.ts:77-86"
+```ts title="examples/reef/src/app/mutations.ts:357-362"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
   status: Status,
   rank: number,
-) =>
-  db.transact(function* (tx) {
-    yield* tx.set(issueId, Issue.status, status);
-    yield* tx.set(issueId, Issue.rank, rank);
-  });
+) => db.run(moveIssueOp, issueId, { status, rank });
 ```
 
 The card moves on the local overlay before the POST returns. Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Other open tabs receive a filtered transaction and re-run locally. A denial drops the pending layer and the card snaps back. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases — [glossary](/concepts/glossary/#server).)

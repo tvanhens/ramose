@@ -29,18 +29,16 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
 
 `ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub`, `role`, name, email) at session establishment:
 
-```ts title="examples/reef/src/app/mutations.ts:29-39"
+```ts title="examples/reef/src/app/mutations.ts:78-86"
+    for (const seed of SEED_LABELS) {
+      op.put(Label, { name: seed.name, color: seed.color });
+    }
+    return { ready: true };
+  },
+);
+
 export const provisionWorkspace = (db: ReefDb) =>
-  Effect.gen(function* () {
-    yield* db.install();
-    yield* db.transact(function* (tx) {
-      for (const seed of SEED_LABELS) {
-        const label = yield* tx.entity();
-        yield* label.set(Label.name, seed.name);
-        yield* label.set(Label.color, seed.color);
-      }
-    });
-  });
+  db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```
 
 `db.install()` is safe to run twice: an already-deployed schema is a silent no-op, including from a member token. A new ident still requires the `admin` class — Reef's first install runs under the creator's admin token.

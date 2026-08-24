@@ -131,10 +131,9 @@ export const Server = Ramose.Server("Ramose", {
 
 From the app, for names created at runtime — how Reef makes a workspace:
 
-```ts title="examples/reef/src/app/mutations.ts:29-31"
+```ts title="examples/reef/src/app/mutations.ts:85-86"
 export const provisionWorkspace = (db: ReefDb) =>
-  Effect.gen(function* () {
-    yield* db.install();
+  db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```
 
 Which door, and why: [One database per customer](/guides/workspaces/#two-doors-to-install-the-schema).

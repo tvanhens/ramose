@@ -16,7 +16,10 @@ import * as Data from "effect/Data";
 import {
   InternalError,
   InvalidRequest,
+  Entity,
+  Field,
   Operation,
+  Schema as DbSchema,
   Operations,
   OperationRejected,
   PrefixHalt,
@@ -758,6 +761,24 @@ describe("put", () => {
     await expect(
       conn.transact([[":db/add", [":user/name", "Missing"], ":user/age", 1]]),
     ).rejects.toThrow(/lookup ref/);
+  });
+
+  test("processTx: card-many string pair that looks like a lookup writes two values", async () => {
+    const Doc = Entity("doc", {
+      tags: Field.many(Schema.String),
+    });
+    const Docs = DbSchema({ doc: Doc });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Docs) as unknown[]);
+
+    const tx = txBuilder(Docs);
+    Effect.runSync(tx.put(Doc, { tags: [":alpha", "beta"] }));
+    const rep = await conn.transact([...tx.spec.ops]);
+    const eid = rep.tempids["tmp-1"];
+    expect(typeof eid).toBe("number");
+    const row = await conn.db().entity(eid!);
+    const tags = row?.[":doc/tags"];
+    expect(Array.isArray(tags) ? [...tags].sort() : tags).toEqual([":alpha", "beta"]);
   });
 
   test("db.run(put) paints the overlay before POST /op", async () => {

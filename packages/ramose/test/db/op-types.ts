@@ -315,6 +315,11 @@ catalogOp.put(User, { bestFriend: putCreate, friends: [putCreate] });
 const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
 type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
 
+catalogOp.put(User, { bestFriend: { id: 1002 } });
+catalogOp.put(User, { bestFriend: catalogOp.principal });
+catalogOp.put(User, { bestFriend: userId });
+catalogOp.put(User, userRow, { age: 36 });
+
 {
   // @ts-expect-error name is string, not number
   catalogOp.put(User, { name: 42 });
@@ -322,4 +327,10 @@ type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
   catalogOp.put(User, { friends: 1002 });
   // @ts-expect-error Tag is not an entity of this catalog
   catalogOp.put(Tag, { label: "x" });
+  // @ts-expect-error a string in a ref slot would mint a dangling record
+  catalogOp.put(User, { bestFriend: "typo-not-an-entity" });
+  // @ts-expect-error a branded movie cell is not a user subject
+  catalogOp.put(User, movieId, { name: "Ada" });
+  // @ts-expect-error a movie eid is not a user ref
+  catalogOp.put(User, { bestFriend: movieId });
 }

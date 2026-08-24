@@ -76,9 +76,7 @@ export const provisionWorkspaceOp = Op(
       }
     });
     for (const seed of SEED_LABELS) {
-      const label = op.entity();
-      label.set(Label.name, seed.name);
-      label.set(Label.color, seed.color);
+      op.put(Label, { name: seed.name, color: seed.color });
     }
     return { ready: true };
   },

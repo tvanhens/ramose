@@ -31,27 +31,21 @@ The handle from `tx.entity()` carries the same three verbs without the first arg
 
 Reef's "New issue" dialog is one write; everything inside lands together or not at all:
 
-```ts title="examples/reef/src/app/mutations.ts:51-74"
-export const createIssue = (
-  db: ReefDb,
-  myEid: number,
-  lastRankInColumn: number | undefined,
-  draft: NewIssue,
-) =>
-  db.transact(function* (tx) {
-    const issue = yield* tx.entity();
-    yield* issue.set(Issue.title, draft.title);
-    // …
-    yield* issue.set(Issue.status, draft.status);
-    yield* issue.set(Issue.priority, draft.priority);
-    yield* issue.set(Issue.rank, rankAfter(lastRankInColumn));
-    yield* issue.set(Issue.createdAt, new Date());
-    yield* issue.set(Issue.creator, myEid);
-    // …
-    for (const labelId of draft.labelIds ?? []) {
-      yield* issue.set(Issue.labels, labelId);
-    }
-  });
+```ts title="examples/reef/src/app/mutations.ts:161-174"
+    op.put(Issue, {
+      title: input.title,
+      description:
+        input.description != null && input.description !== ""
+          ? input.description
+          : undefined,
+      status: input.status,
+      priority: input.priority,
+      rank: input.rank,
+      createdAt: new Date(),
+      creator: input.creatorId,
+      assignee: input.assigneeId,
+      labels: input.labelIds ?? [],
+    });
 ```
 
 A **reference** field takes the other record's id as a number: `issue.set(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
@@ -60,17 +54,10 @@ A **reference** field takes the other record's id as a number: `issue.set(Issue.
 
 Dragging a card in Reef is one write of two facts — new column, new position:
 
-```ts title="examples/reef/src/app/mutations.ts:77-86"
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) =>
-  db.transact(function* (tx) {
-    yield* tx.set(issueId, Issue.status, status);
-    yield* tx.set(issueId, Issue.rank, rank);
-  });
+```ts title="examples/reef/src/app/mutations.ts:96-98"
+    op.set(op.self, Issue.status, input.status);
+    op.set(op.self, Issue.rank, input.rank);
+    return {};
 ```
 
 A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
@@ -81,19 +68,14 @@ A single-value **field** replaces its old value ([glossary](/concepts/glossary/#
 
 Clearing a field is `remove` with no value; deleting a record is `delete`:
 
-```ts title="examples/reef/src/app/mutations.ts:99-103"
-export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.transact(function* (tx) {
-    if (text === "") yield* tx.remove(issueId, Issue.description);
-    else yield* tx.set(issueId, Issue.description, text);
-  });
+```ts title="examples/reef/src/app/mutations.ts:200-202"
+    if (input.text === "") op.remove(op.self, Issue.description);
+    else op.set(op.self, Issue.description, input.text);
+    return {};
 ```
 
-```ts title="examples/reef/src/app/mutations.ts:138-141"
-export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.transact(function* (tx) {
-    yield* tx.delete(issueId);
-  });
+```ts title="examples/reef/src/app/mutations.ts:140"
+    op.delete(op.self);
 ```
 
 Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
@@ -102,17 +84,10 @@ Neither erases history — [Time travel](/concepts/time-travel/) can still show 
 
 A field declared `cardinality: "many"` is a set. One `set` per value; `remove` with the value takes one out:
 
-```ts title="examples/reef/src/app/mutations.ts:120-129"
-export const toggleLabel = (
-  db: ReefDb,
-  issueId: number,
-  labelId: number,
-  on: boolean,
-) =>
-  db.transact(function* (tx) {
-    if (on) yield* tx.set(issueId, Issue.labels, labelId);
-    else yield* tx.remove(issueId, Issue.labels, labelId);
-  });
+```ts title="examples/reef/src/app/mutations.ts:241-243"
+    if (input.on) op.set(op.self, Issue.labels, input.labelId);
+    else op.remove(op.self, Issue.labels, input.labelId);
+    return {};
 ```
 
 ## Ids, unique keys and lookups
@@ -126,6 +101,8 @@ The first argument of `tx.set` names the record. It can be:
 ## Upserts
 
 Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup by unique key that misses is still a hard rejection; put with the unique field is the path that creates when missing.
+
+`put(Entity, id, …)` with a nonexistent id mints that id (same as `set` — not "update only"). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 
 ```ts
 op.put(User, { sub: token.sub, name: token.name });

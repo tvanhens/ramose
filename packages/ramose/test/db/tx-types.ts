@@ -16,6 +16,7 @@ import type {
   Extends,
   ReadDb,
   Tx,
+  Eid,
   TxHandle,
   TxReport,
 } from "../../src/db/internal.ts";
@@ -160,12 +161,22 @@ type _handle = Expect<
 // ── put on the builder ─────────────────────────────────────────────────────
 
 declare const tx: Tx<typeof Movies>;
+declare const movieId: Eid<typeof Movie>;
+declare const userId: Eid<typeof User>;
 const putH = tx.put(User, { name: "Ada", friends: [1002] });
 type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
 tx.put(User, 1001, { age: 36 });
+tx.put(User, { bestFriend: { id: 1002 } });
+tx.put(User, { bestFriend: userId });
 {
   // @ts-expect-error name is string, not number
   tx.put(User, { name: 42 });
   // @ts-expect-error friends is many
   tx.put(User, { friends: 1002 });
+  // @ts-expect-error a string in a ref slot would mint a dangling record
+  tx.put(User, { bestFriend: "typo-not-an-entity" });
+  // @ts-expect-error a branded movie cell is not a user subject
+  tx.put(User, movieId, { name: "Ada" });
+  // @ts-expect-error a movie eid is not a user ref
+  tx.put(User, { bestFriend: movieId });
 }

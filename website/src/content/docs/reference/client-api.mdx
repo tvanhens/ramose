@@ -258,14 +258,14 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
 
 ## Transactions
 
-App writes go through `db.run`. The hatch `db.effect.transact` still takes a `tx`; `tx.entity()` gives a `TxHandle`. `set` / `remove` / `delete` are the datom-level verbs; `put` is the entity-level write.
+App writes go through `db.run`. The hatch `db.effect.transact` still takes a `tx`; `tx.entity()` gives a `TxHandle`. `set` / `remove` / `delete` write one field at a time; `put` is the entity-level write.
 
 ```ts
 interface Tx<C> {
   entity(): Effect<TxHandle<C>>;                 // a new record
   entity(id: TxEntity<C>): Effect<TxHandle<C>>;  // an existing one
   put(entity, attrs): Effect<TxHandle<C>>;       // create
-  put(entity, id, attrs): Effect<TxHandle<C>>;   // update that subject
+  put(entity, id, attrs): Effect<TxHandle<C>>;   // write that id (mints if new)
   set(e: TxEntity<C>, field, value): Effect<void>;
   remove(e: TxEntity<C>, field, value?): Effect<void>;
   delete(e: TxEntity<C>): Effect<void>;
@@ -294,13 +294,15 @@ Rules:
 
 - A single-value field: `set` replaces the old value. A many-valued field: one `set` per value; `remove(field, value)` removes one value, `remove(field)` removes them all.
 - `delete` removes every fact of the record. History keeps them.
-- A reference field takes the target's id (`issue.set(Issue.creator, myEid)`). `put` also accepts a handle, tempid, or lookup in a ref slot.
+- A reference field takes the target's id (`issue.set(Issue.creator, myEid)`). `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (that would mint a dangling record).
 - There is no `preset` on the client; presets are a [policy](/reference/policy/) feature the server applies.
-
-#### Upserts
-
-Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup ref that misses is still a hard rejection.
 - **`TxReport`** is `{ t, txEid, datomCount, dbAfter }`. It has no `tempids`; to learn a new record's id, query for it — `report.dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
+
+### Upserts
+
+Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup that misses is still a hard rejection.
+
+`put(Entity, id, …)` with a nonexistent id mints that id (same as `set`). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 
 ```ts
 const who = yield* db.principal();

@@ -2,18 +2,21 @@
 
 ## Unreleased
 
-### Entity-level writes on the op handle (`put`)
+### Entity-level writes (`put`) (#171)
 
 `op.put(Issue, { title, labels: ids })` creates; `op.put(Issue, id, {…})`
-updates. Attrs are typed through `WriteAtIdent` — cardinality-many is an
-array, `undefined` fields are omitted — and lower to map form. `set` /
-`remove` stay the datom-level escape hatch.
+writes onto that id (and mints it if the number has never been used).
+`Tx` gained the same `put`. Attrs are typed through `WriteAtIdent` —
+cardinality-many is an array, `undefined` fields are omitted — and lower
+to map form. `set` / `remove` stay the field-by-field escape hatch.
 
 Including a `unique: "upsert"` field in the map makes `put`
-ensure-this-row-exists: the engine unifies the tempid with the existing
-row. `op.put(User, { sub, name })` is insert-or-update.
+ensure-this-row-exists: the engine unifies with the existing row.
+`op.put(User, { sub, name })` is insert-or-update.
 
-Reef's `createIssue` / `seedSampleIssues` now write through `op.put`.
+Reef's `createIssue` / `seedSampleIssues` write through `op.put`;
+`provisionWorkspaceOp` seeds labels with `put` so a unique name unifies
+on re-provision.
 
 ### Typed operations over the catalog (#240)
 

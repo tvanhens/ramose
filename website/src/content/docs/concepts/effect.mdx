@@ -56,14 +56,14 @@ Every `db` method can be run this way directly; nothing else needs to be set up.
 
 A write's body is a generator. Read `yield*` as `await`: it runs the step and gives you its result. Reef's drag-and-drop is two steps:
 
-```ts title="examples/reef/src/app/mutations.ts:77-86"
+```ts
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
   status: Status,
   rank: number,
 ) =>
-  db.transact(function* (tx) {
+  db.effect.transact(function* (tx) {
     yield* tx.set(issueId, Issue.status, status);
     yield* tx.set(issueId, Issue.rank, rank);
   });
