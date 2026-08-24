@@ -6,8 +6,6 @@
  * {@link validatePeerWiring} is what makes that a deploy error instead.
  */
 
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Bucket } from "alchemy/Cloudflare/R2";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -67,14 +65,46 @@ export type OwnedPeerOptions = {
   readonly peer?: string | undefined;
 };
 
+/**
+ * Deploy-time Node/Bun only. The package build has no `@types/node` and
+ * must not import `node:fs` / `node:url` — those would fail `tsc -p
+ * tsconfig.build.json` and leak into the published graph.
+ */
+type FsLike = { readonly realpathSync: (path: string) => string };
+
+declare const process: {
+  readonly getBuiltinModule?: (id: string) => FsLike | undefined;
+};
+
+const nodeFs = (): FsLike => {
+  try {
+    const builtin = process.getBuiltinModule?.("fs") ?? process.getBuiltinModule?.("node:fs");
+    if (builtin?.realpathSync !== undefined) return builtin;
+  } catch {
+    // no `process`
+  }
+  const req = (globalThis as { require?: (id: string) => FsLike }).require;
+  if (typeof req === "function") return req("node:fs");
+  throw new Error("cannot stat a path in this runtime (no node:fs)");
+};
+
+/** Alchemy's `fileURLToPath` + fall-back, without importing `node:url`. */
+const fileUrlToPath = (value: string): string => {
+  if (!value.startsWith("file:")) return value;
+  const url = new URL(value);
+  let path = decodeURIComponent(url.pathname);
+  if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+  return path;
+};
+
 const resolveMainPath = (main: string): string => {
   let asPath: string;
   try {
-    asPath = fileURLToPath(main);
+    asPath = fileUrlToPath(main);
   } catch {
     asPath = main;
   }
-  return realpathSync(asPath);
+  return nodeFs().realpathSync(asPath);
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
