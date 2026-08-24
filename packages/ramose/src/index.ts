@@ -49,6 +49,7 @@ export { type AuthConfig, claims, type ClaimsInput } from "./Auth.ts";
 export { Database } from "./Database.ts";
 export {
   DEFAULT_JWT_MAX_TTL,
+  type AuthEnvValue,
   type DatabaseSeed,
   type ServerAuth,
   Server,

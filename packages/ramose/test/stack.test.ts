@@ -17,6 +17,7 @@ import * as net from "node:net";
 import { Database } from "../src/Database.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
+import { workerEntry } from "../src/workerEntry.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
 import { Field, Schema as DbSchema, Entity } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
@@ -170,6 +171,68 @@ describe("Ramose.Server", () => {
         }),
       );
       expect(server.url).toBe(peerUrl);
+      yield* stack.destroy();
+    }),
+  );
+
+  test.provider("a hatch Worker missing RAMOSE_POLICY fails the deploy when auth.policy is set", (stack) =>
+    Effect.gen(function* () {
+      const hatch = (env: Record<string, unknown>) => ({
+        Type: "Cloudflare.Worker",
+        url: peerUrl,
+        workerName: "ramose-peer",
+        Props: {
+          main: workerEntry(),
+          env: {
+            STORE: { Type: "Cloudflare.R2.Bucket" },
+            TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
+            REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+            ...env,
+          },
+        },
+      });
+      const auth = {
+        policy: '{"v":1}',
+        jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+        issuers: "https://auth.acme.example",
+        aud: "ramose:peer:test",
+      };
+      const missing = yield* Effect.result(
+        stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, auth })),
+      );
+      expect(missing._tag).toBe("Failure");
+      expect(String(missing)).toMatch(/Worker has no RAMOSE_POLICY/);
+
+      const diverged = yield* Effect.result(
+        stack.deploy(
+          Server("Ramose", {
+            worker: hatch({
+              RAMOSE_POLICY: auth.policy,
+              RAMOSE_JWKS_URL: auth.jwksUrl,
+              RAMOSE_JWT_ISS: auth.issuers,
+              RAMOSE_JWT_AUD: "other-aud",
+            }),
+            probe: false,
+            auth,
+          }),
+        ),
+      );
+      expect(diverged._tag).toBe("Failure");
+      expect(String(diverged)).toMatch(/diverge on RAMOSE_JWT_AUD/);
+
+      const matched = yield* stack.deploy(
+        Server("Ramose", {
+          worker: hatch({
+            RAMOSE_POLICY: auth.policy,
+            RAMOSE_JWKS_URL: auth.jwksUrl,
+            RAMOSE_JWT_ISS: auth.issuers,
+            RAMOSE_JWT_AUD: auth.aud,
+          }),
+          probe: false,
+          auth,
+        }),
+      );
+      expect(matched.url).toBe(peerUrl);
       yield* stack.destroy();
     }),
   );

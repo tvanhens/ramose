@@ -55,7 +55,10 @@ export type OwnedPeerOptions = {
    * still Server-owned (DOs, bindings, compat are not yours to name).
    */
   readonly main?: string | undefined;
-  /** Extra env bindings merged after the fixed peer bindings and auth. */
+  /**
+   * Extra env bindings (AUTH, ANALYTICS, tuning). Merged after the fixed
+   * peer bindings and before auth — `Server({ auth, token })` wins.
+   */
   readonly env?: Record<string, unknown> | undefined;
   /** Physical Worker name override (Alchemy's `name`). */
   readonly name?: string | undefined;
@@ -63,6 +66,15 @@ export type OwnedPeerOptions = {
   readonly dev?: { readonly port?: number } | undefined;
   /** Alchemy logical id of the Worker resource. @default `"Peer"` */
   readonly peer?: string | undefined;
+  /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
+  readonly routes?: readonly PeerRoute[] | undefined;
+};
+
+/** Zone route passed through to `Cloudflare.Worker`. */
+export type PeerRoute = {
+  readonly pattern: string;
+  readonly zoneName?: string | undefined;
+  readonly zoneId?: string | undefined;
 };
 
 /**
@@ -144,6 +156,13 @@ const envOf = (worker: unknown): Record<string, unknown> | undefined => {
   const env = workerProps(worker)?.env;
   return isRecord(env) ? env : undefined;
 };
+
+/**
+ * @internal The Worker's env bag, or `undefined` when the value is a URL
+ * (nothing to compare or validate).
+ */
+export const workerEnvOf = (worker: unknown): Record<string, unknown> | undefined =>
+  envOf(worker);
 
 /**
  * Deploy-time check of a user-owned Worker. Returns an error message, or
@@ -242,9 +261,10 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         [PEER_BINDINGS.store]: storageDecl(options.storage),
         [PEER_BINDINGS.transactor]: dos.transactor,
         [PEER_BINDINGS.replica]: dos.replica,
-        ...options.authEnv,
         ...options.env,
+        ...options.authEnv,
       },
+      ...(options.routes !== undefined ? { routes: options.routes } : {}),
     });
     return worker;
   });

@@ -8,7 +8,7 @@
  *
  * The explicit `worker:` form is the escape hatch (extra bindings, a
  * user-owned entry). It is validated at deploy: binding names, DO classes,
- * `main` resolution.
+ * `main` resolution, and `auth` / `token` against the Worker env.
  *
  * @resource
  * @product Ramose
@@ -50,8 +50,10 @@ import type { Schema } from "./db/index.ts";
 import {
   declareOwnedPeer,
   ownedPeerDurableObjects,
+  type PeerRoute,
   type PeerStorage,
   validatePeerWiring,
+  workerEnvOf,
 } from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
@@ -126,24 +128,31 @@ export const PROBE_DEFAULTS = {
 } as const satisfies Record<"live" | "local", Required<ServerProbe>>;
 
 /**
+ * A string, or an Alchemy Output / Effect that resolves to one at deploy.
+ * Reef's JWKS URL and CORS origins are interpolations over the auth Worker;
+ * owned form writes them onto the Worker, hatch form compares by identity.
+ */
+export type AuthEnvValue = string | object;
+
+/**
  * What the server Worker needs to verify JWTs and enforce a policy.
  *
  * When Server owns the Worker, these are applied onto {@link RamoseEnv}.
- * On the escape hatch they are still the deploy-time fail-closed check;
- * set the matching `RAMOSE_*` keys on the Worker yourself.
+ * On the escape hatch they are compared against the Worker's env and
+ * fail the deploy on divergence — do not configure auth only on the Worker.
  */
 export interface ServerAuth {
   /** Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is what arms enforcement. */
   readonly policy?: string | undefined;
   /** Where the issuer's public keys live. Required once `policy` is set. */
-  readonly jwksUrl?: string | undefined;
+  readonly jwksUrl?: AuthEnvValue | undefined;
   /**
    * Name of a service binding on the server Worker to fetch `jwksUrl`
    * through. Required when the issuer is another Worker on the same account.
    */
   readonly jwksService?: string | undefined;
   /** Accepted `iss` values — one, or a comma-separated set. Required once `policy` is set. */
-  readonly issuers?: readonly string[] | string | undefined;
+  readonly issuers?: readonly string[] | AuthEnvValue | undefined;
   /** The `aud` every token must carry. Required once `policy` is set. */
   readonly aud?: string | undefined;
   /** Cap on `exp - iat`, in seconds. @default 900 */
@@ -155,7 +164,7 @@ export interface ServerAuth {
    */
   readonly jwt?: AuthConfig | undefined;
   /** Origins the server answers CORS for once a policy narrows it. */
-  readonly allowedOrigins?: readonly string[] | string | undefined;
+  readonly allowedOrigins?: readonly string[] | AuthEnvValue | undefined;
   /** Worker→DO shared secret. See {@link internalSecret}. */
   readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
 }
@@ -180,6 +189,8 @@ export type ServerProps = {
   dev?: { readonly port?: number };
   /** Alchemy logical id of the owned Worker. @default `"Peer"` */
   peer?: string;
+  /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
+  routes?: readonly PeerRoute[];
   /**
    * Catalogs to install at deploy. A schema, or `{ schema, doc }` — `doc` is
    * data destined for the directory, not a resource-side authority.
@@ -188,10 +199,15 @@ export type ServerProps = {
   /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
   /**
-   * Bearer token for this server, when it is deployed with `RAMOSE_TOKEN`.
+   * Bearer token for this server. Owned form binds it as `RAMOSE_TOKEN`;
+   * hatch form requires the Worker env to match. Also the catalog-seed
+   * credential.
    */
   token?: Redacted.Redacted<string> | string;
-  /** Applied onto the owned Worker; deploy-time check on the escape hatch. */
+  /**
+   * Source of truth for Worker auth env. Owned form applies it; hatch
+   * form compares it and fails the deploy on divergence.
+   */
   auth?: ServerAuth;
   /**
    * Bundled operations registry. The owned Worker still needs a `main` that
@@ -223,6 +239,19 @@ export const AUTH_ENV_KEYS = {
   keyof RamoseEnv
 >;
 
+/** @internal Env key `token` lowers onto. */
+export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const satisfies keyof RamoseEnv;
+
+const AUTH_COMPARE_KEYS = [
+  AUTH_ENV_KEYS.policy,
+  AUTH_ENV_KEYS.jwksUrl,
+  AUTH_ENV_KEYS.jwksService,
+  AUTH_ENV_KEYS.issuers,
+  AUTH_ENV_KEYS.aud,
+  AUTH_ENV_KEYS.maxTtl,
+  AUTH_ENV_KEYS.allowedOrigins,
+] as const;
+
 const withAuthConfig = (auth: ServerAuth): ServerAuth =>
   auth.jwt === undefined
     ? auth
@@ -233,11 +262,17 @@ const withAuthConfig = (auth: ServerAuth): ServerAuth =>
         maxTtl: auth.maxTtl ?? auth.jwt.ttl,
       };
 
-const list = (value: readonly string[] | string | undefined): string | undefined => {
-  const items = (typeof value === "string" ? value.split(",") : (value ?? []))
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  return items.length === 0 ? undefined : items.join(",");
+const isBound = (value: unknown): boolean => value !== undefined && value !== "";
+
+const list = (value: unknown): unknown => {
+  if (!isBound(value)) return undefined;
+  if (typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+    const items = (typeof value === "string" ? value.split(",") : value)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return items.length === 0 ? undefined : items.join(",");
+  }
+  return value;
 };
 
 /**
@@ -258,17 +293,21 @@ export const internalSecret = (
 
 /**
  * @internal The server Worker's auth env, as bindings. Unset fields emit no
- * key. A set `policy` also binds {@link internalSecret}.
+ * key. Output / Effect values pass through (Reef's JWKS URL and origins).
+ * A set `policy` also binds {@link internalSecret} unless `mintSecret` is
+ * false (hatch compare — an unpinned secret is minted per call and would
+ * never match).
  */
-export const authEnv = (
+const bindAuthFields = (
   peerAuth: ServerAuth | undefined,
-): Record<string, string | Redacted.Redacted<string>> => {
+  mintSecret: boolean,
+): Record<string, unknown> => {
   if (peerAuth === undefined) return {};
   const auth = withAuthConfig(peerAuth);
   const k = AUTH_ENV_KEYS;
-  const env: Record<string, string | Redacted.Redacted<string>> = {};
-  const set = (key: string, value: string | Redacted.Redacted<string> | undefined) => {
-    if (value !== undefined && value !== "") env[key] = value;
+  const env: Record<string, unknown> = {};
+  const set = (key: string, value: unknown) => {
+    if (isBound(value)) env[key] = value;
   };
   set(k.policy, auth.policy);
   set(k.jwksUrl, auth.jwksUrl);
@@ -278,22 +317,55 @@ export const authEnv = (
   set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
   set(k.allowedOrigins, list(auth.allowedOrigins));
   const secret = auth.internalSecret;
-  const pinned = secret !== undefined && secret !== "";
-  if (pinned || (auth.policy !== undefined && auth.policy !== "")) {
-    env[k.internalSecret] = internalSecret(secret);
+  const pinned = isBound(secret);
+  if (pinned || (mintSecret && isBound(auth.policy))) {
+    env[k.internalSecret] = internalSecret(secret as Redacted.Redacted<string> | string | undefined);
   }
   return env;
 };
 
-const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
-  if (peerAuth === undefined || peerAuth.policy === undefined || peerAuth.policy === "") {
+/**
+ * @internal The server Worker's auth env, as bindings. Unset fields emit no
+ * key. A set `policy` also binds {@link internalSecret}.
+ */
+export const authEnv = (
+  peerAuth: ServerAuth | undefined,
+): Record<string, unknown> => bindAuthFields(peerAuth, true);
+
+/**
+ * @internal `RAMOSE_TOKEN` from `Server({ token })`. Owned form binds it;
+ * hatch form compares it.
+ */
+export const tokenEnv = (
+  token: Redacted.Redacted<string> | string | undefined,
+): Record<string, Redacted.Redacted<string>> => {
+  if (!isBound(token)) return {};
+  return {
+    [TOKEN_ENV_KEY]: typeof token === "string" ? Redacted.make(token) : token,
+  };
+};
+
+/**
+ * @internal What the owned Worker receives: `authEnv` plus `RAMOSE_TOKEN`.
+ */
+export const ownedAuthEnv = (
+  peerAuth: ServerAuth | undefined,
+  token: Redacted.Redacted<string> | string | undefined,
+): Record<string, unknown> => ({
+  ...authEnv(peerAuth),
+  ...tokenEnv(token),
+});
+
+/** @internal Completeness: policy implies jwksUrl + issuers + aud. */
+export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
+  if (peerAuth === undefined || !isBound(peerAuth.policy)) {
     return undefined;
   }
   const auth = withAuthConfig(peerAuth);
   const missing: string[] = [];
-  if (auth.jwksUrl === undefined || auth.jwksUrl === "") missing.push(AUTH_ENV_KEYS.jwksUrl);
+  if (!isBound(auth.jwksUrl)) missing.push(AUTH_ENV_KEYS.jwksUrl);
   if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
-  if (auth.aud === undefined || auth.aud === "") missing.push(AUTH_ENV_KEYS.aud);
+  if (!isBound(auth.aud)) missing.push(AUTH_ENV_KEYS.aud);
   if (missing.length > 0) {
     return `ramose: auth.policy is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not — a configured policy makes JWT verification mandatory, and an incomplete verifier denies every /db/*`;
   }
@@ -301,6 +373,86 @@ const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
     return `ramose: auth.maxTtl must be a positive number of seconds (default ${DEFAULT_JWT_MAX_TTL})`;
   }
   return undefined;
+};
+
+const unwrapBinding = (value: unknown): unknown =>
+  Redacted.isRedacted(value) ? Redacted.value(value) : value;
+
+const normalizeBinding = (value: unknown): unknown => {
+  const raw = unwrapBinding(value);
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  if (typeof raw === "string") {
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .sort()
+      .join(",");
+  }
+  if (Array.isArray(raw) && raw.every((item) => typeof item === "string" || typeof item === "number")) {
+    return raw
+      .map((item) => String(item).trim())
+      .filter((s) => s.length > 0)
+      .sort()
+      .join(",");
+  }
+  return raw;
+};
+
+const sameBinding = (expected: unknown, actual: unknown): boolean => {
+  if (expected === actual) return true;
+  const a = unwrapBinding(expected);
+  const b = unwrapBinding(actual);
+  if (a === b) return true;
+  if (typeof a === "object" || typeof b === "object") return false;
+  return normalizeBinding(a) === normalizeBinding(b);
+};
+
+/**
+ * @internal Hatch form: `auth` / `token` must match the Worker env.
+ * A policy on Server with no `RAMOSE_POLICY` on the Worker is a deploy
+ * error (fail closed). A policy on the Worker with no `auth.policy` is
+ * the same — the Worker env is not a second configuration path.
+ * URL workers have no env and are skipped.
+ */
+export const compareAuthToWorker = (
+  peerAuth: ServerAuth | undefined,
+  token: Redacted.Redacted<string> | string | undefined,
+  worker: unknown,
+): string | undefined => {
+  if (typeof worker === "string") return undefined;
+  const env = workerEnvOf(worker);
+  if (env === undefined) return undefined;
+
+  const hasAuthPolicy = isBound(peerAuth?.policy);
+  const hasWorkerPolicy = isBound(env[AUTH_ENV_KEYS.policy]);
+  if (hasAuthPolicy && !hasWorkerPolicy) {
+    return "ramose: auth.policy is set but the Worker has no RAMOSE_POLICY — a configured policy that never reaches the Worker leaves the server open to everyone";
+  }
+  if (hasWorkerPolicy && !hasAuthPolicy) {
+    return "ramose: the Worker has RAMOSE_POLICY but Ramose.Server was not given auth.policy — pass auth on Server; do not configure the policy only on the Worker";
+  }
+
+  const expected = bindAuthFields(peerAuth, false);
+  if (isBound(token)) Object.assign(expected, tokenEnv(token));
+
+  const keys = new Set<string>([...AUTH_COMPARE_KEYS, TOKEN_ENV_KEY, ...Object.keys(expected)]);
+  const diverged: string[] = [];
+  const pinnedSecret = isBound(peerAuth?.internalSecret);
+  for (const key of keys) {
+    if (key === AUTH_ENV_KEYS.internalSecret && !pinnedSecret) continue;
+    if (key === TOKEN_ENV_KEY && !isBound(token)) continue;
+    const want = expected[key];
+    const got = env[key];
+    if (isBound(want) !== isBound(got) || (isBound(want) && isBound(got) && !sameBinding(want, got))) {
+      diverged.push(key);
+    }
+  }
+  if (diverged.length === 0) return undefined;
+  if (diverged.length === 1 && diverged[0] === TOKEN_ENV_KEY) {
+    return "ramose: Server token does not match the Worker's RAMOSE_TOKEN — Server({ token }) is the seed credential and must be the same secret the Worker enforces";
+  }
+  return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth, token }) is the source of truth`;
 };
 
 export type Server = Resource<
@@ -334,9 +486,12 @@ const ServerResource = Resource<Server>("Ramose.Server");
  *
  * Without `worker`, Server declares the peer (R2, both DO classes, the
  * Worker, {@link import("./peer.ts").PEER_COMPAT}, fixed bindings) and
- * applies `auth` onto its env. With `worker`, that form is validated and
- * kept as the escape hatch.
+ * applies `auth` / `token` onto its env. With `worker`, that form is
+ * validated — bindings, DO classes, `main`, and `auth` / `token` against
+ * the Worker env — and kept as the escape hatch.
  */
+const ownedPeers = new WeakSet<object>();
+
 export const Server = Object.assign(
   (id: string, props: InputProps<ServerProps>) => {
     // Durable Object declarations must be created here — at the stack
@@ -364,9 +519,14 @@ export const Server = Object.assign(
           name: props.name as string | undefined,
           dev: props.dev as { readonly port?: number } | undefined,
           peer: props.peer as string | undefined,
-          authEnv: authEnv(props.auth as ServerAuth | undefined),
+          routes: props.routes as readonly PeerRoute[] | undefined,
+          authEnv: ownedAuthEnv(
+            props.auth as ServerAuth | undefined,
+            props.token as Redacted.Redacted<string> | string | undefined,
+          ),
           durableObjects,
         });
+        if (typeof worker === "object" && worker !== null) ownedPeers.add(worker);
         return { ...props, worker } as InputProps<ServerProps>;
       }) as unknown as Effect.Effect<InputProps<ServerProps>, never, never>,
     );
@@ -494,6 +654,16 @@ const attributes = Effect.fn(function* (
     const badWiring = validatePeerWiring(props.worker);
     if (badWiring !== undefined) {
       return yield* Effect.fail(new InvalidRequest({ message: badWiring }));
+    }
+    const hatch =
+      typeof props.worker !== "object" ||
+      props.worker === null ||
+      !ownedPeers.has(props.worker);
+    if (hatch) {
+      const badMatch = compareAuthToWorker(props.auth, props.token, props.worker);
+      if (badMatch !== undefined) {
+        return yield* Effect.fail(new InvalidRequest({ message: badMatch }));
+      }
     }
   }
   const worker = resolveWorker(props.worker as ServerWorker);

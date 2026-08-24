@@ -15,11 +15,16 @@ import { Databases } from "../src/Databases.ts";
 import {
   AUTH_ENV_KEYS,
   authEnv,
+  checkAuth,
+  compareAuthToWorker,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
   isServer,
+  ownedAuthEnv,
   resolveWorker,
   Server,
+  TOKEN_ENV_KEY,
+  tokenEnv,
   type ServerProps,
 } from "../src/Server.ts";
 import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
@@ -313,5 +318,161 @@ describe("the server's auth env", () => {
     type DatabaseHasAuth = "auth" extends keyof Database["Props"] ? true : false;
     const databaseHasAuth: DatabaseHasAuth = false;
     expect(databaseHasAuth).toBe(false);
+  });
+
+  test("Output / Effect-valued JWKS and origins pass through un-normalised", () => {
+    const jwksUrl = { kind: "Output", value: "https://auth.example/jwks" };
+    const allowedOrigins = { kind: "Effect", value: "https://app.example" };
+    const env = authEnv({
+      policy: '{"v":1}',
+      jwksUrl,
+      issuers: "https://auth.example",
+      aud: "ramose:peer",
+      allowedOrigins,
+      internalSecret: "sh4red",
+    });
+    expect(env[AUTH_ENV_KEYS.jwksUrl]).toBe(jwksUrl);
+    expect(env[AUTH_ENV_KEYS.allowedOrigins]).toBe(allowedOrigins);
+  });
+});
+
+describe("owned form binds auth and token onto the Worker", () => {
+  const auth = {
+    policy: '{"v":1}',
+    jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+    issuers: "https://auth.acme.example",
+    aud: "ramose:peer:prod",
+    internalSecret: "sh4red",
+  };
+
+  test("ownedAuthEnv puts RAMOSE_POLICY, RAMOSE_TOKEN, and the rest of authEnv on the bag", () => {
+    const bindings = ownedAuthEnv(auth, "s3cret");
+    expect(bindings[AUTH_ENV_KEYS.policy]).toBe(auth.policy);
+    expect(bindings[AUTH_ENV_KEYS.jwksUrl]).toBe(auth.jwksUrl);
+    expect(bindings[AUTH_ENV_KEYS.issuers]).toBe(auth.issuers);
+    expect(bindings[AUTH_ENV_KEYS.aud]).toBe(auth.aud);
+    expect(Redacted.value(bindings[TOKEN_ENV_KEY] as Redacted.Redacted<string>)).toBe("s3cret");
+    expect(Redacted.value(bindings[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
+      "sh4red",
+    );
+    expect(ownedAuthEnv(auth, undefined)[TOKEN_ENV_KEY]).toBeUndefined();
+    expect(tokenEnv("s3cret")[TOKEN_ENV_KEY]).not.toBe("s3cret");
+  });
+
+  test("missing verifier fields still fail checkAuth", () => {
+    expect(checkAuth({ policy: '{"v":1}' })).toMatch(/RAMOSE_JWKS_URL.*RAMOSE_JWT_ISS.*RAMOSE_JWT_AUD/);
+    expect(
+      checkAuth({
+        policy: '{"v":1}',
+        jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+        issuers: "https://auth.acme.example",
+        aud: "ramose:peer:prod",
+      }),
+    ).toBeUndefined();
+    expect(checkAuth(undefined)).toBeUndefined();
+    expect(checkAuth({})).toBeUndefined();
+  });
+
+  test("an Output-valued jwksUrl counts as present for checkAuth", () => {
+    expect(
+      checkAuth({
+        policy: '{"v":1}',
+        jwksUrl: { interpolate: "https://auth.example/jwks" },
+        issuers: "https://auth.example",
+        aud: "ramose:peer",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("hatch form compares auth / token against the Worker env", () => {
+  const dos = {
+    STORE: { Type: "Cloudflare.R2.Bucket" },
+    TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
+    REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+  };
+  const auth = {
+    policy: '{"v":1}',
+    jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+    issuers: "https://auth.acme.example",
+    aud: "ramose:peer:prod",
+  };
+  const matching = {
+    RAMOSE_POLICY: auth.policy,
+    RAMOSE_JWKS_URL: auth.jwksUrl,
+    RAMOSE_JWT_ISS: auth.issuers,
+    RAMOSE_JWT_AUD: auth.aud,
+  };
+  const hatch = (env: Record<string, unknown>) => ({
+    Type: "Cloudflare.Worker",
+    Props: { main: workerEntry(), env: { ...dos, ...env } },
+  });
+
+  test("a URL worker has no env to compare", () => {
+    expect(compareAuthToWorker(auth, undefined, "https://peer.example.com")).toBeUndefined();
+    expect(compareAuthToWorker(auth, undefined, { url: "https://peer.example.com" })).toBeUndefined();
+  });
+
+  test("auth.policy without RAMOSE_POLICY on the Worker is a deploy error", () => {
+    expect(compareAuthToWorker(auth, undefined, hatch({}))).toMatch(
+      /auth\.policy is set but the Worker has no RAMOSE_POLICY/,
+    );
+  });
+
+  test("RAMOSE_POLICY on the Worker without auth.policy is a deploy error", () => {
+    expect(compareAuthToWorker(undefined, undefined, hatch(matching))).toMatch(
+      /Worker has RAMOSE_POLICY but Ramose\.Server was not given auth\.policy/,
+    );
+  });
+
+  test("divergence on token / policy / iss / aud / jwks fails", () => {
+    expect(compareAuthToWorker(auth, undefined, hatch({ ...matching, RAMOSE_JWT_AUD: "other" }))).toMatch(
+      /diverge on RAMOSE_JWT_AUD/,
+    );
+    expect(
+      compareAuthToWorker(
+        { ...auth, jwksUrl: "https://other.example/jwks" },
+        undefined,
+        hatch(matching),
+      ),
+    ).toMatch(/diverge on RAMOSE_JWKS_URL/);
+    expect(compareAuthToWorker(auth, "s3cret", hatch(matching))).toMatch(
+      /Server token does not match the Worker's RAMOSE_TOKEN/,
+    );
+    expect(
+      compareAuthToWorker(auth, "s3cret", hatch({ ...matching, RAMOSE_TOKEN: "other" })),
+    ).toMatch(/Server token does not match the Worker's RAMOSE_TOKEN/);
+    expect(
+      compareAuthToWorker(
+        { ...auth, policy: '{"v":2}' },
+        undefined,
+        hatch(matching),
+      ),
+    ).toMatch(/diverge on RAMOSE_POLICY/);
+  });
+
+  test("a correctly-wired hatch (policy on both sides, matching) still deploys", () => {
+    expect(compareAuthToWorker(auth, undefined, hatch(matching))).toBeUndefined();
+    expect(
+      compareAuthToWorker(auth, "s3cret", hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
+    ).toBeUndefined();
+    expect(
+      compareAuthToWorker(auth, Redacted.make("s3cret"), hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
+    ).toBeUndefined();
+  });
+
+  test("the same Output instance on both sides matches; a different instance does not", () => {
+    const jwksUrl = { interpolate: "https://auth.example/jwks" };
+    const deferred = { ...auth, jwksUrl };
+    expect(
+      compareAuthToWorker(deferred, undefined, hatch({ ...matching, RAMOSE_JWKS_URL: jwksUrl })),
+    ).toBeUndefined();
+    expect(
+      compareAuthToWorker(
+        deferred,
+        undefined,
+        hatch({ ...matching, RAMOSE_JWKS_URL: { interpolate: "https://auth.example/jwks" } }),
+      ),
+    ).toMatch(/diverge on RAMOSE_JWKS_URL/);
   });
 });

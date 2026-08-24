@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Server auth is one source of truth (part of #182, tracker #205)
+
+`Server({ auth, token })` produces the Worker env on the owned form
+(`RAMOSE_POLICY`, `RAMOSE_TOKEN`, and the rest of `authEnv`). Output /
+Effect-valued JWKS URL and origins pass through, so Reef can stay on this
+path. On the `worker:` hatch, `auth` / `token` are compared to the Worker
+env and the deploy fails on divergence — including a policy that never
+reaches the Worker as `RAMOSE_POLICY`. Missing verifier fields still fail
+`checkAuth`. `writes` / `operations` injection is still #173.
+
 ### `Ramose.Server` owns the peer (part of #203, tracker #205)
 
 `Ramose.Server("Ramose", { databases, auth })` declares the Worker, both
