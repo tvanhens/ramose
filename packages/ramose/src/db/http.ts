@@ -13,7 +13,7 @@
 
 import { fromJson, toJson } from "../internal/core/json.ts";
 import * as Effect from "effect/Effect";
-import { type DbError, fromResponse, NetworkError } from "./Errors.ts";
+import { type DbError, fromResponse, NetworkError, Unauthorized } from "./Errors.ts";
 
 /**
  * The `fetch` seam, narrowed to what the client actually calls.
@@ -124,6 +124,23 @@ export const send = (
   options: SendOptions,
 ): Effect.Effect<RawResult, DbError> =>
   retryTransient((n) => sendOnce(options, n > 0));
+
+/**
+ * One GET, no retries. A refused WebSocket handshake cannot carry its HTTP
+ * status through the browser socket API; this asks the same peer with the
+ * handshake's token so 401/403 stay {@link Unauthorized}. Any other outcome
+ * (200, 400 "expected websocket", a transport failure) is ignored — the
+ * caller keeps the original `SocketGone` / {@link NetworkError}.
+ */
+export const probeUnauthorized = (
+  options: Omit<SendOptions, "method" | "body">,
+): Effect.Effect<Unauthorized | undefined> =>
+  sendOnce({ ...options, method: "GET" }).pipe(
+    Effect.map(() => undefined),
+    Effect.catch((e: DbError) =>
+      Effect.succeed(e._tag === "Unauthorized" ? e : undefined),
+    ),
+  );
 
 // Platform errors arrive classified: Errors.ts maps workers.dev HTML 404s,
 // Cloudflare 1xxx pages and "Worker not found" onto Unavailable.

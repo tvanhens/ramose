@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
-import { Query } from "../src/db/internal.ts";
+import { isDatabaseError, Query, Unauthorized } from "../src/db/internal.ts";
 import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -275,6 +275,81 @@ describe("a socket that goes away", () => {
     expect(await db.query(names)).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
     expect(peer.frames).toHaveLength(1);
+    await c.dispose();
+  });
+
+  test("a drop after the socket opened does not probe the handshake", async () => {
+    const peer = fakePeer({ answer: () => rows([[{ name: "Ada" }]]) });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+
+    expect(await run(db.asOf(2).query(names))).toEqual([{ name: "Ada" }]);
+    peer.drop();
+    expect(await run(db.asOf(2).query(names))).toEqual([{ name: "Ada" }]);
+
+    expect(peer.calls.filter((call) => call.url.includes("/session"))).toEqual([]);
+    await c.dispose();
+  });
+});
+
+describe("a refused handshake keeps auth identity", () => {
+  test("401 on the probe is Unauthorized, not NetworkError", async () => {
+    let issued = 0;
+    const peer = fakePeer({
+      answer: () => rows([]),
+      refuseUpgrades: 99,
+      http: () => ({ status: 401, body: { error: "token expired" } }),
+    });
+    const c = client(peer, {
+      token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
+    });
+    const e = await runFail(c.ramose.db("movies", Movies).query(names));
+
+    expect(e).toBeInstanceOf(Unauthorized);
+    expect(e._tag).toBe("Unauthorized");
+    expect(e.name).toBe("Unauthorized");
+    expect(e.status).toBe(401);
+    expect(e.message).toBe("token expired");
+    expect(isDatabaseError(e)).toBe(true);
+    // terminal: do not walk the transient ladder, and do not re-read the
+    // token for the probe (#183 hold — same credential that rode the upgrade)
+    expect(peer.sockets).toHaveLength(1);
+    expect(issued).toBe(1);
+    expect(peer.sockets[0]!.url).toContain("token=token-1");
+    expect(peer.calls).toEqual([
+      {
+        url: "https://peer.example.com/db/movies/session",
+        method: "GET",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer token-1",
+        },
+        body: undefined,
+      },
+    ]);
+    await c.dispose();
+  });
+
+  test("403 on the probe keeps policy code and attr", async () => {
+    const peer = fakePeer({
+      answer: () => rows([]),
+      refuseUpgrades: 99,
+      http: () => ({
+        status: 403,
+        body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" },
+      }),
+    });
+    const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
+    const e = await runFail(c.ramose.db("movies", Movies).query(names));
+
+    expect(e).toBeInstanceOf(Unauthorized);
+    expect(e._tag).toBe("Unauthorized");
+    if (e._tag === "Unauthorized") {
+      expect(e.status).toBe(403);
+      expect(e.code).toBe("policy");
+      expect(e.attr).toBe(":doc/owner");
+    }
+    expect(peer.sockets).toHaveLength(1);
     await c.dispose();
   });
 });

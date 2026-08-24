@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
-import { connect, NetworkError, Query } from "../src/db/internal.ts";
+import { connect, NetworkError, Query, Unauthorized } from "../src/db/internal.ts";
 import { fakePeer, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -139,6 +139,33 @@ describe("close()", () => {
 });
 
 describe("the promise / subscription surface", () => {
+  test("a refused handshake rejects with Unauthorized, not NetworkError", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+      refuseUpgrades: 99,
+      http: () => ({ status: 401, body: { error: "token expired" } }),
+    });
+    const c = connect({
+      url: "https://peer.example.com",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      token: "stale",
+    });
+    try {
+      await c.db("movies", Movies).query(names);
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Unauthorized);
+      expect((error as Unauthorized)._tag).toBe("Unauthorized");
+      expect((error as Unauthorized).name).toBe("Unauthorized");
+      expect((error as Unauthorized).status).toBe(401);
+      expect((error as { constructor?: { name?: string } }).constructor?.name).not.toBe(
+        "FiberFailure",
+      );
+    }
+    await c.close();
+  });
+
   test("a failed q rejects with the tagged error, not a FiberFailure", async () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),

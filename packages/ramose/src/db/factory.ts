@@ -24,6 +24,7 @@ import {
   fromStandardFetch,
   globalFetch,
   minTHeader,
+  probeUnauthorized,
   record,
   retryTransient,
   send,
@@ -127,6 +128,23 @@ export const makeDatabases = (
         name,
         token: config.token === undefined ? undefined : token,
         connect: config.webSocket,
+        // browser WS hides the upgrade status; one GET /session (no
+        // Upgrade) with the handshake's token recovers 401/403
+        classifyHandshake: async (handshakeToken) => {
+          try {
+            return await Effect.runPromise(
+              probeUnauthorized({
+                fetch: config.fetch,
+                url: await Effect.runPromise(config.url),
+                path: dbPath(name, "/session"),
+                token: handshakeToken,
+                headers: config.headers,
+              }),
+            );
+          } catch {
+            return undefined;
+          }
+        },
       });
       // past the finalizer, a socket-backed client stays socket-backed: reads
       // fail rather than silently changing transport

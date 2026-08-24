@@ -21,6 +21,14 @@
  * re-read the token, send `{ op: "auth", token }` on the *same* socket, and
  * re-issue the frame once. Nothing standing is torn down by that swap — which
  * is the whole point of the peer having an `auth` op.
+ *
+ * A handshake that never opens is different. The browser (and this
+ * `WebSocketLike` seam) hide the upgrade's HTTP status, so a close/error
+ * before `open` would otherwise become `SocketGone` → `NetworkError`. When
+ * {@link SessionOptions.classifyHandshake} is set, the session asks it with
+ * the handshake's token before surfacing that; a 401/403 probe becomes the
+ * same tagged `Unauthorized` the HTTP path uses. True transport failures
+ * stay `SocketGone`.
  */
 
 import * as Redacted from "effect/Redacted";
@@ -89,6 +97,15 @@ export interface SessionOptions {
    */
   readonly token?: (() => Promise<Redacted.Redacted<string> | undefined>) | undefined;
   readonly connect: SocketFactory;
+  /**
+   * After a handshake that never opened, classify the failure. Return a
+   * tagged error (the HTTP path's `Unauthorized`) to surface it; `undefined`
+   * keeps `SocketGone`. Receives the token that rode the upgrade — not a
+   * fresh mint — so an expired credential is not hidden by a refresh.
+   */
+  readonly classifyHandshake?:
+    | ((token: string | undefined) => Promise<Error | undefined>)
+    | undefined;
   /**
    * Unsolicited `{ op: "tx" }` / `{ op: "resync" }` frames. The overlay
    * applies them. Those frames already carry `t` and bump the basis the
@@ -273,7 +290,11 @@ export const openSession = (options: SessionOptions): Session => {
       const opened = new Promise<void>((resolve, reject) => {
         settle = (e) => (e === undefined ? resolve() : reject(e));
       });
-      ws.addEventListener("open", () => settle());
+      let didOpen = false;
+      ws.addEventListener("open", () => {
+        didOpen = true;
+        settle();
+      });
       ws.addEventListener("close", () => {
         settle(new SocketGone("ramose: session socket closed"));
         if (socket === ws) drop("ramose: session socket closed");
@@ -285,8 +306,21 @@ export const openSession = (options: SessionOptions): Session => {
       ws.addEventListener("message", onMessage);
       socket = ws;
       generation += 1;
-      if (ws.readyState === undefined || ws.readyState === OPEN) settle();
-      await opened;
+      if (ws.readyState === undefined || ws.readyState === OPEN) {
+        didOpen = true;
+        settle();
+      }
+      try {
+        await opened;
+      } catch (cause) {
+        // the browser socket API does not expose the upgrade status; a
+        // probe can recover 401/403. Do not invent a status when it cannot.
+        if (!didOpen && !closed && options.classifyHandshake !== undefined) {
+          const classified = await options.classifyHandshake(token);
+          if (classified !== undefined) throw classified;
+        }
+        throw cause;
+      }
     })();
     const tracked: Promise<void> = started.finally(() => {
       if (opening === tracked) opening = undefined;

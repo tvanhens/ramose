@@ -29,7 +29,7 @@ try {
 | `Unavailable` | the server cannot serve right now (503) | the writer restarting after a failed storage write; carries `retryAfterMs` |
 | `InvalidRequest` | the request is malformed (400) | bad database name, unknown field, bad query or shape |
 | `DatabaseNotFound` | the route does not exist (404) | a wrong server URL or path — a database *name* always exists |
-| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies; carries `code: "policy"` and the field name, never a value |
+| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies; carries `code: "policy"` and the field name, never a value. A live WebSocket handshake the peer refuses with 401/403 is this class too — the same as the HTTPS path — not `NetworkError` |
 | `QueryBudgetExceeded` | the query went over the server's per-query memory limit ([glossary](/concepts/glossary/#query-budget)) (413) | too wide a query; carries `clause`, `cells`, `limit`, and `spentBy` (`caller` or `policy`) |
 | `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
 | `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |

@@ -134,10 +134,13 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       this.url = url;
       const refuse = refusals > 0;
       if (refuse) refusals -= 1;
-      // a real socket is CONNECTING until its open event
+      // a real socket is CONNECTING until its open event. A refused
+      // upgrade (browser) fires error then close, never open.
       queueMicrotask(() => {
-        if (refuse) this.emit("close", {});
-        else this.emit("open", {});
+        if (refuse) {
+          this.emit("error", {});
+          this.emit("close", {});
+        } else this.emit("open", {});
       });
     }
 
