@@ -88,7 +88,7 @@ export type ClassOf = (
 export interface RamoseTokenOptions {
   /**
    * The verifier/minter contract — the same `AuthConfig` the peer's
-   * `Ramose.authEnv({ auth })` pins, so a minted lifetime can never exceed
+   * `Server({ auth: { jwt } })` pins, so a minted lifetime can never exceed
    * the verifier's cap.
    */
   readonly auth: AuthConfig;

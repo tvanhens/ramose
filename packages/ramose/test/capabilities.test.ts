@@ -1,17 +1,16 @@
 /**
- * The two capabilities through the two transport layers.
+ * One capability, one transport.
  *
- * The binding **is** the client: `yield* Ramose.ReadWriteDatabases(Server)`
- * hands back a `Databases`, and the Worker body is identical whether
- * `ServerBinding` (a service binding to the server Worker) or `ServerHttp`
- * (the public URL) decided the wire. `ReadDatabases` is the same client with
- * the writes removed — a shape, not a second transport.
+ * The binding **is** the client: `yield* Ramose.Databases(Server)` hands
+ * back a server-side `Databases` — no `live` / `livePull`. The {@link layer}
+ * auto-picks a service binding when the host Worker has one, otherwise HTTPS.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import * as Output from "alchemy/Output";
 import { RuntimeContext } from "alchemy/RuntimeContext";
+import { Self } from "alchemy/Self";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,11 +18,8 @@ import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
 import { Query } from "../src/db/index.ts";
 import type { Tx } from "../src/db/Tx.ts";
-import { ReadDatabases } from "../src/ReadDatabases.ts";
-import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
+import { asRead, Databases, layer, SERVICE_ORIGIN } from "../src/Databases.ts";
 import type { Server } from "../src/Server.ts";
-import { SERVICE_ORIGIN, ServerBinding } from "../src/ServerBinding.ts";
-import { ServerHttp } from "../src/ServerHttp.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1 };
@@ -99,19 +95,18 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-describe("ReadWriteDatabases under ServerBinding", () => {
+describe("Databases over a service binding", () => {
   test("the binding is the client: writes dispatch through env[LogicalId]", async () => {
     const calls: Call[] = [];
     const env = { Ramose: { fetch: fetcher(calls) } };
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* ReadWriteDatabases(server("s3cret"));
-        // pure: naming a database costs no request
+        const ramose = yield* Databases(server("s3cret"));
         expect(calls).toEqual([]);
         return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
-        Effect.provide(ServerBinding),
+        Effect.provide(layer),
         Effect.provide(
           Layer.mergeAll(
             Layer.succeed(WorkerEnvironment, env as never),
@@ -123,23 +118,27 @@ describe("ReadWriteDatabases under ServerBinding", () => {
 
     expect(report.t).toBe(7);
     expect(calls).toHaveLength(1);
-    // the synthetic origin, the one writer's path, and the server's one token
     expect(calls[0].url).toBe(`${SERVICE_ORIGIN}/db/movies/transact`);
     expect(calls[0].method).toBe("POST");
     expect(calls[0].headers.authorization).toBe("Bearer s3cret");
   });
 
   test("a missing service binding is a defect, not a DbError", async () => {
+    const host = {
+      Type: "Cloudflare.Worker",
+      LogicalId: "App",
+      bind: () => () => Effect.void,
+    };
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* ReadWriteDatabases(server());
+        const ramose = yield* Databases(server());
         return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
-        Effect.provide(ServerBinding),
+        Effect.provide(layer),
         Effect.provide(
           Layer.mergeAll(
-            // the host Worker never lowered the binding
             Layer.succeed(WorkerEnvironment, {} as never),
+            Layer.succeed(Self, host as never),
             runtimeLayer(),
           ),
         ),
@@ -158,16 +157,16 @@ describe("ReadWriteDatabases under ServerBinding", () => {
   });
 });
 
-describe("ReadWriteDatabases under ServerHttp", () => {
+describe("Databases over HTTPS", () => {
   test("same client, public URL, same Worker body", async () => {
     const calls: Call[] = [];
     globalThis.fetch = fetcher(calls) as unknown as typeof fetch;
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* ReadWriteDatabases(server("s3cret"));
+        const ramose = yield* Databases(server("s3cret"));
         return yield* ramose.db("movies", Movies).effect.transact(write);
-      }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
     );
 
     expect(report.t).toBe(7);
@@ -177,47 +176,45 @@ describe("ReadWriteDatabases under ServerHttp", () => {
   });
 });
 
-describe("ReadDatabases", () => {
-  test("hands back a ReadDb: no transact, no install, under either transport", async () => {
+describe("server-side handles have no live / livePull", () => {
+  test("the methods are not on the object", async () => {
     const calls: Call[] = [];
     globalThis.fetch = fetcher(calls) as unknown as typeof fetch;
 
-    const read = (transport: Layer.Layer<ReadDatabases, never, WorkerEnvironment>) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const ramose = yield* ReadDatabases(server());
-          return ramose.db("movies", Movies);
-        }).pipe(
-          Effect.provide(transport),
-          Effect.provide(
-            Layer.mergeAll(
-              Layer.succeed(WorkerEnvironment, {
-                Ramose: { fetch: fetcher(calls) },
-              } as never),
-              runtimeLayer(),
-            ),
-          ),
-        ),
-      );
+    const db = await Effect.runPromise(
+      Effect.gen(function* () {
+        const ramose = yield* Databases(server());
+        return ramose.db("movies", Movies);
+      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+    );
 
-    const dbs = [await read(ServerHttp), await read(ServerBinding)];
-
-    for (const db of dbs) {
-      expect(typeof db.query).toBe("function");
-      expect(typeof db.pull).toBe("function");
-      expect(typeof db.live).toBe("function");
-      expect(typeof db.asOf).toBe("function");
-      // the writes are not merely untyped away — they are not there
-      expect("transact" in db).toBe(false);
-      expect("install" in db).toBe(false);
-      // @ts-expect-error a read capability cannot name a write
-      expect(db.transact).toBeUndefined();
-    }
-    // and a read that never ran issued nothing
+    expect(typeof db.query).toBe("function");
+    expect(typeof db.pull).toBe("function");
+    expect(typeof db.asOf).toBe("function");
+    expect("live" in db).toBe(false);
+    expect("livePull" in db).toBe(false);
+    expect("live" in db.effect).toBe(false);
+    expect("livePull" in db.effect).toBe(false);
+    // @ts-expect-error server-side handles do not have live
+    expect(db.live).toBeUndefined();
     expect(calls).toEqual([]);
   });
 
-  test("its reads take the same wire the read-write client would", async () => {
+  test("asRead is a type-level view of the same handle", async () => {
+    globalThis.fetch = fetcher([]) as unknown as typeof fetch;
+    const db = await Effect.runPromise(
+      Effect.gen(function* () {
+        const ramose = yield* Databases(server());
+        return ramose.db("movies", Movies);
+      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+    );
+    const read = asRead(db);
+    expect(read).toBe(db);
+    // @ts-expect-error a read view cannot name a write
+    type _noWrite = (typeof read)["transact"];
+  });
+
+  test("reads take the HTTPS wire when no service binding is present", async () => {
     const calls: Call[] = [];
     globalThis.fetch = ((url: string, init: any) => {
       calls.push({
@@ -235,11 +232,11 @@ describe("ReadDatabases", () => {
 
     const rows = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* ReadDatabases(server());
+        const ramose = yield* Databases(server());
         return yield* ramose
           .db("movies", Movies)
           .effect.query(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
-      }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
     );
 
     expect(rows).toEqual([{ name: "Ada" }]);

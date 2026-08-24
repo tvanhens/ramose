@@ -1,28 +1,23 @@
 /**
  * @internal Where a transport sends, and with which credential.
  *
- * Not exported from `index.ts`: HTTP is Worker internals, not a second public
- * API. The two transports (`ServerBinding`, `ServerHttp`) differ only in how
- * they obtain a {@link ServerSource}; {@link databasesOf} turns either of them
- * into the one client, `Databases`, and {@link readDatabasesOf} into its
- * least-privilege half.
- *
- * `endpoint` is an Effect so an Alchemy Output can be read when the capability
- * binds (see `ServerRuntime.ts`); it requires nothing, so neither does any
- * client method.
+ * Not exported from `index.ts`: HTTP is Worker internals. The one
+ * {@link import("./Databases.ts").layer} auto-picks a {@link ServerSource}
+ * (service binding if present, else HTTPS); {@link serverDatabasesOf} turns
+ * it into the server-side client (no `live` / `livePull`).
  */
 
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import {
-  type AnySchema,
-  type DatabasesShape,
-  type Db,
-  type FetchLike,
-  makeDatabases,
-  type ReadDb,
-} from "./db/internal.ts";
+import { type FetchLike, makeDatabases } from "./db/internal.ts";
 import { trimSlashes } from "./db/http.ts";
+import {
+  type ServerDatabasesShape,
+  withoutLive,
+} from "./server-db.ts";
+
+export type { ReadDatabasesShape, ServerDatabasesShape, ServerDb, ServerReadDb } from "./server-db.ts";
+export { asRead, withoutLive } from "./server-db.ts";
 
 export interface ServerEndpoint {
   /** Base URL, no trailing slash (e.g. `https://ramose.example.workers.dev`). */
@@ -38,45 +33,12 @@ export interface ServerSource {
   readonly fetch: FetchLike;
 }
 
-/** @internal One method, because a database is a name — and this half cannot write. */
-export interface ReadDatabasesShape {
-  db<C extends AnySchema>(name: string, schema: C): ReadDb<C>;
-}
-
-/** @internal The client's read half: no `transact`, no `install`. */
-export const readOnly = <C extends AnySchema>(db: Db<C>): ReadDb<C> => ({
-  name: db.name,
-  schema: db.schema,
-  query: db.query,
-  live: db.live,
-  pull: db.pull,
-  livePull: db.livePull,
-  basis: db.basis,
-  asOf: db.asOf,
-  history: db.history,
-  // read hatch only — strip `transact` / `install` / `run` / `principal`
-  effect: {
-    name: db.effect.name,
-    schema: db.effect.schema,
-    query: db.effect.query,
-    live: db.effect.live,
-    pull: db.effect.pull,
-    livePull: db.effect.livePull,
-    basis: db.effect.basis,
-    asOf: (t) => db.asOf(t).effect,
-    get history() {
-      return db.history.effect;
-    },
-  },
-});
-
 /**
- * The client over a source. No `webSocket`: a Worker reaching the server
- * through a service binding has no browser socket to give, so reads take the
- * HTTPS fallback and `db.live` is not available on this side of the wire.
+ * The server-side client over a source: no `webSocket`, and `live` /
+ * `livePull` are not on the type (they always defect on this hop).
  */
-export const databasesOf = (source: ServerSource): DatabasesShape =>
-  makeDatabases({
+export const serverDatabasesOf = (source: ServerSource): ServerDatabasesShape => {
+  const databases = makeDatabases({
     url: source.endpoint.pipe(
       Effect.map((endpoint) => trimSlashes(endpoint.url)),
     ),
@@ -93,15 +55,10 @@ export const databasesOf = (source: ServerSource): DatabasesShape =>
     ),
     fetch: source.fetch,
   }).databases;
-
-/**
- * The same client, read-only. Least privilege is a *shape*, not a second
- * transport: the wire is identical (the server's one token, or the caller's
- * JWT, is what the peer actually enforces), so what this removes is the
- * ability to name a write at all — `ramose.db(name, catalog)` hands back a
- * `ReadDb<C>` with no `transact` and no `install`.
- */
-export const readDatabasesOf = (source: ServerSource): ReadDatabasesShape => {
-  const databases = databasesOf(source);
-  return { db: (name, catalog) => readOnly(databases.db(name, catalog)) };
+  return {
+    db: (name, schema) => withoutLive(databases.db(name, schema)),
+  };
 };
+
+/** @deprecated Use {@link serverDatabasesOf}. */
+export const databasesOf = serverDatabasesOf;

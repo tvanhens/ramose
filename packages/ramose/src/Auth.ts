@@ -3,11 +3,11 @@
  *
  * Ramose verifies JWTs and never issues them — but the *shape* it verifies
  * (https://ramose.ai/guides/sign-in/) is a contract with two consumers: the peer's env
- * (`authEnv` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` / `RAMOSE_JWT_MAX_TTL`)
- * and the app's mint route (which signs the payload). `AuthConfig` is that
- * contract as one value; {@link claims} builds the payload from it, so the
- * minted lifetime equals the verifier's cap by construction and a claim set
- * the peer would reject fails at mint instead.
+ * (`Server({ auth: { jwt } })` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` /
+ * `RAMOSE_JWT_MAX_TTL`) and the app's mint route (which signs the payload).
+ * `AuthConfig` is that contract as one value; {@link claims} builds the
+ * payload from it, so the minted lifetime equals the verifier's cap by
+ * construction and a claim set the peer would reject fails at mint instead.
  *
  * `claims` is pure — no signing, no I/O. The app signs the payload with
  * whatever it has (Better Auth's `auth.api.signJWT`, `jose`, …).
@@ -24,7 +24,7 @@ export const DEFAULT_JWT_MAX_TTL = 900;
 
 /**
  * The pinned verifier/minter contract. Declare once; hand it to
- * `authEnv` (`{ auth }`) and to {@link claims}.
+ * `Server({ auth: { jwt } })` and to {@link claims}.
  */
 export interface AuthConfig {
   /** The `iss` every token carries and the peer pins (`RAMOSE_JWT_ISS`). */
@@ -32,7 +32,7 @@ export interface AuthConfig {
   /** The `aud` every token carries and the peer pins (`RAMOSE_JWT_AUD`). */
   readonly audience: string;
   /**
-   * Token lifetime, in whole seconds (JWT NumericDate). `authEnv` pins
+   * Token lifetime, in whole seconds (JWT NumericDate). Server pins
    * `RAMOSE_JWT_MAX_TTL` to it; `claims` sets `exp = iat + ttl` — so the cap
    * holds by construction.
    */

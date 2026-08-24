@@ -2,10 +2,9 @@
  * The `ramose` barrel, exactly.
  *
  * Everything on `ramose/db` (asserted name-by-name in
- * `db-portable.test.ts`) plus the deploy-time half: two resources, two
- * capabilities, two transports, the provider collection, typed policy and the
- * server's auth env. Nothing else is public — no source, no endpoint, no URL
- * type, no admin client, no per-capability transport.
+ * `db-portable.test.ts`) plus the deploy-time half: two resources, one
+ * capability, one transport layer, the provider collection, typed policy
+ * and the peer constants. Nothing else is public.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -14,24 +13,26 @@ const ADDS = [
   // resources
   "Server",
   "Database",
-  // capabilities
-  "ReadWriteDatabases",
-  "ReadDatabases",
-  // transports
-  "ServerBinding",
-  "ServerHttp",
+  // one capability, one transport
+  "Databases",
+  "layer",
+  "asRead",
+  // peer
+  "PEER_COMPAT",
+  "PEER_BINDINGS",
+  "PEER_DO_CLASSES",
+  // local-dev
+  "applyLocalDev",
+  "LOCAL_DEV",
+  "LOCAL_DEV_ACCOUNT_ID",
   // the stack
   "providers",
   "Providers",
   // deploy-time policy
   "Policy",
   "policy",
-  // the server Worker's auth env
-  "authEnv",
-  "internalSecret",
-  "AUTH_ENV_KEYS",
   "DEFAULT_JWT_MAX_TTL",
-  // the verifier/minter contract (`AuthConfig` is a type; `claims` builds the payload)
+  // the verifier/minter contract
   "claims",
   // app-Worker HTTP mapping (not on `ramose/db`)
   "errorToHttp",
@@ -56,6 +57,13 @@ const KILLED = [
   "WriteSystem",
   "ReadWriteSystem",
   "WriteDatabases",
+  "ReadWriteDatabases",
+  "ReadDatabases",
+  "ServerBinding",
+  "ServerHttp",
+  "authEnv",
+  "internalSecret",
+  "AUTH_ENV_KEYS",
   ...["Read", "Write", "ReadWrite"].flatMap((cap) =>
     ["Binding", "Http", "Local"].map((wire) => `${cap}System${wire}`),
   ),

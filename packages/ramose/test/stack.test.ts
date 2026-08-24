@@ -111,9 +111,11 @@ describe("Ramose.Server", () => {
       expect(server.url).toBe(peerUrl);
       expect(server.workerName).toBe("");
       expect(Redacted.value(server.token!)).toBe("s3cret");
+      expect(server.seeded).toEqual([]);
       // a server is the peer, not a database: no name, no /db/:name prefix
       const attributes = Object.keys(server);
       expect(attributes).toContain("url");
+      expect(attributes).toContain("seeded");
       expect(attributes).not.toContain("name");
       expect(attributes).not.toContain("databaseUrl");
       // the live provider proved the peer was up before anything bound to it
@@ -254,6 +256,26 @@ describe("under `alchemy dev`", () => {
     Effect.gen(function* () {
       const server = yield* stack.deploy(Server("Ramose", { worker: peerUrl }));
       expect(server.url).toBe(peerUrl);
+      yield* stack.destroy();
+    }),
+  );
+});
+
+describe("Ramose.Server databases: seeder", () => {
+  test.provider("installs each catalog on its name at deploy", (stack) =>
+    Effect.gen(function* () {
+      const server = yield* stack.deploy(
+        Server("Ramose", {
+          worker: peerUrl,
+          probe: false,
+          databases: { movies: Movies, extras: { schema: Movies, doc: "the extras list" } },
+        }),
+      );
+      expect(server.seeded).toEqual([
+        { name: "movies", t: expect.any(Number) },
+        { name: "extras", t: expect.any(Number), doc: "the extras list" },
+      ]);
+      expect(transactions.map((c) => c.name).sort()).toEqual(["extras", "movies"]);
       yield* stack.destroy();
     }),
   );

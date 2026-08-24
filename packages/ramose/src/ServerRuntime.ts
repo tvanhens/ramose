@@ -89,7 +89,7 @@ export const required = (
       value === undefined || value === null || value === ""
         ? Effect.die(
             new Error(
-              `ramose: no value bound under "${key}" — the capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via Ramose.ServerHttp)`,
+              `ramose: no value bound under "${key}" — the capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action; Ramose.layer falls back to HTTPS when no service binding is present)`,
             ),
           )
         : Effect.succeed(value),

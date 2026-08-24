@@ -11,8 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
 import { Database, isDatabase } from "../src/Database.ts";
-import { ReadDatabases } from "../src/ReadDatabases.ts";
-import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
+import { Databases } from "../src/Databases.ts";
 import {
   AUTH_ENV_KEYS,
   authEnv,
@@ -25,6 +24,8 @@ import {
 } from "../src/Server.ts";
 import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
 import { envKeys } from "../src/ServerRuntime.ts";
+import { PEER_COMPAT, PEER_BINDINGS, PEER_DO_CLASSES, validatePeerWiring } from "../src/peer.ts";
+import { workerEntry } from "../src/workerEntry.ts";
 
 describe("identity", () => {
   test("the resource classes carry their types", () => {
@@ -34,11 +35,9 @@ describe("identity", () => {
 
   test("isServer recognises a server and nothing else", () => {
     expect(isServer({ Type: "Ramose.Server", FQN: "app/Ramose" })).toBe(true);
-    // Refs resolve to callable proxies, hence the `function` case.
     const ref = Object.assign(() => {}, { Type: "Ramose.Server" });
     expect(isServer(ref)).toBe(true);
     expect(isServer({ Type: "Cloudflare.KV.Namespace", FQN: "app/KV" })).toBe(false);
-    // the other resource in this package is not this resource
     expect(isServer({ Type: "Ramose.Database", FQN: "app/Movies" })).toBe(false);
     expect(isDatabase({ Type: "Ramose.Database", FQN: "app/Movies" })).toBe(true);
     expect(isDatabase({ Type: "Ramose.Server", FQN: "app/Ramose" })).toBe(false);
@@ -46,36 +45,34 @@ describe("identity", () => {
     expect(isServer("Ramose.Server")).toBe(false);
   });
 
-  test("the capabilities are keyed under stable ids", () => {
-    expect(ReadWriteDatabases.key).toBe("Ramose.ReadWriteDatabases");
-    expect(ReadDatabases.key).toBe("Ramose.ReadDatabases");
+  test("the capability is keyed under a stable id", () => {
+    expect(Databases.key).toBe("Ramose.Databases");
   });
 });
 
-/**
- * A server pins no database name — that is the whole point of the resource.
- * Both halves of that are compile-time facts, so the assertions below are
- * type-level; the `expect`s only keep the test runner honest about having run
- * the file.
- */
 describe("a server has no database name", () => {
-  test("`name` is not a prop", () => {
-    // @ts-expect-error a database name is chosen per call, by `ramose.db(name, …)`
-    const props: ServerProps = { worker: "https://peer.example.com", name: "movies" };
-    expect(props.worker).toBe("https://peer.example.com");
+  test("`databases` is the seeder, not a single name", () => {
+    type NameIsARequiredProp = "name" extends keyof ServerProps
+      ? ServerProps["name"] extends string
+        ? true
+        : false
+      : false;
+    const nameIsARequiredProp: NameIsARequiredProp = false;
+    expect(nameIsARequiredProp).toBe(false);
 
-    type NameIsAProp = "name" extends keyof ServerProps ? true : false;
-    const nameIsAProp: NameIsAProp = false;
-    expect(nameIsAProp).toBe(false);
+    type HasDatabases = "databases" extends keyof ServerProps ? true : false;
+    const hasDatabases: HasDatabases = true;
+    expect(hasDatabases).toBe(true);
   });
 
-  test("the attributes are url / workerName / token — no name, no databaseUrl", () => {
+  test("the attributes are url / workerName / token / seeded — no name, no databaseUrl", () => {
     const attributes: Server["Attributes"] = {
       url: "https://peer.example.com",
       workerName: "ramose-peer",
       token: undefined,
+      seeded: [],
     };
-    expect(Object.keys(attributes).sort()).toEqual(["token", "url", "workerName"]);
+    expect(Object.keys(attributes).sort()).toEqual(["seeded", "token", "url", "workerName"]);
 
     type Attr = keyof Server["Attributes"];
     const hasName: "name" extends Attr ? true : false = false;
@@ -125,6 +122,60 @@ describe("env keys", () => {
 
   test("service-binding dispatch uses a synthetic origin", () => {
     expect(SERVICE_ORIGIN).toBe("https://ramose.internal");
+  });
+});
+
+describe("PEER_COMPAT", () => {
+  test("one date, nodejs_compat, and the fixed binding / class names", () => {
+    expect(PEER_COMPAT).toEqual({ date: "2026-03-17", flags: ["nodejs_compat"] });
+    expect(PEER_BINDINGS).toEqual({ store: "STORE", transactor: "TRANSACTOR", replica: "REPLICA" });
+    expect(PEER_DO_CLASSES).toEqual({ transactor: "TransactorDO", replica: "QueryReplicaDO" });
+  });
+});
+
+describe("escape-hatch wiring", () => {
+  const peer = (env: Record<string, unknown>, main = workerEntry()) => ({
+    Type: "Cloudflare.Worker",
+    Props: { main, env },
+  });
+
+  const dos = {
+    STORE: { Type: "Cloudflare.R2.Bucket" },
+    TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
+    REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+  };
+
+  test("a URL worker has nothing to validate", () => {
+    expect(validatePeerWiring("https://peer.example.com")).toBeUndefined();
+    expect(validatePeerWiring({ url: "https://peer.example.com" })).toBeUndefined();
+  });
+
+  test("a well-wired Worker passes", () => {
+    expect(validatePeerWiring(peer(dos))).toBeUndefined();
+  });
+
+  test("a missing binding is a deploy error", () => {
+    const { REPLICA: _r, ...partial } = dos;
+    expect(validatePeerWiring(peer(partial))).toMatch(/missing env binding.*REPLICA/);
+  });
+
+  test("a typo'd className is a deploy error", () => {
+    expect(
+      validatePeerWiring(
+        peer({
+          ...dos,
+          TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "WriterDO" } },
+        }),
+      ),
+    ).toMatch(/TRANSACTOR className must be "TransactorDO"/);
+  });
+
+  test("the bare specifier is refused", () => {
+    expect(validatePeerWiring(peer(dos, "ramose/worker"))).toMatch(/bare specifier/);
+  });
+
+  test("a main that does not resolve is refused", () => {
+    expect(validatePeerWiring(peer(dos, "/no/such/peer.ts"))).toMatch(/does not resolve/);
   });
 });
 
@@ -179,11 +230,6 @@ describe("the server's auth env", () => {
     expect(Redacted.value(bound as Redacted.Redacted<string>)).toBe("sh4red");
   });
 
-  /**
-   * The DO gate is off when `RAMOSE_INTERNAL_SECRET` is unset, so a policy that
-   * bound no secret would arm enforcement on the Worker while leaving the
-   * transactor trusting whatever principal the Worker claims.
-   */
   test("a policy always binds an internal secret, minting one if none was pinned", () => {
     const env = authEnv({
       policy: '{"v":1}',
@@ -223,7 +269,6 @@ describe("the server's auth env", () => {
     const a = Redacted.value(internalSecret());
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(a).not.toBe(Redacted.value(internalSecret()));
-    // a pinned one is passed through, whichever wrapper it arrives in
     expect(Redacted.value(internalSecret("pinned"))).toBe("pinned");
     expect(Redacted.value(internalSecret(Redacted.make("pinned")))).toBe("pinned");
   });
@@ -234,7 +279,6 @@ describe("the server's auth env", () => {
     type HasAuth = "auth" extends keyof Server["Attributes"] ? true : false;
     const hasAuth: HasAuth = false;
     expect(hasAuth).toBe(false);
-    // auth lives on the server (the peer), never on a database
     type DatabaseHasAuth = "auth" extends keyof Database["Props"] ? true : false;
     const databaseHasAuth: DatabaseHasAuth = false;
     expect(databaseHasAuth).toBe(false);

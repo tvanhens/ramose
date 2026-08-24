@@ -1,8 +1,8 @@
 /**
  * The verifier/minter contract: `claims` builds the payload the peer
- * verifies (https://ramose.ai/guides/sign-in/) from one `AuthConfig`, and `authEnv`
- * accepts that same config in place of the three loose keys — so the minted
- * lifetime equals the verifier's cap by construction.
+ * verifies (https://ramose.ai/guides/sign-in/) from one `AuthConfig`, and
+ * `authEnv({ jwt })` accepts that same config in place of the three loose
+ * keys — so the minted lifetime equals the verifier's cap by construction.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -98,7 +98,7 @@ describe("claims", () => {
   });
 });
 
-describe("authEnv accepts the AuthConfig", () => {
+describe("authEnv accepts the AuthConfig as `jwt`", () => {
   const loose = {
     policy: POLICY,
     jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
@@ -109,11 +109,11 @@ describe("authEnv accepts the AuthConfig", () => {
     internalSecret: "sh4red",
   };
 
-  test("`{ auth }` produces exactly the loose form's env", () => {
+  test("`{ jwt }` produces exactly the loose form's env", () => {
     const fromConfig = authEnv({
       policy: POLICY,
       jwksUrl: loose.jwksUrl,
-      auth: AUTH,
+      jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
       internalSecret: loose.internalSecret,
     });
@@ -124,7 +124,7 @@ describe("authEnv accepts the AuthConfig", () => {
     const { [AUTH_ENV_KEYS.internalSecret]: secret, ...env } = authEnv({
       policy: POLICY,
       jwksUrl: loose.jwksUrl,
-      auth: AUTH,
+      jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
       internalSecret: loose.internalSecret,
     });
@@ -140,14 +140,14 @@ describe("authEnv accepts the AuthConfig", () => {
   });
 
   test("an explicitly set loose key wins over the config — additive, not exclusive", () => {
-    const env = authEnv({ auth: AUTH, maxTtl: 300 });
+    const env = authEnv({ jwt: AUTH, maxTtl: 300 });
     expect(env[AUTH_ENV_KEYS.maxTtl]).toBe("300");
     expect(env[AUTH_ENV_KEYS.issuers]).toBe(AUTH.issuer);
     expect(env[AUTH_ENV_KEYS.aud]).toBe(AUTH.audience);
   });
 
   test("a config alone binds the three keys and nothing else", () => {
-    expect(authEnv({ auth: AUTH })).toEqual({
+    expect(authEnv({ jwt: AUTH })).toEqual({
       RAMOSE_JWT_ISS: "https://auth.acme.example",
       RAMOSE_JWT_AUD: "ramose:peer:prod",
       RAMOSE_JWT_MAX_TTL: "900",

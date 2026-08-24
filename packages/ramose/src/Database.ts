@@ -19,9 +19,10 @@
  * @section Installing a catalog
  * @example The one place a catalog lands
  * ```typescript
- * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: import.meta.resolve("ramose/worker") });
- * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
- * export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+ * export const Server = Ramose.Server("Ramose", { databases: { todos: Todos } });
+ * // Standalone Database is for runtime-provisioned names (Reef); known
+ * // catalogs belong on Server({ databases }).
+ * export const Extra = Ramose.Database("extra", { server: Server, schema: Extra });
  * ```
  *
  * One resource is not one tenant: db-per-tenant is `ramose.db(tenant, Todos)`
@@ -146,9 +147,15 @@ const resolveServer = (
  * `/health` for exactly this reason, but the probe cannot speak for `/db/:name`
  * — a bounded install is what makes the failure printable either way.
  */
-const install = Effect.fn(function* (id: string, props: DatabaseProps) {
-  const name = props.name ?? id;
-  const { url, token } = resolveServer(props.server);
+/** @internal One idempotent catalog install over HTTPS. Shared with Server's `databases:` seeder. */
+export const installCatalog = Effect.fn(function* (args: {
+  readonly name: string;
+  readonly url: string;
+  readonly token: Redacted.Redacted<string> | undefined;
+  readonly schema: Schema.Any;
+  readonly timeoutMs?: number;
+}) {
+  const { name, url, token, schema } = args;
   if (url === undefined || url === "") {
     return yield* Effect.fail(
       new InvalidRequest({
@@ -156,14 +163,14 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
       }),
     );
   }
-  const timeoutMs = Math.max(1, props.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
+  const timeoutMs = Math.max(1, args.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
   const { databases, close } = makeDatabases({
     url: Effect.succeed(trimSlashes(url)),
     token: token === undefined ? undefined : Effect.succeed(token),
     fetch: globalFetch,
   });
   const report = yield* Effect.ensuring(
-    databases.db(name, props.schema).effect.install(),
+    databases.db(name, schema).effect.install(),
     Effect.sync(close),
   ).pipe(
     Effect.timeoutOrElse({
@@ -177,6 +184,18 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
     }),
   );
   return { name, server: url, t: report.t };
+});
+
+const install = Effect.fn(function* (id: string, props: DatabaseProps) {
+  const name = props.name ?? id;
+  const { url, token } = resolveServer(props.server);
+  return yield* installCatalog({
+    name,
+    url: url ?? "",
+    token,
+    schema: props.schema,
+    timeoutMs: props.timeoutMs,
+  });
 });
 
 /**

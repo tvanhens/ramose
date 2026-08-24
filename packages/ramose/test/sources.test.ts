@@ -22,11 +22,8 @@ import * as Redacted from "effect/Redacted";
 import type { Server } from "../src/Server.ts";
 import { Self } from "alchemy/Self";
 import { WorkerEnvironment } from "alchemy/Cloudflare/Workers";
-import {
-  makeBindingSource,
-  makeServerBinding,
-  SERVICE_ORIGIN,
-} from "../src/ServerBinding.ts";
+import { makeTransport, SERVICE_ORIGIN } from "../src/Databases.ts";
+import { makeBindingSource } from "../src/ServerBinding.ts";
 import { makeHttpSource } from "../src/ServerHttp.ts";
 
 /** A server whose attributes are literal Outputs, as after a deploy. */
@@ -221,10 +218,10 @@ describe("registration happens at bind time", () => {
 });
 
 /**
- * The deploy-time half of the Binding layers: what they lower onto the host,
- * and the hosts they refuse.
+ * The deploy-time half of the one transport: what it lowers onto a Worker
+ * host, and the hosts it falls back from (HTTPS, not a hard refuse).
  */
-describe("the service binding ServerBinding lowers", () => {
+describe("the auto-transport lowers a service binding on a Worker host", () => {
   /** A stand-in host Worker that records what was bound to it. */
   const worker = (bound: unknown[]) =>
     ({
@@ -247,7 +244,7 @@ describe("the service binding ServerBinding lowers", () => {
   ) =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const make = yield* makeServerBinding({ makeClient: (s) => s });
+        const make = yield* makeTransport({ makeClient: (s) => s });
         return yield* make(srv);
       }).pipe(
         Effect.provide(
@@ -275,17 +272,15 @@ describe("the service binding ServerBinding lowers", () => {
     expect(bindings[0].name).toBe("Ramose");
   });
 
-  test("a bare-URL worker is refused — a service binding needs a script name", async () => {
+  test("a bare-URL worker skips the service binding and uses HTTPS", async () => {
     const bound: unknown[] = [];
-    await expect(bind(worker(bound), withWorker("https://peer.example.com"))).rejects.toThrow(
-      /bare URL worker/,
-    );
+    await bind(worker(bound), withWorker("https://peer.example.com"));
     expect(bound).toEqual([]);
   });
 
-  test("a host that is not a Worker is refused, naming its type", async () => {
-    await expect(
-      bind({ Type: "AWS.Lambda.Function", LogicalId: "Fn" }, withWorker("x")),
-    ).rejects.toThrow(/AWS\.Lambda\.Function/);
+  test("a host that is not a Worker uses HTTPS — it is not a defect", async () => {
+    const bound: unknown[] = [];
+    await bind({ Type: "AWS.Lambda.Function", LogicalId: "Fn" }, withWorker("x"));
+    expect(bound).toEqual([]);
   });
 });

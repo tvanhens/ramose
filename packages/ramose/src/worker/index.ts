@@ -33,7 +33,8 @@
 
 import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { Db as CoreDb } from "../internal/core/index.ts";
-import { type RamoseEnv, envInt, internalHeaders } from "../internal/transactor/index.ts";
+import type { RamoseEnv } from "../RamoseEnv.ts";
+import { envInt, internalHeaders } from "../internal/transactor/index.ts";
 import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
@@ -48,7 +49,7 @@ import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
-export type { RamoseEnv };
+export type { RamoseEnv } from "../RamoseEnv.ts";
 export { type ErrorHttp, errorResponse, errorToHttp, statusOf, toDbError } from "../errorHttp.ts";
 export { toHttp, fromThrown, isRamoseError } from "./errors.ts";
 

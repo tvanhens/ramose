@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### `Ramose.Server` owns the peer (part of #203, tracker #205)
+
+`Ramose.Server("Ramose", { databases, auth })` declares the Worker, both
+Durable Object classes, `PEER_COMPAT`, and the fixed `STORE` / `TRANSACTOR` /
+`REPLICA` bindings. `databases:` seeds catalogs at deploy (`doc` is data
+destined for the directory, not an authority). The explicit `worker:` form
+stays as an escape hatch and is validated at deploy (binding names, DO
+classes, `main` resolution).
+
+One client, one transport: `yield* Ramose.Databases(Server)` plus
+`Ramose.layer` (service binding if present, else HTTPS). Read-only is
+`asRead`. Server-side handles have no `live` / `livePull`.
+`ReadWriteDatabases` / `ReadDatabases` / `ServerBinding` / `ServerHttp` /
+`authEnv` / `AUTH_ENV_KEYS` / `internalSecret` are gone from the public
+barrel. `Ramose.applyLocalDev()` fills local-dev credentials.
+Standalone `Database` remains for runtime-provisioned multi-tenant names.
+
 ### Inline values are the documented query spelling (part of #228, tracker #205)
 
 App queries put changing values in `.where` (`where({ issue: issueId })`).

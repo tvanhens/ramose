@@ -17,14 +17,15 @@
  * Cloudflare.Worker("Peer", { main: import.meta.resolve("ramose/worker") })   // ✓
  * ```
  *
- * `import.meta.resolve("ramose/worker")` is what the docs and every stack in
- * this repository show. This helper exists so the resolution has one home,
- * one error message worth reading, and a test — it is not a public subpath.
+ * `Ramose.Server` without `worker:` calls this. An explicit-Worker hatch
+ * should pass `import.meta.resolve("ramose/worker")` (or omit `worker` so
+ * Server does). This helper exists so the resolution has one home, one
+ * error message worth reading, and a test — it is not a public subpath.
  *
  * @module
  *
  * Deliberately **not** on the `ramose` barrel. That barrel is imported by
- * Worker and browser code (`ReadWriteDatabases`, `ServerHttp`, `Policy`), and
+ * Worker and browser code (`Databases`, `layer`, `Policy`), and
  * `import.meta.resolve` is a host API with no meaning in either.
  */
 
