@@ -17,31 +17,24 @@ A **stage** is one isolated copy of the whole stack ([glossary](/concepts/glossa
 
 ## The stack file
 
-The todos app's stack is two files. The deploy file names the three things the **Ramose server** needs on Cloudflare — a [storage bucket](/concepts/glossary/#object-storage) where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) (Cloudflare's single-instance stateful Workers): the writer and the read copy. You name them; you never write them. That file is `resources.ts`; `alchemy.run.ts` installs the schema and declares the stack. The Ramose server is the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). [Why these three things →](/concepts/architecture/#what-runs-where)
+The todos app's stack is two files. `Ramose.Server` **owns** the peer: it declares the Worker, both [Durable Objects](/concepts/glossary/#durable-object), the pinned `PEER_COMPAT` date, and the fixed `STORE` / `TRANSACTOR` / `REPLICA` bindings. You name storage and options. `databases:` seeds known catalogs at deploy. The Ramose server is the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). [Why these pieces exist →](/concepts/architecture/#what-runs-where)
 
 <details>
 <summary>Copy these two files as-is</summary>
 
-```ts title="examples/todos/resources.ts:1-14"
+```ts title="examples/todos/resources.ts"
 import * as Ramose from "ramose";
-import * as Cloudflare from "alchemy/Cloudflare";
+import { Todos } from "./schema.ts";
 
-const Store = Cloudflare.R2.Bucket("Store");
-const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
-const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
-
-export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("ramose/worker"),
-  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
-  env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
+export const Server = Ramose.Server("Ramose", {
+  main: import.meta.resolve("./peer.ts"),
+  databases: { todos: Todos },
 });
-
-export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-The excerpt above is from `examples/todos`, and it is what your own app writes too — `main` is a path, not a module specifier, so `import.meta.resolve` is what turns the `ramose/worker` subpath into one. A bare `main: "ramose/worker"` resolves to nothing and produces a server that reports ready and then never answers. [Getting started](/getting-started/quickstart/) sets it up.
+Omit `main` to use `ramose/worker`. An explicit `worker:` is the escape hatch (extra bindings, a user-owned entry) and is validated at deploy — a typo'd Durable Object `className` or a bare `main: "ramose/worker"` fails the deploy instead of passing `/health` and dying on the first write. [Getting started](/getting-started/quickstart/) sets it up.
 
-```ts title="examples/todos/alchemy.run.ts:20-77"
+```ts title="examples/todos/alchemy.run.ts"
 import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -49,15 +42,13 @@ import * as Command from "alchemy/Command";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
-import { Todos } from "./schema.ts";
 
-// …
-export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+Ramose.applyLocalDev();
 
 // …
 export default Alchemy.Stack(
   // …
-  "ripple-todos",
+  "ramose-todos",
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),
@@ -68,7 +59,6 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
-    yield* TodosDb;
     const ui = yield* Ui;
     return { peerUrl: server.url, uiUrl: ui.url };
   }),
@@ -79,7 +69,7 @@ The elided `Ui` resource starts Vite under `alchemy dev` only. `state: Alchemy.l
 
 </details>
 
-`Ramose.Server` resolves the Worker's URL and, on a real deploy, waits until `GET /health` answers. `Ramose.Database` runs `db.install()` on that server, so a redeploy costs one empty write. Reef has no `Ramose.Database` at all: its databases are created by users ([One database per customer](/guides/workspaces/#two-doors-to-install-the-schema)).
+`Ramose.Server` resolves the Worker's URL and, on a real deploy, waits until `GET /health` answers, then seeds each `databases:` catalog. Standalone `Ramose.Database` remains for runtime-provisioned multi-tenant names (Reef). Reef has no `databases:` and no `Ramose.Database` at all: its databases are created by users ([One database per customer](/guides/workspaces/#two-doors-to-install-the-schema)).
 
 ## Commands
 
@@ -99,7 +89,7 @@ The stack argument is the file, for example `examples/todos/alchemy.run.ts`.
 | `CLOUDFLARE_API_TOKEN` | Workers Scripts Write (covers Durable Objects), Workers R2 Storage Write, Account Settings Read |
 | `CLOUDFLARE_ACCOUNT_ID` | the account to deploy into |
 
-Local dev needs neither for real: `CI=1 ALCHEMY_STATE=local`, any 32-hex placeholder account id and `CLOUDFLARE_API_TOKEN=x` keep everything on your machine.
+Local dev needs neither for real: `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` fills `CI=1`, `ALCHEMY_STATE=local`, a placeholder account id, and `CLOUDFLARE_API_TOKEN=x` when those keys are unset.
 
 ## Deploy Reef
 
@@ -119,26 +109,21 @@ The API token also needs `Account / D1 / Edit` for Better Auth's database.
 Until you add a policy there is no authentication: every caller has full rights on every database. Set one before you point real users at a deployed server, and walk [Before production](/guides/before-production/) first.
 :::
 
-Spread `Ramose.authEnv(auth)` into the server Worker's `env` and pass the same `auth` to `Ramose.Server`:
+Pass `auth` on the owned Server — it is applied onto the Worker's env, and a policy with no `jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every request at run time:
 
 ```ts title="alchemy.run.ts"
-const auth: Ramose.ServerAuth = {
-  policy: process.env.RAMOSE_POLICY, // Ramose.Policy.compile(policy, { pulls })
-  jwksUrl: process.env.RAMOSE_JWKS_URL,
-  issuers: process.env.RAMOSE_JWT_ISS,
-  aud: process.env.RAMOSE_JWT_AUD,
-  allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
-};
-
-const Worker = Cloudflare.Worker("Peer", {
-  // …
-  env: { /* … */ ...Ramose.authEnv(auth) },
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
+  auth: {
+    policy: process.env.RAMOSE_POLICY, // Ramose.Policy.compile(policy, { pulls })
+    jwt: AUTH, // { issuer, audience, ttl } — fills issuers / aud / maxTtl
+    jwksUrl: process.env.RAMOSE_JWKS_URL,
+    allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
+  },
 });
-
-export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 ```
 
-`auth` on `Ramose.Server` is a deploy-time check only: a policy with no `jwksUrl`, `issuers`, or `aud` fails the deploy instead of denying every request at run time. Reef's real wiring is on [Sign in and roles](/guides/sign-in/#wire-the-server).
+On the explicit-Worker hatch, set the matching `RAMOSE_*` keys on the Worker yourself; `auth` on Server is then the deploy-time check only. Reef's real wiring is on [Sign in and roles](/guides/sign-in/#wire-the-server).
 
 ## Tearing down
 
@@ -152,14 +137,13 @@ export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 
 | name | what it is |
 | --- | --- |
-| `Ramose.Server(id, props)` | the deployed server. Props: `worker` (a `Cloudflare.Worker`, `{ url, workerName? }`, or a bare URL string), `url?` (custom domain), `token?` (the server's `RAMOSE_TOKEN`), `auth?` (deploy-time check), `probe?` (`GET /health` retries: 30 attempts, 2 s apart; `false` skips). Outputs `{ url, workerName, token }`. Delete is a no-op. |
-| `Ramose.Database(id, props)` | "install this schema on that name", after the server. Props: `server`, `schema`, `name?` (defaults to `id`). Outputs `{ name, server, t }`. Delete is a no-op. |
-| `Ramose.ReadWriteDatabases(server)` | a **capability** — what your Worker may do ([glossary](/concepts/glossary/#capability)): read and write every database on that server |
-| `Ramose.ReadDatabases(server)` | the same with writes removed: no `transact`, `install`, or `principal` |
-| `Ramose.ServerBinding` | how calls travel — a **service binding**, Worker to Worker, no URL ([glossary](/concepts/glossary/#service-binding)). A `Layer<ReadWriteDatabases \| ReadDatabases, never, WorkerEnvironment>`; needs `worker` to be a `Cloudflare.Worker`. No live queries. |
-| `Ramose.ServerHttp` | the same over the server's public URL. A `Layer<ReadWriteDatabases \| ReadDatabases>`. |
+| `Ramose.Server(id, props)` | owns the peer (or validates an explicit `worker:` hatch). Props: `databases?` (catalog seeder), `storage?`, `main?`, `env?`, `name?`, `dev?`, `peer?`, `worker?` (hatch), `url?`, `token?`, `auth?` (`policy`, `jwt`, `jwksUrl`, …), `probe?`. Outputs `{ url, workerName, token, seeded }`. Delete is a no-op. |
+| `Ramose.Database(id, props)` | standalone catalog install for runtime-provisioned names (Reef). Props: `server`, `schema`, `name?`. Outputs `{ name, server, t }`. Known catalogs belong on `Server({ databases })`. |
+| `Ramose.Databases(server)` | the **capability** ([glossary](/concepts/glossary/#capability)): a server-side client (`q`, `transact` / `run`, `install` — no `live` / `livePull`). Read-only is `Ramose.asRead(db)`. |
+| `Ramose.layer` | one transport: service binding when the host Worker has one, HTTPS otherwise |
 | `Ramose.providers()` | merge into your stack's `providers` next to `Cloudflare.providers()` |
-| `Ramose.authEnv(auth)` | turns a `ServerAuth` (`policy`, `jwksUrl`, `issuers`, `aud`, `maxTtl`, `auth`, `allowedOrigins`, `internalSecret`) into the server Worker's environment variables |
+| `Ramose.applyLocalDev()` | fills placeholder Cloudflare credentials for `alchemy dev` when unset |
+| `Ramose.PEER_COMPAT` | the one compat date + `nodejs_compat` every peer Worker is deployed with |
 
 Using a capability inside a Worker is on [Use it from a Worker](/guides/workers/).
 

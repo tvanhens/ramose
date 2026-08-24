@@ -101,7 +101,7 @@ You may meet these in the reference pages; none is needed to build an app.
 
 ## When you want more
 
-`Ramose.layer({ url, token })` is the Effect-native twin of `Ramose.connect`; it provides a `Ramose.Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
+`import { layer, Databases } from "ramose/db/effect"` is the Effect-native twin of `Ramose.connect`; it provides a `Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. A Worker talking to a deployed `Ramose.Server` uses `yield* Ramose.Databases(Server)` and `Ramose.layer` instead. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
 
 App schemas do not import `effect/Schema` — they use `Ramose.string()`, `Ramose.Enum([...])`, and the other shorthands. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` (or `import { Schema } from "ramose/effect"`), and operation input/output codecs stay Effect Schema.
 

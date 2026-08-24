@@ -21,17 +21,9 @@ bun add -d vite @vitejs/plugin-react typescript @types/react @types/react-dom
 
 One package. Ramose brings Effect 4 and Alchemy 2 — both prereleases — with it at versions that resolve, so there is no `@rc` to remember and nothing else to pin, `alchemy` included. React is an optional peer: a server-only app installs `ramose` alone. Already using Effect? [Read this first](/reference/client-api/#effect-comes-with-ramose).
 
-Now a `.env` file. `alchemy dev` reads it automatically:
+Local `alchemy dev` wants placeholder Cloudflare credentials even though it never talks to Cloudflare. `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` (below) fills them when unset — no `.env` ritual, no inventing a 32-hex account id. Real `CLOUDFLARE_*` values, when you [deploy](/guides/deploy/), are left alone.
 
-```sh title=".env"
-CI=1
-CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
-CLOUDFLARE_API_TOKEN=x
-```
-
-`CI=1` is the one that does the work: it tells Alchemy to take credentials from the environment instead of a login profile. The other two are placeholders the local emulator insists on before it will start — the account id has to be 32 hex characters, the token can be any string, and nothing is uploaded anywhere. You swap in real ones only when you [deploy](/guides/deploy/).
-
-Without them every resource fails and `alchemy dev` keeps running rather than exiting, so the terminal looks busy while nothing comes up. [What that looks like](/guides/troubleshooting/#no-credentials-configured-for-cloudflare).
+Without those placeholders every resource fails and `alchemy dev` keeps running rather than exiting, so the terminal looks busy while nothing comes up. [What that looks like](/guides/troubleshooting/#no-credentials-configured-for-cloudflare).
 
 Add `.env` and `.alchemy/` to a `.gitignore` now — the first holds a real Cloudflare token once you deploy, the second is your entire local database:
 
@@ -107,37 +99,18 @@ Every record type gets an `id` field for free: `Todo.id`. This one file is impor
 
 ## Declare the server
 
-Ramose runs as one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). You never write that Worker — it ships in `ramose/worker`. You only name the storage it needs.
+Ramose runs as one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). `Ramose.Server` **owns** that Worker — it declares storage, both Durable Object classes, the pinned compat date, and the fixed bindings. You name options; you never write the peer.
 
 ```ts title="resources.ts"
 import * as Ramose from "ramose";
-import * as Cloudflare from "alchemy/Cloudflare";
+import { Todos } from "./schema.ts";
 
-const Store = Cloudflare.R2.Bucket("Store");
-const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
-const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
-
-export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("ramose/worker"),
-  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
-  env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
 });
-
-export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-:::caution[`main` takes a path, not a module specifier]
-Write `import.meta.resolve("ramose/worker")`, not `"ramose/worker"`. `main` is resolved as a file path, so a bare specifier silently finds nothing: the stack still reports the server as ready, but no Worker is ever bundled and every request hangs forever instead of failing. If your app starts and then nothing loads, this is why.
-:::
-
-| Line | What it names |
-| --- | --- |
-| `R2.Bucket("Store")` | Object storage: every version of every database is kept here |
-| `DurableObject("TransactorDO")` | The writer: commits each database's writes, in order |
-| `DurableObject("QueryReplicaDO")` | Read copies: where queries run |
-| `Worker("Peer")` | The Ramose server itself. `main` resolves the `ramose/worker` subpath to a file — its code ships with Ramose |
-
-[Why these three things →](/concepts/architecture/#what-runs-where)
+`databases:` seeds the catalog at deploy. It is not a directory of databases — that is later work. [Why these pieces exist →](/concepts/architecture/#what-runs-where)
 
 ## Declare the stack
 
@@ -151,9 +124,8 @@ import * as Command from "alchemy/Command";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
-import { Todos } from "./schema.ts";
 
-export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+Ramose.applyLocalDev();
 
 export const Ui = Command.Dev(
   "Ui",
@@ -178,14 +150,13 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
-    yield* TodosDb;
     const ui = yield* Ui;
     return { peerUrl: server.url, uiUrl: ui.url };
   }),
 );
 ```
 
-`Ramose.Database("todos", …)` installs the schema as a database named `todos`. `Ui` starts Vite once the server is answering and hands it the server's real URL as `VITE_RAMOSE_URL`, so the two can never disagree about the port.
+`databases: { todos: Todos }` on Server installs the schema as a database named `todos`. `Ui` starts Vite once the server is answering and hands it the server's real URL as `VITE_RAMOSE_URL`, so the two can never disagree about the port.
 
 ## Connect
 
@@ -345,16 +316,15 @@ createRoot(root).render(<StrictMode><App /></StrictMode>);
 bun run dev
 ```
 
-A cold start takes a few seconds and ends with `Done: 10 succeeded`. Four lines are the ones to look for — the Ramose server on `:1337`, the Worker actually booting, your database installed, and the app on `:5173`:
+A cold start takes a few seconds and ends with `Done: 10 succeeded`. Three lines are the ones to look for — the Ramose server on `:1337`, the Worker actually booting, and the app on `:5173`:
 
 ```ansi frame="terminal"
 [Peer] ready at http://localhost:1337
 INFO: [Peer] Started in 214ms
-[todos] created
 [Ui] ready at http://localhost:5173/
 ```
 
-`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-specifier mistake above, and on this release it fails silently and waits forever.
+`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in` on an explicit-Worker hatch, `main` must be `import.meta.resolve(…)` — a bare `"ramose/worker"` finds nothing. The owned form calls `workerEntry()` for you.
 
 Open the `[Ui] ready at` URL — `http://localhost:5173` unless something else had the port — and add "buy milk". Then open a second tab on the same URL: the todo is already there. Tick it in one tab and watch it strike through in the other, in about a second. That is one live query in two tabs; there is no code in this app that makes it happen.
 
@@ -394,7 +364,7 @@ Then render it in `TodoRowView`, in `src/App.tsx`, next to the title:
 
 `TodoRow` gains `priority` with nothing else to change — the type follows the query. It is `.optional` because the todos you already added have no priority, and a required field in a shape hides every record that lacks it.
 
-Leave `bun run dev` running while you make these edits. It watches the stack files, so saving `schema.ts` re-applies it on its own — the terminal prints `Plan: 1 to update` and then `[todos] updated`. If you restart instead, you will see `[todos] noop`, because the change already landed.
+Leave `bun run dev` running while you make these edits. It watches the stack files, so saving `schema.ts` re-applies it on its own — the terminal prints `Plan: 1 to update` and then the Server resource updates (it reseeds the catalog). If you restart instead, you will see a no-op, because the change already landed.
 
 ## Filter live
 

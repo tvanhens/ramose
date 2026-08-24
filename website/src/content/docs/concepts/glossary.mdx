@@ -13,7 +13,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="alchemy"></span>**Alchemy** | The TypeScript deploy tool Ramose uses: one file declares your Workers and storage; `bun alchemy dev` runs it on your laptop, `bun alchemy deploy` ships it. | `Alchemy.Stack`, [`alchemy dev` / `deploy`](/guides/deploy/#commands) |
 | <span id="as-of"></span><span id="asof"></span>**as of** | Read the database exactly as it was right after version number `t`. Same query, one extra call. | [`db.asOf(t)`](/reference/client-api/#db) |
 | <span id="better-auth"></span>**Better Auth** | An open-source sign-in library. Reef uses it; the `ramose/better-auth` plugin mints Ramose tokens from it. | `ramoseToken`, `ramoseTokenClient` — [Sign in and roles](/guides/sign-in/#with-better-auth-what-reef-does) |
-| <span id="capability"></span>**capability** | What your own Worker is allowed to do with Ramose: read-only or read-write databases. | `ReadWriteDatabases`, `ReadDatabases` — [Use it from a Worker](/guides/workers/#what-the-worker-can-do) |
+| <span id="capability"></span>**capability** | What your own Worker is allowed to do with Ramose: a server-side client, with read-only as a type-level view. | `Ramose.Databases`, `Ramose.asRead` — [Use it from a Worker](/guides/workers/#what-the-worker-can-do) |
 | <span id="client"></span>**client** | The object that talks to the server for one page and hands out `db` handles. | `Ramose.connect`, `Client`, `RamoseProvider` |
 | <span id="database"></span>**database** | A named, isolated set of facts with its own writer. Naming one costs nothing; the first write creates it. | `ramose.db(name, schema)` — [One database per customer](/guides/workspaces/) |
 | <span id="database-name"></span>**database name** | Letters, digits, `. _ -`, up to 64 characters, starting with a letter or digit. | `Ramose.DATABASE_NAME_RE`, `Ramose.isDatabaseName` |
@@ -30,7 +30,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 |---|---|---|
 | <span id="history"></span>**history** | A read-only view that includes facts that were later removed. | [`db.history`](/concepts/time-travel/#history-including-what-was-deleted) |
 | <span id="id"></span><span id="eid"></span>**id** | Every record has a numeric id; every record type exposes it as a field for free. | `Issue.id`, `Eid` (an object `{ id }`) |
-| <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. | `db.install()`, `Ramose.Database` — [Two doors to install the schema](/guides/workspaces/#two-doors-to-install-the-schema) |
+| <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. | `db.install()`, `Server({ databases })` — [Two doors to install the schema](/guides/workspaces/#two-doors-to-install-the-schema) |
 | <span id="issuer-audience"></span>**issuer / audience** | Who signed a token and who it is for; the server checks both. | `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD` — [The token the server verifies](/reference/policy/#the-token-the-server-verifies) |
 | <span id="jwks"></span>**JWKS** | Your sign-in provider's public keys, at a URL, used to verify tokens. | `RAMOSE_JWKS_URL`, `RAMOSE_JWKS_JSON` |
 | <span id="live-query"></span><span id="standing-query"></span>**live query** | A query that re-runs itself whenever the database changes and hands your screen new rows. | `db.live`, [`useLive`](/reference/react/#uselive), `livePull`, `usePull` |
@@ -58,8 +58,8 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="role"></span><span id="class"></span>**role** (class) | A role name carried in the sign-in token and, when the catalog has `:ns/role`, materialized as a fact on the principal row. Reef: admin, member, viewer. `admin` bypasses every rule. | `classes:`, `P.class(c)`, `ramose.class`, `User.role` — [Arms are fragments](/reference/policy/#arms-are-fragments) |
 | <span id="row"></span>**row** | One result of a query; its TypeScript type is inferred from the query. | `Ramose.Row<typeof q>` |
 | <span id="schema"></span>**schema** | Your data model as one TypeScript value: record types and their fields. Shared by app, rules and deploy. | [`Ramose.Schema`](/guides/catalog/) |
-| <span id="server"></span>**the Ramose server** | The Cloudflare Worker that serves all your databases. Its code ships with Ramose; you declare it, you don't write it. | `Cloudflare.Worker("Ramose")`, `Ramose.Server`, `ramose/worker` — [The server](/reference/server/) |
-| <span id="service-binding"></span>**service binding** | Cloudflare's Worker-to-Worker call; how your Worker reaches the server without a URL. | `Ramose.ServerBinding` — [Use it from a Worker](/guides/workers/) |
+| <span id="server"></span>**the Ramose server** | The Cloudflare Worker that serves all your databases. Its code ships with Ramose; `Ramose.Server` owns the peer. | `Ramose.Server`, `ramose/worker` — [The server](/reference/server/) |
+| <span id="service-binding"></span>**service binding** | Cloudflare's Worker-to-Worker call; how your Worker reaches the server without a URL. | `Ramose.layer` — [Use it from a Worker](/guides/workers/) |
 | <span id="shape"></span>**shape** | The fields you ask a query or pull to return, including fields of referenced records. | `.select({…})`, `.optional`, `.orDefault(v)`, `Ramose.all(N)` — [Choose the fields](/guides/queries/#choose-the-fields) |
 | <span id="token"></span><span id="jwt"></span>**sign-in token** (JWT) | A signed token the server verifies on every request and never issues; carries `sub`, the database name and the role. | `Ramose.token.jwt` / `.static`, `TokenSource` — [What the token carries](/guides/sign-in/#what-the-token-carries) |
 | <span id="signed-in-user"></span><span id="principal"></span>**signed-in user** (principal) | The record that represents the caller, found by matching the token's `sub` to a unique field. The peer upserts it at session establishment (`sub`, `role`, and matching `ramose.attrs`). In an arm, `me`. | `principal: User.sub`, `me`, `P.principal` (preset), `db.principal()` |
@@ -83,7 +83,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 
 ## Reference-only words
 
-Words you will only meet in the Reference pages are defined where they appear: ident (a field's full name, `:issue/title`), tempid, novelty, segment, indexer, group commit, `TxReport` / `txEid` / `datomCount`, `ReadDb`, `authEnv` / `internalSecret`, the `RAMOSE_*` settings, and the Effect words Layer, Stream, fiber and Scope ([Effect in five minutes](/concepts/effect/)).
+Words you will only meet in the Reference pages are defined where they appear: ident (a field's full name, `:issue/title`), tempid, novelty, segment, indexer, group commit, `TxReport` / `txEid` / `datomCount`, `ReadDb`, `PEER_COMPAT`, the `RAMOSE_*` settings, and the Effect words Layer, Stream, fiber and Scope ([Effect in five minutes](/concepts/effect/)).
 
 <details>
 <summary>How we word these in the guides</summary>

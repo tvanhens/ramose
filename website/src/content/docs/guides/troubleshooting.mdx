@@ -19,30 +19,24 @@ and this process is non-interactive so it can't be configured interactively.
 
 Two stack traces follow. Nothing will come up; stop it with Ctrl-C.
 
-The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Three do it:
+The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Call `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` — it fills `CI=1`, `ALCHEMY_STATE=local`, a 32-hex account id, and `CLOUDFLARE_API_TOKEN=x` when those keys are unset. Real credentials are left alone.
 
-```sh title=".env"
-CI=1
-CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
-CLOUDFLARE_API_TOKEN=x
-```
-
-`alchemy dev` reads `.env` on its own. `CI=1` is what makes it read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. These are placeholders: the account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is unnecessary when your stack calls `Alchemy.localState()`. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` set everything.
+`CI=1` is what makes Alchemy read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. The account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is unnecessary when your stack calls `Alchemy.localState()`. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` also default the same keys.
 
 ## The server says ready but nothing ever loads
 
-Requests hang rather than fail. Check `main` in `resources.ts`:
+Requests hang rather than fail. On the owned form, Server resolves `ramose/worker` for you. On the explicit-Worker hatch, check `main`:
 
 ```ts title="resources.ts"
-main: "ramose/worker",                       // resolves to nothing; never boots
+main: "ramose/worker",                       // refused at deploy — or silently finds nothing on older stacks
 main: import.meta.resolve("ramose/worker"),  // a real path — this one works
 ```
 
-`main` is resolved as a file path, so a bare module specifier quietly finds no entry and no Worker is bundled. The tell is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`. Without it, everything downstream — including the step that installs your schema — waits on a server that never answers.
+`main` is resolved as a file path, so a bare module specifier finds no entry and no Worker is bundled. The hatch now fails the deploy when `main` is the bare specifier or does not resolve. The tell on an older stack is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`.
 
 ## My schema change did nothing
 
-`alchemy dev` watches the stack files, so saving `schema.ts` re-applies it on its own: `Plan: 1 to update`, then `[todos] updated`. If you restarted instead, you will see `[todos] noop` — the change already landed.
+`alchemy dev` watches the stack files, so saving `schema.ts` re-applies it on its own: `Plan: 1 to update`, then the Server resource reseeds the catalog. If you restarted instead, you will see a no-op — the change already landed.
 
 ## The terminal says the Worker's code had hung
 

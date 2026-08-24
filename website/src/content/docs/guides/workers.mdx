@@ -11,7 +11,7 @@ Your own Worker gets a typed client bound to the Ramose server — no URL, no to
 
 ## The smallest Worker
 
-You declare what the Worker may do — a **capability** ([glossary](/concepts/glossary/#capability)) — and, separately, how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
+You declare a **capability** ([glossary](/concepts/glossary/#capability)); `Ramose.layer` picks how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
 
 ```ts title="examples/kv-style/app.ts:34-39 · app.ts:131"
 export const App = Cloudflare.Worker(
@@ -19,9 +19,9 @@ export const App = Cloudflare.Worker(
   { main: import.meta.url },
   Effect.gen(function* () {
     // The binding *is* the client. One `Databases`, bound once at init.
-    const ramose = yield* Ramose.ReadWriteDatabases(Server);
+    const ramose = yield* Ramose.Databases(Server);
     // …
-  }).pipe(Effect.provide(Ramose.ServerBinding)),
+  }).pipe(Effect.provide(Ramose.layer)),
 ```
 
 Inside, a request handler names a database, writes, and reads its own write back — no fetch, no connection string:
@@ -41,21 +41,16 @@ Inside, a request handler names a database, writes, and reads its own write back
 
 ## What the Worker can do
 
-| capability | your Worker gets |
+| handle | your Worker gets |
 | --- | --- |
-| `Ramose.ReadWriteDatabases(Server)` | `q`, `pull`, `basis`, `asOf`, `history`, `principal`, `transact`, `install` |
-| `Ramose.ReadDatabases(Server)` | `q`, `pull`, `basis`, `asOf`, `history` — no `transact`, `install`, or `principal` |
+| `ramose.db(name, schema)` | `q`, `pull`, `basis`, `asOf`, `history`, `principal`, `transact` / `run`, `install` |
+| `Ramose.asRead(db)` | the same without writes: no `transact`, `install`, or `principal` |
 
-`live` and `livePull` are in the type of both but do not work here (see below). There is no write-only capability: a writer that cannot read cannot look anything up.
+`live` and `livePull` are **not** on this type — they are client subscriptions (`ramose/db`, `ramose/react`). There is no write-only capability: a writer that cannot read cannot look anything up.
 
 ## How calls travel
 
-| layer | how the call travels |
-| --- | --- |
-| `Ramose.ServerBinding` | a **service binding** — Cloudflare's Worker-to-Worker call ([glossary](/concepts/glossary/#service-binding)): no public hop, no URL. The server must be declared as a `Cloudflare.Worker`. |
-| `Ramose.ServerHttp` | the server's public URL over ordinary `fetch` — also what `alchemy dev` and deploy-time actions use |
-
-Provide one with `Effect.provide` around the whole Worker; nothing inside changes when you swap.
+`Ramose.layer` picks the hop: a **service binding** ([glossary](/concepts/glossary/#service-binding)) when the caller is another Worker in the same stack and the binding is present, the server's public URL over `fetch` otherwise. Provide it with `Effect.provide` around the whole Worker; nothing inside changes when the wire swaps.
 
 ## Handling failures
 
@@ -72,9 +67,7 @@ Errors are tagged classes. On the app path, `await db.run(…)` / `db.query(…)
 
 ## Live queries need a browser
 
-:::caution
-A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `db.live` needs a WebSocket to the server, and a Worker-to-Worker binding has none. Calling it there fails outright with `ramose: db.live needs the session socket` rather than returning an error you can catch. Run live queries in the browser through `Ramose.connect`; let your Worker do request-shaped reads and writes.
-:::
+A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `db.live` needs a WebSocket to the server. Server-side handles from `Ramose.Databases` do not include `live` / `livePull` — those methods are not on the type. Run live queries in the browser through `Ramose.connect`; let your Worker do request-shaped reads and writes.
 
 The complete Worker is [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style): four files, type-checked with the repo.
 

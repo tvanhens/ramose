@@ -58,7 +58,7 @@ A live query needs a WebSocket connection — that is how filtered transactions 
 | environment | live queries |
 | --- | --- |
 | a browser, through `Ramose.connect` (or `RamoseProvider`) | yes — this is the intended home |
-| a Worker calling the server through `Ramose.ServerBinding` | **no** — no WebSocket on that hop; `db.live` fails outright. See [Live queries need a browser](/guides/workers/#live-queries-need-a-browser) |
+| a Worker calling the server through `Ramose.Databases` | **no** — server-side handles have no `live` / `livePull`. See [Live queries need a browser](/guides/workers/#live-queries-need-a-browser) |
 | Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ramose.connect` |
 
 ### Outside React

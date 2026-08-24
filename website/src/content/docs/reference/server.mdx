@@ -4,7 +4,7 @@ description: The one Worker that serves your databases — its HTTP routes, ever
 ---
 import Next from "../../../components/Next.astro";
 
-The wire, the knobs and the operations for the Ramose server — the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). This page is for people deploying or operating one; you declare this Worker, you never write it.
+The wire, the knobs and the operations for the Ramose server — the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)). This page is for people deploying or operating one; `Ramose.Server` owns that Worker, you never write it.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
@@ -56,24 +56,16 @@ The Durable Objects (Cloudflare's single-instance stateful Workers) that hold th
 
 Everything is an environment variable on the server Worker, declared in your Alchemy file and read at boot. Unset means the default. Set only what you change.
 
-```ts title="examples/reef/src/infra/resources.ts:47-60"
-export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("ramose/worker"),
-  compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
-  dev: { port: DEV_PEER_PORT },
-  env: {
-    STORE: Store,
-    TRANSACTOR: Transactor,
-    REPLICA: Replica,
-    ...Ramose.authEnv({
-      policy: compiledPolicy(),
-      auth: REEF_AUTH,
-      jwksService: "AUTH",
-      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
-    }),
+```ts title="examples/todos/resources.ts"
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
+  auth: { policy, jwt: AUTH, jwksUrl },
+});
 ```
 
-**Bindings** (fixed names): `STORE` — the R2 bucket, **object storage** where every version of every database is kept ([glossary](/concepts/glossary/#object-storage)); `TRANSACTOR` — the writer's Durable Object class `TransactorDO`; `REPLICA` — the read copy's class `QueryReplicaDO`; optional `ANALYTICS` — an Analytics Engine dataset. Compatibility flag `nodejs_compat` is required.
+Reef uses the explicit-Worker hatch (`worker:`) because it adds an AUTH service binding, Output-valued JWKS / origins, and `/db/*` routes. That form is validated at deploy: binding names, Durable Object class names, and `main` resolution.
+
+**Bindings** (fixed names, `Ramose.PEER_BINDINGS`): `STORE` — the R2 bucket, **object storage** where every version of every database is kept ([glossary](/concepts/glossary/#object-storage)); `TRANSACTOR` — the writer's Durable Object class `TransactorDO`; `REPLICA` — the read copy's class `QueryReplicaDO`; optional `ANALYTICS` — an Analytics Engine dataset. Compatibility is `Ramose.PEER_COMPAT` (`nodejs_compat` on a pinned date) — do not copy a date into a stack file.
 
 **Auth**
 
@@ -87,9 +79,9 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 | `RAMOSE_JWT_AUD` | unset | the audience every token must carry |
 | `RAMOSE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, seconds |
 | `RAMOSE_ALLOWED_ORIGINS` | unset | CORS list, honoured **only once a policy is set**; without a policy CORS is `*` |
-| `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call; `authEnv` mints one when a policy is set. Pin it once you split the Worker out |
+| `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call; the owned form mints one when a policy is set. Pin it once you split the Worker out |
 
-`Ramose.authEnv({ … })` produces these keys — see [Policy → Server env keys](/reference/policy/).
+`auth` on `Ramose.Server` produces these keys on the owned Worker — see [Policy → Server env keys](/reference/policy/). On the hatch, set them yourself.
 
 When your sign-in provider is another Worker on the same account, bind it into
 this Worker and name that binding in `RAMOSE_JWKS_SERVICE`. Cloudflare answers a
@@ -143,7 +135,7 @@ const tuning = (...names: string[]): Record<string, string> =>
     names.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]!]),
   );
 
-env: { STORE, TRANSACTOR, REPLICA, ...tuning("RAMOSE_QUERY_MAX_CELLS", "RAMOSE_LOG_LEVEL"), ...Ramose.authEnv(auth) }
+Ramose.Server("Ramose", { env: { ...tuning("RAMOSE_QUERY_MAX_CELLS", "RAMOSE_LOG_LEVEL") }, auth })
 ```
 
 ## Query budget

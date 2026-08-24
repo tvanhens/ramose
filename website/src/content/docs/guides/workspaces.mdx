@@ -60,13 +60,15 @@ Something must install the schema before the first real read or write.
 
 **At deploy** — for databases you know by name. The todos app declares one:
 
-```ts title="examples/todos/alchemy.run.ts:34"
-export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+```ts title="examples/todos/resources.ts"
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
+});
 ```
 
 **At creation** — for names that appear at run time. Reef calls `db.install()` from the browser under the creator's admin token; a Worker does the same at sign-up.
 
-`Ramose.Database` for the databases your app always has; `db.install()` when users create them. Never per request.
+`databases:` on Server for the databases your app always has; `db.install()` when users create them. Standalone `Ramose.Database` is the same install for runtime-provisioned names that are still declared at deploy. Never per request.
 
 ## One token per workspace
 

@@ -214,19 +214,18 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
 
 ## Server env keys
 
-`Ramose.authEnv({ policy, jwksUrl, auth: { issuer, audience, ttl }, allowedOrigins?, internalSecret? })` returns these for the server Worker's `env`; `AUTH_ENV_KEYS` names them.
+On the owned form, `auth: { policy, jwt, jwksUrl, … }` on `Ramose.Server` is applied onto these keys. On the explicit-Worker hatch, set them yourself:
 
-```ts title="examples/reef/src/infra/resources.ts:51-60"
+```ts title="examples/reef/src/infra/resources.ts"
   env: {
     STORE: Store,
     TRANSACTOR: Transactor,
     REPLICA: Replica,
-    ...Ramose.authEnv({
-      policy: compiledPolicy(),
-      auth: REEF_AUTH,
-      jwksService: "AUTH",
-      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
-    }),
+    RAMOSE_POLICY: compiledPolicy(),
+    RAMOSE_JWT_ISS: REEF_AUTH.issuer,
+    RAMOSE_JWT_AUD: REEF_AUTH.audience,
+    RAMOSE_JWT_MAX_TTL: String(REEF_AUTH.ttl),
+    RAMOSE_JWKS_SERVICE: "AUTH",
 ```
 
 | key | env var | meaning |
@@ -240,7 +239,7 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
 | `allowedOrigins` | `RAMOSE_ALLOWED_ORIGINS` | CORS list; honoured only once a policy is set |
 | `internalSecret` | `RAMOSE_INTERNAL_SECRET` | Worker-to-writer gate; minted for you when unset and a policy is set |
 
-`auth: { issuer, audience, ttl }` fills `issuers`, `aud` and `maxTtl` from one value. Which mode a server runs in — open, shared token, or policy — is decided by `RAMOSE_POLICY` and `RAMOSE_TOKEN`: see [The three server modes](/guides/permissions/#the-three-server-modes).
+`jwt: { issuer, audience, ttl }` fills `issuers`, `aud` and `maxTtl` from one value. Which mode a server runs in — open, shared token, or policy — is decided by `RAMOSE_POLICY` and `RAMOSE_TOKEN`: see [The three server modes](/guides/permissions/#the-three-server-modes).
 
 ## Testing without a login provider
 
@@ -272,7 +271,7 @@ console.log(
 );
 ```
 
-Then in the server Worker's `env`: `...Ramose.authEnv({ policy, issuers: "https://local.test", aud: "ramose:local" })` plus `RAMOSE_JWKS_JSON: process.env.RAMOSE_JWKS_JSON`. Run `bun alchemy dev` with `RAMOSE_JWKS_JSON` set to line 1 of the script's output, and hand line 2 to the client as `Ramose.token.static(token)`. Generate both once — every run mints a fresh key pair. Reef does not need this: its Better Auth Worker signs tokens locally.
+Then on the owned Server: `auth: { policy, issuers: "https://local.test", aud: "ramose:local" }` plus `env: { RAMOSE_JWKS_JSON: process.env.RAMOSE_JWKS_JSON }`. Run `bun alchemy dev` with `RAMOSE_JWKS_JSON` set to line 1 of the script's output, and hand line 2 to the client as `Ramose.token.static(token)`. Generate both once — every run mints a fresh key pair. Reef does not need this: its Better Auth Worker signs tokens locally.
 
 </details>
 

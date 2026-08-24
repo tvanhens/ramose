@@ -112,9 +112,9 @@ A freshly deployed **Ramose server** accepts every request, from anyone, with fu
 - [ ] **Expect the first deploy to wait.** `Ramose.Server` probes `GET /health`
       up to 30 times, 2 seconds apart. Slow first DNS looks like a hang;
       `probe: false` skips it.
-- [ ] **Install the schema from one place.** `Ramose.Database` at deploy for
-      known databases, `db.install()` at signup for per-customer ones. Never per
-      request.
+- [ ] **Install the schema from one place.** `databases:` on `Ramose.Server`
+      at deploy for known databases, `db.install()` at signup for per-customer
+      ones. Never per request.
 
 <Next links={[
   { href: "/guides/deploy/", label: "Deploy", why: "the stack file, commands, and teardown" },

@@ -155,7 +155,7 @@ Setting `RAMOSE_POLICY` changes what `RAMOSE_TOKEN` means: its holder gets a rol
 ## Add a policy to your app
 
 1. Write `policy.ts` next to your schema and compile it with your shapes.
-2. Put it on the server with `Ramose.authEnv({ policy, jwksUrl, auth })` in the deploy file — [Deploy](/guides/deploy/#the-stack-file).
+2. Put it on the server with `auth: { policy, jwt, jwksUrl }` on `Ramose.Server` — [Deploy](/guides/deploy/#the-stack-file).
 3. Mint tokens carrying a role and a database name — [Sign in and roles](/guides/sign-in/).
 
 <Next links={[

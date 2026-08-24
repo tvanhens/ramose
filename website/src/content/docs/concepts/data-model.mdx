@@ -63,7 +63,7 @@ These ideas — facts instead of rows, a database you can read at any earlier ve
 | Datomic | Ramose |
 | --- | --- |
 | datom `[e a v t]` | a fact; the same order on `t` |
-| schema transacted as data | a **schema** of TypeScript values; `db.install()` or `Ramose.Database` writes it, safe to repeat |
+| schema transacted as data | a **schema** of TypeScript values; `db.install()` or `Server({ databases })` writes it, safe to repeat |
 | `d/transact` with tx-data | `db.transact(function* (tx) { … })` — a generator of `set` / `remove` / `delete` |
 | tempids resolved in the transactor | `tx.entity()` — the new ids are **not** returned; query for them |
 | `:db.unique/identity`, lookup refs | `{ unique: "upsert" }`, `[User.sub, "…"]` |

@@ -124,8 +124,10 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 At deploy, for a database you know up front (the todos app):
 
-```ts title="examples/todos/alchemy.run.ts:34"
-export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+```ts title="examples/todos/resources.ts"
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
+});
 ```
 
 From the app, for names created at runtime — how Reef makes a workspace:

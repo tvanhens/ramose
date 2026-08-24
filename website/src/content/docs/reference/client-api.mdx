@@ -25,13 +25,13 @@ Every exported name of `ramose/db`, with its signature and a short example. This
 
 ```ts
 import * as Ramose from "ramose/db"; // schema, connect, db, query, errors
-import * as Ramose from "ramose";    // the same, plus Server, Database, Policy, authEnv, claims
+import * as Ramose from "ramose";    // the same, plus Server, Databases, layer, Policy, claims
 ```
 
 | entry | runtime names |
 | --- | --- |
 | `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
-| `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
+| `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `applyLocalDev` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
 
@@ -155,10 +155,10 @@ source.claims();      // decoded, NOT verified — UI hints only
 source.invalidate();  // forget the cached token (sign-out)
 ```
 
-**`Ramose.layer(options): Layer<Databases>`** and **`Ramose.Databases`** — the same client for Effect programs; the layer closes its sockets when its scope ends.
+**`Ramose.Databases(Server)`** and **`Ramose.layer`** — the server-side client for a Worker or Action. Provide `Ramose.layer`; the handle has no `live` / `livePull`. The portable Effect hatch (`layer({ url, token })`, `yield* Databases`) lives on `ramose/db/effect`.
 
 ```ts
-const ramose = yield* Ramose.Databases;   // provide Ramose.layer({ url, token })
+const ramose = yield* Ramose.Databases(Server);   // provide Ramose.layer
 const db = ramose.db("todos", Todos);
 ```
 

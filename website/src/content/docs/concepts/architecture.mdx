@@ -52,20 +52,20 @@ Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of 
 | Piece | Runs as | You write it? |
 |---|---|---|
 | your app | a browser page, or your own Worker | yes |
-| the Ramose server | one Cloudflare Worker, all databases | no — you declare it |
-| the writer | a Durable Object, one per database | no — you name it |
-| read copies | Durable Objects | no — you name them |
-| object storage | a Cloudflare R2 bucket | no — you name it |
+| the Ramose server | one Cloudflare Worker, all databases | no — Server declares it |
+| the writer | a Durable Object, one per database | no — Server declares it |
+| read copies | Durable Objects | no — Server declares them |
+| object storage | a Cloudflare R2 bucket | no — you name it, or accept `"Store"` |
 
-That table is why the deploy file names three things: a storage bucket where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) — one for the writer, one for the read copy.
+`Ramose.Server` declares those three things: a storage bucket where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) — one for the writer, one for the read copy. You name storage and options; you never write the classes.
 
-```ts title="examples/reef/src/infra/resources.ts:43-45"
-const Store = Cloudflare.R2.Bucket("Store");
-const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
-const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
+```ts title="examples/todos/resources.ts"
+export const Server = Ramose.Server("Ramose", {
+  databases: { todos: Todos },
+});
 ```
 
-You name them; you never write them. Every version of every database ends up in [object storage](/concepts/glossary/#object-storage), and nothing there is rewritten, which is why you can still read yesterday.
+Every version of every database ends up in [object storage](/concepts/glossary/#object-storage), and nothing there is rewritten, which is why you can still read yesterday. Reef's hatch still names the bucket and both classes itself, because it adds an AUTH binding and custom routes.
 
 ## When something fails
 

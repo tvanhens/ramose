@@ -285,23 +285,25 @@ One file declares the server, its storage and the sign-in Worker; `bun run dev:r
 <details>
 <summary>The Ramose server, declared</summary>
 
-```ts title="examples/reef/src/infra/resources.ts:43-59"
-const Store = Cloudflare.R2.Bucket("Store");
-const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
-const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
+```ts title="examples/reef/src/infra/resources.ts"
+const Store = Cloudflare.R2.Bucket("Store", pinned("store"));
+const Transactor = Cloudflare.DurableObject(Ramose.PEER_DO_CLASSES.transactor, {
+  className: Ramose.PEER_DO_CLASSES.transactor,
+});
+const Replica = Cloudflare.DurableObject(Ramose.PEER_DO_CLASSES.replica, {
+  className: Ramose.PEER_DO_CLASSES.replica,
+});
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: import.meta.resolve("ramose/worker"),
-  compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
+  main: import.meta.resolve("./peer.ts"),
+  compatibility: Ramose.PEER_COMPAT,
   dev: { port: DEV_PEER_PORT },
   env: {
     STORE: Store,
     TRANSACTOR: Transactor,
     REPLICA: Replica,
-    ...Ramose.authEnv({
-      policy: compiledPolicy(),
-      auth: REEF_AUTH,
-      internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
+    RAMOSE_POLICY: compiledPolicy(),
+    RAMOSE_JWT_ISS: REEF_AUTH.issuer,
 ```
 
 </details>
