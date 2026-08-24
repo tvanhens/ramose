@@ -21,6 +21,20 @@ import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
 const { Query, Q } = Ramose;
 
+/** Required card-one fields on the raw `:user/*` e2e schema. */
+const JOINED = new Date("2021-05-05Z");
+const userAttrs = (
+  name: string,
+  email: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  ":user/name": name,
+  ":user/email": email,
+  ":user/age": 20,
+  ":user/joined": JOINED,
+  ...extra,
+});
+
 const URL_ = process.env.RAMOSE_URL;
 const token = process.env.RAMOSE_TOKEN;
 const d = URL_ ? describe : describe.skip;
@@ -59,8 +73,16 @@ d("ramose e2e", () => {
     tSchema = s.t;
     expect(s.t).toBeGreaterThanOrEqual(2);
     const r = await db.transact([
-      { ":db/id": "alice", ":user/name": "Alice", ":user/email": "alice@example.com", ":user/age": 30, ":user/joined": new Date("2021-05-05Z") },
-      { ":db/id": "bob", ":user/name": "Bob", ":user/email": "bob@example.com", ":user/age": 25, ":user/friends": ["alice"] },
+      userAttrs("Alice", "alice@example.com", {
+        ":db/id": "alice",
+        ":user/age": 30,
+        ":user/joined": JOINED,
+      }),
+      userAttrs("Bob", "bob@example.com", {
+        ":db/id": "bob",
+        ":user/age": 25,
+        ":user/friends": ["alice"],
+      }),
     ]);
     alice = r.tempids.alice;
     bob = r.tempids.bob;
@@ -88,10 +110,17 @@ d("ramose e2e", () => {
   });
 
   test("unique conflicts are rejected with 409", async () => {
-    await expect(db.transact([{ ":user/name": "Eve", ":user/email": "alice@example.com", ":user/age": 1 }])).resolves.toBeDefined(); // upsert (identity)
+    await expect(
+      db.transact([
+        userAttrs("Eve", "alice@example.com", { ":user/age": 1 }),
+      ]),
+    ).resolves.toBeDefined(); // upsert (identity)
     const r = await db.q(`[:find ?n . :in $ ?e :where [?e :user/name ?n]]`, [alice]);
     expect(r).toBe("Eve");
     await db.transact([[":db/add", alice, ":user/name", "Alice"]]);
+    await expect(
+      db.transact([[":db/add", bob, ":user/email", "alice@example.com"]]),
+    ).rejects.toMatchObject({ status: 409, code: "tx/unique-conflict" });
   });
 
   test("index run publishes a root; queries stay consistent; repeat query hits cache", async () => {
@@ -111,7 +140,11 @@ d("ramose e2e", () => {
   });
 
   test("serialized t under concurrent clients (no gaps / dupes)", async () => {
-    const acks = await Promise.all(Array.from({ length: 40 }, (_, i) => db.transact([{ ":user/name": `c${i}`, ":user/email": `c${i}@example.com` }])));
+    const acks = await Promise.all(
+      Array.from({ length: 40 }, (_, i) =>
+        db.transact([userAttrs(`c${i}`, `c${i}@example.com`)]),
+      ),
+    );
     const ts = acks.map((a) => a.t).sort((a, b) => a - b);
     for (let i = 1; i < ts.length; i++) expect(ts[i]).toBe(ts[i - 1] + 1);
     const count = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
@@ -123,7 +156,9 @@ d("ramose e2e", () => {
     const before = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
     const [rc, ...acks] = await Promise.all([
       db.reconnectReplica(),
-      ...Array.from({ length: 25 }, (_, i) => db.transact([{ ":user/name": `r${i}`, ":user/email": `r${i}@example.com` }])),
+      ...Array.from({ length: 25 }, (_, i) =>
+        db.transact([userAttrs(`r${i}`, `r${i}@example.com`)]),
+      ),
     ]);
     expect(rc.ok).toBe(true);
     const lastT = Math.max(...acks.map((a) => a.t));
@@ -168,7 +203,11 @@ d("ramose e2e", () => {
   test("write throughput smoke (group commit)", async () => {
     const N = 300;
     const t0 = performance.now();
-    await Promise.all(Array.from({ length: N }, (_, i) => db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }])));
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        db.transact([userAttrs(`w${i}`, `w${i}@example.com`)]),
+      ),
+    );
     const ms = performance.now() - t0;
     const info = await db.info();
     console.log(`e2e write smoke: ${N} tx in ${ms.toFixed(0)} ms → ${((N / ms) * 1000).toFixed(0)} tx/s; max batch ${info.transactor.stats.maxBatch}`);
@@ -385,11 +424,11 @@ d("ramose session socket e2e", () => {
                 ["a", 1],
                 ["b", 2],
                 ["c", 2],
-                ["d", undefined],
+                ["d", 3],
               ] as const) {
                 const e = yield* tx.entity();
                 yield* e.set(Session.name, name);
-                if (n !== undefined) yield* e.set(Session.n, n);
+                yield* e.set(Session.n, n);
               }
             }),
           ),
@@ -410,7 +449,7 @@ d("ramose session socket e2e", () => {
           return { total: Q.sum(f.v) };
         });
         const sumRows = await rt.runPromise(absorb(view.effect.query(sumQ)));
-        expect(sumRows[0]?.total ?? 0).toBe(5);
+        expect(sumRows[0]?.total ?? 0).toBe(8);
 
         // groupBy/aggregate → a record projection: the bound cell is the
         // group key, the aggregate cell counts the group.
@@ -423,6 +462,7 @@ d("ramose session socket e2e", () => {
         expect([...groups].sort((a, b) => a.n - b.n)).toEqual([
           { n: 1, rows: 1 },
           { n: 2, rows: 2 },
+          { n: 3, rows: 1 },
         ]);
 
         // `.having((g) => g.rows.gt(1))` has no kernel spelling — filter the
