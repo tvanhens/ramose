@@ -39,7 +39,7 @@ import {
   token,
   type TxReport,
   Uuid,
-  UuidString,
+  stored,
   type ValueAtIdent,
   Enum,
   boolean,
@@ -105,7 +105,7 @@ type _friendsVt = Expect<
   Equal<(typeof User)["friends"]["valueType"], "ref">
 >;
 
-// helpers + primitives stamp valueType; explicit valueType overrides
+// helpers + primitives stamp valueType; stored() brands a custom pair
 const Typed = Entity("typed", {
   s: Field(Schema.String),
   n: Field(Schema.Number),
@@ -113,10 +113,9 @@ const Typed = Entity("typed", {
   l: Field(Long),
   r: Field(Ref.self),
   u: Field(Uuid),
-  us: Field(UuidString),
   i: Field(Instant),
   by: Field(Bytes),
-  override: Field(Schema.String, { valueType: "uuid" }),
+  override: Field(stored(Schema.String, "uuid")),
 });
 type _sVt = Expect<Equal<(typeof Typed)["s"]["valueType"], "string">>;
 type _nVt = Expect<Equal<(typeof Typed)["n"]["valueType"], "double">>;
@@ -124,7 +123,6 @@ type _bVt = Expect<Equal<(typeof Typed)["b"]["valueType"], "boolean">>;
 type _lVt = Expect<Equal<(typeof Typed)["l"]["valueType"], "long">>;
 type _rVt = Expect<Equal<(typeof Typed)["r"]["valueType"], "ref">>;
 type _uVt = Expect<Equal<(typeof Typed)["u"]["valueType"], "uuid">>;
-type _usVt = Expect<Equal<(typeof Typed)["us"]["valueType"], "uuid">>;
 type _iVt = Expect<Equal<(typeof Typed)["i"]["valueType"], "instant">>;
 type _byVt = Expect<Equal<(typeof Typed)["by"]["valueType"], "bytes">>;
 type _overrideVt = Expect<
@@ -135,12 +133,29 @@ type _uuidIsString = Expect<
 >;
 
 // fail-closed: a literal union does not silently become "string"
-// @ts-expect-error Schema.Literals is not a String AST — pass valueType
+// @ts-expect-error Schema.Literals is not a String AST — wrap with stored
 Field(Schema.Literals(["todo", "done"]));
-const literalsOk = Field(Schema.Literals(["todo", "done"]), {
-  valueType: "string",
-});
+const literalsOk = Field(stored(Schema.Literals(["todo", "done"]), "string"));
 type _literalsVt = Expect<Equal<(typeof literalsOk)["valueType"], "string">>;
+
+// bag override is gone; mismatched stored() pairs are rejected
+// @ts-expect-error valueType is not a Field option
+Field(Schema.Boolean, { valueType: "string" });
+// @ts-expect-error boolean codec does not pair with "string"
+stored(Schema.Boolean, "string");
+// @ts-expect-error string codec does not pair with "boolean"
+stored(Schema.String, "boolean");
+// @ts-expect-error Date codec does not pair with "string"
+stored(Schema.Date, "string");
+const storedOk = stored(Schema.Boolean, "boolean");
+type _storedOk = Expect<Equal<(typeof storedOk) extends { readonly ast: unknown } ? true : false, true>>;
+const storedUuid = stored(Schema.String, "uuid");
+const storedLiterals = stored(Schema.Literals(["on", "off"]), "string");
+const storedOptional = stored(Schema.optional(Schema.String), "string");
+void storedOk;
+void storedUuid;
+void storedLiterals;
+void storedOptional;
 
 // shorthands + composition
 const Short = Entity("short", {
@@ -185,15 +200,15 @@ const ownedKept = Field(string({ owned: true }), { doc: "keep" });
 type _ownedKept = Expect<Equal<(typeof ownedKept)["owned"], true>>;
 const composedVt = Field(string(), { unique: "upsert" });
 type _composedVt = Expect<Equal<(typeof composedVt)["valueType"], "string">>;
-const schemaOverride = Field(Schema.String, { valueType: "uuid" });
+const schemaOverride = Field(stored(Schema.String, "uuid"));
 type _schemaOverride = Expect<Equal<(typeof schemaOverride)["valueType"], "uuid">>;
 const bareRef = Field(Ref);
 type _bareRefVt = Expect<Equal<(typeof bareRef)["valueType"], "ref">>;
-// @ts-expect-error composition cannot override valueType
+// @ts-expect-error valueType is not a Field option
 Field(string(), { valueType: "long" });
-// @ts-expect-error composition cannot override valueType
+// @ts-expect-error valueType is not a Field option
 Field.many(string(), { valueType: "long" });
-// @ts-expect-error composition cannot override valueType
+// @ts-expect-error valueType is not a Field option
 Field.unique(string(), "upsert", { valueType: "long" });
 
 /**

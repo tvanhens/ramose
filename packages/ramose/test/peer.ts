@@ -291,3 +291,24 @@ export const redacted = (value: string) => Redacted.make(value);
 
 /** Every pass is a handful of microtasks; a tick is plenty. */
 export const settle = (ms = 20) => Bun.sleep(ms);
+
+/**
+ * Poll until `cond` is true, or throw after `timeoutMs`.
+ *
+ * Use this for live-session assertions that used to `await settle()` and
+ * then check a frame / row-count: under suite contention the frame can
+ * land after a fixed sleep. Negative assertions (nothing more arrived)
+ * still want a short `settle()`.
+ */
+export const until = async (
+  cond: () => boolean,
+  timeoutMs = 2_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`until: timed out after ${timeoutMs}ms`);
+    }
+    await Bun.sleep(5);
+  }
+};

@@ -148,6 +148,30 @@ describe("Ramose.Server", () => {
     }),
   );
 
+  test.provider("a verifier with no policy fails the deploy; binding nothing stays open", (stack) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        stack.deploy(
+          Server("Ramose", {
+            worker: peerUrl,
+            probe: false,
+            auth: {
+              jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+              issuers: "https://auth.acme.example",
+              aud: "ramose:peer:test",
+            },
+          }),
+        ),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(String(result)).toMatch(/auth\.policy is not/);
+
+      const open = yield* stack.deploy(Server("Ramose", { worker: peerUrl, probe: false }));
+      expect(open.url).toBe(peerUrl);
+      yield* stack.destroy();
+    }),
+  );
+
   test.provider("a policy with no verifier configured fails the deploy, not the first read", (stack) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(

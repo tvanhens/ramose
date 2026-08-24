@@ -14,7 +14,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
-import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
+import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -114,7 +114,7 @@ describe("pull and livePull are two terminals over one shape", () => {
 
     expect(await db.pull(ada, shape)).toEqual({ name: "Ada", age: 36 });
     const live = collect(db.effect.livePull(ada, shape));
-    await settle();
+    await until(() => live.seen.length >= 1);
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
     expect(peer.frameOps("q")).toHaveLength(0);
@@ -133,14 +133,14 @@ describe("the basis is the wake", () => {
     const c = client(peer);
     const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).effect.livePull(ada, shape));
-    await settle();
+    await until(() => live.seen.length >= 1);
     expect(live.seen).toHaveLength(1);
 
     const older = txSnap(
       await world.conn.transact([{ ":db/id": world.eid, ":user/age": 37 }]),
     );
     peer.push({ op: "tx", t: older.t, datoms: older.datoms });
-    await settle();
+    await until(() => live.seen.length >= 2);
 
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual({ name: "Ada", age: 37 });
@@ -158,7 +158,7 @@ describe("the basis is the wake", () => {
     const db = c.ramose.db("movies", Movies);
     const ada = { id: world.eid };
     const live = collect(db.effect.livePull(ada, shape));
-    await settle();
+    await until(() => live.seen.length >= 1);
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
 
     await run(
@@ -166,14 +166,14 @@ describe("the basis is the wake", () => {
         yield* tx.delete(world.eid);
       }),
     );
-    await settle();
+    await until(() => live.seen.length >= 2);
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }, null]);
     expect(live.done).toBe(false);
     expect(peer.frameOps("pull")).toEqual([]);
 
     peer.push({ op: "resync", t: Math.max(world.t, 31), datoms: world.datoms });
-    await settle();
+    await until(() => live.seen.length >= 3);
     expect(live.seen).toHaveLength(3);
     expect(live.seen[2]).toEqual({ name: "Ada", age: 36 });
 
@@ -190,7 +190,7 @@ describe("livePull survives the network like live", () => {
     const c = client(peer);
     const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).effect.livePull(ada, shape));
-    await settle();
+    await until(() => live.seen.length >= 1);
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
@@ -199,7 +199,11 @@ describe("livePull survives the network like live", () => {
     state.t = snap.t;
     state.datoms = snap.datoms;
     peer.drop();
-    await settle(60);
+    await until(
+      () =>
+        peer.sockets.length >= 2 &&
+        (live.seen.at(-1) as { age?: number } | undefined)?.age === 37,
+    );
 
     expect(peer.sockets).toHaveLength(2);
     expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 37 });
@@ -232,7 +236,11 @@ describe("livePull survives the network like live", () => {
     const live = collect(
       c.ramose.db("movies", Movies).effect.livePull({ id: world.eid }, shape),
     );
-    await settle();
+    await until(
+      () =>
+        peer.frames.filter((f) => f.op === "auth").length >= 1 &&
+        live.seen.length >= 1,
+    );
 
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.map((f) => f.op)).toEqual(["sync", "auth", "sync"]);
@@ -251,7 +259,7 @@ describe("livePull survives the network like live", () => {
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
     const live = collect(c.ramose.db("movies", Movies).effect.livePull({ id: 17 }, shape));
-    await settle();
+    await until(() => live.done);
 
     expect(live.done).toBe(true);
     expect((live.error as { _tag?: string })?._tag).toBe("Unauthorized");
@@ -268,7 +276,7 @@ describe("a pinned view has no news", () => {
     const live = collect(
       c.ramose.db("movies", Movies).asOf(3).effect.livePull({ id: 17 }, shape),
     );
-    await settle();
+    await until(() => live.done && live.seen.length >= 1);
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
     expect(live.done).toBe(true);
@@ -288,7 +296,7 @@ describe("a pinned view has no news", () => {
     const live = collect(
       c.ramose.db("movies", Movies).history.effect.livePull({ id: 17 }, shape),
     );
-    await settle();
+    await until(() => live.done && live.seen.length >= 1);
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
     expect(live.done).toBe(true);

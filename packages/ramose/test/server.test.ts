@@ -30,6 +30,9 @@ import {
   tokenEnv,
   WRITES_ALL_POLICY_WARNING,
   WRITES_ENV_KEY,
+  unrecognizedWritesWarning,
+  unrecognizedWritesWarningMessage,
+  warnUnrecognizedWrites,
   warnWritesAllPolicy,
   writesAllPolicyWarning,
   writesEnv,
@@ -386,6 +389,26 @@ describe("owned form binds auth and token onto the Worker", () => {
     expect(checkAuth({})).toBeUndefined();
   });
 
+  test("a bound verifier with no policy fails checkAuth; binding nothing stays open", () => {
+    expect(
+      checkAuth({
+        jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+        issuers: "https://auth.acme.example",
+        aud: "ramose:peer:prod",
+      }),
+    ).toMatch(/RAMOSE_JWKS_URL.*RAMOSE_JWT_ISS.*RAMOSE_JWT_AUD.*auth\.policy is not/);
+    expect(
+      checkAuth({
+        jwt: { issuer: "https://auth.acme.example", audience: "ramose:peer:prod", ttl: 900 },
+        jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+      }),
+    ).toMatch(/set but auth\.policy is not/);
+    expect(checkAuth({ issuers: "https://auth.acme.example" })).toMatch(/RAMOSE_JWT_ISS.*auth\.policy is not/);
+    expect(checkAuth(undefined)).toBeUndefined();
+    expect(checkAuth({})).toBeUndefined();
+    expect(checkAuth({ allowedOrigins: "https://app.acme.example" })).toBeUndefined();
+  });
+
   test("an Output-valued jwksUrl counts as present for checkAuth", () => {
     expect(
       checkAuth({
@@ -530,6 +553,34 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
       /diverge on RAMOSE_WRITES/,
     );
     expect(compareWritesToWorker(undefined, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
+    // fail-closed: ALL is not "all", so it matches writes: "operations"
+    expect(compareWritesToWorker("operations", hatch({ RAMOSE_WRITES: "ALL" }))).toBeUndefined();
+  });
+
+  test("unrecognized RAMOSE_WRITES warns at deploy and names the value", () => {
+    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "ALL" }))).toBe(
+      unrecognizedWritesWarningMessage("ALL"),
+    );
+    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "ALL" }))).toMatch(
+      /RAMOSE_WRITES="ALL" is not "all" or "operations"/,
+    );
+    const warned: string[] = [];
+    const warn = console.warn;
+    console.warn = (message: unknown) => {
+      if (typeof message === "string") warned.push(message);
+    };
+    try {
+      expect(warnUnrecognizedWrites(hatch({ RAMOSE_WRITES: "ALL" }))).toBe(
+        unrecognizedWritesWarningMessage("ALL"),
+      );
+    } finally {
+      console.warn = warn;
+    }
+    expect(warned).toEqual([unrecognizedWritesWarningMessage("ALL")]);
+    expect(unrecognizedWritesWarning(hatch({}))).toBeUndefined();
+    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
+    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "operations" }))).toBeUndefined();
+    expect(unrecognizedWritesWarning("https://peer.example.com")).toBeUndefined();
   });
 
   test("hatch form: a matching writes still deploys", () => {

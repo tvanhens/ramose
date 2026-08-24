@@ -17,7 +17,7 @@ import * as Stream from "effect/Stream";
 import { fromResponse } from "../src/db/Errors.ts";
 import { pipe } from "effect/Function";
 import { Query } from "../src/db/internal.ts";
-import { client, fakePeer, settle } from "./peer.ts";
+import { client, fakePeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -131,12 +131,12 @@ describe("a token swap is not a reconnect", () => {
         }),
       ).pipe(Effect.catchCause((cause) => Effect.sync(() => Cause.squash(cause)))),
     );
-    await settle();
+    await until(() => seen.length >= 1);
     expect(seen).toEqual([[{ name: "Ada" }]]);
 
     const bob = txSnap(await conn.transact([{ ":user/name": "Bob" }]));
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
-    await settle();
+    await until(() => seen.length >= 2);
     expect(seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.sockets).toHaveLength(1);
 

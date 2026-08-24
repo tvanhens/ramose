@@ -80,7 +80,7 @@ const WRITES_ALL_POLICY_EVENT = "writes.all-with-policy";
 const WRITES_UNRECOGNIZED_EVENT = "writes.unrecognized";
 
 function warnWritesAll(env: RamoseEnv, writes: "all" | "operations"): void {
-  if (writes !== "all" || !authState(env).configured) return;
+  if (writes !== "all" || authState(env).policy === undefined) return;
   const key = env.RAMOSE_POLICY ?? "";
   if (writesWarned.has(key)) return;
   writesWarned.add(key);

@@ -27,8 +27,6 @@ export interface FieldOptions {
   readonly index?: boolean;
   readonly owned?: boolean;
   readonly doc?: string;
-  /** Override inferred `:db.type/*`. Required for custom Schemas. Public spelling is `"string"`, not `":db.type/string"`. */
-  readonly valueType?: DbValueType;
 }
 
 type CardOf<O> = [O] extends [{ readonly cardinality: infer C }]
@@ -42,12 +40,6 @@ type UniqueOf<O> = [O] extends [{ readonly unique: infer U }]
     ? U
     : undefined
   : undefined;
-
-type ValueTypeOf<S, O> = [O] extends [{ readonly valueType: infer V }]
-  ? V extends DbValueType
-    ? V
-    : InferDbValueType<S>
-  : InferDbValueType<S>;
 
 /**
  * Ownership, as a *type*: an owned ref owns what it points at, so its
@@ -81,24 +73,14 @@ type MergeUnique<U extends Uniqueness | undefined, O> = Named<O, "unique"> exten
   : U;
 
 /**
- * Composition bags cannot override `valueType` — only the base
- * `Field(schema, options)` form can. Matches {@link mergeFieldOptions}.
- */
-type ComposeOpts = Omit<FieldOptions, "valueType">;
-
-/** Options when the value Schema cannot infer `:db.type/*` on its own. */
-type OptionsFor<S, O extends FieldOptions> = InferDbValueType<S> extends DbValueType
-  ? O
-  : O & { readonly valueType: DbValueType };
-
-/**
  * Fail-closed argument for `Field(schema)` when inference cannot name
- * `:db.type/*`. The brand key is the instruction — `never` hid `valueType`.
+ * `:db.type/*`. The brand key is the instruction — wrap with
+ * {@link import("./valueTypes.ts").stored}.
  */
 type InferableSchema<S extends SchemaNS.Top> = InferDbValueType<S> extends DbValueType
   ? S
   : S & {
-      readonly "pass valueType on Field — this Schema cannot infer :db.type/*": true;
+      readonly "wrap with stored(schema, vt) — this Schema cannot infer :db.type/*": true;
     };
 
 export interface Field<
@@ -145,36 +127,28 @@ const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => ({
   index: options?.index ?? options?.unique !== undefined,
   owned: options?.owned ?? false,
   doc: options?.doc,
-  valueType: tryInferDbValueType(schema, options?.valueType),
+  valueType: tryInferDbValueType(schema),
 });
 
 const fieldSchema = (input: AnyField | SchemaNS.Top): SchemaNS.Top =>
   isField(input) ? input.schema : input;
 
-const withoutValueType = (options?: FieldOptions): FieldOptions => {
-  if (options === undefined) return {};
-  const { valueType: _drop, ...rest } = options;
-  return rest;
-};
-
 const mergeFieldOptions = (
   input: AnyField | SchemaNS.Top,
   extra?: FieldOptions,
 ): FieldOptions => {
-  const bag = withoutValueType(extra);
-  if (!isField(input)) return bag;
+  if (!isField(input)) return extra ?? {};
   return {
-    cardinality: bag.cardinality ?? input.cardinality,
-    unique: bag.unique ?? input.unique,
-    index: bag.index ?? (bag.unique !== undefined ? true : input.index),
-    owned: bag.owned ?? input.owned,
-    doc: bag.doc ?? input.doc,
-    valueType: input.valueType,
+    cardinality: extra?.cardinality ?? input.cardinality,
+    unique: extra?.unique ?? input.unique,
+    index: extra?.index ?? (extra?.unique !== undefined ? true : input.index),
+    owned: extra?.owned ?? input.owned,
+    doc: extra?.doc ?? input.doc,
   };
 };
 
-type ManyOpts = Omit<ComposeOpts, "cardinality">;
-type UniqueOpts = Omit<ComposeOpts, "unique">;
+type ManyOpts = Omit<FieldOptions, "cardinality">;
+type UniqueOpts = Omit<FieldOptions, "unique">;
 
 type FieldMany = {
   <S extends SchemaNS.Top>(
@@ -219,8 +193,8 @@ type FieldUnique = {
  *
  * Prefer the value shorthands (`string()`, `boolean()`, `Ref(User)`, …)
  * for app schemas. `Field(schema)` is the advanced form: a raw Effect
- * Schema, with `valueType` required when inference cannot name
- * `:db.type/*`.
+ * Schema. When inference cannot name `:db.type/*`, wrap the schema with
+ * {@link import("./valueTypes.ts").stored} — `stored(Schema.Literals(["on", "off"]), "string")`.
  *
  * **Write the options inline.** `cardinality`, `unique` and `owned`
  * reach the field's *type* — and so reach `.reverse`'s cardinality, the
@@ -233,7 +207,8 @@ type FieldUnique = {
  *
  * `Field.many` / `Field.unique` compose with a shorthand or a raw Schema
  * so those keys do not depend on the options-bag inference alone.
- * Composition cannot change `valueType` — pass it on `Field(schema, { valueType })`.
+ * Composition cannot change `valueType` — brand the schema with
+ * {@link import("./valueTypes.ts").stored}.
  * `Field.unique` always indexes; `Field.unique(string({ index: false }), "upsert")`
  * discards `index: false` (unique implies index).
  */
@@ -242,13 +217,13 @@ export const Field: {
     schema: InferableSchema<S>,
   ): Field<S, "one", undefined, InferDbValueType<S>, false>;
   <S extends SchemaNS.Top, const O extends FieldOptions>(
-    schema: S,
-    options: OptionsFor<S, O>,
-  ): Field<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<S, O>, OwnedOf<O>>;
+    schema: InferableSchema<S>,
+    options: O,
+  ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>>;
   <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean>(
     field: Field<S, C, U, VT, Own>,
   ): Field<S, C, U, VT, Own>;
-  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends ComposeOpts>(
+  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends FieldOptions>(
     field: Field<S, C, U, VT, Own>,
     options: O,
   ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>>;
@@ -263,13 +238,13 @@ export const Field: {
       schema: InferableSchema<S>,
     ): Field<S, "one", undefined, InferDbValueType<S>, false>;
     <S extends SchemaNS.Top, const O extends FieldOptions>(
-      schema: S,
-      options: OptionsFor<S, O>,
-    ): Field<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<S, O>, OwnedOf<O>>;
+      schema: InferableSchema<S>,
+      options: O,
+    ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>>;
     <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean>(
       field: Field<S, C, U, VT, Own>,
     ): Field<S, C, U, VT, Own>;
-    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends ComposeOpts>(
+    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends FieldOptions>(
       field: Field<S, C, U, VT, Own>,
       options: O,
     ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>>;
