@@ -12,7 +12,7 @@ import { isWorker, WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { Server } from "./Server.ts";
+import { resolveWorker, type Server, type ServerWorker } from "./Server.ts";
 import { makeBindingSource, SERVICE_ORIGIN } from "./ServerBinding.ts";
 import { makeHttpSource } from "./ServerHttp.ts";
 import { envKeys } from "./ServerRuntime.ts";
@@ -48,7 +48,15 @@ const optionalWorkerEnv = (): Effect.Effect<Record<string, any>> =>
 
 const canBindService = (server: Server): boolean => {
   const worker = (server as { Props?: { worker?: unknown } }).Props?.worker;
-  return typeof worker !== "string";
+  if (worker === undefined) return true;
+  if (typeof worker === "string") return false;
+  // A Cloudflare.Worker resource can take a service binding even when
+  // `workerName` is still an Output. `{ url }` is not a Worker — resolving
+  // it yields workerName "" and must not lower an empty target.
+  if (typeof worker === "object" && worker !== null && (worker as { Type?: unknown }).Type === "Cloudflare.Worker") {
+    return true;
+  }
+  return resolveWorker(worker as ServerWorker).workerName !== "";
 };
 
 /** @internal Shared deploy-time + runtime half. */

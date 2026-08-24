@@ -44,7 +44,7 @@ Inside, a request handler names a database, writes, and reads its own write back
 | handle | your Worker gets |
 | --- | --- |
 | `ramose.db(name, schema)` | `q`, `pull`, `basis`, `asOf`, `history`, `principal`, `transact` / `run`, `install` |
-| `Ramose.asRead(db)` | the same without writes: no `transact`, `install`, or `principal` |
+| `Ramose.asRead(db)` | type-level read-only view of the same handle — writes still exist at runtime; policy is what enforces them |
 
 `live` and `livePull` are **not** on this type — they are client subscriptions (`ramose/db`, `ramose/react`). There is no write-only capability: a writer that cannot read cannot look anything up.
 

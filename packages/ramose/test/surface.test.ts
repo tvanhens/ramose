@@ -21,10 +21,6 @@ const ADDS = [
   "PEER_COMPAT",
   "PEER_BINDINGS",
   "PEER_DO_CLASSES",
-  // local-dev
-  "applyLocalDev",
-  "LOCAL_DEV",
-  "LOCAL_DEV_ACCOUNT_ID",
   // the stack
   "providers",
   "Providers",
@@ -64,6 +60,9 @@ const KILLED = [
   "authEnv",
   "internalSecret",
   "AUTH_ENV_KEYS",
+  "applyLocalDev",
+  "LOCAL_DEV",
+  "LOCAL_DEV_ACCOUNT_ID",
   ...["Read", "Write", "ReadWrite"].flatMap((cap) =>
     ["Binding", "Http", "Local"].map((wire) => `${cap}System${wire}`),
   ),

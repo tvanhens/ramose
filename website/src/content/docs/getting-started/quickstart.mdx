@@ -21,7 +21,15 @@ bun add -d vite @vitejs/plugin-react typescript @types/react @types/react-dom
 
 One package. Ramose brings Effect 4 and Alchemy 2 — both prereleases — with it at versions that resolve, so there is no `@rc` to remember and nothing else to pin, `alchemy` included. React is an optional peer: a server-only app installs `ramose` alone. Already using Effect? [Read this first](/reference/client-api/#effect-comes-with-ramose).
 
-Local `alchemy dev` wants placeholder Cloudflare credentials even though it never talks to Cloudflare. `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` (below) fills them when unset — no `.env` ritual, no inventing a 32-hex account id. Real `CLOUDFLARE_*` values, when you [deploy](/guides/deploy/), are left alone.
+Local `alchemy dev` wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Three do it — put them in `.env`; `alchemy dev` reads it on its own:
+
+```sh title=".env"
+CI=1
+CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CLOUDFLARE_API_TOKEN=x
+```
+
+`CI=1` tells Alchemy to take credentials from the environment instead of a login profile. The account id must be 32 hex characters; the token can be any string; nothing is uploaded. Swap in real `CLOUDFLARE_*` values only when you [deploy](/guides/deploy/). In this repository, `bun run dev:todos` and `bun run dev:reef` set the same keys.
 
 Without those placeholders every resource fails and `alchemy dev` keeps running rather than exiting, so the terminal looks busy while nothing comes up. [What that looks like](/guides/troubleshooting/#no-credentials-configured-for-cloudflare).
 
@@ -124,8 +132,6 @@ import * as Command from "alchemy/Command";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
-
-Ramose.applyLocalDev();
 
 export const Ui = Command.Dev(
   "Ui",

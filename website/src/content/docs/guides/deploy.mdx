@@ -43,8 +43,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
 
-Ramose.applyLocalDev();
-
 // …
 export default Alchemy.Stack(
   // …
@@ -89,7 +87,7 @@ The stack argument is the file, for example `examples/todos/alchemy.run.ts`.
 | `CLOUDFLARE_API_TOKEN` | Workers Scripts Write (covers Durable Objects), Workers R2 Storage Write, Account Settings Read |
 | `CLOUDFLARE_ACCOUNT_ID` | the account to deploy into |
 
-Local dev needs neither for real: `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` fills `CI=1`, `ALCHEMY_STATE=local`, a placeholder account id, and `CLOUDFLARE_API_TOKEN=x` when those keys are unset.
+Local `alchemy dev` needs neither for real. Put placeholders in `.env` (`CI=1`, a 32-hex `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN=x`) or use this repository's `bun run dev:todos` / `bun run dev:reef`, which set the same keys. `ALCHEMY_STATE` is not a credential — only set it when you mean the stack to use a local file store.
 
 ## Deploy Reef
 
@@ -142,7 +140,6 @@ On the explicit-Worker hatch, set the matching `RAMOSE_*` keys on the Worker you
 | `Ramose.Databases(server)` | the **capability** ([glossary](/concepts/glossary/#capability)): a server-side client (`q`, `transact` / `run`, `install` — no `live` / `livePull`). Read-only is `Ramose.asRead(db)`. |
 | `Ramose.layer` | one transport: service binding when the host Worker has one, HTTPS otherwise |
 | `Ramose.providers()` | merge into your stack's `providers` next to `Cloudflare.providers()` |
-| `Ramose.applyLocalDev()` | fills placeholder Cloudflare credentials for `alchemy dev` when unset |
 | `Ramose.PEER_COMPAT` | the one compat date + `nodejs_compat` every peer Worker is deployed with |
 
 Using a capability inside a Worker is on [Use it from a Worker](/guides/workers/).

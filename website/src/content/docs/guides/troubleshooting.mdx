@@ -19,9 +19,15 @@ and this process is non-interactive so it can't be configured interactively.
 
 Two stack traces follow. Nothing will come up; stop it with Ctrl-C.
 
-The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Call `Ramose.applyLocalDev()` at the top of `alchemy.run.ts` — it fills `CI=1`, `ALCHEMY_STATE=local`, a 32-hex account id, and `CLOUDFLARE_API_TOKEN=x` when those keys are unset. Real credentials are left alone.
+The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Three do it:
 
-`CI=1` is what makes Alchemy read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. The account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is unnecessary when your stack calls `Alchemy.localState()`. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` also default the same keys.
+```sh title=".env"
+CI=1
+CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+CLOUDFLARE_API_TOKEN=x
+```
+
+`alchemy dev` reads `.env` on its own. `CI=1` is what makes it read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. These are placeholders: the account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is a separate switch your stack may branch on (`Alchemy.localState()` vs `Cloudflare.state()`); do not put it in `.env` unless you mean every deploy to use a file store. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` set the local-dev keys.
 
 ## The server says ready but nothing ever loads
 

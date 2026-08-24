@@ -58,9 +58,6 @@ export {
 export { PEER_COMPAT, PEER_BINDINGS, PEER_DO_CLASSES } from "./peer.ts";
 export type { RamoseEnv } from "./RamoseEnv.ts";
 
-// ── local-dev credentials ──────────────────────────────────────────────────
-export { applyLocalDev, LOCAL_DEV, LOCAL_DEV_ACCOUNT_ID } from "./localDev.ts";
-
 // ── one capability, one transport ──────────────────────────────────────────
 export {
   asRead,

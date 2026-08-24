@@ -18,8 +18,6 @@ import * as Layer from "effect/Layer";
 import { App } from "./app.ts";
 import { Server } from "./resources.ts";
 
-Ramose.applyLocalDev();
-
 export default Alchemy.Stack(
   "ramose-example",
   {

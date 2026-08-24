@@ -6,11 +6,11 @@
  *
  *   bun run dev:todos
  *
- * `applyLocalDev()` fills the placeholder Cloudflare credentials miniflare
- * needs (CI=1, ALCHEMY_STATE=local, a 32-hex account id, a dummy token).
- * The peer serves http://localhost:1337 and the `Ui` resource below starts
- * the Vite dev server on http://localhost:5173 once the peer is up, pointed
- * at it through VITE_RAMOSE_URL.
+ * `bun run dev:todos` sets CI / ALCHEMY_STATE and placeholder Cloudflare
+ * credentials the local emulator insists on. The peer serves
+ * http://localhost:1337 and the `Ui` resource below starts the Vite
+ * dev server on http://localhost:5173 once the peer is up, pointed at
+ * it through VITE_RAMOSE_URL.
  *
  * Deploy: `bun alchemy deploy examples/todos/alchemy.run.ts`, then
  * `VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/todos`.
@@ -23,8 +23,6 @@ import * as Command from "alchemy/Command";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
-
-Ramose.applyLocalDev();
 
 /**
  * The app's dev server, as a stack resource. `Command.Dev` is a long-lived

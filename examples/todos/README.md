@@ -22,8 +22,8 @@ bun alchemy dev examples/todos/alchemy.run.ts          # peer on :1337
 VITE_RAMOSE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 ```
 
-`applyLocalDev()` in the stack file fills the placeholder Cloudflare
-credentials miniflare wants when unset (see `.cursor/CLOUD.md`). `bunx vite
+`bun run dev:todos` sets CI / ALCHEMY_STATE and placeholder Cloudflare
+credentials the local emulator wants (see `.cursor/CLOUD.md`). `bunx vite
 build examples/todos` builds the same bundle for production.
 
 ## The shape

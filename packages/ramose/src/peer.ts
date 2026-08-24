@@ -134,8 +134,9 @@ const classNameOf = (binding: unknown): string | undefined => {
   const props = isRecord(binding.Props) ? binding.Props : undefined;
   if (typeof props?.className === "string") return props.className;
   if (typeof binding.className === "string") return binding.className;
-  if (typeof binding.LogicalId === "string") return binding.LogicalId;
-  if (typeof binding.name === "string") return binding.name;
+  // LogicalId / name are Alchemy resource ids, not the exported class.
+  // Guessing them turns a missing className into a wrong one and fails a
+  // correctly-wired hatch (`DurableObject("Tx", { className: "TransactorDO" })`).
   return undefined;
 };
 

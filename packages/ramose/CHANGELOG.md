@@ -16,8 +16,10 @@ One client, one transport: `yield* Ramose.Databases(Server)` plus
 `asRead`. Server-side handles have no `live` / `livePull`.
 `ReadWriteDatabases` / `ReadDatabases` / `ServerBinding` / `ServerHttp` /
 `authEnv` / `AUTH_ENV_KEYS` / `internalSecret` are gone from the public
-barrel. `Ramose.applyLocalDev()` fills local-dev credentials.
-Standalone `Database` remains for runtime-provisioned multi-tenant names.
+barrel. Local `alchemy dev` credentials are a documented one-liner /
+`dev:*` script (`CI=1`, `ALCHEMY_STATE=local`, placeholder account id
+and token) — there is no env-mutating helper. Standalone `Database`
+remains for runtime-provisioned multi-tenant names.
 
 ### Inline values are the documented query spelling (part of #228, tracker #205)
 

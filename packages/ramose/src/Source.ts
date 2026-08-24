@@ -59,6 +59,3 @@ export const serverDatabasesOf = (source: ServerSource): ServerDatabasesShape =>
     db: (name, schema) => withoutLive(databases.db(name, schema)),
   };
 };
-
-/** @deprecated Use {@link serverDatabasesOf}. */
-export const databasesOf = serverDatabasesOf;

@@ -278,6 +278,12 @@ describe("the auto-transport lowers a service binding on a Worker host", () => {
     expect(bound).toEqual([]);
   });
 
+  test("a { url } worker skips the service binding — an empty target is not a binding", async () => {
+    const bound: unknown[] = [];
+    await bind(worker(bound), withWorker({ url: "https://peer.example.com" }));
+    expect(bound).toEqual([]);
+  });
+
   test("a host that is not a Worker uses HTTPS — it is not a defect", async () => {
     const bound: unknown[] = [];
     await bind({ Type: "AWS.Lambda.Function", LogicalId: "Fn" }, withWorker("x"));

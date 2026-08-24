@@ -99,6 +99,14 @@ export const docOf = (seed: DatabaseSeed): string | undefined => {
 
 /**
  * @internal Deploy-time liveness probe of the server.
+ *
+ * Both providers run it. A server that never answers is not a hypothetical:
+ * under `alchemy dev` the local Worker's proxy binds its port and reports
+ * "ready" *before* the bundle is served, so a Worker that never finishes
+ * bundling leaves a socket that accepts connections and answers nothing. Every
+ * attempt is therefore bounded by {@link timeoutMs} and the whole ladder by
+ * {@link deadlineMs} — without those, "unreachable" and "silent" are the same
+ * thing to `fetch`, and the deploy hangs forever with no error to print.
  */
 export interface ServerProbe {
   /** Total attempts before failing the deploy. @default 30 live, 60 local */
@@ -390,6 +398,12 @@ const redact = (
 /**
  * @internal One `GET {url}/health`; a non-2xx is a failure so the retry policy
  * sees it, and so is silence past `timeoutMs`.
+ *
+ * The timeout is the load-bearing part. `fetch` has no deadline of its own, so
+ * a socket that completes its TCP handshake and then answers nothing — a local
+ * Worker whose bundle never landed, a hung isolate — parks the whole deploy on
+ * one unresolved promise. Bounding the attempt turns that into an ordinary
+ * failure the ladder can retry and, eventually, report.
  */
 export const healthOnce = (url: string, timeoutMs: number) =>
   Effect.tryPromise({
@@ -510,11 +524,31 @@ const ProviderLive = () =>
       return yield* attributes(news, PROBE_DEFAULTS.live);
     }),
     read: Effect.fn(function* ({ output }) {
+      // Virtual: the persisted state row is the source of truth.
       return output ?? undefined;
     }),
-    delete: Effect.fn(function* () {}),
+    delete: Effect.fn(function* () {
+      // Ramose databases are append-only and immutable; destroying the
+      // resource forgets the *server*, it does not erase any log, the segments
+      // in R2, or the Durable Objects. Deleting the data is a separate,
+      // deliberate act (empty the bucket, delete the DO namespaces).
+    }),
   });
 
+/**
+ * @internal Local provider (`alchemy dev`): the same attributes, and the same
+ * probe on a tighter ladder.
+ *
+ * It used to skip the probe on the reasoning that a local Worker the engine
+ * already ordered us after must be up. It need not be. `alchemy dev` binds the
+ * Worker's proxy port and logs "ready" before the first bundle is served, so a
+ * peer whose bundle never lands — a `main` the bundler cannot resolve, a syntax
+ * error in user code — leaves a socket that accepts connections and answers
+ * nothing. Skipping the probe here handed that server to `Ramose.Database`,
+ * whose install then blocked on an unresolvable `fetch` until the run was torn
+ * down and printed a bare `fail` with no reason. Probing puts the failure on
+ * the resource that owns the URL, with the URL in the message.
+ */
 const ProviderLocal = () =>
   Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {

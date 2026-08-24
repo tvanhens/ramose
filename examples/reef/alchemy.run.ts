@@ -8,8 +8,9 @@
  *
  *   bun run dev:reef
  *
- * which is `bun alchemy dev examples/reef/alchemy.run.ts`. `applyLocalDev()`
- * fills the placeholder Cloudflare credentials miniflare needs. The
+ * which is `bun alchemy dev examples/reef/alchemy.run.ts`. `bun run
+ * dev:reef` sets CI / ALCHEMY_STATE and placeholder Cloudflare
+ * credentials the local emulator insists on. The
  * peer serves http://localhost:1337, the auth Worker http://localhost:1338,
  * and the `Ui` resource below starts the Vite dev server on
  * http://localhost:5173 once both Workers are up. Vite proxies /api to the
@@ -30,8 +31,6 @@ import * as Layer from "effect/Layer";
 import { Api } from "./src/infra/api.ts";
 import { Server } from "./src/infra/resources.ts";
 import { DEV_API_PORT, DEV_UI_ORIGIN } from "./src/domain/shared.ts";
-
-Ramose.applyLocalDev();
 
 /**
  * The SPA's dev server, as a stack resource. `Command.Dev` is a long-lived

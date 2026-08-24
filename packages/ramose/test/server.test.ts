@@ -137,8 +137,8 @@ describe("PEER_COMPAT", () => {
     const dos = ownedPeerDurableObjects();
     expect(dos.transactor.name).toBe("TransactorDO");
     expect(dos.replica.name).toBe("QueryReplicaDO");
-    expect(dos.transactor.className ?? "TransactorDO").toBe("TransactorDO");
-    expect(dos.replica.className ?? "QueryReplicaDO").toBe("QueryReplicaDO");
+    expect(dos.transactor.className).toBe("TransactorDO");
+    expect(dos.replica.className).toBe("QueryReplicaDO");
   });
 });
 
@@ -161,6 +161,28 @@ describe("escape-hatch wiring", () => {
 
   test("a well-wired Worker passes", () => {
     expect(validatePeerWiring(peer(dos))).toBeUndefined();
+  });
+
+  test("a hatch whose DO logical id is not the class name still passes", () => {
+    expect(
+      validatePeerWiring(
+        peer({
+          STORE: { Type: "Cloudflare.R2.Bucket" },
+          TRANSACTOR: {
+            Type: "Cloudflare.DurableObject",
+            LogicalId: "Tx",
+            name: "Tx",
+            Props: { className: "TransactorDO" },
+          },
+          REPLICA: {
+            Type: "Cloudflare.DurableObject",
+            LogicalId: "Rep",
+            name: "Rep",
+            Props: { className: "QueryReplicaDO" },
+          },
+        }),
+      ),
+    ).toBeUndefined();
   });
 
   test("a missing binding is a deploy error", () => {
