@@ -151,10 +151,18 @@ export interface ServerAuth {
    */
   readonly policy?: string | undefined;
   /**
-   * Where the issuer's public keys live. Required once `policy` is set;
-   * setting it without a policy fails the deploy.
+   * Where the issuer's public keys live. Required once `policy` is set
+   * unless {@link jwksJson} is set; setting it without a policy fails
+   * the deploy.
    */
   readonly jwksUrl?: AuthEnvValue | undefined;
+  /**
+   * Literal JWK Set for offline / test verification. Used when
+   * {@link jwksUrl} is unset (the Worker prefers the URL if both are
+   * bound). Lowers onto `RAMOSE_JWKS_JSON`. Setting it without a policy
+   * fails the deploy.
+   */
+  readonly jwksJson?: AuthEnvValue | undefined;
   /**
    * Name of a service binding on the server Worker to fetch `jwksUrl`
    * through. Required when the issuer is another Worker on the same account.
@@ -246,6 +254,7 @@ export type ServerProps = {
 export const AUTH_ENV_KEYS = {
   policy: "RAMOSE_POLICY",
   jwksUrl: "RAMOSE_JWKS_URL",
+  jwksJson: "RAMOSE_JWKS_JSON",
   jwksService: "RAMOSE_JWKS_SERVICE",
   issuers: "RAMOSE_JWT_ISS",
   aud: "RAMOSE_JWT_AUD",
@@ -260,22 +269,16 @@ export const AUTH_ENV_KEYS = {
 /** @internal Env key `token` lowers onto. */
 export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const satisfies keyof RamoseEnv;
 
-/**
- * Hatch compare keys. `RAMOSE_JWKS_JSON` has no `ServerAuth` field (offline
- * / test JWKS) but the Worker `build` counts it as a verifier, so a hatch
- * carrying only that key must diverge the same way the other verifier vars
- * do.
- */
 const AUTH_COMPARE_KEYS = [
   AUTH_ENV_KEYS.policy,
   AUTH_ENV_KEYS.jwksUrl,
-  "RAMOSE_JWKS_JSON",
+  AUTH_ENV_KEYS.jwksJson,
   AUTH_ENV_KEYS.jwksService,
   AUTH_ENV_KEYS.issuers,
   AUTH_ENV_KEYS.aud,
   AUTH_ENV_KEYS.maxTtl,
   AUTH_ENV_KEYS.allowedOrigins,
-] as const satisfies readonly (keyof RamoseEnv)[];
+] as const;
 
 const withAuthConfig = (auth: ServerAuth): ServerAuth =>
   auth.jwt === undefined
@@ -336,6 +339,7 @@ const bindAuthFields = (
   };
   set(k.policy, auth.policy);
   set(k.jwksUrl, auth.jwksUrl);
+  set(k.jwksJson, auth.jwksJson);
   set(k.jwksService, auth.jwksService);
   set(k.issuers, list(auth.issuers));
   set(k.aud, auth.aud);
@@ -402,14 +406,15 @@ export const ownedPeerEnv = (
 });
 
 /**
- * @internal Completeness: policy implies jwksUrl + issuers + aud, and a
- * bound verifier implies policy. Binding nothing stays open.
+ * @internal Completeness: policy implies jwksUrl or jwksJson + issuers +
+ * aud, and a bound verifier implies policy. Binding nothing stays open.
  */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
   if (peerAuth === undefined) return undefined;
   const auth = withAuthConfig(peerAuth);
   const verifier: string[] = [];
   if (isBound(auth.jwksUrl)) verifier.push(AUTH_ENV_KEYS.jwksUrl);
+  if (isBound(auth.jwksJson)) verifier.push(AUTH_ENV_KEYS.jwksJson);
   if (isBound(auth.jwksService)) verifier.push(AUTH_ENV_KEYS.jwksService);
   if (list(auth.issuers) !== undefined) verifier.push(AUTH_ENV_KEYS.issuers);
   if (isBound(auth.aud)) verifier.push(AUTH_ENV_KEYS.aud);
@@ -418,7 +423,7 @@ export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined 
     return `ramose: ${verifier.join(", ")} ${verifier.length === 1 ? "is" : "are"} set but auth.policy is not — a bound verifier without a policy leaves the server open to everyone`;
   }
   const missing: string[] = [];
-  if (!isBound(auth.jwksUrl)) missing.push(AUTH_ENV_KEYS.jwksUrl);
+  if (!isBound(auth.jwksUrl) && !isBound(auth.jwksJson)) missing.push(AUTH_ENV_KEYS.jwksUrl);
   if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
   if (!isBound(auth.aud)) missing.push(AUTH_ENV_KEYS.aud);
   if (missing.length > 0) {

@@ -235,6 +235,7 @@ describe("the server's auth env", () => {
     expect(AUTH_ENV_KEYS).toEqual({
       policy: "RAMOSE_POLICY",
       jwksUrl: "RAMOSE_JWKS_URL",
+      jwksJson: "RAMOSE_JWKS_JSON",
       jwksService: "RAMOSE_JWKS_SERVICE",
       issuers: "RAMOSE_JWT_ISS",
       aud: "RAMOSE_JWT_AUD",
@@ -308,6 +309,7 @@ describe("the server's auth env", () => {
     expect(authEnv({ jwksUrl: "https://auth.acme.example/.well-known/jwks.json" })).toEqual({
       RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
     });
+    expect(authEnv({ jwksJson: '{"keys":[]}' })).toEqual({ RAMOSE_JWKS_JSON: '{"keys":[]}' });
     expect(authEnv({})[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
     expect(authEnv({ policy: "" })[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
   });
@@ -385,6 +387,14 @@ describe("owned form binds auth and token onto the Worker", () => {
         aud: "ramose:peer:prod",
       }),
     ).toBeUndefined();
+    expect(
+      checkAuth({
+        policy: '{"v":1}',
+        jwksJson: '{"keys":[]}',
+        issuers: "https://local.test",
+        aud: "ramose:local",
+      }),
+    ).toBeUndefined();
     expect(checkAuth(undefined)).toBeUndefined();
     expect(checkAuth({})).toBeUndefined();
   });
@@ -404,6 +414,7 @@ describe("owned form binds auth and token onto the Worker", () => {
       }),
     ).toMatch(/set but auth\.policy is not/);
     expect(checkAuth({ issuers: "https://auth.acme.example" })).toMatch(/RAMOSE_JWT_ISS.*auth\.policy is not/);
+    expect(checkAuth({ jwksJson: '{"keys":[]}' })).toMatch(/RAMOSE_JWKS_JSON.*auth\.policy is not/);
     expect(checkAuth(undefined)).toBeUndefined();
     expect(checkAuth({})).toBeUndefined();
     expect(checkAuth({ allowedOrigins: "https://app.acme.example" })).toBeUndefined();
@@ -497,9 +508,26 @@ describe("hatch form compares auth / token against the Worker env", () => {
     ).toBeUndefined();
   });
 
-  test("hatch-only RAMOSE_JWKS_JSON diverges like the other verifier vars", () => {
+  test("hatch RAMOSE_JWKS_JSON matches auth.jwksJson and diverges without it", () => {
+    const jwksJson = '{"keys":[]}';
+    const jsonAuth = {
+      policy: '{"v":1}',
+      jwksJson,
+      issuers: "https://local.test",
+      aud: "ramose:local",
+    };
+    const jsonHatch = {
+      RAMOSE_POLICY: jsonAuth.policy,
+      RAMOSE_JWKS_JSON: jwksJson,
+      RAMOSE_JWT_ISS: jsonAuth.issuers,
+      RAMOSE_JWT_AUD: jsonAuth.aud,
+    };
+    expect(compareAuthToWorker(jsonAuth, undefined, hatch(jsonHatch))).toBeUndefined();
     expect(
-      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_JSON: '{"keys":[]}' })),
+      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_JSON: jwksJson })),
+    ).toMatch(/diverge on RAMOSE_JWKS_JSON/);
+    expect(
+      compareAuthToWorker({ ...jsonAuth, jwksJson: '{"keys":[{"kid":"other"}]}' }, undefined, hatch(jsonHatch)),
     ).toMatch(/diverge on RAMOSE_JWKS_JSON/);
     expect(
       compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_URL: "https://auth.example/jwks" })),
