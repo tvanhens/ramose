@@ -1,14 +1,12 @@
 import * as Ramose from "ramose";
-import * as Cloudflare from "alchemy/Cloudflare";
+import { Todos } from "./schema.ts";
 
-const Store = Cloudflare.R2.Bucket("Store");
-const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
-const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
-
-export const RamoseWorker = Cloudflare.Worker("Peer", {
+/**
+ * The owned peer: Server declares the Worker, both Durable Object classes,
+ * PEER_COMPAT, and the STORE / TRANSACTOR / REPLICA bindings. `main` is the
+ * todos operations entry; omit it to use `ramose/worker`.
+ */
+export const Server = Ramose.Server("Ramose", {
   main: import.meta.resolve("./peer.ts"),
-  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
-  env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
+  databases: { todos: Todos },
 });
-
-export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });

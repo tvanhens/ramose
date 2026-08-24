@@ -6,12 +6,11 @@
  *
  *   bun run dev:todos
  *
- * which is `bun alchemy dev examples/todos/alchemy.run.ts` with the env vars
- * miniflare needs defaulted (CI=1, ALCHEMY_STATE=local, placeholder
- * CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN — see .cursor/CLOUD.md). The
- * peer serves http://localhost:1337 and the `Ui` resource below starts the
- * Vite dev server on http://localhost:5173 once the peer is up, pointed at it
- * through VITE_RAMOSE_URL.
+ * `applyLocalDev()` fills the placeholder Cloudflare credentials miniflare
+ * needs (CI=1, ALCHEMY_STATE=local, a 32-hex account id, a dummy token).
+ * The peer serves http://localhost:1337 and the `Ui` resource below starts
+ * the Vite dev server on http://localhost:5173 once the peer is up, pointed
+ * at it through VITE_RAMOSE_URL.
  *
  * Deploy: `bun alchemy deploy examples/todos/alchemy.run.ts`, then
  * `VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/todos`.
@@ -24,14 +23,8 @@ import * as Command from "alchemy/Command";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Server } from "./resources.ts";
-import { Todos } from "./schema.ts";
 
-/**
- * The one place the catalog is installed: `install()` as a deploy-time
- * resource, ordered after the server it names. `db.install()` is an ordinary
- * idempotent transaction, so a redeploy costs one no-op tx.
- */
-export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos });
+Ramose.applyLocalDev();
 
 /**
  * The app's dev server, as a stack resource. `Command.Dev` is a long-lived
@@ -41,8 +34,9 @@ export const TodosDb = Ramose.Database("todos", { server: Server, schema: Todos 
  * triggers when a Worker source changes.
  *
  * Yielding `Server` is what orders the graph: Vite starts after the peer is
- * serving, and `VITE_RAMOSE_URL` points at wherever the peer actually came
- * up. `--strictPort` keeps the UI on :5173 instead of silently drifting to
+ * serving (and after `databases:` has seeded the catalog), and
+ * `VITE_RAMOSE_URL` points at wherever the peer actually came up.
+ * `--strictPort` keeps the UI on :5173 instead of silently drifting to
  * :5174, so the URL the docs tell you to open is the one you get.
  */
 export const Ui = Command.Dev(
@@ -68,7 +62,6 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
-    yield* TodosDb;
     const ui = yield* Ui;
     return { peerUrl: server.url, uiUrl: ui.url };
   }),

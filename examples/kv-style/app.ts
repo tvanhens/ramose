@@ -36,7 +36,7 @@ export const App = Cloudflare.Worker(
   { main: import.meta.url },
   Effect.gen(function* () {
     // The binding *is* the client. One `Databases`, bound once at init.
-    const ramose = yield* Ramose.ReadWriteDatabases(Server);
+    const ramose = yield* Ramose.Databases(Server);
 
     // ── databases are names ──────────────────────────────────────────────────
     //
@@ -46,11 +46,11 @@ export const App = Cloudflare.Worker(
     // per tenant. An illegal name fails the first operation with
     // `InvalidRequest`, so it never reaches the peer.
     //
-    // The catalog is installed once, at deploy (`Ramose.Database` in
-    // alchemy.run.ts) or at tenant creation with `db.install()` — never per
-    // request. The token is shared across every name: it is the peer's one
-    // `RAMOSE_TOKEN`, checked for every tenant database and ignored when the
-    // peer has it unset (https://ramose.ai/reference/server/).
+    // The catalog is installed once, at deploy (`databases:` on Server) or
+    // at tenant creation with `db.install()` — never per request. The token
+    // is shared across every name: it is the peer's one `RAMOSE_TOKEN`,
+    // checked for every tenant database and ignored when the peer has it
+    // unset (https://ramose.ai/reference/server/).
 
     /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
     const createTenant = (tenantId: string) =>
@@ -92,8 +92,8 @@ export const App = Cloudflare.Worker(
             : tenantRoute(tenantId);
         }
 
-        // The default database. `Ramose.Database("movies", …)` in
-        // alchemy.run.ts installed Movies on this name at deploy time.
+        // The default database. `databases: { movies: Movies }` on Server
+        // installed Movies on this name at deploy time.
         const db = ramose.db("movies", Movies);
 
         const report = yield* db.effect.transact(function* (tx) {
@@ -128,7 +128,7 @@ export const App = Cloudflare.Worker(
         }),
       ),
     };
-  }).pipe(Effect.provide(Ramose.ServerBinding)),
+  }).pipe(Effect.provide(Ramose.layer)),
 );
 
 export default App;

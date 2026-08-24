@@ -21,8 +21,8 @@ import { isDatabaseName } from "ramose/db";
  *   (`RAMOSE_JWT_MAX_TTL`); the SPA re-mints slightly earlier.
  *
  * The jwt plugin's config, the mint route's payload (`Ramose.claims`) and the
- * peer's env (`Ramose.authEnv({ auth })`) all read this one value, so they
- * cannot drift.
+ * peer's `RAMOSE_JWT_*` keys (from this same `REEF_AUTH`) all read this one
+ * value, so they cannot drift.
  */
 export const REEF_AUTH: AuthConfig = {
   issuer: "reef-demo-auth",

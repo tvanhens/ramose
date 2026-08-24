@@ -18,23 +18,20 @@ serving, is handed `VITE_RAMOSE_URL`, and is torn down with it. Then open
 http://localhost:5173. It is shorthand for
 
 ```sh
-CI=1 ALCHEMY_STATE=local \
-  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
-  CLOUDFLARE_API_TOKEN=x \
-  bun alchemy dev examples/todos/alchemy.run.ts          # peer on :1337
+bun alchemy dev examples/todos/alchemy.run.ts          # peer on :1337
 VITE_RAMOSE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 ```
 
-with each variable only defaulted when you have not set it yourself (see
-`.cursor/CLOUD.md` for why miniflare wants them). `bunx vite build
-examples/todos` builds the same bundle for production.
+`applyLocalDev()` in the stack file fills the placeholder Cloudflare
+credentials miniflare wants when unset (see `.cursor/CLOUD.md`). `bunx vite
+build examples/todos` builds the same bundle for production.
 
 ## The shape
 
 | file | what it is |
 |---|---|
 | `schema.ts` | the catalog, on `ramose/db` — shared by the stack, a Worker and the browser |
-| `resources.ts` / `alchemy.run.ts` | `Ramose.Server` + `Ramose.Database`: the one place the catalog is installed |
+| `resources.ts` / `alchemy.run.ts` | `Ramose.Server({ databases: { todos: Todos } })`: the owned peer and the catalog seeder |
 | `src/db.ts` | one client, closed with the page. `db`, nothing else |
 | `src/todos.ts` | `Ramose.Query.from` + writes, so the test drives exactly what the UI does |
 | `src/App.tsx` | the UI on `useLive` + `useTransact` from `ramose/react` — no hand-rolled hooks |
@@ -52,8 +49,8 @@ and the socket opens lazily), no runtime and no `run` — every `Db` method
 needs no environment, so the shipped hooks run them directly — and
 no Vite alias: `ramose/db` is a real `exports` entry and nothing it
 reaches imports the deploy engine, so the built bundle contains no `alchemy`
-code at all. (Effect users: `Ramose.layer({ url, token })` is the same client
-as a scoped `Layer<Databases>`.)
+code at all. (Effect users: `import { layer } from "ramose/db/effect"` is the
+same client as a scoped `Layer<Databases>`.)
 
 The query is a **value**, so it is hoisted once at module scope in
 `src/todos.ts`, and one row is named from it, never restated:
