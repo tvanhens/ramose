@@ -57,7 +57,7 @@ production" sections of `CONTRIBUTING.md`.
 bun run check            # objective report on every page; exits 1 on errors
 bun run check --json     # machine-readable
 bun scripts/docs-check.mjs --page guides/catalog
-bun scripts/docs-check.mjs --only words|shape|terms|links|images|code
+bun scripts/docs-check.mjs --only words|shape|terms|links|images|code|facts
 ```
 
 `scripts/docs-check.mjs` is the single source of truth for the objective facts
