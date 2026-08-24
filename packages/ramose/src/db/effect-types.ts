@@ -19,7 +19,7 @@ import type { DbError } from "./Errors.ts";
 import type { SchemaEid, Eid } from "./Eid.ts";
 import type { LookupRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { OpReport, Operation } from "./Operation.ts";
+import type { OpReport, Operation, RunEntity } from "./Operation.ts";
 import type { ParamArgs } from "./Params.ts";
 import type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
 import type { Page, QueryObject } from "./query/index.ts";
@@ -74,13 +74,13 @@ export interface EffectDb<C extends AnySchema = AnySchema>
 
   install(): Effect.Effect<TxReport<C>, DbError>;
 
-  run<I, O>(
-    operation: Operation<string, I, O, undefined>,
+  run<I, O, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, undefined, OC>,
     input: I,
   ): Effect.Effect<OpReport<O, C>, DbError>;
-  run<I, O, N extends AnyEntity>(
-    operation: Operation<string, I, O, N>,
-    entity: unknown,
+  run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, N, OC>,
+    entity: RunEntity<C, N>,
     input: I,
   ): Effect.Effect<OpReport<O, C>, DbError>;
 }

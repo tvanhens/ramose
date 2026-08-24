@@ -28,6 +28,7 @@ import type {
   OpReport,
   Operation,
   OperationInvocation,
+  RunEntity,
 } from "./Operation.ts";
 import { asPromise, fromStream } from "./promise.ts";
 import { shareEqualDeep } from "./shareEqualDeep.ts";
@@ -272,16 +273,17 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
   /**
    * Run a named operation. Decode input, apply the optimistic prefix (steps
    * before the first `op.effect`) as a pending layer, and POST the invocation.
-   * A contextual operation (`on: Namespace`) takes the entity as the second
-   * argument.
+   * A contextual operation (`on: Entity`) takes the entity as the second
+   * argument — an {@link Eid} of that entity, or the same forms {@link Tx}
+   * accepts for one. A comment cell is not an issue cell.
    */
-  run<I, O>(
-    operation: Operation<string, I, O, undefined>,
+  run<I, O, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, undefined, OC>,
     input: I,
   ): Promise<OpReport<O, C>>;
-  run<I, O, N extends AnyEntity>(
-    operation: Operation<string, I, O, N>,
-    entity: unknown,
+  run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, N, OC>,
+    entity: RunEntity<C, N>,
     input: I,
   ): Promise<OpReport<O, C>>;
 
@@ -814,7 +816,7 @@ const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       asPromise(
         operation.on !== undefined
-          ? inner.run(operation as never, a, b as never)
+          ? inner.run(operation as never, a as never, b as never)
           : inner.run(operation as never, a as never),
       )) as Db<C>["run"],
     effect: inner,

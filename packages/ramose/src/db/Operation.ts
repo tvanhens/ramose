@@ -13,12 +13,72 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { Eid } from "./Eid.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { EntityRef } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
-import { isTxHandle } from "./Tx.ts";
+import {
+  isTxHandle,
+  type FieldRefLookup,
+  type TxEntity,
+  type TxField,
+  type TxHandle,
+  type TxValue,
+} from "./Tx.ts";
+
+/**
+ * `true` when `C` is a concrete catalog (keys are entity names). The
+ * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
+ * `TxValue` against that bound is `never`.
+ */
+type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
+  ? false
+  : true;
+
+/**
+ * Field slot on the op handle. Same union as {@link TxField} once the
+ * catalog is known; against the open `AnySchema` bound, a field ref.
+ */
+export type OpField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? TxField<C>
+  : { readonly ident: string };
+
+/**
+ * Value correlated to an {@link OpField}. Delegates to {@link TxValue}
+ * on a concrete catalog; against `AnySchema`, the field ref's Schema type
+ * (so `Issue.status` still rejects `42`).
+ */
+export type OpValue<C extends AnySchema, A> = [ConcreteCatalog<C>] extends [true]
+  ? TxValue<C, A>
+  : A extends { readonly schema: { readonly Type: infer T } }
+    ? T
+    : never;
+
+/**
+ * Entity slot on the op handle. {@link TxEntity} plus the promise
+ * {@link OpHandle} — same bag, void methods instead of Effects.
+ */
+export type OpEntity<C extends AnySchema> =
+  | TxEntity<C>
+  | OpHandle<C>
+  | FieldRefLookup<C>
+  | EntityRef<C>;
+
+/**
+ * `db.run`'s contextual entity. {@link Eid} of the `on` entity, an
+ * unbranded number / tempid / lookup / handle (`TxEntity` without a bare
+ * `number` that would also accept a foreign cell), or a promise handle.
+ * `Eid<Comment>` is not an `Eid<Issue>`.
+ */
+export type RunEntity<C extends AnySchema, N extends AnyEntity> =
+  | Eid<N>
+  | (number & { readonly _ns?: never })
+  | Exclude<TxEntity<C>, number>
+  | OpHandle<C>
+  | TxHandle<C>;
 
 /** Schema for an entity id in operation input / output. */
 export const EntityId: typeof Schema.Number = Schema.Number;
@@ -62,39 +122,53 @@ export type EffectThunk<A = unknown> = (
 ) => Promise<A> | A;
 
 /**
- * Entity handle a body writes through. Catalog-generic: operations are
- * defined against imported attr refs, not a `Tx<AnySchema>` (that bound
- * turns every value into `never`).
+ * Entity handle a body writes through. Promise-surface twin of
+ * {@link TxHandle}: same field / value / entity slots, methods return
+ * `void` instead of `Effect`.
  */
-export interface OpHandle {
+export interface OpHandle<C extends AnySchema = AnySchema> {
   readonly _tag: "TxHandle";
-  readonly eid: unknown;
-  set(field: unknown, value: unknown): void;
-  remove(field: unknown, value?: unknown): void;
+  readonly eid: EntityRef<C>;
+  set<const A extends OpField<C>>(field: A, value: OpValue<C, A>): void;
+  remove<const A extends OpField<C>>(field: A, value?: OpValue<C, A>): void;
   delete(): void;
 }
 
 /**
  * The handle a body awaits through. Transaction verbs accumulate one
  * commit; reads see the speculative view (confirmed + pending + ops so
- * far). Writes accept any attr ref — the catalog is bound at `db.run`.
+ * far). Write slots are {@link TxField} / {@link TxValue} / {@link TxEntity}
+ * (thin aliases when the catalog is concrete).
  */
-export interface Op<N extends AnyEntity | undefined = undefined> {
+export interface Op<
+  C extends AnySchema = AnySchema,
+  N extends AnyEntity | undefined = undefined,
+> {
   /**
    * The entity a contextual operation is bound to (`on: Entity`).
-   * Absent on a non-contextual operation.
+   * Absent on a non-contextual operation. `eid` is the `on` cell.
    */
-  readonly self: [N] extends [AnyEntity] ? OpHandle : undefined;
+  readonly self: [N] extends [AnyEntity]
+    ? OpHandle<C> & { readonly eid: Eid<N> }
+    : undefined;
   /** The authenticated caller. On the client this is `db.principal()`. */
   readonly principal: OpPrincipal;
   /** Database name this invocation is bound to. */
   readonly db: string;
 
-  entity(): OpHandle;
-  entity(id: unknown): OpHandle;
-  set(e: unknown, field: unknown, value: unknown): void;
-  remove(e: unknown, field: unknown, value?: unknown): void;
-  delete(e: unknown): void;
+  entity(): OpHandle<C>;
+  entity(id: OpEntity<C>): OpHandle<C>;
+  set<const A extends OpField<C>>(
+    e: OpEntity<C>,
+    field: A,
+    value: OpValue<C, A>,
+  ): void;
+  remove<const A extends OpField<C>>(
+    e: OpEntity<C>,
+    field: A,
+    value?: OpValue<C, A>,
+  ): void;
+  delete(e: OpEntity<C>): void;
 
   query<Row, P = never, Out = readonly Row[]>(
     input: QueryObject<Row, P, Out>,
@@ -120,16 +194,17 @@ export interface Operation<
   I = unknown,
   O = unknown,
   N extends AnyEntity | undefined = undefined,
+  C extends AnySchema = AnySchema,
 > {
   readonly _tag: "Operation";
   readonly name: Name;
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on: N | undefined;
-  readonly body: (op: Op<N>, input: I) => Promise<O> | O;
+  readonly body: (op: Op<C, N>, input: I) => Promise<O> | O;
 }
 
-export type AnyOperation = Operation<string, any, any, any>;
+export type AnyOperation = Operation<string, any, any, any, any>;
 
 /**
  * Runtime handle the overlay and Worker actually build. Effect-flavored —
@@ -196,10 +271,13 @@ export interface OperationSchemas<
   I,
   O,
   N extends AnyEntity | undefined = undefined,
+  C extends AnySchema = AnySchema,
 > {
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on?: N;
+  /** Bind the body to this catalog so write slots match {@link Tx}. */
+  readonly schema?: C;
 }
 
 /** Define one named operation. */
@@ -208,11 +286,12 @@ export const Operation = <
   I,
   O,
   N extends AnyEntity | undefined = undefined,
+  C extends AnySchema = AnySchema,
 >(
   name: Name,
-  schemas: OperationSchemas<I, O, N>,
-  body: (op: Op<N>, input: I) => Promise<O> | O,
-): Operation<Name, I, O, N> => ({
+  schemas: OperationSchemas<I, O, N, C>,
+  body: (op: Op<C, N>, input: I) => Promise<O> | O,
+): Operation<Name, I, O, N, C> => ({
   _tag: "Operation",
   name,
   input: schemas.input,
