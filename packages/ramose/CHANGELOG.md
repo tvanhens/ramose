@@ -22,8 +22,10 @@ The bare-string entity arm stays the tempid hatch.
 
 A branded `{ id: Eid<N> }` row of the wrong entity is rejected at the
 type level (an unbranded `.ids()` `{ id: number }` is not a branded
-cell — pass `.id`). Ref-typed write slots still accept a handle,
-tempid string, or lookup; `op.self.set(User.bestFriend, "tmp")` is
+cell — pass `.id`). A ref *value* must be an eid, tempid string, or
+lookup — `set(field, op.self)` writes the handle object and
+`processTx` rejects it (`bad attribute key _tag`); pass
+`op.self.eid`. `op.self.set(User.bestFriend, "tmp")` is
 create-and-link. `Operation.for(catalog)` bakes `schema:` in so the
 catalog checks are on without repeating the binding. A schema-bound
 op now runs on a superset db and is rejected on a catalog union.

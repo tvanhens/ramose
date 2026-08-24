@@ -635,6 +635,53 @@ describe("ref tempid create-and-link", () => {
     expect(row?.[":user/bestFriend"]).toBe(beaEid);
     expect(row?.[":user/name"]).toBe("Ada");
   });
+
+  test("a handle in a ref value slot is not unwrapped — use .eid", async () => {
+    const built = buildOp({
+      schema: Movies,
+      db: "movies",
+      principal: { eid: null, class: "admin", claims: {} },
+      self: 1001,
+      effects: "run",
+      q: () => Effect.succeed([]),
+      pull: () => Effect.succeed(null),
+    });
+    const op = asPromiseOp(built.op);
+    const other = op.entity();
+    other.set(User.bestFriend, op.self);
+    expect((built.ops()[0] as unknown[])[3]).toEqual(
+      expect.objectContaining({ _tag: "TxHandle" }),
+    );
+
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Movies) as unknown[]);
+    await expect(conn.transact([...built.ops()])).rejects.toThrow(
+      /bad attribute key _tag/,
+    );
+
+    const viaEid = buildOp({
+      schema: Movies,
+      db: "movies",
+      principal: { eid: null, class: "admin", claims: {} },
+      self: 1001,
+      effects: "run",
+      q: () => Effect.succeed([]),
+      pull: () => Effect.succeed(null),
+    });
+    const viaEidOp = asPromiseOp(viaEid.op);
+    const linked = viaEidOp.entity();
+    linked.set(User.name, "Bea");
+    linked.set(User.bestFriend, viaEidOp.self.eid);
+    expect((viaEid.ops()[1] as unknown[])[3]).toBe(1001);
+    const expansion = await conn.transact([
+      { ":db/id": 1001, ":user/name": "Ada" },
+      ...viaEid.ops(),
+    ]);
+    const beaEid = expansion.tempids["tmp-1"];
+    expect(typeof beaEid).toBe("number");
+    const row = await conn.db().entity(beaEid!);
+    expect(row?.[":user/bestFriend"]).toBe(1001);
+  });
 });
 
 describe("optional add", () => {

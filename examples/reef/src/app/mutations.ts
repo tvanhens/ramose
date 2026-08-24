@@ -126,7 +126,7 @@ export const addCommentOp = Op(
     comment.set(Comment.body, input.body);
     comment.set(Comment.at, new Date());
     comment.set(Comment.author, input.authorId);
-    comment.set(Comment.issue, op.self);
+    comment.set(Comment.issue, op.self.eid);
     return {};
   },
 );
