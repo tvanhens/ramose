@@ -161,7 +161,7 @@ const inProcessPeer = async () => {
 
 const User = Entity("user", {
   name: Field(Schema.String, { unique: "upsert" }),
-  age: Field(Long),
+  age: Field(Long, { optional: true }),
   tags: Field(Schema.String, { cardinality: "many" }),
 });
 
@@ -182,7 +182,7 @@ const Comment = Entity("comment", {
 const Team = Entity("team", {
   name: Field(Schema.String),
   members: Field(Ref(() => User), { cardinality: "many" }),
-  parent: Field(Ref.self),
+  parent: Field(Ref.self, { optional: true }),
 });
 
 const Tracker = DbSchema({ user: User, issue: Issue, comment: Comment, team: Team });
@@ -1255,6 +1255,7 @@ describe("per-element pull filters (select options)", () => {
         yield* c.set(Comment.issue, ids.fix!.id as never);
         yield* c.set(Comment.author, ids.grace!.id as never);
         yield* c.set(Comment.text, "second take");
+        yield* c.set(Comment.at, new Date("2026-01-02T00:00:00.000Z"));
       }),
     );
 

@@ -12,15 +12,15 @@ import {
 
 export const User = Entity("user", {
   name: Field(Schema.String, { unique: "upsert" }),
-  age: Field(Long),
+  age: Field(Long, { optional: true }),
   friends: Field(Ref.self, { cardinality: "many" }),
-  bestFriend: Field(Ref.self),
+  bestFriend: Field(Ref.self, { optional: true }),
 });
 
 export const Movie = Entity("movie", {
   title: Field(Schema.String, { index: true }),
-  year: Field(Long),
-  released: Field(Instant),
+  year: Field(Long, { optional: true }),
+  released: Field(Instant, { optional: true }),
 });
 
 export const Meta = Entity("meta", {

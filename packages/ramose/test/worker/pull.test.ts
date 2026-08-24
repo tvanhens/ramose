@@ -18,6 +18,7 @@ const attr = (ident: string, type: string) => ({
   ":db/ident": ident,
   ":db/valueType": `:db.type/${type}`,
   ":db/cardinality": ":db.cardinality/one",
+  ":db/optional": true,
 });
 
 describe("pull against an uninstalled attribute", () => {
@@ -52,7 +53,7 @@ describe("pull against an uninstalled attribute", () => {
 
   test("the check follows nested sub-patterns", async () => {
     await peer.seed([
-      { ":db/ident": ":doc/author", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":doc/author", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     const bad = await peer.json(
       "/db/acme/pull",

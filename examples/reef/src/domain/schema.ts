@@ -21,9 +21,11 @@ export const User = Ramose.Entity("user", {
     doc: "Policy class, materialized by the peer from the JWT at session establishment",
   }),
   name: Ramose.string({
+    optional: true,
     doc: "Display name, stamped by the peer from ramose.attrs.name",
   }),
   email: Ramose.string({
+    optional: true,
     doc: "Email, stamped by the peer from ramose.attrs.email",
   }),
 });
@@ -42,7 +44,7 @@ export type Status = (typeof STATUSES)[number];
 // docs:issue-entity
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
-  description: Ramose.string(),
+  description: Ramose.string({ optional: true }),
   status: Ramose.Enum(STATUSES),
   /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
   priority: Ramose.int(),
@@ -50,10 +52,11 @@ export const Issue = Ramose.Entity("issue", {
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
   creator: Ramose.Ref(User),
-  assignee: Ramose.Ref(User),
+  assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
+    optional: true,
     doc: "visible to the admin class only",
   }),
 });

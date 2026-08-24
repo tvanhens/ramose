@@ -1,6 +1,6 @@
 /** Lower a schema to ident-datom maps. Ensure is a separate, idempotent schema tx. */
 
-import type { AnyField } from "./Field.ts";
+import { isOptionalField, type AnyField } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import { inferDbValueType, toWireValueType } from "./valueTypes.ts";
 
@@ -11,6 +11,7 @@ export interface SchemaAttrTx {
   readonly ":db/unique"?: string;
   readonly ":db/index"?: true;
   readonly ":db/isComponent"?: true;
+  readonly ":db/optional"?: true;
   readonly ":db/doc"?: string;
 }
 
@@ -38,6 +39,9 @@ export const attributeTx = (
   }
   if (field.owned) {
     (out as { ":db/isComponent": true })[":db/isComponent"] = true;
+  }
+  if (isOptionalField(field) && field.cardinality !== "many") {
+    (out as { ":db/optional": true })[":db/optional"] = true;
   }
   if (field.doc !== undefined) {
     (out as { ":db/doc": string })[":db/doc"] = field.doc;

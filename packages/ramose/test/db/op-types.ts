@@ -348,17 +348,22 @@ const putCreate = catalogOp.put(User, {
   friends: [friend, 1002],
 });
 type _putCreate = Expect<Extends<typeof putCreate, OpHandle<typeof Movies>>>;
-catalogOp.put(User, { bestFriend: putCreate, friends: [putCreate] });
+catalogOp.put(User, { name: "Bea", bestFriend: putCreate, friends: [putCreate] });
 
 const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
 type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
 
-catalogOp.put(User, { bestFriend: 1002 });
-catalogOp.put(User, { bestFriend: { id: userId } });
-catalogOp.put(User, { bestFriend: catalogOp.principal });
-catalogOp.put(User, { bestFriend: userId });
+catalogOp.put(User, { name: "Ada", bestFriend: 1002 });
+catalogOp.put(User, { name: "Ada", bestFriend: { id: userId } });
+catalogOp.put(User, { name: "Ada", bestFriend: catalogOp.principal });
+catalogOp.put(User, { name: "Ada", bestFriend: userId });
 catalogOp.put(User, userId, { age: 36 });
 catalogOp.put(User, userRow, { age: 36 });
+
+const updated = catalogOp.update(User, userId, { age: 37 });
+type _updated = Expect<Extends<typeof updated, OpHandle<typeof Movies>>>;
+catalogOp.update(User, { name: "Ada", age: 38 });
+catalogOp.update(User, userRow, { age: 39 });
 
 {
   // @ts-expect-error name is string, not number
@@ -373,6 +378,12 @@ catalogOp.put(User, userRow, { age: 36 });
   catalogOp.put(User, movieId, { name: "Ada" });
   // @ts-expect-error a movie eid is not a user ref
   catalogOp.put(User, { bestFriend: movieId });
+  // @ts-expect-error create form requires the required keys — key-only is update
+  catalogOp.put(User, { age: 36 });
+  // @ts-expect-error update map form needs a unique: "upsert" field
+  catalogOp.update(User, { age: 36 });
+  // @ts-expect-error a branded movie cell is not a user subject
+  catalogOp.update(User, movieId, { age: 36 });
 }
 
 // ── Issue.creator rejects a Label eid (concrete catalog fixture) ───────────

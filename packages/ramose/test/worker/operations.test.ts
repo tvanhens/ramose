@@ -82,12 +82,40 @@ const createByPut = Operation(
   },
 );
 
+const createShort = Operation(
+  "user/create-short",
+  {
+    schema: Movies,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.put(User, { age: 1 } as never);
+    return {};
+  },
+);
+
+const updateGhost = Operation(
+  "user/update-ghost",
+  {
+    schema: Movies,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.update(User, 999_999, { age: 1 });
+    return {};
+  },
+);
+
 const operations = Operations({
   setTitle,
   ping,
   createNamed,
   setName,
   createByPut,
+  createShort,
+  updateGhost,
 });
 
 const titles = async (peer: Peer, tok?: string) => {
@@ -480,6 +508,32 @@ describe('writes: "operations" is the peer default', () => {
     expect(warned).toHaveLength(1);
     expect(warned[0]?.level).toBe("warn");
     expect(String(warned[0]?.message)).toMatch(/not "all" or "operations"/);
+    peer.close();
+  });
+
+  test("put missing a required field is 409 TxRejected tx/required", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({ name: "user/create-short", input: {}, clientOpId: "op-short" }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/required");
+    peer.close();
+  });
+
+  test("update of a missing row is 409 TxRejected tx/missing-entity", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({ name: "user/update-ghost", input: {}, clientOpId: "op-ghost" }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/missing-entity");
     peer.close();
   });
 });

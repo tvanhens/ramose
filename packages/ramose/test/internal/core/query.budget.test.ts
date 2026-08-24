@@ -11,8 +11,8 @@ import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, QueryError, query, type Quer
 async function setup(n = 2000) {
   const conn = await Connection.create();
   await conn.transact([
-    { ":db/ident": ":p/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-    { ":db/ident": ":p/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
+    { ":db/ident": ":p/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+    { ":db/ident": ":p/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
     { ":db/ident": ":p/friend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
   ]);
   const tx: unknown[] = [];

@@ -217,6 +217,7 @@ export const Entity = <
     owned: false,
     doc: undefined,
     valueType: "ref" as const,
+    isOptional: false,
     attrName: "id" as const,
     ident: ":db/id" as const,
   });

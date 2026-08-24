@@ -12,12 +12,12 @@ import { vkey } from "../../../src/internal/core/query/builtins.ts";
 import { pick, randInt, rng } from "./util.ts";
 
 const SCHEMA = [
-  { ":db/ident": ":p/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-  { ":db/ident": ":p/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":p/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+  { ":db/ident": ":p/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
   { ":db/ident": ":p/friend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":p/flag", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":p/flag", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 const ATTRS = [":p/name", ":p/age", ":p/tag", ":p/friend", ":p/boss", ":p/flag"];
 const NAMES = ["ann", "bo", "cy", "di", "ed"];

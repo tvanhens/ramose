@@ -6,16 +6,16 @@ import { parseQuery } from "../../../src/internal/core/query/parse.ts";
 import { readEdn } from "../../../src/internal/core/query/edn.ts";
 
 const SCHEMA = [
-  { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-  { ":db/ident": ":person/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-  { ":db/ident": ":person/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":person/score", ":db/valueType": ":db.type/double", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":person/active", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+  { ":db/ident": ":person/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+  { ":db/ident": ":person/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person/score", ":db/valueType": ":db.type/double", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person/active", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":person/friends", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":person/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":person/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":person/tags", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":person/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":person/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 let conn: Connection;

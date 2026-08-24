@@ -449,6 +449,7 @@ describe("failures", () => {
         yield* alonzo.set(User.name, "Alonzo");
         yield* ada.set(User.friends, alonzo.eid as never);
         const ghost = yield* tx.entity();
+        yield* ghost.set(User.name, "Ghost");
         yield* ghost.set(User.age, 1);
         yield* ada.set(User.friends, ghost.eid as never);
       }),
@@ -467,7 +468,7 @@ describe("failures", () => {
         friends: User.friends.select({ name: User.name }),
       }),
     );
-    expect(friends!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
+    expect(friends!.friends.map((f) => f.name).sort()).toEqual(["Alonzo", "Ghost"]);
 
     expect(
       await run(

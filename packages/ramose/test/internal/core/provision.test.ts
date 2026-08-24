@@ -19,8 +19,8 @@ const POLICY = parsePolicy({
 });
 
 const SCHEMA = [
-  { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-  { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+  { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 const user = (sub: string, cls = "member", attrs?: Record<string, unknown>): Principal => ({
@@ -69,7 +69,7 @@ describe("provisionTx", () => {
   test("without a role attr, a found row is a no-op and a missing row upserts only sub", async () => {
     const conn = await Connection.create();
     await conn.transact([
-      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
     ]);
     const create = await provisionTx(POLICY, user("zoe"), conn.db());
     expect(create).toEqual([{ ":user/sub": "zoe" }]);
@@ -81,9 +81,9 @@ describe("provisionTx", () => {
     const conn = await Connection.create();
     await conn.transact([
       ...SCHEMA,
-      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":user/score", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":user/score", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
 
     const first = await provisionTx(

@@ -166,14 +166,17 @@ declare const userId: Eid<typeof User>;
 const putH = tx.put(User, { name: "Ada", friends: [1002] });
 type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
 tx.put(User, 1001, { age: 36 });
-tx.put(User, { bestFriend: 1002 });
-tx.put(User, { bestFriend: userId });
+tx.put(User, { name: "Ada", bestFriend: 1002 });
+tx.put(User, { name: "Ada", bestFriend: userId });
 tx.put(User, userId, { age: 36 });
 declare const userRow: { readonly id: Eid<typeof User> };
 // `{ id: row.id }` re-wrap is no longer required — the branded cell is enough
 tx.put(User, userRow.id, { age: 36 });
 tx.set(userRow.id, User.age, 36);
-tx.put(User, { bestFriend: tx.tempid("ada") });
+tx.put(User, { name: "Ada", bestFriend: tx.tempid("ada") });
+const updH = tx.update(User, userId, { age: 37 });
+type _updH = Expect<Extends<Effect.Success<typeof updH>, TxHandle<typeof Movies>>>;
+tx.update(User, { name: "Ada", age: 38 });
 {
   // @ts-expect-error name is string, not number
   tx.put(User, { name: 42 });
@@ -187,4 +190,8 @@ tx.put(User, { bestFriend: tx.tempid("ada") });
   tx.put(User, { bestFriend: movieId });
   // @ts-expect-error a bare string is not a tempid
   tx.put(User, { bestFriend: "typo" });
+  // @ts-expect-error create form requires the required keys — key-only is update
+  tx.put(User, { age: 36 });
+  // @ts-expect-error update map form needs a unique: "upsert" field
+  tx.update(User, { age: 36 });
 }

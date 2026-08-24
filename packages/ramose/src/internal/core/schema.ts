@@ -25,6 +25,7 @@ export const DB_CARDINALITY = 41;
 export const DB_UNIQUE = 42;
 export const DB_IS_COMPONENT = 43;
 export const DB_INDEX = 44;
+export const DB_OPTIONAL = 45;
 export const DB_TX_INSTANT = 50;
 export const DB_DOC = 62;
 
@@ -54,6 +55,8 @@ export interface Attribute {
   readonly index: boolean;
   readonly isComponent: boolean;
   readonly doc?: string;
+  /** Card-one field the schema marked optional — not required at create. */
+  readonly optional?: boolean;
 }
 
 export const VALUE_TYPE_IDENTS: Record<string, VT> = {
@@ -78,6 +81,7 @@ export interface AttributeSpec {
   unique?: Uniqueness;
   index?: boolean;
   isComponent?: boolean;
+  optional?: boolean;
   doc?: string;
 }
 
@@ -88,6 +92,7 @@ const BOOTSTRAP_SPECS: (AttributeSpec & { id: number })[] = [
   { id: DB_UNIQUE, ident: ":db/unique", valueType: ":db.type/string", cardinality: "one" },
   { id: DB_IS_COMPONENT, ident: ":db/isComponent", valueType: ":db.type/boolean", cardinality: "one" },
   { id: DB_INDEX, ident: ":db/index", valueType: ":db.type/boolean", cardinality: "one" },
+  { id: DB_OPTIONAL, ident: ":db/optional", valueType: ":db.type/boolean", cardinality: "one" },
   { id: DB_TX_INSTANT, ident: ":db/txInstant", valueType: ":db.type/instant", cardinality: "one", index: true },
   { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
 ];
@@ -104,6 +109,7 @@ export function attributeDatoms(e: number, spec: AttributeSpec, t: number): Dato
   if (spec.unique) out.push({ e, a: DB_UNIQUE, vt: ValueTag.Str, v: `:db.unique/${spec.unique}`, t, op: true });
   if (spec.index) out.push({ e, a: DB_INDEX, vt: ValueTag.Bool, v: true, t, op: true });
   if (spec.isComponent) out.push({ e, a: DB_IS_COMPONENT, vt: ValueTag.Bool, v: true, t, op: true });
+  if (spec.optional) out.push({ e, a: DB_OPTIONAL, vt: ValueTag.Bool, v: true, t, op: true });
   if (spec.doc) out.push({ e, a: DB_DOC, vt: ValueTag.Str, v: spec.doc, t, op: true });
   return out;
 }
@@ -128,6 +134,7 @@ interface Partial {
   unique?: string;
   index?: boolean;
   isComponent?: boolean;
+  optional?: boolean;
   doc?: string;
 }
 
@@ -194,6 +201,11 @@ export class Schema {
           p.index = d.op ? (d.v as boolean) : undefined;
           touched.add(d.e);
           break;
+        case DB_OPTIONAL:
+          if (!p) this.partials.set(d.e, (p = {}));
+          p.optional = d.op ? (d.v as boolean) : undefined;
+          touched.add(d.e);
+          break;
         case DB_IS_COMPONENT:
           if (!p) this.partials.set(d.e, (p = {}));
           p.isComponent = d.op ? (d.v as boolean) : undefined;
@@ -232,6 +244,7 @@ export class Schema {
       index: !!p.index || unique !== undefined,
       isComponent: !!p.isComponent,
       doc: p.doc,
+      optional: !!p.optional,
     };
     this.byId.set(e, attr);
     this.byIdent.set(attr.ident, attr);

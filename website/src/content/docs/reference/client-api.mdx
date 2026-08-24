@@ -114,7 +114,7 @@ Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form v
 ```ts title="examples/reef/src/domain/schema.ts#issue-entity"
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
-  description: Ramose.string(),
+  description: Ramose.string({ optional: true }),
   status: Ramose.Enum(STATUSES),
   /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
   priority: Ramose.int(),
@@ -122,10 +122,11 @@ export const Issue = Ramose.Entity("issue", {
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
   creator: Ramose.Ref(User),
-  assignee: Ramose.Ref(User),
+  assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
+    optional: true,
     doc: "visible to the admin class only",
   }),
 });
@@ -279,8 +280,10 @@ App writes go through `db.run`. The hatch `db.effect.transact` still takes a `tx
 interface Tx<C> {
   entity(): Effect<TxHandle<C>>;                 // a new record
   entity(id: TxEntity<C>): Effect<TxHandle<C>>;  // an existing one
-  put(entity, attrs): Effect<TxHandle<C>>;       // create
+  put(entity, attrs): Effect<TxHandle<C>>;       // create — required keys required
   put(entity, id, attrs): Effect<TxHandle<C>>;   // write that id (mints if new)
+  update(entity, attrs): Effect<TxHandle<C>>;    // partial; unique upsert key required
+  update(entity, id, attrs): Effect<TxHandle<C>>; // partial; never creates
   set(e: TxEntity<C>, field, value): Effect<void>;
   remove(e: TxEntity<C>, field, value?): Effect<void>;
   delete(e: TxEntity<C>): Effect<void>;
@@ -315,7 +318,7 @@ Rules:
 
 ### Upserts
 
-Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup that misses is still a hard rejection.
+Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name, … })` is insert-or-update with full required data. Key-only `op.put(User, { sub })` is a compile error; that is `op.update(User, { sub, name })`. A lookup that misses is still a hard rejection. `update` never creates: a missing row is `TxRejected` `tx/missing-entity`.
 
 `put(Entity, id, …)` with a nonexistent id mints that id (same as `set`). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 

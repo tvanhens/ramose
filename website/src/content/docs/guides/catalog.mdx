@@ -31,9 +31,11 @@ export const User = Ramose.Entity("user", {
     doc: "Policy class, materialized by the peer from the JWT at session establishment",
   }),
   name: Ramose.string({
+    optional: true,
     doc: "Display name, stamped by the peer from ramose.attrs.name",
   }),
   email: Ramose.string({
+    optional: true,
     doc: "Email, stamped by the peer from ramose.attrs.email",
   }),
 });
@@ -47,7 +49,7 @@ export const Label = Ramose.Entity("label", {
 ```ts title="examples/reef/src/domain/schema.ts#issue-entity"
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
-  description: Ramose.string(),
+  description: Ramose.string({ optional: true }),
   status: Ramose.Enum(STATUSES),
   /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
   priority: Ramose.int(),
@@ -55,10 +57,11 @@ export const Issue = Ramose.Entity("issue", {
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
   creator: Ramose.Ref(User),
-  assignee: Ramose.Ref(User),
+  assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
+    optional: true,
     doc: "visible to the admin class only",
   }),
 });
@@ -96,7 +99,8 @@ Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compos
 
 | option | default | effect |
 | --- | --- | --- |
-| `unique` | none | `"upsert"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up, and `op.put(User, { sub })` [unifies with that row](/guides/transactions/#upserts). `"strict"` rejects a colliding write. |
+| `unique` | none | `"upsert"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up, and `op.put(User, { sub, name, … })` [unifies with that row](/guides/transactions/#upserts-and-updates). `"strict"` rejects a colliding write. |
+| `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. |
 | `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
 | `owned` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
@@ -142,6 +146,8 @@ Which door, and why: [One database per customer](/guides/workspaces/#two-doors-t
 Adding a field or a record type is another install; the app keeps running. There is no destructive migration to fear, because Ramose never rewrites a **fact** — one statement about one record's field ([glossary](/concepts/glossary/#fact)). Old data keeps the field it was written with, reads of the past keep working, and removing a field from the schema does not delete the facts that used it.
 
 Three changes are *not* guarded: a field's value type, whether it holds one value or many, and whether it is a unique key. Existing data is neither re-typed nor checked — add a new field instead. Dropping an option is quieter still: nothing goes over the wire, so the old setting stays. Under a policy, only the `admin` role may add a new ident. Re-installing an already-deployed schema from a member token is a silent no-op (`db.install()` is safe to run twice); a new field or record type is 403.
+
+Adding a *new required* field to a schema that already has rows needs a default or a migration step at `install()` time — `install()` should detect that and say so. That story is [schema evolution](https://github.com/tvanhens/ramose/issues/187); until it lands, existing data may fail required-at-transact on the next write that creates a row of that type.
 
 <Next links={[
   { href: "/guides/transactions/", label: "Write data", why: "create, change and delete records, all-or-nothing" },

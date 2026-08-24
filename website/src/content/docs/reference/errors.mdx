@@ -25,7 +25,7 @@ try {
 
 | tag | means | typical cause |
 | --- | --- | --- |
-| `TxRejected` | the write was refused by the **writer** — the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)); no version number used | schema violation, unique-key conflict, a rule that failed at commit, schema not installed |
+| `TxRejected` | the write was refused by the **writer** — the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)); no version number used | schema violation, unique-key conflict, a missing required field (`tx/required`), `update` of a missing row (`tx/missing-entity`), a rule that failed at commit, schema not installed |
 | `Unavailable` | the server cannot serve right now (503) | the writer restarting after a failed storage write; carries `retryAfterMs` |
 | `InvalidRequest` | the request is malformed (400) | bad database name, unknown field, bad query or shape |
 | `DatabaseNotFound` | the route does not exist (404) | a wrong server URL or path — a database *name* always exists |

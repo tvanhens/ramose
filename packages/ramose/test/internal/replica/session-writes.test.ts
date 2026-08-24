@@ -184,7 +184,7 @@ describe("session { op: transact } is gated like HTTPS /transact", () => {
 
   test("schema-only tx is exempt — member ensure reaches the Transactor", async () => {
     const { replica, txBodies } = await bootReplica();
-    const schemaTx = [{ ":db/ident": ":doc/title", ":db/valueType": ":db.type/string" }];
+    const schemaTx = [{ ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/optional": true }];
     const res = await replica.sessionDispatch("/transact", transactInit(schemaTx), member, "operations");
     expect(res.status).toBe(200);
     expect(txBodies).toHaveLength(1);

@@ -14,7 +14,7 @@ import type {
   Expect,
   Row,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Instant, Long, Query, Ref, stored } from "../../src/db/internal.ts";
+import { Entity, Field, Instant, Long, Query, Ref, stored, string } from "../../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 
@@ -105,11 +105,13 @@ type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: Eid
 const Note = Entity("note", {
   body: Field(Schema.String),
   subtitle: Field(stored(Schema.optional(Schema.String), "string")),
+  nickname: string({ optional: true }),
   author: Ref(User),
 });
 type NoteRow = EntityRow<typeof Note>;
 type _noteBody = Expect<Equal<NoteRow["body"], string>>;
 type _noteSub = Expect<Equal<NoteRow["subtitle"], string | undefined>>;
+type _noteNick = Expect<Equal<NoteRow["nickname"], string | undefined>>;
 type _noteAuthor = Expect<Equal<NoteRow["author"], { readonly id: Eid<typeof User> }>>;
 
 // ── .orderBy keys are typechecked like .where ──────────────────────────────

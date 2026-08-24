@@ -88,14 +88,14 @@ const snapshotOf = async (conn: Connection): Promise<{ t: number; datoms: WireDa
 const moviesWorld = async () => {
   const conn = await Connection.create();
   await conn.transact([
-    { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-    { ":db/ident": ":user/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+    { ":db/ident": ":user/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     { ":db/ident": ":user/friends", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-    { ":db/ident": ":user/bestFriend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":movie/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-    { ":db/ident": ":movie/year", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":movie/released", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":meta/source", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":user/bestFriend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    { ":db/ident": ":movie/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+    { ":db/ident": ":movie/year", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    { ":db/ident": ":movie/released", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    { ":db/ident": ":meta/source", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   ]);
   return conn;
 };
@@ -346,7 +346,7 @@ describe("optimistic transact", () => {
   test("local unique conflict does not POST", async () => {
     const server = await moviesWorld();
     await server.transact([
-      { ":db/ident": ":doc/slug", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value" },
+      { ":db/ident": ":doc/slug", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value", ":db/optional": true },
     ]);
     await server.transact([{ ":doc/slug": "ada" }]);
     const posts: Call[] = [];
@@ -931,8 +931,8 @@ describe("two-writer races", () => {
   test("writer { op: tx } with clientTxId drops pending even when the sieved set is a subset", async () => {
     const server = await moviesWorld();
     await server.transact([
-      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -1056,7 +1056,7 @@ describe("two-writer races", () => {
   test("empty ack does not apply local expansion; later inbound at that t still applies", async () => {
     const server = await moviesWorld();
     await server.transact([
-      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     const peer = fakePeer({
       http: (call) => {
@@ -1108,7 +1108,7 @@ describe("two-writer races", () => {
   test("count-only ack does not apply local expansion; later inbound at that t still applies", async () => {
     const server = await moviesWorld();
     await server.transact([
-      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     const peer = fakePeer({
       http: (call) => {
@@ -1163,8 +1163,8 @@ describe("filtered tx frames (#112 sieve)", () => {
   test("Ada's POST is {tx, clientTxId}; Cal sees skip; filtered ack omits hidden", async () => {
     const server = await moviesWorld();
     await server.transact([
-      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
 
     let release!: () => void;

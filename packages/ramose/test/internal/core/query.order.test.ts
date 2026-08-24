@@ -5,10 +5,10 @@ import { QueryError, query } from "../../../src/internal/core/query/engine.ts";
 import { QueryParseError, parseQuery } from "../../../src/internal/core/query/parse.ts";
 
 const SCHEMA = [
-  { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-  { ":db/ident": ":person/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":person/score", ":db/valueType": ":db.type/double", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+  { ":db/ident": ":person/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person/score", ":db/valueType": ":db.type/double", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 let db: Db;

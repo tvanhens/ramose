@@ -16,14 +16,13 @@ Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.t
 
 ## The four verbs
 
-The entire write vocabulary — no update, no merge:
+The write vocabulary — `put` makes a row so; `update` changes what's there:
 
 | call | does |
 | --- | --- |
-| `tx.entity()` | hands back a handle for a brand-new **record** ([glossary](/concepts/glossary/#record)) |
-| `tx.set(e, field, value)` | states a **fact** — this record's field has this value ([glossary](/concepts/glossary/#fact)) |
-| `tx.remove(e, field, value?)` | takes one value back, or every value of that field |
-| `tx.delete(e)` | deletes the record — every fact about it, and any records it owns |
+| `op.put(Entity, {…})` | make this row so — every required field, insert-or-update if a unique key unifies |
+| `op.update(Entity, id, {…})` | change what's there — partial; the row must already exist |
+| `op.set` / `op.remove` / `op.delete` | field-by-field escape hatch (same verbs on a handle) |
 
 The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.set(…)`, `issue.remove(…)`, `issue.delete()`. Values are checked against the schema as you type.
 
@@ -104,11 +103,20 @@ The first argument of `tx.set` names the record. It can be:
 - **a handle** from `tx.entity()` in the same write.
 - **a lookup by unique key** — `[User.sub, "user_ada"]` names the user whose `sub` is that value, no id in hand ([glossary](/concepts/glossary/#lookup)).
 
-## Upserts
+## Upserts and updates
 
-Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup by unique key that misses is still a hard rejection; put with the unique field is the path that creates when missing.
+`put` means **make this row so**. The create form (`op.put(User, { sub, name, … })`) requires every required field; a unique key in the map unifies with the existing row — insert-or-update. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A lookup by unique key that misses is still a hard rejection; put with the unique field (and the rest of the required data) is the path that creates when missing.
 
-`put(Entity, id, …)` with a nonexistent id mints that id (same as `set` — not "update only"). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
+`update` means **change what's there**. It never creates. Address by eid / handle / branded cell, or by a map that contains at least one `unique: "upsert"` field:
+
+```ts
+op.update(Issue, id, { status: "done" });
+op.update(User, { sub: "auth0|…", name: "Ada" });
+```
+
+A missing row is `TxRejected` with `code: "tx/missing-entity"` on both the optimistic overlay and the worker. Clearing a required field (the `remove` escape hatch) is `tx/required`.
+
+`put(Entity, id, …)` with a nonexistent id still mints that id (same as `set`). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 
 ```ts title="examples/reef/src/app/mutations.ts#seed-labels"
     for (const seed of SEED_LABELS) {

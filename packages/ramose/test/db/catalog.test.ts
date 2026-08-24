@@ -21,9 +21,9 @@ import {
 
 const User = Entity("user", {
   name: Field(Schema.String, { unique: "upsert", doc: "display name" }),
-  age: Field(Long),
+  age: Field(Long, { optional: true }),
   friends: Field(Ref.self, { cardinality: "many" }),
-  bestFriend: Field(Ref.self),
+  bestFriend: Field(Ref.self, { optional: true }),
 });
 
 const Meta = Entity("meta", {
@@ -47,6 +47,7 @@ describe("schemaTx", () => {
         ":db/ident": ":user/age",
         ":db/valueType": ":db.type/long",
         ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
       },
       {
         ":db/ident": ":user/friends",
@@ -57,6 +58,7 @@ describe("schemaTx", () => {
         ":db/ident": ":user/bestFriend",
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
       },
       {
         ":db/ident": ":meta/source",

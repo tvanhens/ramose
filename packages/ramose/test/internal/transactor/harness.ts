@@ -180,5 +180,6 @@ export const attribute = (ident: string, type: string, extra: Record<string, unk
   ":db/ident": ident,
   ":db/valueType": `:db.type/${type}`,
   ":db/cardinality": ":db.cardinality/one",
+  ...(extra[":db/cardinality"] === ":db.cardinality/many" ? {} : { ":db/optional": true }),
   ...extra,
 });

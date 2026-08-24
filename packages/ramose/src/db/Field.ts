@@ -27,6 +27,11 @@ export interface FieldOptions {
   readonly index?: boolean;
   readonly owned?: boolean;
   readonly doc?: string;
+  /**
+   * Omitted at create; `| undefined` on the default row. Card-many is
+   * already trivially satisfiable (empty set) and is never a required key.
+   */
+  readonly optional?: boolean;
 }
 
 type CardOf<O> = [O] extends [{ readonly cardinality: infer C }]
@@ -72,6 +77,17 @@ type MergeUnique<U extends Uniqueness | undefined, O> = Named<O, "unique"> exten
   ? UniqueOf<O>
   : U;
 
+type OptionalOf<O> = [O] extends [{ readonly optional: infer B }]
+  ? B extends true
+    ? true
+    : false
+  : false;
+
+/** Composition may set `optional` (`false` → `true`); absence keeps the inner field. */
+type MergeOptional<Opt extends boolean, O> = Named<O, "optional"> extends true
+  ? OptionalOf<O>
+  : Opt;
+
 /**
  * Fail-closed argument for `Field(schema)` when inference cannot name
  * `:db.type/*`. The brand key is the instruction — wrap with
@@ -89,6 +105,7 @@ export interface Field<
   Unique extends Uniqueness | undefined = Uniqueness | undefined,
   VT extends DbValueType | undefined = DbValueType | undefined,
   Owned extends boolean = boolean,
+  Opt extends boolean = false,
 > {
   readonly _tag: "Field";
   readonly schema: S;
@@ -98,6 +115,13 @@ export interface Field<
   readonly owned: Owned;
   readonly doc: string | undefined;
   readonly valueType: VT;
+  /**
+   * Presence flag for required-at-transact. Not named `optional` — that
+   * getter is the pull-shaping method on a stamped field. A sixth type
+   * parameter so `string({ optional: true })` survives `Entity` stamping
+   * the way `owned` / `cardinality` do.
+   */
+  readonly isOptional: Opt;
 }
 
 export type AnyField = Field<
@@ -105,6 +129,7 @@ export type AnyField = Field<
   Cardinality,
   Uniqueness | undefined,
   DbValueType | undefined,
+  boolean,
   boolean
 >;
 
@@ -139,8 +164,23 @@ const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => {
     owned: options?.owned ?? false,
     doc: options?.doc,
     valueType: tryInferDbValueType(schema),
+    isOptional: options?.optional === true || schemaAllowsUndefined(schema),
   };
 };
+
+const schemaAllowsUndefined = (schema: { readonly ast?: { readonly _tag?: unknown; readonly types?: readonly { readonly _tag?: unknown }[] } }): boolean => {
+  const ast = schema.ast;
+  if (ast === undefined) return false;
+  if (ast._tag === "Undefined") return true;
+  if (ast._tag === "Union" && Array.isArray(ast.types)) {
+    return ast.types.some((t) => t._tag === "Undefined" || schemaAllowsUndefined({ ast: t }));
+  }
+  return false;
+};
+
+/** Required-at-transact: card-many is never a required key. */
+export const isOptionalField = (field: AnyField): boolean =>
+  field.cardinality === "many" || field.isOptional === true;
 
 const fieldSchema = (input: AnyField | SchemaNS.Top): SchemaNS.Top =>
   isField(input) ? input.schema : input;
@@ -157,6 +197,7 @@ const mergeFieldOptions = (
     index: extra?.index ?? (extra?.unique !== undefined ? true : input.index),
     owned: extra?.owned ?? input.owned,
     doc: extra?.doc ?? input.doc,
+    optional: extra?.optional ?? input.isOptional,
   };
 };
 
@@ -166,39 +207,39 @@ type UniqueOpts = Omit<FieldOptions, "unique">;
 type FieldMany = {
   <S extends SchemaNS.Top>(
     schema: InferableSchema<S>,
-  ): Field<S, "many", undefined, InferDbValueType<S>, false>;
+  ): Field<S, "many", undefined, InferDbValueType<S>, false, false>;
   <S extends SchemaNS.Top, const O extends ManyOpts>(
     schema: InferableSchema<S>,
     options: O,
-  ): Field<S, "many", UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>>;
-  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean>(
-    field: Field<S, C, U, VT, Own>,
-  ): Field<S, "many", U, VT, Own>;
-  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends ManyOpts>(
-    field: Field<S, C, U, VT, Own>,
+  ): Field<S, "many", UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>, OptionalOf<O>>;
+  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean>(
+    field: Field<S, C, U, VT, Own, Opt>,
+  ): Field<S, "many", U, VT, Own, Opt>;
+  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, const O extends ManyOpts>(
+    field: Field<S, C, U, VT, Own, Opt>,
     options: O,
-  ): Field<S, "many", MergeUnique<U, O>, VT, MergeOwned<Own, O>>;
+  ): Field<S, "many", MergeUnique<U, O>, VT, MergeOwned<Own, O>, MergeOptional<Opt, O>>;
 };
 
 type FieldUnique = {
   <S extends SchemaNS.Top, const U extends Uniqueness>(
     schema: InferableSchema<S>,
     uniqueness: U,
-  ): Field<S, "one", U, InferDbValueType<S>, false>;
+  ): Field<S, "one", U, InferDbValueType<S>, false, false>;
   <S extends SchemaNS.Top, const U extends Uniqueness, const O extends UniqueOpts>(
     schema: InferableSchema<S>,
     uniqueness: U,
     options: O,
-  ): Field<S, CardOf<O>, U, InferDbValueType<S>, OwnedOf<O>>;
-  <S extends SchemaNS.Top, C extends Cardinality, _U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const U extends Uniqueness>(
-    field: Field<S, C, _U, VT, Own>,
+  ): Field<S, CardOf<O>, U, InferDbValueType<S>, OwnedOf<O>, OptionalOf<O>>;
+  <S extends SchemaNS.Top, C extends Cardinality, _U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, const U extends Uniqueness>(
+    field: Field<S, C, _U, VT, Own, Opt>,
     uniqueness: U,
-  ): Field<S, C, U, VT, Own>;
-  <S extends SchemaNS.Top, C extends Cardinality, _U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const U extends Uniqueness, const O extends UniqueOpts>(
-    field: Field<S, C, _U, VT, Own>,
+  ): Field<S, C, U, VT, Own, Opt>;
+  <S extends SchemaNS.Top, C extends Cardinality, _U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, const U extends Uniqueness, const O extends UniqueOpts>(
+    field: Field<S, C, _U, VT, Own, Opt>,
     uniqueness: U,
     options: O,
-  ): Field<S, MergeCard<C, O>, U, VT, MergeOwned<Own, O>>;
+  ): Field<S, MergeCard<C, O>, U, VT, MergeOwned<Own, O>, MergeOptional<Opt, O>>;
 };
 
 /**
@@ -209,11 +250,11 @@ type FieldUnique = {
  * Schema. When inference cannot name `:db.type/*`, wrap the schema with
  * {@link import("./valueTypes.ts").stored} — `stored(Schema.Literals(["on", "off"]), "string")`.
  *
- * **Write the options inline.** `cardinality`, `unique` and `owned`
- * reach the field's *type* — and so reach `.reverse`'s cardinality, the
- * navigable path, and every row type — only through the `const O` inference on
- * the literal. An options object typed as {@link FieldOptions} first
- * (`const opts: FieldOptions = { owned: true }`) has already widened
+ * **Write the options inline.** `cardinality`, `unique`, `owned` and
+ * `optional` reach the field's *type* — and so reach `.reverse`'s cardinality,
+ * the navigable path, and every row type — only through the `const O`
+ * inference on the literal. An options object typed as {@link FieldOptions}
+ * first (`const opts: FieldOptions = { owned: true }`) has already widened
  * those to their optional declared types, and the field infers the
  * defaults (`"one"` / `undefined` / `false`) while the runtime value still
  * carries what you wrote. Pass the literal at the call site, or `as const` it.
@@ -228,18 +269,18 @@ type FieldUnique = {
 export const Field: {
   <S extends SchemaNS.Top>(
     schema: InferableSchema<S>,
-  ): Field<S, "one", undefined, InferDbValueType<S>, false>;
+  ): Field<S, "one", undefined, InferDbValueType<S>, false, false>;
   <S extends SchemaNS.Top, const O extends FieldOptions>(
     schema: InferableSchema<S>,
     options: O,
-  ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>>;
-  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean>(
-    field: Field<S, C, U, VT, Own>,
-  ): Field<S, C, U, VT, Own>;
-  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends FieldOptions>(
-    field: Field<S, C, U, VT, Own>,
+  ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>, OptionalOf<O>>;
+  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean>(
+    field: Field<S, C, U, VT, Own, Opt>,
+  ): Field<S, C, U, VT, Own, Opt>;
+  <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, const O extends FieldOptions>(
+    field: Field<S, C, U, VT, Own, Opt>,
     options: O,
-  ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>>;
+  ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>, MergeOptional<Opt, O>>;
   readonly many: FieldMany;
   readonly unique: FieldUnique;
 } = Object.assign(
@@ -249,18 +290,18 @@ export const Field: {
       : makeField(input, options)) as {
     <S extends SchemaNS.Top>(
       schema: InferableSchema<S>,
-    ): Field<S, "one", undefined, InferDbValueType<S>, false>;
+    ): Field<S, "one", undefined, InferDbValueType<S>, false, false>;
     <S extends SchemaNS.Top, const O extends FieldOptions>(
       schema: InferableSchema<S>,
       options: O,
-    ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>>;
-    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean>(
-      field: Field<S, C, U, VT, Own>,
-    ): Field<S, C, U, VT, Own>;
-    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, const O extends FieldOptions>(
-      field: Field<S, C, U, VT, Own>,
+    ): Field<S, CardOf<O>, UniqueOf<O>, InferDbValueType<S>, OwnedOf<O>, OptionalOf<O>>;
+    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean>(
+      field: Field<S, C, U, VT, Own, Opt>,
+    ): Field<S, C, U, VT, Own, Opt>;
+    <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, const O extends FieldOptions>(
+      field: Field<S, C, U, VT, Own, Opt>,
       options: O,
-    ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>>;
+    ): Field<S, MergeCard<C, O>, MergeUnique<U, O>, VT, MergeOwned<Own, O>, MergeOptional<Opt, O>>;
   },
   {
     many: ((input: AnyField | SchemaNS.Top, options?: ManyOpts) =>
@@ -285,10 +326,10 @@ export const Field: {
 export type ValueOf<A extends AnyField> = SchemaNS.Schema.Type<A["schema"]>;
 
 type Shorthand<S extends SchemaNS.Top, VT extends DbValueType> = {
-  (): Field<S, "one", undefined, VT, false>;
+  (): Field<S, "one", undefined, VT, false, false>;
   <const O extends FieldOptions>(
     options: O,
-  ): Field<S, CardOf<O>, UniqueOf<O>, VT, OwnedOf<O>>;
+  ): Field<S, CardOf<O>, UniqueOf<O>, VT, OwnedOf<O>, OptionalOf<O>>;
 };
 
 const shorthand =
@@ -332,6 +373,7 @@ type EnumField<L extends readonly [string, ...string[]]> = Field<
   "one",
   undefined,
   "string",
+  false,
   false
 >;
 
@@ -343,7 +385,8 @@ type EnumFieldOpts<
   CardOf<O>,
   UniqueOf<O>,
   "string",
-  OwnedOf<O>
+  OwnedOf<O>,
+  OptionalOf<O>
 >;
 
 /**
@@ -364,16 +407,24 @@ type EntityLike = { readonly fields: object; readonly ns: string };
 type RefShorthand = {
   <const N extends EntityLike>(
     target: N | (() => N),
-  ): Field<TargetedRef<N["fields"], N["ns"], N>, "one", undefined, "ref", false>;
+  ): Field<TargetedRef<N["fields"], N["ns"], N>, "one", undefined, "ref", false, false>;
   <const N extends EntityLike, const O extends FieldOptions>(
     target: N | (() => N),
     options: O,
-  ): Field<TargetedRef<N["fields"], N["ns"], N>, CardOf<O>, UniqueOf<O>, "ref", OwnedOf<O>>;
+  ): Field<
+    TargetedRef<N["fields"], N["ns"], N>,
+    CardOf<O>,
+    UniqueOf<O>,
+    "ref",
+    OwnedOf<O>,
+    OptionalOf<O>
+  >;
   readonly self: Field<
     TargetedRef<SelfMarker>,
     "one",
     undefined,
     "ref",
+    false,
     false
   >;
 } & typeof untargetedRef;
@@ -395,6 +446,7 @@ export const Ref: RefShorthand = Object.assign(
       "one",
       undefined,
       "ref",
+      false,
       false
     >,
   },

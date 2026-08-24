@@ -27,7 +27,11 @@ import { makeQueryObject, type Cursor, type Pipeline, type QueryObject } from ".
 
 type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
 type IsRef<A> = A extends { readonly valueType: "ref" } ? true : false;
-type IsOptional<A> = undefined extends AttrValue<A> ? true : false;
+type IsOptional<A> = A extends { readonly isOptional: true }
+  ? true
+  : undefined extends AttrValue<A>
+    ? true
+    : false;
 
 /** Instant is a branded `Date`; the app row is the friendly `Date`. */
 type FriendlyScalar<T> = T extends Date ? Date : T;
@@ -52,15 +56,15 @@ export type RefIdCell<N extends AnyEntity = AnyEntity> = {
   readonly id: Eid<N>;
 };
 
+type ScalarRow<A, Enclosing extends AnyEntity> = IsRef<A> extends true
+  ? RefIdCell<RefTarget<A, Enclosing>>
+  : FriendlyScalar<Exclude<AttrValue<A>, undefined>>;
+
 type FieldRow<A, Enclosing extends AnyEntity> = IsMany<A> extends true
-  ? IsRef<A> extends true
-    ? readonly RefIdCell<RefTarget<A, Enclosing>>[]
-    : readonly FriendlyScalar<Exclude<AttrValue<A>, undefined>>[]
-  : IsRef<A> extends true
-    ? IsOptional<A> extends true
-      ? RefIdCell<RefTarget<A, Enclosing>> | undefined
-      : RefIdCell<RefTarget<A, Enclosing>>
-    : FriendlyScalar<AttrValue<A>>;
+  ? readonly ScalarRow<A, Enclosing>[]
+  : IsOptional<A> extends true
+    ? ScalarRow<A, Enclosing> | undefined
+    : ScalarRow<A, Enclosing>;
 
 /**
  * The row a select-less fluent query yields: friendly keys, refs as

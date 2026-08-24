@@ -7,15 +7,15 @@ import { parsePullPattern } from "../../../src/internal/core/query/parse.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
 
 const SCHEMA = [
-  { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":user/tags", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
   { ":db/ident": ":user/starred", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":todo/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":todo/done", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":todo/rank", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":todo/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":todo/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":project/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":todo/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":todo/done", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":todo/rank", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":todo/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":todo/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":project/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 let db: Db;

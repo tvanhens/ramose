@@ -37,6 +37,8 @@ import {
   DB_UNIQUE,
   DB_VALUE_TYPE,
   VALUE_TYPE_IDENTS,
+  FIRST_USER_EID,
+  isTxEid,
   txEid,
 } from "./schema.ts";
 
@@ -60,7 +62,7 @@ type EForm = number | string | unknown[];
 
 /** A tx item after map/reverse-ref expansion, before entity/value resolution. */
 export interface TxOp {
-  kind: "add" | "retract" | "retractEntity";
+  kind: "add" | "update" | "retract" | "retractEntity";
   e: EForm;
   a?: string | number;
   v?: unknown;
@@ -142,6 +144,10 @@ export function flattenTxData(txData: TxData): TxOp[] {
         case ":db/add":
           if (item.length !== 4) throw new TxError(":db/add needs [op e a v]");
           ops.push({ kind: "add", e: e as EForm, a: a as string | number, v: isPlainObject(v) ? expandMap(v as Record<string, unknown>) : v, hasV: true });
+          break;
+        case ":db/update":
+          if (item.length !== 4) throw new TxError(":db/update needs [op e a v]");
+          ops.push({ kind: "update", e: e as EForm, a: a as string | number, v: isPlainObject(v) ? expandMap(v as Record<string, unknown>) : v, hasV: true });
           break;
         case ":db/retract":
           if (item.length !== 3 && item.length !== 4) throw new TxError(":db/retract needs [op e a v?]");
@@ -465,6 +471,66 @@ export async function expandTx(
     }
   };
 
+  const nsOfIdent = (ident: string): string => {
+    const slash = ident.indexOf("/", 1);
+    return slash > 0 ? ident.slice(1, slash) : "";
+  };
+
+  const appNamespacesOf = (idents: readonly string[]): Set<string> => {
+    const nss = new Set<string>();
+    for (const ident of idents) {
+      if (ident.startsWith(":db/")) continue;
+      const ns = nsOfIdent(ident);
+      if (ns.length > 0) nss.add(ns);
+    }
+    return nss;
+  };
+
+  const presentIdents = async (e: number): Promise<string[]> => {
+    const idents: string[] = [];
+    const seen = new Set<string>();
+    const add = (ident: string | undefined): void => {
+      if (ident === undefined || seen.has(ident)) return;
+      seen.add(ident);
+      idents.push(ident);
+    };
+    for (const [k, m] of cur) {
+      if (!k.startsWith(e + ":") || m.size === 0) continue;
+      const a = Number(k.slice(String(e).length + 1));
+      add(db.attr(a)?.ident);
+    }
+    if ((await db.exists(e)) && !retracted.has(e)) {
+      const row = await db.entity(e);
+      if (row !== undefined) {
+        for (const key of Object.keys(row)) {
+          if (key !== ":db/id") add(key);
+        }
+      }
+    }
+    return idents;
+  };
+
+  const entityPresent = async (e: number): Promise<boolean> => {
+    if (retracted.has(e)) return false;
+    if (newEntities.has(e)) return true;
+    for (const [k, m] of cur) {
+      if (k.startsWith(e + ":") && m.size > 0) return true;
+    }
+    return db.exists(e);
+  };
+
+  const assertUpdateTarget = async (e: number, attr: Attribute): Promise<void> => {
+    if (!(await entityPresent(e))) {
+      throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
+    }
+    const ns = nsOfIdent(attr.ident);
+    if (ns.length === 0 || attr.ident.startsWith(":db/")) return;
+    const existing = appNamespacesOf(await presentIdents(e));
+    if (existing.size > 0 && !existing.has(ns)) {
+      throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
+    }
+  };
+
   // --- Main pass ------------------------------------------------------------
   for (const op of ops) {
     if (op.kind === "retractEntity") {
@@ -479,6 +545,31 @@ export async function expandTx(
       continue;
     }
     const attr = attrOf(op.a);
+    if (op.kind === "update") {
+      let e: number | undefined;
+      try {
+        e = await resolveEntity(op.e, false);
+      } catch (err) {
+        if (err instanceof TxError && err.code === "tx/lookup-ref") {
+          throw new TxError(err.message, "tx/missing-entity");
+        }
+        throw err;
+      }
+      if (e === undefined) {
+        throw new TxError(
+          `entity ${JSON.stringify(op.e)} does not exist`,
+          "tx/missing-entity",
+        );
+      }
+      if (typeof op.e === "number" && !(await entityPresent(e))) {
+        throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
+      }
+      await assertUpdateTarget(e, attr);
+      const tv = await valueFor(attr, op.v);
+      validateSchemaValue(attr, tv);
+      await emitAdd(e, attr, tv);
+      continue;
+    }
     const e = await resolveEntity(op.e, op.kind === "add");
     if (e === undefined) continue;
     if (op.kind === "add") {
@@ -489,6 +580,61 @@ export async function expandTx(
       const tv = op.hasV ? await valueFor(attr, op.v) : undefined;
       await emitRetract(e, attr, tv);
     }
+  }
+
+  const created = new Set<number>(newEntities);
+  for (const op of expanded) {
+    if (op.kind !== "add") continue;
+    if (isTxEid(op.e) || op.e < FIRST_USER_EID) continue;
+    if (!(await db.exists(op.e))) created.add(op.e);
+  }
+
+  const requiredOfNs = (ns: string): Attribute[] =>
+    db.schema.attributes().filter(
+      (a) =>
+        a.ident.startsWith(`:${ns}/`) &&
+        a.cardinality === "one" &&
+        !a.optional,
+    );
+
+  const missingRequired = async (e: number, nss: Set<string>): Promise<string[]> => {
+    const missing: string[] = [];
+    for (const ns of nss) {
+      for (const attr of requiredOfNs(ns)) {
+        const vals = await current(e, attr.id);
+        if (vals.size === 0) missing.push(attr.ident);
+      }
+    }
+    return missing;
+  };
+
+  for (const e of created) {
+    if (retracted.has(e) || isTxEid(e) || e < FIRST_USER_EID) continue;
+    const nss = appNamespacesOf(await presentIdents(e));
+    if (nss.size === 0) continue;
+    const missing = await missingRequired(e, nss);
+    if (missing.length > 0) {
+      const entity = [...nss][0] ?? "entity";
+      throw new TxError(
+        `entity ${entity} is missing required fields: ${missing.join(", ")}`,
+        "tx/required",
+      );
+    }
+  }
+
+  for (const op of expanded) {
+    if (op.kind !== "retract" || op.implicit || op.fromRetractEntity) continue;
+    if (op.attr.cardinality !== "one" || op.attr.optional) continue;
+    if (op.attr.ident.startsWith(":db/")) continue;
+    if (retracted.has(op.e) || isTxEid(op.e) || op.e < FIRST_USER_EID) continue;
+    const vals = await current(op.e, op.attr.id);
+    if (vals.size > 0) continue;
+    const nss = appNamespacesOf(await presentIdents(op.e));
+    if (nss.size === 0) continue;
+    throw new TxError(
+      `cannot clear required field ${op.attr.ident}`,
+      "tx/required",
+    );
   }
 
   // Tx entity instant (first, so tx datoms sort together nicely).

@@ -11,7 +11,7 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
   const conn = await Connection.create({ build: { leafSize: 8, fanout: 4 } });
   await conn.transact([
     { ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many", ":db/index": true },
-    { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   ]);
   const eids: number[] = [];
   for (let i = 0; i < 60; i++) eids.push((await conn.transact([{ ":db/id": "x", ":p/tag": pick(r, ["x","y","z"]) }])).tempids.x);

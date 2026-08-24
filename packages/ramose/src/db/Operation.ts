@@ -24,12 +24,14 @@ import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
   type PutAttrs,
+  type PutCreateAttrs,
   type PutSubject,
   type TxEntity,
   type TxField,
   type TxHandle,
   type TxKnownEntity,
   type TxValue,
+  type UpdateMapAttrs,
 } from "./Tx.ts";
 
 /**
@@ -48,6 +50,16 @@ type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
 type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
     ? PutAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
+    : Record<string, unknown>;
+
+type OpPutCreateAttrs<C extends AnySchema, E extends AnyEntity> =
+  [ConcreteCatalog<C>] extends [true]
+    ? PutCreateAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
+    : Record<string, unknown>;
+
+type OpUpdateMapAttrs<C extends AnySchema, E extends AnyEntity> =
+  [ConcreteCatalog<C>] extends [true]
+    ? UpdateMapAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
     : Record<string, unknown>;
 
 /**
@@ -237,20 +249,15 @@ export interface Op<
   delete(e: OpEntity<C>): void;
 
   /**
-   * Entity-level write. Lowers to map form. `undefined` fields are
+   * Make this row so. Lowers to map form. `undefined` fields are
    * omitted; cardinality-many takes an array. No subject allocates a
-   * new record. A subject names the record: an existing id, or a new
-   * id if that number has never been used (same as `set` — not
-   * "update only").
+   * new record and the map must carry every required field. A subject
+   * names the record: an existing id, or a new id if that number has
+   * never been used (same as `set` — not "update only").
    *
-   * ### Upserts
-   *
-   * Including a `unique: "upsert"` field in the map makes `put`
-   * ensure-this-row-exists: the engine unifies the new record with the
-   * existing row. `op.put(User, { sub, name })` is insert-or-update;
-   * `op.put(User, { sub })` is enough when you only have the key. A
-   * lookup that misses is still a hard rejection — put with the unique
-   * field is the path that creates when missing.
+   * Including a `unique: "upsert"` field unifies with the existing row
+   * — insert-or-update, still with full required data on create.
+   * Partial writes to an existing row are {@link Op.update}.
    *
    * A two-element array whose first value is an ident (`":…"`) is a
    * lookup on a ref field. On a cardinality-many scalar field, that
@@ -259,9 +266,26 @@ export interface Op<
    */
   put<E extends OpKnownEntity<C>>(
     entity: E,
-    attrs: OpPutAttrs<C, E>,
+    attrs: OpPutCreateAttrs<C, E>,
   ): OpHandle<C>;
   put<E extends OpKnownEntity<C>>(
+    entity: E,
+    id: OpPutSubject<C, E>,
+    attrs: OpPutAttrs<C, E>,
+  ): OpHandle<C>;
+
+  /**
+   * Change what's there. Partial; never creates. Address by subject
+   * (eid / handle / branded cell / lookup) or by a map that contains
+   * at least one `unique: "upsert"` field. Missing row →
+   * `TxRejected` `tx/missing-entity`. Wrong-entity subject →
+   * `tx/wrong-entity`.
+   */
+  update<E extends OpKnownEntity<C>>(
+    entity: E,
+    attrs: OpUpdateMapAttrs<C, E>,
+  ): OpHandle<C>;
+  update<E extends OpKnownEntity<C>>(
     entity: E,
     id: OpPutSubject<C, E>,
     attrs: OpPutAttrs<C, E>,
@@ -329,6 +353,8 @@ export interface RuntimeOp {
   delete(e: unknown): Effect.Effect<void>;
   put(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   put(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  update(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  update(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(

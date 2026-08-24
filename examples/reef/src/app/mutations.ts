@@ -124,11 +124,12 @@ export const addCommentOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    const comment = op.entity();
-    comment.set(Comment.body, input.body);
-    comment.set(Comment.at, new Date());
-    comment.set(Comment.author, input.authorId);
-    comment.set(Comment.issue, op.self.eid);
+    op.put(Comment, {
+      body: input.body,
+      at: new Date(),
+      author: input.authorId,
+      issue: op.self.eid,
+    });
     return {};
   },
 );

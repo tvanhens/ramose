@@ -4,15 +4,15 @@ import { Index, ValueTag } from "../../../src/internal/core/datom.ts";
 import { TxError } from "../../../src/internal/core/tx.ts";
 
 const SCHEMA = [
-  { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true },
-  { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-  { ":db/ident": ":user/handle", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value" },
-  { ":db/ident": ":user/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
+  { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+  { ":db/ident": ":user/handle", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value", ":db/optional": true },
+  { ":db/ident": ":user/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":user/tags", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
   { ":db/ident": ":user/friends", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":user/address", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/isComponent": true },
-  { ":db/ident": ":address/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":user/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":user/address", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/isComponent": true, ":db/optional": true },
+  { ":db/ident": ":address/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":user/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":color/red" },
 ];
 
@@ -105,7 +105,7 @@ describe("transact", () => {
     expect(await conn.db().entid([":user/email", "nope"])).toBeUndefined();
     await expect(conn.transact([[":db/add", [":user/email", "nope"], ":user/age", 9]])).rejects.toBeInstanceOf(TxError);
     // ref to ident entity
-    await conn.transact([{ ":db/ident": ":user/favorite", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" }]);
+    await conn.transact([{ ":db/ident": ":user/favorite", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }]);
     await conn.transact([[":db/add", u, ":user/favorite", ":color/red"]]);
     expect((await conn.db().entity(u))![":user/favorite"]).toBe(conn.db().schema.entid(":color/red"));
   });
@@ -135,7 +135,7 @@ describe("transact", () => {
     const conn = await setup();
     await expect(conn.transact([[":db/add", "x", ":nope/attr", 1]])).rejects.toThrow(/unknown attribute/);
     await expect(conn.transact([[":db/add", "x", ":user/age", "notanumber"]])).rejects.toThrow(/user\/age/);
-    await expect(conn.transact([{ ":db/ident": ":bad", ":db/valueType": ":db.type/nope", ":db/cardinality": ":db.cardinality/one" }])).rejects.toThrow(/valueType/);
+    await expect(conn.transact([{ ":db/ident": ":bad", ":db/valueType": ":db.type/nope", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }])).rejects.toThrow(/valueType/);
     await expect(conn.transact([[":db/frob", 1, 2, 3]])).rejects.toThrow(/unknown tx op/);
     await expect(conn.transact([[":db/add", "x", ":user/friends", "danglingtempid"]])).resolves.toBeDefined(); // tempid as ref allocates
   });

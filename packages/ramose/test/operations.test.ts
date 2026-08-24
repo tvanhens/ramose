@@ -125,6 +125,7 @@ const moviesWorld = async () => {
       ":db/ident": ":user/age",
       ":db/valueType": ":db.type/long",
       ":db/cardinality": ":db.cardinality/one",
+      ":db/optional": true,
     },
     {
       ":db/ident": ":movie/title",

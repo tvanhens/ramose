@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
 import { lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AnyField, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import type {
   AttrAtIdent,
@@ -102,20 +103,82 @@ type PutScalar<
       ? PutRef<C, H, RefSlotTarget<N, K>>
       : ValueAtIdent<C, `:${N["ns"]}/${K}`>);
 
+type PutFieldValue<
+  C extends AnySchema,
+  N extends AnyEntity,
+  K extends string,
+  H = TxHandle<C>,
+> = N["fields"][K] extends { readonly valueType: "ref" }
+  ? N["fields"][K]["cardinality"] extends "many"
+    ? ReadonlyArray<PutScalar<C, N, K, H>>
+    : PutScalar<C, N, K, H>
+  : WriteAtEntity<C, N>[K];
+
 /**
- * `put` attrs: {@link WriteAtEntity} (array for many, omit `undefined`)
- * plus handle / lookup / `{ id }` / principal on ref fields. `H` is the
- * handle admitted in ref slots — `TxHandle` on the builder, widened to
- * `TxHandle | OpHandle` on the promise `Op`.
+ * Partial attrs — every key optional. Used by `put(Entity, subject, {…})`
+ * and `update`. Cardinality-many is an array; `undefined` is omitted.
  */
 export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> = {
-  [K in keyof WriteAtEntity<C, N> & string]?:
-    | (N["fields"][K] extends { readonly valueType: "ref" }
-        ? N["fields"][K]["cardinality"] extends "many"
-          ? ReadonlyArray<PutScalar<C, N, K, H>>
-          : PutScalar<C, N, K, H>
-        : WriteAtEntity<C, N>[K]);
+  [K in keyof WriteAtEntity<C, N> & string]?: PutFieldValue<C, N, K, H> | undefined;
 };
+
+type FieldIsOptional<F> = F extends { readonly cardinality: "many" }
+  ? true
+  : F extends { readonly isOptional: true }
+    ? true
+    : undefined extends ValueOf<F extends AnyField ? F : never>
+      ? true
+      : false;
+
+type RequiredPutKeys<N extends AnyEntity> = {
+  [K in keyof N["fields"] & string]: FieldIsOptional<N["fields"][K]> extends true
+    ? never
+    : K;
+}[keyof N["fields"] & string];
+
+type OptionalPutKeys<N extends AnyEntity> = Exclude<
+  keyof N["fields"] & string,
+  RequiredPutKeys<N>
+>;
+
+/**
+ * `put(Entity, {…})` create form: required card-one keys required,
+ * optional / card-many omitted. Key-only `put(User, { sub })` is a
+ * compile error — that is `update`.
+ */
+export type PutCreateAttrs<
+  C extends AnySchema,
+  N extends AnyEntity,
+  H = TxHandle<C>,
+> = {
+  [K in RequiredPutKeys<N>]: PutFieldValue<C, N, K, H>;
+} & {
+  [K in OptionalPutKeys<N>]?: PutFieldValue<C, N, K, H> | undefined;
+};
+
+type UpsertKeys<N extends AnyEntity> = {
+  [K in keyof N["fields"] & string]: N["fields"][K] extends {
+    readonly unique: "upsert";
+  }
+    ? K
+    : never;
+}[keyof N["fields"] & string];
+
+type RequireAtLeastOne<T, Keys extends keyof T> = {
+  [K in Keys]-?: Required<Pick<T, K>> & Partial<Omit<T, K>>;
+}[Keys];
+
+/**
+ * `update(Entity, {…})` map form: at least one `unique: "upsert"` field.
+ * An entity with no upsert key cannot use this form.
+ */
+export type UpdateMapAttrs<
+  C extends AnySchema,
+  N extends AnyEntity,
+  H = TxHandle<C>,
+> = [UpsertKeys<N>] extends [never]
+  ? { readonly "update map form needs a unique: \"upsert\" field": never }
+  : RequireAtLeastOne<PutAttrs<C, N, H>, UpsertKeys<N> & keyof PutAttrs<C, N, H>>;
 
 /**
  * 3-arg `put` subject, narrowed to entity `N` — the same
@@ -135,6 +198,7 @@ export type TxMap = Readonly<Record<string, unknown>>;
 
 export type TxOp =
   | readonly [":db/add", unknown, string, unknown]
+  | readonly [":db/update", unknown, string, unknown]
   | readonly [":db/retract", unknown, string]
   | readonly [":db/retract", unknown, string, unknown]
   | readonly [":db/retractEntity", unknown]
@@ -212,20 +276,15 @@ export interface Tx<C extends AnySchema = AnySchema> {
   delete(e: TxEntity<C>): Effect.Effect<void>;
 
   /**
-   * Entity-level write. Lowers to map form. `undefined` fields are
+   * Make this row so. Lowers to map form. `undefined` fields are
    * omitted; cardinality-many takes an array. No subject allocates a
-   * new record. A subject names the record: an existing id, or a new
-   * id if that number has never been used (same as `set` — not
-   * "update only").
+   * new record and the map must carry every required field. A subject
+   * names the record: an existing id, or a new id if that number has
+   * never been used (same as `set` — not "update only").
    *
-   * ### Upserts
-   *
-   * Including a `unique: "upsert"` field in the map makes `put`
-   * ensure-this-row-exists: the engine unifies the new record with the
-   * existing row. `put(User, { sub, name })` is insert-or-update;
-   * `put(User, { sub })` is enough when you only have the key. A lookup
-   * that misses is still a hard rejection — put with the unique field
-   * is the path that creates when missing.
+   * Including a `unique: "upsert"` field unifies with the existing row
+   * — insert-or-update, still with full required data on create.
+   * Partial writes to an existing row are {@link Tx.update}.
    *
    * A two-element array whose first value is an ident (`":…"`) is a
    * lookup on a ref field. On a cardinality-many scalar field, that
@@ -234,9 +293,26 @@ export interface Tx<C extends AnySchema = AnySchema> {
    */
   put<N extends TxKnownEntity<C>>(
     entity: N,
-    attrs: PutAttrs<C, N>,
+    attrs: PutCreateAttrs<C, N>,
   ): Effect.Effect<TxHandle<C>>;
   put<N extends TxKnownEntity<C>>(
+    entity: N,
+    id: PutSubject<C, N>,
+    attrs: PutAttrs<C, N>,
+  ): Effect.Effect<TxHandle<C>>;
+
+  /**
+   * Change what's there. Partial; never creates. Address by subject
+   * (eid / handle / branded cell / lookup) or by a map that contains
+   * at least one `unique: "upsert"` field. Missing row →
+   * `TxRejected` `tx/missing-entity`. Wrong-entity subject →
+   * `tx/wrong-entity`.
+   */
+  update<N extends TxKnownEntity<C>>(
+    entity: N,
+    attrs: UpdateMapAttrs<C, N>,
+  ): Effect.Effect<TxHandle<C>>;
+  update<N extends TxKnownEntity<C>>(
     entity: N,
     id: PutSubject<C, N>,
     attrs: PutAttrs<C, N>,
@@ -352,6 +428,59 @@ const lowerPut = (
   return { map, extras };
 };
 
+const upsertIdents = (
+  entity: unknown,
+  attrs: Record<string, unknown>,
+): readonly [string, unknown][] => {
+  if (typeof entity !== "object" || entity === null || !("fields" in entity)) {
+    return [];
+  }
+  const fields = (
+    entity as {
+      fields?: Record<
+        string,
+        { readonly unique?: unknown; readonly ident?: unknown }
+      >;
+    }
+  ).fields;
+  if (fields === undefined) return [];
+  const out: [string, unknown][] = [];
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined) continue;
+    const field = fields[key];
+    if (field?.unique !== "upsert") continue;
+    const ident = typeof field.ident === "string" ? field.ident : fieldIdent(entity, key);
+    const lowered = lowerWriteValue(value);
+    if (lowered === undefined) continue;
+    out.push([ident, lowered]);
+  }
+  return out;
+};
+
+const lowerUpdate = (
+  entity: unknown,
+  eid: unknown,
+  attrs: Record<string, unknown>,
+): TxOp[] => {
+  const ops: TxOp[] = [];
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined) continue;
+    const ident = fieldIdent(entity, key);
+    if (isCardManyScalarField(entity, key) && Array.isArray(value)) {
+      for (const item of value) {
+        const lowered = lowerWriteValue(item);
+        if (lowered === undefined) continue;
+        ops.push([":db/update", eid, ident, lowered]);
+      }
+      continue;
+    }
+    const lowered = lowerWriteValue(value);
+    if (lowered === undefined) continue;
+    ops.push([":db/update", eid, ident, lowered]);
+  }
+  return ops;
+};
+
 const makeHandle = <C extends AnySchema>(
   eid: UnbrandedId | Tempid | LookupRef<C>,
   ops: TxOp[],
@@ -437,6 +566,51 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         ops.push(...extras);
         return makeHandle(eid, ops);
       })) as Tx<C>["put"],
+    update: ((entity: unknown, a: unknown, b?: unknown) =>
+      Effect.sync(() => {
+        const attrs = ((b !== undefined ? b : a) ?? {}) as Record<string, unknown>;
+        const id = b !== undefined ? a : undefined;
+        let eid: UnbrandedId | Tempid | LookupRef<C>;
+        if (id !== undefined) {
+          eid = resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>;
+        } else {
+          const lookups = upsertIdents(entity, attrs);
+          if (lookups.length === 0) {
+            throw new Error(
+              "ramose: update map form needs a unique: \"upsert\" field",
+            );
+          }
+          eid = lookups[0] as unknown as LookupRef<C>;
+        }
+        const written = lowerUpdate(entity, eid, attrs);
+        if (id === undefined) {
+          const lookups = upsertIdents(entity, attrs);
+          const ping = lookups[0];
+          const rest = written.filter(
+            (op) =>
+              !(
+                ping !== undefined &&
+                op[2] === ping[0] &&
+                Object.is(op[3], ping[1])
+              ),
+          );
+          if (rest.length === 0 && ping !== undefined) {
+            // Existence ping: re-assert the addressing unique value.
+            ops.push([":db/update", eid, ping[0], ping[1]]);
+          } else {
+            ops.push(...rest);
+          }
+        } else if (written.length === 0) {
+          const lookups = upsertIdents(entity, attrs);
+          const ping = lookups[0];
+          if (ping !== undefined) {
+            ops.push([":db/update", eid, ping[0], ping[1]]);
+          }
+        } else {
+          ops.push(...written);
+        }
+        return makeHandle(eid, ops);
+      })) as Tx<C>["update"],
   };
   return builder;
 };

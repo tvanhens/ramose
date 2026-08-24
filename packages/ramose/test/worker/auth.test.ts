@@ -69,6 +69,7 @@ const attr = (ident: string, type: string, extra: Record<string, unknown> = {}) 
   ":db/ident": ident,
   ":db/valueType": `:db.type/${type}`,
   ":db/cardinality": ":db.cardinality/one",
+  ...(extra[":db/cardinality"] === ":db.cardinality/many" ? {} : { ":db/optional": true }),
   ...extra,
 });
 
@@ -537,7 +538,7 @@ describe("ensure and privileged surfaces", () => {
     const peer = makePeer("acme", { env: policyEnv() });
     await peer.seed([
       ...SCHEMA,
-      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     const member = await token("acme", "member", "user_ida");
     const first = await peer.json("/db/acme/info", { token: member });
@@ -560,9 +561,9 @@ describe("ensure and privileged surfaces", () => {
     const peer = makePeer("acme", { env: policyEnv() });
     await peer.seed([
       ...SCHEMA,
-      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":user/email", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
     const firstTok = await token("acme", "member", "user_zoe", { name: "Zoe", email: "zoe@acme.test" });
     const first = await peer.json("/db/acme/info", { token: firstTok });
