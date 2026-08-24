@@ -175,7 +175,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
 
 const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
   _tag: "TxHandle",
-  eid: entity.eid,
+  eid: entity.eid as OpHandle["eid"],
   set: (field, value) => {
     Effect.runSync(entity.set(field, value));
   },
@@ -188,14 +188,16 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
 });
 
 /** Wrap the Effect runtime handle as the async `Op` a body sees. */
-export const asPromiseOp = (op: RuntimeOp): Op<any> => {
+export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
   const entity = ((id?: unknown) =>
     promiseEntity(
       Effect.runSync(id === undefined ? op.entity() : op.entity(id)),
-    )) as Op["entity"];
+    )) as Op<any, any>["entity"];
 
   return {
-    self: (op.self === undefined ? undefined : promiseEntity(op.self)) as Op<any>["self"],
+    self: (op.self === undefined
+      ? undefined
+      : promiseEntity(op.self)) as Op<any, any>["self"],
     principal: op.principal,
     db: op.db,
     entity,

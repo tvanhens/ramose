@@ -23,6 +23,7 @@ import {
   TxRejected,
   Unauthorized,
   txBuilder,
+  type Op,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { client, fakePeer, httpsClient, settle, type Call } from "./peer.ts";
@@ -349,12 +350,7 @@ describe("PrefixHalt is out-of-band", () => {
   test("a swallowed PrefixHalt still stops the optimistic prefix", async () => {
     const built = stubOp("halt");
     const swallow = {
-      body: async (op: {
-        entity: () => {
-          set: (attr: unknown, value: unknown) => void;
-        };
-        effect: (name: string, run: () => unknown) => Promise<unknown>;
-      }) => {
+      body: async (op: Op) => {
         const e = op.entity();
         e.set(User.name, "Ada");
         try {
@@ -424,7 +420,10 @@ describe("db.run wire", () => {
     const peer = fakePeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
-    const err = await runFail(db.run(setName, undefined, { name: "x" }));
+    const err = await runFail(
+      // @ts-expect-error contextual op requires an entity
+      db.run(setName, undefined, { name: "x" }),
+    );
     expect((err as { _tag: string })._tag).toBe("InvalidRequest");
     await c.dispose();
   });

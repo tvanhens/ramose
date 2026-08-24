@@ -25,9 +25,11 @@ import { NotOne, ParamError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
+  OpCatalogFitsDb,
   OpReport,
   Operation,
   OperationInvocation,
+  RunEntity,
 } from "./Operation.ts";
 import { asPromise, fromStream } from "./promise.ts";
 import { shareEqualDeep } from "./shareEqualDeep.ts";
@@ -272,16 +274,21 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
   /**
    * Run a named operation. Decode input, apply the optimistic prefix (steps
    * before the first `op.effect`) as a pending layer, and POST the invocation.
-   * A contextual operation (`on: Namespace`) takes the entity as the second
-   * argument.
+   * A contextual operation (`on: Entity`) takes the entity as the second
+   * argument. A *branded* cell of the wrong entity is rejected; an unbranded
+   * number and an opaque tempid string are deliberate hatches. Lookups must
+   * use a unique attr of the `on` entity.
+   *
+   * A schema-less operation runs on any db. An operation bound with
+   * `schema:` only runs on a db of that catalog.
    */
-  run<I, O>(
-    operation: Operation<string, I, O, undefined>,
-    input: I,
+  run<I, O, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, undefined, OC>,
+    input: OpCatalogFitsDb<C, OC> extends true ? I : never,
   ): Promise<OpReport<O, C>>;
-  run<I, O, N extends AnyEntity>(
-    operation: Operation<string, I, O, N>,
-    entity: unknown,
+  run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
+    operation: Operation<string, I, O, N, OC>,
+    entity: OpCatalogFitsDb<C, OC> extends true ? RunEntity<C, N> : never,
     input: I,
   ): Promise<OpReport<O, C>>;
 
@@ -814,7 +821,7 @@ const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       asPromise(
         operation.on !== undefined
-          ? inner.run(operation as never, a, b as never)
+          ? inner.run(operation as never, a as never, b as never)
           : inner.run(operation as never, a as never),
       )) as Db<C>["run"],
     effect: inner,
