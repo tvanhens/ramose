@@ -4,15 +4,14 @@
  * app-class tokens).
  */
 
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import type { TelemetryEvent } from "../../src/internal/core/telemetry.ts";
-import { setTelemetrySink } from "../../src/internal/core/telemetry.ts";
 import { Operation, Operations } from "../../src/db/Operation.ts";
 import { schemaTx } from "../../src/db/ensure.ts";
 import { Movie, Movies, User } from "../db/fixture.ts";
+import { events } from "../internal/transactor/harness.ts";
 import { makePeer, post, type Peer } from "./harness.ts";
 
 const setTitle = Operation(
@@ -262,10 +261,6 @@ describe('writes: "operations" is the peer default', () => {
     RAMOSE_JWT_AUD: AUD,
   });
 
-  afterEach(() => {
-    setTelemetrySink(undefined);
-  });
-
   test("no writes / no RAMOSE_WRITES: app-class token is denied on /transact; /op works; admin and the seed token keep /transact", async () => {
     const peer = makePeer("movies", {
       operations,
@@ -331,8 +326,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("policy + writes: all emits writes.all-with-policy once, and does not fail the request", async () => {
-    const events: TelemetryEvent[] = [];
-    setTelemetrySink((e) => events.push(e));
+    const from = events.length;
     const peer = makePeer("movies", {
       operations,
       env: { ...envOf(), RAMOSE_WRITES: "all" },
@@ -344,7 +338,7 @@ describe('writes: "operations" is the peer default', () => {
       post({ tx: [{ ":movie/title": "open" }] }, member),
     );
     expect(first.status).toBe(200);
-    const warned = events.filter((e) => e.event === "writes.all-with-policy");
+    const warned = events.slice(from).filter((e) => e.event === "writes.all-with-policy");
     expect(warned).toHaveLength(1);
     expect(warned[0]?.level).toBe("warn");
     expect(String(warned[0]?.message)).toMatch(/raw \/transact stays open/);
@@ -353,7 +347,7 @@ describe('writes: "operations" is the peer default', () => {
       post({ query: { find: ["?t"], where: [["?e", ":movie/title", "?t"]] } }, member),
     );
     expect(second.status).toBe(200);
-    expect(events.filter((e) => e.event === "writes.all-with-policy")).toHaveLength(1);
+    expect(events.slice(from).filter((e) => e.event === "writes.all-with-policy")).toHaveLength(1);
     peer.close();
   });
 });
