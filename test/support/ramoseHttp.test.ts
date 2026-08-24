@@ -97,6 +97,20 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(n).toBeGreaterThan(1); // it did retry
   });
 
+  test("retries replica 503 no root yet then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) return json(503, { error: "database has no root yet" });
+        return json(200, { db: "x", t: 1, principal: { eid: null, class: "admin" } });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.db("x").info()).t).toBe(1);
+    expect(n).toBe(2);
+  });
+
   test("does not retry an application 409", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {

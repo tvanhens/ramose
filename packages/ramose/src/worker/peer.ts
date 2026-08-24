@@ -10,6 +10,7 @@
 import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts";
 import type { Basis } from "../internal/replica/index.ts";
+import { UpstreamError } from "./errors.ts";
 
 const sources = new Map<string, R2NodeStore>();
 const MAX_SOURCES = 64;
@@ -185,7 +186,10 @@ export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: R
   for (;;) {
     calls++;
     const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, { headers: { ...coloHeader(request), ...internalHeaders(env) } });
-    if (!res.ok) throw new Error(`replica basis failed: ${res.status} ${await res.text()}`);
+    // Replica 503 "no root yet" must stay 503: wrapping it as Error → Internal
+    // 500 made e2e warmup treat a fresh database as a hard failure (the client
+    // retries 503 / 429, not application 500s).
+    if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
     basis = (await res.json()) as Basis;
     if (minT === undefined || basis.t >= minT || calls > MIN_T_RETRIES) break;
     await new Promise((r) => setTimeout(r, MIN_T_RETRY_MS));

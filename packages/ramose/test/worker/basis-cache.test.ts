@@ -60,6 +60,25 @@ describe("basis cache knobs", () => {
     expect(calls[0].hint).toBe("wnam");
   });
 
+  test("replica 503 no root is UpstreamError, not Internal 500", async () => {
+    const env = {
+      REPLICA: {
+        idFromName: (name: string) => ({ name, toString: () => name }),
+        get: () => ({
+          fetch: async () =>
+            new Response(JSON.stringify({ error: "database has no root yet" }), { status: 503 }),
+        }),
+      },
+    } as any;
+    try {
+      await fetchBasisWithStats(env, "demo", req({ "x-ramose-cache-basis": "0" }));
+      throw new Error("expected throw");
+    } catch (e) {
+      expect((e as { _tag?: string })._tag).toBe("UpstreamError");
+      expect((e as { status?: number }).status).toBe(503);
+    }
+  });
+
   test("cache on (default): first read misses, second hits without touching the replica; keyed by db|hint", async () => {
     const { env, calls } = fakeEnv(() => 5);
     const h = { "x-ramose-replica-hint": "wnam" };
