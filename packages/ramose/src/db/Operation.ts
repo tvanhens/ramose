@@ -44,7 +44,9 @@ type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   : AnyEntity;
 
 type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
-  [ConcreteCatalog<C>] extends [true] ? PutAttrs<C, E> : Record<string, unknown>;
+  [ConcreteCatalog<C>] extends [true]
+    ? PutAttrs<C, E, TxHandle<C> | OpHandle<C>>
+    : Record<string, unknown>;
 
 type OpUpsertField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? UpsertField<C>

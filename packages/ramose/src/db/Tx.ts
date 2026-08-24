@@ -64,23 +64,30 @@ export type TxKnownEntity<C extends AnySchema> = string extends keyof C["entitie
   : C["entities"][keyof C["entities"]];
 
 /** Ref forms `put` accepts in addition to {@link WriteAtIdent}'s decoded type. */
-type PutRef<C extends AnySchema> = TxHandle<C> | string | LookupRef<C>;
+type PutRef<C extends AnySchema, H = TxHandle<C>> = H | string | LookupRef<C>;
 
-type PutScalar<C extends AnySchema, N extends AnyEntity, K extends string> =
+type PutScalar<
+  C extends AnySchema,
+  N extends AnyEntity,
+  K extends string,
+  H = TxHandle<C>,
+> =
   | ValueAtIdent<C, `:${N["ns"]}/${K}`>
-  | (N["fields"][K] extends { readonly valueType: "ref" } ? PutRef<C> : never);
+  | (N["fields"][K] extends { readonly valueType: "ref" } ? PutRef<C, H> : never);
 
 /**
  * `put` attrs: {@link WriteAtEntity} (array for many, omit `undefined`)
- * plus handle / tempid / lookup on ref fields.
+ * plus handle / tempid / lookup on ref fields. `H` is the handle
+ * admitted in ref slots — `TxHandle` on the builder, widened to
+ * `TxHandle | OpHandle` on the promise `Op`.
  */
-export type PutAttrs<C extends AnySchema, N extends AnyEntity> = {
+export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> = {
   [K in keyof WriteAtEntity<C, N> & string]?:
     | WriteAtEntity<C, N>[K]
     | (N["fields"][K] extends { readonly valueType: "ref"; readonly cardinality: "many" }
-        ? ReadonlyArray<PutScalar<C, N, K>>
+        ? ReadonlyArray<PutScalar<C, N, K, H>>
         : N["fields"][K] extends { readonly valueType: "ref" }
-          ? PutRef<C>
+          ? PutRef<C, H>
           : never);
 };
 

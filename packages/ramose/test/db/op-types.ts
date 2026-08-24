@@ -311,12 +311,15 @@ const Catalog = DbSchema({
 });
 declare const catalogOp: Op<typeof Catalog>;
 
+const friend = catalogOp.entity();
 const putCreate = catalogOp.put(User, {
   name: "Ada",
   age: 36,
-  friends: [1002],
+  bestFriend: friend,
+  friends: [friend, 1002],
 });
 type _putCreate = Expect<Extends<typeof putCreate, OpHandle<typeof Catalog>>>;
+catalogOp.put(User, { bestFriend: putCreate, friends: [putCreate] });
 
 const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
 type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Catalog>>>;
