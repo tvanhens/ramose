@@ -19,7 +19,7 @@ A **write** is one all-or-nothing group of changes ([glossary](/concepts/glossar
 
 `useLive`, `useQuery` and `usePull` run reads and re-run them; `useTransact().run` runs a write from an event handler. You never see Effect:
 
-```tsx title="examples/todos/src/App.tsx:14-25"
+```tsx title="examples/todos/src/App.tsx#todo-list"
 const TodoList = () => {
   const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
@@ -34,7 +34,9 @@ const TodoList = () => {
 };
 ```
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:248-250"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
@@ -46,8 +48,19 @@ const TodoList = () => {
 
 Anywhere else — a script, a Worker, a test — `Effect.runPromise(effect)` runs one Effect and gives you a Promise. Reef opens a workspace this way:
 
-```ts title="examples/reef/src/app/ramose.ts:43"
-    if (provision) await Effect.runPromise(provisionWorkspace(db));
+```ts title="examples/reef/src/app/ramose.ts#open-workspace-provision"
+    const connect = options?.connect ?? Ramose.connect;
+    const ramose = connect({
+      url: options?.url ?? RAMOSE_URL,
+      token,
+      fetch: options?.fetch,
+      webSocket: options?.webSocket,
+    });
+    try {
+      await provisionWorkspace(ramose.db(slug, Reef));
+    } finally {
+      await ramose.close();
+    }
 ```
 
 Every `db` method can be run this way directly; nothing else needs to be set up.
@@ -56,17 +69,13 @@ Every `db` method can be run this way directly; nothing else needs to be set up.
 
 A write's body is a generator. Read `yield*` as `await`: it runs the step and gives you its result. Reef's drag-and-drop is two steps:
 
-```ts
+```ts title="examples/reef/src/app/mutations.ts#move-issue"
 export const moveIssue = (
   db: ReefDb,
   issueId: number,
   status: Status,
   rank: number,
-) =>
-  db.effect.transact(function* (tx) {
-    yield* tx.set(issueId, Issue.status, status);
-    yield* tx.set(issueId, Issue.rank, rank);
-  });
+) => db.run(moveIssueOp, issueId, { status, rank });
 ```
 
 `function*` and `yield*` are plain JavaScript; Effect uses them so a write reads top to bottom. If any step fails, the write is not sent.
@@ -79,8 +88,7 @@ The hatch (`db.effect.*`) still produces Effects. `runPromise` from `ramose/effe
 
 Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`, `OperationRejected`. A Worker that proxies those to HTTP uses `errorToHttp`:
 
-```ts title="examples/kv-style/app.ts:123-129"
-      }).pipe(
+```ts title="examples/kv-style/app.ts#error-to-http"
         // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
         Effect.catch((e) => {
           const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));

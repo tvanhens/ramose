@@ -27,9 +27,13 @@ const P = Ramose.Policy;
 const { Query } = Ramose;
 
 /** `member` may touch an issue they created; `admin` never reaches the rules. */
+// docs:own-rules
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
+// enddocs:own-rules
 
+// docs:policy
+// docs:policy-setup
 export const policy = Ramose.policy(
   {
     schema: Reef,
@@ -50,19 +54,27 @@ export const policy = Ramose.policy(
       read: true,
       create: P.class("member"),
     },
+    // enddocs:policy-setup
+    // docs:policy-issue
     issue: {
       read: true,
       create: P.class("member"),
       set: { class: "member", rule: ownIssue },
       remove: { class: "member", rule: ownIssue },
       delete: { class: "member", rule: ownIssue },
+      // docs:policy-preset
       preset: [P.preset(Issue.creator, P.principal)],
+      // enddocs:policy-preset
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
+        // docs:policy-private-note
         P.field(Issue.privateNote, { read: P.class("admin") }),
+        // enddocs:policy-private-note
       ],
     },
+    // enddocs:policy-issue
+    // docs:policy-comment
     comment: {
       read: true,
       create: P.class("member"),
@@ -70,12 +82,16 @@ export const policy = Ramose.policy(
       delete: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
+    // enddocs:policy-comment
   },
 );
+// enddocs:policy
 
 /**
  * The wire JSON for `RAMOSE_POLICY`. Compiling against the app's pull shapes
  * makes "a masked attribute pulled as required" a deploy-time error.
  */
+// docs:compiled-policy
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
+// enddocs:compiled-policy

@@ -18,25 +18,32 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
 
 *Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
 
-```ts title="examples/reef/src/app/ramose.ts:38-43"
-  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+```ts title="examples/reef/src/app/ramose.ts#open-workspace-token · examples/reef/src/app/ramose.ts#open-workspace-provision"
+  const token =
+    options?.token ??
+    Ramose.token.jwt(async () => {
+      const { authClient } = await import("./auth.ts");
+      return authClient.ramose.token({ db: slug });
+    });
   const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
-  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
-  try {
-    const db = ramose.db(slug, Reef);
-    if (provision) await Effect.runPromise(provisionWorkspace(db));
+
+    const connect = options?.connect ?? Ramose.connect;
+    const ramose = connect({
+      url: options?.url ?? RAMOSE_URL,
+      token,
+      fetch: options?.fetch,
+      webSocket: options?.webSocket,
+    });
+    try {
+      await provisionWorkspace(ramose.db(slug, Reef));
+    } finally {
+      await ramose.close();
+    }
 ```
 
 `ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub`, `role`, name, email) at session establishment:
 
-```ts title="examples/reef/src/app/mutations.ts:78-86"
-    for (const seed of SEED_LABELS) {
-      op.put(Label, { name: seed.name, color: seed.color });
-    }
-    return { ready: true };
-  },
-);
-
+```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```
@@ -76,11 +83,10 @@ Under a policy, a sign-in token names one database in its `ramose.db` claim. A t
 
 Your own Worker holds a typed client and does the same at sign-up:
 
-```ts title="examples/kv-style/app.ts:49-54"
-    /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
+```ts title="examples/kv-style/app.ts#create-tenant"
     const createTenant = (tenantId: string) =>
       Effect.gen(function* () {
-        const report = yield* ramose.db(tenantId, Movies).install();
+        const report = yield* ramose.db(tenantId, Movies).effect.install();
         return yield* HttpServerResponse.json({ tenant: tenantId, t: report.t });
       });
 ```

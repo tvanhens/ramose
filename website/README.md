@@ -57,7 +57,7 @@ production" sections of `CONTRIBUTING.md`.
 bun run check            # objective report on every page; exits 1 on errors
 bun run check --json     # machine-readable
 bun scripts/docs-check.mjs --page guides/catalog
-bun scripts/docs-check.mjs --only words|shape|terms|links|images|code
+bun scripts/docs-check.mjs --only words|shape|terms|links|images|code|facts
 ```
 
 `scripts/docs-check.mjs` is the single source of truth for the objective facts
@@ -71,16 +71,21 @@ It checks, with one fixed definition each:
 | `terms` | banned prose vocabulary (code spans excluded), and that "Datomic" appears only on `concepts/data-model` |
 | `links` | every internal link resolves to a real page, and every `#anchor` to a real heading id |
 | `images` | every referenced image exists, has alt text and real dimensions; lists unused assets |
-| `code` | every ` ```ts title="path:lines" ` block against the real file at those lines, including multi-file citations |
+| `code` | every fence whose `title` cites a repo file (`path#marker` or `path:N-M`) extracts from source; a mismatch or a missing marker fails |
+| `facts` | doc-stated error counts and export tables against `Errors.ts` / the public barrels |
+
+A cited fence is filled from source at build time (`remark-extract-snippets`
+in `astro.config.mjs`). The title is the citation; the body may be empty or
+must match the extract. Named regions in example files are `// docs:name` …
+`// enddocs:name`.
 
 Word counts in particular were hand-counted three different ways during one
 review cycle, which is why they now have exactly one definition. Cite the tool,
 not a manual count.
 
-**The clean baseline is `0 errors, 9 warnings`.** All nine are the Glossary and
-"How Ramose thinks about data" naming the vocabulary they exist to replace
-(`datom`, `tempid`, `novelty`, `Datalog`), plus one line listing assets in
-`public/` that no page references. Anything beyond that is new and wants
+`docs-check.mjs` runs on every CI job and fails the build on any ERROR.
+Warnings are the Glossary / data-model pages naming the vocabulary they
+replace, plus unused `public/` assets. Anything else is new and wants
 looking at.
 
 ## Layout

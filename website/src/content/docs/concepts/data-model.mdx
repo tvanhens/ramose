@@ -25,7 +25,7 @@ Move issue 17 to Done and Ramose does not edit the status fact. It adds a new on
 
 A **write** is one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). Every write gets the next **version number `t`** ([glossary](/concepts/glossary/#version-number)). The picture above is the database at version 9. Read it at version 8 and the status is still "todo". That is all Reef's time-travel slider does.
 
-<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="Reef's board read at an earlier version; the same query, one extra call." code="examples/reef/src/app/screens/BoardScreen.tsx:479-485" />
+<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="Reef's board read at an earlier version; the same query, one extra call." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
 
 ## Reading means asking at a version
 

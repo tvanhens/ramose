@@ -111,6 +111,7 @@ export const Api = Cloudflare.Worker(
           // sign-in via listUserInvitations. Nothing to send.
           async sendInvitationEmail() {},
         }),
+        // docs:jwt-plugin
         jwt({
           // Reef never reads `set-auth-jwt`. The jwt plugin's default
           // /get-session after-hook signs an identity JWT on every session
@@ -127,6 +128,7 @@ export const Api = Cloudflare.Worker(
             expirationTime: `${REEF_AUTH.ttl}s`,
           },
         }),
+        // enddocs:jwt-plugin
         // `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`.
         // The session cookie authenticates the caller; `orgClassOf` maps
         // their membership in the org whose slug is `db` to a policy class

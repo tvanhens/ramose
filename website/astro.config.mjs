@@ -1,6 +1,7 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
+import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
 
 // Public canonical origin. The Worker keeps its physical name (`ripple-docs`,
 // see alchemy.run.ts) and its workers.dev hostname; ramose.ai is the custom
@@ -9,6 +10,9 @@ const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
+  markdown: {
+    remarkPlugins: [remarkExtractSnippets],
+  },
   // Old URLs from before the docs overhaul. Astro emits a static
   // meta-refresh page per entry; fragments are kept in the target URL.
   // These stubs have no <html> element, so every build Pagefind logs

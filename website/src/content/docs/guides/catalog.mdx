@@ -21,7 +21,7 @@ A raw [Effect Schema](https://effect.website) is still accepted as the advanced 
 
 Reef's whole data model is 76 lines. The parts that matter:
 
-```ts title="examples/reef/src/domain/schema.ts:14-33"
+```ts title="examples/reef/src/domain/schema.ts#user-entity · examples/reef/src/domain/schema.ts#label-entity"
 export const User = Ramose.Entity("user", {
   sub: Ramose.string({
     unique: "upsert",
@@ -44,7 +44,7 @@ export const Label = Ramose.Entity("label", {
 });
 ```
 
-```ts title="examples/reef/src/domain/schema.ts:38-54"
+```ts title="examples/reef/src/domain/schema.ts#issue-entity"
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string(),
@@ -110,8 +110,7 @@ Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compos
 
 Nothing downstream needs a type annotation. Reef's board row is inferred:
 
-```ts title="examples/reef/src/domain/queries.ts:90-91"
-/** One row of {@link boardQuery} — inferred from the query, never restated. */
+```ts title="examples/reef/src/domain/queries.ts#board-row-type"
 export type BoardRow = Ramose.Row<typeof boardQuery>;
 ```
 
@@ -131,7 +130,7 @@ export const Server = Ramose.Server("Ramose", {
 
 From the app, for names created at runtime — how Reef makes a workspace:
 
-```ts title="examples/reef/src/app/mutations.ts:85-86"
+```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```

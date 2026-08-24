@@ -11,6 +11,7 @@
 import * as Ramose from "ramose/db";
 
 /** One row per human who has entered the workspace. `sub` is the JWT subject. */
+// docs:user-entity
 export const User = Ramose.Entity("user", {
   sub: Ramose.string({
     unique: "upsert",
@@ -26,15 +27,19 @@ export const User = Ramose.Entity("user", {
     doc: "Email, stamped by the peer from ramose.attrs.email",
   }),
 });
+// enddocs:user-entity
 
+// docs:label-entity
 export const Label = Ramose.Entity("label", {
   name: Ramose.string({ unique: "upsert" }),
   color: Ramose.string(),
 });
+// enddocs:label-entity
 
 export const STATUSES = ["backlog", "todo", "doing", "done"] as const;
 export type Status = (typeof STATUSES)[number];
 
+// docs:issue-entity
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string(),
@@ -52,6 +57,7 @@ export const Issue = Ramose.Entity("issue", {
     doc: "visible to the admin class only",
   }),
 });
+// enddocs:issue-entity
 
 export const Comment = Ramose.Entity("comment", {
   body: Ramose.string(),

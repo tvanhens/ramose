@@ -49,28 +49,35 @@ A **sign-in token** — a signed token the server verifies and never issues ([gl
 
 Better Auth (the sign-in library — [glossary](/concepts/glossary/#better-auth)) plus the shipped `ramose/better-auth` plugin is the shortest path. On the auth server, the `jwt` plugin publishes signing keys and `ramoseToken` adds the route that **mints** — creates and signs ([glossary](/concepts/glossary/#mint)) — a token for one database:
 
-```ts title="examples/reef/src/infra/api.ts:100-119"
+```ts title="examples/reef/src/infra/api.ts#jwt-plugin"
         jwt({
+          // Reef never reads `set-auth-jwt`. The jwt plugin's default
+          // /get-session after-hook signs an identity JWT on every session
+          // fetch, which decrypts the JWKS private key. That key is
+          // encrypted with BetterAuthSecret — Alchemy.Random, state-only,
+          // reminted on a cache miss — so a rotated secret turns
+          // `useSession` into a 500 and the SPA shows create-account
+          // after a successful sign-in. `ramoseToken` heals JWKS for mint;
+          // this flag keeps get-session off that path entirely.
+          disableSettingJwtHeader: true,
           jwt: {
             issuer: REEF_AUTH.issuer,
             audience: REEF_AUTH.audience,
             expirationTime: `${REEF_AUTH.ttl}s`,
           },
         }),
-        // …
-        ramoseToken({
-          auth: REEF_AUTH,
-          policy: compiledPolicy(),
-          classOf: orgClassOf(),
-        }),
 ```
 
 In the browser, `ramoseTokenClient()` in the auth client's plugins (`examples/reef/src/app/auth.ts:12-18`) adds one call, `authClient.ramose.token({ db })`. Wrap it in a **token source** and it is what `Ramose.connect` takes — a token source is a self-refreshing credential ([glossary](/concepts/glossary/#token-source)):
 
-```ts title="examples/reef/src/app/ramose.ts:38-40"
-  const token = Ramose.token.jwt(() => authClient.ramose.token({ db: slug }));
+```ts title="examples/reef/src/app/ramose.ts#open-workspace-token"
+  const token =
+    options?.token ??
+    Ramose.token.jwt(async () => {
+      const { authClient } = await import("./auth.ts");
+      return authClient.ramose.token({ db: slug });
+    });
   const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
-  const ramose = Ramose.connect({ url: RAMOSE_URL, token });
 ```
 
 The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, behind the session cookie. The server's `RAMOSE_JWKS_URL` points at Better Auth's `/api/auth/jwks` — the sign-in provider's public keys ([glossary](/concepts/glossary/#jwks)).
@@ -79,7 +86,7 @@ The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, b
 
 A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class` and copies the Better Auth user's name and email onto `ramose.attrs` so the peer can stamp them:
 
-```ts title="packages/ramose/src/better-auth/index.ts:306-317"
+```ts title="packages/ramose/src/better-auth/index.ts:310-321"
 export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {

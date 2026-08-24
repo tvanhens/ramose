@@ -42,6 +42,7 @@ suffixes) is deferred — do not bikeshed it on this pass.
 bun install
 bun run typecheck
 bun test                        # unit/integration (~670 tests, no services)
+bun website/scripts/docs-check.mjs   # cited snippets + docs facts; blocks CI
 bun run dev:todos               # local peer on :1337, todos app on :5173
 bun run dev:reef                # the Reef example instead
 ```
@@ -96,7 +97,7 @@ stage name is unguessable and torn down at the end of the run.
 
 | Workflow | When | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + unit tests |
+| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + unit tests + `docs-check` |
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |

@@ -9,13 +9,28 @@
 //   bun website/scripts/docs-check.mjs              human-readable report
 //   bun website/scripts/docs-check.mjs --json       machine-readable
 //   bun website/scripts/docs-check.mjs --page index every check for one page
-//   bun website/scripts/docs-check.mjs --only words|shape|terms|links|images|code
+//   bun website/scripts/docs-check.mjs --only words|shape|terms|links|images|code|facts
 //
 // Exit code 1 if any ERROR-severity check fails, 0 otherwise (WARN never fails).
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  extractTitle,
+  bodyMatchesExtract,
+  resolveShotCode,
+} from "./lib/snippets.mjs";
+import {
+  dbErrorTags,
+  errorTableTags,
+  ramoseDbRuntime,
+  ramoseReactRuntime,
+  ramoseRootRuntime,
+  listedFromFrontmatter,
+  statedRequestErrorCounts,
+  tickNames,
+} from "./lib/facts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SITE = resolve(HERE, "..");
@@ -30,7 +45,9 @@ const onlyCheck = args.includes("--only") ? args[args.indexOf("--only") + 1] : n
 
 // ── word budgets, from blueprint.md Part 2 (ceilings, include code) ──────────
 const BUDGETS = {
-  "index": 900,
+  // Raised so the landing snippets can be the real Issue entity / policy
+  // arm / live query, not a shortened transcription.
+  "index": 1000,
   "getting-started/introduction": 350,
   // Quickstart + "Build your first app" consolidated into one build-it-from-
   // scratch guide; it carries both former budgets (2300 combined), and it is
@@ -43,10 +60,13 @@ const BUDGETS = {
   "guides/transactions": 1000,
   // Raised for count / groupBy / keyset `.after` on the everyday nav surface,
   // and the recursive-tree window that `again` is for.
-  "guides/queries": 1700,
+  // Raised for count / groupBy / keyset `.after`, and to keep the
+  // select-less `Query.from` (`EntityRow`) vs `Ramose.all(N)` distinction
+  // honest now that snippets extract from source.
+  "guides/queries": 2600,
   "guides/live-queries": 800,
-  "guides/permissions": 1200,
-  "guides/sign-in": 1000,
+  "guides/permissions": 1350,
+  "guides/sign-in": 1100,
   "guides/workspaces": 900,
   "guides/deploy": 1100,
   "guides/workers": 800,
@@ -54,7 +74,7 @@ const BUDGETS = {
   // Raised for the entries covering the bare-specifier `main` hang, schema-change
   // watching, and the corrected port-collision advice (which used to tell readers
   // to kill an unrelated process). All cost real debugging time to rediscover.
-  "guides/troubleshooting": 1250,
+  "guides/troubleshooting": 1300,
   "concepts/data-model": 1000,
   "concepts/architecture": 900,
   "concepts/time-travel": 700,
@@ -62,9 +82,9 @@ const BUDGETS = {
   "concepts/glossary": 2200,
   // Raised for the aggregate / groupBy / `.after` entries on the query builder,
   // and the thread-window sketch on `again`.
-  "reference/client-api": 2950,
+  "reference/client-api": 3300,
   "reference/react": 1200,
-  "reference/policy": 2000,
+  "reference/policy": 2150,
   "reference/errors": 900,
   "reference/server": 2400,
 };
@@ -84,27 +104,6 @@ const NO_LEARN = new Set([
   "index", "getting-started/introduction", "getting-started/compare",
   "concepts/glossary", "guides/troubleshooting",
 ]);
-
-let repoFilesCache = null;
-const walkFind = (relPath) => {
-  if (!repoFilesCache) {
-    const skip = new Set(["node_modules", ".git", "dist", ".alchemy", ".astro"]);
-    const collect = (dir) => {
-      let out = [];
-      for (const f of readdirSync(dir)) {
-        if (skip.has(f)) continue;
-        const p = join(dir, f);
-        try {
-          if (statSync(p).isDirectory()) out = out.concat(collect(p));
-          else out.push(p);
-        } catch { /* unreadable */ }
-      }
-      return out;
-    };
-    repoFilesCache = collect(REPO);
-  }
-  return repoFilesCache.find((p) => p.endsWith("/" + relPath));
-};
 
 const findings = [];
 const add = (sev, check, page, msg, detail) =>
@@ -161,7 +160,15 @@ const countProse = (prose) => {
   return t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
 };
 const countCode = (blocks) =>
-  blocks.reduce((n, b) => n + b.code.split(/\s+/).filter(Boolean).length, 0);
+  blocks.reduce((n, b) => {
+    const title = b.info.match(/title="([^"]+)"/)?.[1];
+    const extracted = title ? extractTitle(title) : null;
+    const src =
+      extracted?.ok && extracted.extracted && !b.code.trim()
+        ? extracted.text
+        : b.code;
+    return n + src.split(/\s+/).filter(Boolean).length;
+  }, 0);
 
 // github-slugger-compatible enough for our heading set
 const slugify = (s) =>
@@ -371,62 +378,96 @@ for (const page of pages) {
     for (const b of blocks) {
       const title = b.info.match(/title="([^"]+)"/)?.[1];
       if (!title) continue;
-      // A title may cite several ranges, e.g.
-      //   title="a/queries.ts:66-68 · app/BoardScreen.tsx:230-232 · Board.tsx:216"
-      // Collect every citation; a shown line may come from any of them.
-      const cites = [...title.matchAll(/([\w./-]+\.(?:ts|tsx|mjs|json|css)):(\d+)(?:-(\d+))?/g)];
-      if (!cites.length) continue;
-      let cited = [];
-      let bad = false;
-      const labels = [];
-      for (const [, relPath, aStr, bStr] of cites) {
-        // later citations in a title are often written relative to the first
-        const candidates = [relPath, join(dirname(cites[0][1]), relPath)];
-        const found = candidates.map((c) => join(REPO, c)).find(existsSync)
-          ?? walkFind(relPath);
-        if (!found) {
-          add("ERROR", "code", page.slug, `cited file does not exist: ${relPath}`);
-          bad = true;
-          continue;
-        }
-        const lines = readFileSync(found, "utf8").split("\n");
-        const a = Number(aStr), bEnd = Number(bStr ?? aStr);
-        if (bEnd > lines.length) {
-          add("ERROR", "code", page.slug,
-            `cited range ${relPath}:${a}-${bEnd} exceeds file (${lines.length} lines)`);
-          bad = true;
-          continue;
-        }
-        labels.push(`${relPath}:${a}-${bEnd}`);
-        cited.push(...lines.slice(a - 1, bEnd).map((l) => l.trim()).filter(Boolean));
+      const got = extractTitle(title);
+      if (!got.extracted) continue;
+      if (!got.ok) {
+        add("ERROR", "code", page.slug, got.error);
+        continue;
       }
-      if (bad || !cited.length) continue;
-      const a = cites[0][2], bEnd = cites[0][3] ?? cites[0][2];
-      const relPath = labels.join(" · ");
-      const shown = b.code
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l && !/^\/\/\s*…$/.test(l) && !/^\/\/\s*\.\.\.$/.test(l));
-      // every shown line that is not an "ours" comment must appear, in order
-      // Order is only enforced within a single-citation block; a multi-file
-      // title stitches ranges together, so membership is the honest test.
-      const single = cites.length === 1;
-      let i = 0, missing = [];
-      for (const line of shown) {
-        const at = single ? cited.indexOf(line, i) : cited.indexOf(line);
-        if (at === -1) missing.push(line);
-        else if (single) i = at + 1;
-      }
-      // tolerate added explanatory comment lines
-      const realMissing = missing.filter((l) => !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"));
-      if (realMissing.length)
+      const match = bodyMatchesExtract(b.code, got.text);
+      if (!match.ok) {
         add("ERROR", "code", page.slug,
-          `block titled ${relPath} has ${realMissing.length} line(s) not in the cited range(s)`,
-          realMissing.slice(0, 3).join(" ⏎ ").slice(0, 160));
+          `block titled ${got.labels.join(" · ")} has ${match.missing.length} line(s) not in the extract`,
+          match.missing.slice(0, 3).join(" ⏎ ").slice(0, 160));
+      }
+    }
+    for (const m of body.matchAll(/<(?:Shot)\b([^>]*)>/g)) {
+      const code = m[1].match(/\bcode=["']([^"']+)["']/)?.[1];
+      if (!code) continue;
+      const resolved = resolveShotCode(code);
+      if (resolved?.error)
+        add("ERROR", "code", page.slug, `Shot code= ${resolved.error}`);
     }
   }
 
   report.push(row);
+}
+
+// FACTS — counts and tables that name code
+if (run("facts") && !onlyPage) {
+  const tags = dbErrorTags();
+  const dbNames = ramoseDbRuntime();
+  const root = ramoseRootRuntime();
+  const reactNames = ramoseReactRuntime();
+
+  for (const page of pages) {
+    const { fm, body } = splitFrontmatter(page.src);
+    for (const hit of statedRequestErrorCounts(body)) {
+      if (hit.n !== tags.length) {
+        add("ERROR", "facts", page.slug,
+          `says "${hit.text}" but DbError has ${tags.length} members`,
+          tags.join(", "));
+      }
+    }
+    if (page.slug === "reference/errors") {
+      const table = errorTableTags(body);
+      for (const tag of tags) {
+        if (!table.includes(tag))
+          add("ERROR", "facts", page.slug, `DbError member ${tag} missing from the errors table`);
+      }
+    }
+    if (page.slug === "reference/client-api") {
+      const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
+      if (dbRow) {
+        for (const name of tickNames(dbRow[1])) {
+          if (!dbNames.has(name) && name !== "DbError")
+            add("ERROR", "facts", page.slug,
+              `ramose/db table lists ${name}, which is not a runtime export`);
+        }
+      }
+      const addRow = body.match(/\|\s*`ramose`\s*\(adds\)\s*\|\s*([^|\n]+)\|/);
+      if (addRow) {
+        for (const name of tickNames(addRow[1])) {
+          if (!root.added.has(name) && !root.all.has(name))
+            add("ERROR", "facts", page.slug,
+              `ramose (adds) table lists ${name}, which is not a ramose export`);
+        }
+      }
+    }
+    if (page.slug === "reference/react") {
+      const listed = listedFromFrontmatter(fm);
+      if (!listed.length)
+        add("ERROR", "facts", page.slug,
+          "react description lists no backticked export names");
+      const ignore = new Set(["ramose"]);
+      for (const name of listed) {
+        if (ignore.has(name)) continue;
+        if (!reactNames.has(name))
+          add("ERROR", "facts", page.slug,
+            `react page names ${name}, which is not a ramose/react runtime export`);
+      }
+      for (const name of reactNames) {
+        if (!body.includes(name))
+          add("ERROR", "facts", page.slug,
+            `ramose/react exports ${name} but the page never mentions it`);
+      }
+    }
+    if (/select-less `Query\.from`.{0,80}Ramose\.all\(/s.test(body) &&
+        /select-less `Query\.from` returns the full entity/.test(body)) {
+      add("ERROR", "facts", page.slug,
+        "select-less Query.from is EntityRow (friendly keys), not Ramose.all(N)");
+    }
+  }
 }
 
 // unused images (whole-site check, skipped when scoped to one page)

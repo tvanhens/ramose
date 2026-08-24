@@ -1,10 +1,12 @@
 ---
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { resolveShotCode } from "../../scripts/lib/snippets.mjs";
 
 // The only way to put an image on a page. See blueprint §1.5.
-// `code` is a repo-relative path with optional ":a-b" lines; it becomes a
-// GitHub blob link at master (#La-Lb) and is shown without "examples/reef/".
+// `code` is a repo-relative path with a `#marker` or `:a-b` range; it
+// becomes a GitHub blob link at master (#La-Lb) and is shown without
+// "examples/reef/".
 interface Props {
   src: string;
   alt: string;
@@ -55,15 +57,11 @@ const height = real?.h ?? heightProp ?? 900;
 let gh: string | undefined;
 let short: string | undefined;
 if (code) {
-  const idx = code.lastIndexOf(":");
-  const hasLines = idx > 0 && /^\d+(-\d+)?$/.test(code.slice(idx + 1));
-  const path = hasLines ? code.slice(0, idx) : code;
-  const lines = hasLines ? code.slice(idx + 1) : "";
-  const [a, b] = lines.split("-");
-  gh = `https://github.com/tvanhens/ripple/blob/master/${path}${
-    a ? `#L${a}${b ? `-L${b}` : ""}` : ""
-  }`;
-  short = code.replace(/^examples\/reef\//, "");
+  const resolved = resolveShotCode(code);
+  if (resolved && !resolved.error) {
+    gh = resolved.gh;
+    short = resolved.short;
+  }
 }
 ---
 

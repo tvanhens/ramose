@@ -13,22 +13,21 @@ Your own Worker gets a typed client bound to the Ramose server — no URL, no to
 
 You declare a **capability** ([glossary](/concepts/glossary/#capability)); `Ramose.layer` picks how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
 
-```ts title="examples/kv-style/app.ts:34-39 · app.ts:131"
+```ts title="examples/kv-style/app.ts#worker-app · examples/kv-style/app.ts#worker-layer"
 export const App = Cloudflare.Worker(
   "App",
   { main: import.meta.url },
   Effect.gen(function* () {
     // The binding *is* the client. One `Databases`, bound once at init.
     const ramose = yield* Ramose.Databases(Server);
-    // …
-  }).pipe(Effect.provide(Ramose.layer)),
+
+  }).pipe(
+    Effect.provide(Ramose.layer),
 ```
 
 Inside, a request handler names a database, writes, and reads its own write back — no fetch, no connection string:
 
-```ts title="examples/kv-style/app.ts:65-72"
-        const tenant = ramose.db(tenantId, Movies);
-
+```ts title="examples/kv-style/app.ts#tenant-transact"
         const { t, dbAfter } = yield* tenant.effect.transact(function* (tx) {
           const ada = yield* tx.entity();
           yield* ada.set(User.name, "Ada");
@@ -56,7 +55,8 @@ Inside, a request handler names a database, writes, and reads its own write back
 
 Errors are tagged classes. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself — `try/catch` and `instanceof`. Mapping them to HTTP is `Ramose.errorToHttp`:
 
-```ts title="examples/kv-style/app.ts:125-128"
+```ts title="examples/kv-style/app.ts#error-to-http"
+        // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
         Effect.catch((e) => {
           const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
           return HttpServerResponse.json(body, { status, headers });

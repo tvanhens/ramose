@@ -19,9 +19,8 @@ Ramose is small and pre-release. Here is the honest trade against what you'd use
 
 Two words recur. The **schema** is your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)); a **database** is a named, isolated set of facts ([glossary](/concepts/glossary/#database)). One customer, one database — naming one is a line of code, not a project in a console.
 
-```ts title="examples/reef/src/app/ramose.ts:42"
-    // A new customer is a name, not a deployment.
-    const db = ramose.db(slug, Reef);
+```ts title="examples/reef/src/app/ramose.ts#ramose-db-slug"
+      await provisionWorkspace(ramose.db(slug, Reef));
 ```
 
 ## Why not just Convex?

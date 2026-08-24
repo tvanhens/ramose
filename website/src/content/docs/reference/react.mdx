@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: Every export of ramose/react — RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage — example first.
+description: Every export of ramose/react — `RamoseProvider`, `useDb`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`, `errorMessage` — example first.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -18,12 +18,12 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## RamoseProvider
 
-```tsx title="examples/reef/src/app/App.tsx:191-195"
-      <RamoseProvider
-        key={open.workspace.slug}
-        url={RAMOSE_URL}
-        token={open.workspace.token}
-      >
+```tsx title="examples/reef/src/app/App.tsx#ramose-provider"
+          <RamoseProvider
+            key={open.workspace.slug}
+            url={RAMOSE_URL}
+            token={open.workspace.token}
+          >
 ```
 
 `RamoseProvider(props: ClientOptions & { children })` — owns one **client** ([glossary](/concepts/glossary/#client)) made with `Ramose.connect`, and closes it on unmount or when `url` / `token` / `fetch` / `webSocket` change.
@@ -33,7 +33,7 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## useDb
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:234"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-db"
   const db = useDb(slug, Reef);
 ```
 
@@ -41,7 +41,7 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## useLive
 
-```tsx title="examples/todos/src/App.tsx:14-25"
+```tsx title="examples/todos/src/App.tsx#todo-list"
 const TodoList = () => {
   const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
@@ -67,7 +67,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useQuery
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:484"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-query"
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
@@ -75,7 +75,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## usePull
 
-```tsx title="examples/reef/src/app/components/IssueDetail.tsx:258"
+```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
 ```
 
@@ -83,7 +83,7 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useBasis
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:479"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis"
   const maxT = useBasis(db);
 ```
 
@@ -91,14 +91,15 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useTransact
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx:248-250"
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
 ```
 
-```tsx title="examples/todos/src/App.tsx:27-28"
-const TodoRowView = ({ row }: { row: TodoRow }) => {
+```tsx title="examples/todos/src/App.tsx#todo-row-transact"
   const { run } = useTransact();
 ```
 

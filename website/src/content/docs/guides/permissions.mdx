@@ -32,23 +32,27 @@ Reef maps the invite's role onto the token at sign-in — [What the token carrie
 
 Helper fragments first, then one rule block per record type:
 
-```ts title="examples/reef/src/domain/policy.ts:30-32"
-/** `member` may touch an issue they created; `admin` never reaches the rules. */
+```ts title="examples/reef/src/domain/policy.ts#own-rules"
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:34-53"
+```ts title="examples/reef/src/domain/policy.ts#policy-setup"
 export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
     classes: CLASSES,
+    claims: Schema.Struct({
+      name: Schema.optional(Schema.String),
+      email: Schema.optional(Schema.String),
+    }),
   },
   {
     user: {
       read: true,
       // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
+      // Clients never write this row.
     },
     label: {
       read: true,
@@ -56,7 +60,7 @@ export const policy = Ramose.policy(
     },
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:54-73"
+```ts title="examples/reef/src/domain/policy.ts#policy-issue · examples/reef/src/domain/policy.ts#policy-comment"
     issue: {
       read: true,
       create: P.class("member"),
@@ -65,10 +69,12 @@ export const policy = Ramose.policy(
       delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
-        // …
+        // Narrows the namespace `read`: members and viewers never see this
+        // datom — pulls must ask for it as `.optional` (compile() checks).
         P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
+
     comment: {
       read: true,
       create: P.class("member"),
@@ -76,8 +82,6 @@ export const policy = Ramose.policy(
       delete: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
-  },
-);
 ```
 
 Read it as:
@@ -102,7 +106,7 @@ Reef's buttons are polite; the proof is the server. Try it:
 3. In a private window, sign up with that email, accept, open the board.
 4. Drag a card. It snaps back; a red toast reads `remove denied on :issue/status`.
 
-<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says remove denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
+<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says remove denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
 
 What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":issue/status"`; Reef's `useTransact({ onError })` turns it into the toast. Writes are checked twice: on arrival, where a refusal is `Unauthorized`, and again before a version number is assigned, where a refusal is `TxRejected`. The second check runs inside **the writer**, the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)), and it is the authority — handle both. Both are in [Errors](/reference/errors/).
 
@@ -110,7 +114,7 @@ What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":
 
 Open the same issue as an admin and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
 
-<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts:57-61" />
+<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts#policy-private-note" />
 
 Reads do not fail. They shrink. A fact you may not read is absent — which is why Reef's panel shape asks for it as `privateNote: Issue.privateNote.optional` (`queries.ts:40-46`). Had it been required, the whole row would disappear: `pull` resolves to `null` and a list query drops that record. That is deliberate — an error message that distinguishes "forbidden" from "does not exist" is itself a leak.
 
@@ -124,12 +128,12 @@ Reads do not fail. They shrink. A fact you may not read is absent — which is w
 
 *Because the policy and the shapes your screens read are both values, `Ramose.Policy.compile(policy, { pulls })` checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.*
 
-```ts title="examples/reef/src/domain/policy.ts:80-81"
+```ts title="examples/reef/src/domain/policy.ts#compiled-policy"
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```
 
-```ts title="examples/reef/test/policy.test.ts:80-85"
+```ts title="examples/reef/test/policy.test.ts#masked-required"
   test("a masked attribute pulled as required is a compile error", () => {
     const badShape = { note: Issue.privateNote };
     expect(() =>

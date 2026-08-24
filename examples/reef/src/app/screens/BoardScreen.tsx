@@ -231,7 +231,9 @@ export const BoardScreen = ({
 }) => {
   const { cls, slug } = workspace;
   const toast = useToast();
+  // docs:use-db
   const db = useDb(slug, Reef);
+  // enddocs:use-db
   const [myEid, setMyEid] = useState<number | undefined>(undefined);
   const [selfReady, setSelfReady] = useState(false);
 
@@ -254,9 +256,11 @@ export const BoardScreen = ({
     };
   }, [db, toast]);
 
+  // docs:use-live-board
   const board = useLive(db, boardQuery);
   const people = useLive(db, peopleQuery);
   const labels = useLive(db, labelsQuery);
+  // enddocs:use-live-board
 
   const [selected, setSelected] = useBoardSelection(slug);
   const lastSelected = useRef<BoardRow | undefined>(undefined);
@@ -264,11 +268,13 @@ export const BoardScreen = ({
   const [invite, setInvite] = useState(false);
   const [timeTraveling, setTimeTraveling] = useState(false);
 
+  // docs:use-transact
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
+  // enddocs:use-transact
 
   useEscape(
     useCallback(() => {
@@ -500,13 +506,19 @@ const TimeTravelView = ({
   liveRows: readonly BoardRow[];
   onExit: () => void;
 }) => {
+  // docs:use-basis
   const maxT = useBasis(db);
+  // enddocs:use-basis
+  // docs:time-travel
   const [scrubbed, setScrubbed] = useState<number | null>(null);
   const t = scrubbed ?? maxT;
   // Until the basis lands, read the live view — the same rows the board
   // already shows — so the hook order never varies.
+  // docs:use-query
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+  // enddocs:use-query
   const everything = useQuery(db.history, everyIssueEverQuery);
+  // enddocs:time-travel
 
   if (t === undefined || maxT === undefined) {
     return <Loading text="reading basis…" />;

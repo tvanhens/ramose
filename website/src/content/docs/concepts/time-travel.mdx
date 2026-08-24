@@ -12,12 +12,13 @@ Nothing is overwritten, so the past is a query away. This page is for anyone who
 
 ## See it in Reef
 
-<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="The board read at version 27 of 42. Same board query; the slider picks the version." code="examples/reef/src/app/screens/BoardScreen.tsx:479-485" />
+<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="The board read at version 27 of 42. Same board query; the slider picks the version." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
 
 The slider's ceiling is the current **version number `t`** — the number every write gets, in order ([glossary](/concepts/glossary/#version-number)). Its value picks a view of the database:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:479-485"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis · examples/reef/src/app/screens/BoardScreen.tsx#time-travel"
   const maxT = useBasis(db);
+
   const [scrubbed, setScrubbed] = useState<number | null>(null);
   const t = scrubbed ?? maxT;
   // Until the basis lands, read the live view — the same rows the board
@@ -32,11 +33,9 @@ The slider's ceiling is the current **version number `t`** — the number every 
 
 `db.asOf(t)` is a read-only view of the database exactly as it was right after version `t` ([glossary](/concepts/glossary/#as-of)). Queries and pulls run over it unchanged. It takes a version number, not a date; and you cannot write into it — the view has no `transact`.
 
-```ts title="examples/kv-style/app.ts:108-111"
-        // …and the same query as of a past transaction. `asOf` is pure.
-        const beforeRows = yield* db
-          .asOf(report.t - 1)
-          .query(Query.from(User).select({ name: User.name }));
+```ts title="examples/kv-style/app.ts#as-of"
+        const beforeRows = yield* db.asOf(report.t - 1).effect.query(namesQuery);
+        const before = beforeRows.map((r) => r.name);
 ```
 
 Calling `asOf` costs nothing; the read happens when you run the query.
@@ -51,8 +50,7 @@ Calling `asOf` costs nothing; the read happens when you run the query.
 
 `db.history` is a view that also returns **facts** later removed — one statement about one record's field ([glossary](/concepts/glossary/#fact)). Reef uses it for the "Deleted, still in history" strip: run a plain query over `db.history`, subtract what the live board shows, and what is left was deleted.
 
-```ts title="examples/reef/src/domain/queries.ts:84-88"
-/** Over `db.history` this also returns issues that no longer exist. */
+```ts title="examples/reef/src/domain/queries.ts#every-issue-ever-query"
 export const everyIssueEverQuery = Query.from(Issue).select({
   id: Issue.id,
   title: Issue.title,

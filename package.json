@@ -21,7 +21,7 @@
     "release:dry": "bun run scripts/release.ts --dry-run --no-provenance",
     "release:version": "bun run scripts/set-version.ts",
     "release:check": "bun run scripts/check-release.ts --built",
-    "test": "bun test packages/ramose examples/todos examples/reef test/support",
+    "test": "bun test packages/ramose examples/todos examples/reef test/support website/scripts",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
     "test:e2e:cf": "bash scripts/e2e-cloudflare.sh",

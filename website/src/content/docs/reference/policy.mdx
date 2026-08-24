@@ -26,25 +26,32 @@ const policy = Ramose.policy(
 );
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:28-30"
-/** `member` may touch an issue they created; `admin` never reaches the rules. */
+```ts title="examples/reef/src/domain/policy.ts#own-rules"
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts:37-61"
+```ts title="examples/reef/src/domain/policy.ts#policy"
 export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
     classes: CLASSES,
+    claims: Schema.Struct({
+      name: Schema.optional(Schema.String),
+      email: Schema.optional(Schema.String),
+    }),
   },
   {
     user: {
       read: true,
-      // The peer upserts this row; clients never write it.
+      // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
+      // Clients never write this row.
     },
-    // …
+    label: {
+      read: true,
+      create: P.class("member"),
+    },
     issue: {
       read: true,
       create: P.class("member"),
@@ -53,10 +60,20 @@ export const policy = Ramose.policy(
       delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
-        // …
+        // Narrows the namespace `read`: members and viewers never see this
+        // datom — pulls must ask for it as `.optional` (compile() checks).
         P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
+    comment: {
+      read: true,
+      create: P.class("member"),
+      remove: { class: "member", rule: ownComment },
+      delete: { class: "member", rule: ownComment },
+      preset: [P.preset(Comment.author, P.principal)],
+    },
+  },
+);
 ```
 
 - `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
@@ -110,7 +127,7 @@ The same `inOrg` value pipes in the app (`pipe(entities(Doc), Query.refine(inOrg
 
 Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version. Relation-based visibility ("issues in a project whose team I belong to") is an ordinary fragment: there is no depth cap and no second language.
 
-`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Prefer a role fact when the peer materializes one (`Q.fact(me, User.role, "admin")`); keep `P.class` for deployments where the role must stay token-only.
+`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Prefer a role fact when the peer writes one (`Q.fact(me, User.role, "admin")`); keep `P.class` for deployments where the role must stay token-only.
 
 ## How rules combine
 
@@ -137,7 +154,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 `P.preset(attr, P.principal | P.claim.x)` — a **server-filled field** ([glossary](/concepts/glossary/#preset)): on `create` the server sets it from the caller. A client value identical to the preset is a no-op; a different one is refused with `Unauthorized`. The operand is `P.principal` or a claim, never a literal.
 
-```ts title="examples/reef/src/domain/policy.ts:56"
+```ts title="examples/reef/src/domain/policy.ts#policy-preset"
       preset: [P.preset(Issue.creator, P.principal)],
 ```
 
@@ -145,11 +162,8 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 `P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
 
-```ts title="examples/reef/src/domain/policy.ts:57-61"
-      attrs: [
-        // …
+```ts title="examples/reef/src/domain/policy.ts#policy-private-note"
         P.field(Issue.privateNote, { read: P.class("admin") }),
-      ],
 ```
 
 ## admin and anonymous
@@ -166,7 +180,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## Where the checks run
 
-- **Reads are filtered, never rejected.** The server hides the facts you may not read; a list is shorter, a hidden required field makes `pull` return `null` — the same as a missing record. A fragment arm runs as one query-engine query over the *unfiltered* data, always at the *current* version, so reading the past cannot revive a revoked grant. For a named rule the engine first asks for every `e` visible to `me` and the per-datom check is a set lookup; a set that is too large falls back to one query per entity. A rule that blows the query memory budget is a 413 `policy/budget-exceeded`, not an empty result. The live connection follows the same rule: a write you cannot read never appears on it, and a grant or revoke that changes what you can see asks the page to reload its view.
+- **Reads are filtered, never rejected.** The server hides the facts you may not read; a list is shorter, a hidden required field makes `pull` return `null` — the same as a missing record. A fragment arm runs as one query-engine query over the *unfiltered* data, always at the *current* version, so reading the past cannot revive a revoked grant. For a named rule the engine first asks for every `e` visible to `me` and the per-fact check is a set lookup; a set that is too large falls back to one query per entity. A rule that blows the query memory budget is a 413 `policy/budget-exceeded`, not an empty result. The live connection follows the same rule: a write you cannot read never appears on it, and a grant or revoke that changes what you can see asks the page to reload its view.
 - **Writes are checked twice.** Both checks run the same expansion first — implied retracts and `retractEntity` closure — and judge every fact that comes out, server-filled fields included. At the server's edge first, against a read copy that may lag: a refusal there is `Unauthorized` 403 with `code: "policy"` and the field name. Then inside the **writer**, against the writer's own current data: a refusal there is `TxRejected` 409, and no version number is used. (The writer is the one thing per database that commits writes — [glossary](/concepts/glossary/#writer).)
 - **The writer's check is the authority.** Because the edge reads a copy that lags the writer, it is best-effort in *both* directions: it can refuse a write the writer would allow, and it can let one through that the writer then refuses. Handle both `Unauthorized` and `TxRejected`.
 - **Refusals do not leak values.** A refused write names the field and a code, never a value.
@@ -178,7 +192,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
 
-```ts title="examples/reef/src/domain/policy.ts:77-78"
+```ts title="examples/reef/src/domain/policy.ts#compiled-policy"
 export const compiledPolicy = (): string =>
   P.compile(policy, { pulls: allShapes });
 ```
@@ -283,7 +297,7 @@ Then on the owned Server: `auth: { policy, issuers: "https://local.test", aud: "
 - One policy per deployed server, over one schema; no per-database variants.
 - No cross-database rules.
 - 413 bodies (`clause`, `cells`, `limit`, `spentBy`) and the `x-ramose-*` timing headers are not policy-filtered. `spentBy` is `policy` when a conjoined visibility rule spent the budget, `caller` otherwise.
-- Reads conjoin each namespace rule into the query before planning (a two-view join: the rule reads the unfiltered db, the caller's clauses the filtered view). `FilteredDb` remains the backstop for pull, history, raw datom access, and attribute-level narrowing.
+- Reads conjoin each namespace rule into the query before planning (a two-view join: the rule reads the unfiltered db, the caller's clauses the filtered view). `FilteredDb` remains the backstop for pull, history, raw fact access, and attribute-level narrowing.
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "Reef's policy read aloud, with a refused write" },

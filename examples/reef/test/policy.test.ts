@@ -95,12 +95,14 @@ describe("reef policy", () => {
     }
   });
 
+  // docs:masked-required
   test("a masked attribute pulled as required is a compile error", () => {
     const badShape = { note: Issue.privateNote };
     expect(() =>
       Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
     ).toThrow(/privateNote/);
   });
+  // enddocs:masked-required
 
   test("the app's own shapes pass the masked-read check", () => {
     expect(() =>
