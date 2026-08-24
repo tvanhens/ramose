@@ -347,7 +347,7 @@ export interface DbSeam {
   readonly liveRaw: (
     query: AnyQueryObject,
     params?: unknown,
-  ) => Subscription<unknown, QueryError>;
+  ) => Subscription<unknown, unknown>;
 }
 
 /** @internal The registry key {@link DbSeam} is attached under. */

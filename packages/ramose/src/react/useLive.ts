@@ -148,28 +148,42 @@ const CHURN_WARNING =
 /**
  * Consecutive query-half key changes before the dev warning fires.
  * One legitimate navigation (`issueId` A → B) is silent; a `Date.now()`
- * footgun changes every render and trips this.
+ * footgun changes every render and trips this. A same-key follow-up
+ * (the hook blanking `rows` via setState) does not reset the streak;
+ * two quiet same-key renders do — that is a settled navigation.
  */
 const CHURN_STREAK = 3;
+const CHURN_SETTLE = 2;
 
 /**
  * Dev-only: warn once per hook site when the **query-half** (holed
- * structure key) churns for {@link CHURN_STREAK} consecutive renders.
+ * structure key) churns for {@link CHURN_STREAK} consecutive changes.
  * Params and view (`asOf(t)`) changes are the documented path and stay
  * silent. A single A → B change does not warn.
  */
 const useKeyChurnWarning = (key: string): void => {
   const prev = useRef<string | undefined>(undefined);
   const streak = useRef(0);
+  const settled = useRef(0);
   const warned = useRef(false);
-  if (DEV && prev.current !== undefined && prev.current !== key) {
+  if (!DEV) {
+    prev.current = key;
+    return;
+  }
+  if (prev.current === undefined) {
+    prev.current = key;
+    return;
+  }
+  if (prev.current !== key) {
     streak.current += 1;
+    settled.current = 0;
     if (streak.current >= CHURN_STREAK && !warned.current) {
       warned.current = true;
       console.warn(CHURN_WARNING);
     }
   } else {
-    streak.current = 0;
+    settled.current += 1;
+    if (settled.current >= CHURN_SETTLE) streak.current = 0;
   }
   prev.current = key;
 };

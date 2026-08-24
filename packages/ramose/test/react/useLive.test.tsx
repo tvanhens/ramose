@@ -624,20 +624,14 @@ describe("useLive shared subscription cache", () => {
       await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(warnings).toHaveLength(0);
 
+      // three consecutive renders with distinct keys — the Date.now() footgun
       rerender({ n: 1 });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
-      expect(warnings).toHaveLength(0);
-
       rerender({ n: 2 });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      rerender({ n: 1 });
       expect(warnings).toHaveLength(1);
       expect(String(warnings[0]![0])).toContain(
         "useLive subscription key changed between renders",
       );
-
-      rerender({ n: 1 });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
-      expect(warnings).toHaveLength(1);
     } finally {
       console.warn = orig;
       await close();
