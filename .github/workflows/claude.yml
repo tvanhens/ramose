@@ -28,7 +28,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Full history so Claude can diff against the base branch.
+          fetch-depth: 0
 
       # Set up the same toolchain as CI so Claude can run typecheck, tests,
       # and the build when responding to @claude requests.
@@ -50,7 +51,8 @@ jobs:
           # prompt: 'Update the pull request description to include a summary of changes.'
 
           # Pre-approve the project's own verification commands (mirroring
-          # ci.yml) so Claude can run them without interactive approval,
-          # which is unavailable in Actions.
-          claude_args: '--allowedTools "Bash(bun install:*),Bash(bun run typecheck),Bash(bun run test),Bash(bun run test:*),Bash(bun test:*),Bash(bun run build),Bash(bun run scripts/check-release.ts:*),Bash(bun run scripts/check-client-dts.ts)"'
+          # ci.yml) plus the git/gh read + comment commands Claude needs to
+          # inspect PR diffs — interactive approval is unavailable in Actions,
+          # so anything not listed here is denied outright.
+          claude_args: '--allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status),Bash(git fetch:*),Bash(bun install:*),Bash(bun run typecheck),Bash(bun run test),Bash(bun run test:*),Bash(bun test:*),Bash(bun run build),Bash(bun run scripts/check-release.ts:*),Bash(bun run scripts/check-client-dts.ts)"'
 
