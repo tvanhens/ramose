@@ -25,7 +25,8 @@
  * const ramose = Ramose.connect({ url, token });
  * export const db = ramose.db("todos", Todos);
  * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
- * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema.
+ * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema;
+// wrap with `stored(schema, vt)` when inference cannot name `:db.type/*`.
  * ```
  */
 
@@ -52,7 +53,7 @@ export {
   Instant,
   Long,
   Uuid,
-  UuidString,
+  stored,
   type DbValueType,
 } from "./valueTypes.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested

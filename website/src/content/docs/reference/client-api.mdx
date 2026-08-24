@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `UuidString` · `Long` · `Bytes` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `params` · `optional` · `EidOf` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `ParamError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -75,12 +75,12 @@ Ramose.Field.many(Ramose.Ref(Label))
 Ramose.Enum(["low", "med", "high"])
 ```
 
-**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). `valueType` is required when the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST.
+**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). When the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST, wrap it with `stored(schema, vt)`.
 
 ```ts
 import { Schema } from "ramose/effect";
 Ramose.Field(Schema.String)
-Ramose.Field(Schema.Literals(["todo", "done"]), { valueType: "string" })
+Ramose.Field(Ramose.stored(Schema.Literals(["todo", "done"]), "string"))
 Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 ```
 
@@ -91,7 +91,6 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `index` | `boolean` | `true` when `unique` is set, else `false` |
 | `owned` | `boolean` | `false` |
 | `doc` | `string` | — |
-| `valueType` | `"string"` · `"long"` · `"double"` · `"boolean"` · `"ref"` · `"uuid"` · `"instant"` · `"bytes"` | inferred; required for a custom `Schema` |
 
 **`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key (`todo`) is what a policy's `ns: { todo: … }` refers to. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
 
@@ -110,7 +109,7 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `Ramose.Ref.self` | a reference to the same record type | ref |
 | `Ramose.Ref` (bare) | `number`, untargeted | ref |
 
-Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form vocabulary (`Field(Ramose.Uuid)`). `UuidString` is deprecated for `Uuid`. `Field(Ramose.Uuid)` row types are `string`.
+Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form vocabulary (`Field(Ramose.Uuid)`). `Field(Ramose.Uuid)` row types are `string`. `stored(schema, vt)` brands a custom Schema with a matching storage form.
 
 ```ts title="examples/reef/src/domain/schema.ts:43-49"
   priority: Ramose.int(),

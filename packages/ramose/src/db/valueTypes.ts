@@ -29,7 +29,7 @@ export type RamoseVt<VT extends DbValueType> = {
  * `:db.type/*` inferred from a value Schema, as a public name. Helper brands
  * win; then the AST tag of the common primitives (`String` / `Number` /
  * `Boolean`). Anything else — literals, unions, structs, refinements — is
- * `undefined` (pass `valueType` on `Field`). Mirrors
+ * `undefined` (wrap with {@link stored}). Mirrors
  * {@link tryInferDbValueType}: unknown shapes do not silently become the
  * wrong value type.
  */
@@ -56,6 +56,54 @@ const asVt = <S extends Schema.Top, const VT extends DbValueType>(
 };
 
 /**
+ * JS type a value type stores. Pairing is decoded-Type only — not
+ * encoded-side AST inference (a refinement over {@link Long} would
+ * silently look like `"double"`).
+ */
+type JsOfVt<VT extends DbValueType> = VT extends "string" | "uuid"
+  ? string
+  : VT extends "long" | "double" | "ref"
+    ? number
+    : VT extends "boolean"
+      ? boolean
+      : VT extends "instant"
+        ? Date
+        : VT extends "bytes"
+          ? Uint8Array
+          : never;
+
+/**
+ * Accept `Schema.optional(String)` with `"string"`; reject
+ * `Schema.Boolean` with `"string"`. The brand key names the mismatch
+ * so the diagnostic is not `not assignable to 'never'`.
+ */
+type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
+  Exclude<Schema.Schema.Type<S>, null | undefined> extends JsOfVt<VT>
+    ? S
+    : S & {
+        readonly "stored(schema, vt): this Schema's Type does not match the value type": true;
+      };
+
+/**
+ * Brand a raw Effect Schema with its storage form so {@link Field} can
+ * infer `:db.type/*`. The advanced-form hatch — `valueType` is not a
+ * field option.
+ *
+ * ```ts
+ * Field(stored(Schema.Literals(["on", "off"]), "string"))
+ * Field(stored(Schema.String, "uuid"))
+ * ```
+ *
+ * The pair is checked: `"instant"` needs a `Date`-typed schema,
+ * `"string"` / `"uuid"` a string-typed one, and so on. A mismatch
+ * (`stored(Schema.Boolean, "string")`) is a type error.
+ */
+export const stored = <S extends Schema.Top, const VT extends DbValueType>(
+  schema: PairableSchema<S, VT>,
+  vt: VT,
+): S & RamoseVt<VT> => asVt(schema, vt);
+
+/**
  * UUID as a canonical string. Lowers to `:db.type/uuid`. The `{ vt: 6, v }`
  * tagged form is wire-internal — the public type is `string`.
  */
@@ -64,10 +112,6 @@ export const Uuid = asVt(
   "uuid",
 );
 export type Uuid = Schema.Schema.Type<typeof Uuid>;
-
-/** @deprecated Use {@link Uuid}. Same string type; kept as a one-release alias. */
-export const UuidString = Uuid;
-export type UuidString = Uuid;
 
 /** Targeted ref schema — carries the target entity's field map. */
 export type TargetedRef<
@@ -136,7 +180,11 @@ export const Ref: RefFn = Object.assign(
 known.set(Ref, "ref");
 known.set(Ref.self, "ref");
 
-/** Stamp a schema object so {@link tryInferDbValueType} sees it. */
+/**
+ * Stamp a schema object so {@link tryInferDbValueType} sees it. The
+ * public hatch is {@link stored}; this remains for non-schema objects
+ * (`Field`'s `Ref` function).
+ */
 export const rememberValueType = (
   schema: object,
   vt: DbValueType,
@@ -224,9 +272,10 @@ export const tryInferDbValueType = (
 };
 
 /**
- * Pick the public value-type name for a value Schema. Explicit
- * `options.valueType` on the field wins; then the helpers above; then
- * the AST tag of the common primitives. Anything else must set `valueType`.
+ * Pick the public value-type name for a value Schema. An explicit
+ * override (the field's already-resolved `valueType`) wins; then the
+ * helpers above; then the AST tag of the common primitives. Anything
+ * else must be wrapped with {@link stored}.
  */
 export const inferDbValueType = (
   schema: SchemaNS.Top,
@@ -235,6 +284,6 @@ export const inferDbValueType = (
   const vt = tryInferDbValueType(schema, override);
   if (vt !== undefined) return vt;
   throw new Error(
-    `ramose/schema: cannot infer value type from this Schema (ast._tag=${schema.ast._tag}). Pass valueType on the field.`,
+    `ramose/schema: cannot infer value type from this Schema (ast._tag=${schema.ast._tag}). Wrap it with stored(schema, vt).`,
   );
 };

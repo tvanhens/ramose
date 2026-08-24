@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### `stored(schema, vt)` replaces the FieldOptions `valueType` override (#244)
+
+`Field(schema, { valueType })` could typecheck a mismatch
+(`Field(Schema.Boolean, { valueType: "string" })`) and install
+`:db.type/string` over a boolean codec. `valueType` is gone from
+`FieldOptions`. Brand the schema instead:
+
+```ts
+Field(stored(Schema.Literals(["on", "off"]), "string"))
+```
+
+`stored` is the existing `asVt` / `known` brand, typed so the schema's
+Type must match the value type. Composition bags already rejected
+`valueType` (#221); the base form now does too.
+
+**Breaking:** `UuidString` is deleted. Use `Uuid`. No deprecation
+window (tracker #205).
+
 ### `writes: "operations"` is the peer default (part of #173, tracker #205)
 
 Raw `POST /db/:name/transact` — HTTPS and the live-session
@@ -161,8 +179,7 @@ plain strings. The `{ vt: 6, v }` / `$uuid` tagged form stays
 wire-internal.
 
 `Long`, `Instant`, `Uuid`, and `Bytes` are branded schemas the
-shorthands wrap (the advanced-form vocabulary). `UuidString` is a
-deprecated alias of `Uuid` for one release.
+shorthands wrap (the advanced-form vocabulary).
 
 ### Split the Effect hatch out of the connect module (part of #219, tracker #205)
 

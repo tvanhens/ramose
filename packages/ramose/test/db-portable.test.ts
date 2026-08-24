@@ -213,7 +213,7 @@ describe("the `/db` barrel's public names", () => {
         "Enum",
         "Instant",
         "Uuid",
-        "UuidString",
+        "stored",
         "Ref",
         "Long",
         "Bytes",

@@ -8,7 +8,6 @@ import * as Schema from "effect/Schema";
 import {
   Enum,
   Field,
-  type FieldOptions,
   Ref,
   Schema as DbSchema,
   Entity,
@@ -18,6 +17,7 @@ import {
   int,
   schemaTx,
   string,
+  stored,
   timestamp,
   uuid,
 } from "../../src/db/internal.ts";
@@ -163,9 +163,9 @@ describe("advanced Field(schema)", () => {
     ]);
   });
 
-  test("literals need an explicit valueType", () => {
+  test("literals need stored(schema, vt)", () => {
     const Flag = Entity("flag", {
-      state: Field(Schema.Literals(["on", "off"]), { valueType: "string" }),
+      state: Field(stored(Schema.Literals(["on", "off"]), "string")),
     });
     expect(schemaTx(DbSchema({ flag: Flag }))[0]).toMatchObject({
       ":db/ident": ":flag/state",
@@ -182,12 +182,13 @@ describe("uuid public type", () => {
 });
 
 describe("Field composition merge", () => {
-  test("composition does not override valueType; Field(schema, { valueType }) still does", () => {
-    const override = { valueType: "long" } as FieldOptions;
-    expect(Field(string(), override).valueType).toBe("string");
-    expect(Field.many(string(), override).valueType).toBe("string");
-    expect(Field.unique(string(), "upsert", override).valueType).toBe("string");
-    expect(Field(Schema.String, { valueType: "uuid" }).valueType).toBe("uuid");
+  test("composition cannot change valueType; stored() brands the schema", () => {
+    expect(Field(string(), { unique: "upsert" }).valueType).toBe("string");
+    expect(Field.many(string(), { owned: true }).valueType).toBe("string");
+    expect(Field.unique(string(), "upsert", { doc: "slug" }).valueType).toBe(
+      "string",
+    );
+    expect(Field(stored(Schema.String, "uuid")).valueType).toBe("uuid");
   });
 
   test("owned merges both ways through Field / Field.many / Field.unique", () => {

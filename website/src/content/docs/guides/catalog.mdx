@@ -90,7 +90,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
 
-Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must pass `{ valueType }` or the field types `valueType` as `undefined` (install then fails). Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`. `UuidString` is deprecated for `Uuid`.
+Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type; anything else must be wrapped with `stored(schema, vt)` or the field types `valueType` as `undefined` (install then fails). Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
 
 ## Options
 
@@ -101,7 +101,6 @@ Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compos
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
 | `owned` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
 | `doc` | none | a description stored with the field |
-| `valueType` | inferred | the stored type, when it cannot be inferred |
 
 ## References between records
 
