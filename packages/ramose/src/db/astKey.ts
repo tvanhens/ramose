@@ -56,8 +56,13 @@ export const computeAstKey = (query: AnyQueryObject, params?: unknown): string =
   try {
     return canonicalAstKey(lowerQueryObject(query, bindingsOf(params)).query);
   } catch {
-    // Per-call token: two broken queries with the same message must not
-    // share a retainLive entry.
+    // Bindings skip the WeakMap, so a per-call token would be a new cache
+    // key every render and tear the subscription down in a loop. Two
+    // independently constructed broken queries still must not share an
+    // entry — the no-bindings path keeps a per-object token.
+    if (hasBindings(params)) {
+      return `${ERROR_PREFIX}${queryStructureKey(query)}\0${canonicalAstKey(bindingsOf(params))}`;
+    }
     return `${ERROR_PREFIX}${nextErrorKey++}`;
   }
 };

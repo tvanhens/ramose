@@ -130,6 +130,23 @@ describe("queryAstKey", () => {
     expect(JSON.stringify(lowerQueryAst(q))).toContain(":todo/title");
   });
 
+  test("a throwing params lowering keys stably — same query and bindings, same key", () => {
+    const p = params({ n: Schema.Number });
+    const limited = Query.from(Todo).ids().limit(p.n);
+    const bad = { extra: 1 };
+    const ka = queryAstKey(limited, bad);
+    const kb = queryAstKey(limited, bad);
+    expect(ka).toMatch(/^\0error:/);
+    expect(ka).toBe(kb);
+    const view = "1/todos?asOf=&history=false&minT=";
+    expect(liveSubscriptionKey(view, limited, bad)).toBe(
+      liveSubscriptionKey(view, limited, bad),
+    );
+    expect(liveSubscriptionKey(view, limited, bad)).not.toBe(
+      liveSubscriptionKey(view, limited, { extra: 2 }),
+    );
+  });
+
   test("two unlowerable queries with the same message do not share a key", () => {
     const a = Query.q(() => Query.entities(Todo)).after(null);
     const b = Query.q(() => Query.entities(Todo)).after(null);

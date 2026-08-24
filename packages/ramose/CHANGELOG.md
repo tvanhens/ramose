@@ -42,7 +42,10 @@ post-binding lowered AST. `one()` / `oneOrFail()` and `.limit(1)` /
 hook applies its own take-unwrap. A params spelling and its inline
 equivalent share an entry when the bound forms match. Dev-mode warns on
 sustained key churn (not the first legitimate `issueId` A → B change)
-and double-lowers at subscribe to catch an impure generator body.
+and double-lowers at subscribe to catch an impure generator body. A
+params-bound query whose lowering throws keys stably on the holed AST
+plus the bindings, so a `ParamError` does not tear the subscription
+down every render.
 
 ### Shared subscriptions and stable row identity (part of #227, tracker #205)
 

@@ -793,6 +793,30 @@ describe("useLive shared subscription cache", () => {
     }
   });
 
+  test("a throwing lowering does not resubscribe per render", async () => {
+    const p = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.Query.from(Todo).ids().limit(p.n);
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    try {
+      const { result, rerender } = renderHook(
+        ({ extra }: { extra: number }) =>
+          useLive(db, limited, { extra } as never),
+        { initialProps: { extra: 1 } },
+      );
+      await waitFor(() => expect(result.current.error).toBeDefined());
+      expect((result.current.error as { _tag: string })._tag).toBe("ParamError");
+      expect(spy.calls).toBe(1);
+      rerender({ extra: 1 });
+      rerender({ extra: 1 });
+      await settle();
+      expect(spy.calls).toBe(1);
+    } finally {
+      await close();
+    }
+  });
+
   test("a params-only change does not warn", async () => {
     const p = Ramose.params({ n: Schema.Number });
     const limited = Ramose.Query.from(Todo).ids().limit(p.n);
