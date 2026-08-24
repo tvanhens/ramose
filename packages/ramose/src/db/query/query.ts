@@ -1062,7 +1062,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     switch (v.kind) {
       case "entity":
       case "tx":
-        return (cell) => (typeof cell === "number" ? makeEid(cell) : cell);
+        // Projected entity/tx vars stay `{ id }` rows; the cell is the
+        // branded number. `select({ id: N.id })` is a different path and
+        // yields the number directly.
+        return (cell) =>
+          typeof cell === "number" ? { id: makeEid(cell) } : cell;
       case "t":
         return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
       default:
@@ -1124,9 +1128,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   if (isIdsSpec(proj)) {
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) =>
-      tuples.map((t) => ({
-        id: typeof t[0] === "number" ? makeEid(t[0]) : t[0],
-      }));
+      tuples.map((t) =>
+        typeof t[0] === "number" ? { id: makeEid(t[0]) } : t[0],
+      );
   } else if (isPullSpec(proj)) {
     const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);

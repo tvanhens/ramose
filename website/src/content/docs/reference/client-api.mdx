@@ -442,7 +442,7 @@ Not shipped: post-group filters (`having`) on the client surface, ordering or pa
 
 ## Pull
 
-**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`, including `.orDefault(v)`, `Ramose.all(N)`, and `ref.select(Ramose.again(n))`.
+**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is an eid, `{ id }` row, `tempid()`, or **lookup** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)). The shape is the same grammar as `.select`, including `.orDefault(v)`, `Ramose.all(N)`, and `ref.select(Ramose.again(n))`.
 
 ```ts
 db.pull(issueId, { title: Issue.title, description: Issue.description.optional });
@@ -477,9 +477,8 @@ export const issueExtraShape = {
 | `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
 | `Ramose.Again<n>` / `Ramose.RecurStub<S>` | the `again(n)` shape term; the `{ id }` stub after the bound |
 | `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
-| `Ramose.Eid<C>` | branded `number` — a record id as data. `Eid<N>` is the cell a `select({ id: N.id })` yields; `Eid<C>` is the union over the catalog. Valid as a React key, a write subject, and a `db.pull` subject |
-| `Ramose.EntityRef<C>` | write / pull subject: branded eid, `{ id }` row, `tempid("ada")`, lookup, handle, or unbranded number. Not a bare `string` |
-| `Ramose.tempid` / `Ramose.Tempid` | `tempid("ada")` — a nominal tempid. `op.tempid` / `tx.tempid` are the same brand |
+| `Ramose.Eid<C>` | branded `number`. `Eid<N>` is a `select({ id: N.id })` cell; `Eid<C>` unions the catalog |
+| `Ramose.EntityRef<C>` / `tempid` | write/pull subject: eid, `{ id }` row, `tempid("ada")`, lookup, handle. Not a bare `string` |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
 | `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |

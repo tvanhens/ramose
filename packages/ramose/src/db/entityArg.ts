@@ -83,7 +83,7 @@ const isPrincipal = (
  * `undefined`. Used by `db.run`, `put` / `set` subjects, and `db.pull`.
  */
 export const lowerEntityArg = (entity: unknown): unknown => {
-  if (entity === undefined || entity === null) return undefined;
+  if (entity === undefined || entity === null) return entity;
   if (typeof entity === "number" || typeof entity === "string") return entity;
   const lookup = asLookupRef(entity);
   if (lookup !== undefined) return lookup;

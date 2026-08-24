@@ -47,7 +47,7 @@ type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
 
 type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
-    ? PutAttrs<C, E, TxHandle<C> | OpHandle<C>>
+    ? PutAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
     : Record<string, unknown>;
 
 /**
@@ -62,7 +62,7 @@ export type OpField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
 type FieldRefValue<C extends AnySchema, A> = A extends {
   readonly schema: { readonly Type: infer T };
 }
-  ? T | (A extends { readonly valueType: "ref" } ? EntityRef<C, AnyEntity, TxHandle<C> | OpHandle<C>> : never)
+  ? T | (A extends { readonly valueType: "ref" } ? EntityRef<C, AnyEntity, TxHandle<C> | AnyOpHandle<C>> : never)
   : unknown;
 
 /**
@@ -72,18 +72,18 @@ type FieldRefValue<C extends AnySchema, A> = A extends {
  * its Schema type; an ident string is `unknown`.
  */
 export type OpValue<C extends AnySchema, A> = [ConcreteCatalog<C>] extends [true]
-  ? TxValue<C, A, TxHandle<C> | OpHandle<C>>
+  ? TxValue<C, A, TxHandle<C> | AnyOpHandle<C>>
   : FieldRefValue<C, A>;
 
 /**
- * Entity slot on the op handle. Same bag as {@link TxEntity}, plus the
- * promise {@link OpHandle}.
+ * Entity slot on the op handle. Same bag as {@link TxEntity}, plus any
+ * {@link OpHandle} — including contextual `self` (`Eid<N> | Tempid`).
  */
-export type OpEntity<C extends AnySchema> = TxEntity<C> | OpHandle<C>;
+export type OpEntity<C extends AnySchema> = TxEntity<C> | AnyOpHandle<C>;
 
 type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
-    ? PutSubject<C, E, TxHandle<C> | OpHandle<C>>
+    ? PutSubject<C, E, TxHandle<C> | AnyOpHandle<C>>
     : OpEntity<C>;
 
 /**
@@ -95,7 +95,7 @@ type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
 export type RunEntity<C extends AnySchema, N extends AnyEntity> = EntityRef<
   C,
   N,
-  TxHandle<C> | OpHandle<C>
+  TxHandle<C> | AnyOpHandle<C>
 >;
 
 /**
@@ -171,18 +171,31 @@ export type EffectThunk<A = unknown> = (
   ctx: OperationEffectContext,
 ) => Promise<A> | A;
 
+/** Id a non-contextual handle names — unbranded so it is valid in any ref slot. */
+export type OpHandleId<C extends AnySchema = AnySchema> =
+  | UnbrandedId
+  | Tempid
+  | LookupRef<C>;
+
 /**
  * Entity handle a body writes through. Promise-surface twin of
  * {@link TxHandle}: same field / value / entity slots, methods return
- * `void` instead of `Effect`.
+ * `void` instead of `Effect`. `Id` defaults to {@link OpHandleId};
+ * contextual `self` specializes it to `Eid<N> | Tempid`.
  */
-export interface OpHandle<C extends AnySchema = AnySchema> {
+export interface OpHandle<
+  C extends AnySchema = AnySchema,
+  Id = OpHandleId<C>,
+> {
   readonly _tag: "TxHandle";
-  readonly eid: UnbrandedId | Tempid | LookupRef<C>;
+  readonly eid: Id;
   set<const A extends OpField<C>>(field: A, value: OpValue<C, A>): void;
   remove<const A extends OpField<C>>(field: A, value?: OpValue<C, A>): void;
   delete(): void;
 }
+
+/** Any handle, including contextual `self`. */
+export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
 
 /**
  * The handle a body awaits through. Transaction verbs accumulate one
@@ -200,7 +213,7 @@ export interface Op<
    * {@link Eid} or a {@link Tempid} when `db.run` was given a named tempid.
    */
   readonly self: [N] extends [AnyEntity]
-    ? Omit<OpHandle<C>, "eid"> & { readonly eid: Eid<N> | Tempid }
+    ? OpHandle<C, Eid<N> | Tempid>
     : undefined;
   /** The authenticated caller. On the client this is `db.principal()`. */
   readonly principal: OpPrincipal;

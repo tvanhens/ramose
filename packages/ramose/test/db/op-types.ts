@@ -304,7 +304,7 @@ type _handleEid = Expect<
   Equal<OpHandle<typeof Movies>["eid"], TxHandle<typeof Movies>["eid"]>
 >;
 type _selfIsHandle = Expect<
-  Extends<typeof op.self, OpHandle<typeof Movies>>
+  Extends<typeof op.self, OpHandle<typeof Movies, Eid<typeof User> | Tempid>>
 >;
 
 // ── put ────────────────────────────────────────────────────────────────────
