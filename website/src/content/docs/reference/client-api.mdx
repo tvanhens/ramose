@@ -304,7 +304,7 @@ const myEid = who.eid?.id; // the peer-owned user row
 
 ## Queries
 
-**`Query.from(Entity)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is `Ramose.Query` (the same names are importable flat from `ramose/query`). The chain is immutable. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Put changing values in `.where` and pass the value to `db.query` / `db.live` / `useLive` — no bindings argument.
+**`Query.from(Entity)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is the `Query` namespace on `ramose/db` (`Ramose.Query` when you import the module as a namespace). The chain is immutable. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Put changing values in `.where` and pass the value to `db.query` / `db.live` / `useLive` — no bindings argument.
 
 ```ts
 Query.from(Todo)                         // every todo…

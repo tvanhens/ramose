@@ -46,8 +46,8 @@ export const inbox = Query.q(function* () {
 ```
 
 Escalating from pipe to generator is un-sugaring, never rewriting. The
-same names are reachable as `Ramose.Q` / `Ramose.Query` from `ramose/db`,
-or flat from the `ramose/query` subpath.
+same names live on the `Query` namespace from `ramose/db` (`Ramose.Q` /
+`Ramose.Query` when you import the module as a namespace).
 
 ## The kernel is inert data
 

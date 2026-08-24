@@ -20,7 +20,7 @@ export const boardQuery = Query.from(Issue)
   .orderBy(Issue.rank, "asc");
 ```
 
-`Query.from(Issue)` means "every issue"; each method after it narrows or shapes that set. `Query` is `Ramose.Query` from `ramose/db` (the same names are importable flat from `ramose/query`). Because the query is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged. Without `.select`, the row is the full entity (friendly keys; refs come back as `{ id: Eid<Target> }` cells — `Comment.issue` is `{ id: Eid<Issue> }`). Required fields stay required; `| undefined` is only on optional fields. That widens live invalidation — any field change wakes the subscription — so `.select` is the optimization lever. `.ids()` keeps today's cheap id-only subscription.
+`Query.from(Issue)` means "every issue"; each method after it narrows or shapes that set. `Query` is the `Query` namespace on `ramose/db` (`Ramose.Query` when you import the module as a namespace). Because the query is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged. Without `.select`, the row is the full entity (friendly keys; refs come back as `{ id: Eid<Target> }` cells — `Comment.issue` is `{ id: Eid<Issue> }`). Required fields stay required; `| undefined` is only on optional fields. That widens live invalidation — any field change wakes the subscription — so `.select` is the optimization lever. `.ids()` keeps today's cheap id-only subscription.
 
 ## Run it
 
