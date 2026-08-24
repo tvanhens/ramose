@@ -123,30 +123,30 @@ In the browser, `Ramose.token.jwt(() => fetch("/api/ramose-token", { method: "PO
 
 ## Wire the server
 
-The **Ramose server** needs the policy, the keys URL, and the issuer / audience pair. On the owned form, pass them as `auth: { policy, jwt, jwksUrl }` — Server applies them onto the Worker. Reef uses the explicit-Worker hatch (AUTH binding, Output-valued JWKS URL), so it sets the `RAMOSE_*` keys itself:
+The **Ramose server** needs the policy, the keys URL, and the issuer / audience pair. Set them once on `Ramose.Server` as `auth: { policy, jwt, jwksUrl }` — and `token` when you want a shared bearer. Server writes the `RAMOSE_*` keys onto the Worker. Do not also hand-copy those keys onto a Worker env.
+
+Reef is the same path. The JWKS URL and CORS origins are Alchemy Outputs over the auth Worker; `auth` carries them through (they are not string-normalised away):
 
 ```ts title="examples/reef/src/infra/resources.ts"
-export const RamoseWorker = Cloudflare.Worker("Peer", {
-  compatibility: Ramose.PEER_COMPAT,
-  // …
-  env: {
-    // …
-    RAMOSE_POLICY: compiledPolicy(),
-    RAMOSE_JWT_ISS: REEF_AUTH.issuer,
-    RAMOSE_JWT_AUD: REEF_AUTH.audience,
-    RAMOSE_JWT_MAX_TTL: String(REEF_AUTH.ttl),
-    RAMOSE_JWKS_SERVICE: "AUTH",
-    AUTH: Api,
-    RAMOSE_JWKS_URL: Effect.map(
+export const Server = Ramose.Server("Ramose", {
+  env: { AUTH: Api },
+  auth: {
+    policy: compiledPolicy(),
+    jwt: REEF_AUTH,
+    jwksService: "AUTH",
+    jwksUrl: Effect.map(
       Api,
       (api) => Output.interpolate`${api.url}${AUTH_BASE_PATH}/jwks`,
     ),
-    // …
+    allowedOrigins: Effect.map(
+      Api,
+      (api) => Output.interpolate`${DEV_UI_ORIGIN},${api.url}`,
+    ),
   },
 });
 ```
 
-With a policy set and any of the three missing, the server denies every request rather than falling open; pass `auth` to `Ramose.Server` on the owned form and the [deploy](/guides/deploy/) fails instead. For offline tests, `RAMOSE_JWKS_JSON` takes a literal key set — [Policy](/reference/policy/#testing-without-a-login-provider).
+With a policy set and any of the three verifier fields missing, the [deploy](/guides/deploy/) fails instead of shipping a server that denies every request. A policy on Server whose Worker has no `RAMOSE_POLICY` is the same class of error. For offline tests, `RAMOSE_JWKS_JSON` takes a literal key set — [Policy](/reference/policy/#testing-without-a-login-provider).
 
 `AUTH: Api` binds the sign-in Worker into the server, and `jwksService` names
 that binding as the route to the keys. Deployed, both are `workers.dev` hosts,

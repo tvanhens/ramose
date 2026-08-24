@@ -63,7 +63,7 @@ export const Server = Ramose.Server("Ramose", {
 });
 ```
 
-Reef uses the explicit-Worker hatch (`worker:`) because it adds an AUTH service binding, Output-valued JWKS / origins, and `/db/*` routes. That form is validated at deploy: binding names, Durable Object class names, and `main` resolution.
+Reef stays on this path: `auth` on Server (policy, `jwt`, Output-valued JWKS URL and origins), `env: { AUTH }` for the service binding, and `routes` for `/db/*` on the demo hostname. The explicit `worker:` hatch is only for a fully user-owned entry; if you pass `auth` / `token` there, they must match the Worker env or the deploy fails.
 
 **Bindings** (fixed names, `Ramose.PEER_BINDINGS`): `STORE` — the R2 bucket, **object storage** where every version of every database is kept ([glossary](/concepts/glossary/#object-storage)); `TRANSACTOR` — the writer's Durable Object class `TransactorDO`; `REPLICA` — the read copy's class `QueryReplicaDO`; optional `ANALYTICS` — an Analytics Engine dataset. Compatibility is `Ramose.PEER_COMPAT` (`nodejs_compat` on a pinned date) — do not copy a date into a stack file.
 
@@ -81,7 +81,7 @@ Reef uses the explicit-Worker hatch (`worker:`) because it adds an AUTH service 
 | `RAMOSE_ALLOWED_ORIGINS` | unset | CORS list, honoured **only once a policy is set**; without a policy CORS is `*` |
 | `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call; the owned form mints one when a policy is set. Pin it once you split the Worker out |
 
-`auth` on `Ramose.Server` produces these keys on the owned Worker — see [Policy → Server env keys](/reference/policy/). On the hatch, set them yourself.
+`auth` and `token` on `Ramose.Server` produce these keys — see [Policy → Server env keys](/reference/policy/). That is the configuration path. Do not also hand-copy `RAMOSE_*` onto a Worker.
 
 When your sign-in provider is another Worker on the same account, bind it into
 this Worker and name that binding in `RAMOSE_JWKS_SERVICE`. Cloudflare answers a

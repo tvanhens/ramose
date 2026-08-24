@@ -214,22 +214,24 @@ Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the pay
 
 ## Server env keys
 
-On the owned form, `auth: { policy, jwt, jwksUrl, … }` on `Ramose.Server` is applied onto these keys. On the explicit-Worker hatch, set them yourself:
+Set `auth: { policy, jwt, jwksUrl, … }` and `token` on `Ramose.Server`. That is the source of truth; Server writes these keys onto the Worker. Do not also hand-copy `RAMOSE_*` onto a Worker env.
 
 ```ts title="examples/reef/src/infra/resources.ts"
-  env: {
-    STORE: Store,
-    TRANSACTOR: Transactor,
-    REPLICA: Replica,
-    RAMOSE_POLICY: compiledPolicy(),
-    RAMOSE_JWT_ISS: REEF_AUTH.issuer,
-    RAMOSE_JWT_AUD: REEF_AUTH.audience,
-    RAMOSE_JWT_MAX_TTL: String(REEF_AUTH.ttl),
-    RAMOSE_JWKS_SERVICE: "AUTH",
+export const Server = Ramose.Server("Ramose", {
+  env: { AUTH: Api },
+  auth: {
+    policy: compiledPolicy(),
+    jwt: REEF_AUTH,
+    jwksService: "AUTH",
+    jwksUrl: /* Output over the auth Worker */,
+    allowedOrigins: /* Output over the SPA origin */,
+  },
+});
 ```
 
 | key | env var | meaning |
 | --- | --- | --- |
+| `token` (Server prop) | `RAMOSE_TOKEN` | shared bearer; owned form binds it |
 | `policy` | `RAMOSE_POLICY` | the compiled JSON; setting it arms enforcement |
 | `jwksUrl` | `RAMOSE_JWKS_URL` | where the sign-in provider publishes its public keys |
 | `jwksService` | `RAMOSE_JWKS_SERVICE` | service binding to fetch `jwksUrl` through; needed when the provider is a Worker on your account ([Server](/reference/server/)) |

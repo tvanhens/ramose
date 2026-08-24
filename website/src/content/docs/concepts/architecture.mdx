@@ -65,7 +65,7 @@ export const Server = Ramose.Server("Ramose", {
 });
 ```
 
-Every version of every database ends up in [object storage](/concepts/glossary/#object-storage), and nothing there is rewritten, which is why you can still read yesterday. Reef's hatch still names the bucket and both classes itself, because it adds an AUTH binding and custom routes.
+Every version of every database ends up in [object storage](/concepts/glossary/#object-storage), and nothing there is rewritten, which is why you can still read yesterday. Reef names the bucket (pinned for the published demo) and passes `auth`, the AUTH binding, and `/db/*` routes on `Ramose.Server` — Server declares the rest.
 
 ## When something fails
 

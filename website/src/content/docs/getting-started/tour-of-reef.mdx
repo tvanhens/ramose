@@ -287,23 +287,15 @@ One file declares the server, its storage and the sign-in Worker; `bun run dev:r
 
 ```ts title="examples/reef/src/infra/resources.ts"
 const Store = Cloudflare.R2.Bucket("Store", pinned("store"));
-const Transactor = Cloudflare.DurableObject(Ramose.PEER_DO_CLASSES.transactor, {
-  className: Ramose.PEER_DO_CLASSES.transactor,
-});
-const Replica = Cloudflare.DurableObject(Ramose.PEER_DO_CLASSES.replica, {
-  className: Ramose.PEER_DO_CLASSES.replica,
-});
 
-export const RamoseWorker = Cloudflare.Worker("Peer", {
+export const Server = Ramose.Server("Ramose", {
   main: import.meta.resolve("./peer.ts"),
-  compatibility: Ramose.PEER_COMPAT,
+  storage: Store,
   dev: { port: DEV_PEER_PORT },
-  env: {
-    STORE: Store,
-    TRANSACTOR: Transactor,
-    REPLICA: Replica,
-    RAMOSE_POLICY: compiledPolicy(),
-    RAMOSE_JWT_ISS: REEF_AUTH.issuer,
+  env: { AUTH: Api },
+  auth: {
+    policy: compiledPolicy(),
+    jwt: REEF_AUTH,
 ```
 
 </details>

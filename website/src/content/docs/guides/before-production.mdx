@@ -15,14 +15,18 @@ A freshly deployed **Ramose server** accepts every request, from anyone, with fu
 
 ## Close the front door
 
-- [ ] **Set a policy, or a shared token.** With neither `RAMOSE_POLICY` nor
-      `RAMOSE_TOKEN` set, every caller is an administrator on every database.
-      Use a [policy](/guides/permissions/) for anything a browser talks to; a
-      shared `RAMOSE_TOKEN` only when the sole caller is your own backend.
-- [ ] **Complete the verifier.** A policy needs `RAMOSE_JWKS_URL`,
-      `RAMOSE_JWT_ISS`, and `RAMOSE_JWT_AUD`. Pass the same `auth` object to
-      `Ramose.Server` and the deploy fails loudly when one is missing — better
-      than a server that denies every request at runtime.
+- [ ] **Set a policy, or a shared token.** With neither `auth.policy` nor
+      `token` on `Ramose.Server` (so neither `RAMOSE_POLICY` nor
+      `RAMOSE_TOKEN` on the Worker), every caller is an administrator on
+      every database. Use a [policy](/guides/permissions/) for anything a
+      browser talks to; a shared `token` only when the sole caller is your
+      own backend.
+- [ ] **Complete the verifier.** A policy needs `jwksUrl`, `issuers`, and
+      `aud` on `auth` (they become `RAMOSE_JWKS_URL`, `RAMOSE_JWT_ISS`,
+      `RAMOSE_JWT_AUD`). The deploy fails loudly when one is missing — or
+      when a policy never reaches the Worker as `RAMOSE_POLICY` — better
+      than a server that is open to everyone or denies every request at
+      runtime.
 - [ ] **Route the keys through a binding.** If your sign-in provider is another
       Worker on the same account, bind it into the server and name that binding
       in `RAMOSE_JWKS_SERVICE`. Fetching its `workers.dev` URL returns
