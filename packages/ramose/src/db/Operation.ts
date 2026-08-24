@@ -228,14 +228,10 @@ export interface Op<
   ): void;
   delete(e: OpEntity<C>): void;
 
-  query<Row, P = never, Out = readonly Row[]>(
-    input: QueryObject<Row, P, Out>,
-    params?: P extends never ? never : P,
+  query<Row, Out = readonly Row[]>(
+    input: QueryObject<Row, Out>,
   ): Promise<Out>;
-  query(
-    input: AnyQueryObject,
-    params?: Readonly<Record<string, unknown>>,
-  ): Promise<unknown>;
+  query(input: AnyQueryObject): Promise<unknown>;
 
   pull(subject: unknown, pattern: unknown): Promise<unknown>;
 
@@ -292,10 +288,7 @@ export interface RuntimeOp {
   set(e: unknown, field: unknown, value: unknown): Effect.Effect<void>;
   remove(e: unknown, field: unknown, value?: unknown): Effect.Effect<void>;
   delete(e: unknown): Effect.Effect<void>;
-  query(
-    input: AnyQueryObject,
-    params?: Readonly<Record<string, unknown>>,
-  ): Effect.Effect<unknown, DbError>;
+  query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(
     name: string,

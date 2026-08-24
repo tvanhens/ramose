@@ -58,10 +58,9 @@ import { txBuilder } from "./Tx.ts";
  * What `db.query` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
  * when the peer answers zero or two rows. Every other query — a rows array,
  * `.one()`'s `row | null`, a cursor {@link Page}, a scalar aggregate — is
- * {@link DbError} only. The unused second type parameter stays so existing
- * `QueryError<Out, P>` mentions still resolve.
+ * {@link DbError} only.
  */
-export type QueryError<R = unknown, _P = never> =
+export type QueryError<R = unknown> =
   | ([R] extends [readonly unknown[]]
       ? DbError
       : [null] extends [R]
@@ -190,8 +189,8 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
    * (`where({ title })`). The result is the query's terminal: the rows
    * array, one row (or `null`) after `one()` / `oneOrFail()`, a `Page`
    * after `after(cursor)`. */
-  query<Row, P = never, Out = readonly Row[]>(
-    input: QueryObject<Row, P, Out>,
+  query<Row, Out = readonly Row[]>(
+    input: QueryObject<Row, Out>,
   ): Promise<Out>;
 
   /**
@@ -203,9 +202,9 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
    * emitted again: a write this query does not see is not a re-render.
    * Put values in the query.
    */
-  live<Row, P = never, Out = readonly Row[]>(
-    input: QueryObject<Row, P, Out>,
-  ): Subscription<Out, QueryError<Out, P>>;
+  live<Row, Out = readonly Row[]>(
+    input: QueryObject<Row, Out>,
+  ): Subscription<Out, QueryError<Out>>;
 
   /**
    * Project one entity. `null` when a required field is missing. The subject

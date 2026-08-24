@@ -9,7 +9,6 @@ export { enrich, isCursor, q, refine, rule } from "./query.ts";
 export type {
   AnyQueryObject,
   Cursor,
-  OpenArgs,
   OpenResult,
   Page,
   Pipeline,

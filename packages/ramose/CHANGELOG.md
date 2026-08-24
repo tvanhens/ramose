@@ -20,6 +20,9 @@ Conditional clauses are ordinary JS on the immutable builder
   construct it.
 - `Query.q` is single-arg only (`Query.q(body)`). The two-arg
   `Query.q(spec, body)` overload is deleted.
+- The unused `P` / `PB` type parameter is gone from `QueryObject`,
+  `db.query` / `db.live`, `useLive` / `useQuery`, `op.query`, and
+  `QueryError`. `OpenArgs` is deleted with it.
 - `EidOf` is gone (also the leftover #204 casing item).
 - Subscription identity is the lowered AST. Two independently built
   identical inline queries share one `useLive` subscription; changing a

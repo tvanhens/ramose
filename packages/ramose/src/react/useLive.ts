@@ -185,15 +185,15 @@ const useKeyChurnWarning = (key: string): void => {
 };
 
 /** Query form: `db.live(query)`, constructed inside the effect. */
-export function useLive<C extends Schema.Any, R, P = never, Out = readonly R[]>(
+export function useLive<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryObject<R, P, Out>,
-): Live<Out, QueryError<Out, P>>;
+  query: QueryObject<R, Out>,
+): Live<Out, QueryError<Out>>;
 /** Subscription form: a handle built elsewhere; re-subscribes when its identity changes. */
 export function useLive<A, E>(sub: Subscription<A, E>): Live<A, E>;
 export function useLive(
   source: ReadDb | Subscription<unknown, unknown>,
-  query?: QueryObject<unknown, unknown, unknown>,
+  query?: QueryObject<unknown, unknown>,
 ): Live<unknown, unknown> {
   const owned = query !== undefined;
   const viewKey = owned ? viewKeyOf(source as ReadDb) : "";

@@ -42,7 +42,6 @@ export {
   type AnyQueryObject,
   type Cursor,
   type LoweredKernelQuery,
-  type OpenArgs,
   type OpenResult,
   type Page,
   type Pipeline,

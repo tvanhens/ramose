@@ -79,7 +79,6 @@ export type {
   EntityRow,
   FluentQuery,
   RefIdCell,
-  OpenArgs,
   OpenResult,
   Page,
   Pipeline,

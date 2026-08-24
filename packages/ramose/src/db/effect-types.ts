@@ -37,13 +37,13 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
   readonly name: string;
   readonly schema: C;
 
-  query<Row, P = never, Out = readonly Row[]>(
-    input: QueryObject<Row, P, Out>,
-  ): Effect.Effect<Out, QueryError<Out, P>>;
+  query<Row, Out = readonly Row[]>(
+    input: QueryObject<Row, Out>,
+  ): Effect.Effect<Out, QueryError<Out>>;
 
-  live<Row, P = never, Out = readonly Row[]>(
-    input: QueryObject<Row, P, Out>,
-  ): Stream.Stream<Out, QueryError<Out, P>>;
+  live<Row, Out = readonly Row[]>(
+    input: QueryObject<Row, Out>,
+  ): Stream.Stream<Out, QueryError<Out>>;
 
   pull<const P>(
     subject: Eid<C> | SchemaEid<C> | LookupRef<C>,

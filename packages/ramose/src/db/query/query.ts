@@ -156,10 +156,6 @@ export interface OpenResult<Row = unknown> {
   readonly _row?: Row;
 }
 
-/** The arguments `open` used to rebind a declared head. The head is gone;
- * `open()` takes no arguments. Kept so existing type imports still resolve. */
-export type OpenArgs<PB> = { readonly [K in keyof PB]: Var<any> | PB[K] };
-
 interface OpenCommand<Row> extends SpliceCommand {
   readonly _row?: Row;
   [Symbol.iterator](): Iterator<never, OpenResult<Row>, any>;
@@ -168,15 +164,15 @@ interface OpenCommand<Row> extends SpliceCommand {
 /**
  * A closed query value: a body, runnable by `db.query` / `db.live` and
  * delegable into other builds via {@link QueryObject.open}. `Row` is the
- * inferred row; `PB` is unused (always `never`); `Out` is what a terminal
- * resolves to — the rows array by default, one row (or `null`) after
- * {@link QueryObject.one} / {@link QueryObject.oneOrFail}, a {@link Page}
- * after {@link QueryObject.after}.
+ * inferred row; `Out` is what a terminal resolves to — the rows array by
+ * default, one row (or `null`) after {@link QueryObject.one} /
+ * {@link QueryObject.oneOrFail}, a {@link Page} after
+ * {@link QueryObject.after}.
  */
-export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
+export interface QueryObject<Row = unknown, Out = readonly Row[]> {
   readonly _tag: "Query";
   /** @internal provenance: re-run per inclusion, so vars stay hygienic */
-  readonly body: (p: never) => unknown;
+  readonly body: () => unknown;
   /** @internal `logic()` strips cursor stages instead of failing `open` */
   readonly stripCursor: boolean;
   /** @internal `one()` / `oneOrFail()` — forced `limit 1`/`2`, unwrapped. */
@@ -193,19 +189,19 @@ export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
 
   /** This query without its cursor (orderBy/limit/offset/one/after) — the
    * logic composes; the cursor was post-processing for the outermost query. */
-  logic(): QueryObject<Row, PB>;
+  logic(): QueryObject<Row>;
 
   /**
    * At most one row. Lowering forces `limit 1`; the result is that row or
    * `null`, the same absence `db.pull` uses. Extra matches are not fetched.
    */
-  one(): QueryObject<Row, PB, Row | null>;
+  one(): QueryObject<Row, Row | null>;
   /**
    * Exactly one row. Lowering forces `limit 2` so a second match is
    * witnessed without pulling a whole page, and `db.query` fails with `NotOne`
    * when the peer answers zero or two.
    */
-  oneOrFail(): QueryObject<Row, PB, Row>;
+  oneOrFail(): QueryObject<Row, Row>;
   /**
    * Keyset-page a sorted query: the result becomes a {@link Page}, whose
    * `cursor` is where it ended — pass `null` for the first page and the
@@ -215,17 +211,15 @@ export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
    * the peer's: `limit(n)` is n rows *past* the cursor, and unlike `offset`
    * the walk does not shift when rows are inserted before it.
    */
-  after(cursor: Cursor | null): QueryObject<Row, PB, Page<Row>>;
+  after(cursor: Cursor | null): QueryObject<Row, Page<Row>>;
 
   /** Phantom — the inferred row. Never present at runtime. */
   readonly _row?: Row;
-  /** Phantom — the declared bindings record. Never present at runtime. */
-  readonly _params?: PB;
   /** Phantom — what a terminal resolves to. Never present at runtime. */
   readonly _out?: Out;
 }
 
-export type AnyQueryObject = QueryObject<any, any, any>;
+export type AnyQueryObject = QueryObject<any, any>;
 
 /**
  * The row type a query yields — so an app names it once, from the query,
@@ -237,7 +231,7 @@ export type AnyQueryObject = QueryObject<any, any, any>;
  * type BoardRows = Ramose.Rows<typeof boardQuery>; // the readonly array
  * ```
  */
-export type Row<Q> = Q extends QueryObject<infer R, any, any> ? R : never;
+export type Row<Q> = Q extends QueryObject<infer R, any> ? R : never;
 
 /** The readonly array of {@link Row} — what `db.query` resolves an unpaged,
  * untaken query to. */
@@ -261,14 +255,13 @@ interface Built {
 const isGen = (x: unknown): x is QueryGen<unknown> =>
   typeof x === "object" && x !== null && typeof (x as Iterator<unknown>).next === "function";
 
-/** Run the body once against `p`, collecting into `ctx`. */
+/** Run the body once, collecting into `ctx`. */
 const runInto = (
   qv: AnyQueryObject,
-  p: unknown,
   ctx: BuildCtx,
   stripCursor: boolean,
 ): Built => {
-  const out = (qv.body as (p: unknown) => unknown)(p);
+  const out = qv.body();
   if (isPipeline(out)) return assemblePipeline(out, ctx, stripCursor);
   if (isGen(out)) {
     const proj = runBody(out, ctx);
@@ -410,7 +403,7 @@ const resolveOrderKey = (
 /** What a body may produce. */
 export type QueryBody<P, Prj> = (p: P) => QueryGen<Prj> | Pipeline<any>;
 
-type RowFromBody<B> = B extends (p: never) => infer Out
+type RowFromBody<B> = B extends () => infer Out
   ? Out extends QueryGen<infer Prj>
     ? Prj extends AnyVar
       ? { readonly id: number }
@@ -420,20 +413,20 @@ type RowFromBody<B> = B extends (p: never) => infer Out
       : never
   : never;
 
-export const makeQueryObject = <Row, PB>(
-  body: (p: never) => unknown,
+export const makeQueryObject = <Row>(
+  body: () => unknown,
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
-): QueryObject<Row, PB> => {
-  const self: QueryObject<Row, PB> = {
+): QueryObject<Row> => {
+  const self: QueryObject<Row> = {
     _tag: "Query",
     body,
     stripCursor,
     take,
     seek,
-    open: (() => openCommand(self)) as QueryObject<Row, PB>["open"],
-    logic: () => makeQueryObject<Row, PB>(body, true),
+    open: (() => openCommand(self)) as QueryObject<Row>["open"],
+    logic: () => makeQueryObject<Row>(body, true),
     one: () => {
       if (seek !== undefined) {
         throw new Error(
@@ -472,9 +465,9 @@ export const makeQueryObject = <Row, PB>(
  * generator spellings denote the same value. Put changing values in the
  * body as literals — `Query.q` takes one argument.
  */
-export function q<B extends (p: never) => QueryGen<any> | Pipeline<any>>(
+export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   body: B,
-): QueryObject<RowFromBody<B>, never> {
+): QueryObject<RowFromBody<B>> {
   if (typeof body !== "function") {
     throw new Error("ramose/query: Query.q(body) takes a generator or a function returning a pipeline");
   }
@@ -572,7 +565,7 @@ const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
   const cmd: OpenCommand<Row> = {
     _tag: "splice",
     splice: (ctx) => {
-      const built = runInto(qv, {}, ctx, qv.stripCursor);
+      const built = runInto(qv, ctx, qv.stripCursor);
       if (built.order.length > 0 || built.limit !== undefined || built.offset !== undefined || qv.take !== undefined || qv.seek !== undefined) {
         throw new Error(
           "ramose/query: a query with a cursor (orderBy/limit/offset/one/after) does not delegate — the cursor is post-processing for the outermost query; extend then order, or strip it explicitly with q.logic()",
@@ -610,7 +603,7 @@ const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
  */
 export const enrich =
   <Extra extends CellRecord>(body: (e: Var<EidCell>) => QueryGen<Extra>) =>
-  <Row, PB>(qv: QueryObject<Row, PB>): QueryObject<Row & RowOfProjection<Extra>, PB> =>
+  <Row>(qv: QueryObject<Row>): QueryObject<Row & RowOfProjection<Extra>> =>
     makeQueryObject(
       function* () {
         const { focus, cols } = (yield* openCommand(qv)) as OpenResult;
@@ -623,7 +616,7 @@ export const enrich =
 /** Shape-preserving sibling of {@link enrich}: extra constraints, same row. */
 export const refine =
   (frag: Fragment<Var<EidCell>, unknown>) =>
-  <Row, PB>(qv: QueryObject<Row, PB>): QueryObject<Row, PB> =>
+  <Row>(qv: QueryObject<Row>): QueryObject<Row> =>
     makeQueryObject(
       function* () {
         const { focus, cols } = (yield* openCommand(qv)) as OpenResult;
@@ -704,7 +697,7 @@ export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   resetGensym();
   const ctx: BuildCtx = { clauses: [] };
-  const built = runInto(qv, {}, ctx, qv.stripCursor);
+  const built = runInto(qv, ctx, qv.stripCursor);
 
   const names = new Map<number, string>();
   let seq = 0;

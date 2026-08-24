@@ -26,7 +26,7 @@ interface DbSeam {
    * doubles; every real client attaches it.
    */
   readonly liveRaw?: (
-    query: QueryObject<unknown, unknown, unknown>,
+    query: QueryObject<unknown, unknown>,
   ) => Subscription<unknown, unknown>;
 }
 

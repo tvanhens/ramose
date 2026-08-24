@@ -28,7 +28,6 @@ export interface OpHandleOptions {
   readonly self?: unknown;
   readonly q: (
     input: AnyQueryObject,
-    params?: Readonly<Record<string, unknown>>,
   ) => Effect.Effect<unknown, DbError>;
   readonly pull: (
     subject: unknown,
@@ -210,8 +209,8 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
     delete: (e) => {
       Effect.runSync(op.delete(e));
     },
-    query: ((input: AnyQueryObject, params?: Readonly<Record<string, unknown>>) =>
-      asPromise(op.query(input, params))) as Op["query"],
+    query: ((input: AnyQueryObject) =>
+      asPromise(op.query(input))) as Op["query"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),
     effect: <A>(name: string, run: EffectThunk<A>): Promise<A> => {
       if (op._effects === "halt") {

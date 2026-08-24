@@ -31,12 +31,12 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>(
+export const useQuery = <C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryObject<R, P, Out>,
-): Async<Out, QueryError<Out, P>> => {
+  query: QueryObject<R, Out>,
+): Async<Out, QueryError<Out>> => {
   const astKey = queryAstKey(query);
-  const [state, set] = useState<Async<Out, QueryError<Out, P>>>({
+  const [state, set] = useState<Async<Out, QueryError<Out>>>({
     data: undefined,
     error: undefined,
     loading: true,
@@ -49,7 +49,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     let disposed = false;
     /** Land this run's outcome unless a later-issued run already landed. */
     const land = (
-      next: (prev: Async<Out, QueryError<Out, P>>) => Async<Out, QueryError<Out, P>>,
+      next: (prev: Async<Out, QueryError<Out>>) => Async<Out, QueryError<Out>>,
     ): void => {
       if (disposed || seq < runs.current.applied) return;
       runs.current.applied = seq;
@@ -67,7 +67,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
       .then((rows) => {
         land(() => ({ data: rows as Out, error: undefined, loading: false }));
       })
-      .catch((error: QueryError<Out, P>) => {
+      .catch((error: QueryError<Out>) => {
         if (disposed) return;
         land((prev) => ({ data: prev.data, error, loading: false }));
       });

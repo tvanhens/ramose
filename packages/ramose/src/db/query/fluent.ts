@@ -202,7 +202,7 @@ export interface FluentQuery<
   N extends AnyEntity = AnyEntity,
   Row = unknown,
   Out = readonly Row[],
-> extends QueryObject<Row, never, Out> {
+> extends QueryObject<Row, Out> {
   /**
    * Conjunction of equality filters, keys typechecked from the entity's
    * fields; or one-or-more stage fragments (`Query.some`, `Query.matching`, …).
@@ -239,7 +239,7 @@ const makeFluent = <N extends AnyEntity, Row>(
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
 ): FluentQuery<N, Row> => {
-  const qv = makeQueryObject<Row, never>(
+  const qv = makeQueryObject<Row>(
     () => withDefaultShape(pipe),
     stripCursor,
     take,
