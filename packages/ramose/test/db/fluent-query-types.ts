@@ -16,7 +16,7 @@ import type {
   Param,
   Row,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Instant, Long, Query, Ref, params } from "../../src/db/internal.ts";
+import { Entity, Field, Instant, Long, Query, Ref, params, stored } from "../../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 
 import { Movies, User } from "./fixture.ts";
@@ -126,7 +126,7 @@ type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: num
 
 const Note = Entity("note", {
   body: Field(Schema.String),
-  subtitle: Field(Schema.optional(Schema.String), { valueType: "string" }),
+  subtitle: Field(stored(Schema.optional(Schema.String), "string")),
   author: Ref(User),
 });
 type NoteRow = EntityRow<typeof Note>;
