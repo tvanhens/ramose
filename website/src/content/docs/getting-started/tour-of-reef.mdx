@@ -83,11 +83,11 @@ export const provisionWorkspace = (db: ReefDb) =>
 Opening one goes to `/:slug` and mounts a provider keyed by its name; switching swaps the connection:
 
 ```tsx title="examples/reef/src/app/App.tsx#ramose-provider"
-        <RamoseProvider
-          key={open.workspace.slug}
-          url={RAMOSE_URL}
-          token={open.workspace.token}
-        >
+          <RamoseProvider
+            key={open.workspace.slug}
+            url={RAMOSE_URL}
+            token={open.workspace.token}
+          >
 ```
 
 :::tip[What you didn't write]

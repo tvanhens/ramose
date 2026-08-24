@@ -19,11 +19,11 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 ## RamoseProvider
 
 ```tsx title="examples/reef/src/app/App.tsx#ramose-provider"
-        <RamoseProvider
-          key={open.workspace.slug}
-          url={RAMOSE_URL}
-          token={open.workspace.token}
-        >
+          <RamoseProvider
+            key={open.workspace.slug}
+            url={RAMOSE_URL}
+            token={open.workspace.token}
+          >
 ```
 
 `RamoseProvider(props: ClientOptions & { children })` — owns one **client** ([glossary](/concepts/glossary/#client)) made with `Ramose.connect`, and closes it on unmount or when `url` / `token` / `fetch` / `webSocket` change.
