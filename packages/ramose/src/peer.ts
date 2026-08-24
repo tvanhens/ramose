@@ -199,14 +199,39 @@ const storageDecl = (storage: PeerStorage | undefined) => {
 };
 
 /**
+ * The two Durable Object *declarations* a hand-written stack writes at
+ * module scope (`Cloudflare.DurableObject("TransactorDO", …)`). Alchemy
+ * scopes a declaration created while evaluating `Worker({ env })` as a
+ * nested binding (`[Worker/TRANSACTOR]`) and never gives it its own
+ * logical id — the working e2e stack and Reef both declare these as
+ * siblings of the Worker instead.
+ *
+ * Call this from `Ramose.Server(…)` itself (stack-module evaluation),
+ * not from inside Worker's env literal.
+ */
+export const ownedPeerDurableObjects = () => ({
+  transactor: Cloudflare.DurableObject(PEER_DO_CLASSES.transactor, {
+    className: PEER_DO_CLASSES.transactor,
+  }),
+  replica: Cloudflare.DurableObject(PEER_DO_CLASSES.replica, {
+    className: PEER_DO_CLASSES.replica,
+  }),
+});
+
+export type OwnedPeerDurableObjects = ReturnType<typeof ownedPeerDurableObjects>;
+
+/**
  * Declare the R2 bucket, both DO classes, and the peer Worker. The caller
  * `yield*`s this from Server's init so Alchemy tracks the dependencies
  * through the Worker's env (the same pattern as a hand-written stack).
  */
 export const declareOwnedPeer = (options: OwnedPeerOptions & {
   readonly authEnv?: Record<string, unknown> | undefined;
+  /** Pre-declared at the `Server()` call site so they are stack-level siblings. */
+  readonly durableObjects?: OwnedPeerDurableObjects | undefined;
 }) =>
   Effect.gen(function* () {
+    const dos = options.durableObjects ?? ownedPeerDurableObjects();
     const worker = yield* Cloudflare.Worker(options.peer ?? PEER_DEFAULTS.worker, {
       main: options.main ?? workerEntry(),
       compatibility: PEER_COMPAT,
@@ -214,12 +239,8 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
       ...(options.dev !== undefined ? { dev: options.dev } : {}),
       env: {
         [PEER_BINDINGS.store]: storageDecl(options.storage),
-        [PEER_BINDINGS.transactor]: Cloudflare.DurableObject(PEER_DO_CLASSES.transactor, {
-          className: PEER_DO_CLASSES.transactor,
-        }),
-        [PEER_BINDINGS.replica]: Cloudflare.DurableObject(PEER_DO_CLASSES.replica, {
-          className: PEER_DO_CLASSES.replica,
-        }),
+        [PEER_BINDINGS.transactor]: dos.transactor,
+        [PEER_BINDINGS.replica]: dos.replica,
         ...options.authEnv,
         ...options.env,
       },

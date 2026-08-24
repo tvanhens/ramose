@@ -27,7 +27,7 @@ const d = URL_ ? describe : describe.skip;
 
 // Real Cloudflare (workers.dev) is slower than local miniflare, and Peer
 // retries transient platform errors — keep headroom above Bun's 5s default.
-setDefaultTimeout(60_000);
+setDefaultTimeout(90_000);
 
 const dbName = `e2e-${Date.now().toString(36)}`;
 
@@ -36,9 +36,9 @@ d("ramose e2e", () => {
     token,
     // A fresh workers.dev hostname is eventually consistent across the edge:
     // a colo can serve the HTML placeholder mid-suite, minutes after /health
-    // passes. Absorb up to 30s of that per request (application errors never
-    // retry). Test timeout is 60s, so a retried request still fails loudly.
-    retryTransientMs: 30_000,
+    // passes. Absorb up to 45s of that per request (application errors never
+    // retry). Test timeout is 90s, so a retried request still fails loudly.
+    retryTransientMs: 45_000,
   });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;

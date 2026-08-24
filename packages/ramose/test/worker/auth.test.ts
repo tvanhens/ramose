@@ -574,6 +574,21 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
+  test("admin /info is not 200 while the transactor answers Worker not found", async () => {
+    const peer = makePeer("demo");
+    await peer.seed(SCHEMA);
+    (peer.env as { TRANSACTOR: unknown }).TRANSACTOR = {
+      idFromName: (name: string) => ({ name, toString: () => name }),
+      get: () => ({
+        fetch: async () => new Response(JSON.stringify({ error: "Worker not found." }), { status: 500 }),
+      }),
+    };
+    const info = await peer.json("/db/demo/info");
+    expect(info.status).toBe(500);
+    expect(info.body).toEqual({ error: "Worker not found." });
+    peer.close();
+  });
+
   test("CORS narrows to RAMOSE_ALLOWED_ORIGINS once a policy is configured", async () => {
     const { peer } = await fixture({ RAMOSE_ALLOWED_ORIGINS: "https://app.acme.test" });
     const ok = await peer.fetch("/health", { headers: { origin: "https://app.acme.test" } });

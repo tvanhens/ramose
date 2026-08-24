@@ -24,7 +24,13 @@ import {
 } from "../src/Server.ts";
 import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
 import { envKeys } from "../src/ServerRuntime.ts";
-import { PEER_COMPAT, PEER_BINDINGS, PEER_DO_CLASSES, validatePeerWiring } from "../src/peer.ts";
+import {
+  PEER_COMPAT,
+  PEER_BINDINGS,
+  PEER_DO_CLASSES,
+  ownedPeerDurableObjects,
+  validatePeerWiring,
+} from "../src/peer.ts";
 import { workerEntry } from "../src/workerEntry.ts";
 
 describe("identity", () => {
@@ -125,6 +131,14 @@ describe("PEER_COMPAT", () => {
     expect(PEER_COMPAT).toEqual({ date: "2026-03-17", flags: ["nodejs_compat"] });
     expect(PEER_BINDINGS).toEqual({ store: "STORE", transactor: "TRANSACTOR", replica: "REPLICA" });
     expect(PEER_DO_CLASSES).toEqual({ transactor: "TransactorDO", replica: "QueryReplicaDO" });
+  });
+
+  test("owned DO declarations keep the exported class names as their logical ids", () => {
+    const dos = ownedPeerDurableObjects();
+    expect(dos.transactor.name).toBe("TransactorDO");
+    expect(dos.replica.name).toBe("QueryReplicaDO");
+    expect(dos.transactor.className ?? "TransactorDO").toBe("TransactorDO");
+    expect(dos.replica.className ?? "QueryReplicaDO").toBe("QueryReplicaDO");
   });
 });
 

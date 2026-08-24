@@ -47,7 +47,12 @@ import { installCatalog } from "./Database.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import { trimSlashes } from "./db/http.ts";
 import type { Schema } from "./db/index.ts";
-import { declareOwnedPeer, type PeerStorage, validatePeerWiring } from "./peer.ts";
+import {
+  declareOwnedPeer,
+  ownedPeerDurableObjects,
+  type PeerStorage,
+  validatePeerWiring,
+} from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
 
@@ -325,8 +330,15 @@ const ServerResource = Resource<Server>("Ramose.Server");
  * kept as the escape hatch.
  */
 export const Server = Object.assign(
-  (id: string, props: InputProps<ServerProps>) =>
-    ServerResource(
+  (id: string, props: InputProps<ServerProps>) => {
+    // Durable Object declarations must be created here — at the stack
+    // module's `Ramose.Server(…)` call — so Alchemy registers them as
+    // top-level `TransactorDO` / `QueryReplicaDO` resources. Creating
+    // them inside `Worker({ env })` nests them as `[Worker/TRANSACTOR]`
+    // bindings and never gives the namespaces their own logical ids.
+    const durableObjects =
+      props.worker === undefined ? ownedPeerDurableObjects() : undefined;
+    return ServerResource(
       id,
       Effect.gen(function* () {
         const given = props.worker as
@@ -345,10 +357,12 @@ export const Server = Object.assign(
           dev: props.dev as { readonly port?: number } | undefined,
           peer: props.peer as string | undefined,
           authEnv: authEnv(props.auth as ServerAuth | undefined),
+          durableObjects,
         });
         return { ...props, worker } as InputProps<ServerProps>;
       }) as unknown as Effect.Effect<InputProps<ServerProps>, never, never>,
-    ),
+    );
+  },
   ServerResource,
 ) as typeof ServerResource;
 
