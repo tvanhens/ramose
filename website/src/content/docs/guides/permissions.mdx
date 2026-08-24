@@ -37,7 +37,7 @@ const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, 
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-```ts title="examples/reef/src/domain/policy.ts#policy"
+```ts title="examples/reef/src/domain/policy.ts#policy-setup"
 export const policy = Ramose.policy(
   {
     schema: Reef,
@@ -58,28 +58,6 @@ export const policy = Ramose.policy(
       read: true,
       create: P.class("member"),
     },
-    issue: {
-      read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
-      preset: [P.preset(Issue.creator, P.principal)],
-      attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("admin") }),
-      ],
-    },
-    comment: {
-      read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
-      preset: [P.preset(Comment.author, P.principal)],
-    },
-  },
-);
 ```
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-issue · examples/reef/src/domain/policy.ts#policy-comment"

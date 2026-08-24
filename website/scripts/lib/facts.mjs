@@ -85,6 +85,12 @@ export const ramoseReactRuntime = () =>
 export const tickNames = (text) =>
   [...text.matchAll(/`([A-Za-z_][A-Za-z0-9]*)`/g)].map((m) => m[1]);
 
+/** Export names the page claims in frontmatter `description:`. */
+export const listedFromFrontmatter = (fm) => {
+  const desc = fm.match(/^description:\s*(.+)$/m)?.[1] ?? "";
+  return tickNames(desc);
+};
+
 const COUNT_WORDS = {
   nine: 9,
   eight: 8,

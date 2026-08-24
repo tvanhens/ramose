@@ -514,7 +514,9 @@ const TimeTravelView = ({
   const t = scrubbed ?? maxT;
   // Until the basis lands, read the live view — the same rows the board
   // already shows — so the hook order never varies.
+  // docs:use-query
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+  // enddocs:use-query
   const everything = useQuery(db.history, everyIssueEverQuery);
   // enddocs:time-travel
 

@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: Every export of ramose/react — RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage — example first.
+description: Every export of ramose/react — `RamoseProvider`, `useDb`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`, `errorMessage` — example first.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -33,10 +33,8 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 ## useDb
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-db"
+  const db = useDb(slug, Reef);
 ```
 
 `useDb(name, schema): Db<C>` — `client.db(name, schema)` from the nearest provider, kept stable on `[client, name, schema]`. Pass a module-scope schema. Throws outside a provider.
@@ -69,8 +67,8 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 
 ## useQuery
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis"
-  const maxT = useBasis(db);
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-query"
+  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
 `useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.

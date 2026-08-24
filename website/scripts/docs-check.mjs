@@ -27,6 +27,7 @@ import {
   ramoseDbRuntime,
   ramoseReactRuntime,
   ramoseRootRuntime,
+  listedFromFrontmatter,
   statedRequestErrorCounts,
   tickNames,
 } from "./lib/facts.mjs";
@@ -410,7 +411,7 @@ if (run("facts") && !onlyPage) {
   const reactNames = ramoseReactRuntime();
 
   for (const page of pages) {
-    const { body } = splitFrontmatter(page.src);
+    const { fm, body } = splitFrontmatter(page.src);
     for (const hit of statedRequestErrorCounts(body)) {
       if (hit.n !== tags.length) {
         add("ERROR", "facts", page.slug,
@@ -444,11 +445,10 @@ if (run("facts") && !onlyPage) {
       }
     }
     if (page.slug === "reference/react") {
-      const listed = tickNames(
-        (body.match(/^description:\s*(.+)$/m)?.[1] ?? "") +
-          "\n" +
-          (body.match(/one section per export[^.]*\./)?.[0] ?? ""),
-      );
+      const listed = listedFromFrontmatter(fm);
+      if (!listed.length)
+        add("ERROR", "facts", page.slug,
+          "react description lists no backticked export names");
       const ignore = new Set(["ramose"]);
       for (const name of listed) {
         if (ignore.has(name)) continue;

@@ -33,6 +33,7 @@ const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.autho
 // enddocs:own-rules
 
 // docs:policy
+// docs:policy-setup
 export const policy = Ramose.policy(
   {
     schema: Reef,
@@ -44,7 +45,6 @@ export const policy = Ramose.policy(
     }),
   },
   {
-    // docs:policy-setup
     user: {
       read: true,
       // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).

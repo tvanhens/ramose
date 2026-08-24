@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bodyMatchesExtract,
@@ -9,7 +9,13 @@ import {
   parseTitleCitations,
   REPO,
 } from "./snippets.mjs";
-import { dbErrorTags, runtimeExports, statedRequestErrorCounts } from "./facts.mjs";
+import {
+  dbErrorTags,
+  listedFromFrontmatter,
+  ramoseReactRuntime,
+  runtimeExports,
+  statedRequestErrorCounts,
+} from "./facts.mjs";
 
 const tmp = join(REPO, ".tmp-snippets-test");
 
@@ -138,5 +144,25 @@ describe("facts", () => {
   test("statedRequestErrorCounts reads number words", () => {
     const hits = statedRequestErrorCounts("the nine request errors, not eight request errors");
     expect(hits.map((h) => h.n)).toEqual([9, 8]);
+  });
+
+  test("listedFromFrontmatter reads backticked names from description", () => {
+    const listed = listedFromFrontmatter(
+      "title: React hooks\ndescription: Every export of ramose/react — `useDb`, `useLive` — example first.\n",
+    );
+    expect(listed).toEqual(["useDb", "useLive"]);
+    expect(listedFromFrontmatter("title: x\n")).toEqual([]);
+  });
+
+  test("listedFromFrontmatter on the real react page is a non-empty subset of the barrel", () => {
+    const src = readFileSync(
+      join(REPO, "website/src/content/docs/reference/react.mdx"),
+      "utf8",
+    );
+    const fm = src.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+    const listed = listedFromFrontmatter(fm);
+    const runtime = ramoseReactRuntime();
+    expect(listed.length).toBeGreaterThan(0);
+    for (const name of listed) expect(runtime.has(name)).toBe(true);
   });
 });
