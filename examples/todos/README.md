@@ -71,7 +71,7 @@ interruption; `useTransact().run` runs a write from an event handler:
 const { rows, error } = useLive(db, todoQuery);
 // …
 const { run } = useTransact();
-onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
 ```
 
 A write bumps the connection's basis, so the standing stream re-runs with no

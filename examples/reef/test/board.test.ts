@@ -754,7 +754,7 @@ describe("refresh open is one session, not two", () => {
     try {
       const db = client.db("coral-team", Reef);
       const who = await db.principal();
-      expect(who.eid?.id).toBe(peer.myEid);
+      expect(who.eid as number | null).toBe(peer.myEid);
       expect(counted.connects).toBe(1);
       // principal() is GET /info — no replica session yet
       expect(peer.sockets()).toBe(0);
@@ -860,7 +860,7 @@ describe("refresh open is one session, not two", () => {
     try {
       const db = client.db("coral-team", Reef);
       const who = await db.principal();
-      expect(who.eid?.id).toBeGreaterThan(0);
+      expect(who.eid).toBeGreaterThan(0);
       expect(counted.connects).toBe(afterProvision + 1);
       expect(peer.sockets()).toBe(0);
 

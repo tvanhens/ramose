@@ -1,5 +1,8 @@
 /** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
+import type { Eid } from "./Eid.ts";
+import type { AnyEntity } from "./Entity.ts";
+import type { Tempid } from "./entityArg.ts";
 import type { ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 
@@ -72,8 +75,7 @@ export type WriteAtEntity<C extends AnySchema, N extends { readonly ns: string; 
  *
  * Both spellings of the head are the same lookup: the attr ref you already
  * have (`[User.name, "Ada"]`) or its ident (`[":user/name", "Ada"]`). The
- * wire form is the ident either way (`lowerSubject` in `Db.ts`,
- * `resolveEntity` in `Tx.ts`).
+ * wire form is the ident either way (`lowerEntityArg`).
  */
 export type LookupRef<C extends AnySchema> = {
   [I in CatalogIdent<C>]: AttrAtIdent<C, I>["unique"] extends undefined
@@ -83,5 +85,78 @@ export type LookupRef<C extends AnySchema> = {
         | readonly [{ readonly ident: I }, ValueAtIdent<C, I>];
 }[CatalogIdent<C>];
 
-/** eid | tempid/ident string | typed lookup ref. */
-export type EntityRef<C extends AnySchema> = number | string | LookupRef<C>;
+/** Unique lookups whose ident is on `N` (`:issue/…`, not `:comment/…`). */
+export type OnIdent<N extends AnyEntity> = `:${N["ns"]}/${string}`;
+
+export type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
+  LookupRef<C>,
+  | readonly [OnIdent<N>, unknown]
+  | readonly [{ readonly ident: OnIdent<N> }, unknown]
+>;
+
+/** Namespaces of `C` — the default `N` for a catalog-wide {@link EntityRef}. */
+export type CatalogEntity<C extends AnySchema> = C["entities"][keyof C["entities"]] &
+  AnyEntity;
+
+/** Unbranded id — a bare `number`, not `Eid<Other>`. Documented mint-by-id hatch. */
+export type UnbrandedId = number & { readonly _ns?: never };
+
+/**
+ * How an entity is named on the typed surfaces: branded eid, `{ id }` row
+ * (`.ids()` / `select({ id })`), nominal tempid, lookup, or the unbranded
+ * number hatch. Raw `string` is not in the set — use {@link Tempid}.
+ *
+ * `H` is the handle admitted beside these forms (`TxHandle` / `OpHandle`).
+ */
+export type EntityRef<
+  C extends AnySchema,
+  N extends AnyEntity = CatalogEntity<C>,
+  H = never,
+> =
+  | Eid<N>
+  | { readonly id: Eid<N> }
+  | Tempid
+  | LookupRefFor<C, N>
+  | UnbrandedId
+  | H;
+
+/** Target entity of a `Ref(User)` field; `never` for `Ref.self` / untargeted. */
+export type FieldTargetEntity<F> = F extends {
+  readonly schema: { readonly _target?: infer T };
+}
+  ? Exclude<T, undefined> extends AnyEntity
+    ? Exclude<T, undefined>
+    : never
+  : never;
+
+/** The entity that owns ident `I` in `C`. */
+export type EntityOfIdent<C extends AnySchema, I extends string> = {
+  [K in keyof C["entities"]]: {
+    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+      C["entities"][K]["ns"],
+      A
+    > extends I
+      ? C["entities"][K] & AnyEntity
+      : never;
+  }[keyof C["entities"][K]["fields"] & string];
+}[keyof C["entities"]];
+
+/**
+ * Ref write target: `Ref(User)` → `User`; `Ref.self` / untargeted → the
+ * enclosing entity of the ident.
+ */
+export type RefWriteTarget<C extends AnySchema, I extends string> = [
+  FieldTargetEntity<AttrAtIdent<C, I>>,
+] extends [never]
+  ? EntityOfIdent<C, I>
+  : FieldTargetEntity<AttrAtIdent<C, I>>;
+
+/**
+ * Write value for a ref-typed ident: {@link EntityRef} of the declared
+ * target. A Label eid is not assignable to `Issue.creator`.
+ */
+export type RefWriteValue<
+  C extends AnySchema,
+  I extends string,
+  H = never,
+> = EntityRef<C, RefWriteTarget<C, I>, H>;

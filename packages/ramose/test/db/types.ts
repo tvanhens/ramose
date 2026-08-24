@@ -313,9 +313,12 @@ type _txEid = Expect<Equal<typeof report.txEid, Eid<typeof Movies>>>;
 // ── eids are data ──────────────────────────────────────────────────────────
 
 declare const eid: Eid<typeof Movies>;
-type _eidId = Expect<Equal<typeof eid.id, number>>;
-// no methods and no I/O: `Eid` is `{ id }`
+type _eidIsNumber = Expect<Extends<typeof eid, number>>;
+// no methods and no I/O: `Eid` is a branded number
 type _eidNoPull = Expect<Equal<"pull" extends keyof typeof eid ? true : false, false>>;
+// a bare string is not an EntityRef — use tempid("ada")
+// @ts-expect-error a bare string is not a tempid
+const _stringRef: EntityRef<typeof Movies> = "oops-typo-not-a-tempid";
 
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 

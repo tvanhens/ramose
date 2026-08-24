@@ -1598,8 +1598,8 @@ describe("Query.from — fluent app spelling", () => {
     const ids = await seed(db);
     const rows = await db.query(Query.from(User).ids());
     const got = new Set(rows.map((r) => r.id));
-    expect(got.has(ids.ada.id)).toBe(true);
-    expect(got.has(ids.grace.id)).toBe(true);
+    expect(got.has(ids.ada.id as (typeof rows)[number]["id"])).toBe(true);
+    expect(got.has(ids.grace.id as (typeof rows)[number]["id"])).toBe(true);
     await peer.dispose();
   });
 

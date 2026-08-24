@@ -28,7 +28,7 @@ export const boardQuery = Query.from(Issue)
 
 ```ts
 const who = await db.principal();
-const myEid = who.eid?.id;
+const myEid = who.eid;
 ```
 
 A lookup by any other field is an ordinary query — put the value in `.where`. Two independently-built queries with the same literals share a live subscription (the key is the lowered AST). Changing an inline literal changes that key and resubscribes; that is the point.
@@ -273,7 +273,7 @@ The compared cell must reach the projection (that is what names it on the row), 
 When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
 ```
 
 ```ts title="examples/reef/src/domain/queries.ts#issue-extra-shape"

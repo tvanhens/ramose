@@ -125,7 +125,7 @@ export const App = Cloudflare.Worker(
         const ada =
           rows.length === 0
             ? null
-            : yield* report.dbAfter.effect.pull({ id: rows[0]!.id }, { name: User.name });
+            : yield* report.dbAfter.effect.pull(rows[0]!.id, { name: User.name });
 
         return yield* HttpServerResponse.json({ t: report.t, names, before, ada });
       }).pipe(

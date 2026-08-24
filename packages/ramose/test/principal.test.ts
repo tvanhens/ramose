@@ -64,7 +64,7 @@ describe("db.principal()", () => {
     const db = c.ramose.db("movies", Movies);
 
     expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -72,7 +72,7 @@ describe("db.principal()", () => {
 
     // a resolved entity is stable: the second ask is the cache
     expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -98,11 +98,11 @@ describe("db.principal()", () => {
     // the row lands (the peer provisioned it); the very next ask resolves
     state.principal = { eid: 9, class: "member" };
     expect(await db.principal()).toEqual({
-      eid: { id: 9 },
+      eid: 9,
       class: "member",
     });
     expect(await db.principal()).toEqual({
-      eid: { id: 9 },
+      eid: 9,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(3); // …and is cached from then on
@@ -118,7 +118,7 @@ describe("db.principal()", () => {
 
     await db.query(names); // opens the socket: generation moves
     expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -129,7 +129,7 @@ describe("db.principal()", () => {
     expect(peer.sockets).toHaveLength(2);
 
     expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(2);
@@ -158,7 +158,7 @@ describe("db.principal()", () => {
     expect(peer.frameOps("auth")).toHaveLength(1);
 
     expect(await db.principal()).toEqual({
-      eid: { id: 21 },
+      eid: 21,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(0);
@@ -198,7 +198,7 @@ describe("db.principal()", () => {
 
     await db.query(names);
     expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -216,11 +216,11 @@ describe("db.principal()", () => {
     // …until it does; the fresh answer is cached against this ack
     state.principal = { eid: 33, class: "member" };
     expect(await db.principal()).toEqual({
-      eid: { id: 33 },
+      eid: 33,
       class: "member",
     });
     expect(await db.principal()).toEqual({
-      eid: { id: 33 },
+      eid: 33,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(3);
@@ -240,11 +240,11 @@ describe("db.principal()", () => {
     const db = databases.db("movies", Movies);
 
     expect(await db.principal()).toEqual({
-      eid: { id: 5 },
+      eid: 5,
       class: "admin",
     });
     expect(await db.principal()).toEqual({
-      eid: { id: 5 },
+      eid: 5,
       class: "admin",
     });
     expect(infoCalls(peer)).toBe(1);

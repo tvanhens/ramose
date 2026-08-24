@@ -16,8 +16,7 @@ export type RedactedOf<A> = Redacted.Redacted<A>;
 import type { AnySchema } from "./Schema.ts";
 import type { DbPrincipal, QueryError, TxReport } from "./Db.ts";
 import type { DbError } from "./Errors.ts";
-import type { SchemaEid, Eid } from "./Eid.ts";
-import type { LookupRef } from "./idents.ts";
+import type { EntityRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   OpReport,
@@ -46,12 +45,12 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
   ): Stream.Stream<Out, QueryError<Out>>;
 
   pull<const P>(
-    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
+    subject: EntityRef<C>,
     pattern: PullPattern<C, P>,
   ): Effect.Effect<Pull<C, P> | null, DbError>;
 
   livePull<const P>(
-    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
+    subject: EntityRef<C>,
     pattern: PullPattern<C, P>,
   ): Stream.Stream<Pull<C, P> | null, DbError>;
 

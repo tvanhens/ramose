@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### One `EntityRef` vocabulary (tracker #178)
+
+Write and pull subjects share one argument type: a branded `Eid`, an
+`{ id }` row, a nominal `tempid("ada")` / `op.tempid("ada")`, a lookup
+ref, a handle, or the unbranded-number hatch. A bare `string` is not a
+tempid — that path minted dangling entities. `Eid` is one shape, the
+branded number: valid as a React key, a write subject, and a `db.pull`
+subject. `Eid<C>` is the union of the catalog's namespace eids.
+`TxValue` / `put` ref slots correlate a `Ref(User)` field with `Eid<User>`,
+so a Label eid is not assignable to `Issue.creator`. One `lowerEntityArg`
+serves `db.run`, `put` / `set`, and `db.pull`. Quickstart and Reef pass
+`row.id` through — no `{ id: row.id }` re-wrap.
+
 ### Entity-level writes (`put`) (#171)
 
 `op.put(Issue, { title, labels: ids })` creates; `op.put(Issue, id, {…})`
@@ -34,7 +47,7 @@ sends `[":user/name", "Ada"]`, the overlay resolves it against the
 local view when the row is present, and `runOperation` resolves it to
 an eid before `entityNamespaceOk`. A lookup that does not exist is
 `OperationRejected` with `reason: "dangling"`, same as a missing eid.
-The bare-string entity arm stays the tempid hatch.
+The tempid hatch is `tempid("ada")` / `op.tempid("ada")`, not a bare string.
 
 A branded `{ id: Eid<N> }` row of the wrong entity is rejected at the
 type level (an unbranded `.ids()` `{ id: number }` is not a branded

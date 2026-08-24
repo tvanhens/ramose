@@ -16,6 +16,7 @@ import {
   reshapePullResult,
   Long,
   Ref,
+  type Eid,
 } from "../../src/db/internal.ts";
 
 const User = Entity("user", {
@@ -139,7 +140,10 @@ describe("transaction builder", () => {
     const tx = txBuilder(Movies);
     Effect.runSync(
       Effect.gen(function* () {
-        yield* tx.put(User, { name: "Ada", bestFriend: { id: 1002 } });
+        yield* tx.put(User, {
+          name: "Ada",
+          bestFriend: { id: 1002 as Eid<typeof User> },
+        });
         yield* tx.put(User, { name: "Bea", bestFriend: { eid: 1003, class: "user" } });
         yield* tx.put(User, { name: "Cam", bestFriend: { eid: null, class: "user" } });
         yield* tx.put(User, 1001, { age: 36 });

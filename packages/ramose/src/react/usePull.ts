@@ -6,17 +6,15 @@
  * and a pinned view emits once, completes, and keeps its rows.
  *
  * Two rules for callers: the view and the `subject` are structural —
- * `db.asOf(t)` and `{ id: 17 }` written inline are fine — while `pattern`
- * is identity, so hoist it exactly as you hoist a query. Changing the
- * subject blanks `rows` until the new pull lands.
+ * `db.asOf(t)` and a branded cell or number written inline are fine —
+ * while `pattern` is identity, so hoist it exactly as you hoist a query.
+ * Changing the subject blanks `rows` until the new pull lands.
  */
 
 import type {
   Schema,
-  SchemaEid,
-  Eid,
+  EntityRef,
   IdentPullPattern,
-  LookupRef,
   Pull,
   ReadDb,
   ValidatePull,
@@ -48,7 +46,7 @@ const subjectKey = (subject: unknown): string => {
 
 export const usePull = <C extends Schema.Any, const P>(
   db: ReadDb<C>,
-  subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
+  subject: EntityRef<C>,
   pattern: PullPattern<C, P>,
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);

@@ -95,7 +95,7 @@ describe("ramose.db(name, catalog) is pure", () => {
 
         const operations: Array<Effect.Effect<unknown, DbError> | Promise<unknown>> = [
           db.query(names),
-          db.pull({ id: 1 }, { name: User.name }),
+          db.pull(1, { name: User.name }),
           db.install(),
           db.effect.transact(function* (tx) {
             yield* tx.delete(1);
@@ -136,7 +136,7 @@ describe("writes are HTTPS, reads are not", () => {
     ]);
     expect(typeof peer.calls[0].body.clientTxId).toBe("string");
     expect(report.t).toBe(7);
-    expect(report.txEid).toEqual({ id: 42 });
+    expect(report.txEid as number).toEqual(42);
     expect(report.datomCount).toBe(3);
     await c.dispose();
   });
@@ -171,7 +171,7 @@ describe("writes are HTTPS, reads are not", () => {
     const db = databases.db("movies", Movies);
 
     const rows = await db.query(eids);
-    expect(rows).toEqual([{ id: 1001 }]);
+    expect(rows as readonly { id: number }[]).toEqual([{ id: 1001 }]);
     expect(await db.pull(rows[0]!, { name: User.name })).toEqual({
       name: "Ada",
     });

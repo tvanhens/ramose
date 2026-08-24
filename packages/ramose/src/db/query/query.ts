@@ -1123,7 +1123,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const proj = built.proj;
   if (isIdsSpec(proj)) {
     find.push(nameOf(proj.v));
-    finalizeRows = (tuples) => tuples.map((t) => (typeof t[0] === "number" ? makeEid(t[0]) : t[0]));
+    finalizeRows = (tuples) =>
+      tuples.map((t) => ({
+        id: typeof t[0] === "number" ? makeEid(t[0]) : t[0],
+      }));
   } else if (isPullSpec(proj)) {
     const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);

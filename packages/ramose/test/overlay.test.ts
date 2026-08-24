@@ -203,7 +203,7 @@ describe("optimistic transact", () => {
 
     const report = await run(
       db.effect.transact(function* (tx) {
-        const e = yield* tx.entity("ada");
+        const e = yield* tx.entity(tx.tempid("ada"));
         yield* e.set(User.name, "Ada");
       }),
     );
@@ -480,7 +480,7 @@ describe("optimistic transact", () => {
 
     const first = Effect.runPromise(
       db.effect.transact(function* (tx) {
-        const e = yield* tx.entity("new");
+        const e = yield* tx.entity(tx.tempid("new"));
         yield* e.set(User.name, "Ada");
       }),
     );

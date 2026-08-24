@@ -82,7 +82,7 @@ export const addTodo = (db: TodosDb, title: string) =>
   db.run(addTodoOp, { title });
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
-  db.run(setDoneOp, eid.id, { done });
+  db.run(setDoneOp, eid, { done });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
-  db.run(deleteTodoOp, eid.id, {});
+  db.run(deleteTodoOp, eid, {});

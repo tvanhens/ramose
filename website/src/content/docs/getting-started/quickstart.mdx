@@ -221,12 +221,12 @@ export const addTodo = (db: TodosDb, title: string) =>
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
   db.transact(function* (tx) {
-    yield* tx.set(eid.id, Todo.done, done);
+    yield* tx.set(eid, Todo.done, done);
   });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.transact(function* (tx) {
-    yield* tx.delete(eid.id);
+    yield* tx.delete(eid);
   });
 ```
 
@@ -273,11 +273,11 @@ const TodoRowView = ({ row }: { row: TodoRow }) => {
         <input
           type="checkbox"
           checked={row.done}
-          onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+          onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
         />
         <span>{row.title}</span>
       </label>
-      <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
+      <button type="button" onClick={() => void run(deleteTodo(db, row.id))}>
         delete
       </button>
     </li>

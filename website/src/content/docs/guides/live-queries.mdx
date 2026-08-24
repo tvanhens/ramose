@@ -44,10 +44,10 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 `usePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
 ```
 
-`{ id: issueId }` inline is fine — the subject is compared by value, not by identity.
+The subject is compared by value, not by identity — a branded `row.id` (or a number) written inline is fine.
 
 ## Where live queries work
 

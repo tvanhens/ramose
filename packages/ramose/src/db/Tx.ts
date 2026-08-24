@@ -1,14 +1,18 @@
 /** Schema-generic transaction builder. `transact(function* (tx) { … })` is hatch-only. */
 
 import * as Effect from "effect/Effect";
-import { isAttrRef, lowerAttr } from "./attrRef.ts";
-import type { Eid } from "./Eid.ts";
+import { lowerAttr } from "./attrRef.ts";
+import { lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnySchema } from "./Schema.ts";
 import type {
+  AttrAtIdent,
   CatalogIdent,
   EntityRef,
+  FieldTargetEntity,
   LookupRef,
+  RefWriteValue,
+  UnbrandedId,
   ValueAtIdent,
   WriteAtEntity,
 } from "./idents.ts";
@@ -31,13 +35,20 @@ type IdentOfTxField<C extends AnySchema, A> = A extends {
     ? A
     : never;
 
-/** Value type correlated to a {@link TxField}. `never` when the field is unknown. */
-export type TxValue<C extends AnySchema, A> =
+/**
+ * Value type correlated to a {@link TxField}. A ref field takes
+ * {@link RefWriteValue} of its declared target — a Label eid is not an
+ * `Issue.creator`. `never` when the field is unknown. `H` is the handle
+ * admitted in ref slots (`TxHandle` on the builder, widened on `Op`).
+ */
+export type TxValue<C extends AnySchema, A, H = TxHandle<C>> =
   IdentOfTxField<C, A> extends infer I
     ? [I] extends [never]
       ? never
       : I extends string
-        ? ValueAtIdent<C, I>
+        ? AttrAtIdent<C, I>["valueType"] extends "ref"
+          ? RefWriteValue<C, I, H>
+          : ValueAtIdent<C, I>
         : never
     : never;
 
@@ -49,10 +60,11 @@ export type FieldRefLookup<C extends AnySchema> = {
   ];
 }[CatalogIdent<C>];
 
-export type TxEntity<C extends AnySchema> =
-  | EntityRef<C>
-  | TxHandle<C>
-  | FieldRefLookup<C>;
+export type TxEntity<C extends AnySchema> = EntityRef<
+  C,
+  C["entities"][keyof C["entities"]] & AnyEntity,
+  TxHandle<C>
+>;
 
 /**
  * Entity of `C` when the catalog is known; any entity against the open
@@ -62,42 +74,23 @@ export type TxKnownEntity<C extends AnySchema> = string extends keyof C["entitie
   ? AnyEntity
   : C["entities"][keyof C["entities"]];
 
-/** Unbranded id — a bare `number` or `.ids()` `{ id }`, not `Eid<Other>`. */
-type UnbrandedId = number & { readonly _ns?: never };
-
-type OnIdent<N extends AnyEntity> = `:${N["ns"]}/${string}`;
-
-/** Target entity of a `Ref(User)` field; `never` for `Ref.self` / untargeted. */
-type FieldTarget<F> = F extends {
-  readonly schema: { readonly _target?: infer T };
-}
-  ? Exclude<T, undefined> extends AnyEntity
-    ? Exclude<T, undefined>
-    : never
-  : never;
-
 /** Targeted ref → that entity; `Ref.self` / untargeted → the enclosing entity. */
 type RefSlotTarget<N extends AnyEntity, K extends string> =
-  [FieldTarget<N["fields"][K]>] extends [never]
+  [FieldTargetEntity<N["fields"][K]>] extends [never]
     ? N
-    : FieldTarget<N["fields"][K]>;
+    : FieldTargetEntity<N["fields"][K]>;
 
 /**
- * Ref forms `put` accepts. No bare `string` — that would mint a dangling
- * record. `{ id }` is the `.ids()` row; `{ eid, class }` is `op.principal`.
+ * Ref forms `put` accepts. Same {@link EntityRef} vocabulary as `set` /
+ * `db.run` — no bare `string`. `{ eid, class }` is `op.principal`.
  */
 type PutRef<
   C extends AnySchema,
   H = TxHandle<C>,
-  Target extends AnyEntity | never = never,
+  Target extends AnyEntity = AnyEntity,
 > =
-  | H
-  | LookupRef<C>
-  | { readonly id: number }
-  | { readonly eid: number | null; readonly class: string }
-  | ([Target] extends [never]
-      ? UnbrandedId
-      : Eid<Target> | UnbrandedId);
+  | EntityRef<C, Target, H>
+  | { readonly eid: number | null; readonly class: string };
 
 type PutScalar<
   C extends AnySchema,
@@ -125,24 +118,15 @@ export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> 
 };
 
 /**
- * 3-arg `put` subject, narrowed to entity `N` the way `db.run` narrows
- * its entity. A branded cell of the wrong entity is rejected.
+ * 3-arg `put` subject, narrowed to entity `N` — the same
+ * {@link EntityRef} vocabulary as `db.run`. A branded cell of the
+ * wrong entity is rejected. No bare `string`.
  */
 export type PutSubject<
   C extends AnySchema,
   N extends AnyEntity,
   H = TxHandle<C>,
-> =
-  | Eid<N>
-  | { readonly id: Eid<N> }
-  | UnbrandedId
-  | string
-  | Extract<
-      LookupRef<C>,
-      | readonly [OnIdent<N>, unknown]
-      | readonly [{ readonly ident: OnIdent<N> }, unknown]
-    >
-  | H;
+> = EntityRef<C, N, H>;
 
 // ── collected ops (what a future impl would send) ──────────────────────────
 
@@ -170,17 +154,21 @@ export interface TxSpec {
  */
 export interface TxHandle<C extends AnySchema = AnySchema> {
   readonly _tag: "TxHandle";
-  /** What this handle names: a fresh tempid, an eid, or a lookup ref. */
-  readonly eid: EntityRef<C>;
+  /**
+   * What this handle names: a fresh tempid, an eid, or a lookup ref.
+   * Not catalog-branded — the handle does not know a namespace — so it
+   * is the unbranded-number / tempid / lookup hatch, valid in any ref slot.
+   */
+  readonly eid: UnbrandedId | Tempid | LookupRef<C>;
 
   set<const A extends TxField<C>>(
     field: A,
-    value: TxValue<C, A>,
+    value: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   remove<const A extends TxField<C>>(
     field: A,
-    value?: TxValue<C, A>,
+    value?: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   delete(): Effect.Effect<void>;
@@ -199,23 +187,26 @@ export interface Tx<C extends AnySchema = AnySchema> {
 
   /**
    * Allocate a tempid, or wrap an existing eid / tempid / lookup ref.
-   * `tx.entity()` → new handle; `tx.entity(1001)`; `tx.entity("ada")`;
-   * `tx.entity([User.name, "Ada"])`.
+   * `tx.entity()` → new handle; `tx.entity(1001)`;
+   * `tx.entity(tx.tempid("ada"))`; `tx.entity([User.name, "Ada"])`.
    */
   entity(): Effect.Effect<TxHandle<C>>;
   entity(id: TxEntity<C>): Effect.Effect<TxHandle<C>>;
+
+  /** Brand a string as a named tempid. Not a bare `string`. */
+  tempid(name: string): Tempid;
 
   /** Assert one datom. Cardinality-many is one call per value. */
   set<const A extends TxField<C>>(
     e: TxEntity<C>,
     field: A,
-    value: TxValue<C, A>,
+    value: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   remove<const A extends TxField<C>>(
     e: TxEntity<C>,
     field: A,
-    value?: TxValue<C, A>,
+    value?: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   delete(e: TxEntity<C>): Effect.Effect<void>;
@@ -294,26 +285,6 @@ export const isTxHandle = (e: unknown): e is TxHandle =>
   e !== null &&
   (e as { _tag?: unknown })._tag === "TxHandle";
 
-const isIdRow = (v: unknown): v is { readonly id: number } =>
-  typeof v === "object" &&
-  v !== null &&
-  !Array.isArray(v) &&
-  "id" in v &&
-  typeof (v as { id: unknown }).id === "number";
-
-/** `op.principal` — `{ eid, class }`, not a handle (handles have `_tag`). */
-const isPrincipal = (
-  v: unknown,
-): v is { readonly eid: number | null; readonly class: string } =>
-  typeof v === "object" &&
-  v !== null &&
-  !Array.isArray(v) &&
-  "eid" in v &&
-  "class" in v &&
-  typeof (v as { class: unknown }).class === "string" &&
-  ((v as { eid: unknown }).eid === null ||
-    typeof (v as { eid: unknown }).eid === "number");
-
 const fieldMeta = (
   entity: unknown,
   key: string,
@@ -337,37 +308,7 @@ const isCardManyScalarField = (entity: unknown, key: string): boolean => {
   return field?.cardinality === "many" && field?.valueType !== "ref";
 };
 
-const resolveEntity = (e: unknown): unknown => {
-  if (isTxHandle(e)) return e.eid;
-  if (isIdRow(e)) return e.id;
-  if (Array.isArray(e) && e.length === 2 && isAttrRef(e[0])) {
-    return [e[0].ident, e[1]];
-  }
-  return e;
-};
-
-const isIdentLookup = (value: unknown): value is readonly [string, unknown] =>
-  Array.isArray(value) &&
-  value.length === 2 &&
-  typeof value[0] === "string" &&
-  value[0][0] === ":";
-
-/**
- * Lower handles, `{ id }` rows, `op.principal`, and field-ref lookups so
- * map form is engine-ready. A principal with a null eid is omitted.
- */
-const lowerWriteValue = (value: unknown): unknown => {
-  if (isTxHandle(value)) return resolveEntity(value);
-  if (isIdRow(value)) return value.id;
-  if (isPrincipal(value)) return value.eid === null ? undefined : value.eid;
-  if (Array.isArray(value) && value.length === 2 && isAttrRef(value[0])) {
-    return [value[0].ident, lowerWriteValue(value[1])];
-  }
-  if (Array.isArray(value) && !isIdentLookup(value)) {
-    return value.map(lowerWriteValue);
-  }
-  return value;
-};
+const resolveEntity = (e: unknown): unknown => lowerEntityArg(e);
 
 const fieldIdent = (entity: unknown, key: string): string => {
   if (typeof entity === "object" && entity !== null && "fields" in entity) {
@@ -412,21 +353,21 @@ const lowerPut = (
 };
 
 const makeHandle = <C extends AnySchema>(
-  eid: EntityRef<C>,
+  eid: UnbrandedId | Tempid | LookupRef<C>,
   ops: TxOp[],
 ): TxHandle<C> => ({
   _tag: "TxHandle",
   eid,
   set: (field: unknown, value: unknown) =>
     Effect.sync(() => {
-      ops.push([":db/add", eid, lowerAttr(field), value]);
+      ops.push([":db/add", eid, lowerAttr(field), lowerWriteValue(value)]);
     }),
   remove: (field: unknown, value?: unknown) =>
     Effect.sync(() => {
       if (value === undefined) {
         ops.push([":db/retract", eid, lowerAttr(field)]);
       } else {
-        ops.push([":db/retract", eid, lowerAttr(field), value]);
+        ops.push([":db/retract", eid, lowerAttr(field), lowerWriteValue(value)]);
       }
     }),
   delete: () =>
@@ -452,20 +393,31 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
       Effect.sync(() => {
         const resolved =
           id === undefined
-            ? (`tmp-${++next}` as EntityRef<C>)
-            : (resolveEntity(id) as EntityRef<C>);
+            ? (`tmp-${++next}` as Tempid)
+            : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         return makeHandle(resolved, ops);
       })) as Tx<C>["entity"],
+    tempid,
     set: (e: unknown, field: unknown, value: unknown) =>
       Effect.sync(() => {
-        ops.push([":db/add", resolveEntity(e), lowerAttr(field), value]);
+        ops.push([
+          ":db/add",
+          resolveEntity(e),
+          lowerAttr(field),
+          lowerWriteValue(value),
+        ]);
       }),
     remove: (e: unknown, field: unknown, value?: unknown) =>
       Effect.sync(() => {
         if (value === undefined) {
           ops.push([":db/retract", resolveEntity(e), lowerAttr(field)]);
         } else {
-          ops.push([":db/retract", resolveEntity(e), lowerAttr(field), value]);
+          ops.push([
+            ":db/retract",
+            resolveEntity(e),
+            lowerAttr(field),
+            lowerWriteValue(value),
+          ]);
         }
       }),
     delete: (e: unknown) =>
@@ -478,8 +430,8 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         const id = b !== undefined ? a : undefined;
         const eid =
           id === undefined
-            ? (`tmp-${++next}` as EntityRef<C>)
-            : (resolveEntity(id) as EntityRef<C>);
+            ? (`tmp-${++next}` as Tempid)
+            : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         const { map, extras } = lowerPut(entity, eid, attrs ?? {});
         ops.push(map);
         ops.push(...extras);

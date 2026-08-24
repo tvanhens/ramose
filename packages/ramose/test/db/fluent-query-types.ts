@@ -79,12 +79,12 @@ Query.from(Comment).where({ text: 42 });
 // ── .ids() is today's { id } row ───────────────────────────────────────────
 
 const onlyIds = Query.from(Comment).ids();
-type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: number }>>;
+type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: Eid<typeof Comment> }>>;
 
 const idsThenSelect = Query.from(Comment).ids().select({ text: Comment.text });
 type _idsThenSelect = Expect<Equal<Row<typeof idsThenSelect>, { readonly text: string }>>;
 const selectThenIds = Query.from(Comment).select({ text: Comment.text }).ids();
-type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: number }>>;
+type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: Eid<typeof Comment> }>>;
 
 // ── optional fields only are `| undefined` ─────────────────────────────────
 

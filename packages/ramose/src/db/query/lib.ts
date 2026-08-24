@@ -12,6 +12,7 @@
  * one vocabulary serves both spellings.
  */
 
+import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
@@ -48,7 +49,7 @@ const makePipeline = <Row>(ns: AnyEntity, stages: readonly PipeStage[]): Pipelin
 });
 
 /** The row a bare (select-less) pipeline yields: the matched entity id. */
-export type IdRow = { readonly id: number };
+export type IdRow<N extends AnyEntity = AnyEntity> = { readonly id: Eid<N> };
 
 /**
  * The source stage: the entities of one namespace. There is no entity
@@ -57,7 +58,7 @@ export type IdRow = { readonly id: number };
  * the pipeline already constrains the focus through a namespace attr, the
  * rule is entailed and lowering emits nothing.
  */
-export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow> => {
+export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
     throw new Error("ramose/query: entities(...) takes an entity");
   }
@@ -77,7 +78,7 @@ export interface FilterStage {
 /** A traversal: refocuses the pipeline; as a fragment, returns the new focus. */
 export interface TraversalStage {
   (focus: AnyVar): QueryGen<Var<EidCell>>;
-  (q: Pipeline<any>): Pipeline<IdRow>;
+  (q: Pipeline<any>): Pipeline<IdRow<AnyEntity>>;
 }
 
 const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
@@ -258,5 +259,5 @@ export const offset =
  */
 export const ids =
   () =>
-  (q: Pipeline<any>): Pipeline<IdRow> =>
+  (q: Pipeline<any>): Pipeline<IdRow<AnyEntity>> =>
     addStage(assertPipeline(q, "ids"), { kind: "ids" });

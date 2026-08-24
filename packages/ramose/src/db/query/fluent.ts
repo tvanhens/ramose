@@ -229,7 +229,7 @@ export interface FluentQuery<
    * Id-only projection — today's cheap live-subscription workhorse.
    * Default-full-entity widens invalidation; `.select` / `.ids` are the levers.
    */
-  ids(): FluentQuery<N, IdRow>;
+  ids(): FluentQuery<N, IdRow<N>>;
 }
 
 const makeFluent = <N extends AnyEntity, Row>(

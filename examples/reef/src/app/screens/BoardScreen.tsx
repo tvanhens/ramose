@@ -242,7 +242,7 @@ export const BoardScreen = ({
     void db.principal().then(
       (who) => {
         if (cancelled) return;
-        setMyEid(who.eid?.id);
+        setMyEid(who.eid ?? undefined);
         setSelfReady(true);
       },
       (err) => {

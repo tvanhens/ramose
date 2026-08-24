@@ -253,12 +253,11 @@ export const IssueDetail = ({
   const [note, setNoteDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
 
-  // A standing pull: `{ id: issueId }` inline is fine (the subject is
-  // structural), and every emission — an edit from any tab — resets the
-  // drafts, so the panel updates in place.
+  // A standing pull: `issueId` (`row.id`) is a branded eid — no `{ id }`
+  // re-wrap. Every emission resets the drafts, so the panel updates in place.
   // docs:issue-panel-reads
   // docs:use-pull-extra
-  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
   // enddocs:use-pull-extra
   useEffect(() => {
     if (extra === null) return;

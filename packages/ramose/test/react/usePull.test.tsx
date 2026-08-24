@@ -51,7 +51,7 @@ describe("usePull", () => {
   test("first emission, a tx re-emission, and a retract's null", async () => {
     const world = await todoWorld();
     const peer = overlayPeer(world);
-    const ada: Ramose.Eid<typeof Todos> = { id: world.a };
+    const ada = world.a;
     const { result } = renderHook(
       () => usePull(useDb("todos", Todos), ada, shape),
       { wrapper: wrapperFor(peer) },
@@ -81,7 +81,7 @@ describe("usePull", () => {
     const peer = overlayPeer(world);
     const { result, rerender } = renderHook(
       ({ id }: { id: number }) =>
-        usePull(useDb("todos", Todos), { id }, shape),
+        usePull(useDb("todos", Todos), id, shape),
       { wrapper: wrapperFor(peer), initialProps: { id: world.a } },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
@@ -111,7 +111,7 @@ describe("usePull", () => {
     });
     const { result, rerender } = renderHook(
       ({ id }: { id: number }) =>
-        usePull(useDb("todos", Todos).asOf(3), { id }, shape),
+        usePull(useDb("todos", Todos).asOf(3), id, shape),
       { wrapper: wrapperFor(peer), initialProps: { id: 17 } },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
@@ -151,7 +151,7 @@ describe("usePull", () => {
           : { body: { t: state.t, result: [] } },
     });
     const { result, rerender } = renderHook(
-      () => usePull(useDb("todos", Todos).asOf(3), { id: 17 }, shape),
+      () => usePull(useDb("todos", Todos).asOf(3), 17, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "then" }));
@@ -180,7 +180,7 @@ describe("usePull", () => {
       },
     });
     const { result } = renderHook(
-      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      () => usePull(useDb("todos", Todos), world.a, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
@@ -198,14 +198,14 @@ describe("usePull", () => {
     const world = await todoWorld();
     const peer = overlayPeer(world);
     const first = renderHook(
-      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      () => usePull(useDb("todos", Todos), world.a, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(first.result.current.rows).toEqual({ title: "A" }));
     first.unmount();
 
     const { result } = renderHook(
-      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      () => usePull(useDb("todos", Todos), world.a, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
@@ -221,7 +221,7 @@ describe("usePull", () => {
     const world = await todoWorld();
     const peer = overlayPeer(world);
     const { result } = renderHook(
-      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
+      () => usePull(useDb("todos", Todos), world.a, shape),
       {
         wrapper: ({ children }) => (
           <StrictMode>{wrapperFor(peer)({ children })}</StrictMode>

@@ -105,7 +105,7 @@ describe("reads become frames", () => {
     const db = c.ramose.db("movies", Movies);
 
     await run(db.asOf(2).query(eids));
-    await run(db.asOf(3).history.pull({ id: 17 }, { name: User.name }));
+    await run(db.asOf(3).history.pull(17, { name: User.name }));
     await run(db.history.query(names));
 
     expect(peer.frames).toEqual([
@@ -223,9 +223,11 @@ describe("a socket that goes away", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ramose.db("movies", Movies).asOf(2).query(eids))).toEqual([
-      { id: 1001 },
-    ]);
+    expect(
+      (await run(c.ramose.db("movies", Movies).asOf(2).query(eids))) as readonly {
+        id: number;
+      }[],
+    ).toEqual([{ id: 1001 }]);
     // one frame per socket: the first died with its socket, the retry landed
     expect(peer.sockets).toHaveLength(2);
     expect(peer.frames).toHaveLength(2);

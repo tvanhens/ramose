@@ -190,7 +190,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 ```ts
 const who = await db.principal();
-const myEid = who.eid?.id;
+const myEid = who.eid;
 const people = await db.query(peopleQuery);
 ```
 
@@ -214,7 +214,7 @@ export const pullTodo = (db: TodosDb, eid: TodoEid) =>
 **`db.livePull(subject, shape): Stream<Pull | null, DbError>`** — the live form; a deleted record emits `null` and the stream stays open.
 
 ```ts
-const stream = db.livePull({ id: issueId }, issueExtraShape);
+const stream = db.livePull(issueId, issueExtraShape);
 ```
 
 **`db.basis(): Effect<{ t: number }, DbError>`** — the **version number `t`** this view reads at ([glossary](/concepts/glossary/#version-number)); one request on a live view, no request on `asOf(t)`.
@@ -239,7 +239,7 @@ const { t } = yield* db.basis();
 **`db.principal(): Effect<{ eid: Eid | null; class: string }, DbError>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. The peer upserts that row at session establishment, so a signed-in caller has an `eid` once the principal attr is deployed. `eid` stays `null` for anonymous and service callers; `class` is `"admin"` on a server with no policy.
 
 ```ts
-const me = yield* db.principal();   // { eid: { id: 42 } | null, class: "member" }
+const me = yield* db.principal();   // { eid: 42 | null, class: "member" }
 ```
 
 **`db.transact(function* (tx) { … }): Effect<TxReport, DbError | E>`** — one write. The body is a generator; `yield*` each step. A failure inside sends nothing.
@@ -255,12 +255,12 @@ export const addTodo = (db: TodosDb, title: string) =>
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
   db.transact(function* (tx) {
-    yield* tx.set(eid.id, Todo.done, done);
+    yield* tx.set(eid, Todo.done, done);
   });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.transact(function* (tx) {
-    yield* tx.delete(eid.id);
+    yield* tx.delete(eid);
   });
 ```
 
@@ -321,7 +321,7 @@ Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exis
 
 ```ts
 const who = yield* db.principal();
-const myEid = who.eid?.id; // the peer-owned user row
+const myEid = who.eid; // the peer-owned user row
 ```
 
 ## Queries
@@ -445,9 +445,9 @@ Not shipped: post-group filters (`having`) on the client surface, ordering or pa
 **`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`, including `.orDefault(v)`, `Ramose.all(N)`, and `ref.select(Ramose.again(n))`.
 
 ```ts
-db.pull({ id: 17 }, { title: Issue.title, description: Issue.description.optional });
-db.pull({ id: 17 }, { done: Todo.done.orDefault(false) });
-db.pull({ id: 17 }, Ramose.all(Issue));
+db.pull(issueId, { title: Issue.title, description: Issue.description.optional });
+db.pull(todoId, { done: Todo.done.orDefault(false) });
+db.pull(issueId, Ramose.all(Issue));
 db.pull([User.sub, "user_ada"], { name: User.name });
 ```
 
@@ -477,7 +477,9 @@ export const issueExtraShape = {
 | `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
 | `Ramose.Again<n>` / `Ramose.RecurStub<S>` | the `again(n)` shape term; the `{ id }` stub after the bound |
 | `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
-| `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data. `Eid<N>` over a namespace is the branded id `number` a `select({ id: N.id })` cell carries; `db.pull` takes it uncast |
+| `Ramose.Eid<C>` | branded `number` — a record id as data. `Eid<N>` is the cell a `select({ id: N.id })` yields; `Eid<C>` is the union over the catalog. Valid as a React key, a write subject, and a `db.pull` subject |
+| `Ramose.EntityRef<C>` | write / pull subject: branded eid, `{ id }` row, `tempid("ada")`, lookup, handle, or unbranded number. Not a bare `string` |
+| `Ramose.tempid` / `Ramose.Tempid` | `tempid("ada")` — a nominal tempid. `op.tempid` / `tx.tempid` are the same brand |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
 | `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |

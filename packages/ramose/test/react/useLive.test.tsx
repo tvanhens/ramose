@@ -34,9 +34,9 @@ const oneTodo = Ramose.Query.from(Todo).ids().limit(1);
 /** Every pass is a handful of microtasks; a beat is plenty. */
 const settle = (ms = 25) => Bun.sleep(ms);
 
-/** Entity ids as the shape the rows carry — `Eid` is `{ id }`, as data. */
-const ids = (...ns: number[]): readonly Ramose.Eid[] =>
-  ns.map((id) => ({ id }));
+/** `.ids()` rows — `{ id }` with a branded number cell. */
+const ids = (...ns: number[]) =>
+  ns.map((id) => ({ id: id as Ramose.Eid<typeof Todo> }));
 
 const todoWorld = async (n: number) => {
   const conn = await catalogWorld(Todos);

@@ -230,7 +230,7 @@ describe("install → transact → q → pull", () => {
       }),
     );
     expect(report.t).toBeGreaterThan(installed.t);
-    expect(report.txEid.id).toBeGreaterThan(0);
+    expect(report.txEid).toBeGreaterThan(0);
     expect(report.datomCount).toBeGreaterThan(0);
 
     // read-your-writes with no second round trip
@@ -240,7 +240,7 @@ describe("install → transact → q → pull", () => {
     expect(ada.id).toBeGreaterThan(0);
 
     const pulled = await run(
-      report.dbAfter.pull(ada, {
+      report.dbAfter.pull(ada.id, {
         name: User.name,
         age: User.age.optional,
         source: Meta.source,
@@ -259,7 +259,7 @@ describe("install → transact → q → pull", () => {
     expect(pulled!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 
     // the ident-keyed escape hatch
-    const soup = await db.pull(ada, [User.name, User.age] as const);
+    const soup = await db.pull(ada.id, [User.name, User.age] as const);
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
@@ -385,7 +385,7 @@ describe("failures", () => {
     const db = peer.ramose.db("movies", Movies);
     // note: no install() — the overlay knows the catalog, the peer does not
 
-    expect(await db.pull({ id: 1 }, { name: User.name })).toBeNull();
+    expect(await db.pull(1, { name: User.name })).toBeNull();
     expect(await db.query(names)).toEqual([]);
     await peer.dispose();
   });
@@ -456,13 +456,13 @@ describe("failures", () => {
     const rows = await run(dbAfter.query(adaId));
     const ada = rows[0]!;
 
-    expect(await run(dbAfter.pull(ada, { name: User.name, age: User.age }))).toBeNull();
+    expect(await run(dbAfter.pull(ada.id, { name: User.name, age: User.age }))).toBeNull();
     expect(
-      await run(dbAfter.pull(ada, { name: User.name, age: User.age.optional })),
+      await run(dbAfter.pull(ada.id, { name: User.name, age: User.age.optional })),
     ).toEqual({ name: "Ada", age: undefined });
 
     const friends = await run(
-      dbAfter.pull(ada, {
+      dbAfter.pull(ada.id, {
         name: User.name,
         friends: User.friends.select({ name: User.name }),
       }),
@@ -471,7 +471,7 @@ describe("failures", () => {
 
     expect(
       await run(
-        dbAfter.pull(ada, {
+        dbAfter.pull(ada.id, {
           name: User.name,
           bestFriend: User.bestFriend.select({ name: User.name }),
         }),
@@ -479,7 +479,7 @@ describe("failures", () => {
     ).toBeNull();
     expect(
       await run(
-        dbAfter.pull(ada, {
+        dbAfter.pull(ada.id, {
           name: User.name,
           bestFriend: User.bestFriend.optional.select({ name: User.name }),
         }),

@@ -36,13 +36,13 @@ const TodoRowView = ({ row }: { row: TodoRow }) => {
         <input
           type="checkbox"
           checked={row.done}
-          onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+          onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
         />
         <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
           {row.title}
         </span>
       </label>
-      <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
+      <button type="button" onClick={() => void run(deleteTodo(db, row.id))}>
         delete
       </button>
     </li>

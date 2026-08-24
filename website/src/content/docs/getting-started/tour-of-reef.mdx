@@ -150,7 +150,7 @@ The card moves on the local overlay before the POST returns. Then the write reac
 The panel **reads one record** with `usePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#issue-panel-reads"
-  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
   useEffect(() => {
     if (extra === null) return;
     setTitleDraft(extra.title);

@@ -29,7 +29,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | Term | What it means | In the code |
 |---|---|---|
 | <span id="history"></span>**history** | A read-only view that includes facts that were later removed. | [`db.history`](/concepts/time-travel/#history-including-what-was-deleted) |
-| <span id="id"></span><span id="eid"></span>**id** | Every record has a numeric id; every record type exposes it as a field for free. | `Issue.id`, `Eid` (an object `{ id }`) |
+| <span id="id"></span><span id="eid"></span>**id** | Every record has a numeric id; every record type exposes it as a field for free. | `Issue.id`, `Eid` (a branded number) |
 | <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. | `db.install()`, `Server({ databases })` — [Two doors to install the schema](/guides/workspaces/#two-doors-to-install-the-schema) |
 | <span id="issuer-audience"></span>**issuer / audience** | Who signed a token and who it is for; the server checks both. | `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD` — [The token the server verifies](/reference/policy/#the-token-the-server-verifies) |
 | <span id="jwks"></span>**JWKS** | Your sign-in provider's public keys, at a URL, used to verify tokens. | `RAMOSE_JWKS_URL`, `RAMOSE_JWKS_JSON` |

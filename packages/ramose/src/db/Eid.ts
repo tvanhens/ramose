@@ -1,52 +1,45 @@
 /**
  * An entity id, as data.
  *
- * `Eid<C>` over a catalog is `{ readonly id: number }` and nothing else: no
- * methods, no I/O, no catalog object hanging off it. The catalog only exists
- * in the type, as a phantom, so two catalogs' eids do not silently mix and a
- * row can be handed straight to React as a key. Reading an entity is
- * `db.pull(eid, shape)`.
+ * One shape: a branded number. Valid as a React key, a write subject, and a
+ * `db.pull` subject with no cast. The brand is a phantom — the value stays
+ * a plain number.
  *
- * `Eid<N>` over a **namespace** is the row cell `select({ id: N.id })`
- * yields: the raw id *number* the peer answered, branded with the namespace
- * the field belongs to. The brand is a phantom too — the value stays a plain
- * number, so it still works as a React key, a `tx.set(id, …)` subject or a
- * predicate value — but the cells do not mix: a `User` id is not a `Todo`
- * id, and a bare `number` is not a cell. Hand it to the next query
- * (`N.id.is(cell)`) or to `db.pull` with no cast. `Query.from(N)` without
- * `.select` yields the full entity (`id` is `Eid<N>`). `.ids()` — and a
- * select-less pipe / generator that returns the focus var — still yields
- * the wrapped, catalog-branded `{ id }` form.
+ * `Eid<N>` over a **namespace** is the cell `select({ id: N.id })` yields.
+ * A `User` id is not a `Todo` id, and a bare `number` is not a cell.
+ *
+ * `Eid<C>` over a **catalog** is the union of `Eid<N>` for every namespace
+ * in `C` (same as {@link SchemaEid}). Transaction eids and
+ * `principal().eid` use this.
  */
 
 import type { AnySchema } from "./Schema.ts";
 import type { AnyEntity } from "./Entity.ts";
 
-export type Eid<S extends AnySchema | AnyEntity = AnySchema> =
-  [S] extends [AnyEntity]
-    ? number & {
-        /**
-         * Phantom: the namespace this cell came from, never present at
-         * runtime. Required in the type — an optional brand would let any
-         * bare `number` pass for a cell.
-         */
-        readonly _ns: S;
-      }
-    : {
-        readonly id: number;
-        /** Phantom: carries the catalog in the type, never present at runtime. */
-        readonly _catalog?: S;
-      };
+/**
+ * Namespace-branded cell: the raw id the peer answered, typed as belonging
+ * to `N`. Required `_ns` — an optional brand would let any bare `number`
+ * pass for a cell.
+ */
+export type NamespaceEid<N extends AnyEntity> = number & {
+  readonly _ns: N;
+};
 
 /**
  * The namespace-branded cells a catalog's rows can carry: `Eid<N>` for every
- * namespace in `C`. This is what lets a `select({ id: N.id })` cell be a
- * `db.pull` subject with no cast — and what keeps another catalog's cells out.
+ * namespace in `C`. A `select({ id: N.id })` cell is a `db.pull` subject
+ * with no cast; another catalog's cells stay out.
  */
-export type SchemaEid<C extends AnySchema> = Eid<
-  C["entities"][keyof C["entities"]]
->;
+export type SchemaEid<C extends AnySchema> = {
+  [K in keyof C["entities"]]: NamespaceEid<C["entities"][K] & AnyEntity>;
+}[keyof C["entities"]];
 
-/** @internal Query rows and test fixtures wrap raw ids with this. */
-export const makeEid = <C extends AnySchema>(id: number): Eid<C> =>
-  ({ id }) as Eid<C>;
+export type Eid<S extends AnySchema | AnyEntity = AnyEntity> = [S] extends [
+  AnyEntity,
+]
+  ? NamespaceEid<S>
+  : SchemaEid<Extract<S, AnySchema>>;
+
+/** @internal Query rows and reports brand raw ids with this. */
+export const makeEid = <S extends AnySchema | AnyEntity>(id: number): Eid<S> =>
+  id as Eid<S>;

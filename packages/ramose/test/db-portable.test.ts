@@ -236,6 +236,8 @@ describe("the `/db` barrel's public names", () => {
         "Operation",
         "Operations",
         "PrefixHalt",
+        // nominal tempids (#178)
+        "tempid",
         // errors
         "TxRejected",
         "Unavailable",

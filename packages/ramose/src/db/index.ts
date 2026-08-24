@@ -116,7 +116,8 @@ export type {
   TxReport,
 } from "./Db.ts";
 export type { SchemaEid, Eid } from "./Eid.ts";
-export type { LookupRef } from "./idents.ts";
+export type { EntityRef, LookupRef } from "./idents.ts";
+export { tempid, type Tempid } from "./entityArg.ts";
 // the pattern-side types too, so `ramose/react`'s `usePull` can accept
 // exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)
 export type {

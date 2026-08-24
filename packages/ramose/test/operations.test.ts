@@ -27,6 +27,7 @@ import {
   TxRejected,
   Unauthorized,
   txBuilder,
+  tempid,
   type Op,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
@@ -329,12 +330,12 @@ describe("optimistic prefix", () => {
 
     const first = Effect.runPromise(
       db.effect.transact(function* (tx) {
-        const e = yield* tx.entity("new");
+        const e = yield* tx.entity(tx.tempid("new"));
         yield* e.set(User.name, "Ada");
       }),
     );
     await settle();
-    const second = db.run(setName, "new", { name: "Ada Lovelace" });
+    const second = db.run(setName, tempid("new"), { name: "Ada Lovelace" });
     await settle();
     expect(opBodies).toHaveLength(0);
 
@@ -552,6 +553,10 @@ describe("lookup-shaped entity args", () => {
     expect(asLookupRef([User.name, "Ada"])).toEqual([":user/name", "Ada"]);
     expect(lowerEntityArg({ id: 1001 })).toBe(1001);
     expect(lowerEntityArg("tmp-1")).toBe("tmp-1");
+    expect(lowerEntityArg(1001)).toBe(1001);
+    expect(lowerEntityArg({ _tag: "TxHandle", eid: { id: 1001 } })).toBe(1001);
+    expect(lowerEntityArg({ eid: 7, class: "admin" })).toBe(7);
+    expect(lowerEntityArg({ eid: null, class: "admin" })).toBeUndefined();
   });
 
   test("db.run looks up [attr, value] on the overlay and posts the lookup", async () => {
@@ -618,8 +623,8 @@ describe("ref tempid create-and-link", () => {
     const op = asPromiseOp(built.op);
     const ada = op.entity();
     ada.set(User.name, "Ada");
-    ada.set(User.bestFriend, "bea");
-    const bea = op.entity("bea");
+    ada.set(User.bestFriend, op.tempid("bea"));
+    const bea = op.entity(op.tempid("bea"));
     bea.set(User.name, "Bea");
     expect(built.ops()).toEqual([
       [":db/add", "tmp-1", ":user/name", "Ada"],
@@ -639,7 +644,7 @@ describe("ref tempid create-and-link", () => {
     expect(row?.[":user/name"]).toBe("Ada");
   });
 
-  test("a handle in a ref value slot is not unwrapped — use .eid", async () => {
+  test("a handle in a ref value slot lowers to its eid", async () => {
     const built = buildOp({
       schema: Movies,
       db: "movies",
@@ -651,34 +656,15 @@ describe("ref tempid create-and-link", () => {
     });
     const op = asPromiseOp(built.op);
     const other = op.entity();
+    other.set(User.name, "Bea");
     other.set(User.bestFriend, op.self);
-    expect((built.ops()[0] as unknown[])[3]).toEqual(
-      expect.objectContaining({ _tag: "TxHandle" }),
-    );
+    expect((built.ops()[1] as unknown[])[3]).toBe(1001);
 
     const conn = await Connection.create();
     await conn.transact(schemaTx(Movies) as unknown[]);
-    await expect(conn.transact([...built.ops()])).rejects.toThrow(
-      /bad attribute key _tag/,
-    );
-
-    const viaEid = buildOp({
-      schema: Movies,
-      db: "movies",
-      principal: { eid: null, class: "admin", claims: {} },
-      self: 1001,
-      effects: "run",
-      q: () => Effect.succeed([]),
-      pull: () => Effect.succeed(null),
-    });
-    const viaEidOp = asPromiseOp(viaEid.op);
-    const linked = viaEidOp.entity();
-    linked.set(User.name, "Bea");
-    linked.set(User.bestFriend, viaEidOp.self.eid);
-    expect((viaEid.ops()[1] as unknown[])[3]).toBe(1001);
     const expansion = await conn.transact([
       { ":db/id": 1001, ":user/name": "Ada" },
-      ...viaEid.ops(),
+      ...built.ops(),
     ]);
     const beaEid = expansion.tempids["tmp-1"];
     expect(typeof beaEid).toBe("number");

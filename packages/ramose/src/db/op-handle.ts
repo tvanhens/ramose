@@ -19,7 +19,8 @@ import {
 } from "./Operation.ts";
 import { asPromise } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
-import { isTxHandle, txBuilder, type TxHandle } from "./Tx.ts";
+import { lowerEntityArg, tempid } from "./entityArg.ts";
+import { txBuilder, type TxHandle } from "./Tx.ts";
 
 export interface OpHandleOptions {
   readonly schema: AnySchema;
@@ -66,20 +67,14 @@ const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): TxHandle => 
 export const entityRefOf = (
   subject: unknown,
 ): number | string | [string, unknown] => {
-  if (typeof subject === "number" || typeof subject === "string") return subject;
-  if (isTxHandle(subject)) {
-    const eid = subject.eid;
-    if (typeof eid === "number" || typeof eid === "string") return eid;
-    if (Array.isArray(eid) && eid.length === 2 && typeof eid[0] === "string") {
-      return [eid[0], eid[1]];
-    }
-  }
+  const lowered = lowerEntityArg(subject);
+  if (typeof lowered === "number" || typeof lowered === "string") return lowered;
   if (
-    Array.isArray(subject) &&
-    subject.length === 2 &&
-    typeof subject[0] === "string"
+    Array.isArray(lowered) &&
+    lowered.length === 2 &&
+    typeof lowered[0] === "string"
   ) {
-    return [subject[0], subject[1]];
+    return [lowered[0], lowered[1]];
   }
   throw new InvalidRequest({ message: "bad pull subject" });
 };
@@ -200,6 +195,7 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
     principal: op.principal,
     db: op.db,
     entity,
+    tempid,
     set: (e, field, value) => {
       Effect.runSync(op.set(e, field, value));
     },

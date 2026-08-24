@@ -18,7 +18,8 @@ import * as Stream from "effect/Stream";
 import type { EffectDb, EffectOf, EffectReadDb } from "./effect-types.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnySchema } from "./Schema.ts";
-import { type SchemaEid, type Eid, makeEid } from "./Eid.ts";
+import { type Eid, makeEid } from "./Eid.ts";
+import { lowerEntityArg } from "./entityArg.ts";
 import { schemaTx } from "./ensure.ts";
 import { type DbError, InvalidRequest, NotOne } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
@@ -34,7 +35,7 @@ import { asPromise, fromStream } from "./promise.ts";
 import { shareEqualDeep } from "./shareEqualDeep.ts";
 import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
-import type { LookupRef } from "./idents.ts";
+import type { EntityRef } from "./idents.ts";
 import {
   tryLowerQueryObject,
   type AnyQueryObject,
@@ -208,11 +209,11 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
 
   /**
    * Project one entity. `null` when a required field is missing. The subject
-   * is an `Eid<C>`, a namespace-branded row cell (`select({ id: N.id })`),
-   * or a lookup ref.
+   * is the shared {@link EntityRef} vocabulary — a branded eid, `{ id }`
+   * row, tempid, lookup, or unbranded number.
    */
   pull<const P>(
-    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
+    subject: EntityRef<C>,
     pattern: PullPattern<C, P>,
   ): Promise<Pull<C, P> | null>;
 
@@ -225,7 +226,7 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
    * pinned view (`asOf` / `history`) emits once and completes.
    */
   livePull<const P>(
-    subject: Eid<C> | SchemaEid<C> | LookupRef<C>,
+    subject: EntityRef<C>,
     pattern: PullPattern<C, P>,
   ): Subscription<Pull<C, P> | null, DbError>;
 
@@ -268,8 +269,8 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
    * before the first `op.effect`) as a pending layer, and POST the invocation.
    * A contextual operation (`on: Entity`) takes the entity as the second
    * argument. A *branded* cell of the wrong entity is rejected; an unbranded
-   * number and an opaque tempid string are deliberate hatches. Lookups must
-   * use a unique attr of the `on` entity.
+   * number and a nominal `tempid("ada")` are deliberate hatches.
+   * Lookups must use a unique attr of the `on` entity.
    *
    * A schema-less operation runs on any db. An operation bound with
    * `schema:` runs on a db that has at least that catalog's entity keys.
@@ -421,18 +422,7 @@ const runGenerator = (
   });
 
 /** `[User.name, "Ada"]` and `[":user/name", "Ada"]` both lower to the wire form. */
-const lowerSubject = (subject: unknown): unknown => {
-  if (Array.isArray(subject) && subject.length === 2) {
-    const head = subject[0];
-    const ident =
-      typeof head === "object" && head !== null && "ident" in head
-        ? (head as { ident: string }).ident
-        : head;
-    return [ident, subject[1]];
-  }
-  const id = (subject as { id?: unknown } | null)?.id;
-  return typeof id === "number" ? id : subject;
-};
+const lowerSubject = (subject: unknown): unknown => lowerEntityArg(subject);
 
 /** @internal Everything a `Db` and its `ReadDb` views share. */
 const makeRead = <C extends AnySchema>(

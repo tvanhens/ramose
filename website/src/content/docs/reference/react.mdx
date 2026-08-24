@@ -76,10 +76,10 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
 ## usePull
 
 ```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
+  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
 ```
 
-`usePull(db, subject, shape): { rows: Pull | null, error, ticks }` — one record, live. `rows` is the record or `null` (missing, deleted, or a required field hidden from you). `{ id }` inline is fine; hoist the shape.
+`usePull(db, subject, shape): { rows: Pull | null, error, ticks }` — one record, live. `rows` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape.
 
 ## useBasis
 

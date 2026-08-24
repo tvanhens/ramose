@@ -129,7 +129,7 @@ A new record's id is not in the report. Query for it through `report.dbAfter`, o
 
 ```ts
 const who = yield* db.principal();
-const myEid = who.eid?.id;
+const myEid = who.eid;
 ```
 
 A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`. Nothing in your UI has to announce the change.

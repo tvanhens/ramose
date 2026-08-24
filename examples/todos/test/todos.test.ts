@@ -268,7 +268,7 @@ describe("the app's writes move the app's live stream", () => {
     expect(todos.changes).toBeGreaterThan(1);
     expect(todos.error).toBeUndefined();
 
-    const first = { id: added[0]!.id };
+    const first = added[0]!.id;
     await setDone(peer.db, first, true);
     await awaitLive(todos, () => todos.rows?.[0]?.done === true);
     expect(todos.rows!.map((r) => r.done)).toEqual([true]);
@@ -318,7 +318,7 @@ describe("the app's writes move the app's live stream", () => {
     const rows = await report.dbAfter.query(
       Ramose.Query.from(Todo).where({ title: "pull me" }).select({ id: Todo.id }),
     );
-    const row = await pullTodo(peer.db, { id: rows[0]!.id });
+    const row = await pullTodo(peer.db, rows[0]!.id);
     expect(row).toMatchObject({ title: "pull me", done: false });
     expect(row?.createdAt).toBeInstanceOf(Date);
 

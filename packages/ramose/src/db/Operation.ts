@@ -18,7 +18,8 @@ import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AttrAtIdent, EntityRef, LookupRef } from "./idents.ts";
+import { asLookupRef, lowerEntityArg, tempid, type Tempid } from "./entityArg.ts";
+import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
@@ -58,45 +59,20 @@ export type OpField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? TxField<C>
   : { readonly ident: string } | string;
 
-type IdentOfOpField<A> = A extends { readonly ident: infer I extends string }
-  ? I
-  : A extends string
-    ? A
-    : never;
-
-type FieldIsRef<C extends AnySchema, A> = A extends {
-  readonly valueType: "ref";
-}
-  ? true
-  : IdentOfOpField<A> extends infer I
-    ? I extends string
-      ? AttrAtIdent<C, I>["valueType"] extends "ref"
-        ? true
-        : false
-      : false
-    : false;
-
-/** Forms the transactor accepts on a ref-typed value (tempid / handle / lookup). */
-type RefWriteValue<C extends AnySchema> =
-  | TxHandle<C>
-  | OpHandle<C>
-  | string
-  | LookupRef<C>;
-
 type FieldRefValue<C extends AnySchema, A> = A extends {
   readonly schema: { readonly Type: infer T };
 }
-  ? T | (A extends { readonly valueType: "ref" } ? RefWriteValue<C> : never)
+  ? T | (A extends { readonly valueType: "ref" } ? EntityRef<C, AnyEntity, TxHandle<C> | OpHandle<C>> : never)
   : unknown;
 
 /**
  * Value correlated to an {@link OpField}. Delegates to {@link TxValue}
- * on a concrete catalog; a ref-typed field also accepts a handle, tempid
- * string, or lookup (the transactor's ref-value forms). Against `AnySchema`,
- * a field ref uses its Schema type; an ident string is `unknown`.
+ * on a concrete catalog — ref fields use the shared {@link EntityRef}
+ * vocabulary (no bare `string`). Against `AnySchema`, a field ref uses
+ * its Schema type; an ident string is `unknown`.
  */
 export type OpValue<C extends AnySchema, A> = [ConcreteCatalog<C>] extends [true]
-  ? TxValue<C, A> | (FieldIsRef<C, A> extends true ? RefWriteValue<C> : never)
+  ? TxValue<C, A, TxHandle<C> | OpHandle<C>>
   : FieldRefValue<C, A>;
 
 /**
@@ -110,34 +86,17 @@ type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
     ? PutSubject<C, E, TxHandle<C> | OpHandle<C>>
     : OpEntity<C>;
 
-type OnIdent<N extends AnyEntity> = `:${N["ns"]}/${string}`;
-
-/** Unique lookups whose ident is on `N` (`:issue/…`, not `:comment/…`). */
-type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
-  LookupRef<C>,
-  | readonly [OnIdent<N>, unknown]
-  | readonly [{ readonly ident: OnIdent<N> }, unknown]
->;
-
 /**
- * `db.run`'s contextual entity.
- *
- * A *branded* cell of the wrong entity is rejected (`Eid<Comment>` is not
- * an `Eid<Issue>`). The same holds for a branded `{ id }` row
- * (`{ id: Eid<Comment> }` is not a user). Deliberate hatches: an unbranded
- * `number`, and an opaque tempid `string` (the queued-contextual path remaps
- * it after the ack). Lookups are narrowed to a unique attr of the `on`
- * entity. An unbranded `.ids()` `{ id: number }` is not a branded cell —
- * pass `.id` through the number hatch.
+ * `db.run`'s contextual entity — the shared {@link EntityRef} vocabulary,
+ * narrowed to `N`. A branded cell of the wrong entity is rejected. The
+ * unbranded-number hatch remains (mint-by-id). Bare `string` does not —
+ * pass {@link Tempid} (`op.tempid("ada")` / `tempid("ada")`).
  */
-export type RunEntity<C extends AnySchema, N extends AnyEntity> =
-  | Eid<N>
-  | { readonly id: Eid<N> }
-  | (number & { readonly _ns?: never })
-  | string
-  | LookupRefFor<C, N>
-  | TxHandle<C>
-  | OpHandle<C>;
+export type RunEntity<C extends AnySchema, N extends AnyEntity> = EntityRef<
+  C,
+  N,
+  TxHandle<C> | OpHandle<C>
+>;
 
 /**
  * Distributes over a union `C` so every member must cover `OC`. A
@@ -219,7 +178,7 @@ export type EffectThunk<A = unknown> = (
  */
 export interface OpHandle<C extends AnySchema = AnySchema> {
   readonly _tag: "TxHandle";
-  readonly eid: EntityRef<C>;
+  readonly eid: UnbrandedId | Tempid | LookupRef<C>;
   set<const A extends OpField<C>>(field: A, value: OpValue<C, A>): void;
   remove<const A extends OpField<C>>(field: A, value?: OpValue<C, A>): void;
   delete(): void;
@@ -238,10 +197,10 @@ export interface Op<
   /**
    * The entity a contextual operation is bound to (`on: Entity`).
    * Absent on a non-contextual operation. `eid` is the `on` cell — an
-   * {@link Eid} or a tempid string when `db.run` was given the string hatch.
+   * {@link Eid} or a {@link Tempid} when `db.run` was given a named tempid.
    */
   readonly self: [N] extends [AnyEntity]
-    ? OpHandle<C> & { readonly eid: Eid<N> | string }
+    ? Omit<OpHandle<C>, "eid"> & { readonly eid: Eid<N> | Tempid }
     : undefined;
   /** The authenticated caller. On the client this is `db.principal()`. */
   readonly principal: OpPrincipal;
@@ -250,6 +209,8 @@ export interface Op<
 
   entity(): OpHandle<C>;
   entity(id: OpEntity<C>): OpHandle<C>;
+  /** Brand a string as a named tempid. Not a bare `string`. */
+  tempid(name: string): Tempid;
   set<const A extends OpField<C>>(
     e: OpEntity<C>,
     field: A,
@@ -477,44 +438,7 @@ export interface OperationInvocation {
   readonly clientOpId: string;
 }
 
-/**
- * `[User.name, "Ada"]` / `[":user/name", "Ada"]` → the wire lookup
- * `[":user/name", "Ada"]`. `undefined` when `value` is not a lookup.
- */
-export const asLookupRef = (
-  value: unknown,
-): readonly [string, unknown] | undefined => {
-  if (!Array.isArray(value) || value.length !== 2) return undefined;
-  const head = value[0];
-  const ident =
-    typeof head === "string"
-      ? head
-      : typeof head === "object" &&
-          head !== null &&
-          "ident" in head &&
-          typeof (head as { ident: unknown }).ident === "string"
-        ? (head as { ident: string }).ident
-        : undefined;
-  if (ident === undefined || ident[0] !== ":") return undefined;
-  return [ident, value[1]];
-};
-
-/** Lower a `db.run` entity argument to an eid, tempid, lookup, or `undefined`. */
-export const lowerEntityArg = (entity: unknown): unknown => {
-  if (entity === undefined || entity === null) return undefined;
-  if (typeof entity === "number" || typeof entity === "string") return entity;
-  const lookup = asLookupRef(entity);
-  if (lookup !== undefined) return lookup;
-  if (isEntityLike(entity)) return entity.id;
-  if (isTxHandle(entity)) return lowerEntityArg(entity.eid);
-  return entity;
-};
-
-const isEntityLike = (value: unknown): value is { readonly id: number } =>
-  typeof value === "object" &&
-  value !== null &&
-  "id" in value &&
-  typeof value.id === "number";
+export { asLookupRef, lowerEntityArg } from "./entityArg.ts";
 
 /**
  * Replace entity handles and tempid strings with resolved eids so an
