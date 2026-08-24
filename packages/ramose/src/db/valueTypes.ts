@@ -94,12 +94,8 @@ type PairableType<S extends Schema.Top, VT extends DbValueType> =
  */
 type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
   S extends RamoseVt<infer V>
-    ? [V] extends [VT]
-      ? [VT] extends [V]
-        ? PairableType<S, VT>
-        : S & {
-            readonly "stored(schema, vt): already branded — pass the unbranded Schema": true;
-          }
+    ? [V, VT] extends [VT, V]
+      ? PairableType<S, VT>
       : S & {
           readonly "stored(schema, vt): already branded — pass the unbranded Schema": true;
         }
