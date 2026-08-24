@@ -237,6 +237,84 @@ describe("Ramose.Server", () => {
     }),
   );
 
+  test.provider("hatch writes must match the Worker; policy + all warns and still deploys", (stack) =>
+    Effect.gen(function* () {
+      const hatch = (env: Record<string, unknown>) => ({
+        Type: "Cloudflare.Worker",
+        url: peerUrl,
+        workerName: "ramose-peer",
+        Props: {
+          main: workerEntry(),
+          env: {
+            STORE: { Type: "Cloudflare.R2.Bucket" },
+            TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
+            REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+            ...env,
+          },
+        },
+      });
+      const missing = yield* Effect.result(
+        stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, writes: "operations" })),
+      );
+      expect(missing._tag).toBe("Failure");
+      expect(String(missing)).toMatch(/Worker has no RAMOSE_WRITES/);
+
+      const diverged = yield* Effect.result(
+        stack.deploy(
+          Server("Ramose", {
+            worker: hatch({ RAMOSE_WRITES: "operations" }),
+            probe: false,
+            writes: "all",
+          }),
+        ),
+      );
+      expect(diverged._tag).toBe("Failure");
+      expect(String(diverged)).toMatch(/diverge on RAMOSE_WRITES/);
+
+      const matched = yield* stack.deploy(
+        Server("Ramose", {
+          worker: hatch({ RAMOSE_WRITES: "operations" }),
+          probe: false,
+          writes: "operations",
+        }),
+      );
+      expect(matched.url).toBe(peerUrl);
+      yield* stack.destroy();
+
+      const warned: string[] = [];
+      const warn = console.warn;
+      console.warn = (message: unknown) => {
+        if (typeof message === "string") warned.push(message);
+      };
+      try {
+        const open = yield* stack.deploy(
+          Server("Ramose", {
+            worker: hatch({
+              RAMOSE_POLICY: '{"v":1}',
+              RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+              RAMOSE_JWT_ISS: "https://auth.acme.example",
+              RAMOSE_JWT_AUD: "ramose:peer:test",
+              RAMOSE_WRITES: "all",
+            }),
+            probe: false,
+            writes: "all",
+            auth: {
+              policy: '{"v":1}',
+              jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+              issuers: "https://auth.acme.example",
+              aud: "ramose:peer:test",
+            },
+          }),
+        );
+        expect(open.url).toBe(peerUrl);
+      } finally {
+        console.warn = warn;
+      }
+      expect(warned.some((line) => line.includes('writes is "all" while a policy is installed'))).toBe(true);
+      yield* stack.destroy();
+    }),
+  );
+
   test.provider("a peer that is down fails the deploy", (stack) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(

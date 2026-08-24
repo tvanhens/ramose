@@ -1,12 +1,15 @@
 /**
  * Peer `/op`: resolve, decode, contextual entity checks, idempotent replay,
- * and `writes: "operations"` enforcement.
+ * and the `writes: "operations"` default (raw `/transact` closed for
+ * app-class tokens).
  */
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import type { TelemetryEvent } from "../../src/internal/core/telemetry.ts";
+import { setTelemetrySink } from "../../src/internal/core/telemetry.ts";
 import { Operation, Operations } from "../../src/db/Operation.ts";
 import { schemaTx } from "../../src/db/ensure.ts";
 import { Movie, Movies, User } from "../db/fixture.ts";
@@ -198,7 +201,7 @@ describe("POST /db/:name/op", () => {
 
 });
 
-describe('writes: "operations"', () => {
+describe('writes: "operations" is the peer default', () => {
   const ISS = "https://auth.acme.test";
   const AUD = "ramose:peer:test";
   let sign: (
@@ -259,10 +262,13 @@ describe('writes: "operations"', () => {
     RAMOSE_JWT_AUD: AUD,
   });
 
-  test("an app-class token cannot POST /transact; admin still can; /op stays open", async () => {
+  afterEach(() => {
+    setTelemetrySink(undefined);
+  });
+
+  test("no writes / no RAMOSE_WRITES: app-class token is denied on /transact; /op works; admin and the seed token keep /transact", async () => {
     const peer = makePeer("movies", {
       operations,
-      writes: "operations",
       env: envOf(),
     });
     await peer.seed(schemaTx(Movies) as unknown[]);
@@ -288,6 +294,66 @@ describe('writes: "operations"', () => {
       post({ name: "user/create", input: { name: "Bea" }, clientOpId: "op-bea" }, member),
     );
     expect(viaOp.status).toBe(200);
+
+    // `$token` is not admin and is not an app class — seed/install still
+    // reaches /transact (ensure of an already-deployed catalog is a no-op).
+    const seeded = makePeer("movies", {
+      operations,
+      env: { ...envOf(), RAMOSE_TOKEN: "s3cret" },
+    });
+    await seeded.seed(schemaTx(Movies) as unknown[]);
+    const asSeed = await seeded.json(
+      "/db/movies/transact",
+      post({ tx: schemaTx(Movies) }, "s3cret"),
+    );
+    expect(asSeed.status).toBe(200);
+    expect(asSeed.body.code).not.toBe("operations");
+    peer.close();
+    seeded.close();
+  });
+
+  test('writes: "all" or RAMOSE_WRITES=all restores raw /transact for app tokens', async () => {
+    const member = await token("movies", "member");
+    for (const options of [
+      { operations, writes: "all" as const, env: envOf() },
+      { operations, env: { ...envOf(), RAMOSE_WRITES: "all" } },
+    ]) {
+      const peer = makePeer("movies", options);
+      await peer.seed(schemaTx(Movies) as unknown[]);
+      await peer.seed([{ ":user/name": "user_ada" }]);
+      const raw = await peer.json(
+        "/db/movies/transact",
+        post({ tx: [{ ":movie/title": "raw-ok" }] }, member),
+      );
+      expect(raw.status).toBe(200);
+      peer.close();
+    }
+  });
+
+  test("policy + writes: all emits writes.all-with-policy once, and does not fail the request", async () => {
+    const events: TelemetryEvent[] = [];
+    setTelemetrySink((e) => events.push(e));
+    const peer = makePeer("movies", {
+      operations,
+      env: { ...envOf(), RAMOSE_WRITES: "all" },
+    });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const member = await token("movies", "member");
+    const first = await peer.json(
+      "/db/movies/transact",
+      post({ tx: [{ ":movie/title": "open" }] }, member),
+    );
+    expect(first.status).toBe(200);
+    const warned = events.filter((e) => e.event === "writes.all-with-policy");
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.level).toBe("warn");
+    expect(String(warned[0]?.message)).toMatch(/raw \/transact stays open/);
+    const second = await peer.json(
+      "/db/movies/query",
+      post({ query: { find: ["?t"], where: [["?e", ":movie/title", "?t"]] } }, member),
+    );
+    expect(second.status).toBe(200);
+    expect(events.filter((e) => e.event === "writes.all-with-policy")).toHaveLength(1);
     peer.close();
   });
 });

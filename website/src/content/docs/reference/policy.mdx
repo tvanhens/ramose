@@ -240,6 +240,7 @@ export const Server = Ramose.Server("Ramose", {
 | `maxTtl` | `RAMOSE_JWT_MAX_TTL` | cap on token lifetime, seconds (default 900) |
 | `allowedOrigins` | `RAMOSE_ALLOWED_ORIGINS` | CORS list; honoured only once a policy is set |
 | `internalSecret` | `RAMOSE_INTERNAL_SECRET` | Worker-to-writer gate; minted for you when unset and a policy is set |
+| `writes` (Server prop) | `RAMOSE_WRITES` | `"operations"` (default) closes raw `/transact` for app-class tokens; `"all"` is the opt-out. See [The server](/reference/server/) |
 
 `jwt: { issuer, audience, ttl }` fills `issuers`, `aud` and `maxTtl` from one value. Which mode a server runs in — open, shared token, or policy — is decided by `RAMOSE_POLICY` and `RAMOSE_TOKEN`: see [The three server modes](/guides/permissions/#the-three-server-modes).
 

@@ -14,6 +14,7 @@ You only need this if you are not using the TypeScript client. Routes are per da
 
 ```
 GET  /health                                              → { ok, service: "ramose", stage, time }   (no token)
+POST /db/:name/op         { name, entity?, input, clientOpId? } → { t, txEid, tempids, datoms, clientOpId, output }
 POST /db/:name/transact   { tx, clientTxId? }             → { t, txEid, tempids, datoms, clientTxId? }
 POST /db/:name/query      { query, inputs?, asOf?, history?, explain? } → { t, root, result }
 POST /db/:name/pull       { eid, pattern, asOf?, history? } → { t, result }
@@ -26,7 +27,8 @@ POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only 
 | route | notes |
 | --- | --- |
 | `/health` | liveness; needs no token even under a policy |
-| `/transact` | the only write; every key in the body is a full field name (`:todo/title`). Optional `clientTxId` is a client-chosen id **for that writer**: the same id from the same principal returns the original reply and does not write a second time; a different principal using the same id is a new write (or a denial), not a replay of someone else's filtered ack. The response `datoms` is the facts that writer may read (not a count, and not the raw log) — **breaking** vs an earlier count. The TypeScript client still exposes `datomCount` as that list's length |
+| `/op` | the app write path (`db.run`). Body is `{ name, entity?, input, clientOpId? }`. Optional `clientOpId` replays the original ack for that principal |
+| `/transact` | raw write, **opt-in**. Closed for app-class tokens by default (`writes: "operations"` / unset `RAMOSE_WRITES`); admin and the seed token keep it. Set `writes: "all"` (or `RAMOSE_WRITES=all`) to restore it for app tokens. Every key in the body is a full field name (`:todo/title`). Optional `clientTxId` is a client-chosen id **for that writer**: the same id from the same principal returns the original reply and does not write a second time; a different principal using the same id is a new write (or a denial), not a replay of someone else's filtered ack. The response `datoms` is the facts that writer may read (not a count, and not the raw log) — **breaking** vs an earlier count. The TypeScript client still exposes `datomCount` as that list's length |
 | `/query`, `/pull` | reads at the current version, or at `asOf` / with `history`. `t` is the version read at; `/query` also returns `root`, the newest snapshot behind it, and `explain: true` adds the plan (admin only) |
 | `/entity` | every field of one record, at the current version or at `?asOf=`. There is no `history` on this route |
 | `/info` | `t` and `principal` for everyone; admins also get writer, read-copy and Worker internals |
@@ -93,6 +95,7 @@ failure that appears only once deployed, since local runs have no such limit.
 
 | var | default | effect |
 | --- | --- | --- |
+| `RAMOSE_WRITES` | `operations` | `"operations"` (the default, including unset) rejects raw `POST /transact` for app-class tokens; admin and the seed token keep it. App writes go through `POST /op`. `"all"` is the explicit opt-out. `Server({ writes })` binds this key on the owned Worker; on the hatch, a passed `writes` must match the Worker or the deploy fails. A policy plus `"all"` logs a warning — raw `/transact` is still open |
 | `RAMOSE_MAX_BATCH` | 0 (unbounded) | writes per storage flush; `1` turns batching off (benchmarks only) |
 | `RAMOSE_INDEX_TX_THRESHOLD` | 500 | take a snapshot after this many writes… |
 | `RAMOSE_INDEX_INTERVAL_MS` | 5000 | …or after this long. Lower both to keep the not-yet-indexed tail (and read-copy memory) small |

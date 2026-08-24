@@ -59,7 +59,11 @@ export interface RamoseEnv {
   RAMOSE_QUERY_MAX_CELLS?: string;
   /** structured log level for all components: debug | info | warn | error (default info) */
   RAMOSE_LOG_LEVEL?: string;
-  /** `"operations"` closes raw `/transact` for app-class tokens (admin keeps it). */
+  /**
+   * Who may POST raw `/transact`. `"operations"` (the default, including
+   * unset) closes it for app-class tokens; admin and the seed token keep
+   * it. `"all"` is the explicit opt-out.
+   */
   RAMOSE_WRITES?: string;
   /** default replica location hint: wnam|enam|…|auto (auto = colo→hint); unset = continent default */
   RAMOSE_REPLICA_HINT?: string;

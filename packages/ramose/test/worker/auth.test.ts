@@ -87,6 +87,10 @@ const policyEnv = (extra: Record<string, string | undefined> = {}) => ({
   RAMOSE_JWKS_JSON: JWKS,
   RAMOSE_JWT_ISS: ISS,
   RAMOSE_JWT_AUD: AUD,
+  // These tests exercise policy on raw `/transact`. The peer default is
+  // now `"operations"` — opt back into `"all"` so a denied write is still
+  // `code: "policy"`, not `code: "operations"`.
+  RAMOSE_WRITES: "all",
   ...extra,
 });
 

@@ -136,7 +136,7 @@ On the explicit-Worker hatch, still pass `auth` / `token` on Server. Server comp
 
 | name | what it is |
 | --- | --- |
-| `Ramose.Server(id, props)` | owns the peer (or validates an explicit `worker:` hatch). Props: `databases?` (catalog seeder), `storage?`, `main?`, `env?`, `name?`, `dev?`, `peer?`, `routes?`, `worker?` (hatch), `url?`, `token?` (binds `RAMOSE_TOKEN`), `auth?` (`policy`, `jwt`, `jwksUrl`, … — the source of truth), `probe?`. Outputs `{ url, workerName, token, seeded }`. Delete is a no-op. |
+| `Ramose.Server(id, props)` | owns the peer (or validates an explicit `worker:` hatch). Props: `databases?` (catalog seeder), `storage?`, `main?`, `env?`, `name?`, `dev?`, `peer?`, `routes?`, `worker?` (hatch), `url?`, `token?` (binds `RAMOSE_TOKEN`), `auth?` (`policy`, `jwt`, `jwksUrl`, … — the source of truth), `writes?` (`"operations"` is the default; `"all"` restores raw `/transact` for app tokens and binds `RAMOSE_WRITES`), `probe?`. Outputs `{ url, workerName, token, seeded }`. Delete is a no-op. |
 | `Ramose.Database(id, props)` | standalone catalog install for runtime-provisioned names (Reef). Props: `server`, `schema`, `name?`. Outputs `{ name, server, t }`. Known catalogs belong on `Server({ databases })`. |
 | `Ramose.Databases(server)` | the **capability** ([glossary](/concepts/glossary/#capability)): a server-side client (`q`, `transact` / `run`, `install` — no `live` / `livePull`). Read-only is `Ramose.asRead(db)`. |
 | `Ramose.layer` | one transport: service binding when the host Worker has one, HTTPS otherwise |

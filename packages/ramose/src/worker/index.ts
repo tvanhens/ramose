@@ -65,6 +65,31 @@ const peerMetrics = {
   aeWrites: 0,
 };
 let levelApplied = false;
+const writesWarned = new Set<string>();
+
+/** `"operations"` is the peer default; `"all"` is the explicit opt-out. */
+export const resolveWrites = (
+  writes: ServerOptions["writes"],
+  envWrites: string | undefined,
+): "all" | "operations" => writes ?? (envWrites === "all" ? "all" : "operations");
+
+/** Test hook: forget the policy + writes: "all" warning. */
+export const clearWritesWarning = (): void => {
+  writesWarned.clear();
+};
+
+const WRITES_ALL_POLICY_EVENT = "writes.all-with-policy";
+
+function warnWritesAll(env: RamoseEnv, writes: "all" | "operations"): void {
+  if (writes !== "all" || !authState(env).configured) return;
+  const key = env.RAMOSE_POLICY ?? "";
+  if (writesWarned.has(key)) return;
+  writesWarned.add(key);
+  plog.warn(WRITES_ALL_POLICY_EVENT, {
+    message:
+      'writes is "all" while a policy is installed — raw /transact stays open for app-class tokens',
+  });
+}
 
 /**
  * Every attribute a pull pattern names that this database's schema does not
@@ -251,14 +276,14 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   const adminOnly = () => {
     if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
   };
-  const writes =
-    peer.writes ??
-    (env.RAMOSE_WRITES === "operations" ? "operations" : "all");
+  const writes = resolveWrites(peer.writes, env.RAMOSE_WRITES);
+  warnWritesAll(env, writes);
   if (
     writes === "operations" &&
     rest === "/transact" &&
     request.method === "POST" &&
-    !isAdmin(principal)
+    !isAdmin(principal) &&
+    !isTokenOnly(principal)
   ) {
     throw new Unauthorized({
       status: 403,
@@ -561,7 +586,9 @@ const runFetch = (
 
 /**
  * Build a peer Worker over a bundled operations registry.
- * `writes: "operations"` rejects raw `/transact` for non-admin tokens.
+ * Raw `/transact` is closed for app-class tokens by default (`writes:
+ * "operations"` / unset `RAMOSE_WRITES`). `"all"` is the explicit opt-out.
+ * Admin and the seed token (`$token`) keep `/transact`.
  */
 export const createServer = (options: ServerOptions = {}) => ({
   async fetch(request: Request, env: RamoseEnv, _ctx?: ExecutionContext): Promise<Response> {

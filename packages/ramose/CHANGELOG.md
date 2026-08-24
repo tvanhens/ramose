@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### `writes: "operations"` is the peer default (part of #173, tracker #205)
+
+Raw `POST /db/:name/transact` is closed for app-class tokens unless you
+opt out. The previous default was `"all"` (raw `/transact` open) unless
+`RAMOSE_WRITES` was exactly `"operations"`. Existing deploys that relied
+on raw `/transact` for app tokens need `Server({ writes: "all" })` or
+`RAMOSE_WRITES=all`. Admin tokens and the seed token (`$token` /
+`RAMOSE_TOKEN` under a policy) still reach `/transact`. App writes go
+through `POST /op` (`db.run`).
+
+`Server({ writes })` binds `RAMOSE_WRITES` on the owned Worker. On the
+`worker:` hatch, a passed `writes` must match the Worker env or the
+deploy fails — a silently-ignored `writes` prop is gone. The ignored
+`operations?: unknown` Server prop is deleted: consuming a registry
+here without injecting it into `ramose/worker` is #172.
+
+A policy plus `writes: "all"` logs a warning (deploy-time and at
+startup). It does not fail the deploy.
+
+Reef keeps the new default. Admin-class JWTs still install via
+`/transact`; app mutations already go through the operations registry.
+
 ### Server auth is one source of truth (part of #182, tracker #205)
 
 `Server({ auth, token })` produces the Worker env on the owned form
@@ -10,7 +32,8 @@ Effect-valued JWKS URL and origins pass through, so Reef can stay on this
 path. On the `worker:` hatch, `auth` / `token` are compared to the Worker
 env and the deploy fails on divergence — including a policy that never
 reaches the Worker as `RAMOSE_POLICY`. Missing verifier fields still fail
-`checkAuth`. `writes` / `operations` injection is still #173.
+`checkAuth`. `writes` now lowers the same way (`RAMOSE_WRITES`); the
+`operations` registry prop is deleted (see #173).
 
 ### `Ramose.Server` owns the peer (part of #203, tracker #205)
 

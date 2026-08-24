@@ -30,7 +30,7 @@ mock.module("cloudflare:workers", () => ({
 }));
 
 const { TransactorDO } = await import("../../src/internal/transactor/transactor-do.ts");
-const { createServer } = await import("../../src/worker/index.ts");
+const { createServer, clearWritesWarning } = await import("../../src/worker/index.ts");
 import type { AnyOperations } from "../../src/db/Operation.ts";
 
 /** `DurableObjectState`, as much of it as the Transactor shell touches. */
@@ -80,6 +80,7 @@ export function makePeer(dbName: string, options: ServerOptions = {}): Peer {
   clearAuthCache();
   clearBasisCache();
   clearSegmentSources();
+  clearWritesWarning();
 
   const bucket = new MemoryBucket();
   const sqlite = new Database(":memory:");
