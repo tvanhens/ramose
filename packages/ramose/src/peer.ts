@@ -18,10 +18,10 @@ import { workerEntry } from "./workerEntry.ts";
  * Compatibility date and flags every Ramose peer Worker is deployed with.
  * One value — do not copy a date into a stack file.
  */
-export const PEER_COMPAT = {
+export const PEER_COMPAT: { date: string; flags: Array<"nodejs_compat"> } = {
   date: "2026-03-17",
   flags: ["nodejs_compat"],
-} as const satisfies { date: string; flags: ReadonlyArray<"nodejs_compat"> };
+};
 
 /** Env keys the peer Worker and both DO classes read. */
 export const PEER_BINDINGS = {
@@ -46,7 +46,7 @@ export const PEER_DEFAULTS = {
   worker: "Peer",
 } as const;
 
-export type PeerStorage = string | Bucket | Effect.Effect<Bucket, unknown, never>;
+export type PeerStorage = string | Bucket | Effect.Effect<Bucket, unknown, unknown>;
 
 export type OwnedPeerOptions = {
   /** R2 bucket, or the logical id to declare. @default `"Store"` */
@@ -162,43 +162,34 @@ export const validatePeerWiring = (worker: unknown): string | undefined => {
   return undefined;
 };
 
-const yieldStorage = (
-  storage: PeerStorage | undefined,
-): Effect.Effect<Bucket, unknown, never> => {
-  if (storage === undefined) {
-    return Cloudflare.R2.Bucket(PEER_DEFAULTS.storage) as Effect.Effect<Bucket, unknown, never>;
-  }
-  if (typeof storage === "string") {
-    return Cloudflare.R2.Bucket(storage) as Effect.Effect<Bucket, unknown, never>;
-  }
-  if (Effect.isEffect(storage)) return storage;
-  return Effect.succeed(storage);
+const storageDecl = (storage: PeerStorage | undefined) => {
+  if (storage === undefined) return Cloudflare.R2.Bucket(PEER_DEFAULTS.storage);
+  if (typeof storage === "string") return Cloudflare.R2.Bucket(storage);
+  return storage;
 };
 
 /**
  * Declare the R2 bucket, both DO classes, and the peer Worker. The caller
- * `yield*`s this from Server's init so Alchemy tracks the dependencies.
+ * `yield*`s this from Server's init so Alchemy tracks the dependencies
+ * through the Worker's env (the same pattern as a hand-written stack).
  */
 export const declareOwnedPeer = (options: OwnedPeerOptions & {
   readonly authEnv?: Record<string, unknown> | undefined;
 }) =>
   Effect.gen(function* () {
-    const store = yield* yieldStorage(options.storage);
-    const transactor = yield* Cloudflare.DurableObject(PEER_DO_CLASSES.transactor, {
-      className: PEER_DO_CLASSES.transactor,
-    });
-    const replica = yield* Cloudflare.DurableObject(PEER_DO_CLASSES.replica, {
-      className: PEER_DO_CLASSES.replica,
-    });
     const worker = yield* Cloudflare.Worker(options.peer ?? PEER_DEFAULTS.worker, {
       main: options.main ?? workerEntry(),
       compatibility: PEER_COMPAT,
       ...(options.name !== undefined ? { name: options.name } : {}),
       ...(options.dev !== undefined ? { dev: options.dev } : {}),
       env: {
-        [PEER_BINDINGS.store]: store,
-        [PEER_BINDINGS.transactor]: transactor,
-        [PEER_BINDINGS.replica]: replica,
+        [PEER_BINDINGS.store]: storageDecl(options.storage),
+        [PEER_BINDINGS.transactor]: Cloudflare.DurableObject(PEER_DO_CLASSES.transactor, {
+          className: PEER_DO_CLASSES.transactor,
+        }),
+        [PEER_BINDINGS.replica]: Cloudflare.DurableObject(PEER_DO_CLASSES.replica, {
+          className: PEER_DO_CLASSES.replica,
+        }),
         ...options.authEnv,
         ...options.env,
       },

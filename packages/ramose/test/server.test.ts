@@ -51,18 +51,13 @@ describe("identity", () => {
 });
 
 describe("a server has no database name", () => {
-  test("`databases` is the seeder, not a single name", () => {
-    type NameIsARequiredProp = "name" extends keyof ServerProps
-      ? ServerProps["name"] extends string
-        ? true
-        : false
-      : false;
-    const nameIsARequiredProp: NameIsARequiredProp = false;
-    expect(nameIsARequiredProp).toBe(false);
-
+  test("`databases` is the seeder; `name` is an optional Worker name", () => {
     type HasDatabases = "databases" extends keyof ServerProps ? true : false;
     const hasDatabases: HasDatabases = true;
     expect(hasDatabases).toBe(true);
+
+    const workerName: ServerProps["name"] = undefined;
+    expect(workerName).toBeUndefined();
   });
 
   test("the attributes are url / workerName / token / seeded — no name, no databaseUrl", () => {
