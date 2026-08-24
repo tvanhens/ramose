@@ -83,9 +83,29 @@ describe("queryAstKey", () => {
     expect(liveSubscriptionKey(view, a)).toBe(liveSubscriptionKey(view, b));
   });
 
-  test("orderBy between two where() calls blocks sorted-equality sharing", () => {
-    const a = Query.from(Todo).where({ done: false }).orderBy(Todo.rank).where({ rank: 3 });
-    const b = Query.from(Todo).where({ rank: 3 }).orderBy(Todo.rank).where({ done: false });
+  test("orderBy between two filters blocks sorted-equality sharing", () => {
+    // Fluent `.where` after `.orderBy` cannot lower (default select is
+    // inserted before orderBy). Pipe keeps both filters as clauses, and
+    // the orderBy in the middle stops applyEq from re-sorting them.
+    const a = Query.q(() =>
+      pipe(
+        Query.entities(Todo),
+        Query.is(Todo.done, false),
+        Query.orderBy(Todo.rank),
+        Query.is(Todo.rank, 3),
+        Query.select({ id: Todo.id }),
+      ),
+    );
+    const b = Query.q(() =>
+      pipe(
+        Query.entities(Todo),
+        Query.is(Todo.rank, 3),
+        Query.orderBy(Todo.rank),
+        Query.is(Todo.done, false),
+        Query.select({ id: Todo.id }),
+      ),
+    );
+    expect(queryAstKey(a)).not.toMatch(/^\0error:/);
     expect(queryAstKey(a)).not.toBe(queryAstKey(b));
   });
 
