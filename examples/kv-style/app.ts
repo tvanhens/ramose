@@ -138,8 +138,8 @@ export const App = Cloudflare.Worker(
         // enddocs:error-to-http
       ),
     };
+  // docs:worker-layer
   }).pipe(
-    // docs:worker-layer
     Effect.provide(Ramose.layer),
     // enddocs:worker-layer
   ),

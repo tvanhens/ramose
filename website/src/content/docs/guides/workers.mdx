@@ -21,6 +21,7 @@ export const App = Cloudflare.Worker(
     // The binding *is* the client. One `Databases`, bound once at init.
     const ramose = yield* Ramose.Databases(Server);
 
+  }).pipe(
     Effect.provide(Ramose.layer),
 ```
 
