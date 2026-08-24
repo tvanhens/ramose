@@ -20,9 +20,9 @@ import type { SchemaEid, Eid } from "./Eid.ts";
 import type { LookupRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
-  OpCatalogFitsDb,
   OpReport,
   Operation,
+  RunArg,
   RunEntity,
 } from "./Operation.ts";
 import type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
@@ -78,11 +78,11 @@ export interface EffectDb<C extends AnySchema = AnySchema>
 
   run<I, O, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, undefined, OC>,
-    input: OpCatalogFitsDb<C, OC> extends true ? I : never,
+    input: RunArg<C, OC, I>,
   ): Effect.Effect<OpReport<O, C>, DbError>;
   run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
-    entity: OpCatalogFitsDb<C, OC> extends true ? RunEntity<C, N> : never,
+    entity: RunArg<C, OC, RunEntity<C, N>>,
     input: I,
   ): Effect.Effect<OpReport<O, C>, DbError>;
 }

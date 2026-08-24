@@ -23,6 +23,7 @@ import {
   Operation,
   Query,
   Schema as DbSchema,
+  merge,
 } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
@@ -106,6 +107,7 @@ type _writesHandle = Expect<
   const b = op.entity();
   a.set(User.bestFriend, b);
   a.set(User.bestFriend, b.eid);
+  a.set(User.bestFriend, "friend");
   a.set(User.friends, b);
   // @ts-expect-error name is a string, not a handle
   a.set(User.name, b);
@@ -173,8 +175,14 @@ db.run(setUserName, 1001, { name: "Ada" });
 db.run(setUserName, "tmp-1", { name: "Ada" });
 db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
 db.run(setUserName, [":user/name", "Ada"] as const, { name: "Ada" });
-declare const idRow: { readonly id: number };
-db.run(setUserName, idRow, { name: "Ada" });
+declare const userRow: { readonly id: Eid<typeof User> };
+db.run(setUserName, userRow, { name: "Ada" });
+declare const idsRow: { readonly id: number };
+// @ts-expect-error an unbranded .ids() row is not a branded user cell
+db.run(setUserName, idsRow, { name: "Ada" });
+declare const movieRow: { readonly id: Eid<typeof Movie> };
+// @ts-expect-error a movie {id} cell is not a user {id} cell
+db.run(setUserName, movieRow, { name: "Ada" });
 db.run(createUser, { name: "Ada" });
 db.run(setMovieTitle, movieId, { title: "Arrival" });
 
@@ -200,6 +208,11 @@ declare const boardDb: Db<typeof Board>;
 boardDb.run(issueOp, [Issue.key, "i-1"], {});
 boardDb.run(issueOp, [":issue/key", "i-1"] as const, {});
 boardDb.run(issueOp, "tmp-1", {});
+declare const issueRow: { readonly id: Eid<typeof Issue> };
+boardDb.run(issueOp, issueRow, {});
+declare const commentRow: { readonly id: Eid<typeof Comment> };
+// @ts-expect-error a comment {id} cell is not an issue {id} cell
+boardDb.run(issueOp, commentRow, {});
 // @ts-expect-error a comment lookup is not an issue lookup
 boardDb.run(issueOp, [Comment.slug, "c-1"], {});
 // @ts-expect-error ident prefix must match the on entity
@@ -225,6 +238,30 @@ otherDb.run(schemaLess, userId, { name: "Ada" });
 
 // @ts-expect-error a schema:-bound op does not run on a different catalog
 otherDb.run(setUserName, userId, { name: "Ada" });
+
+const Wider = merge(Movies, Other);
+declare const wideDb: Db<typeof Wider>;
+wideDb.run(setUserName, userId, { name: "Ada" });
+
+declare const unionDb: Db<typeof Movies | typeof Other>;
+// @ts-expect-error a Movies-bound op does not run on a union of catalogs
+unionDb.run(setUserName, userId, { name: "Ada" });
+
+const setUserNameFor = Operation.for(Movies)(
+  "user/set-name-for",
+  {
+    on: User,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (body, input) => {
+    body.set(body.self, User.name, input.name);
+    return {};
+  },
+);
+db.run(setUserNameFor, userId, { name: "Ada" });
+// @ts-expect-error Operation.for(Movies) does not run on a different catalog
+otherDb.run(setUserNameFor, userId, { name: "Ada" });
 
 const _onNotInCatalog = Operation(
   "tag/on-movies",

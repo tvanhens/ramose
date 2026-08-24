@@ -30,6 +30,7 @@ import { buildOp, entityRefOf, runBody } from "../db/op-handle.ts";
 import {
   type AnyOperation,
   type AnyOperations,
+  asLookupRef,
   decodeInput,
   encodeOutput,
   materializeOutput,
@@ -188,18 +189,30 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
   let self: unknown;
   if (operation.on !== undefined) {
     const raw = args.entity;
-    const eid =
-      typeof raw === "number"
-        ? raw
-        : typeof raw === "object" &&
-            raw !== null &&
-            "id" in raw &&
-            typeof raw.id === "number"
-          ? raw.id
-          : undefined;
+    const lookup = asLookupRef(raw);
+    let eid: number | undefined;
+    if (typeof raw === "number") {
+      eid = raw;
+    } else if (
+      typeof raw === "object" &&
+      raw !== null &&
+      "id" in raw &&
+      typeof raw.id === "number"
+    ) {
+      eid = raw.id;
+    } else if (lookup !== undefined) {
+      try {
+        eid = await dbv.entid([lookup[0], lookup[1]]);
+      } catch {
+        eid = undefined;
+      }
+    }
     if (eid === undefined) {
       throw new OperationRejected({
-        message: `operation ${operation.name} needs an entity`,
+        message:
+          lookup !== undefined
+            ? `entity ${JSON.stringify(lookup)} does not exist`
+            : `operation ${operation.name} needs an entity`,
         operation: operation.name,
         reason: "dangling",
       });

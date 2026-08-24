@@ -24,10 +24,10 @@ import { type DbError, InvalidRequest, NotOne } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
-  OpCatalogFitsDb,
   OpReport,
   Operation,
   OperationInvocation,
+  RunArg,
   RunEntity,
 } from "./Operation.ts";
 import { asPromise, fromStream } from "./promise.ts";
@@ -272,15 +272,15 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
    * use a unique attr of the `on` entity.
    *
    * A schema-less operation runs on any db. An operation bound with
-   * `schema:` only runs on a db of that catalog.
+   * `schema:` runs on a db that has at least that catalog's entity keys.
    */
   run<I, O, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, undefined, OC>,
-    input: OpCatalogFitsDb<C, OC> extends true ? I : never,
+    input: RunArg<C, OC, I>,
   ): Promise<OpReport<O, C>>;
   run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
-    entity: OpCatalogFitsDb<C, OC> extends true ? RunEntity<C, N> : never,
+    entity: RunArg<C, OC, RunEntity<C, N>>,
     input: I,
   ): Promise<OpReport<O, C>>;
 

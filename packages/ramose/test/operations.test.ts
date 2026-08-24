@@ -27,6 +27,8 @@ import {
   type Op,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
+import { asLookupRef, lowerEntityArg } from "../src/db/Operation.ts";
+import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
@@ -537,6 +539,101 @@ describe("db.run / db.query promise rejection identity", () => {
       );
     }
     close();
+  });
+});
+
+describe("lookup-shaped entity args", () => {
+  test("lowerEntityArg sends [attr, value] as an ident lookup", () => {
+    expect(lowerEntityArg([":user/name", "Ada"])).toEqual([":user/name", "Ada"]);
+    expect(lowerEntityArg([User.name, "Ada"])).toEqual([":user/name", "Ada"]);
+    expect(asLookupRef([User.name, "Ada"])).toEqual([":user/name", "Ada"]);
+    expect(lowerEntityArg({ id: 1001 })).toBe(1001);
+    expect(lowerEntityArg("tmp-1")).toBe("tmp-1");
+  });
+
+  test("db.run looks up [attr, value] on the overlay and posts the lookup", async () => {
+    const server = await moviesWorld();
+    await server.transact([{ ":user/name": "Ada" }]);
+    const opBodies: { entity?: unknown }[] = [];
+    const peer = fakePeer({
+      http: async (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        if (call.url.endsWith("/op")) {
+          opBodies.push({ entity: call.body.entity });
+          const eid =
+            typeof call.body.entity === "number"
+              ? call.body.entity
+              : await server.db().entid(call.body.entity as [string, unknown]);
+          const rep = await server.transact([
+            [":db/add", eid, ":user/name", call.body.input.name],
+          ]);
+          return {
+            body: {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: rep.txData.map(toWireDatom),
+              clientOpId: call.body.clientOpId,
+              output: {},
+            },
+          };
+        }
+        return { body: { t: server.t } };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.effect.live(names));
+    await until(() => live.seen.length >= 1);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+
+    const pending = db.run(setName, [":user/name", "Ada"] as const, {
+      name: "Ada Lovelace",
+    });
+    await until(
+      () =>
+        (live.seen.at(-1) as readonly { name: string }[] | undefined)?.some(
+          (r) => r.name === "Ada Lovelace",
+        ) === true,
+    );
+    const report = await pending;
+    expect(report.output).toEqual({});
+    expect(opBodies).toHaveLength(1);
+    expect(opBodies[0]!.entity).toEqual([":user/name", "Ada"]);
+    expect(await db.query(names)).toEqual([{ name: "Ada Lovelace" }]);
+
+    await live.stop();
+    await c.dispose();
+  });
+});
+
+describe("ref tempid create-and-link", () => {
+  test("op.self.set(ref, tempid) allocates the target like the transactor", async () => {
+    const built = stubOp("run");
+    const op = asPromiseOp(built.op);
+    const ada = op.entity();
+    ada.set(User.name, "Ada");
+    ada.set(User.bestFriend, "bea");
+    const bea = op.entity("bea");
+    bea.set(User.name, "Bea");
+    expect(built.ops()).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+      [":db/add", "tmp-1", ":user/bestFriend", "bea"],
+      [":db/add", "bea", ":user/name", "Bea"],
+    ]);
+
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Movies) as unknown[]);
+    const expansion = await conn.transact([...built.ops()]);
+    const adaEid = expansion.tempids["tmp-1"];
+    const beaEid = expansion.tempids.bea;
+    expect(typeof adaEid).toBe("number");
+    expect(typeof beaEid).toBe("number");
+    const row = await conn.db().entity(adaEid!);
+    expect(row?.[":user/bestFriend"]).toBe(beaEid);
+    expect(row?.[":user/name"]).toBe("Ada");
   });
 });
 

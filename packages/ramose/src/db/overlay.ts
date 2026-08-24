@@ -33,7 +33,7 @@ import { tryLowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
 import { NotOne } from "./Errors.ts";
 import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
-import type { AnyOperation, OperationInvocation } from "./Operation.ts";
+import { asLookupRef, type AnyOperation, type OperationInvocation } from "./Operation.ts";
 import {
   type DbError,
   fromResponse,
@@ -135,6 +135,7 @@ const remapEntityRef = (
   if (typeof entity === "string" && referred[entity] !== undefined) {
     return referred[entity];
   }
+  // Lookups (`[":user/name", "Ada"]`) are identity-based — pass through.
   return entity;
 };
 
@@ -721,6 +722,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       Effect.flatMap(() =>
         Effect.gen(function* () {
           let collected: () => readonly unknown[] = () => [];
+          const self = yield* Effect.promise(async () => {
+            const lookup = asLookupRef(args.invocation.entity);
+            if (lookup === undefined) return args.invocation.entity;
+            try {
+              return (await view().entid([lookup[0], lookup[1]])) ?? args.invocation.entity;
+            } catch {
+              return args.invocation.entity;
+            }
+          });
           const built = buildOp({
             schema: args.schema,
             db: args.db,
@@ -729,7 +739,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               class: args.principal.class,
               claims: {},
             },
-            self: args.invocation.entity,
+            self,
             effects: "halt",
             q: (input) =>
               Effect.tryPromise({

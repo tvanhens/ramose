@@ -106,15 +106,16 @@ type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
  * `db.run`'s contextual entity.
  *
  * A *branded* cell of the wrong entity is rejected (`Eid<Comment>` is not
- * an `Eid<Issue>`). Deliberate hatches: an unbranded `number`, and an
- * opaque tempid `string` (the queued-contextual path remaps it after the
- * ack). Lookups are narrowed to a unique attr of the `on` entity.
- * `{ id: number }` / {@link Eid} over the catalog is accepted, same as
- * `db.pull` (`.ids()` rows).
+ * an `Eid<Issue>`). The same holds for a branded `{ id }` row
+ * (`{ id: Eid<Comment> }` is not a user). Deliberate hatches: an unbranded
+ * `number`, and an opaque tempid `string` (the queued-contextual path remaps
+ * it after the ack). Lookups are narrowed to a unique attr of the `on`
+ * entity. An unbranded `.ids()` `{ id: number }` is not a branded cell —
+ * pass `.id` through the number hatch.
  */
 export type RunEntity<C extends AnySchema, N extends AnyEntity> =
   | Eid<N>
-  | Eid<C>
+  | { readonly id: Eid<N> }
   | (number & { readonly _ns?: never })
   | string
   | LookupRefFor<C, N>
@@ -122,20 +123,36 @@ export type RunEntity<C extends AnySchema, N extends AnyEntity> =
   | OpHandle<C>;
 
 /**
+ * Distributes over a union `C` so every member must cover `OC`. A
+ * `Movies | Alt` db therefore rejects a Movies-bound op; a superset db
+ * (extra entity keys) accepts it.
+ */
+type CatalogCovers<C extends AnySchema, OC extends AnySchema> = C extends AnySchema
+  ? keyof OC["entities"] extends keyof C["entities"]
+    ? true
+    : false
+  : false;
+
+/**
  * Whether operation catalog `OC` may run on db catalog `C`. A schema-less
- * op (open `AnySchema` bound) runs anywhere; a `schema:`-bound op only
- * runs on a db of that catalog.
+ * op (open `AnySchema` bound) runs anywhere; a `schema:`-bound op runs on
+ * a db that has at least that catalog's entity keys.
  */
 export type OpCatalogFitsDb<
   C extends AnySchema,
   OC extends AnySchema,
 > = [ConcreteCatalog<OC>] extends [false]
   ? true
-  : [OC] extends [C]
-    ? [C] extends [OC]
-      ? true
-      : false
+  : CatalogCovers<C, OC> extends true
+    ? true
     : false;
+
+/** Parameter type when {@link OpCatalogFitsDb} is false — names the catalog. */
+export type OpCatalogMismatch = "operation schema does not match this db";
+
+/** `I` / entity argument, or {@link OpCatalogMismatch} when the catalogs diverge. */
+export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
+  OpCatalogFitsDb<C, OC> extends true ? A : OpCatalogMismatch;
 
 /** Schema for an entity id in operation input / output. */
 export const EntityId: typeof Schema.Number = Schema.Number;
@@ -340,7 +357,7 @@ type OnEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   : AnyEntity | undefined;
 
 /** Define one named operation. */
-export const Operation = <
+const defineOperation = <
   Name extends string,
   I,
   O,
@@ -358,6 +375,29 @@ export const Operation = <
   on: schemas.on,
   body,
 });
+
+type OperationFor<C extends AnySchema> = <
+  Name extends string,
+  I,
+  O,
+  N extends OnEntity<C> = undefined,
+>(
+  name: Name,
+  schemas: Omit<OperationSchemas<I, O, N, C>, "schema">,
+  body: (op: Op<C, N>, input: I) => Promise<O> | O,
+) => Operation<Name, I, O, N, C>;
+
+/**
+ * Bind `schema:` once for a catalog so every op from the helper carries
+ * the membership / ident checks. `Operation.for(Reef)("issue/move", …)`.
+ */
+const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
+  (name, schemas, body) => defineOperation(name, { ...schemas, schema }, body);
+
+/** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
+export const Operation: typeof defineOperation & {
+  readonly for: typeof operationFor;
+} = Object.assign(defineOperation, { for: operationFor });
 
 /** A deploy-time / client registry of operations. */
 export const Operations = <const M extends Record<string, AnyOperation>>(
@@ -387,12 +427,36 @@ export interface OperationInvocation {
   readonly clientOpId: string;
 }
 
-/** Lower a `db.run` entity argument to an eid, tempid, or `undefined`. */
+/**
+ * `[User.name, "Ada"]` / `[":user/name", "Ada"]` → the wire lookup
+ * `[":user/name", "Ada"]`. `undefined` when `value` is not a lookup.
+ */
+export const asLookupRef = (
+  value: unknown,
+): readonly [string, unknown] | undefined => {
+  if (!Array.isArray(value) || value.length !== 2) return undefined;
+  const head = value[0];
+  const ident =
+    typeof head === "string"
+      ? head
+      : typeof head === "object" &&
+          head !== null &&
+          "ident" in head &&
+          typeof (head as { ident: unknown }).ident === "string"
+        ? (head as { ident: string }).ident
+        : undefined;
+  if (ident === undefined || ident[0] !== ":") return undefined;
+  return [ident, value[1]];
+};
+
+/** Lower a `db.run` entity argument to an eid, tempid, lookup, or `undefined`. */
 export const lowerEntityArg = (entity: unknown): unknown => {
   if (entity === undefined || entity === null) return undefined;
   if (typeof entity === "number" || typeof entity === "string") return entity;
+  const lookup = asLookupRef(entity);
+  if (lookup !== undefined) return lookup;
   if (isEntityLike(entity)) return entity.id;
-  if (isTxHandle(entity)) return entity.eid;
+  if (isTxHandle(entity)) return lowerEntityArg(entity.eid);
   return entity;
 };
 

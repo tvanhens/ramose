@@ -56,7 +56,20 @@ const createNamed = Operation(
   },
 );
 
-const operations = Operations({ setTitle, ping, createNamed });
+const setName = Operation(
+  "user/set-name",
+  {
+    on: User,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({ name: Schema.String }),
+  },
+  (op, input) => {
+    op.set(op.self, User.name, input.name);
+    return { name: input.name };
+  },
+);
+
+const operations = Operations({ setTitle, ping, createNamed, setName });
 
 const titles = async (peer: Peer, tok?: string) => {
   const { body } = await peer.json(
@@ -141,6 +154,56 @@ describe("POST /db/:name/op", () => {
     expect(ok.status).toBe(200);
     expect(ok.body.output).toEqual({ title: "Heat (1995)" });
     expect(await titles(peer)).toEqual(["Heat (1995)"]);
+
+    const idsRow = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "movie/set-title",
+        entity: { id: ada },
+        input: { title: "x" },
+        clientOpId: "op-ids-foreign",
+      }),
+    );
+    expect(idsRow.status).toBe(409);
+    expect(idsRow.body.reason).toBe("foreign");
+    peer.close();
+  });
+
+  test("a lookup-shaped entity resolves when the row exists and is dangling when it does not", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    await peer.seed([{ ":user/name": "Ada" }]);
+
+    const missing = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/set-name",
+        entity: [":user/name", "Missing"],
+        input: { name: "Nope" },
+        clientOpId: "op-lookup-miss",
+      }),
+    );
+    expect(missing.status).toBe(409);
+    expect(missing.body.tag).toBe("OperationRejected");
+    expect(missing.body.operation).toBe("user/set-name");
+    expect(missing.body.reason).toBe("dangling");
+
+    const ok = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/set-name",
+        entity: [":user/name", "Ada"],
+        input: { name: "Ada Lovelace" },
+        clientOpId: "op-lookup-ok",
+      }),
+    );
+    expect(ok.status).toBe(200);
+    expect(ok.body.output).toEqual({ name: "Ada Lovelace" });
+    const { body } = await peer.json(
+      "/db/movies/query",
+      post({ query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] } }),
+    );
+    expect((body.result as string[][]).map((r) => r[0])).toEqual(["Ada Lovelace"]);
     peer.close();
   });
 

@@ -12,6 +12,8 @@ import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import { Comment, Issue, Label, Reef, type Status } from "../domain/schema.ts";
 
+const Op = Ramose.Operation.for(Reef);
+
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
   { name: "bug", color: "#ef5f6b" },
@@ -44,7 +46,7 @@ const authFetch = (
  * must not write that row. Effects come first, so there is no optimistic
  * prefix; the creating tab has no session yet.
  */
-export const provisionWorkspaceOp = Ramose.Operation(
+export const provisionWorkspaceOp = Op(
   "workspace/provision",
   {
     input: Schema.Struct({}),
@@ -85,7 +87,7 @@ export const provisionWorkspaceOp = Ramose.Operation(
 export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
 
-export const moveIssueOp = Ramose.Operation(
+export const moveIssueOp = Op(
   "issue/move",
   {
     on: Issue,
@@ -99,7 +101,7 @@ export const moveIssueOp = Ramose.Operation(
   },
 );
 
-export const setStatusOp = Ramose.Operation(
+export const setStatusOp = Op(
   "issue/set-status",
   {
     on: Issue,
@@ -112,7 +114,7 @@ export const setStatusOp = Ramose.Operation(
   },
 );
 
-export const addCommentOp = Ramose.Operation(
+export const addCommentOp = Op(
   "issue/add-comment",
   {
     on: Issue,
@@ -124,12 +126,12 @@ export const addCommentOp = Ramose.Operation(
     comment.set(Comment.body, input.body);
     comment.set(Comment.at, new Date());
     comment.set(Comment.author, input.authorId);
-    comment.set(Comment.issue, op.self.eid);
+    comment.set(Comment.issue, op.self);
     return {};
   },
 );
 
-export const deleteIssueOp = Ramose.Operation(
+export const deleteIssueOp = Op(
   "issue/delete",
   {
     on: Issue,
@@ -142,7 +144,7 @@ export const deleteIssueOp = Ramose.Operation(
   },
 );
 
-export const createIssueOp = Ramose.Operation(
+export const createIssueOp = Op(
   "issue/create",
   {
     input: Schema.Struct({
@@ -178,7 +180,7 @@ export const createIssueOp = Ramose.Operation(
   },
 );
 
-export const setTitleOp = Ramose.Operation(
+export const setTitleOp = Op(
   "issue/set-title",
   {
     on: Issue,
@@ -191,7 +193,7 @@ export const setTitleOp = Ramose.Operation(
   },
 );
 
-export const setDescriptionOp = Ramose.Operation(
+export const setDescriptionOp = Op(
   "issue/set-description",
   {
     on: Issue,
@@ -205,7 +207,7 @@ export const setDescriptionOp = Ramose.Operation(
   },
 );
 
-export const setPriorityOp = Ramose.Operation(
+export const setPriorityOp = Op(
   "issue/set-priority",
   {
     on: Issue,
@@ -218,7 +220,7 @@ export const setPriorityOp = Ramose.Operation(
   },
 );
 
-export const setAssigneeOp = Ramose.Operation(
+export const setAssigneeOp = Op(
   "issue/set-assignee",
   {
     on: Issue,
@@ -232,7 +234,7 @@ export const setAssigneeOp = Ramose.Operation(
   },
 );
 
-export const toggleLabelOp = Ramose.Operation(
+export const toggleLabelOp = Op(
   "issue/toggle-label",
   {
     on: Issue,
@@ -246,7 +248,7 @@ export const toggleLabelOp = Ramose.Operation(
   },
 );
 
-export const setPrivateNoteOp = Ramose.Operation(
+export const setPrivateNoteOp = Op(
   "issue/set-private-note",
   {
     on: Issue,
@@ -260,7 +262,7 @@ export const setPrivateNoteOp = Ramose.Operation(
   },
 );
 
-export const deleteCommentOp = Ramose.Operation(
+export const deleteCommentOp = Op(
   "comment/delete",
   {
     on: Comment,
@@ -273,7 +275,7 @@ export const deleteCommentOp = Ramose.Operation(
   },
 );
 
-export const seedSampleIssuesOp = Ramose.Operation(
+export const seedSampleIssuesOp = Op(
   "workspace/seed-sample",
   {
     input: Schema.Struct({

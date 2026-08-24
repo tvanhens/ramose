@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Typed operations over the catalog (#240)
+
+`Op<N>` is now `Op<C, N>` and `Operation<Name, I, O, N>` is now
+`Operation<Name, I, O, N, C>`. There is no deprecation window. Anyone
+naming those types must add the catalog parameter (`AnySchema` if the
+operation is schema-less). `schema:` on `Operation` is type-only and
+binds write slots plus `db.run` catalog membership; a schema-less
+operation still runs on any db.
+
+### Lookup-ref entity args on `db.run` (part of #250)
+
+`db.run(op, [User.name, "Ada"], input)` is a real lookup: the client
+sends `[":user/name", "Ada"]`, the overlay resolves it against the
+local view when the row is present, and `runOperation` resolves it to
+an eid before `entityNamespaceOk`. A lookup that does not exist is
+`OperationRejected` with `reason: "dangling"`, same as a missing eid.
+The bare-string entity arm stays the tempid hatch.
+
+A branded `{ id: Eid<N> }` row of the wrong entity is rejected at the
+type level (an unbranded `.ids()` `{ id: number }` is not a branded
+cell — pass `.id`). Ref-typed write slots still accept a handle,
+tempid string, or lookup; `op.self.set(User.bestFriend, "tmp")` is
+create-and-link. `Operation.for(catalog)` bakes `schema:` in so the
+catalog checks are on without repeating the binding. A schema-bound
+op now runs on a superset db and is rejected on a catalog union.
+
 ### Params infrastructure removed (tracker #205)
 
 `Ramose.params`, `EidOf`, `optional` (the param marker), and `Query.when`
