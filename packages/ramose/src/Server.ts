@@ -190,7 +190,7 @@ export type ServerProps = {
   /** Alchemy logical id of the owned Worker. @default `"Peer"` */
   peer?: string;
   /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
-  routes?: readonly PeerRoute[];
+  routes?: PeerRoute[];
   /**
    * Catalogs to install at deploy. A schema, or `{ schema, doc }` — `doc` is
    * data destined for the directory, not a resource-side authority.
@@ -339,7 +339,7 @@ export const authEnv = (
 export const tokenEnv = (
   token: Redacted.Redacted<string> | string | undefined,
 ): Record<string, Redacted.Redacted<string>> => {
-  if (!isBound(token)) return {};
+  if (token === undefined || token === "") return {};
   return {
     [TOKEN_ENV_KEY]: typeof token === "string" ? Redacted.make(token) : token,
   };
@@ -519,7 +519,7 @@ export const Server = Object.assign(
           name: props.name as string | undefined,
           dev: props.dev as { readonly port?: number } | undefined,
           peer: props.peer as string | undefined,
-          routes: props.routes as readonly PeerRoute[] | undefined,
+          routes: props.routes as PeerRoute[] | undefined,
           authEnv: ownedAuthEnv(
             props.auth as ServerAuth | undefined,
             props.token as Redacted.Redacted<string> | string | undefined,

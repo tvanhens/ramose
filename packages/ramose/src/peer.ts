@@ -67,7 +67,7 @@ export type OwnedPeerOptions = {
   /** Alchemy logical id of the Worker resource. @default `"Peer"` */
   readonly peer?: string | undefined;
   /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
-  readonly routes?: readonly PeerRoute[] | undefined;
+  readonly routes?: PeerRoute[] | undefined;
 };
 
 /** Zone route passed through to `Cloudflare.Worker`. */
@@ -264,7 +264,7 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         ...options.env,
         ...options.authEnv,
       },
-      ...(options.routes !== undefined ? { routes: options.routes } : {}),
+      ...(options.routes !== undefined ? { routes: [...options.routes] } : {}),
     });
     return worker;
   });
