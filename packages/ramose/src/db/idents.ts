@@ -45,6 +45,8 @@ export type CardAtIdent<C extends AnySchema, I extends string> =
  * array of them when the attribute is cardinality-many.
  *
  * List-form `:db/add` always takes one value (one datom), even for many.
+ * Map-form `put` takes this shape — an array for many, omitted when
+ * `undefined`.
  */
 export type WriteAtIdent<C extends AnySchema, I extends string> =
   CardAtIdent<C, I> extends "many"
@@ -53,6 +55,37 @@ export type WriteAtIdent<C extends AnySchema, I extends string> =
 
 export type ReadAtIdent<C extends AnySchema, I extends string> =
   WriteAtIdent<C, I>;
+
+/**
+ * Entity-level write bag for `put`: each key is a field of `N`, typed
+ * through {@link WriteAtIdent}. Cardinality-many is an array; a missing
+ * or `undefined` key is omitted at runtime (not written as a nil datom).
+ */
+export type WriteAtEntity<C extends AnySchema, N extends { readonly ns: string; readonly fields: object }> = {
+  [K in keyof N["fields"] & string]?:
+    | WriteAtIdent<C, `:${N["ns"]}/${K}`>
+    | undefined;
+};
+
+/**
+ * Idents whose attribute is `unique: "upsert"` — the engine's
+ * `:db.unique/identity` (tempid unification). `"strict"` is unique/value
+ * and does not upsert.
+ */
+export type IdentityIdent<C extends AnySchema> = {
+  [I in CatalogIdent<C>]: AttrAtIdent<C, I>["unique"] extends "upsert"
+    ? I
+    : never;
+}[CatalogIdent<C>];
+
+/**
+ * Field slot for `upsert`: a field ref or ident of a `unique: "upsert"`
+ * attr. {@link LookupRef} allows any unique (including `"strict"`);
+ * upsert is identity-only.
+ */
+export type UpsertField<C extends AnySchema> = {
+  [I in IdentityIdent<C>]: I | { readonly ident: I };
+}[IdentityIdent<C>];
 
 /**
  * `[attr, value]` on a unique attribute — the other way to name an entity.

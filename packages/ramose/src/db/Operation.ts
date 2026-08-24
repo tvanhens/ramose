@@ -18,13 +18,15 @@ import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AttrAtIdent, EntityRef, LookupRef } from "./idents.ts";
+import type { AttrAtIdent, EntityRef, LookupRef, UpsertField } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
+  type PutAttrs,
   type TxEntity,
   type TxField,
   type TxHandle,
+  type TxKnownEntity,
   type TxValue,
 } from "./Tx.ts";
 
@@ -36,6 +38,17 @@ import {
 type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
   ? false
   : true;
+
+type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? TxKnownEntity<C>
+  : AnyEntity;
+
+type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
+  [ConcreteCatalog<C>] extends [true] ? PutAttrs<C, E> : Record<string, unknown>;
+
+type OpUpsertField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? UpsertField<C>
+  : { readonly ident: string } | string;
 
 /**
  * Field slot on the op handle. Same union as {@link TxField} once the
@@ -245,6 +258,31 @@ export interface Op<
   ): void;
   delete(e: OpEntity<C>): void;
 
+  /**
+   * Entity-level write. Lowers to map form. `undefined` fields are
+   * omitted; cardinality-many takes an array. No subject allocates a
+   * tempid (create); a subject updates that entity.
+   */
+  put<E extends OpKnownEntity<C>>(
+    entity: E,
+    attrs: OpPutAttrs<C, E>,
+  ): OpHandle<C>;
+  put<E extends OpKnownEntity<C>>(
+    entity: E,
+    id: OpEntity<C>,
+    attrs: OpPutAttrs<C, E>,
+  ): OpHandle<C>;
+
+  /**
+   * Ensure a row exists for a `unique: "upsert"` value. Returns a handle
+   * whose tempid unifies with the existing entity when the value is
+   * already present.
+   */
+  upsert<const A extends OpUpsertField<C>>(
+    field: A,
+    value: OpValue<C, A>,
+  ): OpHandle<C>;
+
   query<Row, Out = readonly Row[]>(
     input: QueryObject<Row, Out>,
   ): Promise<Out>;
@@ -305,6 +343,9 @@ export interface RuntimeOp {
   set(e: unknown, field: unknown, value: unknown): Effect.Effect<void>;
   remove(e: unknown, field: unknown, value?: unknown): Effect.Effect<void>;
   delete(e: unknown): Effect.Effect<void>;
+  put(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  put(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  upsert(field: unknown, value: unknown): Effect.Effect<RuntimeOpHandle>;
   query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(

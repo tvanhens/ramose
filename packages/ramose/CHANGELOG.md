@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Entity-level writes on the op handle (`put` / `upsert`)
+
+`op.put(Issue, { title, labels: ids })` creates; `op.put(Issue, id, {…})`
+updates. Attrs are typed through `WriteAtIdent` — cardinality-many is an
+array, `undefined` fields are omitted — and lower to map form. `set` /
+`remove` stay the datom-level escape hatch.
+
+`op.upsert(User.sub, "…")` returns a handle whose tempid unifies with an
+existing `unique: "upsert"` row. A lookup ref that misses is still a
+hard rejection; upsert is "ensure this row exists". Constrained to
+identity attrs (`unique: "upsert"`), not `"strict"`.
+
+Reef's `createIssue` / `seedSampleIssues` now write through `op.put`.
+
 ### Typed operations over the catalog (#240)
 
 `Op<N>` is now `Op<C, N>` and `Operation<Name, I, O, N>` is now

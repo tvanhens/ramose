@@ -297,3 +297,45 @@ type _handleEid = Expect<
 type _selfIsHandle = Expect<
   Extends<typeof op.self, OpHandle<typeof Movies>>
 >;
+
+// ── put / upsert ───────────────────────────────────────────────────────────
+
+const Doc = Entity("doc", {
+  slug: Field(Schema.String, { unique: "strict" }),
+});
+const Catalog = DbSchema({
+  user: User,
+  movie: Movie,
+  meta: Meta,
+  doc: Doc,
+});
+declare const catalogOp: Op<typeof Catalog>;
+
+const putCreate = catalogOp.put(User, {
+  name: "Ada",
+  age: 36,
+  friends: [1002],
+});
+type _putCreate = Expect<Extends<typeof putCreate, OpHandle<typeof Catalog>>>;
+
+const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
+type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Catalog>>>;
+
+const ensured = catalogOp.upsert(User.name, "Ada");
+type _ensured = Expect<Extends<typeof ensured, OpHandle<typeof Catalog>>>;
+catalogOp.upsert(":user/name" as const, "Ada");
+
+{
+  // @ts-expect-error name is string, not number
+  catalogOp.put(User, { name: 42 });
+  // @ts-expect-error friends is many — an array, not one ref
+  catalogOp.put(User, { friends: 1002 });
+  // @ts-expect-error Tag is not an entity of this catalog
+  catalogOp.put(Tag, { label: "x" });
+  // @ts-expect-error title is not unique/upsert
+  catalogOp.upsert(Movie.title, "Heat");
+  // @ts-expect-error age is not unique
+  catalogOp.upsert(User.age, 36);
+  // @ts-expect-error strict unique is not identity upsert
+  catalogOp.upsert(Doc.slug, "roadmap");
+}

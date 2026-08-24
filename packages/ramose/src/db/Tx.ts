@@ -2,11 +2,16 @@
 
 import * as Effect from "effect/Effect";
 import { isAttrRef, lowerAttr } from "./attrRef.ts";
+import type { AnyEntity } from "./Entity.ts";
 import type { AnySchema } from "./Schema.ts";
 import type {
   CatalogIdent,
   EntityRef,
+  LookupRef,
+  UpsertField,
   ValueAtIdent,
+  WriteAtEntity,
+  WriteAtIdent,
 } from "./idents.ts";
 
 // ── field / value correlation ──────────────────────────────────────────────
@@ -50,13 +55,46 @@ export type TxEntity<C extends AnySchema> =
   | TxHandle<C>
   | FieldRefLookup<C>;
 
+/**
+ * Entity of `C` when the catalog is known; any entity against the open
+ * `AnySchema` bound (same `string extends keyof` test as operations).
+ */
+export type TxKnownEntity<C extends AnySchema> = string extends keyof C["entities"]
+  ? AnyEntity
+  : C["entities"][keyof C["entities"]];
+
+/** Ref forms `put` accepts in addition to {@link WriteAtIdent}'s decoded type. */
+type PutRef<C extends AnySchema> = TxHandle<C> | string | LookupRef<C>;
+
+type PutScalar<C extends AnySchema, N extends AnyEntity, K extends string> =
+  | ValueAtIdent<C, `:${N["ns"]}/${K}`>
+  | (N["fields"][K] extends { readonly valueType: "ref" } ? PutRef<C> : never);
+
+/**
+ * `put` attrs: {@link WriteAtEntity} (array for many, omit `undefined`)
+ * plus handle / tempid / lookup on ref fields.
+ */
+export type PutAttrs<C extends AnySchema, N extends AnyEntity> = {
+  [K in keyof WriteAtEntity<C, N> & string]?:
+    | WriteAtEntity<C, N>[K]
+    | (N["fields"][K] extends { readonly valueType: "ref"; readonly cardinality: "many" }
+        ? ReadonlyArray<PutScalar<C, N, K>>
+        : N["fields"][K] extends { readonly valueType: "ref" }
+          ? PutRef<C>
+          : never);
+};
+
 // ── collected ops (what a future impl would send) ──────────────────────────
+
+/** Map form: `{ ":db/id"?: e, ":user/name": "Ada", ":user/friends": [ref, …] }`. */
+export type TxMap = Readonly<Record<string, unknown>>;
 
 export type TxOp =
   | readonly [":db/add", unknown, string, unknown]
   | readonly [":db/retract", unknown, string]
   | readonly [":db/retract", unknown, string, unknown]
-  | readonly [":db/retractEntity", unknown];
+  | readonly [":db/retractEntity", unknown]
+  | TxMap;
 
 export interface TxSpec {
   readonly ops: readonly TxOp[];
@@ -121,6 +159,32 @@ export interface Tx<C extends AnySchema = AnySchema> {
   ): Effect.Effect<void>;
 
   delete(e: TxEntity<C>): Effect.Effect<void>;
+
+  /**
+   * Entity-level write. Lowers to map form. `undefined` fields are
+   * omitted; cardinality-many takes an array. No subject allocates a
+   * tempid (create); a subject updates that entity.
+   */
+  put<N extends TxKnownEntity<C>>(
+    entity: N,
+    attrs: PutAttrs<C, N>,
+  ): Effect.Effect<TxHandle<C>>;
+  put<N extends TxKnownEntity<C>>(
+    entity: N,
+    id: TxEntity<C>,
+    attrs: PutAttrs<C, N>,
+  ): Effect.Effect<TxHandle<C>>;
+
+  /**
+   * Ensure a row exists for a `unique: "upsert"` value. Returns a handle
+   * whose tempid unifies with the existing entity when the value is
+   * already present. A lookup ref that misses is still a hard rejection —
+   * use this instead of `entity([attr, value])` for "get or create".
+   */
+  upsert<const A extends UpsertField<C>>(
+    field: A,
+    value: TxValue<C, A>,
+  ): Effect.Effect<TxHandle<C>>;
 }
 
 /**
@@ -171,6 +235,54 @@ const resolveEntity = (e: unknown): unknown => {
     return [e[0].ident, e[1]];
   }
   return e;
+};
+
+const isIdentLookup = (value: unknown): value is readonly [string, unknown] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  typeof value[0] === "string" &&
+  value[0][0] === ":";
+
+/** Lower handles and field-ref lookups so map form is engine-ready. */
+const lowerWriteValue = (value: unknown): unknown => {
+  if (isTxHandle(value)) return resolveEntity(value);
+  if (Array.isArray(value) && value.length === 2 && isAttrRef(value[0])) {
+    return [value[0].ident, lowerWriteValue(value[1])];
+  }
+  if (Array.isArray(value) && !isIdentLookup(value)) {
+    return value.map(lowerWriteValue);
+  }
+  return value;
+};
+
+const fieldIdent = (entity: unknown, key: string): string => {
+  if (typeof entity === "object" && entity !== null && "fields" in entity) {
+    const fields = (entity as { fields?: Record<string, { ident?: unknown }> })
+      .fields;
+    const ident = fields?.[key]?.ident;
+    if (typeof ident === "string") return ident;
+  }
+  const ns =
+    typeof entity === "object" &&
+    entity !== null &&
+    "ns" in entity &&
+    typeof (entity as { ns: unknown }).ns === "string"
+      ? (entity as { ns: string }).ns
+      : "";
+  return ns.length > 0 ? `:${ns}/${key}` : key;
+};
+
+const lowerPutMap = (
+  entity: unknown,
+  eid: unknown,
+  attrs: Record<string, unknown>,
+): TxMap => {
+  const map: Record<string, unknown> = { ":db/id": eid };
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined) continue;
+    map[fieldIdent(entity, key)] = lowerWriteValue(value);
+  }
+  return map;
 };
 
 const makeHandle = <C extends AnySchema>(
@@ -234,6 +346,26 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
       Effect.sync(() => {
         ops.push([":db/retractEntity", resolveEntity(e)]);
       }),
+    put: ((entity: unknown, a: unknown, b?: unknown) =>
+      Effect.sync(() => {
+        const attrs = (b !== undefined ? b : a) as Record<string, unknown>;
+        const id = b !== undefined ? a : undefined;
+        const eid =
+          id === undefined
+            ? (`tmp-${++next}` as EntityRef<C>)
+            : (resolveEntity(id) as EntityRef<C>);
+        ops.push(lowerPutMap(entity, eid, attrs ?? {}));
+        return makeHandle(eid, ops);
+      })) as Tx<C>["put"],
+    upsert: ((field: unknown, value: unknown) =>
+      Effect.sync(() => {
+        const eid = `tmp-${++next}` as EntityRef<C>;
+        ops.push({
+          ":db/id": eid,
+          [lowerAttr(field)]: lowerWriteValue(value),
+        });
+        return makeHandle(eid, ops);
+      })) as Tx<C>["upsert"],
   };
   return builder;
 };

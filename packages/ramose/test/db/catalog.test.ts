@@ -93,6 +93,33 @@ describe("transaction builder", () => {
     ]);
     expect(tx.schema).toBe(Movies);
   });
+
+  test("put lowers to map form; undefined is omitted; many is an array", () => {
+    const tx = txBuilder(Movies);
+    Effect.runSync(
+      Effect.gen(function* () {
+        const bea = yield* tx.entity();
+        yield* bea.set(User.name, "Bea");
+        const ada = yield* tx.put(User, {
+          name: "Ada",
+          age: undefined,
+          friends: [1002, bea],
+        });
+        yield* tx.put(User, ada, { age: 36 });
+        yield* tx.upsert(User.name, "Ada");
+      }),
+    );
+    expect(tx.spec.ops).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Bea"],
+      {
+        ":db/id": "tmp-2",
+        ":user/name": "Ada",
+        ":user/friends": [1002, "tmp-1"],
+      },
+      { ":db/id": "tmp-2", ":user/age": 36 },
+      { ":db/id": "tmp-3", ":user/name": "Ada" },
+    ]);
+  });
 });
 
 
