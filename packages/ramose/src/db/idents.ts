@@ -68,26 +68,6 @@ export type WriteAtEntity<C extends AnySchema, N extends { readonly ns: string; 
 };
 
 /**
- * Idents whose attribute is `unique: "upsert"` — the engine's
- * `:db.unique/identity` (tempid unification). `"strict"` is unique/value
- * and does not upsert.
- */
-export type IdentityIdent<C extends AnySchema> = {
-  [I in CatalogIdent<C>]: AttrAtIdent<C, I>["unique"] extends "upsert"
-    ? I
-    : never;
-}[CatalogIdent<C>];
-
-/**
- * Field slot for `upsert`: a field ref or ident of a `unique: "upsert"`
- * attr. {@link LookupRef} allows any unique (including `"strict"`);
- * upsert is identity-only.
- */
-export type UpsertField<C extends AnySchema> = {
-  [I in IdentityIdent<C>]: I | { readonly ident: I };
-}[IdentityIdent<C>];
-
-/**
  * `[attr, value]` on a unique attribute — the other way to name an entity.
  *
  * Both spellings of the head are the same lookup: the attr ref you already

@@ -699,7 +699,7 @@ describe("optional add", () => {
   });
 });
 
-describe("put / upsert", () => {
+describe("put", () => {
   const createByPut = Operation(
     "user/create-put",
     {
@@ -712,20 +712,6 @@ describe("put / upsert", () => {
     },
     (op, input) => {
       op.put(User, { name: input.name, age: input.age });
-      return {};
-    },
-  );
-
-  const ensureUser = Operation(
-    "user/ensure",
-    {
-      schema: Movies,
-      input: Schema.Struct({ name: Schema.String, age: Schema.Number }),
-      output: Schema.Struct({}),
-    },
-    (op, input) => {
-      const user = op.upsert(User.name, input.name);
-      user.set(User.age, input.age);
       return {};
     },
   );
@@ -752,7 +738,7 @@ describe("put / upsert", () => {
     ]);
   });
 
-  test("processTx: put creates; upsert unifies on unique identity", async () => {
+  test("processTx: put with a unique field unifies on identity", async () => {
     const conn = await Connection.create();
     await conn.transact(schemaTx(Movies) as unknown[]);
 
@@ -764,8 +750,7 @@ describe("put / upsert", () => {
     expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(36);
 
     const again = txBuilder(Movies);
-    const handle = Effect.runSync(again.upsert(User.name, "Ada"));
-    Effect.runSync(handle.set(User.age, 37));
+    Effect.runSync(again.put(User, { name: "Ada", age: 37 }));
     const second = await conn.transact([...again.spec.ops]);
     expect(second.tempids["tmp-1"]).toBe(ada);
     expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(37);
@@ -818,7 +803,7 @@ describe("put / upsert", () => {
     await c.dispose();
   });
 
-  test("db.run(upsert) unifies a second write onto the same row", async () => {
+  test("db.run(put) with a unique field unifies a second write onto the same row", async () => {
     const server = await moviesWorld();
     const http = async (call: Call) => {
       if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
@@ -842,8 +827,8 @@ describe("put / upsert", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    await db.run(ensureUser, { name: "Ada", age: 36 });
-    await db.run(ensureUser, { name: "Ada", age: 37 });
+    await db.run(createByPut, { name: "Ada", age: 36 });
+    await db.run(createByPut, { name: "Ada", age: 37 });
     const rows = await db.query(
       Query.q(() =>
         pipe(

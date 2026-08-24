@@ -106,7 +106,7 @@ describe("transaction builder", () => {
           friends: [1002, bea],
         });
         yield* tx.put(User, ada, { age: 36 });
-        yield* tx.upsert(User.name, "Ada");
+        yield* tx.put(User, { name: "Ada" });
       }),
     );
     expect(tx.spec.ops).toEqual([

@@ -82,26 +82,12 @@ const createByPut = Operation(
   },
 );
 
-const ensureUser = Operation(
-  "user/ensure",
-  {
-    schema: Movies,
-    input: Schema.Struct({ name: Schema.String }),
-    output: Schema.Struct({}),
-  },
-  (op, input) => {
-    op.upsert(User.name, input.name);
-    return {};
-  },
-);
-
 const operations = Operations({
   setTitle,
   ping,
   createNamed,
   setName,
   createByPut,
-  ensureUser,
 });
 
 const titles = async (peer: Peer, tok?: string) => {
@@ -294,7 +280,7 @@ describe("POST /db/:name/op", () => {
     peer.close();
   });
 
-  test("put creates; upsert unifies a second write onto the same row", async () => {
+  test("put with a unique field unifies a second write onto the same row", async () => {
     const peer = makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const created = await peer.json(
@@ -309,9 +295,9 @@ describe("POST /db/:name/op", () => {
     const again = await peer.json(
       "/db/movies/op",
       post({
-        name: "user/ensure",
+        name: "user/create-put",
         input: { name: "Ada" },
-        clientOpId: "op-upsert",
+        clientOpId: "op-put-again",
       }),
     );
     expect(again.status).toBe(200);

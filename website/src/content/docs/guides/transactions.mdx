@@ -123,6 +123,14 @@ The first argument of `tx.set` names the record. It can be:
 - **a handle** from `tx.entity()` in the same write.
 - **a lookup by unique key** — `[User.sub, "user_ada"]` names the user whose `sub` is that value, no id in hand ([glossary](/concepts/glossary/#lookup)).
 
+## Upserts
+
+Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup by unique key that misses is still a hard rejection; put with the unique field is the path that creates when missing.
+
+```ts
+op.put(User, { sub: token.sub, name: token.name });
+```
+
 ## What a write returns
 
 `transact` resolves with `{ t, txEid, datomCount, dbAfter }`:

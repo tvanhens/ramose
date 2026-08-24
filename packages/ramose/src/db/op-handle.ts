@@ -215,8 +215,6 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
           b === undefined ? op.put(entity, a) : op.put(entity, a, b),
         ),
       )) as Op<any, any>["put"],
-    upsert: (field, value) =>
-      promiseEntity(Effect.runSync(op.upsert(field, value))),
     query: ((input: AnyQueryObject) =>
       asPromise(op.query(input))) as Op["query"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),

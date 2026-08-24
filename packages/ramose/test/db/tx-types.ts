@@ -157,18 +157,15 @@ type _handle = Expect<
   >
 >;
 
-// ── put / upsert on the builder ────────────────────────────────────────────
+// ── put on the builder ─────────────────────────────────────────────────────
 
 declare const tx: Tx<typeof Movies>;
 const putH = tx.put(User, { name: "Ada", friends: [1002] });
 type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
 tx.put(User, 1001, { age: 36 });
-tx.upsert(User.name, "Ada");
 {
   // @ts-expect-error name is string, not number
   tx.put(User, { name: 42 });
   // @ts-expect-error friends is many
   tx.put(User, { friends: 1002 });
-  // @ts-expect-error title is not unique/upsert
-  tx.upsert(Movie.title, "Heat");
 }

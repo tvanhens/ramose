@@ -8,7 +8,6 @@ import type {
   CatalogIdent,
   EntityRef,
   LookupRef,
-  UpsertField,
   ValueAtIdent,
   WriteAtEntity,
   WriteAtIdent,
@@ -171,6 +170,15 @@ export interface Tx<C extends AnySchema = AnySchema> {
    * Entity-level write. Lowers to map form. `undefined` fields are
    * omitted; cardinality-many takes an array. No subject allocates a
    * tempid (create); a subject updates that entity.
+   *
+   * ### Upserts
+   *
+   * Including a `unique: "upsert"` field in the map makes `put`
+   * ensure-this-row-exists: the engine unifies the tempid with the
+   * existing row. `put(User, { sub, name })` is insert-or-update;
+   * `put(User, { sub })` is enough when you only have the key. A lookup
+   * ref that misses is still a hard rejection — put with the unique
+   * field is the path that creates when missing.
    */
   put<N extends TxKnownEntity<C>>(
     entity: N,
@@ -180,17 +188,6 @@ export interface Tx<C extends AnySchema = AnySchema> {
     entity: N,
     id: TxEntity<C>,
     attrs: PutAttrs<C, N>,
-  ): Effect.Effect<TxHandle<C>>;
-
-  /**
-   * Ensure a row exists for a `unique: "upsert"` value. Returns a handle
-   * whose tempid unifies with the existing entity when the value is
-   * already present. A lookup ref that misses is still a hard rejection —
-   * use this instead of `entity([attr, value])` for "get or create".
-   */
-  upsert<const A extends UpsertField<C>>(
-    field: A,
-    value: TxValue<C, A>,
   ): Effect.Effect<TxHandle<C>>;
 }
 
@@ -364,15 +361,6 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         ops.push(lowerPutMap(entity, eid, attrs ?? {}));
         return makeHandle(eid, ops);
       })) as Tx<C>["put"],
-    upsert: ((field: unknown, value: unknown) =>
-      Effect.sync(() => {
-        const eid = `tmp-${++next}` as EntityRef<C>;
-        ops.push({
-          ":db/id": eid,
-          [lowerAttr(field)]: lowerWriteValue(value),
-        });
-        return makeHandle(eid, ops);
-      })) as Tx<C>["upsert"],
   };
   return builder;
 };

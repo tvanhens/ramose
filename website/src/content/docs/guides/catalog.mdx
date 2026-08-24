@@ -96,7 +96,7 @@ Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compos
 
 | option | default | effect |
 | --- | --- | --- |
-| `unique` | none | `"upsert"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up. `"strict"` rejects a colliding write. |
+| `unique` | none | `"upsert"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up, and `op.put(User, { sub })` [unifies with that row](/guides/transactions/#upserts). `"strict"` rejects a colliding write. |
 | `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
 | `owned` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |

@@ -18,7 +18,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AttrAtIdent, EntityRef, LookupRef, UpsertField } from "./idents.ts";
+import type { AttrAtIdent, EntityRef, LookupRef } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
@@ -47,10 +47,6 @@ type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
     ? PutAttrs<C, E, TxHandle<C> | OpHandle<C>>
     : Record<string, unknown>;
-
-type OpUpsertField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
-  ? UpsertField<C>
-  : { readonly ident: string } | string;
 
 /**
  * Field slot on the op handle. Same union as {@link TxField} once the
@@ -264,6 +260,15 @@ export interface Op<
    * Entity-level write. Lowers to map form. `undefined` fields are
    * omitted; cardinality-many takes an array. No subject allocates a
    * tempid (create); a subject updates that entity.
+   *
+   * ### Upserts
+   *
+   * Including a `unique: "upsert"` field in the map makes `put`
+   * ensure-this-row-exists: the engine unifies the tempid with the
+   * existing row. `op.put(User, { sub, name })` is insert-or-update;
+   * `op.put(User, { sub })` is enough when you only have the key. A
+   * lookup ref that misses is still a hard rejection — put with the
+   * unique field is the path that creates when missing.
    */
   put<E extends OpKnownEntity<C>>(
     entity: E,
@@ -273,16 +278,6 @@ export interface Op<
     entity: E,
     id: OpEntity<C>,
     attrs: OpPutAttrs<C, E>,
-  ): OpHandle<C>;
-
-  /**
-   * Ensure a row exists for a `unique: "upsert"` value. Returns a handle
-   * whose tempid unifies with the existing entity when the value is
-   * already present.
-   */
-  upsert<const A extends OpUpsertField<C>>(
-    field: A,
-    value: OpValue<C, A>,
   ): OpHandle<C>;
 
   query<Row, Out = readonly Row[]>(
@@ -347,7 +342,6 @@ export interface RuntimeOp {
   delete(e: unknown): Effect.Effect<void>;
   put(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   put(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
-  upsert(field: unknown, value: unknown): Effect.Effect<RuntimeOpHandle>;
   query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(

@@ -2,17 +2,16 @@
 
 ## Unreleased
 
-### Entity-level writes on the op handle (`put` / `upsert`)
+### Entity-level writes on the op handle (`put`)
 
 `op.put(Issue, { title, labels: ids })` creates; `op.put(Issue, id, {…})`
 updates. Attrs are typed through `WriteAtIdent` — cardinality-many is an
 array, `undefined` fields are omitted — and lower to map form. `set` /
 `remove` stay the datom-level escape hatch.
 
-`op.upsert(User.sub, "…")` returns a handle whose tempid unifies with an
-existing `unique: "upsert"` row. A lookup ref that misses is still a
-hard rejection; upsert is "ensure this row exists". Constrained to
-identity attrs (`unique: "upsert"`), not `"strict"`.
+Including a `unique: "upsert"` field in the map makes `put`
+ensure-this-row-exists: the engine unifies the tempid with the existing
+row. `op.put(User, { sub, name })` is insert-or-update.
 
 Reef's `createIssue` / `seedSampleIssues` now write through `op.put`.
 
