@@ -189,6 +189,7 @@ describe("Field composition merge", () => {
       "string",
     );
     expect(Field(stored(Schema.String, "uuid")).valueType).toBe("uuid");
+    expect(Field(Schema.String).valueType).toBe("string");
   });
 
   test("owned merges both ways through Field / Field.many / Field.unique", () => {

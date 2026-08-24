@@ -101,7 +101,12 @@ type PairableSchema<S extends Schema.Top, VT extends DbValueType> =
 export const stored = <S extends Schema.Top, const VT extends DbValueType>(
   schema: PairableSchema<S, VT>,
   vt: VT,
-): S & RamoseVt<VT> => asVt(schema, vt);
+): S & RamoseVt<VT> =>
+  asVt(
+    // A new object: branding `Schema.String` must not rewrite every string field.
+    (schema as S).annotate({ identifier: `ramose/stored/${vt}` }) as S,
+    vt,
+  );
 
 /**
  * UUID as a canonical string. Lowers to `:db.type/uuid`. The `{ vt: 6, v }`
