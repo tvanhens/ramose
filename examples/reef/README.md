@@ -103,7 +103,7 @@ examples/reef/
   token nears `exp`, so 15-minute tokens refresh themselves. Refresh stays
   on the board — Vite and the auth Worker both fall back to `index.html`.
 - **Board** — local-first reactivity. Columns render one `useLive(db, boardQuery)`
-  read against the session overlay; a drag is one `useTransact` `run` writing
+  read against the session overlay; a drag is one `useOperation` `run` writing
   two datoms (status + rank) and the card moves as soon as the pending layer
   applies — the `live` pill pulses on every `ticks` bump `useLive` reports
   (local apply, ack, or an inbound filtered `tx`). There is no refetch code

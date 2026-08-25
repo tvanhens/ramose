@@ -788,7 +788,7 @@ describe("refresh open is one session, not two", () => {
     };
 
     const ws = await openWorkspace("coral-team", false, opts);
-    expect(ws.cls).toBe("owner");
+    expect((await ws.token.claims()).ramose?.class).toBe("owner");
     expect(counted.connects).toBe(0);
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
@@ -839,7 +839,7 @@ describe("refresh open is one session, not two", () => {
     };
 
     const ws = await openWorkspace("coral-team", false, opts);
-    expect(ws.cls).toBe("viewer");
+    expect((await ws.token.claims()).ramose?.class).toBe("viewer");
     expect(counted.connects).toBe(0);
 
     const client = counted.connect({

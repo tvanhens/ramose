@@ -1,15 +1,13 @@
 /**
  * Workspace wiring. The mint is the `ramose/better-auth` client plugin
  * (`authClient.ramose.token`); `Ramose.token.jwt` re-mints the JWT near
- * `exp`; `cls` is the decoded, unverified claim — UI hints only. The client
- * that lives with the board is owned by `<RamoseProvider key={slug}>` in
- * App.tsx. This module mints `{ slug, cls, token }` and, on create only,
- * runs `install()` + seeds labels over a short-lived client. The peer
- * upserts the signed-in user row (`sub`, `role`, name, email) at session
- * establishment; screens read it with `db.principal()`.
+ * `exp`. The client that lives with the board is owned by
+ * `<RamoseProvider key={slug}>` in App.tsx. This module mints `{ slug,
+ * token }` and, on create only, runs `install()` + seeds labels over a
+ * short-lived client. Class is a UI hint from `useRamoseClaims()` once
+ * the provider owns the source; `eid` comes from `usePrincipal(db)`.
  */
 import * as Ramose from "ramose/db";
-import { policy, type Class } from "../domain/policy.ts";
 import { Reef } from "../domain/schema.ts";
 import { provisionWorkspace } from "./mutations.ts";
 
@@ -18,7 +16,6 @@ export const RAMOSE_URL =
 
 export interface Workspace {
   readonly slug: string;
-  readonly cls: Class;
   /** Stable for the workspace's lifetime — `RamoseProvider` keys its client on it. */
   readonly token: Ramose.TokenSource;
 }
@@ -37,10 +34,11 @@ export type OpenWorkspaceOptions = Pick<
 };
 
 /**
- * Mint the source and decode `cls`. A refresh / shared-URL open
+ * Mint the source (and warm its claims cache so `useRamoseClaims` is
+ * sync on the first board render). A refresh / shared-URL open
  * (`provision: false`) stops there — no `Ramose.connect`. Create still
  * `install()`s and seeds labels over a client that is closed before the
- * board mounts; `myEid` comes from `db.principal()` on the live client.
+ * board mounts.
  */
 export const openWorkspace = async (
   slug: string,
@@ -54,8 +52,7 @@ export const openWorkspace = async (
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const raw = (await token.claims()).ramose?.class;
-  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
+  await token.claims();
   // enddocs:open-workspace-token
   if (provision) {
     // docs:open-workspace-provision
@@ -75,5 +72,5 @@ export const openWorkspace = async (
     }
     // enddocs:open-workspace-provision
   }
-  return { slug, cls, token };
+  return { slug, token };
 };
