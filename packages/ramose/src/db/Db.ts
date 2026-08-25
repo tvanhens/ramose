@@ -24,6 +24,7 @@ import { schemaTx } from "./ensure.ts";
 import {
   assembleInstalled,
   checkEvolution,
+  installTx,
   occupancyIdents,
   occupancyQuery,
   installedCoreQuery,
@@ -924,7 +925,7 @@ export const makeDb = <C extends AnySchema>(
         }
         const refused = checkEvolution(desired, installed, occupied, options);
         if (refused !== undefined) return yield* Effect.fail(refused);
-        return yield* submit(desired);
+        return yield* submit(installTx(desired, installed));
       }),
 
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>

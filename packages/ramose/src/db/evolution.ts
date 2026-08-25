@@ -17,12 +17,22 @@ import { Q, mkVar, q } from "./query/index.ts";
 
 /** One installed attribute, as `install()` reads it back from the peer. */
 export interface InstalledAttr {
+  /** Attribute entity id, when the catalog read resolved one. */
+  readonly e?: number;
   readonly ident: string;
   readonly valueType: string;
   readonly cardinality: string;
   readonly unique?: string;
   readonly optional?: boolean;
 }
+
+/** Retract `:db/optional` so an optional→required flip actually applies. */
+export type OptionalRetract = readonly [
+  ":db/retract",
+  number | readonly [":db/ident", string],
+  ":db/optional",
+  true,
+];
 
 const SYSTEM_PREFIX = ":db/";
 
@@ -150,6 +160,7 @@ export const assembleInstalled = (
     const unique = Number.isNaN(e) ? undefined : uniqueByE.get(e);
     const optional = !Number.isNaN(e) && optionalByE.has(e);
     out.push({
+      ...(Number.isNaN(e) ? {} : { e }),
       ident: row.ident,
       valueType: row.valueType,
       cardinality: row.cardinality,
@@ -257,7 +268,8 @@ export const checkEvolution = (
         flip(desired.ident, "cardinality", have.cardinality, desired.cardinality),
       );
     }
-    if ((have.unique ?? undefined) !== (desired.unique ?? undefined)) {
+    // attributeTx only asserts `:db/unique`; a drop is a documented no-op.
+    if (desired.unique !== undefined && have.unique !== desired.unique) {
       changes.push(flip(desired.ident, "unique", have.unique, desired.unique));
     }
     if (!isRequiredAttr(have) && isRequiredAttr(desired) && occupied.has(namespaceOf(desired.ident))) {
@@ -295,3 +307,34 @@ export const namespacesNeedingOccupancy = (
   }
   return [...needed];
 };
+
+const retractSubject = (
+  have: InstalledAttr,
+): number | readonly [":db/ident", string] =>
+  have.e !== undefined ? have.e : [":db/ident", have.ident];
+
+/**
+ * Retracts for installed-optional / desired-required attrs. `attributeTx`
+ * never retracts `:db/optional`; without these ops the flip is a no-op.
+ */
+export const optionalRetracts = (
+  desiredTx: readonly SchemaAttrTx[],
+  installed: readonly InstalledAttr[],
+): readonly OptionalRetract[] => {
+  const byIdent = new Map(installed.map((a) => [a.ident, a]));
+  const out: OptionalRetract[] = [];
+  for (const tx of desiredTx) {
+    const desired = desiredOf(tx);
+    const have = byIdent.get(desired.ident);
+    if (have === undefined || !isRequiredAttr(desired)) continue;
+    if (have.optional !== true) continue;
+    out.push([":db/retract", retractSubject(have), ":db/optional", true]);
+  }
+  return out;
+};
+
+/** Catalog upsert plus the retracts that make optional→required real. */
+export const installTx = (
+  desiredTx: readonly SchemaAttrTx[],
+  installed: readonly InstalledAttr[],
+): readonly unknown[] => [...desiredTx, ...optionalRetracts(desiredTx, installed)];

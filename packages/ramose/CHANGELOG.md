@@ -32,8 +32,11 @@ would flip, or when a new required field lands on a namespace that
 already has entities. The error lists every incompatible ident and
 tells you a default or a migration step is required. Compatible
 changes — a new optional field, a new namespace, a `doc` edit — still
-apply silently. The opt-in is `install({ allowIncompatible: [":ident"] })`.
-There is no second install API.
+apply silently. Dropping `unique` is a no-op (`attributeTx` cannot
+retract it). An optional→required flip retracts `:db/optional` so the
+peer actually requires the field. The opt-in is
+`install({ allowIncompatible: [":ident"] })`. There is no second
+install API.
 
 ### One `EntityRef` vocabulary (tracker #178)
 

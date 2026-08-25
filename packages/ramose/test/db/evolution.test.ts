@@ -25,15 +25,21 @@ import {
   assembleInstalled,
   checkEvolution,
   incompatibleMessage,
+  installedCoreQuery,
+  installedOptionalQuery,
+  installedUniqueQuery,
+  installTx,
   isRequiredAttr,
   isSystemIdent,
   makeDatabases,
   namespaceOf,
   namespacesNeedingOccupancy,
   occupancyIdents,
+  optionalRetracts,
   schemaTx,
   seedWrite,
 } from "../../src/db/internal.ts";
+import { TxRejected } from "../../src/db/Errors.ts";
 
 const Note = Entity("note", {
   title: Field(Schema.String),
@@ -96,12 +102,14 @@ describe("evolution helpers", () => {
     );
     expect(assembled).toEqual([
       {
+        e: 2001,
         ident: ":note/title",
         valueType: ":db.type/string",
         cardinality: ":db.cardinality/one",
         unique: ":db.unique/identity",
       },
       {
+        e: 2002,
         ident: ":note/body",
         valueType: ":db.type/string",
         cardinality: ":db.cardinality/one",
@@ -180,6 +188,36 @@ describe("checkEvolution", () => {
     const e = checkEvolution(schemaTx(Flipped), [title, body], new Set());
     expect(e?.changes.map((c) => c.kind)).toEqual(["unique"]);
     expect(e?.changes[0]?.to).toBe(":db.unique/identity");
+  });
+
+  test("dropping unique is a silent no-op", () => {
+    const UniqueTitle = {
+      ...title,
+      unique: ":db.unique/identity",
+    };
+    expect(checkEvolution(schemaTx(Notes), [UniqueTitle, body], new Set())).toBeUndefined();
+  });
+
+  test("identity → value uniqueness is IncompatibleSchema", () => {
+    const UniqueTitle = {
+      ...title,
+      unique: ":db.unique/identity",
+    };
+    const Flipped = DbSchema({
+      note: Entity("note", {
+        title: Field(Schema.String, { unique: "strict" }),
+        body: Field(Schema.String, { optional: true }),
+      }),
+    });
+    const e = checkEvolution(schemaTx(Flipped), [UniqueTitle, body], new Set());
+    expect(e?.changes).toEqual([
+      {
+        ident: ":note/title",
+        kind: "unique",
+        from: ":db.unique/identity",
+        to: ":db.unique/value",
+      },
+    ]);
   });
 
   test("a new required field on an occupied namespace is IncompatibleSchema", () => {
@@ -276,6 +314,37 @@ describe("checkEvolution", () => {
     expect(occupancyIdents([title, body], "note")).toEqual([
       ":note/title",
       ":note/body",
+    ]);
+  });
+
+  test("optionalRetracts uses the attribute eid", () => {
+    const Tight = DbSchema({
+      note: Entity("note", {
+        title: Field(Schema.String),
+        body: Field(Schema.String),
+      }),
+    });
+    const installedBody = { ...body, e: 2002 };
+    expect(optionalRetracts(schemaTx(Tight), [title, installedBody])).toEqual([
+      [":db/retract", 2002, ":db/optional", true],
+    ]);
+    expect(installTx(schemaTx(Tight), [title, installedBody]).at(-1)).toEqual([
+      ":db/retract",
+      2002,
+      ":db/optional",
+      true,
+    ]);
+  });
+
+  test("optionalRetracts falls back to an ident lookup", () => {
+    const Tight = DbSchema({
+      note: Entity("note", {
+        title: Field(Schema.String),
+        body: Field(Schema.String),
+      }),
+    });
+    expect(optionalRetracts(schemaTx(Tight), [title, body])).toEqual([
+      [":db/retract", [":db/ident", ":note/body"], ":db/optional", true],
     ]);
   });
 
@@ -474,6 +543,97 @@ describe("install() against a live engine", () => {
       allowIncompatible: [":note/title"],
     });
     expect(report.t).toBeGreaterThan(0);
+    await p.dispose();
+  });
+
+  test("dropping unique stays a no-op — uniqueness is still enforced", async () => {
+    const UniqueNote = Entity("note", {
+      title: Field(Schema.String, { unique: "strict" }),
+      body: Field(Schema.String, { optional: true }),
+    });
+    const UniqueNotes = DbSchema({ note: UniqueNote });
+    const p = await peer();
+    const uniqueDb = p.ramose.db("notes", UniqueNotes);
+    await uniqueDb.install();
+    await run(
+      seedWrite(uniqueDb, function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.set(UniqueNote.title, "hello");
+      }),
+    );
+    const after = p.ramose.db("notes", Notes);
+    const report = await after.install();
+    expect(report.t).toBeGreaterThan(0);
+    const snap = after.asOf(Number.MAX_SAFE_INTEGER);
+    const installed = assembleInstalled(
+      await snap.query(installedCoreQuery),
+      await snap.query(installedUniqueQuery),
+      await snap.query(installedOptionalQuery),
+    );
+    expect(installed.find((a) => a.ident === ":note/title")?.unique).toBe(
+      ":db.unique/value",
+    );
+    const err = await runFail(
+      seedWrite(after, function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.set(Note.title, "hello");
+      }),
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/unique-conflict");
+    await p.dispose();
+  });
+
+  test("optional → required on an empty namespace retracts :db/optional", async () => {
+    const TightNote = Entity("note", {
+      title: Field(Schema.String),
+      body: Field(Schema.String),
+    });
+    const Tight = DbSchema({ note: TightNote });
+    const p = await peer();
+    await p.ramose.db("notes", Notes).install();
+    const report = await p.ramose.db("notes", Tight).install();
+    expect(report.t).toBeGreaterThan(0);
+    const err = await runFail(
+      seedWrite(p.ramose.db("notes", Notes), function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.set(Note.title, "hello");
+      }),
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/required");
+    await p.dispose();
+  });
+
+  test("allowIncompatible retracts :db/optional on occupied data", async () => {
+    const TightNote = Entity("note", {
+      title: Field(Schema.String),
+      body: Field(Schema.String),
+    });
+    const Tight = DbSchema({ note: TightNote });
+    const p = await peer();
+    const db = p.ramose.db("notes", Notes);
+    await db.install();
+    await run(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.set(Note.title, "hello");
+      }),
+    );
+    const refused = await runFail(p.ramose.db("notes", Tight).install());
+    expect(refused).toBeInstanceOf(IncompatibleSchema);
+    const report = await p.ramose.db("notes", Tight).install({
+      allowIncompatible: [":note/body"],
+    });
+    expect(report.t).toBeGreaterThan(0);
+    const err = await runFail(
+      seedWrite(p.ramose.db("notes", Notes), function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.set(Note.title, "other");
+      }),
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/required");
     await p.dispose();
   });
 });
