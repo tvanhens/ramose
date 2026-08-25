@@ -11,11 +11,13 @@ const html = readFileSync(
 const visible = html.replace(/<[^>]+>/g, "");
 
 describe("live-query social card", () => {
-  test("shows the schema, the query, and the React hook", () => {
+  test("shows the schema and an inline filtered live query", () => {
     expect(visible).toContain('Entity("todo"');
-    expect(visible).toContain("Query.from");
-    expect(visible).toContain("useLiveQuery");
+    expect(visible).toContain(
+      "useLiveQuery(\n    db,\n    Ramose.Query.from(Todo).where({ done: false }),\n  )",
+    );
     expect(visible).toContain("data?.map");
+    expect(visible).not.toContain("const todos");
   });
 
   test("does not name the site or ship a mark", () => {

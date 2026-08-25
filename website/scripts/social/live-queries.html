@@ -49,7 +49,8 @@
       .live {
         color: var(--green-bright);
       }
-      .str {
+      .str,
+      .bool {
         color: var(--green);
       }
       .id {
@@ -67,10 +68,11 @@
   <span class="id">done</span>: <span class="fn">Ramose</span>.<span class="fn">boolean</span>(),
 });
 
-<span class="kw">const</span> <span class="id">todos</span> = <span class="fn">Ramose</span>.<span class="fn">Query</span>.<span class="fn">from</span>(<span class="id">Todo</span>);
-
 <span class="kw">const</span> <span class="id">Todos</span> = () <span class="p">=&gt;</span> {
-  <span class="kw">const</span> { <span class="id">data</span> } = <span class="live">useLiveQuery</span>(<span class="id">db</span>, <span class="id">todos</span>);
+  <span class="kw">const</span> { <span class="id">data</span> } = <span class="live">useLiveQuery</span>(
+    <span class="id">db</span>,
+    <span class="fn">Ramose</span>.<span class="fn">Query</span>.<span class="fn">from</span>(<span class="id">Todo</span>).<span class="fn">where</span>({ <span class="id">done</span>: <span class="bool">false</span> }),
+  );
   <span class="kw">return</span> (
     <span class="p">&lt;</span><span class="id">ul</span><span class="p">&gt;</span>
       {<span class="id">data</span>?.<span class="fn">map</span>((<span class="id">todo</span>) <span class="p">=&gt;</span> (
