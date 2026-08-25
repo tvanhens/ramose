@@ -269,9 +269,10 @@ export interface Op<
   /**
    * Make this row so. Lowers to map form. `undefined` fields are
    * omitted; cardinality-many takes an array. No subject allocates a
-   * new record and the map must carry every required field. A subject
-   * names the record: an existing id, or a new id if that number has
-   * never been used (same as `set` — not "update only").
+   * new record and the map must carry every required field. A numeric
+   * subject names an existing record — a missing id is
+   * `TxRejected` `tx/missing-entity` (same as {@link Op.update}; naming
+   * never creates). A tempid / handle subject is a create.
    *
    * Including a `unique: "upsert"` field unifies with the existing row
    * — insert-or-update, still with full required data on create.

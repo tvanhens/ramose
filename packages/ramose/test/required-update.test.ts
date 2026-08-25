@@ -7,7 +7,6 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Connection } from "../src/internal/core/conn.ts";
-import { TxError } from "../src/internal/core/tx.ts";
 import { toWireDatom } from "../src/internal/core/index.ts";
 import {
   Entity,
@@ -95,7 +94,7 @@ describe("required-at-transact", () => {
     expect((await conn.db().entity(eid!))?.[":person/title"]).toBe("Staff");
   });
 
-  test("processTx: optional and card-many omitted pass; required ref must be supplied", async () => {
+  test("processTx: optional and card-many omitted pass", async () => {
     const conn = await setup();
     const tx = txBuilder(People);
     Effect.runSync(tx.put(Person, { handle: "ada", title: "Eng" }));
@@ -104,6 +103,150 @@ describe("required-at-transact", () => {
     expect(row?.[":person/handle"]).toBe("ada");
     expect(row?.[":person/note"]).toBeUndefined();
     expect(row?.[":person/tags"]).toBeUndefined();
+  });
+
+  test("processTx: required ref must be supplied", async () => {
+    const conn = await setup(Staffs);
+    await expect(
+      conn.transact([
+        { ":db/id": "s", ":staff/handle": "ada", ":staff/title": "Eng" },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+
+    const viaPut = txBuilder(Staffs);
+    Effect.runSync(
+      viaPut.put(Staff, { handle: "ada", title: "Eng" } as never),
+    );
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
+      code: "tx/required",
+    });
+  });
+
+  test("processTx: tx.set on a tempid create is tx/required when a field is missing", async () => {
+    const conn = await setup();
+    const short = txBuilder(People);
+    const e = Effect.runSync(short.entity());
+    Effect.runSync(short.set(e, Person.handle, "ada"));
+    await expect(conn.transact([...txOps(short)])).rejects.toMatchObject({
+      code: "tx/required",
+    });
+
+    const full = txBuilder(People);
+    const created = Effect.runSync(full.entity());
+    Effect.runSync(full.set(created, Person.handle, "ada"));
+    Effect.runSync(full.set(created, Person.title, "Eng"));
+    const rep = await conn.transact([...txOps(full)]);
+    const row = await conn.db().entity(rep.tempids["tmp-1"]!);
+    expect(row?.[":person/handle"]).toBe("ada");
+    expect(row?.[":person/title"]).toBe("Eng");
+  });
+
+  test("processTx: H1 — app attrs on a bootstrap eid are required-checked", async () => {
+    const conn = await setup();
+    const viaPut = txBuilder(People);
+    Effect.runSync(viaPut.put(Person, 10, { title: "no handle" }));
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
+      code: "tx/required",
+    });
+    await expect(
+      conn.transact([[":db/add", 10, ":person/title", "no handle"]]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+  });
+
+  test("processTx: H1 — a numeric eid below FIRST_USER_EID that does not exist is tx/missing-entity", async () => {
+    const conn = await setup();
+    const viaPut = txBuilder(People);
+    Effect.runSync(viaPut.put(Person, 500, { title: "no handle" }));
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+  });
+
+  test("processTx: H2 — put / :db/add onto another namespace is tx/wrong-entity", async () => {
+    const conn = await setup(Films);
+    const film = txBuilder(Films);
+    Effect.runSync(film.put(Movie, { title: "Heat" }));
+    const made = await conn.transact([...txOps(film)]);
+    const filmEid = made.tempids["tmp-1"]!;
+
+    const viaPut = txBuilder(Films);
+    Effect.runSync(viaPut.put(Person, filmEid, { title: "nope" }));
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+    });
+
+    const complete = txBuilder(Films);
+    Effect.runSync(
+      complete.put(Person, filmEid, { handle: "ada", title: "nope" }),
+    );
+    await expect(conn.transact([...txOps(complete)])).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+    });
+
+    await expect(
+      conn.transact([[":db/add", filmEid, ":person/title", "nope"]]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
+  });
+
+  test("processTx: H3 — put / set at a nonexistent numeric eid is tx/missing-entity", async () => {
+    const conn = await setup();
+    const viaPut = txBuilder(People);
+    Effect.runSync(
+      viaPut.put(Person, 1008, { handle: "squatter", title: "T" }),
+    );
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+
+    const viaSet = txBuilder(People);
+    Effect.runSync(viaSet.set(1008, Person.handle, "squatter"));
+    await expect(conn.transact([...txOps(viaSet)])).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+
+    const first = txBuilder(People);
+    Effect.runSync(first.put(Person, { handle: "p0", title: "x" }));
+    const a = await conn.transact([...txOps(first)]);
+    const eid = a.tempids["tmp-1"]!;
+    expect(typeof eid).toBe("number");
+    expect(await conn.db().entity(1008)).toBeUndefined();
+    expect((await conn.db().entity(eid))?.[":person/handle"]).toBe("p0");
+  });
+
+  test("processTx: H4 — a dangling ref value is tx/missing-entity", async () => {
+    const Team = Entity("team", {
+      name: Field(Schema.String),
+    });
+    const Member = Entity("member", {
+      nick: Field(Schema.String),
+      team: Field(Ref(Team)),
+    });
+    const Roster = DbSchema({ team: Team, member: Member });
+    const conn = await setup(Roster);
+
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "m",
+          ":member/nick": "bob",
+          ":member/team": "ghost-string",
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/missing-entity" });
+
+    await expect(
+      conn.transact([
+        { ":db/id": "m", ":member/nick": "bob", ":member/team": 888888 },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/missing-entity" });
+
+    const linked = await conn.transact([
+      { ":db/id": "t", ":team/name": "eng" },
+      { ":db/id": "m", ":member/nick": "bob", ":member/team": "t" },
+    ]);
+    expect((await conn.db().entity(linked.tempids.m!))?.[":member/team"]).toBe(
+      linked.tempids.t,
+    );
   });
 
   test("processTx: clearing a required field is tx/required", async () => {
@@ -124,34 +267,40 @@ describe("required-at-transact", () => {
   test("processTx: retractEntity cascade that clears a required ref is tx/required", async () => {
     const conn = await setup(Staffs);
     const seed = txBuilder(Staffs);
+    const boss = Effect.runSync(seed.entity());
     Effect.runSync(
-      seed.put(Staff, 1003, { handle: "boss", title: "Lead", manager: 1003 }),
+      seed.put(Staff, boss, { handle: "boss", title: "Lead", manager: boss }),
     );
+    const ada = Effect.runSync(seed.entity());
     Effect.runSync(
-      seed.put(Staff, 1004, { handle: "ada", title: "Eng", manager: 1003 }),
+      seed.put(Staff, ada, { handle: "ada", title: "Eng", manager: boss }),
     );
-    await conn.transact([...txOps(seed)]);
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const bossEid = tempids["tmp-1"]!;
+    const adaEid = tempids["tmp-2"]!;
 
     await expect(
-      conn.transact([[":db/retract", 1004, ":staff/manager"]]),
+      conn.transact([[":db/retract", adaEid, ":staff/manager"]]),
     ).rejects.toMatchObject({ code: "tx/required" });
 
-    await expect(conn.transact([[":db/retractEntity", 1003]])).rejects.toMatchObject(
+    await expect(conn.transact([[":db/retractEntity", bossEid]])).rejects.toMatchObject(
       { code: "tx/required" },
     );
-    expect((await conn.db().entity(1003))?.[":staff/handle"]).toBe("boss");
-    expect((await conn.db().entity(1004))?.[":staff/manager"]).toBe(1003);
+    expect((await conn.db().entity(bossEid))?.[":staff/handle"]).toBe("boss");
+    expect((await conn.db().entity(adaEid))?.[":staff/manager"]).toBe(bossEid);
   });
 
   test("processTx: retractEntity of a row with no incoming required refs passes", async () => {
     const conn = await setup(Staffs);
     const seed = txBuilder(Staffs);
+    const solo = Effect.runSync(seed.entity());
     Effect.runSync(
-      seed.put(Staff, 1003, { handle: "solo", title: "Lead", manager: 1003 }),
+      seed.put(Staff, solo, { handle: "solo", title: "Lead", manager: solo }),
     );
-    await conn.transact([...txOps(seed)]);
-    await conn.transact([[":db/retractEntity", 1003]]);
-    expect(await conn.db().entity(1003)).toBeUndefined();
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const eid = tempids["tmp-1"]!;
+    await conn.transact([[":db/retractEntity", eid]]);
+    expect(await conn.db().entity(eid)).toBeUndefined();
   });
 });
 
@@ -259,14 +408,14 @@ describe("op.update", () => {
     });
   });
 
-  test("processTx: update clearing a required field is tx/required", async () => {
+  test("processTx: :db/retract clearing a required field is tx/required", async () => {
     const conn = await setup();
     const create = txBuilder(People);
     Effect.runSync(create.put(Person, { handle: "ada", title: "Eng" }));
     const { tempids } = await conn.transact([...txOps(create)]);
     await expect(
       conn.transact([[":db/retract", tempids["tmp-1"]!, ":person/title"]]),
-    ).rejects.toBeInstanceOf(TxError);
+    ).rejects.toMatchObject({ code: "tx/required" });
   });
 });
 
@@ -297,7 +446,84 @@ describe("both write paths reject identically", () => {
     },
   );
 
+  const putOnBootstrap = Operation(
+    "person/put-bootstrap",
+    {
+      schema: People,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+    },
+    (op) => {
+      op.put(Person, 10, { title: "no handle" });
+      return {};
+    },
+  );
+
+  const putOnFilm = Operation(
+    "person/put-on-film",
+    {
+      schema: Films,
+      input: Schema.Struct({ eid: Schema.Number }),
+      output: Schema.Struct({}),
+    },
+    (op, input) => {
+      op.put(Person, input.eid, { title: "nope" });
+      return {};
+    },
+  );
+
+  const putMissingEid = Operation(
+    "person/put-missing-eid",
+    {
+      schema: People,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+    },
+    (op) => {
+      op.put(Person, 1008, { handle: "squatter", title: "T" });
+      return {};
+    },
+  );
+
+  const putDanglingRef = Operation(
+    "person/put-dangling-ref",
+    {
+      schema: People,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+    },
+    (op) => {
+      op.put(Person, {
+        handle: "ada",
+        title: "Eng",
+        manager: 888888 as never,
+      });
+      return {};
+    },
+  );
+
   const names = Query.from(User).select({ name: User.name });
+
+  const overlayOf = async (catalog: AnySchema, dbName: string) => {
+    const server = await Connection.create();
+    await server.transact(schemaTx(catalog) as unknown[]);
+    const http = async (call: Call) => {
+      if (call.url.endsWith("/info")) {
+        return {
+          body: {
+            db: dbName,
+            t: server.t,
+            principal: { eid: null, class: "admin" },
+          },
+        };
+      }
+      throw new Error(`unexpected ${call.url}`);
+    };
+    const peer = fakePeer({ http });
+    const c = client(peer);
+    const db = c.ramose.db(dbName, catalog);
+    return { server, peer, c, db };
+  };
 
   test("overlay: create missing required is TxRejected tx/required", async () => {
     const server = await Connection.create();
@@ -345,6 +571,65 @@ describe("both write paths reject identically", () => {
     await settle();
 
     const err = await db.run(patchMissing, { handle: "ghost" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/missing-entity");
+    await c.dispose();
+  });
+
+  test("overlay: H1 put on bootstrap eid is TxRejected tx/required", async () => {
+    const { c, db, peer, server } = await overlayOf(People, "people");
+    await db.query(Query.from(Person).select({ handle: Person.handle }));
+    peer.socket.push({ op: "resync", t: server.t, datoms: [] });
+    await settle();
+    const err = await db.run(putOnBootstrap, {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/required");
+    await c.dispose();
+  });
+
+  test("overlay: H2 put onto another namespace is TxRejected tx/wrong-entity", async () => {
+    const { c, db, peer, server } = await overlayOf(Films, "films");
+    const film = await server.transact([{ ":film/title": "Heat" }]);
+    const filmEid = film.tempids[Object.keys(film.tempids)[0]!]!;
+    await db.query(Query.from(Person).select({ handle: Person.handle }));
+    const snap = await snapshotOf(server);
+    peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
+    await settle();
+    const err = await db.run(putOnFilm, { eid: filmEid }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/wrong-entity");
+    await c.dispose();
+  });
+
+  test("overlay: H3 put at a nonexistent eid is TxRejected tx/missing-entity", async () => {
+    const { c, db, peer, server } = await overlayOf(People, "people");
+    await db.query(Query.from(Person).select({ handle: Person.handle }));
+    peer.socket.push({ op: "resync", t: server.t, datoms: [] });
+    await settle();
+    const err = await db.run(putMissingEid, {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/missing-entity");
+    await c.dispose();
+  });
+
+  test("overlay: H4 dangling ref is TxRejected tx/missing-entity", async () => {
+    const { c, db, peer, server } = await overlayOf(People, "people");
+    await db.query(Query.from(Person).select({ handle: Person.handle }));
+    peer.socket.push({ op: "resync", t: server.t, datoms: [] });
+    await settle();
+    const err = await db.run(putDanglingRef, {}).then(
       () => undefined,
       (e: unknown) => e,
     );

@@ -720,11 +720,16 @@ describe("ref tempid create-and-link", () => {
   });
 
   test("a handle in a ref value slot lowers to its eid", async () => {
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Movies) as unknown[]);
+    const seeded = await conn.transact([{ ":db/id": "ada", ":user/name": "Ada" }]);
+    const adaEid = seeded.tempids.ada!;
+
     const built = buildOp({
       schema: Movies,
       db: "movies",
       principal: { eid: null, class: "admin", claims: {} },
-      self: 1001,
+      self: adaEid,
       effects: "run",
       q: () => Effect.succeed([]),
       pull: () => Effect.succeed(null),
@@ -733,18 +738,13 @@ describe("ref tempid create-and-link", () => {
     const other = op.entity();
     other.set(User.name, "Bea");
     other.set(User.bestFriend, op.self);
-    expect((built.ops()[1] as unknown[])[3]).toBe(1001);
+    expect((built.ops()[1] as unknown[])[3]).toBe(adaEid);
 
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Movies) as unknown[]);
-    const expansion = await conn.transact([
-      { ":db/id": 1001, ":user/name": "Ada" },
-      ...built.ops(),
-    ]);
+    const expansion = await conn.transact([...built.ops()]);
     const beaEid = expansion.tempids["tmp-1"];
     expect(typeof beaEid).toBe("number");
     const row = await conn.db().entity(beaEid!);
-    expect(row?.[":user/bestFriend"]).toBe(1001);
+    expect(row?.[":user/bestFriend"]).toBe(adaEid);
   });
 });
 

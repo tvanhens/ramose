@@ -124,6 +124,58 @@ const updateGhost = Operation(
   },
 );
 
+const putOnBootstrap = Operation(
+  "user/put-bootstrap",
+  {
+    schema: Movies,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.put(User, 10, { age: 1 });
+    return {};
+  },
+);
+
+const putOnMovie = Operation(
+  "user/put-on-movie",
+  {
+    schema: Movies,
+    input: Schema.Struct({ eid: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.put(User, input.eid, { name: "nope" });
+    return {};
+  },
+);
+
+const putMissingEid = Operation(
+  "user/put-missing-eid",
+  {
+    schema: Movies,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.put(User, 1008, { name: "squatter" });
+    return {};
+  },
+);
+
+const putDanglingRef = Operation(
+  "user/put-dangling-ref",
+  {
+    schema: Movies,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+  },
+  (op) => {
+    op.put(User, { name: "Ada", bestFriend: 888888 as never });
+    return {};
+  },
+);
+
 const operations = Operations({
   setTitle,
   ping,
@@ -133,6 +185,10 @@ const operations = Operations({
   createByPut,
   createShort,
   updateGhost,
+  putOnBootstrap,
+  putOnMovie,
+  putMissingEid,
+  putDanglingRef,
 });
 
 const titles = async (peer: Peer, tok?: string) => {
@@ -159,6 +215,10 @@ describe("GET /health lists registered operation ids", () => {
       "user/create-coded",
       "user/create-put",
       "user/create-short",
+      "user/put-bootstrap",
+      "user/put-dangling-ref",
+      "user/put-missing-eid",
+      "user/put-on-movie",
       "user/set-name",
       "user/update-ghost",
     ]);
@@ -607,6 +667,64 @@ describe('writes: "operations" is the peer default', () => {
     const { status, body } = await peer.json(
       "/db/movies/op",
       post({ name: "user/update-ghost", input: {}, clientOpId: "op-ghost" }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/missing-entity");
+    peer.close();
+  });
+
+  test("H1 put on bootstrap eid is 409 TxRejected tx/required", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({ name: "user/put-bootstrap", input: {}, clientOpId: "op-h1" }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/required");
+    peer.close();
+  });
+
+  test("H2 put onto another namespace is 409 TxRejected tx/wrong-entity", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const seeded = await peer.seed([{ ":db/id": "heat", ":movie/title": "Heat" }]);
+    const filmEid = seeded.tempids.heat!;
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/put-on-movie",
+        input: { eid: filmEid },
+        clientOpId: "op-h2",
+      }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/wrong-entity");
+    peer.close();
+  });
+
+  test("H3 put at a nonexistent eid is 409 TxRejected tx/missing-entity", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({ name: "user/put-missing-eid", input: {}, clientOpId: "op-h3" }),
+    );
+    expect(status).toBe(409);
+    expect(body.tag).toBe("TxRejected");
+    expect(body.code).toBe("tx/missing-entity");
+    peer.close();
+  });
+
+  test("H4 dangling ref is 409 TxRejected tx/missing-entity", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const { status, body } = await peer.json(
+      "/db/movies/op",
+      post({ name: "user/put-dangling-ref", input: {}, clientOpId: "op-h4" }),
     );
     expect(status).toBe(409);
     expect(body.tag).toBe("TxRejected");

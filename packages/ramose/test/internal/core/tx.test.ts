@@ -137,7 +137,9 @@ describe("transact", () => {
     await expect(conn.transact([[":db/add", "x", ":user/age", "notanumber"]])).rejects.toThrow(/user\/age/);
     await expect(conn.transact([{ ":db/ident": ":bad", ":db/valueType": ":db.type/nope", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }])).rejects.toThrow(/valueType/);
     await expect(conn.transact([[":db/frob", 1, 2, 3]])).rejects.toThrow(/unknown tx op/);
-    await expect(conn.transact([[":db/add", "x", ":user/friends", "danglingtempid"]])).resolves.toBeDefined(); // tempid as ref allocates
+    await expect(conn.transact([[":db/add", "x", ":user/friends", "danglingtempid"]])).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
   });
 
   test("concurrent transacts are serialized with monotonic t and no id reuse", async () => {

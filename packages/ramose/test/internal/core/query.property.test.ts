@@ -73,15 +73,26 @@ describe("query ≡ naive reference on random data", () => {
       const rep = await conn.transact([{ ":db/id": "x", ":p/name": pick(r, NAMES), ":p/age": randInt(r, 1, 6), ":p/flag": r() < 0.5 }]);
       eids.push(rep.tempids.x);
     }
+    const live: number[] = eids.slice();
     for (let i = 0; i < 120; i++) {
-      const e = pick(r, eids);
+      if (live.length === 0) break;
+      const e = pick(r, live);
       const kind = r();
-      if (kind < 0.3) await conn.transact([[":db/add", e, ":p/friend", pick(r, eids)]]);
-      else if (kind < 0.5) await conn.transact([[":db/add", e, ":p/boss", pick(r, eids)]]);
+      if (kind < 0.3) await conn.transact([[":db/add", e, ":p/friend", pick(r, live)]]);
+      else if (kind < 0.5) await conn.transact([[":db/add", e, ":p/boss", pick(r, live)]]);
       else if (kind < 0.7) await conn.transact([[":db/add", e, ":p/tag", pick(r, TAGS)]]);
       else if (kind < 0.85) await conn.transact([[":db/add", e, ":p/age", randInt(r, 1, 6)]]);
-      else if (kind < 0.95) await conn.transact([[":db/retract", e, ":p/tag"]]);
-      else await conn.transact([[":db/retractEntity", e]]);
+      else if (kind < 0.95) {
+        await conn.transact([[":db/retract", e, ":p/tag"]]);
+        if (!(await conn.db().exists(e))) {
+          const idx = live.indexOf(e);
+          if (idx >= 0) live.splice(idx, 1);
+        }
+      } else {
+        await conn.transact([[":db/retractEntity", e]]);
+        const idx = live.indexOf(e);
+        if (idx >= 0) live.splice(idx, 1);
+      }
       if (i === 60) await conn.index(); // half in trees, half in novelty
     }
 

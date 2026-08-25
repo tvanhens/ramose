@@ -16,11 +16,18 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
   const eids: number[] = [];
   for (let i = 0; i < 60; i++) eids.push((await conn.transact([{ ":db/id": "x", ":p/tag": pick(r, ["x","y","z"]) }])).tempids.x);
   for (let i = 0; i < 200; i++) {
+    if (eids.length === 0) break;
     const e = pick(r, eids);
     const k = r();
     if (k < 0.4) await conn.transact([[":db/add", e, ":p/boss", pick(r, eids)]]);
     else if (k < 0.8) await conn.transact([[":db/add", e, ":p/tag", pick(r, ["x","y","z"])]]);
-    else await conn.transact([[":db/retract", e, ":p/tag"]]);
+    else {
+      await conn.transact([[":db/retract", e, ":p/tag"]]);
+      if (!(await conn.db().exists(e))) {
+        const idx = eids.indexOf(e);
+        if (idx >= 0) eids.splice(idx, 1);
+      }
+    }
     if (i === 100) await conn.index();
   }
   const db = conn.db();
