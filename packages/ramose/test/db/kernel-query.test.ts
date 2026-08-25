@@ -161,9 +161,9 @@ const inProcessPeer = async () => {
 // ── the fixture catalog (the design record's running example) ──────────────
 
 const User = Entity("user", {
-  name: Field(Schema.String, { unique: "upsert" }),
+  name: Field.unique(Schema.String, "upsert"),
   age: Field(Long, { optional: true }),
-  tags: Field(Schema.String, { cardinality: "many" }),
+  tags: Field.many(Schema.String),
 });
 
 const Issue = Entity("issue", {
@@ -182,7 +182,7 @@ const Comment = Entity("comment", {
 
 const Team = Entity("team", {
   name: Field(Schema.String),
-  members: Field(Ref(() => User), { cardinality: "many" }),
+  members: Field.many(Ref(() => User)),
   parent: Field(Ref.self, { optional: true }),
 });
 

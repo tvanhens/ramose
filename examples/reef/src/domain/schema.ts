@@ -13,8 +13,7 @@ import * as Ramose from "ramose/db";
 /** One row per human who has entered the workspace. `sub` is the JWT subject. */
 // docs:user-entity
 export const User = Ramose.Entity("user", {
-  sub: Ramose.string({
-    unique: "upsert",
+  sub: Ramose.Field.unique(Ramose.string(), "upsert", {
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
   role: Ramose.string({
@@ -33,7 +32,7 @@ export const User = Ramose.Entity("user", {
 
 // docs:label-entity
 export const Label = Ramose.Entity("label", {
-  name: Ramose.string({ unique: "upsert" }),
+  name: Ramose.Field.unique(Ramose.string(), "upsert"),
   color: Ramose.string(),
 });
 // enddocs:label-entity

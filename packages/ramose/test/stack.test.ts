@@ -3,8 +3,9 @@
  * in-memory state store and a local HTTP server standing in for the peer.
  *
  * No cloud, no credentials — `Ramose.providers()` talks to nothing but the
- * peer's `/health` and, for a `Database`, one `POST /db/:name/transact`. That
- * is the point: `Server` only proves the peer is up, and `Database` is not a
+ * peer's `/health` and, for a `Database`, `install()`'s catalog read
+ * (`POST /db/:name/query`) then one `POST /db/:name/transact`. That is the
+ * point: `Server` only proves the peer is up, and `Database` is not a
  * cloud object at all — it is "install this catalog on this name".
  */
 
@@ -64,6 +65,11 @@ const peer = Bun.serve({
       });
       t += 1;
       return Response.json({ t, txEid: 13194139533319 + t, tempids: {}, datoms: body.tx.length });
+    }
+    // install() reads the installed catalog before the upsert. An empty
+    // result is a fresh name — no user attributes, check passes.
+    if (/^\/db\/[^/]+\/query$/.test(pathname)) {
+      return Response.json({ t, result: [] });
     }
     return new Response("not found", { status: 404 });
   },

@@ -28,7 +28,7 @@ import { snapshotOf } from "./overlay-seed.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const Person = Entity("person", {
-  handle: Field(Schema.String, { unique: "upsert" }),
+  handle: Field.unique(Schema.String, "upsert"),
   title: Field(Schema.String),
   note: Field(Schema.String, { optional: true }),
   tags: Field.many(Schema.String),
@@ -42,17 +42,17 @@ const Movie = Entity("film", {
 const Films = DbSchema({ person: Person, film: Movie });
 
 const Label = Entity("label", {
-  name: Field(Schema.String, { unique: "upsert" }),
+  name: Field.unique(Schema.String, "upsert"),
 });
 const Doc = Entity("doc", {
-  slug: Field(Schema.String, { unique: "upsert" }),
+  slug: Field.unique(Schema.String, "upsert"),
   title: Field(Schema.String),
   labels: Field.many(Ref(Label)),
 });
 const Docs = DbSchema({ label: Label, doc: Doc });
 
 const Staff = Entity("staff", {
-  handle: Field(Schema.String, { unique: "upsert" }),
+  handle: Field.unique(Schema.String, "upsert"),
   title: Field(Schema.String),
   manager: Field(Ref.self),
 });

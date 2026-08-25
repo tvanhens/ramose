@@ -701,7 +701,7 @@ describe("the board's writes move the board's live stream", () => {
     const labels = await peer.db.query(labelsQuery);
     expect(people.map((p) => p.name)).toEqual(["Ada"]);
     expect(labels).toEqual([]);
-    expect(peer.queryOps()).toEqual([]);
+    expect(peer.queryOps().filter((f) => f.asOf === undefined)).toEqual([]);
     await peer.dispose();
   });
 });

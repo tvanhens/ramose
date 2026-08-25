@@ -273,7 +273,7 @@ type _nestedAllBestName = Expect<
 const Node = Entity("node", {
   label: Field(Schema.String),
   next: Field(Ref.self),
-  kids: Field(Ref.self, { cardinality: "many" }),
+  kids: Field.many(Ref.self),
 });
 const Graph = DbSchema({ node: Node });
 declare const graph: Db<typeof Graph>;

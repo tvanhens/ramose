@@ -30,7 +30,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 |---|---|---|
 | <span id="history"></span>**history** | A read-only view that includes facts that were later removed. | [`db.history`](/concepts/time-travel/#history-including-what-was-deleted) |
 | <span id="id"></span><span id="eid"></span>**id** | Every record has a numeric id; every record type exposes it as a field for free. | `Issue.id`, `Eid` (a branded number) |
-| <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. | `db.install()`, `Server({ databases })` — [Two doors to install the schema](/guides/workspaces/#two-doors-to-install-the-schema) |
+| <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. Reads installed fields first and refuses incompatible flips (`IncompatibleSchema`). | `db.install()`, `install({ allowIncompatible })`, `Server({ databases })` — [Changing a schema later](/guides/catalog/#changing-a-schema-later) |
 | <span id="issuer-audience"></span>**issuer / audience** | Who signed a token and who it is for; the server checks both. | `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD` — [The token the server verifies](/reference/policy/#the-token-the-server-verifies) |
 | <span id="jwks"></span>**JWKS** | Your sign-in provider's public keys, at a URL, used to verify tokens. | `RAMOSE_JWKS_URL`, `RAMOSE_JWKS_JSON` |
 | <span id="live-query"></span><span id="standing-query"></span>**live query** | A query that re-runs itself whenever the database changes and hands your screen new rows. | `db.live`, [`useLive`](/reference/react/#uselive), `livePull`, `usePull` |
@@ -43,7 +43,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | Term | What it means | In the code |
 |---|---|---|
 | <span id="object-storage"></span><span id="r2"></span>**object storage** | Cloudflare R2, where every version of every database is kept. | `Cloudflare.R2.Bucket` |
-| <span id="one-or-many"></span><span id="cardinality"></span>**one value or many** | Whether a field holds one value or a set of values. Labels on an issue are "many". | `cardinality: "one"` \| `"many"` — [Options](/guides/catalog/#options) |
+| <span id="one-or-many"></span><span id="cardinality"></span>**one value or many** | Whether a field holds one value or a set of values. Labels on an issue are "many". | `Field.many(schema)` — [Many, unique, owned](/guides/catalog/#many-unique-owned) |
 | <span id="open-mode"></span>**open mode** | A server with no policy and no token: every caller is admin. Right for a laptop, wrong for the internet. | env unset — [The three server modes](/guides/permissions/#the-three-server-modes) |
 | <span id="policy"></span><span id="permissions"></span>**policy** | The value that says which roles may read, create, change or remove which fields; compiled to JSON for the server. | [`Ramose.Policy`](/reference/policy/), `RAMOSE_POLICY` |
 | <span id="operation"></span>**operation** | A named write (`issue/move`) run with `db.run`. Not a policy verb (`read` / `create` / `set` / `remove` / `delete`). | [`db.run`](/reference/client-api/#writes), [Write data](/guides/transactions/) |
@@ -74,7 +74,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="tick"></span>**tick / update** | A live-query re-run: your own write applied on the overlay, or a filtered transaction arriving on the connection. | `useLive().ticks` |
 | <span id="time-travel"></span>**time travel** | Reading the database at an earlier version number with `asOf`. | `db.asOf(t)` — [Time travel](/concepts/time-travel/) |
 | <span id="token-source"></span>**token source** | A self-refreshing credential: a function that fetches a token, re-minted near expiry. | `Ramose.token.jwt(mint)` — [Tokens refresh themselves](/guides/sign-in/#tokens-refresh-themselves) |
-| <span id="unique-key"></span>**unique key** | A field whose value identifies one record; lets you look records up by it. | `unique: "upsert"` — [Options](/guides/catalog/#options) |
+| <span id="unique-key"></span>**unique key** | A field whose value identifies one record; lets you look records up by it. Unify-on-collision vs reject-on-collision. | `Field.unique(schema, "upsert" \| "strict")` — [Many, unique, owned](/guides/catalog/#many-unique-owned) |
 | <span id="version-number"></span><span id="basis"></span><span id="t"></span>**version number `t`** (basis) | The number every write gets, in order. Reads happen at a version; `asOf(t)` picks one. Not a date. | `report.t`, `db.basis()`, `useBasis` |
 | <span id="connection"></span><span id="session"></span>**WebSocket connection** (session) | The connection a browser holds to a database; hosts the current-view overlay and carries filtered transactions. Pinned `asOf` / `history` still read the server. Writes always use HTTPS. | `GET /db/:name/session` — [HTTP API](/reference/server/#http-api) |
 | <span id="worker"></span>**Worker** | Cloudflare's serverless function. Your app's backend and the Ramose server are Workers. | `Cloudflare.Worker` |

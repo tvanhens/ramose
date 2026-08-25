@@ -26,7 +26,7 @@ import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { Meta, Movie, Movies, User } from "./db/fixture.ts";
 
 const Doc = Entity("doc", {
-  slug: Field(Schema.String, { unique: "strict" }),
+  slug: Field.unique(Schema.String, "strict"),
 });
 const Secret = Entity("secret", {
   note: Field(Schema.String),
