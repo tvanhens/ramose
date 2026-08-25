@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
-// Capture the live-query Twitter cards at 2×.
+// Capture the live-query Twitter card at 2×.
 //
 //   bun website/scripts/social/capture.mjs
-//   bun website/scripts/social/capture.mjs twitter
 //
 // Needs system Chrome (`google-chrome`). Output lands in website/public/social/.
 
@@ -14,10 +13,9 @@ import sharp from "sharp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, "../../public/social");
-const FONT = join(
-  HERE,
-  "../../node_modules/@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2",
-);
+const W = 1600;
+const H = 900;
+const FILE = "live-queries-twitter.png";
 const CHROME =
   process.env.CHROME ??
   ["/opt/google/chrome/chrome", "/usr/bin/google-chrome-stable", "/usr/local/bin/google-chrome"].find(
@@ -30,19 +28,6 @@ const CHROME =
     },
   ) ??
   "google-chrome";
-
-const ALL = [
-  { id: "twitter", file: "live-queries-twitter.png", w: 1600, h: 900 },
-  { id: "card", file: "live-queries-card.png", w: 1080, h: 1350 },
-];
-const only = process.argv.slice(2);
-const SHOTS = only.length
-  ? ALL.filter((s) => only.includes(s.id) || only.includes(s.file))
-  : ALL;
-if (!SHOTS.length) {
-  console.error(`unknown shot: ${only.join(" ")}`);
-  process.exit(1);
-}
 
 const run = (cmd, args, opts = {}) =>
   new Promise((resolve, reject) => {
@@ -64,7 +49,7 @@ const waitForFile = async (path, timeoutMs = 20_000) => {
   throw new Error(`timed out waiting for ${path}`);
 };
 
-const screenshot = async (url, dest, w, h) => {
+const screenshot = async (url, dest) => {
   const profile = join(OUT, `.chrome-${process.pid}-${Date.now()}`);
   mkdirSync(profile, { recursive: true });
   const child = spawn(
@@ -86,7 +71,7 @@ const screenshot = async (url, dest, w, h) => {
       "--force-device-scale-factor=2",
       "--virtual-time-budget=4000",
       `--user-data-dir=${profile}`,
-      `--window-size=${w},${h}`,
+      `--window-size=${W},${H}`,
       `--screenshot=${dest}`,
       url,
     ],
@@ -104,54 +89,42 @@ const screenshot = async (url, dest, w, h) => {
 
 mkdirSync(OUT, { recursive: true });
 
-const html = Bun.file(join(HERE, "live-queries.html"));
-const font = Bun.file(FONT);
-if (!(await font.exists())) {
-  console.error(`Manrope woff2 missing at ${FONT}`);
-  process.exit(1);
-}
-
 const server = Bun.serve({
   port: 0,
-  async fetch(req) {
+  fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/" || url.pathname === "/live-queries.html") {
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
-    if (url.pathname === "/fonts/manrope-latin.woff2") {
-      return new Response(font, { headers: { "content-type": "font/woff2" } });
+      return new Response(Bun.file(join(HERE, "live-queries.html")), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
     }
     return new Response("not found", { status: 404 });
   },
 });
 
-const base = `http://127.0.0.1:${server.port}/live-queries.html`;
-console.log(`serving social cards at ${base}`);
+const dest = join(OUT, FILE);
+const raw = join(OUT, `.raw-${FILE}`);
+const page = `http://127.0.0.1:${server.port}/live-queries.html`;
+console.log(`→ ${FILE}  ${W}×${H} @2x`);
+await screenshot(page, raw);
 
-for (const shot of SHOTS) {
-  const raw = join(OUT, `.raw-${shot.file}`);
-  const dest = join(OUT, shot.file);
-  const url = `${base}?shot=${shot.id}`;
-  console.log(`→ ${shot.file}  ${shot.w}×${shot.h} @2x`);
-  await screenshot(url, raw, shot.w, shot.h);
-  const img = sharp(raw);
-  const meta = await img.metadata();
-  const targetW = shot.w * 2;
-  const targetH = shot.h * 2;
-  let pipeline = img;
-  if ((meta.width ?? 0) > targetW || (meta.height ?? 0) > targetH) {
-    pipeline = pipeline.extract({
-      left: 0,
-      top: 0,
-      width: Math.min(targetW, meta.width ?? targetW),
-      height: Math.min(targetH, meta.height ?? targetH),
-    });
-  }
-  await pipeline.png({ compressionLevel: 9, adaptiveFiltering: true }).toFile(dest);
-  unlinkSync(raw);
-  const outMeta = await sharp(dest).metadata();
-  console.log(`   ${outMeta.width}×${outMeta.height}  ${outMeta.channels}-channel`);
+const img = sharp(raw);
+const meta = await img.metadata();
+const targetW = W * 2;
+const targetH = H * 2;
+let pipeline = img;
+if ((meta.width ?? 0) > targetW || (meta.height ?? 0) > targetH) {
+  pipeline = pipeline.extract({
+    left: 0,
+    top: 0,
+    width: Math.min(targetW, meta.width ?? targetW),
+    height: Math.min(targetH, meta.height ?? targetH),
+  });
 }
+await pipeline.png({ compressionLevel: 9, adaptiveFiltering: true }).toFile(dest);
+unlinkSync(raw);
+const outMeta = await sharp(dest).metadata();
+console.log(`   ${outMeta.width}×${outMeta.height}  ${outMeta.channels}-channel`);
 
 server.stop();
 console.log("done");

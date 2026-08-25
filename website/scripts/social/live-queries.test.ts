@@ -11,16 +11,16 @@ const html = readFileSync(
 const visible = html.replace(/<[^>]+>/g, "");
 
 describe("live-query social card", () => {
-  test("ships the public live-query spelling", () => {
-    expect(visible).toContain("useLiveQuery");
+  test("shows the schema, the query, and the React hook", () => {
+    expect(visible).toContain('Entity("todo"');
     expect(visible).toContain("Query.from");
-    expect(visible).toContain(".where");
-    expect(visible).toContain(".select");
-    expect(visible).toContain(".orderBy");
-    expect(visible).toContain("db.live");
-    expect(visible).toContain("useLivePull");
-    expect(visible).toContain("db.query");
-    expect(visible).toContain("db.asOf");
+    expect(visible).toContain("useLiveQuery");
+    expect(visible).toContain("data?.map");
+  });
+
+  test("does not name the site or ship a mark", () => {
+    expect(visible).not.toContain("ramose.ai");
+    expect(html).not.toContain("viewBox=\"0 0 305 169\"");
   });
 
   test("does not advertise the retired useLive alias", () => {

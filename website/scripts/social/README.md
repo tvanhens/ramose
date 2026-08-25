@@ -1,15 +1,11 @@
-# Live-query social cards
+# Live-query social card
 
-Twitter-ready stills of the live-query spelling. Same brand palette as
-`public/og.png` (black / forest / green), captured at 2× so the code stays
-sharp in the timeline.
+A 1600×900 still of the schema + `useLiveQuery` component. No wordmark, no
+site URL — just the code. Captured at 2× so it stays sharp in the timeline.
 
 ```sh
-# system Chrome
 bun website/scripts/social/capture.mjs
-bun website/scripts/social/capture.mjs twitter   # 1600×900 landscape
-bun website/scripts/social/capture.mjs card      # 1080×1350 4:5 cheat sheet
 ```
 
-Open `live-queries.html?shot=twitter` in a browser to preview. Output lands
-in `website/public/social/`.
+Open `live-queries.html` in a browser to preview. Output:
+`website/public/social/live-queries-twitter.png`.
