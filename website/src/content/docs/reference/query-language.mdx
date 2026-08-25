@@ -108,12 +108,28 @@ cells — `return { title: t.v }` — would otherwise collapse those two
 into one: the engine keeps unique projected tuples, and a title is not
 an identity. The default is now the same as `select`: the record that
 bound each projected value rides along, so the two issues stay two
-rows. `Q.distinct({ title: t.v })` is the opt-in for unique titles —
+rows.
+
+That ride follows the value to the fact that bound it. A cell bound by
+`Q.call` — `return { low: yield* Q.call("lower-case", t.v) }` — traces
+each argument back to its binding fact, so two issues titled
+`"same title"` stay two rows after a case-insensitive projection. A
+value exported from `Q.or` (a join var bound by a fact in a branch)
+does the same when the entity handle is already in scope — the
+documented pattern, where branches close over outer handles. `Q.not`
+does not bind, so a value that exists only inside `not` has no row
+provenance.
+
+`Q.distinct({ title: t.v })` is the opt-in for unique titles —
 one row when every projected cell agrees.
 
 ```ts
 // two issues titled "fix" → two rows
 return { title: t.v };
+
+// the same two issues, folded → two rows
+const low = yield* Q.call("lower-case", t.v);
+return { low };
 
 // the same two issues → one row
 return Q.distinct({ title: t.v });
@@ -202,6 +218,9 @@ const next = yield* Q.call("+", age, 1);
 const folded = yield* Q.call("lower-case", title);
 yield* Q.includes(folded, needle);
 ```
+
+Projecting the result keeps one row per source, the same as projecting
+the argument — see [Projection keeps one row per source](#projection-keeps-one-row-per-source).
 
 ## Effect stops at the boundary
 

@@ -866,6 +866,90 @@ describe("db.query end to end", () => {
     await peer.dispose();
   });
 
+  test("Q.call projection keeps one row per source — fnBind rides the binding fact", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    await run(
+      seedWrite(db, function* (tx) {
+        const a = yield* tx.entity();
+        yield* a.set(Issue.title, "same title");
+        yield* a.set(Issue.done, false);
+        yield* a.set(Issue.rank, 10);
+        yield* a.set(Issue.owner, ids.ada!.id as never);
+        const b = yield* tx.entity();
+        yield* b.set(Issue.title, "same title");
+        yield* b.set(Issue.done, true);
+        yield* b.set(Issue.rank, 11);
+        yield* b.set(Issue.owner, ids.ada!.id as never);
+      }),
+    );
+
+    const folded = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      const low = yield* Q.call("lower-case", t.v);
+      return { low };
+    });
+    const rows = await db.query(folded);
+    expect(rows.filter((r) => r.low === "same title")).toHaveLength(2);
+    expect(lowerQueryObject(folded).query.with).toHaveLength(1);
+
+    const unique = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      const low = yield* Q.call("lower-case", t.v);
+      return Q.distinct({ low });
+    });
+    expect((await db.query(unique)).filter((r) => r.low === "same title")).toHaveLength(1);
+    expect(lowerQueryObject(unique).query.with).toBeUndefined();
+
+    await peer.dispose();
+  });
+
+  test("or-join export of a value var keeps one row per source", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    await run(
+      seedWrite(db, function* (tx) {
+        const a = yield* tx.entity();
+        yield* a.set(Issue.title, "same title");
+        yield* a.set(Issue.done, false);
+        yield* a.set(Issue.rank, 10);
+        yield* a.set(Issue.owner, ids.ada!.id as never);
+        const b = yield* tx.entity();
+        yield* b.set(Issue.title, "same title");
+        yield* b.set(Issue.done, true);
+        yield* b.set(Issue.rank, 11);
+        yield* b.set(Issue.owner, ids.ada!.id as never);
+      }),
+    );
+
+    const exported = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = Q.var<string>();
+      yield* Q.or(
+        function* () {
+          yield* Q.fact(issue, Issue.title, title);
+          yield* Q.eq(title, "same title");
+        },
+        function* () {
+          yield* Q.fact(issue, Issue.title, title);
+          yield* Q.startsWith(title, "no-such-prefix");
+        },
+      );
+      return { title };
+    });
+    const rows = await db.query(exported);
+    expect(rows.filter((r) => r.title === "same title")).toHaveLength(2);
+    expect(lowerQueryObject(exported).query.with).toHaveLength(1);
+
+    await peer.dispose();
+  });
+
   test("an ungrouped aggregate answers one row over the empty set", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("tracker", Tracker);

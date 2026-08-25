@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `Q.call` and or-join projections keep one row per source (part of #305)
+
+A projected `Q.call` result traces its arguments back to the facts that
+bound them, so two issues titled `"same title"` projected as
+`{ low: yield* Q.call("lower-case", t.v) }` stay two rows. The same
+ride walks facts inside `Q.or` branches when the entity handle is
+already in scope. `Q.distinct` is unchanged. `Q.not` still does not
+bind, and a value that exists only inside `not` has no row provenance.
+
 ### `initialData` and Suspense on the read hooks (part of #196)
 
 `useLiveQuery` / `useQuery` / `useLivePull` / `usePull` take

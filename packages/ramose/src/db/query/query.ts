@@ -1756,28 +1756,106 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   // the same rank are two rows to a sum). The entity position of each fact
   // that binds the value rides in `:with` — distinctness includes it
   // without projecting it (the nav lowering carried its root the same
-  // way). An e-var already in the projection is grouping, not
-  // multiplicity, and stays out. `Q.distinct` skips this for plain
-  // projected cells; aggregates still join so a sum sees every row.
-  // Top-level facts only: a var bound solely inside an or/not group is not
-  // bound at the query's top level, so it cannot ride `:with`.
+  // way). A value bound by `Q.call` traces each var argument back to the
+  // fact that bound it (or rides an entity/tx argument itself). Facts
+  // inside an or-join count when the e-position is already bound at the
+  // top level — a join var, or a handle the branches close over. `not`
+  // does not bind, so it contributes no provenance. An e-var already in
+  // the projection is grouping, not multiplicity, and stays out.
+  // `Q.distinct` skips this for plain projected cells; aggregates still
+  // join so a sum sees every row.
   const withVars: string[] = [];
   if (provenanceVars.size > 0) {
-    const seen = new Set<number>();
-    for (const c of clauses) {
-      if (c._tag !== "fact") continue;
-      const v = c.vVar ?? c.v0;
-      const bindsValue =
-        (isVar(v) && provenanceVars.has(v.id)) ||
-        (c.txVar !== undefined && provenanceVars.has(c.txVar.id)) ||
-        (c.opVar !== undefined && provenanceVars.has(c.opVar.id));
-      if (!bindsValue) continue;
-      const e = c.eVar ?? c.e0;
-      if (isVar(e) && !projVars.has(e.id) && !seen.has(e.id)) {
-        seen.add(e.id);
-        withVars.push(nameOf(e));
+    const walkGroups = (list: readonly BClause[], visit: (c: BClause) => void): void => {
+      for (const c of list) {
+        visit(c);
+        if (c._tag === "orGroup") c.branches.forEach((b) => walkGroups(b, visit));
+      }
+    };
+
+    // `Q.call` results are not fact-bound. Follow ret → args until every
+    // projected (or aggregated) cell names the vars a fact can ride.
+    const fnBindArgs = new Map<number, readonly Position[]>();
+    walkGroups(clauses, (c) => {
+      if (c._tag === "fnBind") fnBindArgs.set(c.ret.id, c.args);
+    });
+    const rideableDirect: AnyVar[] = [];
+    const queue = [...provenanceVars];
+    for (let i = 0; i < queue.length; i++) {
+      const args = fnBindArgs.get(queue[i]!);
+      if (args === undefined) continue;
+      for (const a of args) {
+        if (!isVar(a)) continue;
+        if (a.kind === "entity" || a.kind === "tx") {
+          rideableDirect.push(a);
+          continue;
+        }
+        if (!provenanceVars.has(a.id)) {
+          provenanceVars.add(a.id);
+          queue.push(a.id);
+        }
       }
     }
+
+    // An e-var minted only inside a branch is not bound after the or-join
+    // unless it is a join var. Riding one that is not available is a
+    // query error, so nested facts only contribute already-visible e's.
+    const topLevelBound = new Set<number>();
+    for (const c of clauses) {
+      switch (c._tag) {
+        case "fact":
+          factVars(c, topLevelBound);
+          break;
+        case "fnBind":
+          for (const a of c.args) if (isVar(a)) topLevelBound.add(a.id);
+          topLevelBound.add(c.ret.id);
+          break;
+        case "memberOf":
+          topLevelBound.add(c.v.id);
+          break;
+        case "ruleCall":
+          for (const a of c.args) if (isVar(a)) topLevelBound.add(a.id);
+          topLevelBound.add(c.ret.id);
+          break;
+        case "orGroup": {
+          const inner = new Set<number>();
+          c.branches.forEach((b) => clauseListVars(b, inner));
+          const rest = clauseListVars(clauses.filter((s) => s !== c));
+          for (const id of inner) {
+            if (rest.has(id) || projVars.has(id) || topLevelBound.has(id)) {
+              topLevelBound.add(id);
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    const seen = new Set<number>();
+    const ride = (e: unknown, requireBound: boolean): void => {
+      if (!isVar(e) || projVars.has(e.id) || seen.has(e.id)) return;
+      if (requireBound && !topLevelBound.has(e.id)) return;
+      seen.add(e.id);
+      withVars.push(nameOf(e));
+    };
+    for (const v of rideableDirect) ride(v, true);
+
+    const walkFacts = (list: readonly BClause[], nested: boolean): void => {
+      for (const c of list) {
+        if (c._tag === "fact") {
+          const v = c.vVar ?? c.v0;
+          const bindsValue =
+            (isVar(v) && provenanceVars.has(v.id)) ||
+            (c.txVar !== undefined && provenanceVars.has(c.txVar.id)) ||
+            (c.opVar !== undefined && provenanceVars.has(c.opVar.id));
+          if (!bindsValue) continue;
+          ride(c.eVar ?? c.e0, nested);
+        } else if (c._tag === "orGroup") {
+          c.branches.forEach((b) => walkFacts(b, true));
+        }
+      }
+    };
+    walkFacts(clauses, false);
   }
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
