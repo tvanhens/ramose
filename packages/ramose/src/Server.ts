@@ -639,8 +639,11 @@ export const compareOperationsToHealth = (
 
 /**
  * @internal `Server({ operations })` vs compiled `auth.policy` `operations:`.
- * An armed name that is not registered fails the deploy. Unarmed registered
- * ops are allowed (superuser-only). Unset policy or operations skips.
+ * An armed name that is not registered fails the deploy. A named-rule or
+ * db-dependent v1 arm on a registry-bare (no-`on`) op fails the deploy —
+ * those arms need a resolved target and must not be ignored. Unarmed
+ * registered ops are allowed (superuser-only). Unset policy or operations
+ * skips.
  */
 export const compareOperationsToPolicy = (
   operations: AnyOperations | undefined,
@@ -657,7 +660,7 @@ export const compareOperationsToPolicy = (
   const armed = (parsed as { operations?: unknown }).operations;
   if (armed == null || typeof armed !== "object" || Array.isArray(armed)) return undefined;
   try {
-    checkOperationsPolicyCoverage(operations, Object.keys(armed));
+    checkOperationsPolicyCoverage(operations, armed as Record<string, unknown>);
     return undefined;
   } catch (error) {
     if (error instanceof PolicyError) return error;
