@@ -79,6 +79,8 @@ export const policy = Ramose.policy(
       read: true,
     },
     // enddocs:policy-comment
+    // addCommentOp is class-only: its `on` is the issue, so ownIssue would
+    // limit comments to the issue creator (the old comment.create arm did not).
     // docs:policy-operations
     operations: {
       provisionWorkspaceOp: P.class("owner"),
