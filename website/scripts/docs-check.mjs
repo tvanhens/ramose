@@ -483,7 +483,7 @@ if (run("images") && !onlyPage) {
   const HEAD_ASSETS = new Set(["/og.png", "/favicon.svg"]);
   const onDisk = walk(PUBLIC)
     .map((p) => "/" + relative(PUBLIC, p))
-    .filter((p) => /\.(png|gif|jpg)$/.test(p) && !p.startsWith("/brand") && !HEAD_ASSETS.has(p));
+    .filter((p) => /\.(png|gif|jpg)$/.test(p) && !p.startsWith("/brand") && !p.startsWith("/social") && !HEAD_ASSETS.has(p));
   // One consolidated line, not one warning per file: these are kept on purpose
   // (alternate crops, the GIF's source frames) and seven separate warnings
   // drown out the findings that need action.

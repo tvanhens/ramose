@@ -9,7 +9,9 @@ sole documentation location. The shipped query language (`Query.from`, the kerne
 [Client API](https://ramose.ai/reference/client-api/)).
 Recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
 brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
-[`website/public/brand/`](website/public/brand/).
+[`website/public/brand/`](website/public/brand/). Twitter stills of the live-query
+spelling live in [`website/public/social/`](website/public/social/) and are
+regenerated with `bun website/scripts/social/capture.mjs`.
 
 ## Public vocabulary
 
