@@ -50,8 +50,11 @@ describe("ident names", () => {
     expect([...RESERVED_FIELD_KEYS]).toEqual(["id", "ns", "fields", "_tag"]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
-      expect(isIdentName(key)).toBe(true);
     }
+    expect(isIdentName("id")).toBe(true);
+    expect(isIdentName("ns")).toBe(true);
+    expect(isIdentName("fields")).toBe(true);
+    expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
   });
 });

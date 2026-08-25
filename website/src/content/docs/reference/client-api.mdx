@@ -63,7 +63,7 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-**`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. `name` and every field key must match `IDENT_NAME_RE`. `id`, `ns`, `fields` and `_tag` are reserved — a field named `id` would replace the entity id.
+**`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields` and `_tag` are reserved.
 
 **Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag and composes with `Field.many` / `Field.unique`.
 
@@ -92,7 +92,7 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `owned` | `boolean` | `false` |
 | `doc` | `string` | — |
 
-**`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key must equal the entity's name (`todo`), so a policy's `ns.todo` and the wire prefix `:todo/*` cannot drift. `Ramose.Schema([User, Label])` is the same as `{ user: User, label: Label }`. Duplicate names are rejected. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
+**`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key must be the entity name (`todo`), so `ns.todo` and `:todo/*` cannot drift. `Schema([User, Label])` keys each by name. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
 
 | shorthand | TypeScript value | stored as |
 | --- | --- | --- |
@@ -185,7 +185,7 @@ const db = ramose.db("todos", Todos);
 if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only");
 ```
 
-**`Ramose.IDENT_NAME_RE`** / **`Ramose.isIdentName(name)`** — the entity-name and field-key rule: `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. `Ramose.RESERVED_FIELD_KEYS` / `Ramose.isReservedFieldKey(name)` are the four metadata names (`id`, `ns`, `fields`, `_tag`) a field cannot use. A bad name or reserved key throws from `Entity` / `Schema` — a setup mistake, not a `DbError`.
+**`Ramose.IDENT_NAME_RE`** / **`Ramose.isIdentName(name)`** — entity and field names: `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. **`RESERVED_FIELD_KEYS`** / **`isReservedFieldKey`** are `id`, `ns`, `fields`, `_tag`. A bad name throws from `Entity` / `Schema`.
 
 ## Db
 
