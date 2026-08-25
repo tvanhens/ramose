@@ -205,6 +205,13 @@ const rewriteMap = (
   return out;
 };
 
+/** @internal Pending-layer tempid rewrite. Tests pin `:db/update`. */
+export const rewritePendingTx = (
+  tx: readonly unknown[],
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown[] => rewriteTx(tx, ids, schema);
+
 const rewriteTx = (
   tx: readonly unknown[],
   ids: Record<string, number>,
@@ -214,8 +221,9 @@ const rewriteTx = (
     if (Array.isArray(item)) {
       const [op, e, a, v] = item as unknown[];
       if (op === ":db/retractEntity") return [op, rewriteEntityForm(e, ids, schema)];
-      if (op === ":db/add" || op === ":db/retract") {
-        const next: unknown[] = [op, rewriteEntityForm(e, ids, schema), a];
+      if (op === ":db/add" || op === ":db/retract" || op === ":db/update") {
+        const next: unknown[] = [op, rewriteEntityForm(e, ids, schema)];
+        if (item.length >= 3) next.push(a);
         if (item.length >= 4) {
           next.push(isRefAttr(schema, a) ? rewriteEntityForm(v, ids, schema) : v);
         }

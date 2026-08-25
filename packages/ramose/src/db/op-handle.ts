@@ -17,7 +17,7 @@ import {
   type RuntimeOpHandle,
   PrefixHalt,
 } from "./Operation.ts";
-import { asPromise } from "./promise.ts";
+import { asPromise, runSync } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
 import { lowerEntityArg, tempid } from "./entityArg.ts";
 import { txBuilder, txOps, type TxHandle } from "./Tx.ts";
@@ -60,7 +60,7 @@ const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): TxHandle => 
   // Worker catalogs are empty; `tx.entity` is catalog-typed. The runtime
   // already accepts eid / tempid / lookup / handle via `resolveEntity`.
   const bind = tx.entity as (id?: unknown) => Effect.Effect<TxHandle>;
-  return Effect.runSync(bind(self));
+  return runSync(bind(self));
 };
 
 /** Narrow a pull subject to an engine entity ref without a channel cast. */
@@ -176,13 +176,13 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
   _tag: "TxHandle",
   eid: entity.eid as OpHandle["eid"],
   set: (field, value) => {
-    Effect.runSync(entity.set(field, value));
+    runSync(entity.set(field, value));
   },
   remove: (field, value) => {
-    Effect.runSync(entity.remove(field, value));
+    runSync(entity.remove(field, value));
   },
   delete: () => {
-    Effect.runSync(entity.delete());
+    runSync(entity.delete());
   },
 });
 
@@ -190,7 +190,7 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
 export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
   const entity = ((id?: unknown) =>
     promiseEntity(
-      Effect.runSync(id === undefined ? op.entity() : op.entity(id)),
+      runSync(id === undefined ? op.entity() : op.entity(id)),
     )) as Op<any, any>["entity"];
 
   return {
@@ -202,23 +202,23 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
     entity,
     tempid,
     set: (e, field, value) => {
-      Effect.runSync(op.set(e, field, value));
+      runSync(op.set(e, field, value));
     },
     remove: (e, field, value) => {
-      Effect.runSync(op.remove(e, field, value));
+      runSync(op.remove(e, field, value));
     },
     delete: (e) => {
-      Effect.runSync(op.delete(e));
+      runSync(op.delete(e));
     },
     put: ((entity: unknown, a: unknown, b?: unknown) =>
       promiseEntity(
-        Effect.runSync(
+        runSync(
           b === undefined ? op.put(entity, a) : op.put(entity, a, b),
         ),
       )) as Op<any, any>["put"],
     update: ((entity: unknown, a: unknown, b?: unknown) =>
       promiseEntity(
-        Effect.runSync(
+        runSync(
           b === undefined ? op.update(entity, a) : op.update(entity, a, b),
         ),
       )) as Op<any, any>["update"],

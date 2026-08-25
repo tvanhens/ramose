@@ -325,8 +325,8 @@ export const toggleLabel = (
 Rules:
 
 - A new entity cannot be created without its required fields. That is why the default row type is honest: creation carried them.
-- `update` never creates. A missing row is `TxRejected` with `code: "tx/missing-entity"`. `put` / `set` at a numeric id that does not exist is the same. Clearing a required field is `tx/required`.
-- `put` with a unique key unifies with the existing row — still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`.
+- `update` never creates. A missing row is `TxRejected` with `code: "tx/missing-entity"`. `put` / `set` at a numeric id that does not exist is the same. An all-`undefined` map still checks the subject. Clearing a required field is `tx/required`.
+- `put` with a unique key unifies with the existing row — still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. `update` by that key sees a same-operation `put`.
 - A single-value field: `set` replaces the old value. A many-valued field: one `set` per value; `remove(field, value)` removes one value, `remove(field)` removes them all.
 - `delete` removes every fact of the record. History keeps them.
 - A reference field takes the target's id. `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (rejected as a dangling ref).

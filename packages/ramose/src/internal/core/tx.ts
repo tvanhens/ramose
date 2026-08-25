@@ -6,6 +6,8 @@
  *
  * Tx data forms (attribute names are ident strings, e.g. ":user/name"):
  *   [":db/add", e, a, v]
+ *   [":db/update", e, a, v]              (never creates; missing subject rejects)
+ *   [":db/update", e]                    (existence ping; no write)
  *   [":db/retract", e, a, v?]            (v omitted → retract all values)
  *   [":db/retractEntity", e]             (also retracts refs to e; components recursively)
  *   { ":db/id": e?, ":user/name": "Bob", ":user/friends": [ref, ...], ":user/_friends": [ref] }
@@ -145,6 +147,10 @@ export function flattenTxData(txData: TxData): TxOp[] {
           ops.push({ kind: "add", e: e as EForm, a: a as string | number, v: isPlainObject(v) ? expandMap(v as Record<string, unknown>) : v, hasV: true });
           break;
         case ":db/update":
+          if (item.length === 2) {
+            ops.push({ kind: "update", e: e as EForm, hasV: false });
+            break;
+          }
           if (item.length !== 4) throw new TxError(":db/update needs [op e a v]");
           {
             const vals = Array.isArray(v) && !isLookupRef(v) ? v : [v];
@@ -227,6 +233,9 @@ export async function expandTx(
   const ops = flattenTxData(txData);
   const txe = txEid(t);
   const tempids = new Map<string, number>();
+  const claims = new Map<string, string>(); // "attr|valueKey" → tempid
+  // (a, valueKey) → e for unique attrs asserted in this tx
+  const uniqueSeen = new Map<string, number>();
   const out: Datom[] = [];
   const expanded: ExpandedOp[] = [];
   const newEntities = new Set<number>([txe]);
@@ -287,8 +296,10 @@ export async function expandTx(
     }
     if (isLookupRef(form)) {
       const id = await db.entid(form);
-      if (id === undefined) throw new TxError(`lookup ref ${JSON.stringify(form)} does not resolve`, "tx/lookup-ref");
-      return id;
+      if (id !== undefined) return id;
+      const sameTx = resolveLookupInTx(form);
+      if (sameTx !== undefined) return sameTx;
+      throw new TxError(`lookup ref ${JSON.stringify(form)} does not resolve`, "tx/lookup-ref");
     }
     if (form !== null && typeof form === "object" && "vt" in (form as any) && (form as any).vt === ValueTag.Ref) {
       return (form as TaggedValue).v as number;
@@ -306,7 +317,33 @@ export async function expandTx(
       cur = next;
     }
   };
-  const claims = new Map<string, string>(); // "attr|valueKey" → tempid
+
+  /** Unique identity asserted earlier in this tx — so `:db/update` lookups see same-tx puts. */
+  const resolveLookupInTx = (form: readonly [string, unknown]): number | undefined => {
+    let attr: Attribute;
+    try {
+      attr = attrOf(form[0]);
+    } catch {
+      return undefined;
+    }
+    if (!attr.unique) return undefined;
+    let tv: TaggedValue;
+    try {
+      tv =
+        attr.valueType === ValueTag.Ref && typeof form[1] === "string" && form[1][0] === ":"
+          ? { vt: ValueTag.Ref, v: db.schema.entid(form[1])! }
+          : db.coerce(attr, form[1]);
+    } catch {
+      return undefined;
+    }
+    if (tv.v === undefined) return undefined;
+    const uk = attr.id + "|" + valueKey(tv.vt, tv.v);
+    const seen = uniqueSeen.get(uk);
+    if (seen !== undefined) return seen;
+    const claimant = claims.get(uk);
+    if (claimant === undefined) return undefined;
+    return tempids.get(aliasOf(claimant));
+  };
 
   // --- Upsert pass: tempids that assert a unique-identity value already in the db
   for (const op of ops) {
@@ -361,8 +398,6 @@ export async function expandTx(
     cur.set(k, m);
     return m;
   };
-  // (a, valueKey) → e for unique attrs asserted in this tx
-  const uniqueSeen = new Map<string, number>();
 
   const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
     const vals = await current(e, attr.id);
@@ -604,7 +639,6 @@ export async function expandTx(
       }
       continue;
     }
-    const attr = attrOf(op.a);
     if (op.kind === "update") {
       let e: number | undefined;
       try {
@@ -624,12 +658,20 @@ export async function expandTx(
       if (typeof op.e === "number" && !(await entityPresent(e))) {
         throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
       }
+      if (op.a === undefined || op.hasV === false) {
+        if (!(await entityPresent(e))) {
+          throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
+        }
+        continue;
+      }
+      const attr = attrOf(op.a);
       await assertWriteTarget(e, attr, false);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
       continue;
     }
+    const attr = attrOf(op.a);
     const e = await resolveEntity(op.e, op.kind === "add");
     if (e === undefined) continue;
     if (op.kind === "add") {

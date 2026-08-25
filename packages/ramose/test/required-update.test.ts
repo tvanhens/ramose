@@ -20,6 +20,8 @@ import {
   type AnySchema,
   txOps,
 } from "../src/db/internal.ts";
+import { runSync } from "../src/db/promise.ts";
+import { rewritePendingTx } from "../src/db/overlay.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { snapshotOf } from "./overlay-seed.ts";
@@ -315,6 +317,23 @@ describe("op.update", () => {
     ]);
   });
 
+  test("all-undefined subject form emits an existence ping", () => {
+    const tx = txBuilder(People);
+    Effect.runSync(tx.update(Person, 999_999, { title: undefined }));
+    expect(txOps(tx)).toEqual([[":db/update", 999_999]]);
+  });
+
+  test("no-upsert map form is TxRejected tx/invalid", () => {
+    const tx = txBuilder(Films);
+    try {
+      runSync(tx.update(Movie, { title: "Heat" } as never));
+      throw new Error("expected TxRejected");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TxRejected);
+      expect((err as TxRejected).code).toBe("tx/invalid");
+    }
+  });
+
   test("processTx: missing row is tx/missing-entity (eid and unique map)", async () => {
     const conn = await setup();
     const byEid = txBuilder(People);
@@ -342,6 +361,77 @@ describe("op.update", () => {
     await expect(conn.transact([...txOps(wrong)])).rejects.toMatchObject({
       code: "tx/wrong-entity",
     });
+  });
+
+  test("processTx: all-undefined subject form on a missing row is tx/missing-entity", async () => {
+    const conn = await setup();
+    const tx = txBuilder(People);
+    Effect.runSync(tx.update(Person, 999_999, { title: undefined }));
+    await expect(conn.transact([...txOps(tx)])).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+  });
+
+  test("processTx: all-undefined subject form on an existing row is a no-op", async () => {
+    const conn = await setup();
+    const create = txBuilder(People);
+    Effect.runSync(create.put(Person, { handle: "ada", title: "Eng", note: "hi" }));
+    const { tempids } = await conn.transact([...txOps(create)]);
+    const eid = tempids["tmp-1"]!;
+
+    const empty = txBuilder(People);
+    Effect.runSync(empty.update(Person, eid, { title: undefined, note: undefined }));
+    const second = await conn.transact([...txOps(empty)]);
+    expect(second.t).toBeGreaterThan(0);
+    const row = await conn.db().entity(eid);
+    expect(row?.[":person/title"]).toBe("Eng");
+    expect(row?.[":person/note"]).toBe("hi");
+  });
+
+  test("processTx: undefined values are skipped (title changes, note stays)", async () => {
+    const conn = await setup();
+    const create = txBuilder(People);
+    Effect.runSync(create.put(Person, { handle: "ada", title: "Eng", note: "hi" }));
+    const { tempids } = await conn.transact([...txOps(create)]);
+    const eid = tempids["tmp-1"]!;
+
+    const patch = txBuilder(People);
+    Effect.runSync(patch.update(Person, eid, { title: "Staff", note: undefined }));
+    await conn.transact([...txOps(patch)]);
+    const row = await conn.db().entity(eid);
+    expect(row?.[":person/title"]).toBe("Staff");
+    expect(row?.[":person/note"]).toBe("hi");
+  });
+
+  test("processTx: update by handle and lookup-ref subject", async () => {
+    const conn = await setup();
+    const create = txBuilder(People);
+    Effect.runSync(create.put(Person, { handle: "ada", title: "Eng" }));
+    const { tempids } = await conn.transact([...txOps(create)]);
+    const eid = tempids["tmp-1"]!;
+
+    const byHandle = txBuilder(People);
+    const handle = Effect.runSync(byHandle.entity(eid));
+    Effect.runSync(byHandle.update(Person, handle, { title: "Staff" }));
+    await conn.transact([...txOps(byHandle)]);
+    expect((await conn.db().entity(eid))?.[":person/title"]).toBe("Staff");
+
+    const byLookup = txBuilder(People);
+    Effect.runSync(
+      byLookup.update(Person, [Person.handle, "ada"] as const, { title: "Lead" }),
+    );
+    await conn.transact([...txOps(byLookup)]);
+    expect((await conn.db().entity(eid))?.[":person/title"]).toBe("Lead");
+  });
+
+  test("processTx: update by unique key sees a put from the same tx", async () => {
+    const conn = await setup();
+    const tx = txBuilder(People);
+    Effect.runSync(tx.put(Person, { handle: "ada", title: "T" }));
+    Effect.runSync(tx.update(Person, { handle: "ada", title: "T2" }));
+    const { tempids } = await conn.transact([...txOps(tx)]);
+    const eid = tempids["tmp-1"]!;
+    expect((await conn.db().entity(eid))?.[":person/title"]).toBe("T2");
   });
 
   test("processTx: update of an existing row is partial and never creates", async () => {
@@ -498,6 +588,32 @@ describe("both write paths reject identically", () => {
         title: "Eng",
         manager: 888888 as never,
       });
+      return {};
+    },
+  );
+
+  const patchUndefinedMissing = Operation(
+    "person/update-undefined-missing",
+    {
+      schema: People,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+    },
+    (op) => {
+      op.update(Person, 999_999, { title: undefined });
+      return {};
+    },
+  );
+
+  const patchNoUpsert = Operation(
+    "film/update-no-upsert",
+    {
+      schema: Films,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+    },
+    (op) => {
+      op.update(Movie, { title: "Heat" } as never);
       return {};
     },
   );
@@ -690,5 +806,55 @@ describe("both write paths reject identically", () => {
     release();
     await pending;
     await c.dispose();
+  });
+
+  test("overlay: all-undefined update of a missing row is TxRejected tx/missing-entity", async () => {
+    const { c, db, peer, server } = await overlayOf(People, "people");
+    await db.query(Query.from(Person).select({ handle: Person.handle }));
+    peer.socket.push({ op: "resync", t: server.t, datoms: [] });
+    await settle();
+    const err = await db.run(patchUndefinedMissing, {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/missing-entity");
+    await c.dispose();
+  });
+
+  test("overlay: no-upsert map form is TxRejected tx/invalid", async () => {
+    const { c, db, peer, server } = await overlayOf(Films, "films");
+    await db.query(Query.from(Movie).select({ title: Movie.title }));
+    peer.socket.push({ op: "resync", t: server.t, datoms: [] });
+    await settle();
+    const err = await db.run(patchNoUpsert, {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TxRejected);
+    expect((err as TxRejected).code).toBe("tx/invalid");
+    await c.dispose();
+  });
+});
+
+describe("overlay rewriteTx :db/update", () => {
+  test("rewrites a tempid subject and a ref-value tempid", async () => {
+    const conn = await setup(Staffs);
+    const rewritten = rewritePendingTx(
+      [
+        [":db/update", "tmp-boss", ":staff/title", "Lead"],
+        [":db/update", 1001, ":staff/manager", "tmp-boss"],
+        [":db/update", 1001],
+        [":db/add", 1001, ":staff/manager", "tmp-boss"],
+      ],
+      { "tmp-boss": 2002 },
+      conn.db().schema,
+    );
+    expect(rewritten).toEqual([
+      [":db/update", 2002, ":staff/title", "Lead"],
+      [":db/update", 1001, ":staff/manager", 2002],
+      [":db/update", 1001],
+      [":db/add", 1001, ":staff/manager", 2002],
+    ]);
   });
 });
