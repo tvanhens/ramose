@@ -1851,6 +1851,14 @@ describe("query: aggregates with order/limit and scalar value", () => {
     const asc = await db.query(grouped.orderBy((r) => r.id, "asc"));
     expect(desc.map((r) => r.id)).toEqual([...asc.map((r) => r.id)].reverse());
 
+    const nested = Query.from(Comment).select(
+      { issue: Comment.issue.select({ id: Issue.id, title: Issue.title }) },
+      { n: Q.count(Q.focus) },
+    );
+    const nestedRows = await db.query(nested);
+    expect(nestedRows.every((r) => typeof r.issue.id === "number")).toBe(true);
+    expect(nestedRows.every((r) => typeof r.issue.title === "string")).toBe(true);
+
     await peer.dispose();
   });
 
