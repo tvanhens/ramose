@@ -359,7 +359,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
       const checked = await checkWrite(env, who, segmentSource(env, db), bf.basis, tx);
       if (checked.kind === "skip") {
         return json(
-          { t: bf.basis.t, txEid: 0, tempids: {}, datoms: [], output: prepared.output, ...(clientOpId !== undefined ? { clientOpId } : {}) },
+          { t: bf.basis.t, txEid: 0, tempids: {}, datoms: [], output: await prepared.encodeOutput({}), ...(clientOpId !== undefined ? { clientOpId } : {}) },
           200,
           { "x-ramose-ms": String(Date.now() - t0) },
         );
@@ -375,7 +375,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
         txEid: 0,
         tempids: {},
         datoms: [],
-        output: prepared.output,
+        output: await prepared.encodeOutput({}),
         ...(clientOpId !== undefined ? { clientTxId: clientOpId } : {}),
       };
       if (clientOpId !== undefined) {
@@ -407,7 +407,12 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const headers = { "content-type": "application/json", ...CORS, "x-ramose-ms": String(ms) };
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
     const ack = fromJson(await res.json()) as Record<string, unknown>;
-    return json({ ...ack, output: ack.output ?? prepared.output, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
+    const tempids =
+      ack.tempids !== null && typeof ack.tempids === "object"
+        ? (ack.tempids as Record<string, number>)
+        : {};
+    const output = await prepared.encodeOutput(tempids);
+    return json({ ...ack, output, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
   }
   if (rest === "/transact" && request.method === "POST") {
     let body = transactBody ?? "";

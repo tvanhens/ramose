@@ -20,7 +20,7 @@ import {
 import { asPromise } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
 import { lowerEntityArg, tempid } from "./entityArg.ts";
-import { txBuilder, type TxHandle } from "./Tx.ts";
+import { txBuilder, txOps, type TxHandle } from "./Tx.ts";
 
 export interface OpHandleOptions {
   readonly schema: AnySchema;
@@ -111,7 +111,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   const haltPrefix = (): void => {
     if (prefix.halted) return;
     prefix.halted = true;
-    frozen = [...tx.spec.ops];
+    frozen = [...txOps(tx)];
   };
 
   const effect = <A, E>(
@@ -149,7 +149,6 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   };
 
   const op: RuntimeOp = {
-    ...tx,
     self,
     principal: options.principal,
     db: options.db,
@@ -159,11 +158,17 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     query: options.q,
     pull: options.pull,
     effect,
+    entity: tx.entity,
+    set: tx.set,
+    remove: tx.remove,
+    delete: tx.delete,
+    put: tx.put,
+    update: tx.update,
   };
 
   return {
     op,
-    ops: () => frozen ?? tx.spec.ops,
+    ops: () => frozen ?? txOps(tx),
   };
 };
 

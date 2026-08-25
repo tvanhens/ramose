@@ -37,6 +37,7 @@ import {
   lowerQueryObject,
   values,
   type Db,
+  seedWrite,
 } from "../../src/db/internal.ts";
 import { entityShape } from "../../src/db/query/fluent.ts";
 
@@ -192,7 +193,7 @@ const seed = async (db: Db<typeof Tracker>) => {
   const out: Record<string, { readonly id: number }> = {};
   await db.install();
   await run(
-    db.effect.transact(function* (tx) {
+    seedWrite(db, function* (tx) {
       const ada = yield* tx.entity();
       yield* ada.set(User.name, "Ada");
       yield* ada.set(User.age, 36);
@@ -766,7 +767,7 @@ describe("db.query end to end", () => {
 
     // a second rank-2 issue: sum must see both rows, not one distinct 2
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const dupe = yield* tx.entity();
         yield* dupe.set(Issue.title, "the duplicate rank");
         yield* dupe.set(Issue.done, true);
@@ -998,7 +999,7 @@ describe("db.query end to end", () => {
     const ids = await seed(db);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const late = yield* tx.entity();
         yield* late.set(Issue.title, "the late arrival");
         yield* late.set(Issue.done, false);
@@ -1250,7 +1251,7 @@ describe("per-element pull filters (select options)", () => {
     const ids = await seed(db);
     // a second comment, so the filter has something to drop
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const c = yield* tx.entity();
         yield* c.set(Comment.issue, ids.fix!.id as never);
         yield* c.set(Comment.author, ids.grace!.id as never);

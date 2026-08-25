@@ -1,4 +1,4 @@
-/** Schema-generic transaction builder. `transact(function* (tx) { … })` is hatch-only. */
+/** Schema-generic transaction builder. Internal — operation bodies see {@link Op}. */
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
@@ -208,6 +208,29 @@ export interface TxSpec {
   readonly ops: readonly TxOp[];
 }
 
+/** @internal Collected ops and catalog — not on the public builder shape. */
+export const TX_INTERNALS: unique symbol = Symbol.for("ramose.tx.internals");
+
+export interface TxInternals<C extends AnySchema = AnySchema> {
+  readonly schema: C;
+  readonly ops: () => readonly TxOp[];
+}
+
+const internalsOf = (tx: object): TxInternals => {
+  const inner = (tx as Record<symbol, TxInternals | undefined>)[TX_INTERNALS];
+  if (inner === undefined) {
+    throw new Error("ramose: tx internals are not available");
+  }
+  return inner;
+};
+
+/** @internal Ops the builder has collected. */
+export const txOps = (tx: object): readonly TxOp[] => internalsOf(tx).ops();
+
+/** @internal Catalog the builder was created with. */
+export const txSchema = <C extends AnySchema>(tx: Tx<C>): C =>
+  internalsOf(tx).schema as C;
+
 // ── instance handle (a bag) ────────────────────────────────────────────────
 
 /**
@@ -241,14 +264,11 @@ export interface TxHandle<C extends AnySchema = AnySchema> {
 // ── builder ────────────────────────────────────────────────────────────────
 
 /**
- * Schema-generic transaction builder. Methods are Effects so the body
- * is a generator (or an Effect.gen callback). `db.effect.transact` is the
- * terminal that would submit.
+ * Schema-generic transaction builder. Methods are Effects so the hatch
+ * and the op handle can share one lowering. Collected ops live under
+ * {@link TX_INTERNALS}, not on this shape.
  */
 export interface Tx<C extends AnySchema = AnySchema> {
-  readonly schema: C;
-  readonly spec: TxSpec;
-
   /**
    * Allocate a tempid, or wrap an existing eid / tempid / lookup ref.
    * `tx.entity()` → new handle; `tx.entity(1001)`;
@@ -334,26 +354,6 @@ export type YieldContext<Eff> = [Eff] extends [never]
   : [Eff] extends [Effect.Effect<infer _A, infer _E, infer R>]
     ? R
     : never;
-
-/**
- * Generator body — the happy path:
- * `db.effect.transact(function* (tx) { … })`.
- */
-export type TxGenBody<
-  C extends AnySchema,
-  Eff extends Effect.Effect<any, any, any> = Effect.Effect<any, any, any>,
-  A = unknown,
-> = (tx: Tx<C>) => Generator<Eff, A, never>;
-
-/**
- * Effect-returning callback — kept for composition
- * (`(tx) => Effect.gen(...)` / `Effect.fn`). Not the default.
- */
-export type TxEffectBody<
-  C extends AnySchema,
-  E = never,
-  R = never,
-> = (tx: Tx<C>) => Effect.Effect<unknown, E, R>;
 
 /** @internal An instance handle, as opposed to a raw eid / tempid / lookup. */
 export const isTxHandle = (e: unknown): e is TxHandle =>
@@ -513,18 +513,13 @@ const makeHandle = <C extends AnySchema>(
 });
 
 /**
- * Start a schema-typed transaction builder. Used by
- * `db.effect.transact(function* (tx) { … })` and by compile-time / runtime
- * fixtures.
+ * Start a schema-typed transaction builder. Used by {@link buildOp} and
+ * by compile-time / runtime fixtures. Not a public write path.
  */
 export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
   const ops: TxOp[] = [];
   let next = 0;
   const builder: Tx<C> = {
-    schema,
-    get spec() {
-      return { ops: ops.slice() };
-    },
     entity: ((id?: TxEntity<C>) =>
       Effect.sync(() => {
         const resolved =
@@ -619,5 +614,10 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         return makeHandle(eid, ops);
       })) as Tx<C>["update"],
   };
+  (builder as Tx<C> & Record<typeof TX_INTERNALS, TxInternals<C>>)[TX_INTERNALS] =
+    {
+      schema,
+      ops: () => ops.slice(),
+    };
   return builder;
 };

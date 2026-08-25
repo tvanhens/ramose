@@ -32,6 +32,8 @@ import {
   txBuilder,
   tempid,
   type Op,
+  txOps,
+  seedWrite,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { asLookupRef, lowerEntityArg } from "../src/db/Operation.ts";
@@ -393,7 +395,7 @@ describe("optimistic prefix", () => {
     await seedClient(peer, db, server);
 
     const first = Effect.runPromise(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity(tx.tempid("new"));
         yield* e.set(User.name, "Ada");
       }),
@@ -744,7 +746,7 @@ describe("optional add", () => {
     Effect.runSync(e.set(User.name, "Ada"));
     Effect.runSync(e.set(User.age, undefined as never));
     Effect.runSync(e.set(User.age, null as never));
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", undefined],
       [":db/add", "tmp-1", ":user/age", null],
@@ -797,14 +799,14 @@ describe("put", () => {
 
     const create = txBuilder(Movies);
     Effect.runSync(create.put(User, { name: "Ada", age: 36 }));
-    const first = await conn.transact([...create.spec.ops]);
+    const first = await conn.transact([...txOps(create)]);
     const ada = first.tempids["tmp-1"];
     expect(typeof ada).toBe("number");
     expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(36);
 
     const again = txBuilder(Movies);
     Effect.runSync(again.put(User, { name: "Ada", age: 37 }));
-    const second = await conn.transact([...again.spec.ops]);
+    const second = await conn.transact([...txOps(again)]);
     expect(second.tempids["tmp-1"]).toBe(ada);
     expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(37);
 
@@ -823,7 +825,7 @@ describe("put", () => {
 
     const tx = txBuilder(Docs);
     Effect.runSync(tx.put(Doc, { tags: [":alpha", "beta"] }));
-    const rep = await conn.transact([...tx.spec.ops]);
+    const rep = await conn.transact([...txOps(tx)]);
     const eid = rep.tempids["tmp-1"];
     expect(typeof eid).toBe("number");
     const row = await conn.db().entity(eid!);

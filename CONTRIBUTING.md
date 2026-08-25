@@ -30,7 +30,9 @@ internals stay Datomic-shaped.
 | `db.query` | `db.q` | Hatch is `db.effect.query`. `Query.from` is the app constructor; `Query.q` is the generator/kernel spelling. |
 | `Claims` / `claims()` / `P.claim` | `MintedClaims`, `Policy.Claims`, `P.claims` | One token-payload type; no new JWT fields. |
 
-The Effect hatch's tx handle is `TxHandle` (`tx.entity()`), not `Entity`.
+Public writes are `db.run`. There is no public `db.transact`. The internal seed
+tool (`seedWrite`, not exported from `ramose/db`) still uses a `TxHandle`
+(`tx.entity()`), not `Entity`.
 Value-type helpers `Long` / `Instant` / `Uuid` stay as the advanced-form
 vocabulary (#207). `Query.q` + `pipe` remain the generator/kernel spelling
 under `Query.from`. The remaining casing pass (`./workerEntry`, error

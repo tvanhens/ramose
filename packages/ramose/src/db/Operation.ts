@@ -771,6 +771,20 @@ export const encodeOutput = <O>(
     ),
   );
 
+/**
+ * Resolve handles / named tempids against a commit's tempid map, then
+ * encode. Call after the writer assigns eids — that is how `db.run`
+ * returns the id of what you created.
+ */
+export const finalizeOutput = (
+  schema: Schema.Codec<unknown, unknown>,
+  value: unknown,
+  tempids: Readonly<Record<string, number>>,
+): Effect.Effect<unknown, InvalidRequest> =>
+  encodeOutput(schema, materializeOutput(value, tempids)).pipe(
+    Effect.catch(() => Effect.succeed(materializeOutput(value, tempids))),
+  );
+
 /** Decode a wire output back into the operation's output type. */
 export const decodeOutput = <O>(
   schema: Schema.Codec<O, unknown>,

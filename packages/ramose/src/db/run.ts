@@ -16,6 +16,7 @@ import {
   type OpReport,
   type OperationInvocation,
   lowerEntityArg,
+  materializeOutput,
 } from "./Operation.ts";
 
 export interface OverlayOpAck {
@@ -120,7 +121,14 @@ export const runOperation = <C extends AnySchema, O>(
     const ack = record(body);
     const t = typeof ack.t === "number" ? ack.t : 0;
     wire.session(name)?.bump(t);
-    const output = yield* decodeOutput<O>(operation.output, ack.output);
+    const tempids =
+      ack.tempids !== null && typeof ack.tempids === "object"
+        ? (ack.tempids as Record<string, number>)
+        : {};
+    const output = yield* decodeOutput<O>(
+      operation.output,
+      materializeOutput(ack.output, tempids),
+    );
     return reportOf<C, O>(
       wire,
       name,

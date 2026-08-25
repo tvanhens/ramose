@@ -26,7 +26,7 @@ import {
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import { Databases, Query, layer } from "../../src/db/internal.ts";
+import { Databases, Query, layer, seedWrite } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
@@ -212,7 +212,7 @@ describe("install → transact → q → pull", () => {
     expect(peer.calls[0].url).toBe("https://peer.local/db/movies/transact");
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
         yield* ada.set(User.age, 36);
@@ -283,7 +283,7 @@ describe("install → transact → q → pull", () => {
 
     // and the schema is usable either way round
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
@@ -297,7 +297,7 @@ describe("install → transact → q → pull", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const { dbAfter } = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
         const bob = yield* tx.entity();
@@ -327,7 +327,7 @@ describe("views", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const first = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),
@@ -366,7 +366,7 @@ describe("the read fence is what dbAfter carries", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),
@@ -396,8 +396,7 @@ describe("failures", () => {
     await db.install();
 
     const caught = await run(
-      db
-        .effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
           yield* tx.set(1, ":user/nope" as never, "x" as never);
         })
         .pipe(
@@ -425,7 +424,7 @@ describe("failures", () => {
     const writes = peer.calls.length;
 
     const e = await runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
@@ -442,7 +441,7 @@ describe("failures", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const { dbAfter } = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
         const alonzo = yield* tx.entity();
@@ -494,7 +493,7 @@ describe("failures", () => {
     const db = peer.ramose.db("movies", Movies);
     await db.install();
     const { dbAfter } = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),

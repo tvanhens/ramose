@@ -72,6 +72,15 @@ const KILLED = [
   "Client",
   "Session",
   "openSession",
+  "transact",
+  "Tx",
+  "TxHandle",
+  "TxGenBody",
+  "TxEffectBody",
+  "txBuilder",
+  "TxSpec",
+  "seedWrite",
+  "submitRaw",
 ];
 
 describe("the `ramose` barrel", () => {

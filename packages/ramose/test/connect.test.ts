@@ -19,6 +19,7 @@ import {
   Query,
   Unauthorized,
   defineOperations,
+  seedWrite,
 } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 import { fakePeer, type FakePeer } from "./peer.ts";
@@ -66,7 +67,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
     });
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),

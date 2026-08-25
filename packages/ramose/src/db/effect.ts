@@ -5,7 +5,7 @@
  * Effect users reach the same client through:
  *
  * - `db.effect.*` — Effect / Stream variants of every db method, including
- *   `db.effect.transact` (the generator write, hatch-only).
+ *   `db.effect.run` (the write path).
  * - this module — `layer` / `Databases` for an Effect-native connect.
  *
  * `ramose/effect` remains the opt-in re-export of Effect's own modules

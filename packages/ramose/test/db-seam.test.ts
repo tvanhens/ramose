@@ -12,6 +12,7 @@ import {
   type DbSeam,
   Query,
   type ReadDb,
+  seedWrite,
 } from "../src/db/internal.ts";
 import { client, fakePeer, httpsClient, settle, until } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
@@ -35,7 +36,7 @@ describe("the view key is structural", () => {
     const b = client(fakePeer());
     const db = a.ramose.db("movies", Movies);
     const report = await Effect.runPromise(
-      db.effect.transact(function* () {}),
+      seedWrite(db, function* () {}),
     );
 
     const keys = [
@@ -53,7 +54,7 @@ describe("the view key is structural", () => {
     const https = httpsClient(fakePeer());
     const httpsDb = https.databases.db("movies", Movies);
     const httpsReport = await Effect.runPromise(
-      httpsDb.effect.transact(function* () {}),
+      seedWrite(httpsDb, function* () {}),
     );
     expect(seamOf(httpsReport.dbAfter).key).not.toBe(seamOf(httpsDb).key);
     https.close();

@@ -53,7 +53,7 @@ import {
 } from "./Pull.ts";
 import type { Session } from "./session.ts";
 import type { Subscription } from "./subscription.ts";
-import { txBuilder } from "./Tx.ts";
+import { txBuilder, txOps, type Tx } from "./Tx.ts";
 
 /**
  * What `db.query` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
@@ -345,6 +345,12 @@ export interface DbSeam {
 /** @internal The registry key {@link DbSeam} is attached under. */
 export const DB_SEAM: symbol = Symbol.for("ramose.db.seam");
 
+/**
+ * @internal Raw `POST /transact` submit — admin / seed / test. Not on the
+ * public `Db` or `EffectDb` shapes. App writes use {@link Db.run}.
+ */
+export const DB_SUBMIT: unique symbol = Symbol.for("ramose.db.submit");
+
 /** One token per client, so views over different clients never compare equal. */
 const clientTokens = new WeakMap<Wire, number>();
 let nextClientToken = 1;
@@ -401,25 +407,6 @@ const terminal = (e: { readonly _tag: string }): boolean =>
   e._tag === "QueryBudgetExceeded" ||
   e._tag === "NotOne" ||
   e._tag === "OperationRejected";
-
-const isGenerator = (
-  value: unknown,
-): value is Generator<Effect.Effect<any, any, any>, unknown, unknown> =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as Iterator<unknown>).next === "function";
-
-const runGenerator = (
-  gen: Generator<Effect.Effect<any, any, any>, unknown, unknown>,
-): Effect.Effect<unknown, any, any> =>
-  Effect.gen(function* () {
-    let step = gen.next();
-    while (!step.done) {
-      const value = yield* step.value;
-      step = gen.next(value);
-    }
-    return step.value;
-  });
 
 /** `[User.name, "Ada"]` and `[":user/name", "Ada"]` both lower to the wire form. */
 const lowerSubject = (subject: unknown): unknown => lowerEntityArg(subject);
@@ -886,18 +873,6 @@ export const makeDb = <C extends AnySchema>(
             ),
           ),
 
-    transact: ((body: (tx: unknown) => unknown) =>
-      Effect.suspend(() => {
-        const tx = txBuilder(schema);
-        const out = body(tx);
-        const run = isGenerator(out)
-          ? runGenerator(out)
-          : (out as Effect.Effect<unknown, unknown, unknown>);
-        return run.pipe(
-          Effect.andThen(() => submit(tx.spec.ops as readonly unknown[])),
-        );
-      })) as EffectDb<C>["transact"],
-
     install: () => submit(schemaTx(schema)),
 
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
@@ -916,5 +891,46 @@ export const makeDb = <C extends AnySchema>(
         );
       })) as EffectDb<C>["run"],
   };
+  (effectDb as EffectDb<C> & Record<typeof DB_SUBMIT, typeof submit>)[DB_SUBMIT] =
+    submit;
   return wrapDb(effectDb);
 };
+
+/**
+ * @internal Submit raw tx ops through the existing wire (`overlay.transact`
+ * or `POST /transact`). Tests and seed paths only — not a public write.
+ */
+export const submitRaw = <C extends AnySchema>(
+  db: Db<C> | EffectDb<C>,
+  ops: readonly unknown[],
+): Effect.Effect<TxReport<C>, DbError> => {
+  const hatch = "effect" in db ? db.effect : db;
+  const submit = (hatch as Record<symbol, unknown>)[DB_SUBMIT] as
+    | ((tx: readonly unknown[]) => Effect.Effect<TxReport<C>, DbError>)
+    | undefined;
+  if (submit === undefined) {
+    return Effect.fail(
+      new InvalidRequest({ message: "ramose: raw submit is not available" }),
+    );
+  }
+  return submit(ops);
+};
+
+/**
+ * @internal Run a builder body and {@link submitRaw} the collected ops.
+ * Tests / seed only. App writes use {@link Db.run}.
+ */
+export const seedWrite = <C extends AnySchema>(
+  db: Db<C> | EffectDb<C>,
+  body: (tx: Tx<C>) => Generator<Effect.Effect<any, any, any>, unknown, never>,
+): Effect.Effect<TxReport<C>, DbError> =>
+  Effect.gen(function* () {
+    const tx = txBuilder(("schema" in db ? db.schema : undefined) as C);
+    const gen = body(tx);
+    let step = gen.next();
+    while (!step.done) {
+      yield* step.value;
+      step = gen.next();
+    }
+    return yield* submitRaw(db, [...txOps(tx)]);
+  });

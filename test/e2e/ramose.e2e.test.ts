@@ -16,7 +16,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import * as RamoseEffect from "../../packages/ramose/src/db/effect.ts";
-import { addSession } from "../../e2e-ops.ts";
+import { addReefIssue, addReefUser, addSession, moveReefIssue } from "../../e2e-ops.ts";
 import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
 const { Query, Q } = Ramose;
@@ -287,13 +287,7 @@ d("ramose session socket e2e", () => {
 
         await a.runPromise(absorb(dbA.effect.install()));
         const report = await a.runPromise(
-          absorb(
-            dbA.effect.transact(function* (tx) {
-              const ada = yield* tx.entity();
-              yield* ada.set(Session.name, "Ada");
-              yield* ada.set(Session.n, 1);
-            }),
-          ),
+          absorb(dbA.effect.run(addSession, { name: "Ada", n: 1 })),
         );
         expect(report.t).toBeGreaterThan(0);
 
@@ -324,13 +318,7 @@ d("ramose session socket e2e", () => {
         for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(100);
 
         await b.runPromise(
-          absorb(
-            dbB.effect.transact(function* (tx) {
-              const bob = yield* tx.entity();
-              yield* bob.set(Session.name, "Bob");
-              yield* bob.set(Session.n, 2);
-            }),
-          ),
+          absorb(dbB.effect.run(addSession, { name: "Bob", n: 2 })),
         );
         // Prove B's write is visible on A's HTTPS path before requiring live.
         let count = 0;
@@ -417,22 +405,18 @@ d("ramose session socket e2e", () => {
           .runSync(RamoseEffect.Databases)
           .db(`${dbName}-agg`, SessionCatalog);
         await rt.runPromise(absorb(db.effect.install()));
-        const report = await rt.runPromise(
-          absorb(
-            db.effect.transact(function* (tx) {
-              for (const [name, n] of [
-                ["a", 1],
-                ["b", 2],
-                ["c", 2],
-                ["d", 3],
-              ] as const) {
-                const e = yield* tx.entity();
-                yield* e.set(Session.name, name);
-                yield* e.set(Session.n, n);
-              }
-            }),
-          ),
+        let report = await rt.runPromise(
+          absorb(db.effect.run(addSession, { name: "a", n: 1 })),
         );
+        for (const [name, n] of [
+          ["b", 2],
+          ["c", 2],
+          ["d", 3],
+        ] as const) {
+          report = await rt.runPromise(
+            absorb(db.effect.run(addSession, { name, n })),
+          );
+        }
         const view = report.dbAfter;
 
         // `.count()` / `.sum(attr)` scalars → count/sum cells; the kernel
@@ -632,12 +616,7 @@ d("ramose session socket e2e", () => {
 
         await phoneRt.runPromise(absorb(phone.effect.install()));
         const person = await phoneRt.runPromise(
-          absorb(
-            phone.effect.transact(function* (tx) {
-              const ada = yield* tx.entity();
-              yield* ada.set(ReefUser.name, "Ada");
-            }),
-          ),
+          absorb(phone.effect.run(addReefUser, { name: "Ada" })),
         );
         const people = await phoneRt.runPromise(
           absorb(
@@ -649,17 +628,21 @@ d("ramose session socket e2e", () => {
         const adaId = people[0]!.id;
         const seeded = await phoneRt.runPromise(
           absorb(
-            phone.effect.transact(function* (tx) {
-              const one = yield* tx.entity();
-              yield* one.set(ReefIssue.title, "One");
-              yield* one.set(ReefIssue.status, "todo");
-              yield* one.set(ReefIssue.rank, 1);
-              yield* one.set(ReefIssue.creator, adaId);
-              const two = yield* tx.entity();
-              yield* two.set(ReefIssue.title, "Two");
-              yield* two.set(ReefIssue.status, "todo");
-              yield* two.set(ReefIssue.rank, 2);
-              yield* two.set(ReefIssue.creator, adaId);
+            phone.effect.run(addReefIssue, {
+              title: "One",
+              status: "todo",
+              rank: 1,
+              creatorId: adaId,
+            }),
+          ),
+        );
+        await phoneRt.runPromise(
+          absorb(
+            phone.effect.run(addReefIssue, {
+              title: "Two",
+              status: "todo",
+              rank: 2,
+              creatorId: adaId,
             }),
           ),
         );
@@ -705,17 +688,17 @@ d("ramose session socket e2e", () => {
         await Promise.all([
           phoneRt.runPromise(
             absorb(
-              phone.effect.transact(function* (tx) {
-                yield* tx.set(one!.id, ReefIssue.status, "doing");
-                yield* tx.set(one!.id, ReefIssue.rank, 10);
+              phone.effect.run(moveReefIssue, one!.id, {
+                status: "doing",
+                rank: 10,
               }),
             ),
           ),
           computerRt.runPromise(
             absorb(
-              computer.effect.transact(function* (tx) {
-                yield* tx.set(two!.id, ReefIssue.status, "done");
-                yield* tx.set(two!.id, ReefIssue.rank, 20);
+              computer.effect.run(moveReefIssue, two!.id, {
+                status: "done",
+                rank: 20,
               }),
             ),
           ),

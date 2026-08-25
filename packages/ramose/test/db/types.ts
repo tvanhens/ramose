@@ -285,25 +285,21 @@ type _histIsProperty = Expect<
   Equal<typeof hist extends (...args: never) => unknown ? true : false, false>
 >;
 
-// ── the transaction is the generator, and reports a TxReport ───────────────
+// ── install reports a TxReport; transact is gone from both surfaces ────────
 
-const written = movies.effect.transact(function* (tx) {
-  const ada = yield* tx.entity();
-  yield* ada.set(User.name, "Ada");
-  yield* ada.set(User.age, 36);
-  yield* ada.set(Meta.source, "import");
-  yield* ada.remove(User.age, 35);
-  const arrival = yield* tx.entity();
-  yield* arrival.set(Movie.title, "Arrival");
-  yield* tx.remove(1001, User.age, 36);
-  yield* tx.delete(1001);
-});
+const installed = movies.effect.install();
 type _writtenOk = Expect<
-  Equal<Effect.Success<typeof written>, TxReport<typeof Movies>>
+  Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _writtenErr = Expect<Equal<Effect.Error<typeof written>, DbError>>;
+type _writtenErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
 /** Every signature's `R` is `never`. */
-type _writtenR = Expect<Equal<Effect.Services<typeof written>, never>>;
+type _writtenR = Expect<Equal<Effect.Services<typeof installed>, never>>;
+type _noPromiseTransact = Expect<
+  Equal<"transact" extends keyof typeof movies ? true : false, false>
+>;
+type _noHatchTransact = Expect<
+  Equal<"transact" extends keyof (typeof movies)["effect"] ? true : false, false>
+>;
 
 // `dbAfter` is the same `Db`, so it composes without a cast
 declare const report: TxReport<typeof Movies>;
@@ -323,10 +319,7 @@ const _stringRef: EntityRef<typeof Movies> = "oops-typo-not-a-tempid";
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
 const caught = movies
-  .effect.transact(function* (tx) {
-    const e = yield* tx.entity();
-    yield* e.set(User.name, "Ada");
-  })
+  .effect.install()
   .pipe(
     Effect.catchTags({
       TxRejected: (e) => Effect.succeed(e.code),

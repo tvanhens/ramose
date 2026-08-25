@@ -12,9 +12,9 @@
  * `useDb(name, schema)` memoises a `Db` from it. On top sit the reads —
  * `useLive` (standing query as state), `useQuery` (one-shot `db.query` as
  * `Async`), `usePull` (standing `db.livePull` as `Live`), `useBasis`
- * (where the basis is) — plus `useTransact()` for writes from event
- * handlers (works with or without the provider) and `errorMessage` for
- * toast text.
+ * (where the basis is) — plus `useTransact()` as the pending / error
+ * helper around `db.run` (works with or without the provider) and
+ * `errorMessage` for toast text.
  *
  * This entry and every hook module it re-exports open with `"use client"`
  * so a Next App Router / React Router server-component import compiles.

@@ -19,6 +19,7 @@ import {
   TxRejected,
   txBuilder,
   type AnySchema,
+  txOps,
 } from "../src/db/internal.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
@@ -67,7 +68,7 @@ describe("required-at-transact", () => {
     const conn = await setup();
     const viaPut = txBuilder(People);
     Effect.runSync(viaPut.put(Person, { handle: "ada" } as never));
-    await expect(conn.transact([...viaPut.spec.ops])).rejects.toMatchObject({
+    await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
       code: "tx/required",
     });
 
@@ -83,13 +84,13 @@ describe("required-at-transact", () => {
     const conn = await setup();
     const first = txBuilder(People);
     Effect.runSync(first.put(Person, { handle: "ada", title: "Eng" }));
-    const created = await conn.transact([...first.spec.ops]);
+    const created = await conn.transact([...txOps(first)]);
     const eid = created.tempids["tmp-1"];
     expect(typeof eid).toBe("number");
 
     const again = txBuilder(People);
     Effect.runSync(again.put(Person, { handle: "ada", title: "Staff" }));
-    const second = await conn.transact([...again.spec.ops]);
+    const second = await conn.transact([...txOps(again)]);
     expect(second.tempids["tmp-1"]).toBe(eid);
     expect((await conn.db().entity(eid!))?.[":person/title"]).toBe("Staff");
   });
@@ -98,7 +99,7 @@ describe("required-at-transact", () => {
     const conn = await setup();
     const tx = txBuilder(People);
     Effect.runSync(tx.put(Person, { handle: "ada", title: "Eng" }));
-    const rep = await conn.transact([...tx.spec.ops]);
+    const rep = await conn.transact([...txOps(tx)]);
     const row = await conn.db().entity(rep.tempids["tmp-1"]!);
     expect(row?.[":person/handle"]).toBe("ada");
     expect(row?.[":person/note"]).toBeUndefined();
@@ -109,7 +110,7 @@ describe("required-at-transact", () => {
     const conn = await setup();
     const create = txBuilder(People);
     Effect.runSync(create.put(Person, { handle: "ada", title: "Eng" }));
-    const { tempids } = await conn.transact([...create.spec.ops]);
+    const { tempids } = await conn.transact([...txOps(create)]);
     const eid = tempids["tmp-1"]!;
 
     await expect(
@@ -129,7 +130,7 @@ describe("required-at-transact", () => {
     Effect.runSync(
       seed.put(Staff, 1004, { handle: "ada", title: "Eng", manager: 1003 }),
     );
-    await conn.transact([...seed.spec.ops]);
+    await conn.transact([...txOps(seed)]);
 
     await expect(
       conn.transact([[":db/retract", 1004, ":staff/manager"]]),
@@ -148,7 +149,7 @@ describe("required-at-transact", () => {
     Effect.runSync(
       seed.put(Staff, 1003, { handle: "solo", title: "Lead", manager: 1003 }),
     );
-    await conn.transact([...seed.spec.ops]);
+    await conn.transact([...txOps(seed)]);
     await conn.transact([[":db/retractEntity", 1003]]);
     expect(await conn.db().entity(1003)).toBeUndefined();
   });
@@ -159,7 +160,7 @@ describe("op.update", () => {
     const tx = txBuilder(People);
     Effect.runSync(tx.update(Person, 1001, { title: "Eng", note: undefined }));
     Effect.runSync(tx.update(Person, { handle: "ada", title: "Staff" }));
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       [":db/update", 1001, ":person/title", "Eng"],
       [":db/update", [":person/handle", "ada"], ":person/title", "Staff"],
     ]);
@@ -169,13 +170,13 @@ describe("op.update", () => {
     const conn = await setup();
     const byEid = txBuilder(People);
     Effect.runSync(byEid.update(Person, 999_999, { title: "x" }));
-    await expect(conn.transact([...byEid.spec.ops])).rejects.toMatchObject({
+    await expect(conn.transact([...txOps(byEid)])).rejects.toMatchObject({
       code: "tx/missing-entity",
     });
 
     const byKey = txBuilder(People);
     Effect.runSync(byKey.update(Person, { handle: "missing", title: "x" }));
-    await expect(conn.transact([...byKey.spec.ops])).rejects.toMatchObject({
+    await expect(conn.transact([...txOps(byKey)])).rejects.toMatchObject({
       code: "tx/missing-entity",
     });
   });
@@ -184,12 +185,12 @@ describe("op.update", () => {
     const conn = await setup(Films);
     const film = txBuilder(Films);
     Effect.runSync(film.put(Movie, { title: "Heat" }));
-    const made = await conn.transact([...film.spec.ops]);
+    const made = await conn.transact([...txOps(film)]);
     const filmEid = made.tempids["tmp-1"]!;
 
     const wrong = txBuilder(Films);
     Effect.runSync(wrong.update(Person, filmEid, { title: "nope" }));
-    await expect(conn.transact([...wrong.spec.ops])).rejects.toMatchObject({
+    await expect(conn.transact([...txOps(wrong)])).rejects.toMatchObject({
       code: "tx/wrong-entity",
     });
   });
@@ -198,12 +199,12 @@ describe("op.update", () => {
     const conn = await setup();
     const create = txBuilder(People);
     Effect.runSync(create.put(Person, { handle: "ada", title: "Eng", note: "hi" }));
-    const { tempids } = await conn.transact([...create.spec.ops]);
+    const { tempids } = await conn.transact([...txOps(create)]);
     const eid = tempids["tmp-1"]!;
 
     const patch = txBuilder(People);
     Effect.runSync(patch.update(Person, { handle: "ada", title: "Staff" }));
-    const second = await conn.transact([...patch.spec.ops]);
+    const second = await conn.transact([...txOps(patch)]);
     expect(second.tempids).toEqual({});
     const row = await conn.db().entity(eid);
     expect(row?.[":person/title"]).toBe("Staff");
@@ -217,7 +218,7 @@ describe("op.update", () => {
     Effect.runSync(
       tx.update(Doc, 1006, { labels: [[Label.name, "red"] as const] }),
     );
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       [":db/update", 1006, ":doc/labels", 1004],
       [":db/update", 1006, ":doc/labels", 1005],
       [":db/update", 1006, ":doc/labels", [":label/name", "red"]],
@@ -230,21 +231,21 @@ describe("op.update", () => {
     Effect.runSync(seed.put(Label, { name: "red" }));
     Effect.runSync(seed.put(Label, { name: "blue" }));
     Effect.runSync(seed.put(Doc, { slug: "roadmap", title: "Roadmap" }));
-    const { tempids } = await conn.transact([...seed.spec.ops]);
+    const { tempids } = await conn.transact([...txOps(seed)]);
     const red = tempids["tmp-1"]!;
     const blue = tempids["tmp-2"]!;
     const doc = tempids["tmp-3"]!;
 
     const viaPut = txBuilder(Docs);
     Effect.runSync(viaPut.put(Doc, doc, { labels: [red, blue] }));
-    await conn.transact([...viaPut.spec.ops]);
+    await conn.transact([...txOps(viaPut)]);
     expect(
       ((await conn.db().entity(doc))?.[":doc/labels"] as number[]).sort(),
     ).toEqual([red, blue].sort());
 
     const viaUpdate = txBuilder(Docs);
     Effect.runSync(viaUpdate.update(Doc, doc, { labels: [red] }));
-    await conn.transact([...viaUpdate.spec.ops]);
+    await conn.transact([...txOps(viaUpdate)]);
     const labels = (await conn.db().entity(doc))?.[":doc/labels"] as number[];
     expect(labels).toContain(red);
     expect(labels).toContain(blue);
@@ -253,7 +254,7 @@ describe("op.update", () => {
     Effect.runSync(
       byLookup.update(Doc, doc, { labels: [[Label.name, "blue"] as const] }),
     );
-    await expect(conn.transact([...byLookup.spec.ops])).resolves.toMatchObject({
+    await expect(conn.transact([...txOps(byLookup)])).resolves.toMatchObject({
       t: expect.any(Number),
     });
   });
@@ -262,7 +263,7 @@ describe("op.update", () => {
     const conn = await setup();
     const create = txBuilder(People);
     Effect.runSync(create.put(Person, { handle: "ada", title: "Eng" }));
-    const { tempids } = await conn.transact([...create.spec.ops]);
+    const { tempids } = await conn.transact([...txOps(create)]);
     await expect(
       conn.transact([[":db/retract", tempids["tmp-1"]!, ":person/title"]]),
     ).rejects.toBeInstanceOf(TxError);

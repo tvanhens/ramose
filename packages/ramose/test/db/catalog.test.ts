@@ -17,6 +17,8 @@ import {
   Long,
   Ref,
   type Eid,
+  txOps,
+  txSchema,
 } from "../../src/db/internal.ts";
 
 const User = Entity("user", {
@@ -85,7 +87,7 @@ describe("transaction builder", () => {
         yield* byLookup.set(Meta.source, "lookup");
       }),
     );
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", 36],
       [":db/add", "tmp-1", ":meta/source", "import"],
@@ -94,7 +96,7 @@ describe("transaction builder", () => {
       [":db/retractEntity", 1001],
       [":db/add", [":user/name", "Ada"], ":meta/source", "lookup"],
     ]);
-    expect(tx.schema).toBe(Movies);
+    expect(txSchema(tx)).toBe(Movies);
   });
 
   test("put lowers to map form; undefined is omitted; many is an array", () => {
@@ -112,7 +114,7 @@ describe("transaction builder", () => {
         yield* tx.put(User, { name: "Ada" });
       }),
     );
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       [":db/add", "tmp-1", ":user/name", "Bea"],
       {
         ":db/id": "tmp-2",
@@ -131,7 +133,7 @@ describe("transaction builder", () => {
     const Docs = DbSchema({ doc: Doc });
     const tx = txBuilder(Docs);
     Effect.runSync(tx.put(Doc, { tags: [":alpha", "beta"] }));
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       { ":db/id": "tmp-1" },
       [":db/add", "tmp-1", ":doc/tags", ":alpha"],
       [":db/add", "tmp-1", ":doc/tags", "beta"],
@@ -151,7 +153,7 @@ describe("transaction builder", () => {
         yield* tx.put(User, 1001, { age: 36 });
       }),
     );
-    expect(tx.spec.ops).toEqual([
+    expect(txOps(tx)).toEqual([
       { ":db/id": "tmp-1", ":user/name": "Ada", ":user/bestFriend": 1002 },
       { ":db/id": "tmp-2", ":user/name": "Bea", ":user/bestFriend": 1003 },
       { ":db/id": "tmp-3", ":user/name": "Cam" },

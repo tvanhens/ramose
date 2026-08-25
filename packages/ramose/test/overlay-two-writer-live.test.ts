@@ -25,7 +25,14 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
-import { Field, Schema as DbSchema, type Db, Entity, Query } from "../src/db/internal.ts";
+import {
+  type Db,
+  Entity,
+  Field,
+  Query,
+  Schema as DbSchema,
+  seedWrite,
+} from "../src/db/internal.ts";
 import { toWireDatom, type LogEntry, type RootRecord } from "../src/internal/core/index.ts";
 import { MemoryBucket } from "../src/internal/storage/memory.ts";
 import type { RamoseEnv } from "../src/internal/transactor/index.ts";
@@ -191,7 +198,7 @@ const waitBoards = async (
 };
 
 const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
-  db.effect.transact(function* (tx) {
+  seedWrite(db, function* (tx) {
     yield* tx.set(id, Issue.status, status);
     yield* tx.set(id, Issue.rank, rank);
   });
