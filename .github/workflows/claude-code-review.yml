@@ -2,7 +2,12 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # Omit ready_for_review. Draft → ready fires that event while the
+    # `opened` review is still running; concurrency then cancels the first
+    # run. Some status aggregators treat the leftover cancelled check as a
+    # failed rollup even when the replacement succeeded (and `opened`
+    # already reviewed the same head SHA).
+    types: [opened, synchronize, reopened]
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"
@@ -66,11 +71,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # Tiered effort: a fresh PR (opened / ready_for_review / reopened /
-          # manual dispatch) gets a high-effort review; a synchronize re-review
-          # of a new push runs at medium — fewer, higher-confidence findings.
-          # A PR gets one opened review but N push re-reviews, so re-reviews
-          # dominate the run count and this is where wall-clock comes back.
+          # Tiered effort: a fresh PR (opened / reopened / manual dispatch)
+          # gets a high-effort review; a synchronize re-review of a new push
+          # runs at medium — fewer, higher-confidence findings. A PR gets one
+          # opened review but N push re-reviews, so re-reviews dominate the
+          # run count and this is where wall-clock comes back.
           prompt: "/code-review:code-review ${{ github.event.action == 'synchronize' && 'medium' || 'high' }} --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr_number }}"
           # The Actions sandbox has no interactive approval, so every tool the
           # review needs must be pre-approved here. Skill(code-review:code-review)
