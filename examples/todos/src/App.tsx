@@ -1,4 +1,4 @@
-import { useLive, useTransact } from "ramose/react";
+import { useLiveQuery, useTransact } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
@@ -13,12 +13,12 @@ export const App = () => (
 
 // docs:todo-list
 const TodoList = () => {
-  const { rows, error } = useLive(db, todoQuery);
+  const { data, error } = useLiveQuery(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
+  if (data === undefined) return <p>loading…</p>;
   return (
     <ul>
-      {rows.map((row) => (
+      {data.map((row) => (
         <TodoRowView key={row.id} row={row} />
       ))}
     </ul>

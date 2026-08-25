@@ -1,11 +1,11 @@
 /**
- * Refcounted standing-query cache for `useLive(db, q)`.
+ * Refcounted live-query cache for `useLiveQuery(db, q)`.
  *
  * Two hook sites with the same `(viewKey, astKey)` share one
  * raw `liveRaw` handle. The cache entry holds the un-finalized wire result;
  * each retain wrapper applies that subscriber's `finalize` (take-unwrap /
  * page-wrap / reshape) on read. The last `close()` tears the handle down.
- * The subscription form (`useLive(sub)`) does not go through this — the
+ * The subscription form (`useLiveQuery(sub)`) does not go through this — the
  * caller owns that handle.
  *
  * A terminal error stays on the shared handle until refs hit 0. A later

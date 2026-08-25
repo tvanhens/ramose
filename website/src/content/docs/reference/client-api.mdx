@@ -199,7 +199,7 @@ const myEid = who.eid;
 const people = await db.query(peopleQuery);
 ```
 
-**`db.live(query): Subscription<Out, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the subscription fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive). The hatch is `db.effect.live` (a Stream).
+**`db.live(query): Subscription<Out, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the subscription fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLiveQuery(db, query)`](/reference/react/#uselivequery). The hatch is `db.effect.live` (a Stream).
 
 ```ts
 const live = db.live(boardQuery);   // subscribe / for-await / close()

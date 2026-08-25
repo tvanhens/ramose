@@ -12,20 +12,25 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-export interface Transact {
+/** What `run` resolves — always, so `void run(...)` is safe. */
+export type RunResult<A, E = unknown> =
+  | { readonly ok: true; readonly value: A }
+  | { readonly ok: false; readonly error: E };
+
+export interface Transact<E = unknown> {
   /**
-   * Runs the work. Always resolves — failure lands on `error` / `onError`,
-   * so `void run(...)` is safe. On success, resolves to the work's value.
+   * Runs the work. Always resolves — failure lands on `error` / `onError`
+   * and on the rejected half of the result, so `void run(...)` is safe.
    */
   readonly run: <A>(
     work: Promise<A> | (() => Promise<A>),
-  ) => Promise<A | undefined>;
+  ) => Promise<RunResult<A, E>>;
   /** In-flight count > 0. */
   readonly pending: boolean;
   /**
    * The last-settled failure — cleared when a run settles successfully.
    */
-  readonly error: unknown | undefined;
+  readonly error: E | undefined;
   readonly clearError: () => void;
 }
 
@@ -33,7 +38,7 @@ export interface Transact {
  * Run a promise from an event handler and expose pending / error.
  * The write itself is `db.run` (or any other promise).
  *
- * - `run` always resolves: the value on success, `undefined` on failure.
+ * - `run` always resolves: `{ ok: true, value }` or `{ ok: false, error }`.
  * - `pending` counts concurrent runs: true while any run is in flight.
  * - `onError` fires per failure (the toast hook); `error` also lands on the
  *   return for inline rendering, and clears on the next successful run (or
@@ -42,11 +47,11 @@ export interface Transact {
  * - After unmount the work still runs to completion, but no state is
  *   touched. `onError` still fires.
  */
-export const useTransact = (options?: {
-  onError?: (error: unknown) => void;
-}): Transact => {
+export const useTransact = <E = unknown>(options?: {
+  onError?: (error: E) => void;
+}): Transact<E> => {
   const [inFlight, setInFlight] = useState(0);
-  const [error, setError] = useState<unknown | undefined>(undefined);
+  const [error, setError] = useState<E | undefined>(undefined);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -62,16 +67,17 @@ export const useTransact = (options?: {
   const run = useCallback(
     async <A>(
       work: Promise<A> | (() => Promise<A>),
-    ): Promise<A | undefined> => {
+    ): Promise<RunResult<A, E>> => {
       if (mounted.current) setInFlight((n) => n + 1);
       try {
         const value = await (typeof work === "function" ? work() : work);
         if (mounted.current) setError(undefined);
-        return value;
+        return { ok: true, value };
       } catch (failure) {
-        if (mounted.current) setError(failure);
-        onErrorRef.current?.(failure);
-        return undefined;
+        const err = failure as E;
+        if (mounted.current) setError(err);
+        onErrorRef.current?.(err);
+        return { ok: false, error: err };
       } finally {
         if (mounted.current) setInFlight((n) => n - 1);
       }

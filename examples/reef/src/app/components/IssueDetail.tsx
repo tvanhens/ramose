@@ -1,7 +1,7 @@
 /**
  * The issue side panel. Status / priority / assignee / labels come straight
  * from the live board row (overlay current-view); description and the
- * admin-only note ride one standing `usePull`, so a local edit and an
+ * admin-only note ride one `useLivePull`, so a local edit and an
  * inbound filtered `tx` both land in place. Every control is enabled
  * regardless of role — the peer's policy is the enforcement, a denial
  * drops the pending layer, and the toast is all the UI does.
@@ -9,7 +9,7 @@
  * write-denied below `admin`.
  */
 
-import { errorMessage, useLive, usePull, useTransact } from "ramose/react";
+import { errorMessage, useLivePull, useLiveQuery, useTransact } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useEffect, useState } from "react";
 import {
@@ -257,7 +257,7 @@ export const IssueDetail = ({
   // re-wrap. Every emission resets the drafts, so the panel updates in place.
   // docs:issue-panel-reads
   // docs:use-pull-extra
-  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
+  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
   // enddocs:use-pull-extra
   useEffect(() => {
     if (extra === null) return;
@@ -267,7 +267,7 @@ export const IssueDetail = ({
   }, [extra]);
 
   // docs:comments-live
-  const comments = useLive(db, commentsQuery(issueId));
+  const comments = useLiveQuery(db, commentsQuery(issueId));
   // enddocs:comments-live
   // enddocs:issue-panel-reads
 
@@ -449,15 +449,15 @@ export const IssueDetail = ({
           <div {...stylex.props(styles.sectionLabel)}>
             <Icon name="message" size={12} />
             Comments
-            {comments.rows !== undefined && comments.rows.length > 0 && (
-              <Tag>{comments.rows.length}</Tag>
+            {comments.data !== undefined && comments.data.length > 0 && (
+              <Tag>{comments.data.length}</Tag>
             )}
           </div>
           <div {...stylex.props(styles.comments)}>
-            {comments.rows !== undefined && comments.rows.length === 0 && (
+            {comments.data !== undefined && comments.data.length === 0 && (
               <p {...stylex.props(styles.commentEmpty)}>No comments yet.</p>
             )}
-            {(comments.rows ?? []).map((comment: CommentRow) => (
+            {(comments.data ?? []).map((comment: CommentRow) => (
               <div key={comment.id} {...stylex.props(styles.comment)}>
                 <Avatar name={comment.author.name} />
                 <div {...stylex.props(styles.commentBody)}>

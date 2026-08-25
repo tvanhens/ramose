@@ -15,9 +15,9 @@ A live query answers itself: hand it the query you would run once, and you get t
 Reef's board is one **live query** — a query that re-runs itself whenever the database changes and hands your screen new rows ([glossary](/concepts/glossary/#live-query)):
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+  const board = useLiveQuery(db, boardQuery);
+  const people = useLiveQuery(db, peopleQuery);
+  const labels = useLiveQuery(db, labelsQuery);
 ```
 
 `useLive(db, query)` returns `{ rows, error, ticks }`. `rows` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `ticks` counts **updates** ([glossary](/concepts/glossary/#tick)) — a local write applied on the overlay, or a filtered transaction arriving on the **WebSocket connection** ([glossary](/concepts/glossary/#connection)). Render with `key={row.id}`.
@@ -44,7 +44,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 `usePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
+  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
 ```
 
 The subject is compared by value, not by identity — a branded `row.id` (or a number) written inline is fine.
@@ -81,7 +81,7 @@ There is no per-query subscription state on the server. A live query is a re-run
 `useLive` keys its subscription on the lowered query AST, not object identity. Two components that build the same query share one subscription. Put changing values in `.where` — no bindings argument:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#comments-live"
-  const comments = useLive(db, commentsQuery(issueId));
+  const comments = useLiveQuery(db, commentsQuery(issueId));
 ```
 
 Same `issueId` → same key → same shared subscription, even when the query object is new every render. A different `issueId` is a different AST: the hook resubscribes. That is the point. Unstable values (`where({ at: new Date() })`) churn the key every render — keep bound values stable.

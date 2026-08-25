@@ -1,15 +1,14 @@
 /**
  * `useBasis` — where the basis is:
  *
- * - a live view asks the peer (`GET /db/:name/info`) once on mount and again
- *   on every `{ op: "tx" }` / resync;
+ * - a live view reads `session.t` synchronously and again on every
+ *   `{ op: "tx" }` / resync — no `GET /info` per tick;
  * - an `asOf(t)` view answers `t` on the first render, with no request and
  *   no socket;
  * - switching views re-answers, still without a request when pinned.
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Effect from "effect/Effect";
 import { useEffect } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { registerDom, Todos, titles, wrapperFor } from "./harness.tsx";
@@ -22,9 +21,10 @@ const infoCalls = (calls: readonly Call[]) =>
   calls.filter((c) => c.url.includes("/info"));
 
 describe("useBasis", () => {
-  test("a live view asks the peer, then re-asks on every { op: tx }", async () => {
+  test("a live view reads session.t, then follows { op: tx } without /info per tick", async () => {
     const state = { t: 7 };
     const peer = fakePeer({
+      answer: () => ({ body: { t: state.t, result: [] } }),
       http: (call) =>
         call.url.includes("/info")
           ? { body: { db: "todos", t: state.t } }
@@ -43,13 +43,13 @@ describe("useBasis", () => {
       { wrapper: wrapperFor(peer) },
     );
 
-    expect(result.current).toBeUndefined();
     await waitFor(() => expect(result.current).toBe(7));
-    expect(infoCalls(peer.calls).length).toBeGreaterThan(0);
+    const infos = infoCalls(peer.calls).length;
 
     state.t = 9;
     peer.push({ op: "tx", t: 9, datoms: [] });
     await waitFor(() => expect(result.current).toBe(9));
+    expect(infoCalls(peer.calls).length).toBe(infos);
   });
 
   test("an asOf view answers its t on the first render, with no request", () => {
@@ -70,6 +70,7 @@ describe("useBasis", () => {
   test("switching views re-answers — pinned coordinates still without a request", async () => {
     const state = { t: 7 };
     const peer = fakePeer({
+      answer: () => ({ body: { t: state.t, result: [] } }),
       http: (call) =>
         call.url.includes("/info")
           ? { body: { db: "todos", t: state.t } }
@@ -78,6 +79,9 @@ describe("useBasis", () => {
     const { result, rerender } = renderHook(
       ({ t }: { t: number | undefined }) => {
         const db = useDb("todos", Todos);
+        useEffect(() => {
+          if (t === undefined) db.query(titles).catch(() => {});
+        }, [db, t]);
         return useBasis(t === undefined ? db : db.asOf(t));
       },
       { wrapper: wrapperFor(peer), initialProps: { t: 3 as number | undefined } },
@@ -88,13 +92,11 @@ describe("useBasis", () => {
     await waitFor(() => expect(result.current).toBe(5));
     expect(peer.calls).toHaveLength(0);
 
-    // the live view is the one that asks
     rerender({ t: undefined });
     await waitFor(() => expect(result.current).toBe(7));
-    expect(infoCalls(peer.calls).length).toBeGreaterThanOrEqual(1);
   });
 
-  test("a wake during an in-flight /info is not dropped", async () => {
+  test("a wake updates from session.t even while an initial /info is in flight", async () => {
     let released = false;
     let release!: () => void;
     const hold = new Promise<void>((resolve) => {
@@ -102,6 +104,7 @@ describe("useBasis", () => {
     });
     const state = { t: 4 };
     const peer = fakePeer({
+      answer: () => ({ body: { t: state.t, result: [] } }),
       http: async (call) => {
         if (call.url.includes("/info")) {
           if (!released) await hold;
@@ -122,16 +125,13 @@ describe("useBasis", () => {
       { wrapper: wrapperFor(peer) },
     );
 
-    await waitFor(() => expect(infoCalls(peer.calls).length).toBe(1));
-    expect(result.current).toBeUndefined();
-
     state.t = 5;
     peer.push({ op: "tx", t: 5, datoms: [] });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(() => expect(result.current).toBe(5));
+
     released = true;
     release();
-
-    await waitFor(() => expect(result.current).toBe(5));
-    expect(infoCalls(peer.calls).length).toBeGreaterThanOrEqual(2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(result.current).toBe(5);
   });
 });

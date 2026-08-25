@@ -1,7 +1,7 @@
 /**
  * One open workspace: header, live kanban, issue panel, time travel.
  *
- * Everything on screen is derived from three `useLive(db, query)` reads
+ * Everything on screen is derived from three `useLiveQuery(db, query)` reads
  * against the session overlay; every write goes through `useTransact` so
  * the pending layer paints before the Transactor acks. The peer's policy
  * may still deny a write — the layer drops, the board snaps back, and the
@@ -12,7 +12,7 @@ import {
   errorMessage,
   useBasis,
   useDb,
-  useLive,
+  useLiveQuery,
   useQuery,
   useTransact,
 } from "ramose/react";
@@ -257,9 +257,9 @@ export const BoardScreen = ({
   }, [db, toast]);
 
   // docs:use-live-board
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+  const board = useLiveQuery(db, boardQuery);
+  const people = useLiveQuery(db, peopleQuery);
+  const labels = useLiveQuery(db, labelsQuery);
   // enddocs:use-live-board
 
   const [selected, setSelected] = useBoardSelection(slug);
@@ -283,10 +283,10 @@ export const BoardScreen = ({
     }, [setSelected]),
   );
 
-  const liveRows = board.rows;
-  // `ticks` counts overlay emissions after the first — local apply, ack,
-  // or an inbound filtered `tx` — and the pulse makes that visible.
-  const ticks = board.ticks;
+  const liveRows = board.data;
+  // `t` is the basis the rows were read at — local apply, ack, or an
+  // inbound filtered `tx` — and the pulse makes that visible.
+  const basis = board.t;
   // Derived from the live rows, so a deleted issue closes its own panel.
   const selectedRow =
     liveRows === undefined || selected === null
@@ -333,18 +333,16 @@ export const BoardScreen = ({
           title="Live: your writes paint on the local overlay; other sessions arrive as filtered transactions"
         >
           <span
-            key={ticks}
+            key={basis}
             {...stylex.props(
               styles.liveDot,
               timeTraveling && styles.liveDotPaused,
-              ticks > 0 && !timeTraveling && styles.liveDotPulse,
+              basis !== undefined && !timeTraveling && styles.liveDotPulse,
             )}
           />
           {timeTraveling ? "paused" : "live"}
-          {ticks > 0 && (
-            <span {...stylex.props(styles.liveMono)}>
-              {ticks} {ticks === 1 ? "tick" : "ticks"}
-            </span>
+          {basis !== undefined && (
+            <span {...stylex.props(styles.liveMono)}>t {basis}</span>
           )}
         </span>
         {!timeTraveling && (
@@ -415,7 +413,7 @@ export const BoardScreen = ({
                             onClick={() => {
                               if (myEid === undefined) return;
                               void run(
-                                seedSampleIssues(db, myEid, labels.rows ?? []),
+                                seedSampleIssues(db, myEid, labels.data ?? []),
                               );
                             }}
                           >
@@ -438,8 +436,8 @@ export const BoardScreen = ({
               row={selectedRow}
               myEid={myEid}
               cls={cls}
-              labels={labels.rows ?? []}
-              people={people.rows ?? []}
+              labels={labels.data ?? []}
+              people={people.data ?? []}
               onClose={() => setSelected(null)}
             />
           )}
@@ -449,7 +447,7 @@ export const BoardScreen = ({
       {draftStatus !== null && (
         <NewIssueDialog
           status={draftStatus}
-          people={people.rows ?? []}
+          people={people.data ?? []}
           onClose={() => setDraftStatus(null)}
           onSubmit={(draft) => {
             if (myEid === undefined) {
@@ -460,7 +458,7 @@ export const BoardScreen = ({
             void run(
               createIssue(db, myEid, column[column.length - 1]?.rank, draft),
             ).then((report) => {
-              if (report !== undefined) setSelected(report.output.id);
+              if (report.ok) setSelected(report.value.output.id);
             });
             setDraftStatus(null);
           }}

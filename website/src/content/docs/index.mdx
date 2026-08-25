@@ -102,9 +102,9 @@ export const boardQuery = Query.from(Issue)
 
   const db = useDb(slug, Reef);
 
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+  const board = useLiveQuery(db, boardQuery);
+  const people = useLiveQuery(db, peopleQuery);
+  const labels = useLiveQuery(db, labelsQuery);
 ```
 
   </div>
