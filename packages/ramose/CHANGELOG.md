@@ -13,6 +13,8 @@ alone still inherits the namespace on writes; `compile()` warns when
 that leaves `read` narrower than the writes.
 
 Reef's policy uses the aliases. `privateNote` is `P.only("owner")`.
+A field write arm whose namespace has no matching verb is dropped
+(it would grant, not narrow); `compile()` warns.
 
 ### Explicit `superuser` and `schemaClasses` (part of #179, tracker #205)
 

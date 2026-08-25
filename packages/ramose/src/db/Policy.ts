@@ -248,6 +248,8 @@ export interface Policy<
   readonly ruleDefs: readonly unknown[];
   /** idents whose attribute rule narrows their namespace's `read` */
   readonly maskedReads: ReadonlySet<string>;
+  /** attr write arms dropped because the namespace has no such op (would grant) */
+  readonly droppedAttrWrites: readonly string[];
 }
 
 /** The declared classes of a policy value: `Ramose.Policy.Class<typeof policy>`. */
@@ -370,7 +372,9 @@ export const field = <A extends AttrRef, const R>(
  * One arm on every op — read, create, and `write:` (set / remove / delete).
  * `P.only("owner")` is `P.class("owner")` on each; `P.only(arm)` applies
  * that arm. A field with only `read:` still inherits the namespace on
- * writes — this is the spelling that actually masks them.
+ * writes — this is the spelling that actually masks them. Write arms
+ * whose namespace has no matching op are dropped (they would grant,
+ * not narrow).
  */
 export function only<const Cls extends string>(
   ...classes: Cls[]
@@ -774,6 +778,29 @@ export function policy<
 
   const ns: Record<string, NsRules> = {};
   const maskedReads = new Set<string>();
+  const droppedAttrWrites: string[] = [];
+
+  const keepNarrowingWrites = (
+    own: Record<string, readonly CompiledArm[]>,
+    nsRules: Readonly<Record<string, readonly CompiledArm[]>>,
+    where: string,
+  ): Record<string, readonly CompiledArm[]> => {
+    const out: Record<string, readonly CompiledArm[]> = {};
+    const dropped: string[] = [];
+    for (const [op, arms] of Object.entries(own)) {
+      if (op !== "read" && nsRules[op] === undefined) {
+        dropped.push(publicPolicyOp(op));
+        continue;
+      }
+      out[op] = arms;
+    }
+    if (dropped.length > 0) {
+      droppedAttrWrites.push(
+        `${where}: dropped ${dropped.join(", ")} — the namespace has no such arm, so emitting them would grant rather than narrow`,
+      );
+    }
+    return out;
+  };
 
   for (const [nsKey, nsSpec] of Object.entries(arms as Record<string, NsRuleSpec<unknown> | undefined>)) {
     if (nsSpec === undefined) continue;
@@ -798,12 +825,16 @@ export function policy<
       if (!fieldIdents.has(a.attr)) {
         fail(`${where}.attrs: ${a.attr} is not a field of the ${nsKey} entity`, a.attr);
       }
-      const r = compileSpec(
-        a.rules,
+      const r = keepNarrowingWrites(
+        compileSpec(
+          a.rules,
+          `${where}.attrs["${a.attr}"]`,
+          `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`,
+          prefix,
+          fieldIdents,
+        ),
+        rules,
         `${where}.attrs["${a.attr}"]`,
-        `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`,
-        prefix,
-        fieldIdents,
       );
       attrs[a.attr] = r;
       if (r.read !== undefined) maskedReads.add(a.attr);
@@ -837,6 +868,7 @@ export function policy<
     ns,
     ruleDefs,
     maskedReads,
+    droppedAttrWrites,
   };
 }
 
@@ -1034,7 +1066,7 @@ const isBroaderThanRead = (
  * an explicit `write:`) is the fix.
  */
 export const checkReadWriteMasks = (p: Policy): readonly string[] => {
-  const warnings: string[] = [];
+  const warnings: string[] = (p.droppedAttrWrites ?? []).map((m) => `ramose/policy: ${m}`);
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     for (const [ident, own] of Object.entries(entry.attrs)) {
       const read = own.read;

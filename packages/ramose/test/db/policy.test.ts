@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { Connection, Index, filterDb, parsePolicy, type CompiledPolicy, type Principal } from "../../src/internal/core/index.ts";
+import { checkTx } from "../../src/internal/core/policy/check.ts";
 import {
   Field,
   Schema as DbSchema,
@@ -170,7 +171,7 @@ describe("compile", () => {
   test("P.only puts the same class gate on every op", () => {
     const p = P.policy(
       { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
-      { doc: { read: true, write: P.class("member"), attrs: [P.field(Doc.audit, P.only("admin"))] } },
+      { doc: { read: true, create: P.class("member"), write: P.class("member"), attrs: [P.field(Doc.audit, P.only("admin"))] } },
     );
     const c = compiled(p);
     const owner = [{ _tag: "allow" as const, class: ["admin"], rule: true as const }];
@@ -186,7 +187,7 @@ describe("compile", () => {
   test("P.only(arm) applies that arm on every op", () => {
     const p = P.policy(
       { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
-      { doc: { attrs: [P.field(Doc.audit, P.only(ownDoc))] } },
+      { doc: { write: ownDoc, create: ownDoc, attrs: [P.field(Doc.audit, P.only(ownDoc))] } },
     );
     const c = compiled(p);
     const name = (c.attrs[":doc/audit"]!.read![0] as { rule: string }).rule;
@@ -672,6 +673,7 @@ describe("read narrower than writes", () => {
       {
         doc: {
           read: true,
+          create: P.class("member"),
           write: P.class("member"),
           attrs: [P.field(Doc.audit, P.only("admin"))],
         },
@@ -681,12 +683,53 @@ describe("read narrower than writes", () => {
     expect(captureWarn(() => P.compile(only))).toEqual([]);
   });
 
+  test("P.only on a read-only namespace emits only the read arm — writes would grant", async () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      { doc: { read: ownDoc, attrs: [P.field(Doc.audit, P.only("admin"))] } },
+    );
+    const c = compiled(p);
+    expect(c.attrs[":doc/audit"]).toEqual({
+      read: [{ _tag: "allow" as const, class: ["admin"], rule: true as const }],
+    });
+    expect(c.ns!.doc!.add).toBeUndefined();
+    expect(P.checkReadWriteMasks(p).join("\n")).toMatch(/would grant rather than narrow/);
+
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact([
+      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+      { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":doc/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":doc/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    ]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":user/sub": "u_alice" },
+      { ":db/id": "d1", ":doc/title": "D1", ":doc/owner": "alice", ":doc/audit": "who" },
+    ]);
+    const admin: Principal = {
+      kind: "user",
+      class: "admin",
+      sub: "u_alice",
+      eid: tempids.alice,
+      claims: { sub: "u_alice" },
+      db: "acme",
+    };
+    const denied = await checkTx(
+      [[":db/add", tempids.d1, ":doc/audit", "x"]],
+      conn.db(),
+      c,
+      admin,
+    );
+    expect(denied.ok).toBe(false);
+  });
+
   test("compile warns when an explicit write arm is more open than read", () => {
     const p = P.policy(
       { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
       {
         doc: {
           read: true,
+          write: P.class("member"),
           attrs: [P.field(Doc.audit, { read: P.class("admin"), write: P.class("admin", "member") })],
         },
       },

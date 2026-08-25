@@ -163,7 +163,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## Field rules narrow
 
-`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A later field inherits that rule. A `read` arm without write arms still inherits the namespace on writes — `P.only("owner")` masks every op. `compile()` warns when `read` is narrower than the writes.
+`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A later field inherits that rule. `P.only("owner")` masks every op the record type already names; write arms the namespace lacks are dropped (they would grant). `compile()` warns when `read` is narrower than the writes.
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-private-note"
         P.field(Issue.privateNote, P.only("owner")),
