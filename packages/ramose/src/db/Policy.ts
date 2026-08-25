@@ -785,17 +785,6 @@ export interface CompileOptions {
 }
 
 /**
- * `reshapePullResult` drops an entity that is missing a *required* key, so a
- * read-masked attribute pulled as required would delete the row instead of
- * redacting the field. Deploy-time error, not a printed list.
- *
- * `.orDefault(v)` is required for this purpose, deliberately: it is not a way
- * to keep the row. The masked datom comes back absent, so the default would
- * *stand in* for it — the caller reads `v` as if it were the hidden value,
- * which is worse than the `undefined` `.optional` gives them. Fail closed:
- * only `.optional` (or a card-many field, which is `[]`) passes.
- */
-/**
  * The peer upserts the principal with `sub`, `role` (when that attr
  * exists), and matching `ramose.attrs`. Any other required card-one
  * field on that entity makes first login `tx/required`. Fail closed
@@ -826,6 +815,17 @@ export const checkPrincipalProvisioning = (
   );
 };
 
+/**
+ * `reshapePullResult` drops an entity that is missing a *required* key, so a
+ * read-masked attribute pulled as required would delete the row instead of
+ * redacting the field. Deploy-time error, not a printed list.
+ *
+ * `.orDefault(v)` is required for this purpose, deliberately: it is not a way
+ * to keep the row. The masked datom comes back absent, so the default would
+ * *stand in* for it — the caller reads `v` as if it were the hidden value,
+ * which is worse than the `undefined` `.optional` gives them. Fail closed:
+ * only `.optional` (or a card-many field, which is `[]`) passes.
+ */
 export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
   if (p.maskedReads.size === 0) return;
   const walk = (pattern: unknown, where: string): void => {
