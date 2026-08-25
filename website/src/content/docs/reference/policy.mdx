@@ -18,8 +18,8 @@ const policy = Ramose.policy(
     schema: Schema,
     principal: User.sub,          // the field whose value is the token's `sub`
     classes: ["owner", "member", "viewer"],
-    schemaClasses: ["owner"],      // may install schema; defaults to [superuser]
-    superuser?: "operator",        // optional bypass class — do not mint to a browser
+    schemaClasses: ["owner"],
+    superuser?: "operator",
     claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
   },
   {
@@ -81,10 +81,9 @@ export const policy = Ramose.policy(
 
 - `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
-- `superuser` / `schemaClasses` — optional bypass class, and who may install schema (default `[superuser]`). At least one schema class is required.
 - The second argument is one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
 
-`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no class that can install schema, or `P.class(superuser)` in an arm (unreachable). `P.class` is typed as the head's `classes` minus `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
+`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no schema class, or `P.class(superuser)`. `P.class` omits `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
@@ -172,17 +171,17 @@ Membership, ownership and sharing are facts in the database, not claims in the t
         P.field(Issue.privateNote, { read: P.class("owner") }),
 ```
 
-## superuser, schemaClasses, and anonymous
+## Standing
 
 | field | meaning |
 | --- | --- |
-| `superuser` | optional class that skips every rule — reads unfiltered, writes unchecked; may call `explain` and `/admin/*`. `P.class(superuser)` in an arm is rejected as unreachable |
-| `schemaClasses` | classes that may install or grow schema. Defaults to `[superuser]`. A schema class still runs the rules |
+| `superuser` | bypass: unfiltered reads, unchecked writes; `explain`, `/admin/*`. `P.class(superuser)` is unreachable |
+| `schemaClasses` | who may grow schema (default `[superuser]`); still runs the rules |
 | `anonymous` | given to a caller with no token, **only if the policy declares it**; otherwise token-less calls are `Unauthorized` |
 | `$token` | the `RAMOSE_TOKEN` holder under a policy; cannot be declared, so no rule admits it |
 
 :::caution
-`superuser` bypasses everything, including field masks. Do not hand it to a browser. Name it in the policy head; a class literally called `admin` is ordinary unless it is `superuser`. `anonymous` opens the door to the internet; declare it on purpose.
+A class named `admin` is ordinary unless named `superuser`. `anonymous` is the internet; declare it on purpose.
 :::
 
 ## Where the checks run
