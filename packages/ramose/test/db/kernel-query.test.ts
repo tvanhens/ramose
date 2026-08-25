@@ -2080,3 +2080,133 @@ describe("query: aggregates with order/limit and scalar value", () => {
     expect(() => lowerQueryObject(q)).toThrow(/no paging root/);
   });
 });
+
+describe("query: ignoreCase string predicates and Q.call", () => {
+  test("ignoreCase lowers through the lower-case builtin", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.includes(title.v, "SHIP", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const { query } = lowerQueryObject(q);
+    const where = query.where as unknown[];
+    const folds = where.filter(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "lower-case",
+    ) as unknown[][];
+    expect(folds).toHaveLength(1);
+    expect((folds[0]![0] as unknown[])[0]).toBe("lower-case");
+    const lowered = folds[0]![1] as string;
+    expect(where).toContainEqual([["includes?", lowered, "ship"]]);
+  });
+
+  test("startsWith and endsWith take the same ignoreCase option", () => {
+    const starts = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.startsWith(title.v, "FIX", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const ends = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.endsWith(title.v, "FLAKE", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const startWhere = lowerQueryObject(starts).query.where as unknown[];
+    const endWhere = lowerQueryObject(ends).query.where as unknown[];
+    expect(JSON.stringify(startWhere)).toContain("starts-with?");
+    expect(JSON.stringify(startWhere)).toContain("lower-case");
+    expect(JSON.stringify(startWhere)).toContain('"fix"');
+    expect(JSON.stringify(endWhere)).toContain("ends-with?");
+    expect(JSON.stringify(endWhere)).toContain('"flake"');
+  });
+
+  test("two bound sides both fold through lower-case", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      const needle = Q.var<string>();
+      yield* Q.includes(title.v, needle, { ignoreCase: true });
+      return { title: title.v };
+    });
+    const where = lowerQueryObject(q).query.where as unknown[];
+    const folds = where.filter(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "lower-case",
+    );
+    expect(folds).toHaveLength(2);
+  });
+
+  test("Q.call lowers to a function-binding clause", () => {
+    const q = Query.q(function* () {
+      const user = yield* Query.entities(User);
+      const age = yield* Q.fact(user, User.age);
+      const next = yield* Q.call("+", age.v, 1);
+      return { next };
+    });
+    const { query } = lowerQueryObject(q);
+    const where = query.where as unknown[];
+    const bind = where.find(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "+",
+    ) as unknown[];
+    expect(bind).toBeDefined();
+    expect((bind[0] as unknown[])[2]).toBe(1);
+    expect(typeof bind[1]).toBe("string");
+    expect(query.find).toContain(bind[1]);
+  });
+
+  test("Q.call rejects a name the engine does not ship", () => {
+    expect(() => Q.call("no-such-fn", 1)).toThrow(/not an engine function/);
+  });
+
+  test("ignoreCase search is end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const sensitive = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.includes(t, "SHIP")))
+      .select({ title: Issue.title });
+    expect(await db.query(sensitive)).toEqual([]);
+
+    const folded = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.includes(t, "SHIP", { ignoreCase: true })))
+      .select({ title: Issue.title });
+    expect(await db.query(folded)).toEqual([{ title: "ship the release" }]);
+
+    const prefix = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.startsWith(t, "FIX", { ignoreCase: true })))
+      .select({ title: Issue.title });
+    expect(await db.query(prefix)).toEqual([{ title: "fix the flake" }]);
+
+    await peer.dispose();
+  });
+
+  test("Q.call arithmetic binding is end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const q = Query.q(function* () {
+      const user = yield* Query.entities(User);
+      const name = yield* Q.fact(user, User.name);
+      const age = yield* Q.fact(user, User.age);
+      const next = yield* Q.call("+", age.v, 1);
+      yield* Q.eq(next, 37);
+      return { name: name.v, next };
+    });
+    expect(await db.query(q)).toEqual([{ name: "Ada", next: 37 }]);
+
+    await peer.dispose();
+  });
+
+  test("ignoreCase does not lower to a pull-phase filter", () => {
+    expect(() =>
+      lowerQueryObject(
+        Query.from(User).select({
+          tags: values(User.tags, { where: [(v) => Q.includes(v, "A", { ignoreCase: true })] }),
+        }),
+      ),
+    ).toThrow(/ignoreCase does not lower to a pull filter/);
+  });
+});

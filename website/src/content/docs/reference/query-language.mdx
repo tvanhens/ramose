@@ -63,7 +63,13 @@ cast:
   position on the wire); the handle exposes `{ e, v, t, tx, op }`, so
   time-based questions are ordinary clauses (`f.t` reads as the basis `t`).
 - Value comparisons — `Q.eq`, `Q.gt`, `Q.startsWith`, `Q.in`, … over bound
-  vars.
+  vars. `Q.startsWith` / `Q.endsWith` / `Q.includes` take
+  `{ ignoreCase: true }`, which folds both sides through the engine's
+  `lower-case` function before the predicate. `Q.matches` still rejects
+  `RegExp` flags — there is no inline `(?i)`.
+- `Q.call(fn, …args)` — a function-binding clause: `yield* Q.call("+", a, 1)`
+  binds the result so the next clause can name it. The names it accepts are
+  the engine functions listed below.
 - `Q.or` / `Q.not` — take sub-generators; closure capture over outer
   handles supplies the join-variable lists. No explicit var lists, ever.
 - Rule invocation — yielding a rule application records an inert call
@@ -142,6 +148,32 @@ from the last row. None of these delegate through `q.open` — a cursor is
 post-processing for the outermost query; strip it with `q.logic()`. Conditional
 clauses in the fluent spelling are ordinary JavaScript
 (`if (assignee) q = q.where({ assignee })`).
+
+## Engine functions `Q.call` can bind
+
+`Q.call` is the escape hatch for builtins the kernel does not wrap as
+comparisons or aggregate cells. A call is a clause: you cannot obtain the
+result without contributing it. Unknown names fail at build time.
+
+| Group | Names |
+| --- | --- |
+| Arithmetic | `+` `-` `*` `/` `quot` `rem` `mod` `inc` `dec` `abs` `min` `max` |
+| String | `str` `subs` `lower-case` `upper-case` `trim` `split` |
+| Regex | `re-find` `re-matches` `re-seq` |
+| Collections | `count` `identity` `ground` `vector` `tuple` `untuple` |
+| Other | `rand` `rand-int` `now` |
+
+The string functions also answer under `clojure.string/` aliases
+(`clojure.string/lower-case`, `clojure.string/join`, …). Aggregates
+(`count`, `sum`, `median`, …) stay cells — `Q.count(e)`, not `Q.call`.
+`get-else` and `missing?` need the database source and are not `Q.call`
+names.
+
+```ts
+const next = yield* Q.call("+", age, 1);
+const folded = yield* Q.call("lower-case", title);
+yield* Q.includes(folded, needle);
+```
 
 ## Effect stops at the boundary
 

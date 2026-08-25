@@ -1175,6 +1175,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         case "cmp":
           for (const a of c.args) if (isVar(a)) into.add(a.id);
           break;
+        case "fnBind":
+          for (const a of c.args) if (isVar(a)) into.add(a.id);
+          into.add(c.ret.id);
+          break;
         case "memberOf":
           into.add(c.v.id);
           break;
@@ -1221,7 +1225,13 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           break;
         }
         case "cmp":
-          out.push(...lowerCmp(c.op, c.args));
+          out.push(...lowerCmp(c));
+          break;
+        case "fnBind":
+          out.push([
+            [c.fn, ...c.args.map((a) => lowerPos(a, `Q.call("${c.fn}")`))],
+            nameOf(c.ret),
+          ]);
           break;
         case "memberOf": {
           // entailment skip: a sibling fact already constrains this var
@@ -1313,6 +1323,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           case "cmp":
             for (const a of c.args) if (isVar(a) && a.id === id) found = a;
             break;
+          case "fnBind":
+            for (const a of c.args) if (isVar(a) && a.id === id) found = a;
+            if (c.ret.id === id) found = c.ret;
+            break;
           case "memberOf":
             if (c.v.id === id) found = c.v;
             break;
@@ -1385,7 +1399,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return clause;
   };
 
-  const lowerCmp = (op: string, args: readonly Position[]): unknown[][] => {
+  const lowerCmp = (c: CmpCommand): unknown[][] => {
+    const { op, args, ignoreCase } = c;
     // f.t compares as a basis t: the wire slot binds the tx *eid*, so a
     // numeric operand converts by the stable tx partition base
     const tSided = args.some((a) => isVar(a) && a.kind === "t");
@@ -1419,6 +1434,30 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       // per match, not one per value
       return [[["ground", values], [nameOf(subject), "..."]]];
     }
+    if (ignoreCase) {
+      if (args.some(isAggSpec)) {
+        throw new Error(
+          "ramose/query: ignoreCase cannot wrap an aggregate comparison — :having does not bind functions; write the comparison at the query's top level without ignoreCase, or fold through Q.call(\"lower-case\") before aggregating",
+        );
+      }
+      const extras: unknown[][] = [];
+      const folded = args.map((a) => {
+        if (isVar(a)) {
+          const out = freshName("l");
+          extras.push([["lower-case", nameOf(a)], out]);
+          return out;
+        }
+        if (isBlank(a) || a === undefined) {
+          throw new Error("ramose/query: ignoreCase needs a bound var or a string on each side");
+        }
+        const v = unwrapEidLike(a);
+        if (typeof v !== "string") {
+          throw new Error("ramose/query: ignoreCase applies to strings");
+        }
+        return v.toLowerCase();
+      });
+      return [...extras, [[op, ...folded]]];
+    }
     return [[[op, ...args.map(operand)]]];
   };
 
@@ -1434,8 +1473,14 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const havingCmps: CmpCommand[] = [];
   const rowClauses: BClause[] = [];
   for (const c of clauses) {
-    if (c._tag === "cmp" && c.args.some(isAggSpec)) havingCmps.push(c);
-    else rowClauses.push(c);
+    if (c._tag === "cmp" && c.args.some(isAggSpec)) {
+      if (c.ignoreCase) {
+        throw new Error(
+          "ramose/query: ignoreCase cannot wrap an aggregate comparison — :having does not bind functions",
+        );
+      }
+      havingCmps.push(c);
+    } else rowClauses.push(c);
   }
   const nameCells = havingCmps.length > 0;
   /** Two `AggSpec` values with one fn over one var are the same cell —

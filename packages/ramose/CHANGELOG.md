@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Case-insensitive string predicates and `Q.call` (part of #190)
+
+`Q.startsWith` / `Q.endsWith` / `Q.includes` take `{ ignoreCase: true }`,
+lowered through the engine's `lower-case` function. `Q.matches` still
+rejects `RegExp` flags. `Q.call(fn, …args)` is the function-binding
+escape hatch for engine builtins the kernel does not wrap (`+`,
+`lower-case`, `str`, …). The names it accepts are listed on the
+query-language page.
+
 ### Aggregates with order/limit and a scalar terminal (tracker #189)
 
 `orderBy` / `limit` / `offset` are methods on `QueryObject`, so both
