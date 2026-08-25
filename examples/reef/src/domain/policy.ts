@@ -7,8 +7,8 @@
  * Classes (carried as `ramose.class`, minted from the Better Auth org role):
  *
  *   owner   workspace owners/admins — may install schema (`schemaClasses`)
- *           and read `issue.privateNote`. Still subject to the rules.
- *   member  can create issues/comments and edit or delete *their own*
+ *           and read or write `issue.privateNote`. Still subject to the rules.
+ *   member  can create issues/comments and write or delete *their own*
  *   viewer  read-only; every write arm denies it
  *
  * There is no bypass class. `schemaClasses: ["owner"]` is what lets the
@@ -62,17 +62,15 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("owner", "member"),
-      set: { class: ["owner", "member"], rule: ownIssue },
-      remove: { class: ["owner", "member"], rule: ownIssue },
-      delete: { class: ["owner", "member"], rule: ownIssue },
+      write: { class: ["owner", "member"], rule: ownIssue },
       // docs:policy-preset
       preset: [P.preset(Issue.creator, P.principal)],
       // enddocs:policy-preset
       attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
+        // Owner-only on every op: members and viewers never see or
+        // write this datom. Pulls must ask for it as `.optional`.
         // docs:policy-private-note
-        P.field(Issue.privateNote, { read: P.class("owner") }),
+        P.field(Issue.privateNote, P.only("owner")),
         // enddocs:policy-private-note
       ],
     },
@@ -81,8 +79,7 @@ export const policy = Ramose.policy(
     comment: {
       read: true,
       create: P.class("owner", "member"),
-      remove: { class: ["owner", "member"], rule: ownComment },
-      delete: { class: ["owner", "member"], rule: ownComment },
+      write: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
     // enddocs:policy-comment

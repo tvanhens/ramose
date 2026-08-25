@@ -58,11 +58,16 @@ describe("reef policy", () => {
     expect(parsed.preset[":user/sub"]).toBeUndefined();
   });
 
-  test("privateNote read is narrowed to the owner class", () => {
+  test("privateNote is owner-only on every op", () => {
     const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    const arms = parsed.attrs[":issue/privateNote"]?.read;
-    expect(arms).toBeDefined();
-    expect(arms).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
+    const owner = [{ _tag: "allow" as const, class: ["owner"], rule: true as const }];
+    expect(parsed.attrs[":issue/privateNote"]).toEqual({
+      read: owner,
+      add: owner,
+      retract: owner,
+      retractEntity: owner,
+      create: owner,
+    });
     // …and it is the only narrowing: every other issue attribute is unnamed
     // and inherits the broad namespace read at eval time.
     expect(Object.keys(parsed.attrs)).toEqual([":issue/privateNote"]);
@@ -121,10 +126,70 @@ describe("reef policy", () => {
     });
     const name = (add![0] as { rule: string }).rule;
     expect(parsed.ns?.issue?.retract![0]).toEqual(add![0]);
+    expect(parsed.ns?.issue?.retractEntity![0]).toEqual(add![0]);
+    expect(parsed.ns?.comment?.retract![0]).toEqual({
+      _tag: "allow",
+      class: ["owner", "member"],
+      rule: expect.any(String),
+    });
+    expect(parsed.ns?.comment?.add![0]).toEqual(parsed.ns?.comment?.retract![0]);
     expect(parsed.rules).toBeDefined();
     const def = (parsed.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === name);
     expect(def).toBeDefined();
     expect(JSON.stringify(def)).toContain(":issue/creator");
+  });
+
+  test("a member cannot write privateNote; the creator-owner can", async () => {
+    const compiled = parsePolicy(JSON.parse(compiledPolicy()));
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Reef) as never);
+    const seeded = await conn.transact([
+      { ":db/id": "ada", ":user/sub": "user_ada", ":user/role": "owner" },
+      { ":db/id": "moe", ":user/sub": "user_moe", ":user/role": "member" },
+      {
+        ":db/id": "iss",
+        ":issue/title": "Mine",
+        ":issue/status": "todo",
+        ":issue/priority": "none",
+        ":issue/rank": 1,
+        ":issue/createdAt": 1,
+        ":issue/creator": "moe",
+      },
+      {
+        ":db/id": "own",
+        ":issue/title": "Ada's",
+        ":issue/status": "todo",
+        ":issue/priority": "none",
+        ":issue/rank": 2,
+        ":issue/createdAt": 1,
+        ":issue/creator": "ada",
+      },
+    ]);
+    const db = conn.db();
+    const moe = who("member", "user_moe", seeded.tempids.moe);
+    const ada = who("owner", "user_ada", seeded.tempids.ada);
+    const memberWrite = await checkTx(
+      [[":db/add", seeded.tempids.iss, ":issue/privateNote", "secret"]],
+      db,
+      compiled,
+      moe,
+    );
+    expect(memberWrite.ok).toBe(false);
+    if (!memberWrite.ok) expect(memberWrite.attr).toBe(":issue/privateNote");
+    const ownerWrite = await checkTx(
+      [[":db/add", seeded.tempids.own, ":issue/privateNote", "secret"]],
+      db,
+      compiled,
+      ada,
+    );
+    expect(ownerWrite.ok).toBe(true);
+    const ownerOnMembers = await checkTx(
+      [[":db/add", seeded.tempids.iss, ":issue/privateNote", "nope"]],
+      db,
+      compiled,
+      ada,
+    );
+    expect(ownerOnMembers.ok).toBe(false);
   });
 
   // `RAMOSE_POLICY` is a Cloudflare plain-text binding, capped at 5.1 kB —

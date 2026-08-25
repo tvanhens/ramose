@@ -57,10 +57,10 @@ export const Issue = Ramose.Entity("issue", {
   creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
-  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
+  /** Owner-only field — the policy masks read and write (see policy.ts). */
   privateNote: Ramose.string({
     optional: true,
-    doc: "visible to the owner class only",
+    doc: "visible to and writable by the owner class only",
   }),
 });
 ```
@@ -74,7 +74,7 @@ export const Issue = Ramose.Entity("issue", {
 | `issue.rank` | A double (`Ramose.float()`). |
 | `issue.creator` → `user` | A **reference** — a typed foreign key ([glossary](/concepts/glossary/#reference)). Permissions fill it in for you. |
 | `issue.labels` → `label` | A *set* of references — no join table. |
-| `issue.privateNote` | Admin-only text; the policy masks it for everyone else. |
+| `issue.privateNote` | Owner-only text; the policy masks read and write for everyone else. |
 
 Every record type also gets an `id` field for free (`Issue.id`).
 

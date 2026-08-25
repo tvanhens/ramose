@@ -23,7 +23,7 @@ const policy = Ramose.policy(
     claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
   },
   {
-    issue: { read, create, set, remove, delete, preset?, attrs? },
+    issue: { read, create, write, preset?, attrs? },
   },
 );
 ```
@@ -58,21 +58,18 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("owner", "member"),
-      set: { class: ["owner", "member"], rule: ownIssue },
-      remove: { class: ["owner", "member"], rule: ownIssue },
-      delete: { class: ["owner", "member"], rule: ownIssue },
+      write: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("owner") }),
+        // Owner-only on every op: members and viewers never see or
+        // write this datom. Pulls must ask for it as `.optional`.
+        P.field(Issue.privateNote, P.only("owner")),
       ],
     },
     comment: {
       read: true,
       create: P.class("owner", "member"),
-      remove: { class: ["owner", "member"], rule: ownComment },
-      delete: { class: ["owner", "member"], rule: ownComment },
+      write: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },
@@ -98,12 +95,13 @@ These are the access-check verbs a policy arm keys. They are not the write-path 
 | `set` | writing a value to a field of an existing record |
 | `remove` | clearing a value from a field |
 | `delete` | deleting a whole record |
+| `write` | authoring alias for `set` + `remove` + `delete` — one arm, three verbs |
 
 ```ts
-issue: { read: true, create: P.class("member"), set: { class: "member", rule: ownIssue } }
+issue: { read: true, create: P.class("member"), write: { class: "member", rule: ownIssue } }
 ```
 
-Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate.
+Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate. Naming both `write` and `set` / `remove` / `delete` is a deploy-time error.
 
 ## Arms are fragments
 
@@ -152,7 +150,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 { doc: { read: [mine, inOrg] } }
 // 4. narrowed: everything above, except doc.audit, which is owners only
 { doc: { read: [mine, inOrg],
-         attrs: [P.field(Doc.audit, { read: P.class("owner") })] } }
+         attrs: [P.field(Doc.audit, P.only("owner"))] } }
 ```
 
 ## preset
@@ -165,10 +163,10 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## Field rules narrow
 
-`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
+`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable. A `read` arm without write arms still inherits the namespace on writes — `P.only("owner")` is the one-arm spelling that masks every op. `compile()` warns when a field's `read` is narrower than its writes.
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-private-note"
-        P.field(Issue.privateNote, { read: P.class("owner") }),
+        P.field(Issue.privateNote, P.only("owner")),
 ```
 
 ## Standing
@@ -196,7 +194,7 @@ Class `admin` is ordinary unless named `superuser`. `anonymous` is the internet;
 
 `P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up). The wire version is 2; installed policies recompile at deploy.
 
-Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
+Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone. `compile()` also warns when a field's `read` is narrower than its writes.
 
 ```ts title="examples/reef/src/domain/policy.ts#compiled-policy"
 export const compiledPolicy = (): string =>

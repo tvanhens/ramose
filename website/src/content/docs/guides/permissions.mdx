@@ -65,22 +65,19 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("owner", "member"),
-      set: { class: ["owner", "member"], rule: ownIssue },
-      remove: { class: ["owner", "member"], rule: ownIssue },
-      delete: { class: ["owner", "member"], rule: ownIssue },
+      write: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("owner") }),
+        // Owner-only on every op: members and viewers never see or
+        // write this datom. Pulls must ask for it as `.optional`.
+        P.field(Issue.privateNote, P.only("owner")),
       ],
     },
 
     comment: {
       read: true,
       create: P.class("owner", "member"),
-      remove: { class: ["owner", "member"], rule: ownComment },
-      delete: { class: ["owner", "member"], rule: ownComment },
+      write: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
 ```
@@ -91,8 +88,8 @@ Read it as:
 | --- | --- |
 | `principal: User.sub` · `classes: ["owner", "member", "viewer"]` · `schemaClasses: ["owner"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. Owners may install schema. |
 | `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; owners reach the same rules. |
-| `issue.read: true` · `attrs: privateNote read: owner` | Everyone sees issues — except `privateNote`, which only owners receive. A screen that wants it must ask for it as `.optional`. |
-| `issue.set / remove / delete: ownIssue` | Owners and members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
+| `issue.read: true` · `attrs: privateNote P.only("owner")` | Everyone sees issues — except `privateNote`, which only owners read or write. A screen that wants it must ask for it as `.optional`. |
+| `issue.write: ownIssue` | Owners and members change or delete only their own issues; viewers never. `write:` is `set` + `remove` + `delete`. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
 | `preset: creator = principal` | The server stamps `creator` to the caller on create. |
 | (nothing) | Anything not mentioned is denied: no `set` arm on `label`, so members cannot recolour labels. |
 
