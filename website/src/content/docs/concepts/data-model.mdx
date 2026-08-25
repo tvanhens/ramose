@@ -47,7 +47,7 @@ Because a database is only a name, one per customer is a function call, not a de
 
 The **policy** is a value that says which roles may read, create, change or remove which fields ([glossary](/concepts/glossary/#policy)). The server checks it on every write and filters every read with it, so a rule holds no matter which screen or script is asking. It is deny by default: forgetting a rule closes a door, never opens one.
 
-Rules are about facts, so they can be precise: in Reef, a member may change an issue *they created*, and only admins ever receive the admin note. Because the policy and the fields your screens read are both values, the deploy checks them against each other — see [the deploy-time check](/guides/permissions/#the-deploy-time-check).
+Rules are about facts, so they can be precise: in Reef, a member may change an issue *they created*, and only owners ever receive the private note. Because the policy and the fields your screens read are both values, the deploy checks them against each other — see [the deploy-time check](/guides/permissions/#the-deploy-time-check).
 
 ## The schema is a value
 

@@ -324,7 +324,7 @@ export const BoardScreen = ({
         <span {...stylex.props(styles.wsName)}>{name}</span>
         <span {...stylex.props(styles.wsSlug, styles.wide)}>db/{slug}</span>
         <Tag
-          tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
+          tone={cls === "owner" ? "accent" : cls === "member" ? "ok" : "neutral"}
           title="your ramose.class in this workspace"
         >
           {cls}
@@ -358,7 +358,7 @@ export const BoardScreen = ({
             <Icon name="history" size={13} /> Time travel
           </Button>
         )}
-        {cls === "admin" && (
+        {cls === "owner" && (
           <Button size="sm" onClick={() => setInvite(true)}>
             <Icon name="userPlus" size={13} /> Invite
           </Button>

@@ -20,7 +20,9 @@ import type {
 } from "../internal/core/policy/ast.ts";
 import { POLICY_OPS } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
-import type { AnyField } from "./Field.ts";
+import { isOptionalField, type AnyField } from "./Field.ts";
+import { roleIdentOf } from "../internal/core/policy/provision.ts";
+import { inferDbValueType } from "./valueTypes.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
@@ -165,6 +167,16 @@ export interface PolicyHead<
   /** attribute whose value is the JWT `sub` — derives `me`'s type */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
   readonly classes: CL;
+  /**
+   * Class whose holders bypass every rule. `P.class(superuser)` in an
+   * arm is unreachable and rejected. Omit to have no bypass class.
+   */
+  readonly superuser?: CL[number];
+  /**
+   * Classes that may install or grow schema. Defaults to `[superuser]`.
+   * Distinct from bypass — a schema class still runs the rules.
+   */
+  readonly schemaClasses?: readonly CL[number][];
   /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
 }
@@ -193,11 +205,14 @@ interface NsRules {
 export interface Policy<
   C extends AnySchema = AnySchema,
   CL extends readonly string[] = readonly string[],
+  SU extends CL[number] | undefined = CL[number] | undefined,
 > {
   readonly _tag: "Policy";
   readonly schema: C;
   readonly principal: string;
   readonly classes: CL;
+  readonly superuser?: SU;
+  readonly schemaClasses: readonly CL[number][];
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
   /** catalog namespace key → normalised rules */
   readonly ns: Readonly<Record<string, NsRules>>;
@@ -216,6 +231,9 @@ const fail = (message: string, ident?: string, cause?: unknown): never => {
 
 /** Keep `CL` inferred from the head, not widened by arm literals. */
 type NoInfer<T> = [T][T extends unknown ? 0 : never];
+
+/** Arm class names: the head's `classes` minus `superuser` (unreachable). */
+type ArmClasses<CL extends readonly string[], SU> = readonly Exclude<CL[number], SU>[];
 
 /** Runtime fragment: promote does not re-check the type-level brand. */
 type AnyFragFn = (me: Var<unknown>) => (focus: Var<unknown>) => QueryGen<unknown>;
@@ -553,22 +571,27 @@ const checkArmFocus = (
  * Build a policy. `policy(head, arms)` is head/body shaped like `Query.q`:
  * `principal: User.sub` derives `me`, and every inline arm is checked as
  * `(me) => fragment` with `me` fully typed. Unknown idents, undeclared
- * classes and unknown namespace keys fail here.
+ * classes and unknown namespace keys fail here. `superuser` / `schemaClasses`
+ * are required to resolve to at least one class that may install schema;
+ * `P.class(superuser)` in an arm is unreachable and rejected.
  */
 export function policy<
   const C extends AnySchema,
   const I extends CatalogIdent<C>,
   const CL extends readonly string[],
+  const SU extends CL[number] | undefined = undefined,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
   head: {
     readonly schema: C;
     readonly principal: AttrRef & { readonly ident: I };
     readonly classes: CL;
+    readonly superuser?: SU & CL[number];
+    readonly schemaClasses?: readonly CL[number][];
     readonly claims?: Schema.Struct<CF>;
   },
-  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<CL>>,
-): Policy<C, CL> {
+  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<ArmClasses<CL, SU>>>,
+): Policy<C, CL, SU> {
   if (head == null || typeof head !== "object" || head.schema == null) {
     fail("policy(head, arms) takes a head { schema, principal, classes }");
   }
@@ -583,16 +606,46 @@ export function policy<
   const idents = catalogIdents(schema);
   const principalIdent = identOf(head.principal as AttrRef);
   if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the schema`, principalIdent);
+  checkPrincipalProvisioning(schema, principalIdent);
 
   const classes = head.classes;
   if (classes.length === 0) fail("classes must not be empty");
   if (new Set(classes).size !== classes.length) fail("duplicate class");
   const classSet = new Set<string>(classes);
 
+  const superuser = head.superuser;
+  if (superuser !== undefined) {
+    if (typeof superuser !== "string" || superuser.length === 0) {
+      fail("superuser must be a declared class name");
+    }
+    if (!classSet.has(superuser)) {
+      fail(`superuser ${JSON.stringify(superuser)} is not a declared class`);
+    }
+  }
+
+  const schemaClasses: readonly string[] = (() => {
+    if (head.schemaClasses !== undefined) {
+      const list = [...head.schemaClasses];
+      if (list.length === 0) fail("schemaClasses must not be empty");
+      if (new Set(list).size !== list.length) fail("duplicate schema class");
+      for (const c of list) {
+        if (!classSet.has(c)) fail(`schemaClasses: ${JSON.stringify(c)} is not a declared class`);
+      }
+      return list;
+    }
+    if (superuser !== undefined) return [superuser];
+    return fail("no class can install schema — set schemaClasses or superuser");
+  })();
+
   const checkClasses = (gate: readonly string[] | undefined, where: string): void => {
     if (gate === undefined) return;
     for (const c of gate) {
       if (!classSet.has(c)) fail(`${where}: ${JSON.stringify(c)} is not a declared class`);
+      if (superuser !== undefined && c === superuser) {
+        fail(
+          `${where}: P.class(${JSON.stringify(superuser)}) is unreachable — the superuser bypasses every rule`,
+        );
+      }
     }
   };
 
@@ -706,6 +759,8 @@ export function policy<
     schema,
     principal: principalIdent,
     classes,
+    ...(superuser !== undefined ? { superuser } : {}),
+    schemaClasses,
     claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
     ns,
     ruleDefs,
@@ -769,6 +824,8 @@ const lower = (p: Policy): CompiledPolicy => {
     version: POLICY_VERSION,
     principal: p.principal,
     classes: p.classes,
+    ...(p.superuser !== undefined ? { superuser: p.superuser } : {}),
+    schemaClasses: p.schemaClasses,
     claims: claimsJson(p.claims),
     attrs,
     ns,
@@ -781,6 +838,45 @@ export interface CompileOptions {
   /** app pull patterns, checked for read-masked attributes used as required */
   readonly pulls?: readonly unknown[];
 }
+
+const isStringField = (field: AnyField): boolean =>
+  inferDbValueType(field.schema, field.valueType) === "string";
+
+/**
+ * Fail closed at deploy: only the principal ident, a string-typed
+ * `role` sibling, and optional / card-many fields are provisionable.
+ * The peer writes `role` only when that attr is string-typed — a
+ * required card-one non-string `role` is not provisionable. The peer
+ * *may* stamp matching `ramose.attrs` at login, but those keys are
+ * per-token and never guaranteed — they do not make a required field
+ * provisionable. A required card-one field beyond principal + string
+ * role makes first login `tx/required`. Mark those fields
+ * `optional: true` (or use a schema AST that admits `undefined`).
+ */
+export const checkPrincipalProvisioning = (
+  schema: AnySchema,
+  principalIdent: string,
+): void => {
+  const entity = Object.values(schema.entities).find((e) => entityFieldIdents(e).has(principalIdent));
+  if (entity === undefined) return;
+  const roleIdent = roleIdentOf(principalIdent);
+  const missing: string[] = [];
+  for (const field of Object.values(entity.fields)) {
+    const ident = typeof field.ident === "string" ? field.ident : undefined;
+    if (ident === undefined) continue;
+    if (ident === principalIdent) continue;
+    if (ident === roleIdent && isStringField(field as AnyField)) continue;
+    if (isOptionalField(field as AnyField)) continue;
+    missing.push(ident);
+  }
+  if (missing.length === 0) return;
+  const listed = missing.join(", ");
+  const one = missing.length === 1;
+  fail(
+    `principal entity ${entity.ns} has required field${one ? "" : "s"} the peer does not write: ${listed} — mark ${one ? "it" : "them"} optional: true or first login is tx/required`,
+    missing[0],
+  );
+};
 
 /**
  * `reshapePullResult` drops an entity that is missing a *required* key, so a
@@ -830,6 +926,7 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
 /** Compile to the wire JSON. Round-tripped through core's `parsePolicy`. */
 export const compile = (p: Policy, options?: CompileOptions): string => {
   if (p?._tag !== "Policy") fail("compile() expects a policy(...) value");
+  checkPrincipalProvisioning(p.schema, p.principal);
   if (options?.pulls) checkPulls(p, options.pulls);
   const compiled = lower(p);
   const json = JSON.stringify(compiled);

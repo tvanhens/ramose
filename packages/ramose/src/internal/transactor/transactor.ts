@@ -52,7 +52,9 @@ import {
   publicPolicyOp,
   componentLogger,
   filterDb,
-  isAdmin,
+  canChangeSchema,
+  isSchemaTx,
+  isSuperuser,
   provisionTx,
   resolveProvisionedEid,
   shouldProvision,
@@ -556,7 +558,8 @@ export class Transactor {
     if (!policy) return p.tx;
     if (p.system) return p.tx;
     if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
-    if (isAdmin(p.principal)) return p.tx;
+    if (isSuperuser(p.principal, policy)) return p.tx;
+    if (isSchemaTx(p.tx) && canChangeSchema(p.principal, policy)) return p.tx;
     const db = this.conn.db();
     // the Worker usually resolved it already; when its pre-check was skipped, do it here
     let who = p.principal;
@@ -572,7 +575,7 @@ export class Transactor {
   /** Ack facts the writer may read, judged against the post-commit unfiltered db. */
   private async ackDatoms(datoms: Datom[], principal?: Principal): Promise<WireDatom[]> {
     const policy = this.host.policy;
-    if (!policy || !principal || isAdmin(principal)) return datoms.map(toWireDatom);
+    if (!policy || !principal || isSuperuser(principal, policy)) return datoms.map(toWireDatom);
     const db = this.conn.db();
     let who = principal;
     if (who.eid === undefined && who.sub !== undefined) {
@@ -588,7 +591,7 @@ export class Transactor {
 
   /** A unique conflict names the entity and value it collided with — a read leak under a policy. */
   private scrub(err: unknown, p: Pending): unknown {
-    if (!this.host.policy || !p.principal || isAdmin(p.principal)) return err;
+    if (!this.host.policy || !p.principal || isSuperuser(p.principal, this.host.policy)) return err;
     if (err instanceof TxError && err.code === "tx/unique-conflict") return new TxRejected({ message: "unique conflict", code: err.code });
     return err;
   }

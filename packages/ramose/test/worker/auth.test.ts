@@ -49,6 +49,7 @@ const POLICY = {
   version: 1,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   ns: {
     doc: {
       read: allow({ _tag: "or", exprs: [eq(":doc/owner"), inOrg] }),
@@ -450,6 +451,29 @@ describe("ensure and privileged surfaces", () => {
     expect(fresh.body.attr).toBe(":doc/secret");
     // …and an admin actually installs it
     expect((await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, await token("acme", "admin")))).status).toBe(200);
+    peer.close();
+  });
+
+  test("a schema class cannot smuggle an app write inside an ensure map", async () => {
+    const { peer, eids } = await fixture({
+      RAMOSE_WRITES: "all",
+      RAMOSE_POLICY: JSON.stringify({ ...POLICY, schemaClasses: ["member"] }),
+    });
+    const member = await token("acme", "member", "user_ada");
+    const mixed = {
+      tx: [
+        {
+          ...attr(":junk/one", "string"),
+          ":doc/owner": { ":db/id": eids.solo, ":doc/title": "PWNED" },
+        },
+      ],
+    };
+    const res = await peer.json("/db/acme/transact", post(mixed, member));
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("policy");
+    expect(await titles(peer, member)).toEqual(["Roadmap"]);
+    const asAdmin = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [[eids.solo, ":doc/title", "?t"]] } }, await token("acme", "admin")));
+    expect(asAdmin.body.result).toEqual([["Carol private"]]);
     peer.close();
   });
 

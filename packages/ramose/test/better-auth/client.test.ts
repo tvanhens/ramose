@@ -73,7 +73,7 @@ describe("ramoseTokenClient", () => {
     });
 
     const minted = await clientFor(cookie).ramose.token({ db: "acme" });
-    expect(minted.class).toBe("admin");
+    expect(minted.class).toBe("owner");
     expect(minted.token.split(".")).toHaveLength(3);
     expect(minted.exp * 1000).toBeGreaterThan(Date.now());
   });
@@ -90,7 +90,7 @@ describe("ramoseTokenClient", () => {
     const claims = await source.claims();
     expect(claims.ramose).toEqual({
       db: "wave",
-      class: "admin",
+      class: "owner",
       attrs: { name: "owner@wave.test", email: "owner@wave.test" },
     });
 

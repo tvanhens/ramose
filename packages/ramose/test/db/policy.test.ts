@@ -12,6 +12,7 @@ import {
   Q,
   Query,
   Ref,
+  stored,
 } from "../../src/db/internal.ts";
 
 const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
@@ -66,6 +67,7 @@ const specPolicy = P.policy(
     schema: App,
     principal: User.sub,
     classes: ["anonymous", "member", "admin"],
+    schemaClasses: ["admin"],
     claims: Schema.Struct({ org: Schema.String }),
   },
   {
@@ -96,6 +98,8 @@ describe("compile", () => {
     expect(c.version).toBe(2);
     expect(c.principal).toBe(":user/sub");
     expect(c.classes).toEqual(["anonymous", "member", "admin"]);
+    expect(c.schemaClasses).toEqual(["admin"]);
+    expect(c.superuser).toBeUndefined();
     expect(c.claims).toBeDefined();
     expect(c.rules).toBeDefined();
     expect((c.rules as unknown[]).length).toBeGreaterThan(0);
@@ -173,7 +177,7 @@ describe("compile", () => {
 
   test("true is the empty fragment — public, no rule emitted", () => {
     const only = P.policy(
-      { schema: App, principal: User.sub, classes: ["member"] },
+      { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
       { doc: { read: true } },
     );
     const c = compiled(only);
@@ -183,7 +187,7 @@ describe("compile", () => {
 
   test("a namespace with no rule is absent — deny by default", () => {
     const only = P.policy(
-      { schema: App, principal: User.sub, classes: ["member"] },
+      { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
       { doc: { read: ownDoc } },
     );
     const c = compiled(only);
@@ -194,10 +198,57 @@ describe("compile", () => {
 });
 
 describe("deploy-time errors", () => {
+  test("omitting superuser and schemaClasses is a PolicyError", () => {
+    expect(() =>
+      P.policy({ schema: App, principal: User.sub, classes: ["member"] }, { doc: { read: true } }),
+    ).toThrow(/no class can install schema/);
+  });
+
+  test("empty schemaClasses is a PolicyError", () => {
+    expect(() =>
+      P.policy(
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: [] },
+        { doc: { read: true } },
+      ),
+    ).toThrow(/schemaClasses must not be empty/);
+  });
+
+  test("P.class(superuser) is a PolicyError", () => {
+    expect(() =>
+      P.policy(
+        {
+          schema: App,
+          principal: User.sub,
+          classes: ["owner", "member"],
+          superuser: "owner",
+        },
+        // @ts-expect-error — superuser is unreachable in an arm
+        { doc: { read: P.class("owner") } },
+      ),
+    ).toThrow(/unreachable/);
+  });
+
+  test("schemaClasses defaults to [superuser] on the wire", () => {
+    const p = P.policy(
+      {
+        schema: App,
+        principal: User.sub,
+        classes: ["owner", "member"],
+        superuser: "owner",
+      },
+      { doc: { read: P.class("member") } },
+    );
+    expect(p.superuser).toBe("owner");
+    expect(p.schemaClasses).toEqual(["owner"]);
+    const c = compiled(p);
+    expect(c.superuser).toBe("owner");
+    expect(c.schemaClasses).toEqual(["owner"]);
+  });
+
   test("an undeclared class is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         // @ts-expect-error — "admin" is not a declared class
         { doc: { read: P.class("admin") } },
       ),
@@ -208,7 +259,7 @@ describe("deploy-time errors", () => {
     const Other = Entity("other", { thing: Field(Schema.String) });
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         // @ts-expect-error — :other/thing is not a field of doc
         { doc: { read: () => Query.is(Other.thing, "x") } },
       ),
@@ -218,7 +269,7 @@ describe("deploy-time errors", () => {
   test("a namespace key outside the catalog is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         // @ts-expect-error — "nope" is not a catalog namespace key
         { nope: { read: P.class("member") } },
       ),
@@ -228,7 +279,7 @@ describe("deploy-time errors", () => {
   test("an attribute rule outside its namespace is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         {
           doc: {
             read: P.class("member"),
@@ -242,7 +293,7 @@ describe("deploy-time errors", () => {
   test("a rule that never binds the focus as its entity is a PolicyError", () => {
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         {
           doc: {
             read: (me) =>
@@ -270,10 +321,64 @@ describe("deploy-time errors", () => {
     ).toThrow(/principal :other\/sub is not in the schema/);
   });
 
+  test("a principal entity with an unprovisionable required field is a PolicyError", () => {
+    const Named = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      name: Field(Schema.String),
+    });
+    const Catalog = DbSchema({ user: Named });
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Named.sub, classes: ["member"] }, {}),
+    ).toThrow(PolicyError);
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Named.sub, classes: ["member"] }, {}),
+    ).toThrow(/required field.*:user\/name.*optional: true or first login is tx\/required/);
+    expect(() =>
+      P.checkPrincipalProvisioning(Catalog, ":user/sub"),
+    ).toThrow(/:user\/name/);
+  });
+
+  test("a required non-string role is not provisionable", () => {
+    const Role = Entity("role", { name: Field(Schema.String) });
+    const RefUser = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Ref(() => Role)),
+    });
+    const RefCatalog = DbSchema({ user: RefUser, role: Role });
+    expect(() =>
+      P.policy({ schema: RefCatalog, principal: RefUser.sub, classes: ["member"] }, {}),
+    ).toThrow(PolicyError);
+    expect(() => P.checkPrincipalProvisioning(RefCatalog, ":user/sub")).toThrow(/:user\/role/);
+
+    const Numbered = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Schema.Number),
+    });
+    const NumberedCatalog = DbSchema({ user: Numbered });
+    expect(() =>
+      P.checkPrincipalProvisioning(NumberedCatalog, ":user/sub"),
+    ).toThrow(/:user\/role/);
+  });
+
+  test("principal sub, string role, optional fields, and card-many are provisionable", () => {
+    const Account = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Schema.String),
+      name: Field(Schema.String, { optional: true }),
+      email: Field(stored(Schema.UndefinedOr(Schema.String), "string")),
+      tags: Field.many(Schema.String),
+    });
+    const Catalog = DbSchema({ user: Account });
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}),
+    ).not.toThrow();
+    expect(() => P.compile(P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}))).not.toThrow();
+  });
+
   test("an empty fragment is a PolicyError — public is `true`", () => {
     expect(() =>
       P.policy(
-        { schema: App, principal: User.sub, classes: ["member"] },
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         {
           doc: {
             read: () =>
@@ -288,7 +393,7 @@ describe("deploy-time errors", () => {
 
   test("reusing a fragment on a second entity is a PolicyError", () => {
     expect(() =>
-      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] }, {
         doc: { read: ownDocHand },
         comment: { read: ownDocHand },
       }),
@@ -297,7 +402,7 @@ describe("deploy-time errors", () => {
 
   test("the same fragment on the wrong entity alone is a PolicyError", () => {
     expect(() =>
-      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] }, {
         comment: { read: ownDocHand },
       }),
     ).toThrow(/ns\.comment\.read: rule never binds the focus as this entity/);
@@ -327,7 +432,7 @@ describe("focus binding — backlink and named rules", () => {
 
   test("a backlink-bound arm compiles", () => {
     const p = P.policy(
-      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
       { doc: { read: commentedByMe } },
     );
     const c = compiled(p);
@@ -341,7 +446,7 @@ describe("focus binding — backlink and named rules", () => {
 
   test("an arm that only invokes a named Query.rule compiles", () => {
     const p = P.policy(
-      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
       { doc: { read: viaNamed } },
     );
     const c = compiled(p);
@@ -356,7 +461,7 @@ describe("focus binding — backlink and named rules", () => {
   test("Query.some over a reverse ref compiles", () => {
     expect(() =>
       P.policy(
-        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         { doc: { read: viaSome } },
       ),
     ).not.toThrow();
@@ -364,7 +469,7 @@ describe("focus binding — backlink and named rules", () => {
 
   test("Query.some as a FilterStage arm compiles", () => {
     const p = P.policy(
-      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
       { doc: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) } },
     );
     const c = compiled(p);
@@ -376,12 +481,12 @@ describe("focus binding — backlink and named rules", () => {
 
   test("byId and updatedSince arms compile", () => {
     expect(() =>
-      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] }, {
         doc: { read: () => Query.byId(1) },
       }),
     ).not.toThrow();
     expect(() =>
-      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] }, {
         doc: { read: () => Query.updatedSince(0) },
       }),
     ).not.toThrow();
@@ -406,7 +511,7 @@ describe("focus binding — backlink and named rules", () => {
     const db = conn.db();
     const policy = compiled(
       P.policy(
-        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         { doc: { read: commentedByMe } },
       ),
     );
@@ -441,7 +546,7 @@ describe("focus binding — backlink and named rules", () => {
     const db = conn.db();
     const policy = compiled(
       P.policy(
-        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { schema: AppComments, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
         { doc: { read: viaNamed } },
       ),
     );

@@ -49,7 +49,7 @@ export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```
 
-`db.install()` is safe to run twice: an already-deployed schema is a silent no-op, including from a member token. A new ident still requires the `admin` class — Reef's first install runs under the creator's admin token.
+`db.install()` is safe to run twice: an already-deployed schema is a silent no-op, including from a member token. A new ident still requires a `schemaClasses` class — Reef's first install runs under the creator's owner token.
 
 ## What that buys you
 
@@ -72,7 +72,7 @@ export const Server = Ramose.Server("Ramose", {
 });
 ```
 
-**At creation** — for names that appear at run time. Reef calls `db.install()` from the browser under the creator's admin token; a Worker does the same at sign-up.
+**At creation** — for names that appear at run time. Reef calls `db.install()` from the browser under the creator's owner token (`schemaClasses`, not a bypass class); a Worker does the same at sign-up.
 
 `databases:` on Server for the databases your app always has; `db.install()` when users create them. Standalone `Ramose.Database` is the same install for runtime-provisioned names that are still declared at deploy. Never per request.
 

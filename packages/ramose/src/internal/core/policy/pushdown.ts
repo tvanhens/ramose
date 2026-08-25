@@ -11,7 +11,7 @@
  */
 
 import { type CompiledPolicy, isRuleArm, nsPrefix } from "./ast.ts";
-import type { Principal } from "./principal.ts";
+import { type Principal, holdsClass } from "./principal.ts";
 import type { Db } from "../db.ts";
 import {
   type Clause,
@@ -143,7 +143,7 @@ function nsConjunction(
   const names: string[] = [];
   for (const arm of arms) {
     if (!isRuleArm(arm)) continue;
-    if (arm.class !== undefined && !arm.class.includes(principal.class)) continue;
+    if (arm.class !== undefined && !arm.class.some((c) => holdsClass(principal, c))) continue;
     if (arm.rule === true) return "skip";
     names.push(arm.rule);
   }

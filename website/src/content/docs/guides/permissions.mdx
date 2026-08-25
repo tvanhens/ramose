@@ -22,7 +22,7 @@ A **role** is a name carried in the **sign-in token** — the signed token the s
 
 | role | may |
 | --- | --- |
-| `admin` | everything — bypasses every rule |
+| `owner` | install schema; read the private note; still subject to the rules |
 | `member` | read; create issues and comments; change or delete their own |
 | `viewer` | read only — every write is refused |
 
@@ -42,7 +42,8 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: ["admin", "member", "viewer"],
+    classes: ["owner", "member", "viewer"],
+    schemaClasses: ["owner"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -56,30 +57,30 @@ export const policy = Ramose.policy(
     },
     label: {
       read: true,
-      create: P.class("member"),
+      create: P.class("owner", "member"),
     },
 ```
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-issue · examples/reef/src/domain/policy.ts#policy-comment"
     issue: {
       read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
+      create: P.class("owner", "member"),
+      set: { class: ["owner", "member"], rule: ownIssue },
+      remove: { class: ["owner", "member"], rule: ownIssue },
+      delete: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("owner") }),
       ],
     },
 
     comment: {
       read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
+      create: P.class("owner", "member"),
+      remove: { class: ["owner", "member"], rule: ownComment },
+      delete: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
 ```
@@ -88,10 +89,10 @@ Read it as:
 
 | rule | plain English |
 | --- | --- |
-| `principal: User.sub` · `classes: ["admin", "member", "viewer"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
-| `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; admins never reach the rules. |
-| `issue.read: true` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
-| `issue.set / remove / delete: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
+| `principal: User.sub` · `classes: ["owner", "member", "viewer"]` · `schemaClasses: ["owner"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. Owners may install schema. |
+| `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; owners reach the same rules. |
+| `issue.read: true` · `attrs: privateNote read: owner` | Everyone sees issues — except `privateNote`, which only owners receive. A screen that wants it must ask for it as `.optional`. |
+| `issue.set / remove / delete: ownIssue` | Owners and members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
 | `preset: creator = principal` | The server stamps `creator` to the caller on create. |
 | (nothing) | Anything not mentioned is denied: no `set` arm on `label`, so members cannot recolour labels. |
 
@@ -112,7 +113,7 @@ What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":
 
 ## See a field masked
 
-Open the same issue as an admin and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
+Open the same issue as an owner and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
 
 <Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts#policy-private-note" />
 

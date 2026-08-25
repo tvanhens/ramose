@@ -809,6 +809,7 @@ describe("decideSessionTx: post-commit rule view", () => {
     version: 1,
     principal: ":user/sub",
     classes: ["member", "admin"],
+    superuser: "admin",
     attrs: {},
     ns: {
       doc: { read: [A.allow(A.or(A.eq(":doc/owner", A.principal), inOrg))] },
@@ -933,6 +934,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     version: 1,
     principal: ":user/sub",
     classes: ["member", "admin"],
+    superuser: "admin",
     attrs: { ":doc/audit": { read: [A.allow(A.class("admin"))] } },
     ns: {
       doc: { read: [A.allow(A.or(A.eq(":doc/owner", A.principal), inOrg))] },

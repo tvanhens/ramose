@@ -36,6 +36,13 @@ export interface FieldOptions {
   /**
    * Omitted at create; `| undefined` on the default row. Card-many is
    * already trivially satisfiable (empty set) and is never a required key.
+   *
+   * This is one of two sources of {@link Field.isOptional}. The other is
+   * the Effect schema AST: `Field(Schema.UndefinedOr(Schema.String))` is
+   * silently optional even when this flag is absent. Say `optional: true`
+   * explicitly if you mean it — a schema refactor that admits `undefined`
+   * flips requiredness without touching this bag. Fail-closed rejection of
+   * that inference is #185's doctrine and is not applied here.
    */
   readonly optional?: boolean;
 }
@@ -91,10 +98,12 @@ export interface Field<
   readonly doc: string | undefined;
   readonly valueType: VT;
   /**
-   * Presence flag for required-at-transact. Not named `optional` — that
-   * getter is the pull-shaping method on a stamped field. A sixth type
-   * parameter so `string({ optional: true })` survives `Entity` stamping
-   * the way `owned` / `cardinality` do.
+   * Presence flag for required-at-transact. True when `{ optional: true }`
+   * **or** the Effect schema AST admits `undefined` (see
+   * {@link FieldOptions.optional}). Not named `optional` — that getter is
+   * the pull-shaping method on a stamped field. A sixth type parameter so
+   * `string({ optional: true })` survives `Entity` stamping the way
+   * `owned` / `cardinality` do.
    */
   readonly isOptional: Opt;
 }
@@ -283,6 +292,11 @@ type FieldOwned = {
  * `"upsert"` unifies with the existing row on a colliding write;
  * `"strict"` rejects the write. Composition cannot change `valueType` —
  * brand the schema with {@link import("./valueTypes.ts").stored}.
+ *
+ * Runtime `isOptional` has a second source: an Effect schema AST that
+ * admits `undefined`. `{ optional: true }` is the documented flag;
+ * `Field(Schema.UndefinedOr(Schema.String))` is also optional. The
+ * inference is not fail-closed here (#185).
  * `Field.unique` always indexes; `Field.unique(string({ index: false }), "upsert")`
  * discards `index: false` (unique implies index).
  */

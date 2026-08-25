@@ -17,7 +17,9 @@ const policy = Ramose.policy(
   {
     schema: Schema,
     principal: User.sub,          // the field whose value is the token's `sub`
-    classes: ["admin", "member", "viewer"],
+    classes: ["owner", "member", "viewer"],
+    schemaClasses: ["owner"],
+    superuser?: "operator",
     claims?: Schema.Struct({ … }), // shape of `ramose.attrs`, if you use it
   },
   {
@@ -36,7 +38,8 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: ["admin", "member", "viewer"],
+    classes: ["owner", "member", "viewer"],
+    schemaClasses: ["owner"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -50,26 +53,26 @@ export const policy = Ramose.policy(
     },
     label: {
       read: true,
-      create: P.class("member"),
+      create: P.class("owner", "member"),
     },
     issue: {
       read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
+      create: P.class("owner", "member"),
+      set: { class: ["owner", "member"], rule: ownIssue },
+      remove: { class: ["owner", "member"], rule: ownIssue },
+      delete: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("owner") }),
       ],
     },
     comment: {
       read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
+      create: P.class("owner", "member"),
+      remove: { class: ["owner", "member"], rule: ownComment },
+      delete: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },
@@ -80,7 +83,7 @@ export const policy = Ramose.policy(
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
 - The second argument is one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
 
-`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, or a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot). `P.class` is typed as the head's `classes`; `Ramose.Policy.Class<typeof policy>` is that union.
+`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no schema class, or `P.class(superuser)`. `P.class` omits `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
@@ -129,7 +132,7 @@ The same `inOrg` value pipes in the app (`pipe(entities(Doc), Query.refine(inOrg
 
 Membership, ownership and sharing are facts in the database, not claims in the token. Revoking access is a write; it takes effect on the next version. Relation-based visibility ("issues in a project whose team I belong to") is an ordinary fragment: there is no depth cap and no second language.
 
-`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Prefer a role fact when the peer writes one (`Q.fact(me, User.role, "admin")`); keep `P.class` for deployments where the role must stay token-only.
+`P.class` is a residual JWT claims gate, checked before the rule runs. It composes with fragments (`{ class: "member", rule: ownIssue }`) and never grows expressions. Prefer a role fact when the peer writes one (`Q.fact(me, User.role, "owner")`); keep `P.class` for deployments where the role must stay token-only.
 
 ## How rules combine
 
@@ -147,9 +150,9 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 { doc: { read: (me) => Query.is(Doc.owner, me) } }
 // 3. two arms: the owner *or* anyone in the document's org may read it
 { doc: { read: [mine, inOrg] } }
-// 4. narrowed: everything above, except doc.audit, which is admins only
+// 4. narrowed: everything above, except doc.audit, which is owners only
 { doc: { read: [mine, inOrg],
-         attrs: [P.field(Doc.audit, { read: P.class("admin") })] } }
+         attrs: [P.field(Doc.audit, { read: P.class("owner") })] } }
 ```
 
 ## preset
@@ -165,19 +168,20 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 `P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable.
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-private-note"
-        P.field(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("owner") }),
 ```
 
-## admin and anonymous
+## Standing
 
-| class | meaning |
+| field | meaning |
 | --- | --- |
-| `admin` | skips every rule — reads unfiltered, writes unchecked; the only class that may install schema, call `explain`, or `/admin/*` routes |
+| `superuser` | bypass: unfiltered reads, unchecked writes; `explain`, `/admin/*`. `P.class(superuser)` is unreachable |
+| `schemaClasses` | who may grow schema (default `[superuser]`); runs the rules |
 | `anonymous` | given to a caller with no token, **only if the policy declares it**; otherwise token-less calls are `Unauthorized` |
 | `$token` | the `RAMOSE_TOKEN` holder under a policy; cannot be declared, so no rule admits it |
 
 :::caution
-`admin` bypasses everything, including field masks. Mint it only for people who should see all of a database. `anonymous` opens the door to the internet; declare it on purpose.
+Class `admin` is ordinary unless named `superuser`. `anonymous` is the internet; declare it on purpose.
 :::
 
 ## Where the checks run

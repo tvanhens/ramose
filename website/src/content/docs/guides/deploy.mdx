@@ -69,6 +69,8 @@ The elided `Ui` resource starts Vite under `alchemy dev` only. `state: Alchemy.l
 
 `Ramose.Server` resolves the Worker's URL and, on a real deploy, waits until `GET /health` answers, then seeds each `databases:` catalog. Standalone `Ramose.Database` remains for runtime-provisioned multi-tenant names (Reef). Reef has no `databases:` and no `Ramose.Database` at all: its databases are created by users ([One database per customer](/guides/workspaces/#two-doors-to-install-the-schema)).
 
+After deploying required-at-transact, databases installed before that change read every card-one field as required until `install()` runs again. Redeploy then reinstall — `Ramose.Database` does this for you; runtime-created databases need their creation-time `install()` re-run.
+
 ## Commands
 
 | command | what it does |

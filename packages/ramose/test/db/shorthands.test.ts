@@ -258,6 +258,21 @@ describe("Field composition merge", () => {
     expect(owned.doc).toBe("shared");
   });
 
+  test("isOptional is true from { optional: true } or an AST that admits undefined", () => {
+    expect(string().isOptional).toBe(false);
+    expect(string({ optional: true }).isOptional).toBe(true);
+    expect(Field(Schema.String).isOptional).toBe(false);
+    // Type-level Opt stays false unless `{ optional: true }` — unchanged.
+    // Runtime still reads the AST. Widen through boolean so tsc does not
+    // fight the existing OptionalOf inference.
+    const runtimeOptional = (field: { readonly isOptional: boolean }): boolean =>
+      field.isOptional;
+    expect(runtimeOptional(Field(stored(Schema.UndefinedOr(Schema.String), "string")))).toBe(
+      true,
+    );
+    expect(runtimeOptional(Field(stored(Schema.optional(Schema.String), "string")))).toBe(true);
+  });
+
   test("Field.unique always indexes; index: false is discarded", () => {
     expect(Field.unique(string({ index: false }), "upsert").index).toBe(true);
   });

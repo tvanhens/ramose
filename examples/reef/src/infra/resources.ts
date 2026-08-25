@@ -48,7 +48,8 @@ const Store = Cloudflare.R2.Bucket("Store", pinned("store"));
  * The server resource: owns the peer, applies `auth` onto its env, and (on
  * a live deploy) proves it answers `/health`. No `databases:` and no
  * `Ramose.Database` — a workspace database is created at runtime, by the
- * browser, with `db.install()` under its creator's admin-class JWT.
+ * browser, with `db.install()` under its creator's owner-class JWT
+ * (`schemaClasses`, not a bypass class).
  *
  * The data plane rides the SPA's own origin: a route claims `/db/*` on the
  * demo hostname, whose remaining paths belong to the auth Worker's custom

@@ -12,7 +12,8 @@ import {
   allowsOp,
   checkTx,
   filterDb,
-  isAdmin,
+  isSchemaTx,
+  isSuperuser,
   parsePolicy,
   policyView,
   presetOps,
@@ -42,6 +43,7 @@ const POLICY_JSON = {
   version: 1,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   attrs: { ":doc/audit": { read: [A.allow(A.class("admin"))] } },
   ns: {
     doc: {
@@ -130,6 +132,25 @@ describe("parsePolicy", () => {
     bad({ attrs: { ":doc/audit": { read: [A.allow(A.class("ghost"))] } } }, /not a declared class/);
     bad({ ns: { ":doc": {} } }, /bare namespace prefix/);
     bad({ preset: { ":doc/owner": { _tag: "wat" } } }, /unknown operand _tag/);
+    bad({ superuser: "ghost" }, /superuser: "ghost" is not a declared class/);
+    bad({ schemaClasses: [] }, /schemaClasses/);
+    bad({ schemaClasses: ["ghost"] }, /schemaClasses: "ghost" is not a declared class/);
+  });
+
+  test("superuser and schemaClasses are optional; schemaClasses defaults to [superuser]", () => {
+    const named = parsePolicy({ ...POLICY_JSON, superuser: "admin" });
+    expect(named.superuser).toBe("admin");
+    expect(named.schemaClasses).toEqual(["admin"]);
+    const split = parsePolicy({
+      ...POLICY_JSON,
+      superuser: "admin",
+      schemaClasses: ["member"],
+    });
+    expect(split.superuser).toBe("admin");
+    expect(split.schemaClasses).toEqual(["member"]);
+    const none = parsePolicy({ ...POLICY_JSON, superuser: undefined });
+    expect(none.superuser).toBeUndefined();
+    expect(none.schemaClasses).toBeUndefined();
   });
 
   test("accepts a version-2 fragment policy", () => {
@@ -137,6 +158,7 @@ describe("parsePolicy", () => {
       version: 2,
       principal: ":user/sub",
       classes: ["member", "admin"],
+      superuser: "admin",
       attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
       ns: {
         doc: {
@@ -246,11 +268,14 @@ describe("rule combination", () => {
     expect(errs[0]).toMatchObject({ _tag: "PolicyError", reason: "unknown-attr", attr: ":ghost/attr" });
   });
 
-  test("admin bypasses the filter entirely", async () => {
+  test("superuser bypasses the filter; a class named admin does not", async () => {
     expect(filterDb(db, db, policy, admin())).toBe(db);
-    expect(isAdmin(admin())).toBe(true);
-    expect(isAdmin(alice())).toBe(false);
-    expect(isAdmin({ ...alice(), kind: "service" })).toBe(false); // a service token is not data-plane admin
+    expect(isSuperuser(admin(), policy)).toBe(true);
+    expect(isSuperuser(alice(), policy)).toBe(false);
+    expect(isSuperuser({ ...alice(), kind: "service" }, policy)).toBe(false); // a service token is not data-plane superuser
+    const noBypass = parsePolicy({ ...POLICY_JSON, superuser: undefined });
+    expect(isSuperuser(admin(), noBypass)).toBe(false);
+    expect(filterDb(db, db, noBypass, admin())).not.toBe(db);
   });
 });
 
@@ -336,6 +361,29 @@ describe("filtered Db", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("isSchemaTx", () => {
+  const ensure = {
+    ":db/ident": ":doc/title",
+    ":db/valueType": ":db.type/string",
+    ":db/cardinality": ":db.cardinality/one",
+    ":db/optional": true,
+  };
+
+  test("a map-form ensure of :db/* scalars is schema", () => {
+    expect(isSchemaTx([ensure])).toBe(true);
+    expect(isSchemaTx([ensure, { ...ensure, ":db/ident": ":doc/audit", ":db/index": true }])).toBe(true);
+  });
+
+  test("empty, vector, extra app keys, nested maps, and :db/id are not schema", () => {
+    expect(isSchemaTx([])).toBe(false);
+    expect(isSchemaTx([[":db/add", 1, ":doc/title", "x"]])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":doc/title": "PWNED" }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":doc/owner": { ":db/id": 1, ":doc/title": "PWNED" } }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":db/id": 42 }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":db/id": "attr" }])).toBe(false);
+  });
+});
 
 describe("checkTx", () => {
   const check = (ops: unknown[], p: Principal, d: Db = db) => checkTx(ops, d, policy, p);
@@ -500,6 +548,7 @@ const FRAGMENT_POLICY_JSON = {
   version: 2,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
   ns: {
     doc: {
