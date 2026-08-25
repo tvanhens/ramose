@@ -6,7 +6,7 @@ import Next from "../../../components/Next.astro";
 
 The exact rules language and token contract. This page is for people who have read [Permissions](/guides/permissions/) and [Sign in and roles](/guides/sign-in/) and want every arm and claim spelled out. Rules are enforced by the Ramose server, never by the client. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
-**Reads are per-datom masks. Writes are per-operation arms.** A namespace `read` (and optional attribute `read`) hides facts; a named operation's arm decides who may run that write. There is no datom write vocabulary on the public policy surface.
+**Reads are per-fact masks. Writes are per-operation arms.** A namespace `read` (and optional attribute `read`) hides facts; a named operation's arm decides who may run that write. There is no fact write vocabulary on the public policy surface.
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
@@ -91,9 +91,9 @@ export const policy = Ramose.policy(
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
-## Reads: per-datom masks
+## Reads: per-fact masks
 
-The only per-datom verb is `read`. It is checked on every query, pull and live query — including `asOf` and `history` views. Namespace `read` is the default for every attribute; `P.field` narrows one attribute.
+The only per-fact verb is `read`. It is checked on every query, pull and live query — including `asOf` and `history` views. Namespace `read` is the default for every attribute; `P.field` narrows one attribute.
 
 ```ts
 issue: { read: true, attrs: [P.field(Issue.privateNote, { read: P.class("owner") })] }
@@ -103,7 +103,7 @@ Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, 
 
 ## Writes: per-operation arms
 
-Writes are authorized at the named operation, not per datom. The body's `operations:` keys are the registry bindings (typed off `head.operations`); they lower to the operation's wire name. An arm is what an arm is on `read`: `true`, `P.class(...)`, `{ class, rule }`, or an array (OR). Operations are deny-by-default.
+Writes are authorized at the named operation, not per fact. The body's `operations:` keys are the registry bindings (typed off `head.operations`); they lower to the operation's wire name. An arm is what an arm is on `read`: `true`, `P.class(...)`, `{ class, rule }`, or an array (OR). Operations are deny-by-default.
 
 - A **bare** (no-`on`) operation takes a class gate only. A rule fragment is a compile error.
 - An operation with `on:` may name `rule: (me) => fragment`. The rule runs against the **resolved target** before the body executes — one named-rule query with `self` as the focus.
@@ -206,7 +206,7 @@ Class `admin` is ordinary unless named `superuser`. `anonymous` is the internet;
 ## Where the checks run
 
 - **Reads are filtered, never rejected.** The server hides the facts you may not read; a list is shorter, a hidden required field makes `pull` return `null` — the same as a missing record. A fragment arm runs as one query-engine query over the *unfiltered* data, always at the *current* version, so reading the past cannot revive a revoked grant. For a named rule the engine first asks for every `e` visible to `me` and the per-fact check is a set lookup; a set that is too large falls back to one query per entity. A rule that blows the query memory budget is a 413 `policy/budget-exceeded`, not an empty result. The live connection follows the same rule: a write you cannot read never appears on it, and a grant or revoke that changes what you can see asks the page to reload its view.
-- **Writes are checked at the operation.** `prepareOperation` runs the class gate before touching the db, then the named rule against the resolved `self`, both before the body executes any effect or accumulates any tx. A refusal is the same opaque `Unauthorized` 403 with `code: "policy"` a datom denial is. Raw `/transact` under a configured policy admits schema txs for `schemaClasses` and data txs for `superuser` only — there is no per-datom write vocabulary left to check anyone else against. `writes: "all"` opens raw `/transact` only when no policy is configured.
+- **Writes are checked at the operation.** `prepareOperation` runs the class gate before touching the db, then the named rule against the resolved `self`, both before the body executes any effect or accumulates any tx. A refusal is the same opaque `Unauthorized` 403 with `code: "policy"` a fact denial is. Raw `/transact` under a configured policy admits schema txs for `schemaClasses` and data txs for `superuser` only — there is no per-fact write vocabulary left to check anyone else against. `writes: "all"` opens raw `/transact` only when no policy is configured.
 - **Refusals do not leak values.** An operation denial names neither the target nor a field value.
 - **The server fails closed.** A malformed policy, or a policy without a working verifier, denies every `/db/*` request and logs once at start-up.
 

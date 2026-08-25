@@ -16,7 +16,7 @@ Ramose decides, per fact, who may read it, and per named operation, who may run 
 
 The **policy** is a value: which roles may read which facts, and which roles may run which named operations, compiled to JSON for the server ([glossary](/concepts/glossary/#policy)). You write it in TypeScript against your schema's record types and the app's operations registry. The server enforces it on every read and write; your buttons are only a hint.
 
-**Reads are per-datom masks. Writes are per-operation arms.**
+**Reads are per-fact masks. Writes are per-operation arms.**
 
 ## The three roles in Reef
 
@@ -114,7 +114,7 @@ Reef's buttons are polite; the proof is the server. Try it:
 
 <Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
 
-What came back was `Unauthorized` (HTTP 403) with `code: "policy"` — the same opaque denial a datom refusal is. Reef's `useTransact({ onError })` turns it into the toast. The class gate runs before the database is touched; a named rule (when the op has `on:`) runs against the resolved target before the body accumulates any tx. Both are in [Errors](/reference/errors/).
+What came back was `Unauthorized` (HTTP 403) with `code: "policy"` — the same opaque denial a fact refusal is. Reef's `useTransact({ onError })` turns it into the toast. The class gate runs before the database is touched; a named rule (when the op has `on:`) runs against the resolved target before the body accumulates any tx. Both are in [Errors](/reference/errors/).
 
 ## See a field masked
 
@@ -158,7 +158,7 @@ The check is opt-in: `compile(policy)` with no `pulls` skips it. Keep every shap
 | --- | --- | --- |
 | **Open** | neither set | everyone, as `admin`. Right for a laptop, wrong for the internet |
 | **Shared token** | `RAMOSE_TOKEN` | one bearer token, `admin` on every database — for a backend that is itself the authority |
-| **Policy** | `RAMOSE_POLICY` (+ **JWKS**, the sign-in provider's public keys — [glossary](/concepts/glossary/#jwks)) | every caller presents a sign-in token; reads are filtered per datom and writes checked per operation |
+| **Policy** | `RAMOSE_POLICY` (+ **JWKS**, the sign-in provider's public keys — [glossary](/concepts/glossary/#jwks)) | every caller presents a sign-in token; reads are filtered per fact and writes checked per operation |
 
 Setting `RAMOSE_POLICY` changes what `RAMOSE_TOKEN` means: its holder gets a role no rule can name — the surprise behind "my token stopped working when I turned on permissions".
 
