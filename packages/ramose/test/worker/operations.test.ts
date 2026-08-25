@@ -129,6 +129,32 @@ const titles = async (peer: Peer, tok?: string) => {
   return ((body.result as string[][]) ?? []).map((r) => r[0]).sort();
 };
 
+describe("GET /health lists registered operation ids", () => {
+  test("the peer reports the registry it was built with", async () => {
+    const peer = makePeer("movies", { operations });
+    const { status, body } = await peer.json("/health");
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.operations).toEqual([
+      "movie/set-title",
+      "ping",
+      "user/create",
+      "user/create-put",
+      "user/create-short",
+      "user/set-name",
+      "user/update-ghost",
+    ]);
+    peer.close();
+  });
+
+  test("an empty registry reports an empty list", async () => {
+    const peer = makePeer("movies");
+    const { body } = await peer.json("/health");
+    expect(body.operations).toEqual([]);
+    peer.close();
+  });
+});
+
 describe("POST /db/:name/op", () => {
   test("unknown name is 400, not 409", async () => {
     const peer = makePeer("movies", { operations });

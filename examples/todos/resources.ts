@@ -1,5 +1,6 @@
 import * as Ramose from "ramose";
 import { Todos } from "./schema.ts";
+import { operations } from "./src/todos.ts";
 
 /**
  * The owned peer: Server declares the Worker, both Durable Object classes,
@@ -9,4 +10,5 @@ import { Todos } from "./schema.ts";
 export const Server = Ramose.Server("Ramose", {
   main: import.meta.resolve("./peer.ts"),
   databases: { todos: Todos },
+  operations,
 });
