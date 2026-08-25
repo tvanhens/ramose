@@ -411,7 +411,7 @@ describe("checkTx", () => {
     expect(JSON.stringify(denied)).not.toContain("leak");
   });
 
-  test("schema tx is admitted here; schemaClasses is the caller's job", async () => {
+  test("schema tx is schemaClasses-gated; a member is denied", async () => {
     const schema = [
       {
         ":db/ident": ":new/attr",
@@ -420,8 +420,15 @@ describe("checkTx", () => {
         ":db/optional": true,
       },
     ];
-    expect((await check(schema, alice())).ok).toBe(true);
+    expect(await check(schema, alice())).toEqual({
+      ok: false,
+      code: "policy",
+      attr: ":db/tx",
+      op: "transact",
+    });
     expect((await check(schema, admin())).ok).toBe(true);
+    const memberSchema = parsePolicy({ ...POLICY_JSON, schemaClasses: ["member"] });
+    expect((await checkTx(schema, db, memberSchema, alice())).ok).toBe(true);
   });
 });
 

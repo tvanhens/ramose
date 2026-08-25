@@ -124,6 +124,30 @@ describe("the commit loop's policy check", () => {
     ).toBeGreaterThan(0);
   });
 
+  test("a member cannot install or redefine schema on the writer", async () => {
+    const { h } = await seeded();
+    const before = h.transactor.t;
+    const install = [
+      {
+        ":db/ident": ":junk/one",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
+      },
+    ];
+    const redefine = [
+      {
+        ":db/ident": ":user/sub",
+        ":db/valueType": ":db.type/string",
+        ":db/unique": ":db.unique/identity",
+      },
+    ];
+    expect((await rejection(h.transactor.transact(install, member("user_bob"))))?.code).toBe("policy");
+    expect((await rejection(h.transactor.transact(redefine, member("user_bob"))))?.code).toBe("policy");
+    expect(h.transactor.t).toBe(before);
+    expect((await h.transactor.transact(install, admin)).t).toBe(before + 1);
+  });
+
   test("admin skips the check entirely", async () => {
     const { h, eids } = await seeded();
     expect((await h.transactor.transact([[":db/add", eids.doc, ":doc/title", "ops rename"]], admin)).t).toBeGreaterThan(0);

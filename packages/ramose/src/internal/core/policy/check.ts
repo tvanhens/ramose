@@ -8,7 +8,7 @@ import type { TxData } from "../tx.ts";
 import type { Db } from "../db.ts";
 import type { Schema } from "../schema.ts";
 import { type CompiledPolicy } from "./ast.ts";
-import { type Principal, isSuperuser } from "./principal.ts";
+import { type Principal, canChangeSchema, isSuperuser } from "./principal.ts";
 
 /** Never carries values or eids. */
 export interface PolicyDenied {
@@ -44,9 +44,9 @@ export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[
 }
 
 /**
- * Authoritative raw-transact check. Superuser may write data; everyone
- * else is denied here — the caller has already admitted schema txs via
- * `schemaClasses`. Operation-originated txs never reach this function.
+ * Authoritative raw-transact check. Superuser may write data; schema
+ * txs require `schemaClasses`. Everyone else is denied. Operation-
+ * originated txs never reach this function.
  */
 export async function checkTx(
   txData: TxData,
@@ -57,6 +57,6 @@ export async function checkTx(
 ): Promise<CheckTxResult> {
   const ops = txData as unknown[];
   if (isSuperuser(principal, policy)) return { ok: true, ops };
-  if (isSchemaTx(txData)) return { ok: true, ops };
+  if (isSchemaTx(txData) && canChangeSchema(principal, policy)) return { ok: true, ops };
   return deny(":db/tx", "transact");
 }
