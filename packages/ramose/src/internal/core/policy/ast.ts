@@ -64,6 +64,16 @@ export interface CompiledPolicy {
   /** attribute ident whose value is the JWT `sub`, e.g. ":user/sub" */
   readonly principal: string;
   readonly classes: readonly string[];
+  /**
+   * Class whose holders bypass every rule. Absent = no bypass.
+   * Standing is resolved via {@link classesOf}, not this string vs `p.class`.
+   */
+  readonly superuser?: string;
+  /**
+   * Classes that may install or grow schema. Defaults to `[superuser]`
+   * when that field is set. Distinct from bypass.
+   */
+  readonly schemaClasses?: readonly string[];
   /** shape of `ramose.attrs`; opaque to core (Effect Schema JSON in alchemy) */
   readonly claims?: unknown;
   readonly attrs: Readonly<Record<string, AttrRules>>;
@@ -282,6 +292,35 @@ export function parsePolicy(json: unknown): CompiledPolicy {
   if (new Set(classes).size !== classes.length) fail(".classes", "duplicate class");
   const classSet = new Set(classes);
 
+  let superuser: string | undefined;
+  if (o.superuser !== undefined) {
+    if (typeof o.superuser !== "string" || o.superuser.length === 0) {
+      fail(".superuser", "expected a declared class name");
+    }
+    if (!classSet.has(o.superuser)) {
+      fail(".superuser", `${JSON.stringify(o.superuser)} is not a declared class`);
+    }
+    superuser = o.superuser;
+  }
+
+  let schemaClasses: string[] | undefined;
+  if (o.schemaClasses !== undefined) {
+    if (
+      !Array.isArray(o.schemaClasses) ||
+      o.schemaClasses.length === 0 ||
+      o.schemaClasses.some((c) => typeof c !== "string" || c.length === 0)
+    ) {
+      fail(".schemaClasses", "expected a non-empty array of class names");
+    }
+    schemaClasses = (o.schemaClasses as string[]).slice();
+    if (new Set(schemaClasses).size !== schemaClasses.length) fail(".schemaClasses", "duplicate class");
+    for (const c of schemaClasses) {
+      if (!classSet.has(c)) fail(".schemaClasses", `${JSON.stringify(c)} is not a declared class`);
+    }
+  } else if (superuser !== undefined) {
+    schemaClasses = [superuser];
+  }
+
   let ruleDefs: unknown[] | undefined;
   let ruleNames = new Set<string>();
   if (o.rules !== undefined) {
@@ -328,6 +367,8 @@ export function parsePolicy(json: unknown): CompiledPolicy {
     version,
     principal,
     classes,
+    ...(superuser !== undefined ? { superuser } : {}),
+    ...(schemaClasses !== undefined ? { schemaClasses } : {}),
     claims: o.claims,
     attrs,
     ns,

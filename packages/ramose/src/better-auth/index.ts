@@ -305,15 +305,16 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
 
 /**
  * The org-role → policy-class mapping Reef established: `owner` and `admin`
- * are `admin`, `member` is `member`, anything else (or absent) is `viewer`.
+ * are `owner`, `member` is `member`, anything else (or absent) is `viewer`.
  * Better Auth roles can be comma-separated; the first one decides.
+ * `owner` is a schema class, not a bypass class.
  */
-export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
+export const classOfRole = (role: string): "owner" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {
     case "owner":
     case "admin":
-      return "admin";
+      return "owner";
     case "member":
       return "member";
     default:

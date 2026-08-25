@@ -31,7 +31,7 @@ const AUTH: AuthConfig = {
 const POLICY = JSON.stringify({
   version: 1,
   principal: ":user/sub",
-  classes: ["admin", "member", "viewer"],
+  classes: ["owner", "member", "viewer"],
   attrs: {},
   preset: {},
 });
@@ -103,7 +103,7 @@ const statusOf = async (attempt: Promise<unknown>): Promise<number> => {
 };
 
 describe("ramoseToken", () => {
-  test("mints a verifiable token for an org owner: class admin, exp - iat = ttl", async () => {
+  test("mints a verifiable token for an org owner: class owner, exp - iat = ttl", async () => {
     const auth = makeAuth();
     const owner = await signUp(auth, "owner@acme.test");
     await auth.api.createOrganization({
@@ -115,7 +115,7 @@ describe("ramoseToken", () => {
       body: { db: "acme" },
       headers: owner.headers,
     });
-    expect(minted.class).toBe("admin");
+    expect(minted.class).toBe("owner");
     expect(typeof minted.token).toBe("string");
 
     // Verify against the jwt plugin's own JWKS — the peer's exact procedure.
@@ -127,7 +127,7 @@ describe("ramoseToken", () => {
     expect(payload.sub).toBe(owner.userId);
     expect(payload.ramose).toEqual({
       db: "acme",
-      class: "admin",
+      class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
     expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
@@ -368,7 +368,7 @@ describe("JWKS secret rotation", () => {
       body: { db: "acme" },
       headers: new Headers({ cookie }),
     });
-    expect(minted.class).toBe("admin");
+    expect(minted.class).toBe("owner");
     const keysAfter = (await authB.api.getJwks()).keys;
     expect(keysAfter.length).toBe(2);
     expect(keysAfter.map((k) => k.kid).sort()).not.toEqual(
@@ -382,7 +382,7 @@ describe("JWKS secret rotation", () => {
     });
     expect(payload.ramose).toEqual({
       db: "acme",
-      class: "admin",
+      class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
     // The token minted under secret A still verifies — old public key stayed.
@@ -392,17 +392,17 @@ describe("JWKS secret rotation", () => {
     });
     expect(old.payload.ramose).toEqual({
       db: "acme",
-      class: "admin",
+      class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
   });
 });
 
 describe("classOfRole", () => {
-  test("owner and admin map to admin; member to member; the rest to viewer", () => {
-    expect(classOfRole("owner")).toBe("admin");
-    expect(classOfRole("admin")).toBe("admin");
-    expect(classOfRole("owner,member")).toBe("admin");
+  test("owner and admin map to owner; member to member; the rest to viewer", () => {
+    expect(classOfRole("owner")).toBe("owner");
+    expect(classOfRole("admin")).toBe("owner");
+    expect(classOfRole("owner,member")).toBe("owner");
     expect(classOfRole("member")).toBe("member");
     expect(classOfRole("viewer")).toBe("viewer");
     expect(classOfRole("mystery-role")).toBe("viewer");

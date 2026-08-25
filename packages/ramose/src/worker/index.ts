@@ -31,7 +31,7 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isSuperuser, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { Db as CoreDb } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { envInt, internalHeaders } from "../internal/transactor/index.ts";
@@ -296,7 +296,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   if (isTokenOnly(principal) && !(rest === "/transact" && request.method === "POST")) throw new Unauthorized({});
   principal = await withProvisioned(env, principal, db, transactor, txUrl, request);
   const adminOnly = () => {
-    if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
+    if (policy !== undefined && !isSuperuser(principal, policy)) throw new Unauthorized({ status: 403, message: "superuser only", code: "policy" });
   };
   const writes = resolveWrites(peer.writes, env.RAMOSE_WRITES);
   warnWritesAll(env, writes);
@@ -304,7 +304,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   let transactBody: string | undefined;
   if (rest === "/transact" && request.method === "POST") {
     transactBody = await request.text();
-    if (!allowsRawTransact(writes, principal, txOf(transactBody))) {
+    if (!allowsRawTransact(writes, principal, txOf(transactBody), policy)) {
       throw new Unauthorized({
         status: 403,
         message: "raw transact is disabled; use operations",
@@ -503,7 +503,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ramose-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   if (rest === "/info" && request.method === "GET") {
-    // every principal may ask where the basis is; only admin sees the peer's internals.
+    // every principal may ask where the basis is; only superuser sees the peer's internals.
     // top-level `t` is the one shape both answers share — it is what `db.basis()` reads.
     // `principal` is on both too: it is what `db.principal()` reads. The peer
     // provisions the row at session establishment, so `eid` is set for any
@@ -511,7 +511,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const basis = (await fetchBasisWithStats(env, db, request)).basis;
     const basisT = basis.t;
     const who = await describePrincipal(env, principal, segmentSource(env, db), basis);
-    if (policy !== undefined && !isAdmin(principal)) {
+    if (policy !== undefined && !isSuperuser(principal, policy)) {
       return json({ db, t: basisT, principal: who }, 200, { "x-ramose-ms": String(Date.now() - t0) });
     }
     // A DO that is still provisioning answers 500 "Worker not found." as

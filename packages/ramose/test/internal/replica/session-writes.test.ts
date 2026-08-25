@@ -5,10 +5,11 @@
  */
 import { describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import type { Principal, RootRecord } from "../../../src/internal/core/index.ts";
+import { parsePolicy, type Principal, type RootRecord } from "../../../src/internal/core/index.ts";
 import type { RamoseEnv } from "../../../src/internal/transactor/index.ts";
 import { MemoryBucket } from "../../../src/internal/storage/memory.ts";
 import { sqliteLike } from "../transactor/harness.ts";
+import { allowsRawTransact } from "../../../src/worker/auth.ts";
 import { openSession, type SocketLike } from "../../../src/worker/session.ts";
 import type { WritesMode } from "../../../src/writes.ts";
 
@@ -60,14 +61,31 @@ const member: Principal = {
   claims: { sub: "ada" },
   db: "acme",
 };
-const admin: Principal = {
+/** Open-mode service ingress — display class is a label, not a bypass key. */
+const service: Principal = { kind: "service", class: "admin", claims: {}, db: "acme" };
+/** User token whose class is literally `admin` — ordinary unless named `superuser`. */
+const namedAdmin: Principal = {
   kind: "user",
   class: "admin",
   sub: "ops",
   claims: { sub: "ops" },
   db: "acme",
 };
+const owner: Principal = {
+  kind: "user",
+  class: "owner",
+  sub: "ops",
+  claims: { sub: "ops" },
+  db: "acme",
+};
 const seed: Principal = { kind: "service", class: "$token", claims: {}, db: "acme" };
+
+const SESSION_POLICY = JSON.stringify({
+  version: 1,
+  principal: ":user/sub",
+  classes: ["member", "owner", "admin"],
+  superuser: "owner",
+});
 
 const dataTx = [{ ":doc/title": "raw via socket" }];
 
@@ -82,7 +100,10 @@ type ReplicaDispatch = {
   ): Promise<Response>;
 };
 
-async function bootReplica(envWrites?: string): Promise<{
+async function bootReplica(
+  envWrites?: string,
+  extra: Record<string, string | undefined> = {},
+): Promise<{
   replica: ReplicaDispatch;
   txBodies: string[];
 }> {
@@ -105,6 +126,7 @@ async function bootReplica(envWrites?: string): Promise<{
   const env = {
     STORE: new MemoryBucket(),
     RAMOSE_WRITES: envWrites,
+    ...extra,
     TRANSACTOR: {
       idFromName: () => ({ toString: () => "tx" }),
       get: () => ({
@@ -134,6 +156,25 @@ const transactInit = (tx: unknown) => ({
   body: JSON.stringify({ tx }),
 });
 
+describe("allowsRawTransact", () => {
+  const policy = parsePolicy(JSON.parse(SESSION_POLICY));
+  const schemaTx = [{ ":db/ident": ":doc/title", ":db/valueType": ":db.type/string" }];
+
+  test("operations denies an app-class caller; schema, superuser, $token, and writes: all pass", () => {
+    expect(allowsRawTransact("operations", member, dataTx)).toBe(false);
+    expect(allowsRawTransact("operations", namedAdmin, dataTx)).toBe(false);
+    expect(allowsRawTransact("operations", namedAdmin, dataTx, policy)).toBe(false);
+    expect(allowsRawTransact("operations", owner, dataTx, policy)).toBe(true);
+    expect(allowsRawTransact("operations", seed, dataTx)).toBe(true);
+    expect(allowsRawTransact("operations", service, dataTx)).toBe(true);
+    expect(allowsRawTransact("all", member, dataTx)).toBe(true);
+    expect(allowsRawTransact("operations", member, schemaTx)).toBe(true);
+    expect(
+      allowsRawTransact("operations", member, [{ ...schemaTx[0], ":doc/title": "PWNED" }]),
+    ).toBe(false);
+  });
+});
+
 describe("session { op: transact } is gated like HTTPS /transact", () => {
   test("app-class token under the default is 403 operations; Transactor is not called", async () => {
     const { replica, txBodies } = await bootReplica();
@@ -152,10 +193,10 @@ describe("session { op: transact } is gated like HTTPS /transact", () => {
     expect(txBodies).toEqual([]);
   });
 
-  test("admin, seed, and writes: all reach the Transactor", async () => {
+  test("open-mode service, seed, and writes: all reach the Transactor", async () => {
     const { replica, txBodies } = await bootReplica();
     for (const [who, writes] of [
-      [admin, "operations"],
+      [service, "operations"],
       [seed, "operations"],
       [member, "all"],
     ] as const) {
@@ -163,6 +204,16 @@ describe("session { op: transact } is gated like HTTPS /transact", () => {
       expect(res.status).toBe(200);
     }
     expect(txBodies).toHaveLength(3);
+  });
+
+  test("a class literally named admin is not a bypass; the named superuser is", async () => {
+    const { replica, txBodies } = await bootReplica(undefined, { RAMOSE_POLICY: SESSION_POLICY });
+    const asAdmin = await replica.sessionDispatch("/transact", transactInit(dataTx), namedAdmin, "operations");
+    expect(asAdmin.status).toBe(403);
+    expect(((await asAdmin.json()) as { code?: string }).code).toBe("operations");
+    const asOwner = await replica.sessionDispatch("/transact", transactInit(dataTx), owner, "operations");
+    expect(asOwner.status).toBe(200);
+    expect(txBodies).toHaveLength(1);
   });
 
   test("a live transact frame under operations is denied the same way", async () => {

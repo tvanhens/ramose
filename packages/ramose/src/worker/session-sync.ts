@@ -22,7 +22,7 @@ import {
   PolicyMemo,
   allowsOp,
   filterDb,
-  isAdmin,
+  isSuperuser,
   isSystemAttrId,
   toWireDatom,
 } from "../internal/core/index.ts";
@@ -153,7 +153,7 @@ export async function ruleViewChanged(opts: {
 /**
  * One committed entry, judged after that commit.
  *
- * - no policy / admin → every datom, as a `tx`
+ * - no policy / superuser → every datom, as a `tx`
  * - rule-view change → `resync` (grant of membership, revoke-of-P, …)
  * - nothing visible → `skip` (the socket must not learn that `t` happened)
  * - else → `tx` with the kept facts
@@ -166,7 +166,7 @@ export async function decideSessionTx(opts: {
   ruleDbBefore: Db;
 }): Promise<SessionTxDecision> {
   const { datoms, policy, principal, ruleDbAfter, ruleDbBefore } = opts;
-  if (!policy || !principal || isAdmin(principal)) {
+  if (!policy || !principal || isSuperuser(principal, policy)) {
     return { kind: "tx", datoms: datoms.map(toWireDatom) };
   }
   if (await ruleViewChanged({ datoms, policy, principal, ruleDbAfter, ruleDbBefore })) {

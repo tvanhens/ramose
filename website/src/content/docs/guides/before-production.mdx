@@ -39,9 +39,11 @@ A freshly deployed **Ramose server** accepts every request, from anyone, with fu
 - [ ] **Cap token lifetime.** `RAMOSE_JWT_MAX_TTL` defaults to 900 seconds.
       A revoked *grant* takes effect on the next write, but a revoked *token*
       is only gone when it expires.
-- [ ] **Declare `admin` deliberately.** A token with class `admin` bypasses
-      every rule and is the only class that may call `explain` or the
-      `/admin/*` routes. Do not hand it to a browser.
+- [ ] **Declare `superuser` deliberately.** A token whose class is the
+      policy's `superuser` bypasses every rule and is the only class that
+      may call `explain` or the `/admin/*` routes. Do not hand it to a
+      browser. Schema install is `schemaClasses` (default `[superuser]`)
+      and does not require bypass.
 - [ ] **Check the demo console is gone.** The server serves a small demo app at
       `/` until a policy is configured. Load your server's root URL and confirm
       you get a 404.

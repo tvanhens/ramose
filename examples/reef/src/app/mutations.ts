@@ -396,7 +396,7 @@ export const toggleLabel = (
 ) => db.run(toggleLabelOp, issueId, { labelId, on });
 // enddocs:toggle-label
 
-/** Admin-only by policy: everyone else gets `Unauthorized` from the peer. */
+/** Owner-only by policy: everyone else gets `Unauthorized` from the peer. */
 export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
   db.run(setPrivateNoteOp, issueId, { note });
 

@@ -3,7 +3,7 @@
  *
  * Every workspace is its own Ramose database (`ramose.db(slug, Reef)`), so
  * this catalog is installed once per workspace at creation time, from the
- * browser, under the creator's admin-class JWT. Refs are targeted
+ * browser, under the creator's owner-class JWT. Refs are targeted
  * (`Ramose.Ref(User)`) so navigational queries can join through them
  * (`Issue.assignee.name`).
  */
@@ -49,10 +49,10 @@ export const Issue = Ramose.Entity("issue", {
   creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
-  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
+  /** Owner-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
     optional: true,
-    doc: "visible to the admin class only",
+    doc: "visible to the owner class only",
   }),
 });
 // enddocs:issue-entity

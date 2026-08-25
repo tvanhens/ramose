@@ -19,6 +19,7 @@ const POLICY = parsePolicy({
   version: 1,
   principal: ":user/sub",
   classes: ["member", "admin"],
+  superuser: "admin",
   attrs: {
     // owner may write this; only admin may read it — a raw-txData ack would leak it
     ":doc/audit": { read: allow({ _tag: "class", class: "admin" }) },

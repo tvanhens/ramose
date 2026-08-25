@@ -103,7 +103,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
       const built = buildOp({
         schema: Reef,
         db: "coral-team",
-        principal: { eid: null, class: "admin", claims: {} },
+        principal: { eid: null, class: "owner", claims: {} },
         self: body.entity,
         effects: "run",
         effectCtx: {
@@ -776,7 +776,7 @@ describe("refresh open is one session, not two", () => {
 
     const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
     const token = Ramose.token.jwt(async () =>
-      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "admin" } }),
+      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "owner" } }),
     );
     const counted = countingConnect();
     const opts = {
@@ -788,7 +788,7 @@ describe("refresh open is one session, not two", () => {
     };
 
     const ws = await openWorkspace("coral-team", false, opts);
-    expect(ws.cls).toBe("admin");
+    expect(ws.cls).toBe("owner");
     expect(counted.connects).toBe(0);
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
@@ -870,7 +870,7 @@ describe("refresh open is one session, not two", () => {
     const peer = await inProcessPeer({ seed: false });
     const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
     const token = Ramose.token.jwt(async () =>
-      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "admin" } }),
+      jwtOf({ sub: user.id, ramose: { db: "coral-team", class: "owner" } }),
     );
     const counted = countingConnect();
     const opts = {
@@ -888,7 +888,7 @@ describe("refresh open is one session, not two", () => {
     expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
     // in-process peer has no auth layer; seed the row the real peer writes
     await peer.conn.transact([
-      { ":user/sub": "ada", ":user/role": "admin", ":user/name": "Ada", ":user/email": "ada@reef.test" },
+      { ":user/sub": "ada", ":user/role": "owner", ":user/name": "Ada", ":user/email": "ada@reef.test" },
     ]);
 
     peer.resetTraffic();
