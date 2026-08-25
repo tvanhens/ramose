@@ -93,6 +93,7 @@ export {
 export * from "./session.ts";
 export * from "./token.ts";
 export * from "./Tx.ts";
+export { seedWrite, submitRaw } from "./seed.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
 // Field-returning `Ref` (eager entity / thunk / self) wins over the

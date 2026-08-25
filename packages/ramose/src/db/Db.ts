@@ -53,7 +53,6 @@ import {
 } from "./Pull.ts";
 import type { Session } from "./session.ts";
 import type { Subscription } from "./subscription.ts";
-import { txBuilder, txOps, type Tx } from "./Tx.ts";
 
 /**
  * What `db.query` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
@@ -895,42 +894,3 @@ export const makeDb = <C extends AnySchema>(
     submit;
   return wrapDb(effectDb);
 };
-
-/**
- * @internal Submit raw tx ops through the existing wire (`overlay.transact`
- * or `POST /transact`). Tests and seed paths only — not a public write.
- */
-export const submitRaw = <C extends AnySchema>(
-  db: Db<C> | EffectDb<C>,
-  ops: readonly unknown[],
-): Effect.Effect<TxReport<C>, DbError> => {
-  const hatch = "effect" in db ? db.effect : db;
-  const submit = (hatch as unknown as Record<symbol, unknown>)[DB_SUBMIT] as
-    | ((tx: readonly unknown[]) => Effect.Effect<TxReport<C>, DbError>)
-    | undefined;
-  if (submit === undefined) {
-    return Effect.fail(
-      new InvalidRequest({ message: "ramose: raw submit is not available" }),
-    );
-  }
-  return submit(ops);
-};
-
-/**
- * @internal Run a builder body and {@link submitRaw} the collected ops.
- * Tests / seed only. App writes use {@link Db.run}.
- */
-export const seedWrite = <C extends AnySchema>(
-  db: Db<C> | EffectDb<C>,
-  body: (tx: Tx<C>) => Generator<Effect.Effect<any, any, any>, unknown, any>,
-): Effect.Effect<TxReport<C>, DbError> =>
-  Effect.gen(function* () {
-    const tx = txBuilder(("schema" in db ? db.schema : undefined) as C);
-    const gen = body(tx);
-    let step = gen.next();
-    while (!step.done) {
-      const value = yield* step.value;
-      step = gen.next(value);
-    }
-    return yield* submitRaw(db, [...txOps(tx)]);
-  }) as Effect.Effect<TxReport<C>, DbError>;
