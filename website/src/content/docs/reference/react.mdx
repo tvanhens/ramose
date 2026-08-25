@@ -122,7 +122,7 @@ A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (
 errorMessage(e); // e.message ?? e._tag ?? String(e)
 ```
 
-`errorMessage(error: unknown): string` — the one-liner for a toast; a policy denial shows the server's message, e.g. `remove denied on :issue/status`.
+`errorMessage(error: unknown): string` — the one-liner for a toast; a policy denial shows `Unauthorized`.
 
 ## Rules
 

@@ -194,7 +194,7 @@ const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, 
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading remove denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
+<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading Unauthorized" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes

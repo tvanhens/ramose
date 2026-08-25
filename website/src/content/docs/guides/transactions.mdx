@@ -156,7 +156,7 @@ A write also moves every open screen forward. A **live query** re-runs itself wh
 
 ## When a write is refused
 
-- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer** ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `remove denied on :issue/status`.
+- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer** ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and does not name a field or value.
 - **`TxRejected`** (HTTP 409) — the writer refused it: a schema violation, a unique-key conflict, or a denial the first check missed. No version number is spent.
 - **`OperationRejected`** (HTTP 409) — the named operation was refused (dangling / foreign entity, a body-thrown rejection).
 
