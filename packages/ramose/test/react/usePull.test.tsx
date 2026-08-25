@@ -284,7 +284,7 @@ describe("usePull (one-shot)", () => {
     const peer = fakePeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
-          ? { body: { t: 3, result: { title: "A" } } }
+          ? { body: { t: 3, result: { done: true } } }
           : { body: { t: 3, result: [] } },
     });
     const { result, rerender } = renderHook(
@@ -296,12 +296,14 @@ describe("usePull (one-shot)", () => {
         ),
       { wrapper: wrapperFor(peer), initialProps: { optional: false } },
     );
-    await waitFor(() => expect(result.current.data).toEqual({ title: "A" }));
+    await waitFor(() => expect(result.current.data).toBeNull());
     expect(peer.frameOps("pull")).toHaveLength(1);
 
     rerender({ optional: true });
-    await waitFor(() => expect(peer.frameOps("pull")).toHaveLength(2));
-    expect(result.current.data).toEqual({ title: "A" });
+    await waitFor(() =>
+      expect(result.current.data).toEqual({ title: undefined }),
+    );
+    expect(peer.frameOps("pull")).toHaveLength(2);
   });
 
   test("a render-fresh inline pattern does not re-run after the first result", async () => {

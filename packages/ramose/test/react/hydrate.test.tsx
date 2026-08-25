@@ -633,6 +633,42 @@ describe("{ suspense: true }", () => {
     expect(peer.frameOps("pull").length).toBeLessThan(8);
   });
 
+  test("required and .optional usePull suspense do not share a slot", async () => {
+    ensureDom();
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { delay: 20, body: { t: 3, result: { done: true } } }
+          : { body: { t: 3, result: [] } },
+    });
+    function Probe() {
+      const db = useDb("todos", Todos).asOf(3);
+      const req = usePull(db, 17, { title: Todo.title }, { suspense: true });
+      const opt = usePull(
+        db,
+        17,
+        { title: Todo.title.optional },
+        { suspense: true },
+      );
+      return (
+        <div>{`req:${req.data === null ? "NULL" : "OPT"};opt:${opt.data === null ? "NULL" : "OPT"}`}</div>
+      );
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    expect(container.textContent).toBe("loading");
+    await waitFor(() =>
+      expect(container.textContent).toBe("req:NULL;opt:OPT"),
+    );
+  });
+
   test("useLivePull suspense with a render-fresh inline pattern settles", async () => {
     ensureDom();
     const peer = fakePeer({
