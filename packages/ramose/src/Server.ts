@@ -646,7 +646,7 @@ export const compareOperationsToPolicy = (
   operations: AnyOperations | undefined,
   policyJson: string | undefined,
 ): PolicyError | undefined => {
-  if (operations === undefined || !isBound(policyJson)) return undefined;
+  if (operations === undefined || policyJson === undefined || !isBound(policyJson)) return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(policyJson);
@@ -961,7 +961,8 @@ const attributes = Effect.fn(function* (
     if (badOps !== undefined) {
       return yield* Effect.fail(badOps);
     }
-    const policyJson = isBound(props.auth?.policy) ? props.auth.policy : undefined;
+    const authPolicy = props.auth?.policy;
+    const policyJson = isBound(authPolicy) ? authPolicy : undefined;
     const badPolicyOps = compareOperationsToPolicy(props.operations, policyJson);
     if (badPolicyOps !== undefined) {
       return yield* Effect.fail(badPolicyOps);

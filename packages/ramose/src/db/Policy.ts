@@ -26,7 +26,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AnyOperation, AnyOperations } from "./Operation.ts";
+import type { AnyOperation, AnyOperations, Operation } from "./Operation.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
   Q,
@@ -162,8 +162,12 @@ export type OperationArmValue<
   O extends AnyOperation,
   M,
   CL extends string = string,
-> = O["on"] extends AnyEntity
-  ? ArmValue<M, O["on"], CL> | readonly ArmValue<M, O["on"], CL>[]
+> = O extends Operation<any, any, any, infer N, any>
+  ? [N] extends [undefined]
+    ? ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[]
+    : N extends AnyEntity
+      ? ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[]
+      : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[]
   : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[];
 
 /** Typed keys off the registry — no string op names in app code. */
@@ -784,7 +788,7 @@ export function policy<
     if (registry === undefined || registry._tag !== "Operations") {
       fail("operations: needs the registry on the policy head (head.operations)");
     }
-    const bound = registry.operations as Record<string, AnyOperation>;
+    const bound = (registry as AnyOperations).operations as Record<string, AnyOperation>;
     for (const [key, raw] of Object.entries(operationSpec)) {
       if (raw === undefined) continue;
       const operation = bound[key];
@@ -797,7 +801,9 @@ export function policy<
       }
       const list = Array.isArray(raw) ? raw : [raw];
       if (list.length === 0) continue;
-      const on = operation.on as { ns?: string; fields?: Record<string, { readonly ident?: unknown }> } | undefined;
+      const on = operation.on as
+        | { readonly ns?: string; readonly fields: Record<string, { readonly ident?: unknown }> }
+        | undefined;
       const fieldIdents = on !== undefined ? entityFieldIdents(on) : new Set<string>();
       const entityKey = on?.ns ?? `op/${wireName}`;
       compiledOps[wireName] = list.map((arm, i) => {
