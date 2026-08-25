@@ -66,18 +66,13 @@ A **reference** field takes the other record's id as a number: `issue.set(Issue.
 
 Dragging a card in Reef is one write of two facts — new column, new position:
 
-```ts title="examples/reef/src/app/mutations.ts#move-issue"
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) => db.run(moveIssueOp, issueId, { status, rank });
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#move-issue"
+                void move.run(id, { status, rank })
 ```
 
 A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts#move-issue" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/screens/BoardScreen.tsx#move-issue" />
 
 `update` never creates. Address by eid / handle / branded cell, or by a map that contains at least one `unique: "upsert"` field:
 
@@ -100,14 +95,12 @@ A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set`
 
 Clearing a field is `remove` with no value; deleting a record is `delete`:
 
-```ts title="examples/reef/src/app/mutations.ts#set-description"
-export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.run(setDescriptionOp, issueId, { text });
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#set-description"
+                void setDescription.run(issueId, { text: description.trim() });
 ```
 
-```ts title="examples/reef/src/app/mutations.ts#delete-issue"
-export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.run(deleteIssueOp, issueId, {});
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#delete-issue"
+            void removeIssue.run(issueId, {})
 ```
 
 Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
@@ -133,13 +126,8 @@ The one declared cascade is `Field.owned` on an outgoing ref — see [Define you
 
 A field declared with `Field.many` is a set. One `set` per value; `remove` with the value takes one out:
 
-```ts title="examples/reef/src/app/mutations.ts#toggle-label"
-export const toggleLabel = (
-  db: ReefDb,
-  issueId: number,
-  labelId: number,
-  on: boolean,
-) => db.run(toggleLabelOp, issueId, { labelId, on });
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#toggle-label"
+                      void toggleLabel.run(issueId, { labelId: label.id, on: !on })
 ```
 
 ## What a write returns

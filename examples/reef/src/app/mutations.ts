@@ -8,7 +8,6 @@
 
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
-import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import {
   Comment,
@@ -90,11 +89,6 @@ export const provisionWorkspaceOp = Op(
     return { ready: true };
   },
 );
-
-// docs:provision-workspace
-export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).then(() => undefined);
-// enddocs:provision-workspace
 
 export const moveIssueOp = Op.patch("issue/move", Issue, ["status", "rank"], {
   doc: "Move an issue to a new column and rank",
@@ -333,67 +327,6 @@ export interface NewIssue {
   readonly assigneeId?: number | undefined;
   readonly labelIds?: readonly number[];
 }
-
-/** `creator` is preset by the peer; writing it explicitly is the same datom. */
-// docs:create-issue
-export const createIssue = (
-  db: ReefDb,
-  myEid: number,
-  lastRankInColumn: number | undefined,
-  draft: NewIssue,
-) =>
-  db.run(createIssueOp, {
-    title: draft.title,
-    ...(draft.description != null && draft.description !== ""
-      ? { description: draft.description }
-      : {}),
-    status: draft.status,
-    priority: draft.priority,
-    rank: rankAfter(lastRankInColumn),
-    creatorId: myEid,
-    ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
-    ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
-  });
-// enddocs:create-issue
-
-/** Drag-and-drop: `update` of status and rank. */
-// docs:move-issue
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) => db.run(moveIssueOp, issueId, { status, rank });
-// enddocs:move-issue
-
-export const setTitle = (db: ReefDb, issueId: number, title: string) =>
-  db.run(setTitleOp, issueId, { title });
-
-// docs:set-description
-export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.run(setDescriptionOp, issueId, { text });
-// enddocs:set-description
-
-// docs:toggle-label
-export const toggleLabel = (
-  db: ReefDb,
-  issueId: number,
-  labelId: number,
-  on: boolean,
-) => db.run(toggleLabelOp, issueId, { labelId, on });
-// enddocs:toggle-label
-
-// docs:delete-issue
-export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.run(deleteIssueOp, issueId, {});
-// enddocs:delete-issue
-
-export const addComment = (
-  db: ReefDb,
-  myEid: number,
-  issueId: number,
-  body: string,
-) => db.run(addCommentOp, issueId, { body, authorId: myEid });
 
 // ── sample data ──────────────────────────────────────────────────────────────
 

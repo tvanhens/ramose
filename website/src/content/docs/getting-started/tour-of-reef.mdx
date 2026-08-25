@@ -69,15 +69,14 @@ Password hashing, sessions, the token-mint route (`ramoseToken` is a plugin), au
 
 ## Workspaces
 
-<Shot src="/reef/workspaces.png" alt="Reef's workspace picker listing two workspaces, Coral Reef Divers and Kelp Forest, each labelled with its own database name, above a New workspace form" caption="Each workspace is its own database. Create runs install() from the browser." code="examples/reef/src/app/mutations.ts#provision-workspace" />
+<Shot src="/reef/workspaces.png" alt="Reef's workspace picker listing two workspaces, Coral Reef Divers and Kelp Forest, each labelled with its own database name, above a New workspace form" caption="Each workspace is its own database. Create runs install() from the browser." code="examples/reef/src/app/ramose.ts#provision-workspace" />
 
 A **workspace** is one customer's isolated data — one database ([glossary](/concepts/glossary/#workspace)). Create installs the schema into a fresh database and seeds it:
 
 *Writes are named operations: `await db.run(moveIssueOp, id, { status, rank })`. Effect is an [advanced hatch](/concepts/effect/).*
 
-```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
-export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).then(() => undefined);
+```ts title="examples/reef/src/app/ramose.ts#provision-workspace"
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
 ```
 
 Opening one goes to `/:slug` and mounts a provider keyed by its name; switching swaps the connection:
@@ -126,13 +125,8 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
-```ts title="examples/reef/src/app/mutations.ts#move-issue"
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) => db.run(moveIssueOp, issueId, { status, rank });
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#move-issue"
+                void move.run(id, { status, rank })
 ```
 
 The card moves on the local overlay before the POST returns. Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Other open tabs receive a filtered transaction and re-run locally. A denial drops the pending layer and the card snaps back. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases — [glossary](/concepts/glossary/#server).)

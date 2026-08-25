@@ -427,7 +427,9 @@ export const BoardScreen = ({
               onSelect={(id) => setSelected(id)}
               onNew={(status) => setDraftStatus(status)}
               onMove={(id, status, rank) =>
+                // docs:move-issue
                 void move.run(id, { status, rank })
+                // enddocs:move-issue
               }
             />
             {liveRows.length === 0 && (

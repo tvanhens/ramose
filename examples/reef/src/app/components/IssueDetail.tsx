@@ -325,7 +325,11 @@ export const IssueDetail = ({
           icon="trash"
           label="Delete issue"
           tone="danger"
-          onClick={() => void removeIssue.run(issueId, {})}
+          onClick={() =>
+            // docs:delete-issue
+            void removeIssue.run(issueId, {})
+            // enddocs:delete-issue
+          }
         />
         <IconButton icon="x" label="Close panel" onClick={onClose} />
       </div>
@@ -423,7 +427,9 @@ export const IssueDetail = ({
                     color={label.color}
                     on={on}
                     onToggle={() =>
+                      // docs:toggle-label
                       void toggleLabel.run(issueId, { labelId: label.id, on: !on })
+                      // enddocs:toggle-label
                     }
                   />
                 );
@@ -440,7 +446,9 @@ export const IssueDetail = ({
             onChange={(e) => setDescriptionDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && description !== (extra.description ?? "")) {
+                // docs:set-description
                 void setDescription.run(issueId, { text: description.trim() });
+                // enddocs:set-description
               }
             }}
           />
