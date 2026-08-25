@@ -87,13 +87,13 @@ The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, b
 
 A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class` and copies the Better Auth user's name and email onto `ramose.attrs` so the peer can stamp them:
 
-```ts title="packages/ramose/src/better-auth/index.ts:311-322"
-export const classOfRole = (role: string): "admin" | "member" | "viewer" => {
+```ts title="packages/ramose/src/better-auth/index.ts:312-323"
+export const classOfRole = (role: string): "owner" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {
     case "owner":
     case "admin":
-      return "admin";
+      return "owner";
     case "member":
       return "member";
     default:

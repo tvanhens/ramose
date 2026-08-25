@@ -22,6 +22,8 @@ describe("reef policy", () => {
     const parsed = parsePolicy(JSON.parse(json));
     expect(parsed.principal).toBe(":user/sub");
     expect(parsed.classes).toEqual([...policy.classes]);
+    expect(parsed.schemaClasses).toEqual(["owner"]);
+    expect(parsed.superuser).toBeUndefined();
   });
 
   test("presets pin creator and author to the caller", () => {
@@ -43,11 +45,11 @@ describe("reef policy", () => {
     expect(parsed.preset[":user/sub"]).toBeUndefined();
   });
 
-  test("privateNote read is narrowed to the admin class", () => {
+  test("privateNote read is narrowed to the owner class", () => {
     const parsed = parsePolicy(JSON.parse(compiledPolicy()));
     const arms = parsed.attrs[":issue/privateNote"]?.read;
     expect(arms).toBeDefined();
-    expect(arms).toEqual([{ _tag: "allow", class: ["admin"], rule: true }]);
+    expect(arms).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
     // …and it is the only narrowing: every other issue attribute is unnamed
     // and inherits the broad namespace read at eval time.
     expect(Object.keys(parsed.attrs)).toEqual([":issue/privateNote"]);
@@ -113,10 +115,10 @@ describe("reef policy", () => {
 // The mapping lives in `ramose/better-auth` now (the mint plugin's
 // default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
-  test("owner and admin mint the admin class", () => {
-    expect(classOfRole("owner")).toBe("admin");
-    expect(classOfRole("admin")).toBe("admin");
-    expect(classOfRole("owner,member")).toBe("admin");
+  test("owner and admin mint the owner class", () => {
+    expect(classOfRole("owner")).toBe("owner");
+    expect(classOfRole("admin")).toBe("owner");
+    expect(classOfRole("owner,member")).toBe("owner");
   });
   test("member mints member; anything else is a viewer", () => {
     expect(classOfRole("member")).toBe("member");

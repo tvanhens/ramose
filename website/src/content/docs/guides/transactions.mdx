@@ -6,7 +6,7 @@ import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-App writes go through `db.run` — a named **operation**. Raw `POST /transact` is closed for app-class tokens by default; admin and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
+App writes go through `db.run` — a named **operation**. Raw `POST /transact` is closed for app-class tokens by default; superuser and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
 
 Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line:
 

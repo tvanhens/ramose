@@ -187,7 +187,7 @@ export const boardShape = {
 
 <Shot src="/reef/invite.png" alt="The Invite dialog with an email field and the role select open on viewer" caption="Roles live in Better Auth; the token carries one; the policy enforces it." code="examples/reef/src/domain/policy.ts#own-rules" />
 
-A **role** is admin, member or viewer — a name carried in the token that the rules refer to ([glossary](/concepts/glossary/#role)). The policy names them once:
+A **role** is owner, member or viewer — a name carried in the token that the rules refer to ([glossary](/concepts/glossary/#role)). The policy names them once:
 
 ```ts title="examples/reef/src/domain/policy.ts#own-rules"
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
@@ -236,7 +236,7 @@ export const issueExtraShape = {
 ```
 
 :::tip[What you didn't write]
-Per-role serializers, "strip this column for non-admins" in every read path, a second DTO.
+Per-role serializers, "strip this column for non-owners" in every read path, a second DTO.
 :::
 
 → [Permissions](/guides/permissions/) · [Policy](/reference/policy/)

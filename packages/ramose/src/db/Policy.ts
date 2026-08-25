@@ -165,6 +165,16 @@ export interface PolicyHead<
   /** attribute whose value is the JWT `sub` — derives `me`'s type */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
   readonly classes: CL;
+  /**
+   * Class whose holders bypass every rule. `P.class(superuser)` in an
+   * arm is unreachable and rejected. Omit to have no bypass class.
+   */
+  readonly superuser?: CL[number];
+  /**
+   * Classes that may install or grow schema. Defaults to `[superuser]`.
+   * Distinct from bypass — a schema class still runs the rules.
+   */
+  readonly schemaClasses?: readonly CL[number][];
   /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
 }
@@ -193,11 +203,14 @@ interface NsRules {
 export interface Policy<
   C extends AnySchema = AnySchema,
   CL extends readonly string[] = readonly string[],
+  SU extends CL[number] | undefined = CL[number] | undefined,
 > {
   readonly _tag: "Policy";
   readonly schema: C;
   readonly principal: string;
   readonly classes: CL;
+  readonly superuser?: SU;
+  readonly schemaClasses: readonly CL[number][];
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
   /** catalog namespace key → normalised rules */
   readonly ns: Readonly<Record<string, NsRules>>;
@@ -216,6 +229,9 @@ const fail = (message: string, ident?: string, cause?: unknown): never => {
 
 /** Keep `CL` inferred from the head, not widened by arm literals. */
 type NoInfer<T> = [T][T extends unknown ? 0 : never];
+
+/** Arm class names: the head's `classes` minus `superuser` (unreachable). */
+type ArmClasses<CL extends readonly string[], SU> = readonly Exclude<CL[number], SU>[];
 
 /** Runtime fragment: promote does not re-check the type-level brand. */
 type AnyFragFn = (me: Var<unknown>) => (focus: Var<unknown>) => QueryGen<unknown>;
@@ -553,22 +569,27 @@ const checkArmFocus = (
  * Build a policy. `policy(head, arms)` is head/body shaped like `Query.q`:
  * `principal: User.sub` derives `me`, and every inline arm is checked as
  * `(me) => fragment` with `me` fully typed. Unknown idents, undeclared
- * classes and unknown namespace keys fail here.
+ * classes and unknown namespace keys fail here. `superuser` / `schemaClasses`
+ * are required to resolve to at least one class that may install schema;
+ * `P.class(superuser)` in an arm is unreachable and rejected.
  */
 export function policy<
   const C extends AnySchema,
   const I extends CatalogIdent<C>,
   const CL extends readonly string[],
+  const SU extends CL[number] | undefined = undefined,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
   head: {
     readonly schema: C;
     readonly principal: AttrRef & { readonly ident: I };
     readonly classes: CL;
+    readonly superuser?: SU & CL[number];
+    readonly schemaClasses?: readonly CL[number][];
     readonly claims?: Schema.Struct<CF>;
   },
-  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<CL>>,
-): Policy<C, CL> {
+  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<ArmClasses<CL, SU>>>,
+): Policy<C, CL, SU> {
   if (head == null || typeof head !== "object" || head.schema == null) {
     fail("policy(head, arms) takes a head { schema, principal, classes }");
   }
@@ -589,10 +610,39 @@ export function policy<
   if (new Set(classes).size !== classes.length) fail("duplicate class");
   const classSet = new Set<string>(classes);
 
+  const superuser = head.superuser;
+  if (superuser !== undefined) {
+    if (typeof superuser !== "string" || superuser.length === 0) {
+      fail("superuser must be a declared class name");
+    }
+    if (!classSet.has(superuser)) {
+      fail(`superuser ${JSON.stringify(superuser)} is not a declared class`);
+    }
+  }
+
+  const schemaClasses: readonly string[] = (() => {
+    if (head.schemaClasses !== undefined) {
+      const list = [...head.schemaClasses];
+      if (list.length === 0) fail("schemaClasses must not be empty");
+      if (new Set(list).size !== list.length) fail("duplicate schema class");
+      for (const c of list) {
+        if (!classSet.has(c)) fail(`schemaClasses: ${JSON.stringify(c)} is not a declared class`);
+      }
+      return list;
+    }
+    if (superuser !== undefined) return [superuser];
+    return fail("no class can install schema — set schemaClasses or superuser");
+  })();
+
   const checkClasses = (gate: readonly string[] | undefined, where: string): void => {
     if (gate === undefined) return;
     for (const c of gate) {
       if (!classSet.has(c)) fail(`${where}: ${JSON.stringify(c)} is not a declared class`);
+      if (superuser !== undefined && c === superuser) {
+        fail(
+          `${where}: P.class(${JSON.stringify(superuser)}) is unreachable — the superuser bypasses every rule`,
+        );
+      }
     }
   };
 
@@ -706,6 +756,8 @@ export function policy<
     schema,
     principal: principalIdent,
     classes,
+    ...(superuser !== undefined ? { superuser } : {}),
+    schemaClasses,
     claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
     ns,
     ruleDefs,
@@ -769,6 +821,8 @@ const lower = (p: Policy): CompiledPolicy => {
     version: POLICY_VERSION,
     principal: p.principal,
     classes: p.classes,
+    ...(p.superuser !== undefined ? { superuser: p.superuser } : {}),
+    schemaClasses: p.schemaClasses,
     claims: claimsJson(p.claims),
     attrs,
     ns,

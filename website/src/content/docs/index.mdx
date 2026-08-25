@@ -76,7 +76,7 @@ export const Issue = Ramose.Entity("issue", {
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
     optional: true,
-    doc: "visible to the admin class only",
+    doc: "visible to the owner class only",
   }),
 });
 ```
@@ -130,7 +130,7 @@ export const boardQuery = Query.from(Issue)
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("owner") }),
       ],
     },
 ```

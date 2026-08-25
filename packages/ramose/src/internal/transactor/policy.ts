@@ -68,6 +68,9 @@ export function asPrincipal(x: unknown): Principal | undefined {
   if (kind !== "service" && kind !== "user" && kind !== "anonymous") return undefined;
   if (typeof o.class !== "string" || typeof o.db !== "string") return undefined;
   const claims = typeof o.claims === "object" && o.claims !== null ? (o.claims as Principal["claims"]) : {};
+  const classes = Array.isArray(o.classes)
+    ? o.classes.filter((c): c is string => typeof c === "string")
+    : undefined;
   return {
     kind,
     class: o.class,
@@ -75,5 +78,6 @@ export function asPrincipal(x: unknown): Principal | undefined {
     claims,
     ...(typeof o.sub === "string" ? { sub: o.sub } : {}),
     ...(typeof o.eid === "number" ? { eid: o.eid } : {}),
+    ...(classes !== undefined && classes.length > 0 ? { classes } : {}),
   };
 }

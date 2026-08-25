@@ -38,6 +38,7 @@ const FRAGMENT_POLICY_JSON = {
   version: 2 as const,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   attrs: { ":doc/audit": { read: [{ _tag: "allow" as const, class: ["admin"], rule: true as const }] } },
   ns: {
     doc: {

@@ -516,6 +516,7 @@ describe('writes: "operations" is the peer default', () => {
     version: 1,
     principal: ":user/name",
     classes: ["member", "admin"],
+    superuser: "admin",
     ns: {
       user: {
         read: allow({ _tag: "class", class: "member" }),

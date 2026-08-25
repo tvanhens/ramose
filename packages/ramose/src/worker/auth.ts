@@ -26,7 +26,9 @@ import {
   publicPolicyOp,
   componentLogger,
   filterDb,
-  isAdmin,
+  canChangeSchema,
+  isSchemaTx,
+  isSuperuser,
   shouldProvision,
 } from "../internal/core/index.ts";
 import { type Basis, dbFromBasis } from "../internal/replica/basis.ts";
@@ -362,7 +364,7 @@ async function resolveEid(policy: CompiledPolicy, sub: string, dbName: string, r
 
 /** Resolve the principal entity with one AVET lookup on the policy's `principal` attribute. */
 export async function withEid(policy: CompiledPolicy, principal: Principal, ruleDb: Db): Promise<Principal> {
-  if (principal.eid !== undefined || principal.sub === undefined || isAdmin(principal)) return principal;
+  if (principal.eid !== undefined || principal.sub === undefined || isSuperuser(principal, policy)) return principal;
   const eid = await resolveEid(policy, principal.sub, principal.db, ruleDb);
   return eid === undefined ? principal : { ...principal, eid };
 }
@@ -372,8 +374,8 @@ export async function withEid(policy: CompiledPolicy, principal: Principal, rule
  * ack and `/info` carry `{ eid, class }`. `eid: null` only for principals
  * the peer does not provision (anonymous, service, no policy, or the
  * principal attr is not deployed yet). Informational, so unlike {@link withEid}
- * it resolves for admins too: an admin is exempt from filtering, not from
- * having a row.
+ * it resolves for superusers too: a superuser is exempt from filtering, not
+ * from having a row.
  */
 export async function describePrincipal(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis): Promise<{ eid: number | null; class: string }> {
   const st = authState(env);
@@ -401,23 +403,12 @@ export async function viewDb(
   const st = authState(env);
   if (st.configured && st.policy === undefined) throw new Unauthorized({});
   const data = await dbFromBasis(store, basis, opts);
-  if (st.policy === undefined || isAdmin(principal)) return data;
+  if (st.policy === undefined || isSuperuser(principal, st.policy)) return data;
   const current = opts.asOf === undefined && !opts.history ? data : await dbFromBasis(store, basis);
   return filterDb(data, current, st.policy, await withEid(st.policy, principal, current));
 }
 
-/**
- * Every op is a map form carrying `:db/ident` — i.e. an `ensure`.
- * Empty `tx` is not schema (nothing to ensure).
- */
-export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[] {
-  if (!Array.isArray(tx) || tx.length === 0) return false;
-  for (const op of tx) {
-    if (typeof op !== "object" || op === null || Array.isArray(op)) return false;
-    if (typeof (op as Record<string, unknown>)[":db/ident"] !== "string") return false;
-  }
-  return true;
-}
+export { isSchemaTx };
 
 /** Every op is a map form carrying `:db/ident` — i.e. an `ensure`. */
 function schemaIdents(tx: readonly unknown[]): string[] | undefined {
@@ -427,17 +418,20 @@ function schemaIdents(tx: readonly unknown[]): string[] | undefined {
 
 /**
  * Raw `/transact` (HTTP or a session `{ op: "transact" }` frame).
- * `"all"` is open. Admin and `$token` keep it under `"operations"`.
+ * `"all"` is open. Superuser and `$token` keep it under `"operations"`.
  * Schema-only txs are exempt — `checkWrite` already polices them
- * (unknown ident stays 403 admin-only; already-deployed subset is a skip).
+ * (unknown ident stays 403 schema-class; already-deployed subset is a skip).
  */
 export function allowsRawTransact(
   writes: WritesMode,
   principal: Principal | undefined,
   tx: unknown,
+  policy?: CompiledPolicy,
 ): boolean {
   if (writes === "all") return true;
-  if (principal !== undefined && (isAdmin(principal) || isTokenOnly(principal))) return true;
+  if (principal !== undefined && isTokenOnly(principal)) return true;
+  if (policy === undefined) return true;
+  if (principal !== undefined && isSuperuser(principal, policy)) return true;
   return isSchemaTx(tx);
 }
 
@@ -454,15 +448,24 @@ export type WriteCheck = { readonly kind: "send"; readonly tx: unknown[]; readon
  */
 export async function checkWrite(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis, tx: unknown[]): Promise<WriteCheck> {
   const st = authState(env);
-  if (st.policy === undefined || isAdmin(principal)) return { kind: "send", tx, principal };
+  if (st.policy === undefined || isSuperuser(principal, st.policy)) return { kind: "send", tx, principal };
   const db = await dbFromBasis(store, basis);
 
-  // `ensure` is a schema tx: only `admin` changes schema, and a subset of what
-  // is already deployed is skipped silently (frontend deployed before backend).
+  // `ensure` is a schema tx: `schemaClasses` (default `[superuser]`) may
+  // grow it. A subset of what is already deployed is skipped silently
+  // (frontend deployed before backend) for everyone else.
   const idents = schemaIdents(tx);
   if (idents !== undefined) {
+    if (canChangeSchema(principal, st.policy)) return { kind: "send", tx, principal };
     for (const ident of idents) {
-      if (db.attr(ident) === undefined) throw new Unauthorized({ status: 403, message: "schema changes require the admin class", code: "policy", attr: ident });
+      if (db.attr(ident) === undefined) {
+        throw new Unauthorized({
+          status: 403,
+          message: "schema changes require a schema class",
+          code: "policy",
+          attr: ident,
+        });
+      }
     }
     return { kind: "skip" };
   }

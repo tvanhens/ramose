@@ -12,7 +12,7 @@ import {
   allowsOp,
   checkTx,
   filterDb,
-  isAdmin,
+  isSuperuser,
   parsePolicy,
   policyView,
   presetOps,
@@ -42,6 +42,7 @@ const POLICY_JSON = {
   version: 1,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   attrs: { ":doc/audit": { read: [A.allow(A.class("admin"))] } },
   ns: {
     doc: {
@@ -130,6 +131,25 @@ describe("parsePolicy", () => {
     bad({ attrs: { ":doc/audit": { read: [A.allow(A.class("ghost"))] } } }, /not a declared class/);
     bad({ ns: { ":doc": {} } }, /bare namespace prefix/);
     bad({ preset: { ":doc/owner": { _tag: "wat" } } }, /unknown operand _tag/);
+    bad({ superuser: "ghost" }, /superuser: "ghost" is not a declared class/);
+    bad({ schemaClasses: [] }, /schemaClasses/);
+    bad({ schemaClasses: ["ghost"] }, /schemaClasses: "ghost" is not a declared class/);
+  });
+
+  test("superuser and schemaClasses are optional; schemaClasses defaults to [superuser]", () => {
+    const named = parsePolicy({ ...POLICY_JSON, superuser: "admin" });
+    expect(named.superuser).toBe("admin");
+    expect(named.schemaClasses).toEqual(["admin"]);
+    const split = parsePolicy({
+      ...POLICY_JSON,
+      superuser: "admin",
+      schemaClasses: ["member"],
+    });
+    expect(split.superuser).toBe("admin");
+    expect(split.schemaClasses).toEqual(["member"]);
+    const none = parsePolicy({ ...POLICY_JSON, superuser: undefined });
+    expect(none.superuser).toBeUndefined();
+    expect(none.schemaClasses).toBeUndefined();
   });
 
   test("accepts a version-2 fragment policy", () => {
@@ -137,6 +157,7 @@ describe("parsePolicy", () => {
       version: 2,
       principal: ":user/sub",
       classes: ["member", "admin"],
+      superuser: "admin",
       attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
       ns: {
         doc: {
@@ -246,11 +267,14 @@ describe("rule combination", () => {
     expect(errs[0]).toMatchObject({ _tag: "PolicyError", reason: "unknown-attr", attr: ":ghost/attr" });
   });
 
-  test("admin bypasses the filter entirely", async () => {
+  test("superuser bypasses the filter; a class named admin does not", async () => {
     expect(filterDb(db, db, policy, admin())).toBe(db);
-    expect(isAdmin(admin())).toBe(true);
-    expect(isAdmin(alice())).toBe(false);
-    expect(isAdmin({ ...alice(), kind: "service" })).toBe(false); // a service token is not data-plane admin
+    expect(isSuperuser(admin(), policy)).toBe(true);
+    expect(isSuperuser(alice(), policy)).toBe(false);
+    expect(isSuperuser({ ...alice(), kind: "service" }, policy)).toBe(false); // a service token is not data-plane superuser
+    const noBypass = parsePolicy({ ...POLICY_JSON, superuser: undefined });
+    expect(isSuperuser(admin(), noBypass)).toBe(false);
+    expect(filterDb(db, db, noBypass, admin())).not.toBe(db);
   });
 });
 
@@ -500,6 +524,7 @@ const FRAGMENT_POLICY_JSON = {
   version: 2,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   attrs: { ":doc/audit": { read: [{ _tag: "allow", class: ["admin"], rule: true }] } },
   ns: {
     doc: {

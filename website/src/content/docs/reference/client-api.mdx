@@ -126,7 +126,7 @@ export const Issue = Ramose.Entity("issue", {
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
     optional: true,
-    doc: "visible to the admin class only",
+    doc: "visible to the owner class only",
   }),
 });
 ```
@@ -264,7 +264,7 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.run(deleteTodoOp, eid, {});
 ```
 
-**`db.install(): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only `admin` may run it. Reef's workspace provision runs install as an operation effect, then seeds labels.
+**`db.install(): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only a `schemaClasses` class may run it (default `[superuser]`). Reef's workspace provision runs install as an operation effect, then seeds labels.
 
 ```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>
@@ -273,7 +273,7 @@ export const provisionWorkspace = (db: ReefDb) =>
 
 ## Writes
 
-App writes go through `db.run`. There is no public `db.transact`. Raw `POST /transact` is admin / seed / `writes: "all"`.
+App writes go through `db.run`. There is no public `db.transact`. Raw `POST /transact` is superuser / seed / `writes: "all"`.
 
 **`Ramose.Operation(name, schemas, body)`** — one named write. `name` (`issue/move`) is the wire contract; renaming one, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. Input and output codecs are Effect Schema (`ramose/effect`). Return a handle (or `{ id: handle }`) with `EntityId` in the output schema; `db.run` resolves it after the writer assigns ids.
 

@@ -139,12 +139,37 @@ const _fixtures = () => {
     {},
   );
 
-  const pol = P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
-    doc: { read: P.class("member") },
-  });
+  P.policy(
+    {
+      schema: App,
+      principal: User.sub,
+      classes: ["owner", "member"],
+      superuser: "owner",
+    },
+    {
+      // @ts-expect-error — superuser is unreachable in an arm
+      doc: { read: P.class("owner") },
+    },
+  );
+
+  P.policy(
+    {
+      schema: App,
+      principal: User.sub,
+      classes: ["owner", "member"],
+      superuser: "owner",
+    },
+    { doc: { read: P.class("member") } },
+  );
+
+  const pol = P.policy(
+    { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+    { doc: { read: P.class("member") } },
+  );
   type _schema = Expect<Equal<(typeof pol)["schema"], typeof App>>;
   type _class = Expect<Equal<P.Class<typeof pol>, "member">>;
   type _classes = Expect<Equal<(typeof pol)["classes"], readonly ["member"]>>;
+  type _schemaClass = Expect<Equal<(typeof pol)["schemaClasses"][number], "member">>;
 
   claims({ issuer: "i", audience: "a", ttl: 900 }, { sub: "u", db: "acme", class: "member" }, pol);
   // @ts-expect-error — "admin" is not a declared class of pol

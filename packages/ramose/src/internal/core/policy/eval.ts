@@ -30,7 +30,7 @@ import {
   isRuleArm,
   nsPrefix,
 } from "./ast.ts";
-import { type Principal, claimValue } from "./principal.ts";
+import { type Principal, claimValue, holdsClass } from "./principal.ts";
 
 /** Bootstrap `:db/*` attributes: schema and tx metadata are not secret. */
 export function isSystemAttrId(a: number): boolean {
@@ -278,7 +278,7 @@ export async function evalExpr(expr: PolicyExpr, ctx: EvalCtx): Promise<boolean>
     case "const":
       return expr.value;
     case "class":
-      return ctx.principal.class === expr.class;
+      return holdsClass(ctx.principal, expr.class);
     case "not":
       return !(await evalExpr(expr.expr, ctx));
     case "and": {
@@ -338,7 +338,7 @@ async function evalRuleArm(
   rules: readonly unknown[] | undefined,
   useVisibleSet: boolean,
 ): Promise<boolean> {
-  if (arm.class !== undefined && !arm.class.includes(ctx.principal.class)) return false;
+  if (arm.class !== undefined && !arm.class.some((c) => holdsClass(ctx.principal, c))) return false;
   if (arm.rule === true) return true;
   return evalNamedRule(arm.rule, ctx, rules, useVisibleSet);
 }

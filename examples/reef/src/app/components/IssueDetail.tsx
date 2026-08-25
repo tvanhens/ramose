@@ -426,13 +426,13 @@ export const IssueDetail = ({
           <div {...stylex.props(styles.sectionLabel)}>
             <Icon name="lock" size={12} />
             Admin note
-            {cls !== "admin" && <Tag tone="warn">masked for {cls}</Tag>}
+            {cls !== "owner" && <Tag tone="warn">masked for {cls}</Tag>}
           </div>
           <TextArea
             value={note}
             placeholder={
-              cls === "admin"
-                ? "Visible to admins only…"
+              cls === "owner"
+                ? "Visible to owners only…"
                 : "Read-masked for your class — a write here is denied by the peer"
             }
             onChange={(e) => setNoteDraft(e.target.value)}

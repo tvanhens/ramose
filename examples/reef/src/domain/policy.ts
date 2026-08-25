@@ -6,11 +6,14 @@
  *
  * Classes (carried as `ramose.class`, minted from the Better Auth org role):
  *
- *   admin   workspace owners/admins — bypasses every rule (core `isAdmin`),
- *           which is also what lets the creator run `db.install()` and read
- *           `issue.privateNote`
+ *   owner   workspace owners/admins — may install schema (`schemaClasses`)
+ *           and read `issue.privateNote`. Still subject to the rules.
  *   member  can create issues/comments and edit or delete *their own*
  *   viewer  read-only; every write arm denies it
+ *
+ * There is no bypass class. `schemaClasses: ["owner"]` is what lets the
+ * creator run `db.install()` from a browser JWT; a `superuser` class
+ * would skip every rule and must not be minted to a browser.
  *
  * Deny is the default: a namespace without a rule denies, and `preset`
  * attributes are peer-owned on create — a client-supplied value is allowed
@@ -25,7 +28,7 @@ import { Comment, Issue, Reef, User } from "./schema.ts";
 const P = Ramose.Policy;
 const { Query } = Ramose;
 
-/** `member` may touch an issue they created; `admin` never reaches the rules. */
+/** `member` may touch an issue they created; `owner` reaches the same rules. */
 // docs:own-rules
 const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
@@ -37,7 +40,8 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: ["admin", "member", "viewer"],
+    classes: ["owner", "member", "viewer"],
+    schemaClasses: ["owner"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -68,7 +72,7 @@ export const policy = Ramose.policy(
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
         // docs:policy-private-note
-        P.field(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("owner") }),
         // enddocs:policy-private-note
       ],
     },

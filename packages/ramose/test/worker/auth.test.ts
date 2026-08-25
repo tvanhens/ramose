@@ -49,6 +49,7 @@ const POLICY = {
   version: 1,
   principal: ":user/sub",
   classes: ["anonymous", "member", "admin"],
+  superuser: "admin",
   ns: {
     doc: {
       read: allow({ _tag: "or", exprs: [eq(":doc/owner"), inOrg] }),

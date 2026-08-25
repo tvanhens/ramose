@@ -50,10 +50,10 @@ export const Issue = Ramose.Entity("issue", {
   creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
-  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
+  /** Owner-only field — the policy narrows its `read` (see policy.ts). */
   privateNote: Ramose.string({
     optional: true,
-    doc: "visible to the admin class only",
+    doc: "visible to the owner class only",
   }),
 });
 // enddocs:issue-entity

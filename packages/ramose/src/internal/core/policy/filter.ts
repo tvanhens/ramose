@@ -4,7 +4,7 @@ import type { Datom, IndexId, Prefix } from "../datom.ts";
 import { Db, type DbOptions } from "../db.ts";
 import type { CompiledPolicy } from "./ast.ts";
 import { PolicyMemo, allowsOp, isSystemAttrId } from "./eval.ts";
-import { type Principal, isAdmin } from "./principal.ts";
+import { type Principal, isSuperuser } from "./principal.ts";
 
 export interface PolicyView {
   readonly policy: CompiledPolicy;
@@ -103,7 +103,7 @@ export function filterDb(
   principal: Principal,
   opts?: { readonly maxCells?: number; readonly visibleSetMax?: number },
 ): Db {
-  if (isAdmin(principal)) return db;
+  if (isSuperuser(principal, policy)) return db;
   const rules = ruleDb instanceof FilteredDb ? ruleDb.view.ruleDb : ruleDb;
   const view: PolicyView = {
     policy,
