@@ -712,7 +712,7 @@ describe("deleting an issue", () => {
     const created = await createIssue(peer.db, peer.myEid, undefined, {
       title: "Commented",
       status: "todo",
-      priority: 1,
+      priority: "low",
     });
     const issueId = created.output.id as Ramose.Eid<typeof Issue>;
     await addComment(peer.db, peer.myEid, issueId, "first note");
