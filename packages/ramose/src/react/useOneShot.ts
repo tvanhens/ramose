@@ -3,7 +3,7 @@
 /**
  * Shared one-shot engine for `useQuery` / `usePull`: last-write-wins by
  * issue order, previous `data` kept while the next run is in flight,
- * `refetch()` re-issues the same run.
+ * `refetch()` / `retry()` re-issue the same run.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -59,5 +59,5 @@ export const useOneShot = <A, E>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nudge]);
 
-  return { ...state, refetch };
+  return { ...state, refetch, retry: refetch };
 };

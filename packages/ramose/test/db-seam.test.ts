@@ -110,6 +110,24 @@ describe("the wake", () => {
     const db = databases.db("movies", Movies);
     expect(seamOf(db).onWake(() => {})).toBeUndefined();
     expect(seamOf(db).t()).toBeUndefined();
+    expect(seamOf(db).status()).toBe("offline");
+    expect(seamOf(db).generation()).toBe(0);
     close();
+  });
+
+  test("a socket client reports connecting then live, and generation moves on drop", async () => {
+    const peer = fakePeer();
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    expect(seamOf(db).status()).toBe("connecting");
+    await db.query(Query.q(() => Query.entities(User)));
+    expect(seamOf(db).status()).toBe("live");
+    const gen = seamOf(db).generation();
+    expect(gen).toBeGreaterThan(0);
+    peer.drop();
+    await settle();
+    expect(seamOf(db).status()).toBe("reconnecting");
+    expect(seamOf(db).generation()).toBeGreaterThan(gen);
+    await c.dispose();
   });
 });

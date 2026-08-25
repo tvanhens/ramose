@@ -9,8 +9,10 @@
  */
 
 import {
+  type ConnectionStatus,
   errorMessage,
   useBasis,
+  useConnectionStatus,
   useDb,
   useLiveQuery,
   useQuery,
@@ -64,6 +66,14 @@ import {
   useEscape,
   useToast,
 } from "../ui.tsx";
+
+const PILL_TITLE: Record<ConnectionStatus, string> = {
+  connecting: "Connecting to the workspace…",
+  live: "Live: your writes paint on the local overlay; other sessions arrive as filtered transactions",
+  reconnecting: "Reconnecting — the socket dropped and a new one is opening",
+  offline: "Offline — no live connection",
+  closed: "Connection closed",
+};
 
 const pulse = stylex.keyframes({
   "0%": { boxShadow: "0 0 0 0 rgba(63, 185, 112, 0.6)" },
@@ -131,12 +141,18 @@ const styles = stylex.create({
     backgroundColor: colors.ok,
   },
   liveDotPaused: { backgroundColor: colors.warn },
+  liveDotDown: { backgroundColor: colors.danger },
   liveDotPulse: {
     animationName: pulse,
     animationDuration: "700ms",
     animationTimingFunction: "ease-out",
   },
   liveMono: { fontFamily: type.mono, color: colors.textFaint, fontWeight: 500 },
+  retry: {
+    display: "flex",
+    justifyContent: "center",
+    paddingBottom: space.lg,
+  },
   divider: {
     width: "1px",
     height: "20px",
@@ -263,6 +279,7 @@ export const BoardScreen = ({
   const people = useLiveQuery(db, peopleQuery);
   const labels = useLiveQuery(db, labelsQuery);
   // enddocs:use-live-board
+  const connection = useConnectionStatus(db);
 
   const [selected, setSelected] = useBoardSelection(slug);
   const [draftStatus, setDraftStatus] = useState<Status | null>(null);
@@ -305,14 +322,22 @@ export const BoardScreen = ({
   }, [selected, selectedRow, liveRows, setSelected]);
   const canWrite = cls !== "viewer";
 
-  if (board.error !== undefined) {
-    return (
-      <div {...stylex.props(styles.screen)}>
-        <Loading text="connection lost — retrying on reload…" />
-      </div>
-    );
+  if (liveRows === undefined) {
+    if (board.error !== undefined) {
+      return (
+        <div {...stylex.props(styles.screen)}>
+          <Loading text={errorMessage(board.error)} />
+          <div {...stylex.props(styles.retry)}>
+            <Button size="sm" onClick={() => board.retry()}>
+              Retry
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return <Loading text={`opening ${slug}…`} />;
   }
-  if (!selfReady || liveRows === undefined) {
+  if (!selfReady) {
     return <Loading text={`opening ${slug}…`} />;
   }
 
@@ -332,17 +357,29 @@ export const BoardScreen = ({
         <span {...stylex.props(styles.spacer)} />
         <span
           {...stylex.props(styles.live, styles.wide)}
-          title="Live: your writes paint on the local overlay; other sessions arrive as filtered transactions"
+          title={
+            timeTraveling
+              ? "Paused at a past t"
+              : PILL_TITLE[connection]
+          }
         >
           <span
             key={basis}
             {...stylex.props(
               styles.liveDot,
-              timeTraveling && styles.liveDotPaused,
-              basis !== undefined && !timeTraveling && styles.liveDotPulse,
+              (timeTraveling ||
+                connection === "connecting" ||
+                connection === "reconnecting") &&
+                styles.liveDotPaused,
+              (connection === "offline" || connection === "closed") &&
+                styles.liveDotDown,
+              basis !== undefined &&
+                !timeTraveling &&
+                connection === "live" &&
+                styles.liveDotPulse,
             )}
           />
-          {timeTraveling ? "paused" : "live"}
+          {timeTraveling ? "paused" : connection}
           {basis !== undefined && (
             <span {...stylex.props(styles.liveMono)}>t {basis}</span>
           )}

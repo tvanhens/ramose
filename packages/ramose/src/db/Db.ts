@@ -70,7 +70,7 @@ import {
   reshapePullResult,
   type ValidatePull,
 } from "./Pull.ts";
-import type { Session } from "./session.ts";
+import type { ConnectionStatus, Session } from "./session.ts";
 import type { Subscription } from "./subscription.ts";
 
 /**
@@ -357,6 +357,16 @@ export interface DbSeam {
    */
   readonly t: () => number | undefined;
   /**
+   * Session generation — 0 before a socket exists. A reconnect after a
+   * terminal live error is new information.
+   */
+  readonly generation: () => number;
+  /**
+   * `"offline"` with no socket factory; otherwise the session's
+   * {@link ConnectionStatus} (`"connecting"` until the first handshake).
+   */
+  readonly status: () => ConnectionStatus;
+  /**
    * Standing query that emits the raw wire result — no take-unwrap, no
    * page-wrap. `useLive` shares this handle and applies each subscriber's
    * `finalize`.
@@ -399,6 +409,8 @@ const attachSeam = (
     asOf: view.asOf,
     onWake: (cb) => wire.session(name)?.onWake(cb),
     t: () => wire.session(name)?.t,
+    generation: () => wire.session(name)?.generation ?? 0,
+    status: () => wire.session(name)?.status ?? "offline",
     liveRaw,
   };
   (db as Record<symbol, unknown>)[DB_SEAM] = seam;

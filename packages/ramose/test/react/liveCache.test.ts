@@ -49,6 +49,46 @@ describe("retainLive", () => {
     expect(closed).toBe(1);
   });
 
+  test("a shared terminal error evicts so the next retain creates a new handle", () => {
+    const listeners: Array<{
+      onValue: (value: unknown) => void;
+      onError?: (error: unknown) => void;
+    }> = [];
+    let created = 0;
+    const make = (): Subscription<unknown> => {
+      created += 1;
+      return {
+        subscribe(onValue, onError) {
+          listeners.push({ onValue, onError });
+          return () => {};
+        },
+        async *[Symbol.asyncIterator]() {},
+        close() {},
+      };
+    };
+
+    const a = retainLive("term", make);
+    const b = retainLive("term", make);
+    expect(created).toBe(1);
+    let err: unknown;
+    a.subscribe(
+      () => {},
+      (e) => {
+        err = e;
+      },
+    );
+    b.subscribe(() => {});
+
+    listeners[0]!.onError?.(new Error("unauthorized"));
+    expect(err).toBeInstanceOf(Error);
+
+    const c = retainLive("term", make);
+    expect(created).toBe(2);
+    c.close();
+    a.close();
+    b.close();
+  });
+
   test("finalize runs per wrapper; NotOne stays on that subscriber", () => {
     const listeners: Array<(value: unknown) => void> = [];
     const raw = handle(() => {}, listeners);

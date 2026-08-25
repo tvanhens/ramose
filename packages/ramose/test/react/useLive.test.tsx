@@ -311,6 +311,71 @@ describe("useLiveQuery (query form)", () => {
     }
   });
 
+  test("retry() re-subscribes after a terminal Unauthorized", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, answer, close } = overlaySetup(world);
+    const spy = spyRawLive(db);
+    try {
+      const { result } = renderHook(() => useLiveQuery(db, allTodos));
+      await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
+      expect(spy.calls).toBe(1);
+
+      answer((frame) =>
+        frame.op === "sync"
+          ? { status: 401, body: { error: "token expired" } }
+          : { body: { t: world.t, result: [] } },
+      );
+      peer.drop();
+      await waitFor(() => expect(result.current.error).toBeDefined());
+
+      answer((frame) =>
+        frame.op === "sync"
+          ? { body: { t: world.t, datoms: world.datoms } }
+          : { body: { t: world.t, result: [] } },
+      );
+      result.current.retry();
+      await waitFor(() => expect(result.current.error).toBeUndefined());
+      expect(result.current.data).toEqual(ids(...world.eids));
+      expect(result.current.status).toBe("success");
+      expect(spy.calls).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a later live generation re-subscribes after a terminal Unauthorized", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, answer, close } = overlaySetup(world);
+    try {
+      const { result } = renderHook(() => useLiveQuery(db, allTodos));
+      await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
+
+      answer((frame) =>
+        frame.op === "sync"
+          ? { status: 401, body: { error: "token expired" } }
+          : { body: { t: world.t, result: [] } },
+      );
+      peer.drop();
+      await waitFor(() => expect(result.current.error).toBeDefined());
+      expect((result.current.error as { _tag: string })._tag).toBe(
+        "Unauthorized",
+      );
+
+      answer((frame) =>
+        frame.op === "sync"
+          ? { body: { t: world.t, datoms: world.datoms } }
+          : { body: { t: world.t, result: [] } },
+      );
+      // drop the spent socket, then a one-shot reconnects — new generation, live
+      peer.drop();
+      await db.query(allTodos);
+      await waitFor(() => expect(result.current.error).toBeUndefined());
+      expect(result.current.data).toEqual(ids(...world.eids));
+    } finally {
+      await close();
+    }
+  });
+
   test("unmount interrupts — the peer sees no re-run on the next tick", async () => {
     const world = await todoWorld(1);
     const { db, peer, close } = overlaySetup(world);

@@ -8,10 +8,11 @@
  * The subscription form (`useLiveQuery(sub)`) does not go through this — the
  * caller owns that handle.
  *
- * A terminal error stays on the shared handle until refs hit 0. A later
- * mount while a sibling still holds it replays that error (pre-cache,
- * each hook retried independently). A per-subscriber `NotOne` (oneOrFail)
- * is not that: it is applied in the wrapper and does not poison siblings.
+ * A terminal error evicts the cache entry so a later `retry()` (or a
+ * remount) opens a fresh standing read. Siblings still holding the dead
+ * handle keep it until they close or retry. A per-subscriber `NotOne`
+ * (oneOrFail) is not that: it is applied in the wrapper and does not
+ * evict or poison siblings.
  */
 
 import { NotOne } from "../db/Errors.ts";
@@ -53,16 +54,22 @@ export const retainLive = (
   let last: unknown | typeof NONE = NONE;
   return {
     subscribe: (onValue, onError) =>
-      held.sub.subscribe((raw) => {
-        let rows = finalize === undefined ? raw : finalize(raw);
-        if (rows instanceof NotOne) {
-          onError?.(rows);
-          return;
-        }
-        if (last !== NONE) rows = shareEqualDeep(last, rows);
-        last = rows;
-        onValue(rows);
-      }, onError),
+      held.sub.subscribe(
+        (raw) => {
+          let rows = finalize === undefined ? raw : finalize(raw);
+          if (rows instanceof NotOne) {
+            onError?.(rows);
+            return;
+          }
+          if (last !== NONE) rows = shareEqualDeep(last, rows);
+          last = rows;
+          onValue(rows);
+        },
+        (error) => {
+          if (cache.get(key) === held) cache.delete(key);
+          onError?.(error);
+        },
+      ),
     [Symbol.asyncIterator]: () => held.sub[Symbol.asyncIterator](),
     close() {
       if (done) return;
