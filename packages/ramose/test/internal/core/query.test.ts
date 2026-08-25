@@ -225,6 +225,31 @@ describe("datalog basics", () => {
     await expect(query(db, `[:find ?e :where [(> ?e 5)]]`)).rejects.toBeInstanceOf(QueryError);
   });
 
+  test("fn lookup rejects Object.prototype names as unknown function", async () => {
+    // Wire path a subscription's lowered query executes on — not Q.call.
+    // Before the own-property guard, constructor/toString ran; hasOwnProperty
+    // and __proto__ threw raw TypeErrors (500-class), not QueryError.
+    for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      const err = await query(db, `[:find ?x :where [(${name} "T") ?x]]`).then(
+        () => {
+          throw new Error(`${name} should have been rejected`);
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(QueryError);
+      expect(err).not.toBeInstanceOf(TypeError);
+      expect((err as QueryError).message).toBe(`unknown function ${name}`);
+    }
+    const missing = await query(db, `[:find ?x :where [(no-such-fn "T") ?x]]`).then(
+      () => {
+        throw new Error("no-such-fn should have been rejected");
+      },
+      (e: unknown) => e,
+    );
+    expect(missing).toBeInstanceOf(QueryError);
+    expect((missing as QueryError).message).toBe("unknown function no-such-fn");
+  });
+
   test("parser produces AST usable directly", async () => {
     const ast = parseQuery(`[:find ?n :where [?e :person/name ?n]]`);
     expect(ast.find.kind).toBe("rel");
