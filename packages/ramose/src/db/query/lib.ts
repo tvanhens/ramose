@@ -15,7 +15,17 @@
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
 import type { UnbrandedId } from "../idents.ts";
-import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
+import type {
+  AttrValue,
+  FocusSelect,
+  OrderDir,
+  OrderEmpty,
+  PathCarrier,
+  Shape,
+  ValidShape,
+  SelectResult,
+} from "../shapes.ts";
+import type { FocusMismatch, InFocus, OwnerOf, RefTarget, ReverseOk } from "./focus.ts";
 import {
   Q,
   type AnyVar,
@@ -49,7 +59,7 @@ const makePipeline = <Row, N extends AnyEntity>(
       next: (v: unknown) =>
         state === 0
           ? ((state = 1), { done: false as const, value: cmd as never })
-          : { done: true as const, value: v as Var<EidCell> },
+          : { done: true as const, value: v as Var<Eid<N>> },
     };
   },
 });
@@ -87,33 +97,48 @@ type FilterOut<X> = [X] extends [never]
       : QueryGen<void>
     : QueryGen<void>;
 
-/** A filter: keeps the pipeline's focus; as a fragment, contributes clauses. */
-export type FilterStage = <X>(x: X) => FilterOut<X>;
+/**
+ * A filter's argument: a pipeline is accepted only when `A` is a member
+ * of the focus field map (`A = void` is namespace-generic — `byId`,
+ * `updatedSince`). One generic so `pipe` infers `N` from the argument.
+ */
+type FilterParam<X, A> = [X] extends [Pipeline<any, infer N>]
+  ? [A] extends [void]
+    ? X
+    : [InFocus<A, N>] extends [true]
+      ? X
+      : FocusMismatch
+  : X;
 
 /**
- * The entity a `Ref(User)` field points at. Self-refs / untargeted refs
- * resolve to the pipeline's current focus. Optional `_target` infers
- * `T | undefined`; strip that before the `AnyEntity` test (same as
- * {@link import("../idents.ts").FieldTargetEntity}).
+ * A filter parameterized by the focus namespace. `N` is the pipeline
+ * focus the stage may be applied to; the attr-capturing form
+ * (`FilterStage<AnyEntity, typeof User.name>`) rejects a foreign
+ * field map at the call site.
  */
-type RefTarget<A, Enclosing extends AnyEntity> = A extends {
-  readonly schema: { readonly _target?: infer T };
-}
-  ? Exclude<T, undefined> extends AnyEntity
-    ? Exclude<T, undefined>
-    : Enclosing
-  : Enclosing;
+export type FilterStage<
+  N extends AnyEntity = AnyEntity,
+  A = void,
+> = <X>(x: FilterParam<X, A>) => FilterOut<X>;
 
 type FollowOut<A extends AttrLike, X> = [X] extends [never]
-  ? QueryGen<Var<EidCell>>
+  ? QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
   : [X] extends [Pipeline<infer _Row, infer N>]
     ? [N] extends [AnyEntity]
       ? Pipeline<IdRow<RefTarget<A, N>>, RefTarget<A, N>>
-      : QueryGen<Var<EidCell>>
-    : QueryGen<Var<EidCell>>;
+      : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
+    : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>;
+
+type FollowParam<X, A> = [X] extends [Pipeline<any, infer N>]
+  ? [InFocus<A, N>] extends [true]
+    ? X
+    : FocusMismatch
+  : X;
 
 /** `follow(A)` as a dual stage: pipeline in keeps a branded target row. */
-export type FollowStage<A extends AttrLike> = <X>(x: X) => FollowOut<A, X>;
+export type FollowStage<A extends AttrLike> = <X>(
+  x: FollowParam<X, A>,
+) => FollowOut<A, X>;
 
 /**
  * `{ id }` row when a traversal's target namespace is not known
@@ -122,22 +147,43 @@ export type FollowStage<A extends AttrLike> = <X>(x: X) => FollowOut<A, X>;
  */
 export type HatchIdRow = { readonly id: UnbrandedId };
 
-type TraversalOut<X> = [X] extends [never]
+type TraversalOut<A, X> = [X] extends [never]
   ? QueryGen<Var<EidCell>>
   : [X] extends [Pipeline<any, any>]
-    ? Pipeline<HatchIdRow>
+    ? [A] extends [void]
+      ? Pipeline<HatchIdRow>
+      : Pipeline<HatchIdRow, OwnerOf<A>>
     : QueryGen<Var<EidCell>>;
 
+/**
+ * A reverse-ref argument: the attr must point at the current focus
+ * (`backlink(Comment.issue)` on an Issue pipeline).
+ */
+type ReverseParam<X, A> = [X] extends [Pipeline<any, infer N>]
+  ? [A] extends [void]
+    ? X
+    : [ReverseOk<A, N>] extends [true]
+      ? X
+      : FocusMismatch
+  : X;
+
 /** A traversal: refocuses the pipeline; as a fragment, returns the new focus. */
-export type TraversalStage = <X>(x: X) => TraversalOut<X>;
+export type TraversalStage<A = void> = <X>(
+  x: ReverseParam<X, A>,
+) => TraversalOut<A, X>;
 
-const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
+const filter = <A = void>(frag: (focus: AnyVar) => QueryGen<void>): FilterStage<AnyEntity, A> =>
   ((x: unknown) =>
-    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage;
+    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage<
+    AnyEntity,
+    A
+  >;
 
-const traversal = (frag: (focus: AnyVar) => QueryGen<Var<EidCell>>): TraversalStage =>
+const traversal = <A = void>(
+  frag: (focus: AnyVar) => QueryGen<Var<EidCell>>,
+): TraversalStage<A> =>
   ((x: unknown) =>
-    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as TraversalStage;
+    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as TraversalStage<A>;
 
 /**
  * Lift a plain fragment into a pipeable stage — the same adapter every
@@ -157,8 +203,11 @@ export const stage: {
 type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
-export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
+export const is = <A extends AttrLike>(
+  attr: A,
+  value: ValueIn<A>,
+): FilterStage<AnyEntity, A> =>
+  filter<A>(function* (e) {
     yield* Q.fact(e, attr, value);
   });
 
@@ -170,17 +219,17 @@ export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage 
  * attribute).
  */
 export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage =>
-  is({ ident: ":db/id" }, id);
+  is({ ident: ":db/id" }, id) as FilterStage;
 
 /** `has(A)`: the focus carries some `A` fact. */
-export const has = (attr: AttrLike): FilterStage =>
-  filter(function* (e) {
+export const has = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> =>
+  filter<A>(function* (e) {
     yield* Q.fact(e, attr);
   });
 
 /** `missing(A)`: no `A` fact at all. */
-export const missing = (attr: AttrLike): FilterStage =>
-  filter(function* (e) {
+export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> =>
+  filter<A>(function* (e) {
     yield* Q.not(has(attr)(e));
   });
 
@@ -195,10 +244,10 @@ export const missing = (attr: AttrLike): FilterStage =>
 export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
-): FilterStage =>
-  filter(function* (e) {
+): FilterStage<AnyEntity, A> =>
+  filter<A>(function* (e) {
     const f = yield* Q.fact(e, attr);
-    yield* pred(f.v) as QueryGen<unknown>;
+    yield* pred(f.v as Var<AttrValue<A>>) as QueryGen<unknown>;
   });
 
 // ── traversals ──────────────────────────────────────────────────────────────
@@ -210,25 +259,42 @@ export const follow = <A extends AttrLike>(attr: A): FollowStage<A> =>
   }) as unknown as FollowStage<A>;
 
 /** `backlink(A)`: same clause, opposite mode — refocus on the referrer. */
-export const backlink = (attr: AttrLike): TraversalStage =>
-  traversal(function* (other) {
-    return (yield* Q.fact(Q._, attr, other)).e;
+export const backlink = <A extends AttrLike>(attr: A): TraversalStage<A> =>
+  traversal<A>(function* (other) {
+    return (yield* Q.fact(Q._, attr, other)).e as Var<EidCell>;
   });
 
 // ── quantifiers over a reverse ref ──────────────────────────────────────────
 
 type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
+/** A filter over a reverse ref: the attr must point at the current focus. */
+export type ReverseFilter<A extends AttrLike> = <X>(
+  x: ReverseParam<X, A>,
+) => FilterOut<X>;
+
+const reverseFilter = <A extends AttrLike>(
+  frag: (focus: AnyVar) => QueryGen<void>,
+): ReverseFilter<A> =>
+  ((x: unknown) =>
+    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as ReverseFilter<A>;
+
 /** `some(R, ps…)`: ∃ other. `[other R e]` ∧ ps(other). */
-export const some = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const some = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): ReverseFilter<A> =>
+  reverseFilter<A>(function* (e) {
     const other = yield* backlink(ref)(e);
     for (const p of ps) yield* p(other) as QueryGen<unknown>;
   });
 
 /** `none(R, ps…)`: ¬∃ other. `[other R e]` ∧ ps(other). */
-export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const none = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): ReverseFilter<A> =>
+  reverseFilter<A>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       for (const p of ps) yield* p(other) as QueryGen<unknown>;
@@ -237,8 +303,11 @@ export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
 
 /** `every(R, ps…)`: ¬∃ other. `[other R e]` ∧ ¬ps(other) — vacuously true
  * of a focus nothing points at, like the nav surface's `every`. */
-export const every = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const every = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): ReverseFilter<A> =>
+  reverseFilter<A>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       yield* Q.not(function* () {
@@ -276,16 +345,36 @@ const assertPipeline = <N extends AnyEntity = AnyEntity>(
   return x as Pipeline<any, N>;
 };
 
+type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
+  ? unknown
+  : FocusMismatch;
+
 /** Contribute the projection — what a generator body says with its return. */
 export const select =
   <const S extends Shape>(shape: S & ValidShape<S>) =>
-  <N extends AnyEntity>(q: Pipeline<any, N>): Pipeline<SelectResult<S>, N> =>
+  <N extends AnyEntity>(
+    q: Pipeline<any, N> & SelectArg<S, N>,
+  ): Pipeline<SelectResult<S>, N> =>
     addStage(assertPipeline(q, "select"), { kind: "select", shape: shape as Shape });
+
+type OrderKeyArg<K, Row, N extends AnyEntity> = [K] extends [string]
+  ? [K] extends [keyof Row]
+    ? unknown
+    : FocusMismatch
+  : [InFocus<K, N>] extends [true]
+    ? unknown
+    : FocusMismatch;
 
 /** Contribute a sort key: a selected column's name, or an attr path. */
 export const orderBy =
-  (key: string | PathCarrier, dir: OrderDir = "asc", opts?: { readonly empty?: OrderEmpty }) =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
+  <const K extends string | PathCarrier>(
+    key: K,
+    dir: OrderDir = "asc",
+    opts?: { readonly empty?: OrderEmpty },
+  ) =>
+  <Row, N extends AnyEntity>(
+    q: Pipeline<Row, N> & OrderKeyArg<K, Row, N>,
+  ): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "orderBy"), {
       kind: "orderBy",
       key,

@@ -17,7 +17,7 @@
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { TX_BASE } from "../../internal/core/schema.ts";
-import { makeEid } from "../Eid.ts";
+import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
 import type { AnyEntity } from "../Entity.ts";
 import {
@@ -134,7 +134,7 @@ export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
   readonly ns: N;
   readonly stages: readonly PipeStage[];
   readonly _row?: Row;
-  [Symbol.iterator](): Iterator<never, Var<EidCell>, any>;
+  [Symbol.iterator](): Iterator<never, Var<Eid<N>>, any>;
 }
 
 export const isPipeline = (x: unknown): x is Pipeline =>

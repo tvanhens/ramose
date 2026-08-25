@@ -47,6 +47,8 @@ type BacklinkNav<
     readonly ident: `:${Ns}/${Name}`;
     readonly cardinality: Card;
     readonly valueType: "ref";
+    /** Distinguishes a backlink from a forward field of the same ident. */
+    readonly __reverse: true;
   } & PathCarrier
 >;
 
