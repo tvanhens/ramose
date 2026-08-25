@@ -25,6 +25,13 @@ export const asPromise = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
     throw failureOf(exit.cause);
   });
 
+/** Sync twin of {@link asPromise} — throws the tagged failure, not FiberFailure. */
+export const runSync = <A, E>(effect: Effect.Effect<A, E>): A => {
+  const exit = Effect.runSyncExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw failureOf(exit.cause);
+};
+
 /**
  * Hatch-only: run an Effect from `db.effect.*` so the Promise rejects with
  * the tagged error itself (not a FiberFailure). App-path methods already

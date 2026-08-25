@@ -85,5 +85,6 @@ export {
   type FollowStage,
   type HatchIdRow,
   type IdRow,
+  type ReverseFilter,
   type TraversalStage,
 } from "./lib.ts";

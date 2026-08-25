@@ -17,6 +17,20 @@ the rows array (a `Q.value` scalar stays a scalar). Group keys bind
 `:db/id` as a number, keep optional / defaulted fields, and nested
 `orderBy(r => r.owner.name)` walks from the select focus.
 
+### `Ramose.Enum` members and fail-closed `valueType` (part of #185, tracker #205)
+
+`Enum([...])` still brands a string-literal union as `:db.type/string`.
+The field now also carries `.members`, so Reef's board iterates
+`Issue.status.members` / `Issue.priority.members` instead of a
+hand-rolled const. Reef stores priority as that closed set
+(`"none" | "low" | "medium" | "high" | "urgent"`), not a magic int.
+
+Static `InferDbValueType` keeps mirroring the runtime AST rule:
+`String` / `Number` / `Boolean` infer; literals, unions, structs and
+declarations type `valueType` as `undefined`, so `Field(schema)`
+rejects at the schema file. Wrap with `stored(schema, vt)` — do not
+pass `valueType` on the options bag.
+
 ### Required-at-transact and `op.update` (tracker #205)
 
 The default entity row's presence claim is now true at write time.

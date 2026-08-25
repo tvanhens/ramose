@@ -29,9 +29,9 @@ export type RamoseVt<VT extends DbValueType> = {
  * `:db.type/*` inferred from a value Schema, as a public name. Helper brands
  * win; then the AST tag of the common primitives (`String` / `Number` /
  * `Boolean`). Anything else — literals, unions, structs, refinements — is
- * `undefined` (wrap with {@link stored}). Mirrors
- * {@link tryInferDbValueType}: unknown shapes do not silently become the
- * wrong value type.
+ * `undefined` (wrap with {@link stored}, or use {@link enumSchema} /
+ * `Enum` for a string-literal set). Mirrors {@link tryInferDbValueType}:
+ * unknown shapes do not silently become the wrong value type.
  */
 export type InferDbValueType<S> = S extends RamoseVt<infer V>
   ? V
@@ -261,6 +261,8 @@ export const Bytes = asVt(
 );
 export type Bytes = Schema.Schema.Type<typeof Bytes>;
 
+const enumMembers = new WeakMap<object, readonly [string, ...string[]]>();
+
 /**
  * String-literal union branded as `:db.type/string`. Used by
  * {@link import("./Field.ts").Enum}.
@@ -273,8 +275,15 @@ export const enumSchema = <
   if (values.length === 0) {
     throw new Error("ramose/schema: Enum([...]) needs at least one value");
   }
-  return asVt(Schema.Literals(values), "string");
+  const schema = asVt(Schema.Literals(values), "string");
+  enumMembers.set(schema, values);
+  return schema;
 };
+
+/** Closed-set members attached by {@link enumSchema}, if any. */
+export const enumMembersOf = (
+  schema: object,
+): readonly [string, ...string[]] | undefined => enumMembers.get(schema);
 
 export const tryInferDbValueType = (
   schema: SchemaNS.Top,

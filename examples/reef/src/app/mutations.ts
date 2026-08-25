@@ -10,9 +10,17 @@ import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
-import { Comment, Issue, Label, Reef, type Status } from "../domain/schema.ts";
+import {
+  Comment,
+  Issue,
+  Label,
+  Reef,
+  type Priority,
+  type Status,
+} from "../domain/schema.ts";
 
 const Op = Ramose.Operation.for(Reef);
+const { Query } = Ramose;
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -21,8 +29,6 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
   { name: "design", color: "#b17aff" },
   { name: "infra", color: "#3fb970" },
 ];
-
-const StatusSchema = Schema.Literals(["backlog", "todo", "doing", "done"]);
 
 const authFetch = (
   env: unknown,
@@ -123,10 +129,21 @@ export const deleteIssueOp = Op(
     on: Issue,
     input: Schema.Struct({}),
     output: Schema.Struct({}),
-    doc: "Delete an issue",
+    doc: "Delete an issue and its comments",
   },
-  (op) => {
+  async (op) => {
+    // docs:delete-issue-op
+    const issueId = op.self.eid;
+    if (typeof issueId === "number") {
+      const comments = await op.query(
+        Query.from(Comment)
+          .where({ issue: issueId })
+          .select({ id: Comment.id }),
+      );
+      for (const row of comments) op.delete(row.id);
+    }
     op.delete(op.self);
+    // enddocs:delete-issue-op
     return {};
   },
 );
@@ -137,8 +154,8 @@ export const createIssueOp = Op(
     input: Schema.Struct({
       title: Schema.String,
       description: Schema.optional(Schema.String),
-      status: StatusSchema,
-      priority: Schema.Number,
+      status: Issue.status.schema,
+      priority: Issue.priority.schema,
       rank: Schema.Number,
       creatorId: Schema.Number,
       assigneeId: Schema.optional(Schema.Number),
@@ -312,7 +329,7 @@ export interface NewIssue {
   readonly title: string;
   readonly description?: string;
   readonly status: Status;
-  readonly priority: number;
+  readonly priority: Priority;
   readonly assigneeId?: number | undefined;
   readonly labelIds?: readonly number[];
 }
@@ -361,7 +378,7 @@ export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   db.run(setDescriptionOp, issueId, { text });
 // enddocs:set-description
 
-export const setPriority = (db: ReefDb, issueId: number, priority: number) =>
+export const setPriority = (db: ReefDb, issueId: number, priority: Priority) =>
   db.run(setPriorityOp, issueId, { priority });
 
 export const setAssignee = (
@@ -404,7 +421,7 @@ export const deleteComment = (db: ReefDb, commentId: number) =>
 const SAMPLE_ISSUES: readonly {
   title: string;
   status: Status;
-  priority: number;
+  priority: Priority;
   labels: readonly string[];
   description?: string;
   assign?: boolean;
@@ -412,7 +429,7 @@ const SAMPLE_ISSUES: readonly {
   {
     title: "Live board flickers when two tabs move the same card",
     status: "doing",
-    priority: 4,
+    priority: "urgent",
     labels: ["bug"],
     assign: true,
     description:
@@ -421,52 +438,52 @@ const SAMPLE_ISSUES: readonly {
   {
     title: "Add keyboard shortcuts for moving issues between columns",
     status: "todo",
-    priority: 2,
+    priority: "medium",
     labels: ["feature"],
   },
   {
     title: "Design pass on the issue detail panel",
     status: "doing",
-    priority: 3,
+    priority: "high",
     labels: ["design"],
     assign: true,
   },
   {
     title: "Rotate the JWKS signing key on a schedule",
     status: "backlog",
-    priority: 3,
+    priority: "high",
     labels: ["infra"],
   },
   {
     title: "Empty-state illustration for new workspaces",
     status: "backlog",
-    priority: 1,
+    priority: "low",
     labels: ["design", "feature"],
   },
   {
     title: "Time-travel slider should snap to transaction boundaries",
     status: "todo",
-    priority: 2,
+    priority: "medium",
     labels: ["feature", "bug"],
     assign: true,
   },
   {
     title: "Show who is online in the workspace header",
     status: "backlog",
-    priority: 0,
+    priority: "none",
     labels: ["feature"],
   },
   {
     title: "Ship the peer to three regions",
     status: "done",
-    priority: 3,
+    priority: "high",
     labels: ["infra"],
     assign: true,
   },
   {
     title: "Per-datom policy for issue.privateNote",
     status: "done",
-    priority: 2,
+    priority: "medium",
     labels: ["infra", "feature"],
   },
 ];

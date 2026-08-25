@@ -39,15 +39,6 @@ export const DEV_API_PORT = 1338;
 export const DEV_UI_ORIGIN = "http://localhost:5173";
 
 /**
- * The policy classes, in the order the policy declares them. The role →
- * class mapping (owner|admin → admin, member → member, else viewer) is
- * `classOfRole` from `ramose/better-auth` — the mint plugin's default —
- * so Reef no longer spells it itself.
- */
-export const CLASSES = ["admin", "member", "viewer"] as const;
-export type RamoseClass = (typeof CLASSES)[number];
-
-/**
  * Workspace slug = Ramose database name. `SLUG_RE` is Reef's friendlier
  * subset (lowercase, hyphens, at least two characters); `isDatabaseName` —
  * the peer's own rule, exported by `ramose/db` — is the outer

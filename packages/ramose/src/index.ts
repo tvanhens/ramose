@@ -43,7 +43,7 @@ export { policy } from "./db/Policy.ts";
 export * as Policy from "./db/Policy.ts";
 
 // ── the verifier/minter contract ─────────────────────────────────────────
-export { type AuthConfig, claims, type ClaimsInput } from "./Auth.ts";
+export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";
 
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";

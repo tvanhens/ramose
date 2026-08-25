@@ -8,6 +8,7 @@
 
 import * as Schema from "effect/Schema";
 import { parseQuery } from "../internal/core/query/parse.ts";
+import type { Clause, RuleDef, Term } from "../internal/core/query/ast.ts";
 import { POLICY_VERSION, parsePolicy } from "../internal/core/policy/ast.ts";
 import type {
   AttrRules,
@@ -25,7 +26,17 @@ import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
-import { Q, lowerQueryObject, q, rule, type Fragment, type QueryGen, type Var } from "./query/index.ts";
+import {
+  Q,
+  lowerQueryObject,
+  q,
+  rule,
+  type AttrLike,
+  type FilterStage,
+  type QueryGen,
+  type ReverseFilter,
+  type Var,
+} from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
 export { PolicyError };
 
@@ -63,68 +74,107 @@ export type Me<N extends AnyEntity = AnyEntity> = Var<Eid<N>>;
 
 export type PrincipalMe<C extends AnySchema, I extends string> = Me<NsOfPrincipal<C, I>>;
 
-/** `(me) => fragment` — the arm closes over the typed principal token. */
-export type FragFn<M> = (me: M) => Fragment<Var<unknown>, unknown>;
+/**
+ * Stamped field idents of an entity — the set a policy arm may mention.
+ * Trait fields keep the trait's ident (`Issue.tags` → `:taggable/tags`)
+ * while still belonging to the composing entity's field set.
+ */
+export type EntityFieldIdent<N extends AnyEntity> = {
+  [K in keyof N["fields"]]: N["fields"][K] extends { readonly ident: infer I extends string }
+    ? I
+    : never;
+}[keyof N["fields"]];
+
+/** A stamped field of `N` — the `A` a forward `FilterStage` may capture. */
+type EntityField<N extends AnyEntity> = N["fields"][keyof N["fields"]];
+
+/**
+ * `(me) => fragment` — the arm closes over the typed principal token.
+ * A `Query.is` / `Query.has` filter must name a field of `N` (`InFocus`).
+ * `Query.some` / `none` / `every` are `ReverseFilter` (the ref must point
+ * at the focus when applied to a pipeline). `byId`, `updatedSince`, and
+ * `assertedBy` are unbranded `FilterStage` (valid on every entity). A
+ * handwritten generator is branded with `N` as its focus; `{ _ident?: never }`
+ * keeps a wrong-entity `Query.is` from sneaking through the generator branch.
+ */
+export type FragFn<M, N extends AnyEntity = AnyEntity> = (me: M) =>
+  | FilterStage<N, EntityField<N>>
+  | FilterStage
+  | ReverseFilter<AttrLike>
+  | ((focus: Var<Eid<N>>) => QueryGen<unknown> & { readonly _ident?: never });
 
 /**
  * JWT claims gate. `class` is checked before the rule runs; it never
  * grows an expression tree. `rule` defaults to `true` (public).
  */
-export interface ClassGate<A = true> {
+export interface ClassGate<A = true, CL extends string = string> {
   readonly _tag: "ClassGate";
-  readonly classes: readonly string[];
+  readonly classes: readonly CL[];
   readonly arm: A;
 }
 
-export interface ClassFn {
+export interface ClassFn<CL extends string = string> {
   readonly _tag: "ClassGate";
-  readonly classes: readonly string[];
+  readonly classes: readonly CL[];
   readonly arm: true;
-  <A>(arm: A): ClassGate<A>;
+  <A>(arm: A): ClassGate<A, CL>;
 }
 
 /**
  * JWT class gate as a config record — `rule` is contextually typed, so
  * inline `(me) => …` needs no annotation. `rule` defaults to `true`.
  */
-export type ClassConfig<M> = {
-  readonly class: string | readonly string[];
-  readonly rule?: true | FragFn<M>;
+export type ClassConfig<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
+  readonly class: CL | readonly CL[];
+  readonly rule?: true | FragFn<M, N>;
 };
 
 /** One allow arm: a fragment, `true` (empty / public), or a class gate. */
-export type ArmValue<M> = true | FragFn<M> | ClassGate<true | FragFn<M>> | ClassConfig<M>;
+export type ArmValue<M, N extends AnyEntity = AnyEntity, CL extends string = string> =
+  | true
+  | FragFn<M, N>
+  | ClassGate<true | FragFn<M, N>, CL>
+  | ClassConfig<M, N, CL>;
 
 /** Arms per op; an array is OR. */
-export type RuleSpec<M> = {
-  readonly [K in Op]?: ArmValue<M> | readonly ArmValue<M>[];
+export type RuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
+  readonly [K in Op]?: ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[];
 };
 
-export interface AttrRule<M = unknown> {
+export interface AttrRule<M = unknown, N extends AnyEntity = AnyEntity, CL extends string = string> {
   readonly _tag: "AttrRule";
   readonly attr: string;
-  readonly rules: RuleSpec<M>;
+  readonly rules: RuleSpec<M, N, CL>;
 }
 
-export type NsRuleSpec<M> = RuleSpec<M> & {
+export type NsRuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = RuleSpec<
+  M,
+  N,
+  CL
+> & {
   readonly preset?: readonly Preset[];
-  readonly attrs?: readonly AttrRule<M>[];
+  readonly attrs?: readonly AttrRule<M, N, CL>[];
 };
 
 export interface PolicyHead<
   C extends AnySchema = AnySchema,
+  CL extends readonly string[] = readonly string[],
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 > {
   readonly schema: C;
   /** attribute whose value is the JWT `sub` — derives `me`'s type */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
-  readonly classes: readonly string[];
+  readonly classes: CL;
   /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
 }
 
-export type PolicyArms<C extends AnySchema, M> = {
-  readonly [K in keyof C["entities"]]?: NsRuleSpec<M>;
+export type PolicyArms<
+  C extends AnySchema,
+  M,
+  CL extends readonly string[] = readonly string[],
+> = {
+  readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
 };
 
 interface CompiledArm {
@@ -140,11 +190,14 @@ interface NsRules {
 }
 
 /** A policy bound to its catalog. `compile` lowers it to the wire JSON. */
-export interface Policy<C extends AnySchema = AnySchema> {
+export interface Policy<
+  C extends AnySchema = AnySchema,
+  CL extends readonly string[] = readonly string[],
+> {
   readonly _tag: "Policy";
   readonly schema: C;
   readonly principal: string;
-  readonly classes: readonly string[];
+  readonly classes: CL;
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
   /** catalog namespace key → normalised rules */
   readonly ns: Readonly<Record<string, NsRules>>;
@@ -154,9 +207,18 @@ export interface Policy<C extends AnySchema = AnySchema> {
   readonly maskedReads: ReadonlySet<string>;
 }
 
+/** The declared classes of a policy value: `Ramose.Policy.Class<typeof policy>`. */
+export type Class<P extends { readonly classes: readonly string[] }> = P["classes"][number];
+
 const fail = (message: string, ident?: string, cause?: unknown): never => {
   throw new PolicyError({ message: `ramose/policy: ${message}`, ident, cause });
 };
+
+/** Keep `CL` inferred from the head, not widened by arm literals. */
+type NoInfer<T> = [T][T extends unknown ? 0 : never];
+
+/** Runtime fragment: promote does not re-check the type-level brand. */
+type AnyFragFn = (me: Var<unknown>) => (focus: Var<unknown>) => QueryGen<unknown>;
 
 // ── claims ─────────────────────────────────────────────────────────────────
 
@@ -224,7 +286,7 @@ const isClassConfig = (v: unknown): v is ClassConfig<unknown> =>
  * the gate with a fragment. Checked before the rule runs; never an
  * expression.
  */
-export const classFn = (...classes: string[]): ClassFn => {
+export const classFn = <const Cls extends string>(...classes: Cls[]): ClassFn<Cls> => {
   if (classes.length === 0) fail("P.class needs at least one class name");
   for (const c of classes) {
     if (typeof c !== "string" || c.length === 0) fail("P.class names must be non-empty strings");
@@ -233,7 +295,7 @@ export const classFn = (...classes: string[]): ClassFn => {
     _tag: "ClassGate" as const,
     classes,
     arm,
-  })) as unknown as ClassFn;
+  })) as unknown as ClassFn<Cls>;
   return Object.assign(apply, { _tag: "ClassGate" as const, classes, arm: true as const });
 };
 export { classFn as class };
@@ -245,7 +307,15 @@ export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => 
 };
 
 /** Field rule; narrows (ANDs with) its entity rule. */
-export const field = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<M> => ({
+export const field = <
+  A extends AttrRef,
+  M,
+  N extends AnyEntity = AnyEntity,
+  CL extends string = string,
+>(
+  a: A,
+  rules: RuleSpec<M, N, CL>,
+): AttrRule<M, N, CL> => ({
   _tag: "AttrRule",
   attr: identOf(a),
   rules,
@@ -256,7 +326,18 @@ export const field = <A extends AttrRef, M>(a: A, rules: RuleSpec<M>): AttrRule<
 const catalogIdents = (schema: AnySchema): ReadonlySet<string> => {
   const out = new Set<string>();
   for (const ns of Object.values(schema.entities)) {
-    for (const key of Object.keys(ns.fields)) out.add(`:${ns.ns}/${key}`);
+    for (const ident of entityFieldIdents(ns)) out.add(ident);
+  }
+  return out;
+};
+
+/** Stamped idents on `entity.fields` — not `:${ns}/${key}`, so trait fields count. */
+const entityFieldIdents = (entity: {
+  readonly fields: Readonly<Record<string, { readonly ident?: unknown }>>;
+}): Set<string> => {
+  const out = new Set<string>();
+  for (const field of Object.values(entity.fields)) {
+    if (typeof field?.ident === "string") out.add(field.ident);
   }
   return out;
 };
@@ -273,7 +354,7 @@ const walkIdents = (x: unknown, visit: (ident: string) => void): void => {
   }
 };
 
-const isFragFn = (v: unknown): v is FragFn<Var<unknown>> => typeof v === "function" && !isClassGate(v);
+const isFragFn = (v: unknown): v is AnyFragFn => typeof v === "function" && !isClassGate(v);
 
 const asClassList = (c: string | readonly string[], where: string): readonly string[] => {
   const list = typeof c === "string" ? [c] : [...c];
@@ -283,21 +364,21 @@ const asClassList = (c: string | readonly string[], where: string): readonly str
 
 const unwrapGate = (
   v: ArmValue<unknown>,
-): { readonly classes?: readonly string[]; readonly body: true | FragFn<Var<unknown>> } => {
+): { readonly classes?: readonly string[]; readonly body: true | AnyFragFn } => {
   if (v === true) return { body: true };
   if (isClassGate(v)) {
     const inner = v.arm === undefined ? true : v.arm;
     if (inner !== true && !isFragFn(inner)) {
       fail("P.class(...) wraps a fragment or true");
     }
-    return { classes: v.classes, body: inner as true | FragFn<Var<unknown>> };
+    return { classes: v.classes, body: inner as true | AnyFragFn };
   }
   if (isClassConfig(v)) {
     const inner = v.rule === undefined ? true : v.rule;
     if (inner !== true && !isFragFn(inner)) {
       fail("a class gate's rule is a fragment or true");
     }
-    return { classes: asClassList(v.class, "class"), body: inner as true | FragFn<Var<unknown>> };
+    return { classes: asClassList(v.class, "class"), body: inner as true | AnyFragFn };
   }
   if (isFragFn(v)) return { body: v };
   return fail("an arm is a fragment, true, or a class gate");
@@ -305,7 +386,7 @@ const unwrapGate = (
 
 const promote = (
   name: string,
-  frag: FragFn<Var<unknown>>,
+  frag: AnyFragFn,
   where: string,
 ): ReturnType<typeof rule> => {
   const body = function* (me: Var<unknown>, e: Var<unknown>): QueryGen<void> {
@@ -344,16 +425,17 @@ const lowerNamedRules = (named: readonly ReturnType<typeof rule>[]): unknown[] =
   }
 };
 
-const validateRuleBodies = (
+const parseRuleDefs = (
   defs: readonly unknown[],
   idents: ReadonlySet<string>,
   where: string,
-): void => {
-  if (defs.length === 0) return;
+): readonly RuleDef[] => {
+  if (defs.length === 0) return [];
+  let parsed: ReturnType<typeof parseQuery>;
   try {
-    parseQuery({ find: ["?e"], where: [], rules: defs });
+    parsed = parseQuery({ find: ["?e"], where: [], rules: defs });
   } catch (cause) {
-    fail(
+    return fail(
       `${where}: rule body failed query validation: ${cause instanceof Error ? cause.message : String(cause)}`,
       undefined,
       cause,
@@ -363,6 +445,106 @@ const validateRuleBodies = (
     if (ident.startsWith(":db/")) return;
     if (!idents.has(ident)) fail(`${where}: ${ident} is not in the schema`, ident);
   });
+  return parsed.rules ?? [];
+};
+
+const termVar = (t: Term): string | undefined => (t.kind === "var" ? t.name : undefined);
+
+const attrIdent = (t: Term): string | undefined =>
+  t.kind === "const" && typeof t.value === "string" ? t.value : undefined;
+
+/**
+ * True when `focus` is bound as the arm entity: the e-slot of one of this
+ * entity's fields (or a `:db/` / wildcard pattern), the value-slot of a
+ * generating fact (a backlink / reverse ref), `ground`, or a named-rule
+ * argument that is bound that way in the callee. An e-slot of a *foreign*
+ * ident does not count — `[?comment :doc/owner ?me]` matches nothing.
+ */
+const bindsFocusAsEntity = (
+  focus: string,
+  clauses: readonly Clause[],
+  fieldIdents: ReadonlySet<string>,
+  byName: ReadonlyMap<string, readonly RuleDef[]>,
+  visiting: Set<string>,
+): boolean => {
+  for (const c of clauses) {
+    switch (c.kind) {
+      case "pattern": {
+        if (termVar(c.v) === focus) return true;
+        if (termVar(c.e) === focus) {
+          const ident = attrIdent(c.a);
+          if (ident === undefined || ident.startsWith(":db/") || fieldIdents.has(ident)) {
+            return true;
+          }
+        }
+        break;
+      }
+      case "rule-call": {
+        const defs = byName.get(c.name);
+        if (defs === undefined) break;
+        for (let i = 0; i < c.args.length; i++) {
+          if (termVar(c.args[i]!) !== focus) continue;
+          for (const def of defs) {
+            const headVar = def.args[i];
+            if (headVar === undefined) continue;
+            const key = `${def.name}\0${headVar}`;
+            if (visiting.has(key)) continue;
+            visiting.add(key);
+            const hit = bindsFocusAsEntity(headVar, def.clauses, fieldIdents, byName, visiting);
+            visiting.delete(key);
+            if (hit) return true;
+          }
+        }
+        break;
+      }
+      case "or":
+        if (c.branches.some((b) => bindsFocusAsEntity(focus, b, fieldIdents, byName, visiting))) {
+          return true;
+        }
+        break;
+      case "fn":
+        if (c.fn === "ground" && c.binding.kind === "scalar" && c.binding.var === focus) {
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+};
+
+/**
+ * A rule that never binds the arm's focus as that entity is a silent deny
+ * (deny-by-default) or an unbound `?e` at evaluation. The check is "the
+ * focus appears in a generating position that names this entity" — an
+ * own-field e-slot, a reverse-ref value-slot, or a named `Query.rule`
+ * that does one of those — not "this def's clauses mention an own ident".
+ * A backlink arm and an arm that only invokes a named rule both bind the
+ * focus without mentioning a field of the arm entity in that one def.
+ */
+const checkArmFocus = (
+  parsed: readonly RuleDef[],
+  ruleArmMeta: ReadonlyMap<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>,
+): void => {
+  const byName = new Map<string, RuleDef[]>();
+  for (const d of parsed) {
+    const list = byName.get(d.name);
+    if (list) list.push(d);
+    else byName.set(d.name, [d]);
+  }
+  for (const [name, meta] of ruleArmMeta) {
+    const defs = byName.get(name);
+    if (defs === undefined) continue;
+    for (const def of defs) {
+      // promote() is `rule(name, (me, e) => …)` — focus is the second head var.
+      const focus = def.args[1];
+      if (focus === undefined) continue;
+      if (!bindsFocusAsEntity(focus, def.clauses, meta.fieldIdents, byName, new Set())) {
+        fail(`${meta.where}: rule never binds the focus as this entity`);
+      }
+    }
+  }
 };
 
 // ── authoring ──────────────────────────────────────────────────────────────
@@ -376,16 +558,17 @@ const validateRuleBodies = (
 export function policy<
   const C extends AnySchema,
   const I extends CatalogIdent<C>,
+  const CL extends readonly string[],
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
 >(
   head: {
     readonly schema: C;
     readonly principal: AttrRef & { readonly ident: I };
-    readonly classes: readonly string[];
+    readonly classes: CL;
     readonly claims?: Schema.Struct<CF>;
   },
-  arms: PolicyArms<C, PrincipalMe<C, I>>,
-): Policy<C> {
+  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<CL>>,
+): Policy<C, CL> {
   if (head == null || typeof head !== "object" || head.schema == null) {
     fail("policy(head, arms) takes a head { schema, principal, classes }");
   }
@@ -401,10 +584,10 @@ export function policy<
   const principalIdent = identOf(head.principal as AttrRef);
   if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the schema`, principalIdent);
 
-  const classes = [...head.classes];
+  const classes = head.classes;
   if (classes.length === 0) fail("classes must not be empty");
   if (new Set(classes).size !== classes.length) fail("duplicate class");
-  const classSet = new Set(classes);
+  const classSet = new Set<string>(classes);
 
   const checkClasses = (gate: readonly string[] | undefined, where: string): void => {
     if (gate === undefined) return;
@@ -414,20 +597,31 @@ export function policy<
   };
 
   const pending: ReturnType<typeof rule>[] = [];
-  const seenFrags = new Map<FragFn<Var<unknown>>, string>();
+  const seenFrags = new Map<AnyFragFn, Map<string, string>>();
+  const ruleArmMeta = new Map<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>();
   let nextRule = 0;
 
-  const compileArm = (raw: ArmValue<unknown>, where: string, prefix: string, op: string): CompiledArm => {
+  const compileArm = (
+    raw: ArmValue<unknown>,
+    where: string,
+    prefix: string,
+    op: string,
+    entityKey: string,
+    fieldIdents: ReadonlySet<string>,
+  ): CompiledArm => {
     const { classes: gate, body } = unwrapGate(raw);
     checkClasses(gate, where);
     if (body === true) {
       return gate === undefined ? { rule: true } : { classes: gate, rule: true };
     }
-    const existing = seenFrags.get(body);
+    const byEntity = seenFrags.get(body);
+    const existing = byEntity?.get(entityKey);
     const name = existing ?? `policy/${prefix}/${op}/${nextRule++}`;
     if (existing === undefined) {
       pending.push(promote(name, body, where));
-      seenFrags.set(body, name);
+      if (byEntity === undefined) seenFrags.set(body, new Map([[entityKey, name]]));
+      else byEntity.set(entityKey, name);
+      ruleArmMeta.set(name, { fieldIdents, where });
     }
     return gate === undefined ? { rule: name } : { classes: gate, rule: name };
   };
@@ -436,6 +630,8 @@ export function policy<
     spec: RuleSpec<unknown>,
     where: string,
     prefix: string,
+    entityKey: string,
+    fieldIdents: ReadonlySet<string>,
   ): Record<string, readonly CompiledArm[]> => {
     const out: Record<string, CompiledArm[]> = {};
     for (const op of PUBLIC_POLICY_OPS) {
@@ -445,7 +641,7 @@ export function policy<
       if (list.length === 0) continue;
       const wire = toWireOp(op);
       out[wire] = list.map((arm, i) =>
-        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire),
+        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, entityKey, fieldIdents),
       );
     }
     return out;
@@ -456,21 +652,34 @@ export function policy<
 
   for (const [nsKey, nsSpec] of Object.entries(arms as Record<string, NsRuleSpec<unknown> | undefined>)) {
     if (nsSpec === undefined) continue;
-    const declared = (schema.entities as Record<string, { ns: string } | undefined>)[nsKey];
+    const declared = (
+      schema.entities as Record<
+        string,
+        { ns: string; fields: Record<string, { readonly ident?: unknown }> } | undefined
+      >
+    )[nsKey];
     if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the schema`);
-    const prefix = declared!.ns;
+    const entity = declared!;
+    const prefix = entity.ns;
     const where = `ns.${nsKey}`;
+    const fieldIdents = entityFieldIdents(entity);
 
-    const rules = compileSpec(nsSpec, where, prefix);
+    const rules = compileSpec(nsSpec, where, prefix, prefix, fieldIdents);
 
     const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
     for (const a of nsSpec.attrs ?? []) {
       if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.field(...)`);
       if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the schema`, a.attr);
-      if (!a.attr.startsWith(`:${prefix}/`)) {
-        fail(`${where}.attrs: ${a.attr} is not under the ${prefix} entity`, a.attr);
+      if (!fieldIdents.has(a.attr)) {
+        fail(`${where}.attrs: ${a.attr} is not a field of the ${nsKey} entity`, a.attr);
       }
-      const r = compileSpec(a.rules, `${where}.attrs["${a.attr}"]`, `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`);
+      const r = compileSpec(
+        a.rules,
+        `${where}.attrs["${a.attr}"]`,
+        `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`,
+        prefix,
+        fieldIdents,
+      );
       attrs[a.attr] = r;
       if (r.read !== undefined) maskedReads.add(a.attr);
     }
@@ -479,8 +688,8 @@ export function policy<
     for (const p of nsSpec.preset ?? []) {
       if (p?._tag !== "Preset") fail(`${where}.preset expects P.preset(...)`);
       if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the schema`, p.attr);
-      if (!p.attr.startsWith(`:${prefix}/`)) {
-        fail(`${where}.preset: ${p.attr} is not under the ${prefix} entity`, p.attr);
+      if (!fieldIdents.has(p.attr)) {
+        fail(`${where}.preset: ${p.attr} is not a field of the ${nsKey} entity`, p.attr);
       }
       presetMap[p.attr] = p.operand;
     }
@@ -489,7 +698,8 @@ export function policy<
   }
 
   const ruleDefs = lowerNamedRules(pending);
-  validateRuleBodies(ruleDefs, idents, "rules");
+  const parsedRules = parseRuleDefs(ruleDefs, idents, "rules");
+  checkArmFocus(parsedRules, ruleArmMeta);
 
   return {
     _tag: "Policy",

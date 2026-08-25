@@ -95,11 +95,12 @@ export interface RamoseTokenOptions {
   /** Resolves the caller's class for the requested database; see {@link ClassOf}. */
   readonly classOf: ClassOf;
   /**
-   * The compiled policy (`Ramose.Policy.compile(policy)` JSON, or parsed).
+   * The policy value, its compiled JSON, or the parsed AST.
    * Optional; when given, a class the policy does not declare fails the mint
-   * instead of minting a token that grants nothing.
+   * instead of minting a token that grants nothing. Passing the policy
+   * value also narrows `Ramose.claims`' `class`.
    */
-  readonly policy?: CompiledPolicy | string;
+  readonly policy?: CompiledPolicy | string | { readonly classes: readonly string[] };
   /**
    * Where the route lives under Better Auth's `basePath`.
    * @default "/ramose/token" — which Better Auth's client proxy exposes as

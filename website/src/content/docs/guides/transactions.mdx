@@ -86,7 +86,7 @@ op.update(Issue, id, { status: "done" });
 op.update(User, { sub: "auth0|…", name: "Ada" });
 ```
 
-A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`.
+A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`. An all-`undefined` map still checks that the subject exists. `update` by unique key sees a `put` of that key in the same operation.
 
 `put` with a unique key unifies with the existing row — insert-or-update, still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 
@@ -111,6 +111,23 @@ export const deleteIssue = (db: ReefDb, issueId: number) =>
 ```
 
 Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
+
+Deleting a parent does not infer a cascade. Incoming refs on survivors **clear** when the field is optional or many-valued, and **reject** (`tx/required`) when it is a required card-one ref — unless that referrer is itself deleted in the same write. Requiredness never implies delete-propagation. Delete the children first (Reef's comments stay required on their issue):
+
+```ts title="examples/reef/src/app/mutations.ts#delete-issue-op"
+    const issueId = op.self.eid;
+    if (typeof issueId === "number") {
+      const comments = await op.query(
+        Query.from(Comment)
+          .where({ issue: issueId })
+          .select({ id: Comment.id }),
+      );
+      for (const row of comments) op.delete(row.id);
+    }
+    op.delete(op.self);
+```
+
+The one declared cascade is `{ owned: true }` on an outgoing ref — see [Define your data](/guides/catalog/#options).
 
 ## Many-valued fields
 

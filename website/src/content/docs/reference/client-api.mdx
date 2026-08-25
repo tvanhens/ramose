@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `IDENT_NAME_RE` · `isIdentName` · `RESERVED_FIELD_KEYS` · `isReservedFieldKey` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -63,7 +63,7 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-**`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`.
+**`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields` and `_tag` are reserved.
 
 **Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag and composes with `Field.many` / `Field.unique`.
 
@@ -92,7 +92,7 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `owned` | `boolean` | `false` |
 | `doc` | `string` | — |
 
-**`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key (`todo`) is what a policy's `ns: { todo: … }` refers to. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
+**`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key must be the entity name (`todo`), so `ns.todo` and `:todo/*` cannot drift. `Schema([User, Label])` keys each by name. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
 
 | shorthand | TypeScript value | stored as |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `Ramose.timestamp()` | `Date` | instant |
 | `Ramose.uuid()` | canonical uuid `string` | uuid |
 | `Ramose.bytes()` | `Uint8Array` | bytes |
-| `Ramose.Enum(["low", "med"])` | `"low" \| "med"` | string |
+| `Ramose.Enum(["low", "med"])` | `"low" \| "med"` (the field also has `.members`) | string |
 | `Ramose.Ref(User)` | `number` (the target's id); enables nested `.select({ … })` and `.reverse` in shapes, `Query.follow` / `Query.backlink` in queries | ref |
 | `Ramose.Ref(() => Other)` | the same, thunk form for cycles | ref |
 | `Ramose.Ref.self` | a reference to the same record type | ref |
@@ -115,9 +115,8 @@ Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form v
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string({ optional: true }),
-  status: Ramose.Enum(STATUSES),
-  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-  priority: Ramose.int(),
+  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
+  priority: Ramose.Enum(["none", "low", "medium", "high", "urgent"]),
   /** Fractional order inside a column; drag-and-drop writes midpoints. */
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
@@ -158,7 +157,8 @@ interface Client {
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const raw = (await token.claims()).ramose?.class;
+  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
 ```
 
 **`Ramose.token.static(value)`** and **`Ramose.token.jwt(mint, options?)`** — the two **token sources** ([glossary](/concepts/glossary/#token-source)). `jwt` calls `mint` on first use, shares one in-flight mint, and re-mints within `refreshMargin` (default 2 minutes) of the token's `exp`. `mint` may resolve to the token string or to `{ token }`. A thrown `Unauthorized` passes through; any other throw becomes `NetworkError`.
@@ -184,6 +184,8 @@ const db = ramose.db("todos", Todos);
 ```ts
 if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only");
 ```
+
+**`Ramose.IDENT_NAME_RE`** / **`Ramose.isIdentName(name)`** — entity and field names: `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. **`RESERVED_FIELD_KEYS`** / **`isReservedFieldKey`** are `id`, `ns`, `fields`, `_tag`. A bad name throws from `Entity` / `Schema`.
 
 ## Db
 
@@ -325,8 +327,8 @@ export const toggleLabel = (
 Rules:
 
 - A new entity cannot be created without its required fields. That is why the default row type is honest: creation carried them.
-- `update` never creates. A missing row is `TxRejected` with `code: "tx/missing-entity"`. `put` / `set` at a numeric id that does not exist is the same. Clearing a required field is `tx/required`.
-- `put` with a unique key unifies with the existing row — still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`.
+- `update` never creates. A missing row is `TxRejected` with `code: "tx/missing-entity"`. `put` / `set` at a numeric id that does not exist is the same. An all-`undefined` map still checks the subject. Clearing a required field is `tx/required`.
+- `put` with a unique key unifies with the existing row — still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. `update` by that key sees a same-operation `put`.
 - A single-value field: `set` replaces the old value. A many-valued field: one `set` per value; `remove(field, value)` removes one value, `remove(field)` removes them all.
 - `delete` removes every fact of the record. History keeps them.
 - A reference field takes the target's id. `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (rejected as a dangling ref).
