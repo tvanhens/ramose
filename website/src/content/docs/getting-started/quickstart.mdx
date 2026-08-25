@@ -279,7 +279,7 @@ Each write is a named **operation** run with `db.run` ([glossary](/concepts/glos
 ## The screen
 
 ```tsx title="src/App.tsx"
-import { useLive, useTransact } from "ramose/react";
+import { useLiveQuery, useTransact } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
@@ -293,12 +293,12 @@ export const App = () => (
 );
 
 const TodoList = () => {
-  const { rows, error } = useLive(db, todoQuery);
+  const { data, error } = useLiveQuery(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
+  if (data === undefined) return <p>loading…</p>;
   return (
     <ul>
-      {rows.map((row) => <TodoRowView key={row.id} row={row} />)}
+      {data.map((row) => <TodoRowView key={row.id} row={row} />)}
     </ul>
   );
 };
@@ -341,7 +341,7 @@ const NewTodo = () => {
 };
 ```
 
-`useLive(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` is the pending helper around `db.run` — not the write API. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
+`useLiveQuery(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` is the pending helper around `db.run` — not the write API. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
 
 ```tsx title="src/main.tsx"
 import { StrictMode } from "react";
@@ -426,16 +426,16 @@ Import it in `src/App.tsx` alongside `todoQuery`, then switch `TodoList` between
 ```tsx title="src/App.tsx — TodoList"
 const TodoList = () => {
   const [showAll, setShowAll] = useState(true);
-  const { rows, error } = useLive(db, showAll ? todoQuery : openTodos);
+  const { data, error } = useLiveQuery(db, showAll ? todoQuery : openTodos);
   if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
+  if (data === undefined) return <p>loading…</p>;
   return (
     <>
       <button type="button" onClick={() => setShowAll((v) => !v)}>
         {showAll ? "show open only" : "show all"}
       </button>
       <ul>
-        {rows.map((row) => <TodoRowView key={row.id} row={row} />)}
+        {data.map((row) => <TodoRowView key={row.id} row={row} />)}
       </ul>
     </>
   );

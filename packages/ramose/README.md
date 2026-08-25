@@ -27,7 +27,7 @@ Ramose is pre-release: expect the API to change between minor versions.
 | `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
 | `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to `ramose/db` plus alchemy-free `policy` / `Policy` / `claims` — not `Server` / Alchemy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
-| `ramose/react` | `RamoseProvider`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
+| `ramose/react` | `RamoseProvider`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
 | `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
 | `ramose/effect` | Opt-in Effect escape hatch — re-exports `Effect`, `Function`, `pipe`, `Redacted`, `Schema`, `Layer`, `Stream`, `Cause`, `Exit`. Not the app path. |
 
@@ -52,13 +52,13 @@ export const Todos = Ramose.Schema({ todo: Todo });
 
 ```tsx
 // App.tsx
-import { useLive } from "ramose/react";
+import { useLiveQuery } from "ramose/react";
 import { db } from "./db.ts";
 import { todoQuery } from "./todos.ts";
 
 const TodoList = () => {
-  const { rows } = useLive(db, todoQuery);
-  return <ul>{rows?.map((row) => <li key={row.id}>{row.title}</li>)}</ul>;
+  const { data } = useLiveQuery(db, todoQuery);
+  return <ul>{data?.map((row) => <li key={row.id}>{row.title}</li>)}</ul>;
 };
 ```
 
