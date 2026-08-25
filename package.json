@@ -26,6 +26,8 @@
     "test:e2e": "bun test test/e2e",
     "test:e2e:cf": "bash scripts/e2e-cloudflare.sh",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "lint:oxlint": "bunx oxlint .",
+    "lint:effect": "bunx effect-tsgo diagnostics --project tsconfig.json --format pretty",
     "bench": "bun run bench/run.ts",
     "bench:seek": "bun run bench/seek.bench.ts",
     "bench:join": "bun run bench/join.bench.ts",
@@ -42,19 +44,23 @@
     "deploy:prod": "bun run scripts/build-packages.ts && bun alchemy deploy --stage prod",
     "deploy:docs": "bun alchemy deploy website/alchemy.run.ts",
     "deploy:docs:prod": "bun alchemy deploy website/alchemy.run.ts --stage prod --adopt",
-    "destroy": "bun alchemy destroy"
+    "destroy": "bun alchemy destroy",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
+    "@effect/tsgo": "0.36.5",
     "@stylexjs/stylex": "^0.19.0",
     "@stylexjs/unplugin": "^0.19.0",
     "@types/bun": "latest",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "oxlint": "1.78.0",
+    "oxlint-tsgolint": "7.0.2001",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "typescript": "^5.6.0",
+    "typescript": "7.0.2",
     "vite": "^7.0.0"
   },
   "dependencies": {

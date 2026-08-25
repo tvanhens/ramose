@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
@@ -17,7 +18,6 @@
     "jsx": "react-jsx",
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
-    "baseUrl": ".",
     // The one published package maps to its source here, so `typecheck` reads
     // the source of truth and never needs a build first: `exports` resolves
     // `types` to `dist/*.d.ts` for consumers, so without these mappings tsc
@@ -25,16 +25,23 @@
     // named entries are the public `exports` map in packages/ramose/package.json
     // — no wildcard. Engine internals are reached with workspace-relative
     // paths, not `ramose/internal/*`.
+    // TypeScript 7 (required by @effect/tsgo) removed `baseUrl` and requires
+    // relative path mapping targets. Bun still honors these at runtime.
     "paths": {
-      "ramose": ["packages/ramose/src/index.ts"],
-      "ramose/db": ["packages/ramose/src/db/index.ts"],
-      "ramose/db/effect": ["packages/ramose/src/db/effect.ts"],
-      "ramose/worker": ["packages/ramose/src/worker/index.ts"],
-      "ramose/react": ["packages/ramose/src/react/index.ts"],
-      "ramose/better-auth": ["packages/ramose/src/better-auth/index.ts"],
-      "ramose/better-auth/client": ["packages/ramose/src/better-auth/client.ts"],
-      "ramose/effect": ["packages/ramose/src/effect.ts"]
-    }
+      "ramose": ["./packages/ramose/src/index.ts"],
+      "ramose/db": ["./packages/ramose/src/db/index.ts"],
+      "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
+      "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
+      "ramose/react": ["./packages/ramose/src/react/index.ts"],
+      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
+      "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
+      "ramose/effect": ["./packages/ramose/src/effect.ts"]
+    },
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ]
   },
   "include": [
     "alchemy.run.ts",
