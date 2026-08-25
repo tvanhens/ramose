@@ -1722,7 +1722,12 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         "ramose/query: after(...) pages a sorted query — add an orderBy for the cursor to be a position in",
       );
     }
-    const root = nameOf(built.focus!);
+    if (built.focus === undefined) {
+      throw new Error(
+        "ramose/query: after(...) pages by a root entity's id as tie-breaker — a multi-root projection has no root to page from",
+      );
+    }
+    const root = nameOf(built.focus);
     if (!order.some((o) => o.var === root)) {
       order.push({ var: root, dir: "asc", empty: "last" });
     }

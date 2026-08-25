@@ -26,13 +26,10 @@ import {
   is,
   limit as limitStage,
   offset as offsetStage,
-  orderBy as orderByStage,
   select as selectStage,
   type IdRow,
 } from "./lib.ts";
 import {
-  isAggSpec,
-  isVar,
   type AggSpec,
   type CellRecord,
   type EidCell,
@@ -315,15 +312,11 @@ const makeFluent = <N extends AnyEntity, Row>(
     extra === undefined
       ? next(selectStage(shape)(pipe as never))
       : next(selectStage(shape, extra as never)(pipe as never))) as FluentQuery<N, Row>["select"];
-  fluent.orderBy = (key, dir, opts) => {
-    if (typeof key === "function" || isVar(key) || isAggSpec(key)) {
-      return makeFluent(ns, pipe, stripCursor, take, seek, [
-        ...orders,
-        { key, dir: dir ?? "asc", empty: opts?.empty ?? "last" },
-      ], limitN, offsetN);
-    }
-    return next(orderByStage(key as string | PathCarrier, dir, opts)(pipe as never));
-  };
+  fluent.orderBy = (key, dir, opts) =>
+    makeFluent(ns, pipe, stripCursor, take, seek, [
+      ...orders,
+      { key, dir: dir ?? "asc", empty: opts?.empty ?? "last" },
+    ], limitN, offsetN);
   fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
   fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
   fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek, orders, limitN, offsetN);

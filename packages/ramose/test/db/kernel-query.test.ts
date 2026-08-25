@@ -1894,6 +1894,9 @@ describe("query: aggregates with order/limit and scalar value", () => {
     const byOwner = Query.from(Issue)
       .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
       .orderBy((r) => r.owner.name, "asc");
+    const lowered = JSON.stringify(lowerQueryObject(byOwner).query.where);
+    expect(lowered).toContain(":issue/owner");
+    expect(lowered).toContain(":user/name");
     const asc = await db.query(byOwner);
     expect(asc.map((r) => r.owner.name)).toEqual(["Ada", "Ada", "Grace"]);
 
@@ -1923,5 +1926,31 @@ describe("query: aggregates with order/limit and scalar value", () => {
     expect((unpaged as { rows?: unknown }).rows).toBeUndefined();
 
     await peer.dispose();
+  });
+
+  test("mixed orderBy spellings keep call order as sort-key precedence", () => {
+    const rankThenTitle = Query.from(Issue)
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy((r) => r.rank, "desc")
+      .orderBy("title", "asc");
+    const titleThenRank = Query.from(Issue)
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy("title", "asc")
+      .orderBy((r) => r.rank, "desc");
+    const a = lowerQueryObject(rankThenTitle).query.order as readonly { var: string; dir: string }[];
+    const b = lowerQueryObject(titleThenRank).query.order as readonly { var: string; dir: string }[];
+    expect(a.map((o) => o.dir)).toEqual(["desc", "asc"]);
+    expect(b.map((o) => o.dir)).toEqual(["asc", "desc"]);
+  });
+
+  test("after() on a multi-root projection raises a ramose/query error", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, n: Q.count(issue) };
+    })
+      .orderBy((r) => r.title, "asc")
+      .after(null);
+    expect(() => lowerQueryObject(q)).toThrow(/no root to page from/);
   });
 });
