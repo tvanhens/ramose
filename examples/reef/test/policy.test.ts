@@ -61,6 +61,7 @@ describe("reef policy", () => {
     const ops = parsed.operations!;
     expect(ops["workspace/provision"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
     expect(ops["issue/create"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
+    expect(ops["issue/add-comment"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["workspace/seed-sample"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["issue/set-private-note"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
     expect(ops["issue/set-title"]).toEqual([

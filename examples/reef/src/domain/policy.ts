@@ -86,7 +86,7 @@ export const policy = Ramose.policy(
       seedSampleIssuesOp: P.class("owner", "member"),
       moveIssueOp: { class: ["owner", "member"], rule: ownIssue },
       setStatusOp: { class: ["owner", "member"], rule: ownIssue },
-      addCommentOp: { class: ["owner", "member"], rule: ownIssue },
+      addCommentOp: P.class("owner", "member"),
       deleteIssueOp: { class: ["owner", "member"], rule: ownIssue },
       setTitleOp: { class: ["owner", "member"], rule: ownIssue },
       setDescriptionOp: { class: ["owner", "member"], rule: ownIssue },
