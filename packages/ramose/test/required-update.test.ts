@@ -498,6 +498,36 @@ describe("op.update", () => {
     });
   });
 
+  test("schema attrs stay :db/-exempt so a healing install can write :db/optional", async () => {
+    const conn = await Connection.create();
+    // Attribute entities live in :db/ and never carry every bootstrap attr
+    // (:db/doc, :db/unique, :db/index, …). If those card-one :db/ attrs
+    // were required-at-transact, schemaTx / install() could not write
+    // :db/optional onto a pre-#269 database — the healing path.
+    await expect(
+      conn.transact([
+        {
+          ":db/ident": ":heal/title",
+          ":db/valueType": ":db.type/string",
+          ":db/cardinality": ":db.cardinality/one",
+        },
+      ]),
+    ).resolves.toMatchObject({ t: expect.any(Number) });
+    await expect(
+      conn.transact([
+        {
+          ":db/ident": ":heal/title",
+          ":db/valueType": ":db.type/string",
+          ":db/cardinality": ":db.cardinality/one",
+          ":db/optional": true,
+        },
+      ]),
+    ).resolves.toMatchObject({ t: expect.any(Number) });
+    await expect(
+      conn.transact([{ ":db/id": "row", ":heal/title": "ok" }]),
+    ).resolves.toMatchObject({ t: expect.any(Number) });
+  });
+
   test("processTx: :db/retract clearing a required field is tx/required", async () => {
     const conn = await setup();
     const create = txBuilder(People);

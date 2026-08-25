@@ -43,6 +43,8 @@ A **sign-in token** — a signed token the server verifies and never issues ([gl
 
 `iss` and `aud` are the **issuer / audience** pair ([glossary](/concepts/glossary/#issuer-audience)). Signatures: RS256, ES256, or EdDSA. A wrong `db` or `class` is `Unauthorized`.
 
+At session establishment the peer upserts the policy's principal entity with `sub`, `role` (when that attr exists), and each matching `ramose.attrs` key. It does not write anything else. A required field the peer does not write makes **first login** fail with `tx/required` (409) — before any client write. Mark those fields `optional: true`. Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` refuse a principal entity with unprovisionable required fields at deploy ([Define your data](/guides/catalog/#the-signed-in-user-row)).
+
 ## With Better Auth (what Reef does)
 
 <Shot src="/reef/sign-in.png" alt="Reef's sign-in card: the Reef logo, the heading Welcome back, empty email and password fields and a Sign in button, over a soft glow" caption="Better Auth owns this screen. Ramose never sees a password — only the token it signs." code="examples/reef/src/app/screens/AuthScreen.tsx:147-150" />

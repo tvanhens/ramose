@@ -86,7 +86,7 @@ Ramose.Field.many(Ramose.Ref(Label))
 
 | option | values | default |
 | --- | --- | --- |
-| `optional` | `boolean` | `false` |
+| `optional` | `boolean` | `false`. Also true when the Effect schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`) |
 | `index` | `boolean` | `true` when unique |
 | `doc` | `string` | — |
 

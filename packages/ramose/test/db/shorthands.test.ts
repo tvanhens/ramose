@@ -258,6 +258,18 @@ describe("Field composition merge", () => {
     expect(owned.doc).toBe("shared");
   });
 
+  test("isOptional is true from { optional: true } or an AST that admits undefined", () => {
+    expect(string().isOptional).toBe(false);
+    expect(string({ optional: true }).isOptional).toBe(true);
+    expect(Field(Schema.String).isOptional).toBe(false);
+    const runtimeOptional = (field: { readonly isOptional: boolean }): boolean =>
+      field.isOptional;
+    expect(runtimeOptional(Field(stored(Schema.UndefinedOr(Schema.String), "string")))).toBe(
+      true,
+    );
+    expect(runtimeOptional(Field(stored(Schema.optional(Schema.String), "string")))).toBe(true);
+  });
+
   test("Field.unique always indexes; index: false is discarded", () => {
     expect(Field.unique(string({ index: false }), "upsert").index).toBe(true);
   });

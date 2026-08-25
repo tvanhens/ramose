@@ -51,6 +51,32 @@ another entity is `retractEntity`'d — reject with `TxRejected`
 `tx/required` on both the worker path and the optimistic overlay. A `put` whose tempid unified
 with an existing row is an update and passes.
 
+Requiredness is stored as `:db/optional`. Installs from before this
+flip never wrote that datom, so after deploying the new code every
+card-one attr reads as required until `install()` runs again — a hard
+write outage between deploy and reinstall. Redeploy then reinstall:
+`Ramose.Database` does this for you; runtime-created databases need
+their creation-time `install()` re-run. The healing install works
+because schema attrs stay `:db/`-exempt from the required check. The
+same flip is why raw-datom schema literals in the test suite grew
+`:db/optional`.
+
+The peer provisions the signed-in user with `sub`, `role`, and matching
+`ramose.attrs` only. A required field beyond those makes first login
+`tx/required`. `policy()` / `compile()` fail closed when the principal
+entity has unprovisionable required fields.
+
+`Field.isOptional` is true when `{ optional: true }` **or** the Effect
+schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`).
+The inference is unchanged; fail-closed "say `optional: true`
+explicitly" is #185's doctrine.
+
+### Decision-7 rollout hazards (part of #279, tracker #205)
+
+Docs and the principal deploy-check for the three operational hazards
+of the required-at-transact default flip, none of which block
+pre-release (breakage is allowed). Remaining work stays on #279.
+
 `op.update` (and `tx.update`) is the partial verb: addressed by eid /
 handle / branded cell / lookup, or by a map with at least one
 `unique: "upsert"` field (type-enforced). It never creates. A missing
