@@ -33,7 +33,12 @@ import { tryLowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
 import { NotOne } from "./Errors.ts";
 import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
-import { asLookupRef, type AnyOperation, type OperationInvocation } from "./Operation.ts";
+import {
+  asLookupRef,
+  materializeOutput,
+  type AnyOperation,
+  type OperationInvocation,
+} from "./Operation.ts";
 import {
   type DbError,
   fromResponse,
@@ -851,7 +856,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                             : 0,
                       clientTxId: id,
                       clientOpId: id,
-                      output: ack.output,
+                      output: materializeOutput(ack.output, tempids),
                     }),
                   );
                 })

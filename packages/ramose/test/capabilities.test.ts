@@ -16,13 +16,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
-import { Query } from "../src/db/index.ts";
-import type { Tx } from "../src/db/Tx.ts";
+import { Operation, Query } from "../src/db/index.ts";
+import * as Schema from "effect/Schema";
 import { asRead, Databases, layer, SERVICE_ORIGIN } from "../src/Databases.ts";
 import type { Server } from "../src/Server.ts";
 import { Movies, User } from "./db/fixture.ts";
 
-const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1 };
+const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1, output: {} };
 
 /** A server whose attributes are literal Outputs, as after a deploy. */
 const server = (token?: string): Server =>
@@ -85,10 +85,18 @@ const fetcher = (calls: Call[]) => (url: string, init: any) => {
   );
 };
 
-function* write(tx: Tx<typeof Movies>) {
-  const ada = yield* tx.entity();
-  yield* ada.set(User.name, "Ada");
-}
+const addAda = Operation(
+  "user/add-ada",
+  {
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+    schema: Movies,
+  },
+  (op) => {
+    op.put(User, { name: "Ada" });
+    return {};
+  },
+);
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -104,7 +112,7 @@ describe("Databases over a service binding", () => {
       Effect.gen(function* () {
         const ramose = yield* Databases(server("s3cret"));
         expect(calls).toEqual([]);
-        return yield* ramose.db("movies", Movies).effect.transact(write);
+        return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(
         Effect.provide(layer),
         Effect.provide(
@@ -118,7 +126,7 @@ describe("Databases over a service binding", () => {
 
     expect(report.t).toBe(7);
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${SERVICE_ORIGIN}/db/movies/transact`);
+    expect(calls[0].url).toBe(`${SERVICE_ORIGIN}/db/movies/op`);
     expect(calls[0].method).toBe("POST");
     expect(calls[0].headers.authorization).toBe("Bearer s3cret");
   });
@@ -132,7 +140,7 @@ describe("Databases over a service binding", () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* Databases(server());
-        return yield* ramose.db("movies", Movies).effect.transact(write);
+        return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(
         Effect.provide(layer),
         Effect.provide(
@@ -165,13 +173,13 @@ describe("Databases over HTTPS", () => {
     const report = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* Databases(server("s3cret"));
-        return yield* ramose.db("movies", Movies).effect.transact(write);
+        return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
     );
 
     expect(report.t).toBe(7);
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("https://peer.example.com/db/movies/transact");
+    expect(calls[0].url).toBe("https://peer.example.com/db/movies/op");
     expect(calls[0].headers.authorization).toBe("Bearer s3cret");
   });
 });

@@ -11,13 +11,13 @@ Every exported name of `ramose/db`, with its signature and a short example. This
 ## Rules of thumb
 
 - **A `db` is a value.** `ramose.db(name, schema)` makes no request, and `asOf` and `history` are pure too.
-- **A write is all-or-nothing** — one **write** is one all-or-nothing change ([glossary](/concepts/glossary/#write)). It returns a `TxReport`; `report.dbAfter` reads your own write with no second round trip.
+- **A write is all-or-nothing** — one **write** is one all-or-nothing change ([glossary](/concepts/glossary/#write)). `db.run` returns an `OpReport`; `report.output` is the operation's return (the id of what you created), and `report.dbAfter` reads your own write with no second round trip.
 - **Reads shrink, writes fail.** Fields you may not read are absent; a write you may not make is `Unauthorized`.
 - **Live queries need a WebSocket.** `db.live` and `db.livePull` retry network trouble on their own.
 - **Setup mistakes throw, they are not errors.** A malformed URL or missing `fetch` throws from `connect`; a `DbError` is always about a request.
 - **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one.
 
-*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+*The app path is promises: `await db.query(…)`, `await db.run(…)`. Effect is an [advanced hatch](/concepts/effect/) (`db.effect`, `ramose/effect`, `ramose/db/effect`).*
 
 ## Imports
 
@@ -197,13 +197,13 @@ const myEid = who.eid;
 const people = await db.query(peopleQuery);
 ```
 
-**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
+**`db.live(query): Subscription<Out, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the subscription fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive). The hatch is `db.effect.live` (a Stream).
 
 ```ts
-const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
+const live = db.live(boardQuery);   // subscribe / for-await / close()
 ```
 
-**`db.pull(subject, shape): Effect<Pull | null, DbError>`** — read one record ([Pull](#pull) below).
+**`db.pull(subject, shape): Promise<Pull | null>`** — read one record ([Pull](#pull) below). The hatch is `db.effect.pull`.
 
 ```ts title="examples/todos/src/todos.ts"
 export const pullTodo = (db: TodosDb, eid: TodoEid) =>
@@ -214,22 +214,22 @@ export const pullTodo = (db: TodosDb, eid: TodoEid) =>
   });
 ```
 
-**`db.livePull(subject, shape): Stream<Pull | null, DbError>`** — the live form; a deleted record emits `null` and the stream stays open.
+**`db.livePull(subject, shape): Subscription<Pull | null, DbError>`** — the live form; a deleted record emits `null` and the subscription stays open.
 
 ```ts
-const stream = db.livePull(issueId, issueExtraShape);
+const live = db.livePull(issueId, issueExtraShape);
 ```
 
-**`db.basis(): Effect<{ t: number }, DbError>`** — the **version number `t`** this view reads at ([glossary](/concepts/glossary/#version-number)); one request on a live view, no request on `asOf(t)`.
+**`db.basis(): Promise<{ t: number }>`** — the **version number `t`** this view reads at ([glossary](/concepts/glossary/#version-number)); one request on a live view, no request on `asOf(t)`.
 
 ```ts
-const { t } = yield* db.basis();
+const { t } = await db.basis();
 ```
 
 **`db.asOf(t): ReadDb`** — the database as it was right after write `t`. `t` is a version number, not a `Date`. Pure.
 
-```ts title="examples/kv-style/app.ts"
-        const beforeRows = yield* db.asOf(report.t - 1).query(namesQuery);
+```ts title="examples/kv-style/app.ts#as-of"
+        const beforeRows = yield* db.asOf(report.t - 1).effect.query(namesQuery);
         const before = beforeRows.map((r) => r.name);
 ```
 
@@ -239,46 +239,62 @@ const { t } = yield* db.basis();
   const everything = useQuery(db.history, everyIssueEverQuery);
 ```
 
-**`db.principal(): Effect<{ eid: Eid | null; class: string }, DbError>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. The peer upserts that row at session establishment, so a signed-in caller has an `eid` once the principal attr is deployed. `eid` stays `null` for anonymous and service callers; `class` is `"admin"` on a server with no policy.
+**`db.principal(): Promise<{ eid: Eid | null; class: string }>`** — who this connection is: the **signed-in user's** record ([glossary](/concepts/glossary/#signed-in-user)) and role. The peer writes that row at session establishment, so a signed-in caller has an `eid` once the principal attr is deployed. `eid` stays `null` for anonymous and service callers; `class` is `"admin"` on a server with no policy.
 
 ```ts
-const me = yield* db.principal();   // { eid: 42 | null, class: "member" }
+const me = await db.principal();   // { eid: 42 | null, class: "member" }
 ```
 
-**`db.transact(function* (tx) { … }): Effect<TxReport, DbError | E>`** — one write. The body is a generator; `yield*` each step. A failure inside sends nothing.
+**`db.run(operation, input): Promise<OpReport<O>>`** / **`db.run(operation, entity, input)`** — one named **operation** ([glossary](/concepts/glossary/#operation)). The contextual form (`on: Entity`) takes the entity as the second argument. A failure inside sends nothing. The hatch is `db.effect.run`.
 
-```ts title="examples/todos/src/todos.ts"
+```ts title="examples/todos/src/todos.ts#add-todo"
 export const addTodo = (db: TodosDb, title: string) =>
-  db.transact(function* (tx) {
-    const t = yield* tx.entity();
-    yield* t.set(Todo.title, title);
-    yield* t.set(Todo.done, false);
-    yield* t.set(Todo.createdAt, new Date());
-  });
+  db.run(addTodoOp, { title });
+```
 
+```ts title="examples/todos/src/todos.ts#set-done"
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
-  db.transact(function* (tx) {
-    yield* tx.set(eid, Todo.done, done);
-  });
+  db.run(setDoneOp, eid, { done });
+```
 
+```ts title="examples/todos/src/todos.ts#delete-todo"
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
-  db.transact(function* (tx) {
-    yield* tx.delete(eid);
-  });
+  db.run(deleteTodoOp, eid, {});
 ```
 
-**`db.install(): Effect<TxReport, DbError>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only `admin` may run it.
+**`db.install(): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only `admin` may run it. Reef's workspace provision runs install as an operation effect, then seeds labels.
 
-```ts title="examples/reef/src/app/mutations.ts"
-  Effect.gen(function* () {
-    yield* db.install();
+```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
+export const provisionWorkspace = (db: ReefDb) =>
+  db.run(provisionWorkspaceOp, {}).then(() => undefined);
 ```
 
-## Transactions
+## Writes
 
-App writes go through `db.run`. The hatch `db.effect.transact` still takes a `tx`; `tx.entity()` gives a `TxHandle`. `set` / `remove` / `delete` write one field at a time; `put` is the entity-level write.
+App writes go through `db.run`. There is no public `db.transact`. Raw `POST /transact` is admin / seed / `writes: "all"`.
 
-**Named operations.** Define each write once, import that registry from the app and the peer entry, and pass it to `Server({ operations })`. `defineOperations(catalog, { … })` is the shared registry; `Operation.patch` is the low-ceremony path for a one-field update. Wire ids (`issue/move`) are the contract — renaming one is a breaking change. `doc:` on `Operation` is what humans read and later MCP will use as the tool description.
+**`Ramose.Operation(name, schemas, body)`** — one named write. `name` (`issue/move`) is the wire contract; renaming one, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. Input and output codecs are Effect Schema (`ramose/effect`). Return a handle (or `{ id: handle }`) with `EntityId` in the output schema; `db.run` resolves it after the writer assigns ids.
+
+```ts title="examples/todos/src/todos.ts#add-todo-op"
+export const addTodoOp = Ramose.Operation(
+  "todo/add",
+  {
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({ id: Ramose.EntityId }),
+    doc: "Add a todo",
+  },
+  (op, input) => {
+    const created = op.put(Todo, {
+      title: input.title,
+      done: false,
+      createdAt: new Date(),
+    });
+    return { id: created };
+  },
+);
+```
+
+**`Ramose.Operation.patch(name, Entity, keys, options?)`** — a one-field (or few-field) update. `Operation.for(catalog)` bakes `schema:` into every helper.
 
 ```ts title="examples/reef/src/app/mutations.ts#set-title-op"
 export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
@@ -286,57 +302,42 @@ export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
 });
 ```
 
+**`Ramose.defineOperations(catalog, { … })`** — the shared registry both the app and the peer entry import. Pass it to `createServer({ operations })` and `Server({ operations, main })`. `Ramose.Operations({ … })` is the catalog-free form. `operationNames` / `operationCards` list wire ids and discovery cards.
+
 `checkOperationsCoverage(client, peer)` (or `connect({ operations }).checkOperations()`, or `Server({ operations })` at deploy) fails with `OperationsCoverageError` when the peer is missing an id the client ships.
 
-```ts
-interface Tx<C> {
-  entity(): Effect<TxHandle<C>>;                 // a new record
-  entity(id: TxEntity<C>): Effect<TxHandle<C>>;  // an existing one
-  put(entity, attrs): Effect<TxHandle<C>>;       // create — required keys required
-  put(entity, id, attrs): Effect<TxHandle<C>>;   // write that id (must exist)
-  update(entity, attrs): Effect<TxHandle<C>>;    // partial; unique upsert key required
-  update(entity, id, attrs): Effect<TxHandle<C>>; // partial; never creates
-  set(e: TxEntity<C>, field, value): Effect<void>;
-  remove(e: TxEntity<C>, field, value?): Effect<void>;
-  delete(e: TxEntity<C>): Effect<void>;
-}
-interface TxHandle<C> { eid; set(field, value); remove(field, value?); delete(); }
-```
+**Verbs** — [Write data](/guides/transactions/) teaches these. `put` makes a row so (full required data; a unique key unifies). `update` changes what's there (partial; never creates). `set` / `remove` / `delete` are the field-level escape hatch (a many-valued toggle, clearing a field).
 
-`TxEntity` — not an exported name, just the shape these verbs accept — is a record id (`number`), a `TxHandle`, a lookup by unique key (`[User.sub, "abc"]`), or a temporary id string. `field` is a handle (`Issue.title`) or its full name (`":issue/title"`).
-
-```ts title="examples/reef/src/app/mutations.ts"
+```ts title="examples/reef/src/app/mutations.ts#set-description"
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.transact(function* (tx) {
-    if (text === "") yield* tx.remove(issueId, Issue.description);
-    else yield* tx.set(issueId, Issue.description, text);
-  });
+  db.run(setDescriptionOp, issueId, { text });
 ```
 
-```ts title="examples/reef/src/app/mutations.ts"
-  db.transact(function* (tx) {
-    if (on) yield* tx.set(issueId, Issue.labels, labelId);
-    else yield* tx.remove(issueId, Issue.labels, labelId);
-  });
+```ts title="examples/reef/src/app/mutations.ts#toggle-label"
+export const toggleLabel = (
+  db: ReefDb,
+  issueId: number,
+  labelId: number,
+  on: boolean,
+) => db.run(toggleLabelOp, issueId, { labelId, on });
 ```
 
 Rules:
 
+- A new entity cannot be created without its required fields. That is why the default row type is honest: creation carried them.
+- `update` never creates. A missing row is `TxRejected` with `code: "tx/missing-entity"`. `put` / `set` at a numeric id that does not exist is the same. Clearing a required field is `tx/required`.
+- `put` with a unique key unifies with the existing row — still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`.
 - A single-value field: `set` replaces the old value. A many-valued field: one `set` per value; `remove(field, value)` removes one value, `remove(field)` removes them all.
 - `delete` removes every fact of the record. History keeps them.
-- A reference field takes the target's id (`issue.set(Issue.creator, myEid)`). `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (rejected as a dangling ref).
+- A reference field takes the target's id. `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (rejected as a dangling ref).
 - There is no `preset` on the client; presets are a [policy](/reference/policy/) feature the server applies.
-- **`TxReport`** is `{ t, txEid, datomCount, dbAfter }`. It has no `tempids`; to learn a new record's id, query for it — `report.dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
 
-### Upserts
-
-Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name, … })` is insert-or-update with full required data. Key-only `op.put(User, { sub })` is a compile error; that is `op.update(User, { sub, name })`. A lookup that misses is still a hard rejection. `update` never creates: a missing row is `TxRejected` `tx/missing-entity`.
-
-`put(Entity, id, …)` / `set` at a numeric id that does not exist is `TxRejected` `tx/missing-entity`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
+**`OpReport`** is `{ t, txEid, datomCount, dbAfter, output }`. `output` is the encoded return — `report.output.id` after a create that returned a handle. `dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
 
 ```ts
-const who = yield* db.principal();
-const myEid = who.eid; // the peer-owned user row
+const report = await db.run(addTodoOp, { title: "buy milk" });
+const id = report.output.id;
+const me = await db.principal();
 ```
 
 ## Queries
@@ -440,8 +441,8 @@ const paged = Query.from(Issue)
   .select(boardShape)
   .orderBy(Issue.createdAt, "desc")
   .limit(20);
-const p1 = yield* db.query(paged.after(null));
-const p2 = yield* db.query(paged.after(p1.cursor));   // rows strictly after page one
+const p1 = await db.query(paged.after(null));
+const p2 = await db.query(paged.after(p1.cursor));   // rows strictly after page one
 ```
 
 Rules the surface enforces:
@@ -491,11 +492,14 @@ export const issueExtraShape = {
 | `Ramose.Pull<C, P>` | the result of shape `P` |
 | `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
 | `Ramose.Again<n>` / `Ramose.RecurStub<S>` | the `again(n)` shape term; the `{ id }` stub after the bound |
-| `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
+| `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `run`, `install`, `principal` |
 | `Ramose.Eid<C>` | branded `number`. `Eid<N>` is a `select({ id: N.id })` cell; `Eid<C>` unions the catalog |
 | `Ramose.EntityRef<C>` / `tempid` | write/pull subject: eid, `{ id }` row, `tempid("ada")`, lookup, handle. Not a bare `string` |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
-| `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
+| `Ramose.Operation` / `Ramose.Operations` / `Ramose.defineOperations` | a named write; a registry; the catalog-bound registry |
+| `Ramose.OpReport<O, C>` | `{ t, txEid, datomCount, dbAfter, output }` — `output` is the encoded return |
+| `Ramose.EntityId` | output codec for a created id (a handle rematerializes to a number) |
+| `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` — what `install` returns |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
 | `Ramose.DbError` | the union of the nine request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |

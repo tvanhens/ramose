@@ -18,7 +18,7 @@ import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 import { schemaTx } from "../src/db/ensure.ts";
-import { Field, Schema as DbSchema, Entity, Query } from "../src/db/internal.ts";
+import { Entity, Field, Query, Schema as DbSchema, seedWrite } from "../src/db/internal.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import type { Session } from "../src/db/session.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
@@ -152,7 +152,7 @@ describe("optimistic transact", () => {
 
     const writes = adaPeer.calls.filter((c) => c.url.endsWith("/transact")).length;
     const pending = Effect.runPromise(
-      ada.effect.transact(function* (tx) {
+      seedWrite(ada, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
@@ -202,7 +202,7 @@ describe("optimistic transact", () => {
     await seedClient(adaPeer, db, server);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity(tx.tempid("ada"));
         yield* e.set(User.name, "Ada");
       }),
@@ -244,7 +244,7 @@ describe("optimistic transact", () => {
     await settle();
 
     const failed = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
@@ -310,7 +310,7 @@ describe("optimistic transact", () => {
     expect(namesOf(live.seen.at(-1))).toEqual(["Ada"]);
 
     const denied = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Bob");
       }),
@@ -319,7 +319,7 @@ describe("optimistic transact", () => {
     expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob"]);
 
     const kept = run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Cy");
       }),
@@ -361,7 +361,7 @@ describe("optimistic transact", () => {
     await seedClient(peer, db, server);
 
     const e = await runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const row = yield* tx.entity();
         yield* row.set(Doc.slug, "ada");
       }),
@@ -397,7 +397,7 @@ describe("optimistic transact", () => {
     expect(live.seen.at(-1)).toEqual([]);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Secret.note, "classified");
       }),
@@ -436,7 +436,7 @@ describe("optimistic transact", () => {
     await settle();
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Secret.note, "classified");
       }),
@@ -479,14 +479,14 @@ describe("optimistic transact", () => {
     await seedClient(peer, db, server);
 
     const first = Effect.runPromise(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity(tx.tempid("new"));
         yield* e.set(User.name, "Ada");
       }),
     );
     await settle();
     const second = Effect.runPromise(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Movie.title, "new");
       }),
@@ -532,14 +532,14 @@ describe("confirmed follower", () => {
     await settle();
 
     const first = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
     );
     await settle();
     const second = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Bea");
       }),
@@ -583,7 +583,7 @@ describe("confirmed follower", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
@@ -957,7 +957,7 @@ describe("two-writer races", () => {
     await settle();
 
     const pending = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Note.title, "Q3");
         yield* e.set(Note.audit, "classified");
@@ -1016,7 +1016,7 @@ describe("two-writer races", () => {
     await settle();
 
     const pending = runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(User.name, "Ada");
       }),
@@ -1077,7 +1077,7 @@ describe("two-writer races", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Secret.note, "classified");
       }),
@@ -1129,7 +1129,7 @@ describe("two-writer races", () => {
     await seedClient(peer, db, server);
 
     const report = await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Secret.note, "classified");
       }),
@@ -1207,7 +1207,7 @@ describe("filtered tx frames (#112 sieve)", () => {
     await settle();
 
     const pending = Effect.runPromise(
-      ada.effect.transact(function* (tx) {
+      seedWrite(ada, function* (tx) {
         const e = yield* tx.entity();
         yield* e.set(Note.title, "Q3");
         yield* e.set(Note.audit, "classified");

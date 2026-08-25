@@ -14,7 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
-import { Query } from "../src/db/internal.ts";
+import { Query, seedWrite } from "../src/db/internal.ts";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
 import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
@@ -176,7 +176,7 @@ describe("paint is the wake", () => {
     expect(live.seen).toHaveLength(1);
 
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const bob = yield* tx.entity();
         yield* bob.set(User.name, "Bob");
       }),

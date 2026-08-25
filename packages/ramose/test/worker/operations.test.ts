@@ -8,7 +8,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { Operation, Operations } from "../../src/db/Operation.ts";
+import { EntityId, Operation, Operations } from "../../src/db/Operation.ts";
 import { schemaTx } from "../../src/db/ensure.ts";
 import { Movie, Movies, User } from "../db/fixture.ts";
 import { events } from "../internal/transactor/harness.ts";
@@ -66,6 +66,22 @@ const setName = Operation(
   (op, input) => {
     op.set(op.self, User.name, input.name);
     return { name: input.name };
+  },
+);
+
+const createCoded = Operation(
+  "user/create-coded",
+  {
+    schema: Movies,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({
+      id: EntityId,
+      code: Schema.NumberFromString,
+    }),
+  },
+  (op, input) => {
+    const created = op.put(User, { name: input.name });
+    return { id: created, code: 5 };
   },
 );
 
@@ -165,6 +181,7 @@ const operations = Operations({
   ping,
   createNamed,
   setName,
+  createCoded,
   createByPut,
   createShort,
   updateGhost,
@@ -195,6 +212,7 @@ describe("GET /health lists registered operation ids", () => {
       "movie/set-title",
       "ping",
       "user/create",
+      "user/create-coded",
       "user/create-put",
       "user/create-short",
       "user/put-bootstrap",
@@ -391,6 +409,39 @@ describe("POST /db/:name/op", () => {
       post({ query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] } }),
     );
     expect((body.result as string[][]).map((r) => r[0])).toEqual(["Ada"]);
+    peer.close();
+  });
+
+  test("a clientOpId replay returns the same encoded output as the first commit", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const first = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/create-coded",
+        input: { name: "Ada" },
+        clientOpId: "op-coded",
+      }),
+    );
+    expect(first.status).toBe(200);
+    const firstOut = first.body.output as { id: unknown; code: unknown };
+    expect(typeof firstOut.id).toBe("number");
+    expect(firstOut.code).toBe("5");
+    expect(JSON.stringify(first.body.output)).not.toContain("TxHandle");
+
+    const second = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/create-coded",
+        input: { name: "Ada" },
+        clientOpId: "op-coded",
+      }),
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.t).toBe(first.body.t);
+    expect(second.body.output).toEqual(first.body.output);
+    expect(second.body.tempids).toEqual(first.body.tempids);
+    expect(JSON.stringify(second.body.output)).not.toContain("TxHandle");
     peer.close();
   });
 

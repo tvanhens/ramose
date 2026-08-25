@@ -63,7 +63,7 @@ const TodoList = () => {
 - `ticks` counts updates after the first — Reef's "live" pill pulses on it.
 - `key={row.id}`: a selected `id: X.id` is a plain `number`.
 
-A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
+A second form, `useLive(sub)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
 
 ## useQuery
 
@@ -103,9 +103,9 @@ A second form, `useLive(stream)`, drains any `Stream` you built yourself (`db.li
   const { run } = useTransact();
 ```
 
-`useTransact(options?): { run, pending, error, clearError }` — runs a **write** ([glossary](/concepts/glossary/#write)) or any Effect from an event handler. Needs no provider and takes no `db`.
+`useTransact(options?): { run, pending, error, clearError }` — pending / error helper for a promise from an event handler. Not the write API: that is `db.run`. Typical call is `run(moveIssue(db, id, status, rank))`. Needs no provider and takes no `db`.
 
-- `run(effect): Promise<Exit>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe.
+- `run(work): Promise<A | undefined>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `onError`.
 - `pending` is `true` while any run is in flight; `error` holds the last failure until a run succeeds or `clearError()`; `onError` fires per failure.
 
 ## errorMessage
@@ -122,7 +122,7 @@ errorMessage(e); // e.message ?? e._tag ?? String(e)
 - **Inline query values.** `useLive` and `useQuery` key on the lowered AST — `useLive(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. Hoist shapes for `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
 - **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
 - **`key={row.id}`** in lists; the id is a `number`.
-- **`error` is not the same shape in every hook.** `useLive`, `useQuery` and `usePull` report an Effect `Cause`; `useTransact` reports the failure itself. So a toast is `errorMessage(Cause.squash(error))` from a read hook and `errorMessage(error)` from `useTransact`.
+- **`error` is the tagged failure.** `useLive`, `useQuery`, `usePull` and `useTransact` report the class itself, so `errorMessage(error)` works on every hook.
 
 <Next links={[
   { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },

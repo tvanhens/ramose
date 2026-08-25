@@ -27,11 +27,8 @@ export const App = Cloudflare.Worker(
 
 Inside, a request handler names a database, writes, and reads its own write back — no fetch, no connection string:
 
-```ts title="examples/kv-style/app.ts#tenant-transact"
-        const { t, dbAfter } = yield* tenant.effect.transact(function* (tx) {
-          const ada = yield* tx.entity();
-          yield* ada.set(User.name, "Ada");
-        });
+```ts title="examples/kv-style/app.ts#tenant-run"
+        const { t, dbAfter } = yield* tenant.effect.run(addUser, { name: "Ada" });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
         const names = yield* dbAfter.effect.query(namesQuery);
 ```
@@ -42,7 +39,7 @@ Inside, a request handler names a database, writes, and reads its own write back
 
 | handle | your Worker gets |
 | --- | --- |
-| `ramose.db(name, schema)` | `q`, `pull`, `basis`, `asOf`, `history`, `principal`, `transact` / `run`, `install` |
+| `ramose.db(name, schema)` | `query`, `pull`, `basis`, `asOf`, `history`, `principal`, `run`, `install` |
 | `Ramose.asRead(db)` | type-level read-only view of the same handle — writes still exist at runtime; policy is what enforces them |
 
 `live` and `livePull` are **not** on this type — they are client subscriptions (`ramose/db`, `ramose/react`). There is no write-only capability: a writer that cannot read cannot look anything up.

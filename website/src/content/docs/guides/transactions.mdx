@@ -1,14 +1,14 @@
 ---
 title: Write data
-description: One function writes — db.transact. Create, change, clear and delete records, all-or-nothing, and read your own write straight back.
+description: One function writes — db.run. Named operations, put and update, and the id of what you created.
 ---
 import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-App writes go through `db.run` (a named operation, `POST /op`). Raw `db.transact` / `POST /transact` is closed for app-class tokens by default — admin and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples. The four verbs below are the same builder operations use.
+App writes go through `db.run` — a named **operation**. Raw `POST /transact` is closed for app-class tokens by default; admin and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
 
-Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line instead of a three-line `transact`:
+Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line:
 
 ```ts title="examples/reef/src/app/mutations.ts#set-title-op"
 export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
@@ -16,32 +16,28 @@ export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
 });
 ```
 
-The string id (`issue/set-title`) is the wire contract. Convention: `entity/verb` or `entity/verb-noun`. Renaming an id, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read and later MCP will use as the tool description. `Server({ operations })` and `checkOperationsCoverage` fail with `OperationsCoverageError` when the peer is missing an id the client ships.
+The string id (`issue/set-title`) is the wire contract. Convention: `entity/verb` or `entity/verb-noun`. Renaming an id, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. `Server({ operations })` and `checkOperationsCoverage` fail with `OperationsCoverageError` when the peer is missing an id the client ships.
 
-<Learn learn={["The four verbs, and that there is no fifth", "Create, change, clear and delete a record", "What a write returns; what a refused write looks like"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
+<Learn learn={["Named operations are the only write path", "put makes a row so; update changes what's there", "How you get the id of what you created"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
 
-:::note[Effect, in three rules]
-Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
-:::
+## The verbs
 
-## The four verbs
-
-The write vocabulary — `put` makes a row so; `update` changes what's there:
+`put` makes a row so. `update` changes what's there. `set` / `remove` / `delete` stay as the field-level escape hatch (a many-valued toggle, clearing a field):
 
 | call | does |
 | --- | --- |
-| `op.put(Entity, {…})` | make this row so — every required field, insert-or-update if a unique key unifies |
+| `op.put(Entity, {…})` | make this row so — every required field; a unique key unifies (insert-or-update) |
 | `op.update(Entity, id, {…})` | change what's there — partial; the row must already exist |
-| `op.set` / `op.remove` / `op.delete` | field-by-field escape hatch (same verbs on a handle) |
+| `op.set` / `op.remove` / `op.delete` | field-by-field (same verbs on a handle) |
 
-The handle from `tx.entity()` carries the same three verbs without the first argument: `issue.set(…)`, `issue.remove(…)`, `issue.delete()`. Values are checked against the schema as you type.
+A new entity cannot be created without its required fields. That is why the default row type is honest: creation carried them.
 
 ## Create a record
 
-Reef's "New issue" dialog is one write; everything inside lands together or not at all:
+Reef's "New issue" dialog is one operation; everything inside lands together or not at all:
 
 ```ts title="examples/reef/src/app/mutations.ts#create-issue-put"
-    op.put(Issue, {
+    const created = op.put(Issue, {
       title: input.title,
       description:
         input.description != null && input.description !== ""
@@ -55,6 +51,13 @@ Reef's "New issue" dialog is one write; everything inside lands together or not 
       assignee: input.assigneeId,
       labels: input.labelIds ?? [],
     });
+```
+
+Return the handle from the body with `EntityId` in the output schema. `db.run` resolves it after the writer assigns ids:
+
+```ts
+const report = await db.run(createIssueOp, { title, … });
+const id = report.output.id;
 ```
 
 A **reference** field takes the other record's id as a number: `issue.set(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
@@ -75,6 +78,23 @@ export const moveIssue = (
 A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
 
 <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/mutations.ts#move-issue" />
+
+`update` never creates. Address by eid / handle / branded cell, or by a map that contains at least one `unique: "upsert"` field:
+
+```ts
+op.update(Issue, id, { status: "done" });
+op.update(User, { sub: "auth0|…", name: "Ada" });
+```
+
+A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`.
+
+`put` with a unique key unifies with the existing row — insert-or-update, still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
+
+```ts title="examples/reef/src/app/mutations.ts#seed-labels"
+    for (const seed of SEED_LABELS) {
+      op.put(Label, { name: seed.name, color: seed.color });
+    }
+```
 
 ## Remove a value, delete a record
 
@@ -105,59 +125,27 @@ export const toggleLabel = (
 ) => db.run(toggleLabelOp, issueId, { labelId, on });
 ```
 
-## Ids, unique keys and lookups
-
-The first argument of `tx.set` names the record. It can be:
-
-- **an id as a number.** A query that selects `id: Issue.id` gives you `row.id` as a `number` — pass it straight in (that is `issueId` above). A query with no `.select` returns `{ id }` objects — pass `row.id` then too.
-- **a handle** from `tx.entity()` in the same write.
-- **a lookup by unique key** — `[User.sub, "user_ada"]` names the user whose `sub` is that value, no id in hand ([glossary](/concepts/glossary/#lookup)).
-
-## Upserts and updates
-
-`put` means **make this row so**. The create form (`op.put(User, { sub, name, … })`) requires every required field; a unique key in the map unifies with the existing row — insert-or-update. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A lookup by unique key that misses is still a hard rejection; put with the unique field (and the rest of the required data) is the path that creates when missing.
-
-`update` means **change what's there**. It never creates. Address by eid / handle / branded cell, or by a map that contains at least one `unique: "upsert"` field:
-
-```ts
-op.update(Issue, id, { status: "done" });
-op.update(User, { sub: "auth0|…", name: "Ada" });
-```
-
-A missing row is `TxRejected` with `code: "tx/missing-entity"` on both the optimistic overlay and the worker — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
-
-```ts title="examples/reef/src/app/mutations.ts#seed-labels"
-    for (const seed of SEED_LABELS) {
-      op.put(Label, { name: seed.name, color: seed.color });
-    }
-```
-
 ## What a write returns
 
-`transact` resolves with `{ t, txEid, datomCount, dbAfter }`:
+`db.run` resolves with `{ t, txEid, datomCount, dbAfter, output }`:
 
 - **`t`** — the **version number** the database is at after your write ([glossary](/concepts/glossary/#version-number)).
 - **`txEid`** — the write's own record id.
 - **`datomCount`** — how many facts landed.
 - **`dbAfter`** — the same database, pinned at `t`. Read through it and you see your own write with no second round trip.
+- **`output`** — the operation's encoded return. Return a handle (or `{ id: handle }`) with `EntityId` in the output schema to get the id of what you created.
 
-A new record's id is not in the report. Query for it through `report.dbAfter`, or read the row the peer already upserted for you:
-
-```ts
-const who = yield* db.principal();
-const myEid = who.eid;
-```
-
-A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`. Nothing in your UI has to announce the change.
+A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`.
 
 ## When a write is refused
 
-- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer**, the one thing per database that commits writes in order ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `remove denied on :issue/status`.
+- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer** ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and the field that tripped: `remove denied on :issue/status`.
 - **`TxRejected`** (HTTP 409) — the writer refused it: a schema violation, a unique-key conflict, or a denial the first check missed. No version number is spent.
+- **`OperationRejected`** (HTTP 409) — the named operation was refused (dangling / foreign entity, a body-thrown rejection).
 
-Both are values you can match by name — see [Errors](/reference/errors/). Writes to one database apply one at a time, so there are no conflicts to retry, only refusals to handle.
+All are values you can match by name — see [Errors](/reference/errors/).
 
-In React, `useTransact` runs the write and hands you the refusal:
+In React, `useTransact` is the pending / error helper around `db.run` — not the write API:
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes

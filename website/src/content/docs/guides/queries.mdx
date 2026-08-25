@@ -225,8 +225,8 @@ const theAda = await db.query(byEmail("ada@example").oneOrFail());
 `after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
 
 ```ts
-const page1 = yield* db.query(boardQuery.after(null));
-const page2 = yield* db.query(boardQuery.after(page1.cursor));
+const page1 = await db.query(boardQuery.after(null));
+const page2 = await db.query(boardQuery.after(page1.cursor));
 // page.cursor is null when the page came back short — nothing past it
 ```
 
@@ -240,7 +240,7 @@ const openCount = Query.q(function* () {
   yield* Query.is(Todo.done, false)(todo);
   return { n: Q.count(todo) };
 });
-const rows = yield* db.query(openCount);
+const rows = await db.query(openCount);
 const open = rows[0]!.n; // an ungrouped aggregate always answers one row — 0 over no matches
 
 const perOwner = Query.q(function* () {

@@ -1,12 +1,13 @@
 "use client";
 
 /**
- * `useTransact` — run a promise from an event handler, and know whether it
- * is running and whether it failed.
+ * `useTransact` — pending / error helper for a promise from an event
+ * handler. Not the write API: that is `db.run`. Typical call is
+ * `run(moveIssue(db, id, status, rank))`.
  *
  * Deliberately not tied to the provider: it runs whatever promise the caller
- * built (`run(moveIssue(db, id, status, rank))`), so it composes with a
- * module-singleton `Db` just as well as with `useDb`.
+ * built, so it composes with a module-singleton `Db` just as well as with
+ * `useDb`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -29,7 +30,8 @@ export interface Transact {
 }
 
 /**
- * One hook for running writes from event handlers.
+ * Run a promise from an event handler and expose pending / error.
+ * The write itself is `db.run` (or any other promise).
  *
  * - `run` always resolves: the value on success, `undefined` on failure.
  * - `pending` counts concurrent runs: true while any run is in flight.

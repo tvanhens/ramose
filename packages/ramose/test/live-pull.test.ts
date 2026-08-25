@@ -14,6 +14,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
+import { seedWrite } from "../src/db/internal.ts";
 import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
@@ -162,7 +163,7 @@ describe("the basis is the wake", () => {
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
 
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         yield* tx.delete(world.eid);
       }),
     );

@@ -16,7 +16,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { fromResponse } from "../src/db/Errors.ts";
 import { pipe } from "effect/Function";
-import { Query } from "../src/db/internal.ts";
+import { Query, seedWrite } from "../src/db/internal.ts";
 import { client, fakePeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -45,7 +45,7 @@ describe("the credential on the wire", () => {
     const db = c.ramose.db("movies", Movies);
 
     await db.query(names);
-    await run(db.effect.transact(function* (tx) { yield* tx.delete(1); }));
+    await run(seedWrite(db, function* (tx) { yield* tx.delete(1); }));
 
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/movies/session?token=s3cret",
@@ -64,8 +64,8 @@ describe("the credential on the wire", () => {
       }),
     });
     const c = client(peer);
-    const e = await runFail(
-      c.ramose.db("movies", Movies).effect.transact(function* (tx) {
+    const e = await runFail(seedWrite(
+      c.ramose.db("movies", Movies), function* (tx) {
         yield* tx.delete(1);
       }),
     );

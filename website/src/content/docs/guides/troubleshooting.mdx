@@ -70,9 +70,7 @@ bun add ramose react react-dom
 
 ## What is Effect and how much do I need?
 
-:::note[Effect, in three rules]
-Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
-:::
+The app path is promises: `await db.query(…)`, `await db.run(…)`. React hooks run reads and `useTransact().run` wraps a write promise. Effect is an [advanced hatch](/concepts/effect/).
 
 ## TypeScript cannot resolve `ramose`
 
@@ -126,7 +124,7 @@ No — none of the three exist. Count rows on the client for now. The full list 
 
 ## Can I use it without React? Without Effect?
 
-Without React, yes: `Effect.runPromise(db.query(query))` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Without Effect, mostly: the React hooks run it for you; elsewhere you only need `Effect.runPromise` and `yield*` inside a write.
+Without React, yes: `await db.query(query)` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Effect is optional — an [advanced hatch](/concepts/effect/).
 
 ## Can I use Clerk, Auth0, or my own login?
 

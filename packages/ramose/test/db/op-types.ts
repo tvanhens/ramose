@@ -22,6 +22,7 @@ import type {
 } from "../../src/db/internal.ts";
 import {
   Entity,
+  EntityId,
   Field,
   Operation,
   Query,
@@ -147,6 +148,25 @@ const setUserName = Operation(
     return {};
   },
 );
+
+const createUserWithId = Operation(
+  "user/create-id",
+  {
+    schema: Movies,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({ id: EntityId }),
+  },
+  (body, input) => {
+    const created = body.put(User, { name: input.name });
+    return { id: created };
+  },
+);
+declare const createdReport: OpReport<
+  { readonly id: number },
+  typeof Movies
+>;
+type _createdId = Expect<Equal<typeof createdReport.output.id, number>>;
+void createUserWithId;
 
 const createUser = Operation(
   "user/create",

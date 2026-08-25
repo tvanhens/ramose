@@ -89,7 +89,7 @@ export const Issue = Ramose.Entity("issue", {
   <div class="rg-moment-copy">
     <h2 id="one-query-always-current">One query, always current</h2>
     <p>The board is one query, read with <code>useLive</code>. Drag a card in one window and every other window moves it too — no WebSocket code, no refetch anywhere in Reef.</p>
-    <p>Ramose is built on <a href="https://effect.website">Effect</a>. In React you rarely see it — the hooks run it for you. <a href="/concepts/effect/">Effect in five minutes →</a></p>
+    <p>Writes are named operations: <code>await db.run(…)</code>. Nothing refetches after a write.</p>
     <p class="rg-cta"><a href="/guides/live-queries/">Live queries →</a></p>
   </div>
   <div class="rg-moment-code">

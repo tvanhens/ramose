@@ -64,8 +64,8 @@ These ideas — facts instead of rows, a database you can read at any earlier ve
 | --- | --- |
 | datom `[e a v t]` | a fact; the same order on `t` |
 | schema transacted as data | a **schema** of TypeScript values; `db.install()` or `Server({ databases })` writes it, safe to repeat |
-| `d/transact` with tx-data | `db.transact(function* (tx) { … })` — a generator of `set` / `remove` / `delete` |
-| tempids resolved in the transactor | `tx.entity()` — the new ids are **not** returned; query for them |
+| `d/transact` with tx-data | `db.run(operation, …)` — a named operation of `put` / `update` / `set` / `remove` / `delete` |
+| tempids resolved in the transactor | return a handle with `EntityId` in the operation output; `report.output` is the id |
 | `:db.unique/identity`, lookup refs | `{ unique: "upsert" }`, `[User.sub, "…"]` |
 | `:db.cardinality/many` | `{ cardinality: "many" }` |
 | `d/pull` | `db.pull({ id }, shape)`, same nesting; `.optional` for absence, `.orDefault(v)` for a pull `:default` |

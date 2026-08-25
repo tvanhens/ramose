@@ -32,8 +32,7 @@ import {
   type AnyOperations,
   asLookupRef,
   decodeInput,
-  encodeOutput,
-  materializeOutput,
+  finalizeOutput,
 } from "../db/Operation.ts";
 import { lowerPullPattern } from "../db/Pull.ts";
 import { tryLowerQueryObject } from "../db/query/index.ts";
@@ -159,9 +158,12 @@ export interface ExecuteArgs {
 
 export interface ExecuteReady {
   readonly tx: unknown[];
+  /** Raw body return — live handles, not wire-encoded. Use `encodeOutput`. */
   readonly output: unknown;
   readonly principal: Principal;
   readonly clientOpId?: string;
+  /** Resolve handles against the commit's tempid map, then encode. */
+  encodeOutput(tempids: Readonly<Record<string, number>>): Promise<unknown>;
 }
 
 /**
@@ -299,20 +301,16 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
     });
   }
 
-  let output: unknown = materializeOutput(result.output, {});
-  try {
-    output = await Effect.runPromise(
-      encodeOutput(operation.output, output),
-    );
-  } catch {
-    // keep the materialized value if the schema cannot encode handles
-  }
+  const output = result.output;
+  const encode = (tempids: Readonly<Record<string, number>>) =>
+    Effect.runPromise(finalizeOutput(operation.output, output, tempids));
 
   return {
     tx: [...built.ops()],
     output,
     principal: args.principal,
     clientOpId: args.clientOpId,
+    encodeOutput: encode,
   };
 }
 

@@ -26,7 +26,6 @@ import type {
 } from "./Operation.ts";
 import type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
 import type { Page, QueryObject } from "./query/index.ts";
-import type { Tx, YieldContext, YieldError } from "./Tx.ts";
 
 type PullPattern<C extends AnySchema, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
@@ -63,15 +62,6 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
 export interface EffectDb<C extends AnySchema = AnySchema>
   extends EffectReadDb<C> {
   principal(): Effect.Effect<DbPrincipal<C>, DbError>;
-
-  /** Generator write — hatch only. App code uses `db.run`. */
-  transact<Eff extends Effect.Effect<any, any, any>, A = unknown>(
-    body: (tx: Tx<C>) => Generator<Eff, A, never>,
-  ): Effect.Effect<
-    TxReport<C>,
-    DbError | YieldError<Eff>,
-    YieldContext<Eff>
-  >;
 
   install(): Effect.Effect<TxReport<C>, DbError>;
 

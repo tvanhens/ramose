@@ -5,7 +5,6 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
@@ -29,21 +28,12 @@ const Tag = Entity("tag", {
 });
 declare const db: Db<typeof Movies>;
 
-// ── generator transact is the only write ───────────────────────────────────
+// ── transact is gone; writes are db.run / the internal builder ─────────────
 
-const crossNs = db.effect.transact(function* (tx) {
-  const ada = yield* tx.entity();
-  yield* ada.set(User.name, "Ada");
-  yield* ada.set(User.age, 36);
-  yield* ada.set(Meta.source, "import");
-  // bag: Movie.title on a user handle is legal — do not close the world
-  yield* ada.set(Movie.title, "not a movie but types allow any ns");
-});
-type _crossNsReport = Expect<
-  Equal<Effect.Success<typeof crossNs>, TxReport<typeof Movies>>
+type _dbHasRun = Expect<Equal<"run" extends keyof typeof db ? true : false, true>>;
+type _hatchHasRun = Expect<
+  Equal<"run" extends keyof (typeof db)["effect"] ? true : false, true>
 >;
-type _crossNsErr = Expect<Extends<DbError, Effect.Error<typeof crossNs>>>;
-type _crossNsR = Expect<Equal<Effect.Services<typeof crossNs>, never>>;
 
 // ── the report is `{ t, txEid, datomCount, dbAfter }` ──────────────────────
 
@@ -56,51 +46,6 @@ type _reportCount = Expect<Equal<Report["datomCount"], number>>;
 type _dbAfterIsDb = Expect<Equal<Report["dbAfter"], Db<typeof Movies>>>;
 /** No public `minT`: the floor is a property of the db, not an option. */
 type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
-
-// ── unknown attr is a type error ───────────────────────────────────────────
-
-db.effect.transact(function* (tx) {
-  const e = yield* tx.entity();
-  // @ts-expect-error unknown attr on the namespace
-  yield* e.set(User.nope, "x");
-  // @ts-expect-error ident not in the catalog
-  yield* e.set({ ident: ":user/nope" } as const, "x");
-  // @ts-expect-error namespace not in this catalog
-  yield* e.set(Tag.label, "x");
-  // @ts-expect-error unknown ident string
-  yield* tx.set(e, ":user/nope", "x");
-});
-
-// ── wrong value type is a type error ───────────────────────────────────────
-
-db.effect.transact(function* (tx) {
-  const e = yield* tx.entity();
-  // @ts-expect-error name is string, not number
-  yield* e.set(User.name, 42);
-  // @ts-expect-error year is number, not string
-  yield* e.set(Movie.year, "2016");
-  // @ts-expect-error ident form: name is string, not number
-  yield* tx.set(e, ":user/name" as const, 42);
-  // @ts-expect-error friends is a ref (number), not a string
-  yield* e.set(User.friends, "Ada");
-});
-
-// ── retract / retractEntity typecheck ──────────────────────────────────────
-
-const retracts = db.effect.transact(function* (tx) {
-  const e = yield* tx.entity(1001);
-  yield* e.remove(User.age, 35);
-  yield* e.remove(User.name);
-  yield* e.delete();
-  yield* tx.remove(e, User.friends, 1002);
-  yield* tx.delete(e);
-  const byLookup = yield* tx.entity([User.name, "Ada"]);
-  yield* byLookup.set(Meta.source, "lookup");
-  yield* tx.set([":user/name", "Ada"], User.age, 36);
-});
-type _retractReport = Expect<
-  Equal<Effect.Success<typeof retracts>, TxReport<typeof Movies>>
->;
 
 // ── a read view has no write half ──────────────────────────────────────────
 
@@ -117,8 +62,8 @@ type _dbHasInstall = Expect<
 type _dbNoTransact = Expect<
   Equal<"transact" extends DbK ? true : false, false>
 >;
-type _hatchHasTransact = Expect<
-  Equal<"transact" extends keyof (typeof db)["effect"] ? true : false, true>
+type _hatchNoTransact = Expect<
+  Equal<"transact" extends keyof (typeof db)["effect"] ? true : false, false>
 >;
 type _dbStillReads = Expect<Equal<"query" extends DbK ? true : false, true>>;
 
@@ -137,18 +82,6 @@ type _installReport = Expect<
 >;
 type _installErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
 
-// ── callback errors union into transact ────────────────────────────────────
-
-class ExtraLoad extends Data.TaggedError("ExtraLoad")<{}> {}
-
-const withExtra = db.effect.transact(function* (tx) {
-  const e = yield* tx.entity();
-  yield* e.set(User.name, "Ada");
-  return yield* Effect.fail(new ExtraLoad());
-});
-type _extraErr = Expect<Extends<ExtraLoad, Effect.Error<typeof withExtra>>>;
-type _stillDb = Expect<Extends<DbError, Effect.Error<typeof withExtra>>>;
-
 // ── builder types are catalog-generic ──────────────────────────────────────
 
 type _handle = Expect<
@@ -163,6 +96,41 @@ type _handle = Expect<
 declare const tx: Tx<typeof Movies>;
 declare const movieId: Eid<typeof Movie>;
 declare const userId: Eid<typeof User>;
+declare const handle: TxHandle<typeof Movies>;
+
+// ── field / value slots on the builder ─────────────────────────────────────
+
+tx.set(handle, User.name, "Ada");
+tx.set(handle, User.age, 36);
+tx.set(handle, Meta.source, "import");
+// bag: Movie.title on a user handle is legal — do not close the world
+tx.set(handle, Movie.title, "not a movie but types allow any ns");
+{
+  // @ts-expect-error unknown attr on the namespace
+  handle.set(User.nope, "x");
+  // @ts-expect-error ident not in the catalog
+  handle.set({ ident: ":user/nope" } as const, "x");
+  // @ts-expect-error namespace not in this catalog
+  handle.set(Tag.label, "x");
+  // @ts-expect-error unknown ident string
+  tx.set(handle, ":user/nope", "x");
+  // @ts-expect-error name is string, not number
+  handle.set(User.name, 42);
+  // @ts-expect-error year is number, not string
+  handle.set(Movie.year, "2016");
+  // @ts-expect-error ident form: name is string, not number
+  tx.set(handle, ":user/name" as const, 42);
+  // @ts-expect-error friends is a ref (number), not a string
+  handle.set(User.friends, "Ada");
+}
+handle.remove(User.age, 35);
+handle.remove(User.name);
+handle.delete();
+tx.remove(handle, User.friends, 1002);
+tx.delete(handle);
+tx.entity([User.name, "Ada"]);
+tx.set([":user/name", "Ada"], User.age, 36);
+
 const putH = tx.put(User, { name: "Ada", friends: [1002] });
 type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
 tx.put(User, 1001, { age: 36 });

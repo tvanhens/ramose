@@ -61,20 +61,16 @@ A live query needs a WebSocket connection — that is how filtered transactions 
 
 ### Outside React
 
-`db.live(query)` returns a **stream** of results, not a single value, so `Effect.runPromise` cannot run it — that rule is for one-shot calls like `db.query`. Consume it with `Stream.runForEach`:
+`db.live(query)` returns a **subscription** — `subscribe`, `for await`, `close()`. It is not a single promise:
 
 ```ts title="watch.ts"
-import * as Effect from "effect/Effect";
-import * as Stream from "effect/Stream";
-
-await Effect.runPromise(
-  Stream.runForEach(db.live(todoQuery), (rows) =>
-    Effect.sync(() => console.log(rows)),
-  ),
-);
+const live = db.live(todoQuery);
+for await (const rows of live) {
+  console.log(rows);
+}
 ```
 
-That call runs until you interrupt it, re-emitting the whole result set on every update. In React, `useLive` does this for you.
+That loop runs until you `close()` it (or break), re-emitting the whole result set on every update. In React, `useLive` does this for you. Effect users who want a Stream use `db.effect.live` — [Effect (advanced)](/concepts/effect/).
 
 ## What it costs
 
@@ -90,7 +86,7 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 Same `issueId` → same key → same shared subscription, even when the query object is new every render. A different `issueId` is a different AST: the hook resubscribes. That is the point. Unstable values (`where({ at: new Date() })`) churn the key every render — keep bound values stable.
 
-`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so a new page resubscribes, which is what a new page wants. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).
+`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so a new page resubscribes, which is what a new page wants. A subscription you built yourself can be passed directly (`useLive(sub)`) — see [React hooks](/reference/react/).
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "who may read and write each field" },

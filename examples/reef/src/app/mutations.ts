@@ -144,12 +144,12 @@ export const createIssueOp = Op(
       assigneeId: Schema.optional(Schema.Number),
       labelIds: Schema.optional(Schema.Array(Schema.Number)),
     }),
-    output: Schema.Struct({}),
+    output: Schema.Struct({ id: Ramose.EntityId }),
     doc: "Create an issue",
   },
   (op, input) => {
     // docs:create-issue-put
-    op.put(Issue, {
+    const created = op.put(Issue, {
       title: input.title,
       description:
         input.description != null && input.description !== ""
@@ -164,7 +164,7 @@ export const createIssueOp = Op(
       labels: input.labelIds ?? [],
     });
     // enddocs:create-issue-put
-    return {};
+    return { id: created };
   },
 );
 

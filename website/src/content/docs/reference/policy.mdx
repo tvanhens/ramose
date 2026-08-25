@@ -84,9 +84,11 @@ export const policy = Ramose.policy(
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
-## Operations
+## Policy verbs
 
-| operation | when it is checked |
+These are the access-check verbs a policy arm keys. They are not the write-path `Operation` / `db.run` names.
+
+| verb | when it is checked |
 | --- | --- |
 | `read` | every query, pull and live query — including `asOf` and `history` views |
 | `create` | the first `set` to a record that has no facts yet |

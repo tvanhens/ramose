@@ -16,7 +16,7 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
-import { layer, Query, token, Unauthorized } from "../src/db/internal.ts";
+import { layer, Query, seedWrite, token, Unauthorized } from "../src/db/internal.ts";
 import { client, fakePeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -98,7 +98,7 @@ describe("token.jwt mints lazily and caches", () => {
     expect(mints).toBe(0);
 
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),
@@ -107,7 +107,7 @@ describe("token.jwt mints lazily and caches", () => {
     expect(peer.calls[0]!.headers.authorization).toBe(`Bearer ${jwt}`);
 
     await run(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const bob = yield* tx.entity();
         yield* bob.set(User.name, "Bob");
       }),
@@ -339,7 +339,7 @@ describe("failure typing on the wire", () => {
     const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),
@@ -363,7 +363,7 @@ describe("failure typing on the wire", () => {
     const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
       }),

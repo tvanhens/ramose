@@ -7,7 +7,7 @@ import Next from "../../../components/Next.astro";
 
 You are going to build a todo app from an empty folder. It stores todos in a Ramose database, and the list updates itself in every open tab — no refetch code, no WebSocket server, no REST endpoints. Everything installs from npm; you do not need to clone anything, and you do not need a Cloudflare account to run it.
 
-<Learn learn={["Install Ramose and declare a schema", "Run the Ramose server on your laptop", "Read with a live query and write with a typed transaction", "Add a field and filter the list without touching a refetch"]} minutes={15} />
+<Learn learn={["Install Ramose and declare a schema", "Run the Ramose server on your laptop", "Read with a live query and write with a named operation", "Add a field and filter the list without touching a refetch"]} minutes={15} />
 
 You need [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`). Ramose is pre-release: `bun add` writes a caret range, and once the app works you may want to pin an exact version, because the API moves between releases.
 
@@ -112,13 +112,24 @@ Ramose runs as one Cloudflare Worker that serves all your databases ([glossary](
 ```ts title="resources.ts"
 import * as Ramose from "ramose";
 import { Todos } from "./schema.ts";
+import { operations } from "./src/todos.ts";
 
 export const Server = Ramose.Server("Ramose", {
+  main: import.meta.resolve("./peer.ts"),
   databases: { todos: Todos },
+  operations,
 });
 ```
 
-`databases:` seeds the catalog at deploy. It is not a directory of databases — that is later work. [Why these pieces exist →](/concepts/architecture/#what-runs-where)
+`databases:` seeds the catalog at deploy. `operations` is the write registry both the app and the Worker import. [Why these pieces exist →](/concepts/architecture/#what-runs-where)
+
+```ts title="peer.ts"
+import { createServer } from "ramose/worker";
+import { operations } from "./src/todos.ts";
+
+export default createServer({ operations });
+export { QueryReplicaDO, TransactorDO } from "ramose/worker";
+```
 
 ## Declare the stack
 
@@ -190,9 +201,10 @@ interface ImportMetaEnv {
 ## The query and the writes
 
 ```ts title="src/todos.ts"
+import { Schema } from "ramose/effect";
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
-import { Todo, type Todos } from "../schema.ts";
+import { Todo, Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
 export type TodoEid = Eid<typeof Todos>;
@@ -211,32 +223,58 @@ export const todoQuery = Ramose.Query.from(Todo)
 /** One row of {@link todoQuery} — inferred, never restated. */
 export type TodoRow = Ramose.Row<typeof todoQuery>;
 
+export const addTodoOp = Ramose.Operation(
+  "todo/add",
+  {
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({ id: Ramose.EntityId }),
+    doc: "Add a todo",
+  },
+  (op, input) => {
+    const created = op.put(Todo, {
+      title: input.title,
+      done: false,
+      createdAt: new Date(),
+    });
+    return { id: created };
+  },
+);
+
+export const setDoneOp = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
+
+export const deleteTodoOp = Ramose.Operation(
+  "todo/delete",
+  {
+    on: Todo,
+    input: Schema.Struct({}),
+    output: Schema.Struct({}),
+    doc: "Delete a todo",
+  },
+  (op) => {
+    op.delete(op.self);
+    return {};
+  },
+);
+
+export const operations = Ramose.defineOperations(Todos, {
+  addTodoOp,
+  setDoneOp,
+  deleteTodoOp,
+});
+
 export const addTodo = (db: TodosDb, title: string) =>
-  db.transact(function* (tx) {
-    const t = yield* tx.entity();
-    yield* t.set(Todo.title, title);
-    yield* t.set(Todo.done, false);
-    yield* t.set(Todo.createdAt, new Date());
-  });
+  db.run(addTodoOp, { title });
 
 export const setDone = (db: TodosDb, eid: TodoEid, done: boolean) =>
-  db.transact(function* (tx) {
-    yield* tx.set(eid, Todo.done, done);
-  });
+  db.run(setDoneOp, eid, { done });
 
 export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
-  db.transact(function* (tx) {
-    yield* tx.delete(eid);
-  });
+  db.run(deleteTodoOp, eid, {});
 ```
 
 A query is a **value** — hoist it once and run it once, live, or in the past. `TodoRow` is read off the query, so adding a field to the shape changes the type everywhere it is used.
 
-Each write is one all-or-nothing change ([glossary](/concepts/glossary/#write)). `tx.entity()` starts a record, `set` sets a field, `delete` deletes one.
-
-:::note[Effect, in three rules]
-Ramose's calls return *Effect values* — descriptions of work. (1) Inside `db.transact(function* (tx) { … })` write `yield*` before each step. (2) In React the hooks run them for you. (3) Elsewhere, `await Effect.runPromise(effect)` — except a live query, which is a stream ([how to run one](/guides/live-queries/#outside-react)). That is all you need for now — [Effect in five minutes](/concepts/effect/).
-:::
+Each write is a named **operation** run with `db.run` ([glossary](/concepts/glossary/#operation)). `put` makes a row so (every required field); `Operation.patch` is a one-field update. The id of a created row comes back on `report.output`. [Write data](/guides/transactions/) is the full story.
 
 ## The screen
 
@@ -303,7 +341,7 @@ const NewTodo = () => {
 };
 ```
 
-`useLive(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` runs a write from an event handler. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
+`useLive(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` is the pending helper around `db.run` — not the write API. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
 
 ```tsx title="src/main.tsx"
 import { StrictMode } from "react";
@@ -354,12 +392,12 @@ Four edits, one per layer. Add the field to the record type in `schema.ts`:
   priority: Ramose.int(),
 ```
 
-Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
+Add it to `todoShape`, and set it in the `put` map, both in `src/todos.ts`:
 
-```ts title="src/todos.ts — one line into todoShape, one into addTodo"
+```ts title="src/todos.ts — one line into todoShape, one into addTodoOp"
   priority: Todo.priority.optional,   // in todoShape
 
-  yield* t.set(Todo.priority, 2);     // in addTodo, beside the other adds
+  priority: 2,                        // in the put map, beside title / done / createdAt
 ```
 
 Then render it in `TodoRowView`, in `src/App.tsx`, next to the title:
