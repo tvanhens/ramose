@@ -1,4 +1,5 @@
-/** The one schema-layer tagged failure: a policy that did not compile. */
+/** Schema-layer tagged failures: a policy that did not compile. Incompatible
+ * `install()` flips live in {@link import("./evolution.ts").IncompatibleSchema}. */
 
 import * as Data from "effect/Data";
 

@@ -21,6 +21,20 @@ import type { AnySchema } from "./Schema.ts";
 import { type Eid, makeEid } from "./Eid.ts";
 import { lowerEntityArg } from "./entityArg.ts";
 import { schemaTx } from "./ensure.ts";
+import {
+  assembleInstalled,
+  checkEvolution,
+  occupancyIdents,
+  occupancyQuery,
+  installedCoreQuery,
+  installedOptionalQuery,
+  installedUniqueQuery,
+  namespacesNeedingOccupancy,
+  type InstallOptions,
+  type InstalledAttr,
+} from "./evolution.ts";
+export { IncompatibleSchema } from "./evolution.ts";
+export type { InstallOptions, SchemaChange } from "./evolution.ts";
 import { type DbError, InvalidRequest, NotOne } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
@@ -260,8 +274,14 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
    */
   principal(): Promise<DbPrincipal<C>>;
 
-  /** Idempotent catalog upsert, as an ordinary transaction. */
-  install(): Promise<TxReport<C>>;
+  /**
+   * Idempotent catalog upsert, as an ordinary transaction. Reads the
+   * installed fields first and fails with {@link IncompatibleSchema} when a
+   * value type, cardinality, uniqueness, or a new required field on
+   * existing rows would change. Pass `{ allowIncompatible: [":ident"] }`
+   * to apply those idents anyway.
+   */
+  install(options?: InstallOptions): Promise<TxReport<C>>;
 
   /**
    * Run a named operation. Decode input, apply the optimistic prefix (steps
@@ -790,7 +810,7 @@ const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
   const db = {
     ...wrapRead(inner),
     principal: () => asPromise(inner.principal()),
-    install: () => asPromise(inner.install()),
+    install: (options?: InstallOptions) => asPromise(inner.install(options)),
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       asPromise(
         operation.on !== undefined
@@ -857,8 +877,9 @@ export const makeDb = <C extends AnySchema>(
     );
   };
 
+  const read = makeRead(wire, name, schema, view, bad);
   const effectDb: EffectDb<C> = {
-    ...makeRead(wire, name, schema, view, bad),
+    ...read,
 
     principal: () =>
       bad !== undefined
@@ -872,7 +893,35 @@ export const makeDb = <C extends AnySchema>(
             ),
           ),
 
-    install: () => submit(schemaTx(schema)),
+    install: (options?: InstallOptions) =>
+      Effect.gen(function* () {
+        if (bad !== undefined) return yield* Effect.fail(bad);
+        // asOf pins the read to the peer — the overlay already has this
+        // catalog applied locally, so a live query would not see the
+        // installed set. A far-future t is the current basis.
+        const snap = read.asOf(Number.MAX_SAFE_INTEGER);
+        const [core, uniques, optionals] = yield* Effect.all([
+          snap.query(installedCoreQuery),
+          snap.query(installedUniqueQuery),
+          snap.query(installedOptionalQuery),
+        ]);
+        const installed: InstalledAttr[] = assembleInstalled(
+          core,
+          uniques,
+          optionals,
+        );
+        const desired = schemaTx(schema);
+        const occupied = new Set<string>();
+        for (const ns of namespacesNeedingOccupancy(desired, installed, options)) {
+          const idents = occupancyIdents(installed, ns);
+          if (idents.length === 0) continue;
+          const hit = yield* snap.query(occupancyQuery(idents));
+          if (hit !== null) occupied.add(ns);
+        }
+        const refused = checkEvolution(desired, installed, occupied, options);
+        if (refused !== undefined) return yield* Effect.fail(refused);
+        return yield* submit(desired);
+      }),
 
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       Effect.suspend(() => {

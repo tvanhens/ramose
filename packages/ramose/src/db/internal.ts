@@ -23,6 +23,7 @@ export {
 } from "./effect.ts";
 export type { Subscription } from "./subscription.ts";
 export * from "./ensure.ts";
+export * from "./evolution.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";
 export * from "./SchemaErrors.ts";

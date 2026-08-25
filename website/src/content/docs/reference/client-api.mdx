@@ -15,7 +15,7 @@ Every exported name of `ramose/db`, with its signature and a short example. This
 - **Reads shrink, writes fail.** Fields you may not read are absent; a write you may not make is `Unauthorized`.
 - **Live queries need a WebSocket.** `db.live` and `db.livePull` retry network trouble on their own.
 - **Setup mistakes throw, they are not errors.** A malformed URL or missing `fetch` throws from `connect`; a `DbError` is always about a request.
-- **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one.
+- **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one. Incompatible flips fail with `IncompatibleSchema` unless you pass `allowIncompatible`.
 
 *The app path is promises: `await db.query(…)`, `await db.run(…)`. Effect is an [advanced hatch](/concepts/effect/) (`db.effect`, `ramose/effect`, `ramose/db/effect`).*
 
@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `IncompatibleSchema` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -262,7 +262,7 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.run(deleteTodoOp, eid, {});
 ```
 
-**`db.install(): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only `admin` may run it. Reef's workspace provision runs install as an operation effect, then seeds labels.
+**`db.install(options?): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Reads the installed fields first and fails with `IncompatibleSchema` when a value type, cardinality, uniqueness, or a new required field on existing rows would change. Pass `{ allowIncompatible: [":ident"] }` to apply those idents anyway. Under a policy only `admin` may run it. Reef's workspace provision runs install as an operation effect, then seeds labels.
 
 ```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>
@@ -504,6 +504,7 @@ export const issueExtraShape = {
 | `Ramose.DbError` | the union of the nine request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
 | `Ramose.PolicyError` | a policy did not compile against its schema — deploy time, not a request |
+| `Ramose.IncompatibleSchema` | `install()` refused a value-type / cardinality / uniqueness flip, or a new required field on existing rows |
 | `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
 | `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
 
@@ -513,7 +514,7 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 ## Errors
 
-Nine tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError` `OperationRejected`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). A policy that does not compile throws `PolicyError`. Match with `try/catch` and `instanceof` / `_tag`; `Ramose.isDatabaseError(e)` is the guard. Each is described on [Errors](/reference/errors/).
+Nine tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError` `OperationRejected`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). A policy that does not compile throws `PolicyError`. `install()` can fail with `IncompatibleSchema`. Match with `try/catch` and `instanceof` / `_tag`; `Ramose.isDatabaseError(e)` is the guard. Each is described on [Errors](/reference/errors/).
 
 ```ts
 try {

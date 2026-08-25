@@ -209,7 +209,9 @@ describe("install → transact → q → pull", () => {
 
     const installed = await db.install();
     expect(installed.t).toBeGreaterThan(0);
-    expect(peer.calls[0].url).toBe("https://peer.local/db/movies/transact");
+    expect(
+      peer.calls.some((c) => c.url === "https://peer.local/db/movies/transact"),
+    ).toBe(true);
 
     const report = await run(
       seedWrite(db, function* (tx) {
@@ -263,12 +265,18 @@ describe("install → transact → q → pull", () => {
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
-    // writes stay HTTPS; current-view reads run on the overlay (catch-up sync)
-    expect(peer.calls.map((c) => c.url)).toEqual([
+    // writes stay HTTPS; current-view reads run on the overlay (catch-up sync).
+    // install() reads the installed catalog as a pinned asOf query (peer, not overlay).
+    expect(
+      peer.calls.filter((c) => c.url.endsWith("/transact")).map((c) => c.url),
+    ).toEqual([
       "https://peer.local/db/movies/transact",
       "https://peer.local/db/movies/transact",
     ]);
-    expect(peer.frames.filter((f) => f.op === "q" || f.op === "pull")).toEqual([]);
+    expect(
+      peer.frames.filter((f) => (f.op === "q" || f.op === "pull") && f.asOf === undefined),
+    ).toEqual([]);
+    expect(peer.frames.some((f) => f.op === "q" && typeof f.asOf === "number")).toBe(true);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
@@ -279,7 +287,8 @@ describe("install → transact → q → pull", () => {
     const first = await db.install();
     const second = await db.install();
     expect(second.t).toBeGreaterThan(first.t);
-    expect(peer.calls[1].body.tx).toEqual(peer.calls[0].body.tx);
+    const txs = peer.calls.filter((c) => c.url.endsWith("/transact"));
+    expect(txs[1]!.body.tx).toEqual(txs[0]!.body.tx);
 
     // and the schema is usable either way round
     await run(

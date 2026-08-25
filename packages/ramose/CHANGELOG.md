@@ -22,9 +22,18 @@ row is `tx/missing-entity`; a subject of the wrong entity is
 `tx/wrong-entity`. `put(Entity, { uniqueKey })` as key-only
 ensure-exists is a compile error — that is `update`.
 
-Zero Effect types on the promise `Op` surface. Schema evolution when
-adding a new required field to existing rows is #187 — `install()`
-does not yet detect it.
+Zero Effect types on the promise `Op` surface.
+
+### Schema evolution guard on `install()` (tracker #187)
+
+`install()` reads the installed attribute set first and fails with
+`IncompatibleSchema` when a value type, cardinality, or uniqueness
+would flip, or when a new required field lands on a namespace that
+already has entities. The error lists every incompatible ident and
+tells you a default or a migration step is required. Compatible
+changes — a new optional field, a new namespace, a `doc` edit — still
+apply silently. The opt-in is `install({ allowIncompatible: [":ident"] })`.
+There is no second install API.
 
 ### One `EntityRef` vocabulary (tracker #178)
 

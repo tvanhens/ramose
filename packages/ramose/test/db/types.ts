@@ -387,6 +387,10 @@ const installedP = movies.install();
 type _install = Expect<
   Equal<typeof installedP, Promise<TxReport<typeof Movies>>>
 >;
+const installedHatch = movies.install({ allowIncompatible: [":user/name"] });
+type _installHatch = Expect<
+  Equal<typeof installedHatch, Promise<TxReport<typeof Movies>>>
+>;
 
 /** `db.principal()` — who am I; the eid is typed against this db's catalog. */
 const me = movies.principal();

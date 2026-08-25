@@ -261,14 +261,15 @@ describe("install", () => {
 
     expect(first.t).toBe(2);
     expect(second.t).toBe(2);
-    expect(peer.calls.map((call) => call.url)).toEqual([
+    const txs = peer.calls.filter((call) => call.url.endsWith("/transact"));
+    expect(txs.map((call) => call.url)).toEqual([
       "https://peer.example.com/db/movies/transact",
       "https://peer.example.com/db/movies/transact",
     ]);
     // the same upsert both times — `:db/ident` is unique/identity
-    expect(peer.calls[0].body.tx).toEqual(schemaTx(Movies));
-    expect(peer.calls[1].body.tx).toEqual(peer.calls[0].body.tx);
-    expect(typeof peer.calls[0].body.clientTxId).toBe("string");
+    expect(txs[0]!.body.tx).toEqual(schemaTx(Movies));
+    expect(txs[1]!.body.tx).toEqual(txs[0]!.body.tx);
+    expect(typeof txs[0]!.body.clientTxId).toBe("string");
     await c.dispose();
   });
 });

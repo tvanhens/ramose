@@ -254,6 +254,7 @@ describe("the `/db` barrel's public names", () => {
         "NetworkError",
         "isDatabaseError",
         "PolicyError",
+        "IncompatibleSchema",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
         "OperationRejected",

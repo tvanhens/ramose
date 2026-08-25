@@ -115,6 +115,7 @@ export type {
   ReadDb,
   TxReport,
 } from "./Db.ts";
+export type { InstallOptions, SchemaChange } from "./evolution.ts";
 export type { SchemaEid, Eid } from "./Eid.ts";
 export type { EntityRef, LookupRef } from "./idents.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
@@ -169,3 +170,4 @@ export {
   Unauthorized,
   Unavailable,
 } from "./Errors.ts";
+export { IncompatibleSchema } from "./evolution.ts";
