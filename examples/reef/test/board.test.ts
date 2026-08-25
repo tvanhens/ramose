@@ -75,6 +75,9 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
   const resyncDumps: { t: number; datoms: number }[] = [];
   const httpPaths: string[] = [];
   let sockets = 0;
+  // Overlay + op bodies write `creator`/`author` from `op.principal`. After
+  // seed the in-process peer acts as Ada so a token-less client has a real eid.
+  let seededEid: number | null = null;
   let hold: Promise<void> | undefined;
   let releaseHold: (() => void) | undefined;
   let rejectNext:
@@ -103,7 +106,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
       const built = buildOp({
         schema: Reef,
         db: "coral-team",
-        principal: { eid: null, class: "owner", claims: {} },
+        principal: { eid: seededEid, class: "owner", claims: {} },
         self: body.entity,
         effects: "run",
         effectCtx: {
@@ -225,7 +228,9 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         typeof ramose === "object" &&
         typeof (ramose as { class?: unknown }).class === "string"
           ? (ramose as { class: string }).class
-          : "member";
+          : sub === undefined
+            ? "owner"
+            : "member";
       let eid: number | null = null;
       if (sub !== undefined) {
         try {
@@ -234,6 +239,8 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         } catch {
           // First provision hits /info (for db.run) before /op installs the catalog.
         }
+      } else {
+        eid = seededEid;
       }
       return new Response(
         JSON.stringify({ db: "coral-team", t: conn.t, principal: { eid, class: cls } }),
@@ -330,6 +337,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
     );
     const people = await seeded.dbAfter.query(peopleQuery);
     myEid = people[0]!.id;
+    seededEid = myEid;
   }
 
   return {

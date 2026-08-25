@@ -436,7 +436,7 @@ describe("ensure and privileged surfaces", () => {
     };
     const res = await peer.json("/db/acme/transact", post(mixed, member));
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("policy");
+    expect(res.body.code).toBe("operations");
     expect(await titles(peer, member)).toEqual(["Roadmap"]);
     const asAdmin = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [[eids.solo, ":doc/title", "?t"]] } }, await token("acme", "admin")));
     expect(asAdmin.body.result).toEqual([["Carol private"]]);

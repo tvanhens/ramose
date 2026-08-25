@@ -606,8 +606,9 @@ describe("fragment-rule evaluation", () => {
   });
 
   test("compiled head vars bind positionally to principal and focus", async () => {
+    const { operations: _ops, ...fragmentBase } = FRAGMENT_POLICY_JSON;
     const p = parsePolicy({
-      ...FRAGMENT_POLICY_JSON,
+      ...fragmentBase,
       ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
       rules: [[["policy/doc/owner", "?q1", "?q2"], ["?q2", ":doc/owner", "?q1"]]],
     });
@@ -644,8 +645,9 @@ function mulberry32(seed: number): () => number {
 
 describe("visible-set materialization", () => {
   test("set path ≡ per-entity path on a selective scan", async () => {
+    const { operations: _ops, ...fragmentBase } = FRAGMENT_POLICY_JSON;
     const p = parsePolicy({
-      ...FRAGMENT_POLICY_JSON,
+      ...fragmentBase,
       ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
       rules: [[["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
     });
@@ -738,8 +740,9 @@ describe("visible-set materialization", () => {
         { ":doc/title": "D5", ":doc/owner": ids.alice, ":doc/project": ids.p1 },
       ]);
       const d = conn.db();
+      const { operations: _ops, ...fragmentBase } = FRAGMENT_POLICY_JSON;
       const p = parsePolicy({
-        ...FRAGMENT_POLICY_JSON,
+        ...fragmentBase,
         ns: { doc: { read: [{ _tag: "allow", rule: "policy/doc/owner" }] } },
         rules: [[["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
       });

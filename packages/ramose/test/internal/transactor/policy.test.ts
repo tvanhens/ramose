@@ -102,9 +102,9 @@ describe("the commit loop's policy check", () => {
   });
 
   test("fromOperation is how a named operation lands its tx", async () => {
-    const { h } = await seeded();
+    const { h, eids } = await seeded();
     const ack = await h.transactor.transact(
-      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/owner": "ada" }],
+      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/owner": eids.ada }],
       member("user_ada"),
       undefined,
       { fromOperation: true },
@@ -143,9 +143,9 @@ describe("the commit loop's policy check", () => {
   });
 
   test("ack.datoms omits facts the writer cannot read (hidden attr)", async () => {
-    const { h } = await seeded();
+    const { h, eids } = await seeded();
     const ack = await h.transactor.transact(
-      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/audit": "hunter2", ":doc/owner": "ada" }],
+      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/audit": "hunter2", ":doc/owner": eids.ada }],
       member("user_ada"),
       undefined,
       { fromOperation: true },
@@ -166,7 +166,7 @@ describe("the commit loop's policy check", () => {
     const ada = member("user_ada");
     const bob = member("user_bob");
     const first = await h.transactor.transact(
-      [{ ":db/id": "d", ":doc/title": "Ada only", ":doc/audit": "secret-ack", ":doc/owner": "ada" }],
+      [{ ":db/id": "d", ":doc/title": "Ada only", ":doc/audit": "secret-ack", ":doc/owner": eids.ada }],
       ada,
       "c1",
       { fromOperation: true },
@@ -182,7 +182,7 @@ describe("the commit loop's policy check", () => {
     expect(denied?.code).toBe("policy");
 
     const foreign = await h.transactor.transact(
-      [{ ":db/id": "bobs", ":doc/title": "Bob doc", ":doc/owner": "bob" }],
+      [{ ":db/id": "bobs", ":doc/title": "Bob doc", ":doc/owner": eids.bob }],
       bob,
       "c1",
       { fromOperation: true },
