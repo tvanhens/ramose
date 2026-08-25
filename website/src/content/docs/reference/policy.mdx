@@ -80,7 +80,7 @@ export const policy = Ramose.policy(
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
 - The second argument is one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
 
-`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, or a rule that never mentions a field of its entity. `P.class` is typed as the head's `classes`; `Ramose.Policy.Class<typeof policy>` is that union.
+`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, or a rule that never binds the arm's focus as that entity (one of its fields, a reverse ref to it, or a named `Query.rule` that does). A clause that only puts the focus in another entity's attribute slot is rejected — it would match nothing. `P.class` is typed as the head's `classes`; `Ramose.Policy.Class<typeof policy>` is that union.
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
@@ -190,7 +190,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## compile and the pulls check
 
-`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up, field set). The wire version is 2; installed policies recompile at deploy.
+`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up) and the focus-binding backstop. The wire version is 2; installed policies recompile at deploy.
 
 Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
 

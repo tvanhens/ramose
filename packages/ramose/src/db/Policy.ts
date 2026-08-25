@@ -8,6 +8,7 @@
 
 import * as Schema from "effect/Schema";
 import { parseQuery } from "../internal/core/query/parse.ts";
+import type { Clause, RuleDef, Term } from "../internal/core/query/ast.ts";
 import { POLICY_VERSION, parsePolicy } from "../internal/core/policy/ast.ts";
 import type {
   AttrRules,
@@ -415,16 +416,17 @@ const lowerNamedRules = (named: readonly ReturnType<typeof rule>[]): unknown[] =
   }
 };
 
-const validateRuleBodies = (
+const parseRuleDefs = (
   defs: readonly unknown[],
   idents: ReadonlySet<string>,
   where: string,
-): void => {
-  if (defs.length === 0) return;
+): readonly RuleDef[] => {
+  if (defs.length === 0) return [];
+  let parsed: ReturnType<typeof parseQuery>;
   try {
-    parseQuery({ find: ["?e"], where: [], rules: defs });
+    parsed = parseQuery({ find: ["?e"], where: [], rules: defs });
   } catch (cause) {
-    fail(
+    return fail(
       `${where}: rule body failed query validation: ${cause instanceof Error ? cause.message : String(cause)}`,
       undefined,
       cause,
@@ -434,35 +436,104 @@ const validateRuleBodies = (
     if (ident.startsWith(":db/")) return;
     if (!idents.has(ident)) fail(`${where}: ${ident} is not in the schema`, ident);
   });
+  return parsed.rules ?? [];
 };
 
-const ruleNameOf = (def: unknown): string | undefined => {
-  if (!Array.isArray(def) || !Array.isArray(def[0])) return undefined;
-  const name = def[0][0];
-  return typeof name === "string" ? name : undefined;
+const termVar = (t: Term): string | undefined => (t.kind === "var" ? t.name : undefined);
+
+const attrIdent = (t: Term): string | undefined =>
+  t.kind === "const" && typeof t.value === "string" ? t.value : undefined;
+
+/**
+ * True when `focus` is bound as the arm entity: the e-slot of one of this
+ * entity's fields (or a `:db/` / wildcard pattern), the value-slot of a
+ * generating fact (a backlink / reverse ref), `ground`, or a named-rule
+ * argument that is bound that way in the callee. An e-slot of a *foreign*
+ * ident does not count — `[?comment :doc/owner ?me]` matches nothing.
+ */
+const bindsFocusAsEntity = (
+  focus: string,
+  clauses: readonly Clause[],
+  fieldIdents: ReadonlySet<string>,
+  byName: ReadonlyMap<string, readonly RuleDef[]>,
+  visiting: Set<string>,
+): boolean => {
+  for (const c of clauses) {
+    switch (c.kind) {
+      case "pattern": {
+        if (termVar(c.v) === focus) return true;
+        if (termVar(c.e) === focus) {
+          const ident = attrIdent(c.a);
+          if (ident === undefined || ident.startsWith(":db/") || fieldIdents.has(ident)) {
+            return true;
+          }
+        }
+        break;
+      }
+      case "rule-call": {
+        const defs = byName.get(c.name);
+        if (defs === undefined) break;
+        for (let i = 0; i < c.args.length; i++) {
+          if (termVar(c.args[i]!) !== focus) continue;
+          for (const def of defs) {
+            const headVar = def.args[i];
+            if (headVar === undefined) continue;
+            const key = `${def.name}\0${headVar}`;
+            if (visiting.has(key)) continue;
+            visiting.add(key);
+            const hit = bindsFocusAsEntity(headVar, def.clauses, fieldIdents, byName, visiting);
+            visiting.delete(key);
+            if (hit) return true;
+          }
+        }
+        break;
+      }
+      case "or":
+        if (c.branches.some((b) => bindsFocusAsEntity(focus, b, fieldIdents, byName, visiting))) {
+          return true;
+        }
+        break;
+      case "fn":
+        if (c.fn === "ground" && c.binding.kind === "scalar" && c.binding.var === focus) {
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
 };
 
 /**
- * A fragment that never mentions a field of its arm entity matches nothing
- * (deny-by-default). Check the stamped field set, not an ident-prefix —
- * a future trait field lives in the trait's namespace but still belongs
- * to the composing entity.
+ * A rule that never binds the arm's focus as that entity is a silent deny
+ * (deny-by-default) or an unbound `?e` at evaluation. The check is "the
+ * focus appears in a generating position that names this entity" — an
+ * own-field e-slot, a reverse-ref value-slot, or a named `Query.rule`
+ * that does one of those — not "this def's clauses mention an own ident".
+ * A backlink arm and an arm that only invokes a named rule both bind the
+ * focus without mentioning a field of the arm entity in that one def.
  */
-const checkArmFieldSets = (
-  defs: readonly unknown[],
-  ruleFieldSets: ReadonlyMap<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>,
+const checkArmFocus = (
+  parsed: readonly RuleDef[],
+  ruleArmMeta: ReadonlyMap<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>,
 ): void => {
-  for (const def of defs) {
-    const name = ruleNameOf(def);
-    if (name === undefined) continue;
-    const meta = ruleFieldSets.get(name);
-    if (meta === undefined) continue;
-    let hit = false;
-    walkIdents(def, (ident) => {
-      if (meta.fieldIdents.has(ident)) hit = true;
-    });
-    if (!hit) {
-      fail(`${meta.where}: rule never mentions a field of this entity`);
+  const byName = new Map<string, RuleDef[]>();
+  for (const d of parsed) {
+    const list = byName.get(d.name);
+    if (list) list.push(d);
+    else byName.set(d.name, [d]);
+  }
+  for (const [name, meta] of ruleArmMeta) {
+    const defs = byName.get(name);
+    if (defs === undefined) continue;
+    for (const def of defs) {
+      // promote() is `rule(name, (me, e) => …)` — focus is the second head var.
+      const focus = def.args[1];
+      if (focus === undefined) continue;
+      if (!bindsFocusAsEntity(focus, def.clauses, meta.fieldIdents, byName, new Set())) {
+        fail(`${meta.where}: rule never binds the focus as this entity`);
+      }
     }
   }
 };
@@ -517,8 +588,8 @@ export function policy<
   };
 
   const pending: ReturnType<typeof rule>[] = [];
-  const seenFrags = new Map<AnyFragFn, string>();
-  const ruleFieldSets = new Map<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>();
+  const seenFrags = new Map<AnyFragFn, Map<string, string>>();
+  const ruleArmMeta = new Map<string, { readonly fieldIdents: ReadonlySet<string>; readonly where: string }>();
   let nextRule = 0;
 
   const compileArm = (
@@ -526,6 +597,7 @@ export function policy<
     where: string,
     prefix: string,
     op: string,
+    entityKey: string,
     fieldIdents: ReadonlySet<string>,
   ): CompiledArm => {
     const { classes: gate, body } = unwrapGate(raw);
@@ -533,12 +605,14 @@ export function policy<
     if (body === true) {
       return gate === undefined ? { rule: true } : { classes: gate, rule: true };
     }
-    const existing = seenFrags.get(body);
+    const byEntity = seenFrags.get(body);
+    const existing = byEntity?.get(entityKey);
     const name = existing ?? `policy/${prefix}/${op}/${nextRule++}`;
     if (existing === undefined) {
       pending.push(promote(name, body, where));
-      seenFrags.set(body, name);
-      ruleFieldSets.set(name, { fieldIdents, where });
+      if (byEntity === undefined) seenFrags.set(body, new Map([[entityKey, name]]));
+      else byEntity.set(entityKey, name);
+      ruleArmMeta.set(name, { fieldIdents, where });
     }
     return gate === undefined ? { rule: name } : { classes: gate, rule: name };
   };
@@ -547,6 +621,7 @@ export function policy<
     spec: RuleSpec<unknown>,
     where: string,
     prefix: string,
+    entityKey: string,
     fieldIdents: ReadonlySet<string>,
   ): Record<string, readonly CompiledArm[]> => {
     const out: Record<string, CompiledArm[]> = {};
@@ -557,7 +632,7 @@ export function policy<
       if (list.length === 0) continue;
       const wire = toWireOp(op);
       out[wire] = list.map((arm, i) =>
-        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, fieldIdents),
+        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, entityKey, fieldIdents),
       );
     }
     return out;
@@ -580,7 +655,7 @@ export function policy<
     const where = `ns.${nsKey}`;
     const fieldIdents = entityFieldIdents(entity);
 
-    const rules = compileSpec(nsSpec, where, prefix, fieldIdents);
+    const rules = compileSpec(nsSpec, where, prefix, prefix, fieldIdents);
 
     const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
     for (const a of nsSpec.attrs ?? []) {
@@ -593,6 +668,7 @@ export function policy<
         a.rules,
         `${where}.attrs["${a.attr}"]`,
         `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`,
+        prefix,
         fieldIdents,
       );
       attrs[a.attr] = r;
@@ -613,8 +689,8 @@ export function policy<
   }
 
   const ruleDefs = lowerNamedRules(pending);
-  validateRuleBodies(ruleDefs, idents, "rules");
-  checkArmFieldSets(ruleDefs, ruleFieldSets);
+  const parsedRules = parseRuleDefs(ruleDefs, idents, "rules");
+  checkArmFocus(parsedRules, ruleArmMeta);
 
   return {
     _tag: "Policy",

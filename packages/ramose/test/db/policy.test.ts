@@ -25,6 +25,19 @@ const Doc = Entity("doc", {
 });
 const App = DbSchema({ user: User, org: Org, project: Project, doc: Doc });
 
+const Comment = Entity("comment", {
+  body: Field(Schema.String),
+  doc: Field(Ref(() => Doc)),
+  author: Field(Ref(() => User)),
+});
+const AppComments = DbSchema({ user: User, org: Org, project: Project, doc: Doc, comment: Comment });
+
+/** Handwritten so the FragFn brand does not reject reuse on a second entity. */
+const ownDocHand = (me: P.Me<typeof User>) =>
+  function* (e: Query.Var) {
+    yield* Query.is(Doc.owner, me)(e);
+  };
+
 /** doc → project → org → members contains the caller. */
 const inOrg = (me: P.Me<typeof User>) =>
   function* (doc: Query.Var) {
@@ -226,7 +239,7 @@ describe("deploy-time errors", () => {
     ).toThrow(/not a field of the doc entity/);
   });
 
-  test("a rule that never mentions a field of its entity is a PolicyError", () => {
+  test("a rule that never binds the focus as its entity is a PolicyError", () => {
     expect(() =>
       P.policy(
         { schema: App, principal: User.sub, classes: ["member"] },
@@ -239,7 +252,7 @@ describe("deploy-time errors", () => {
           },
         },
       ),
-    ).toThrow(/never mentions a field of this entity/);
+    ).toThrow(/never binds the focus as this entity/);
   });
 
   test("a principal outside the catalog is a PolicyError", () => {
@@ -271,6 +284,154 @@ describe("deploy-time errors", () => {
         },
       ),
     ).toThrow(/empty fragment/);
+  });
+
+  test("reusing a fragment on a second entity is a PolicyError", () => {
+    expect(() =>
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+        doc: { read: ownDocHand },
+        comment: { read: ownDocHand },
+      }),
+    ).toThrow(/ns\.comment\.read: rule never binds the focus as this entity/);
+  });
+
+  test("the same fragment on the wrong entity alone is a PolicyError", () => {
+    expect(() =>
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+        comment: { read: ownDocHand },
+      }),
+    ).toThrow(/ns\.comment\.read: rule never binds the focus as this entity/);
+  });
+});
+
+describe("focus binding — backlink and named rules", () => {
+  const commentedByMe = (me: P.Me<typeof User>) =>
+    function* (doc: Query.Var) {
+      const c = yield* Query.backlink(Comment.doc)(doc);
+      yield* Query.is(Comment.author, me)(c);
+    };
+
+  const ownedBy = Query.rule("app/ownedBy", function* (doc: Query.Var, owner: Query.Var) {
+    yield* Query.is(Doc.owner, owner)(doc);
+  });
+
+  const viaNamed = (me: P.Me<typeof User>) =>
+    function* (e: Query.Var) {
+      yield* ownedBy(e, me);
+    };
+
+  const viaSome = (me: P.Me<typeof User>) =>
+    function* (e: Query.Var) {
+      yield* Query.some(Comment.doc, Query.is(Comment.author, me))(e);
+    };
+
+  test("a backlink-bound arm compiles", () => {
+    const p = P.policy(
+      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { doc: { read: commentedByMe } },
+    );
+    const c = compiled(p);
+    const name = (c.ns!.doc!.read![0] as { rule: string }).rule;
+    const def = ruleNamed(c, name)!;
+    const body = JSON.stringify(def.slice(1));
+    expect(body).toContain(":comment/doc");
+    expect(body).toContain(":comment/author");
+    expect(body).not.toMatch(/:doc\//);
+  });
+
+  test("an arm that only invokes a named Query.rule compiles", () => {
+    const p = P.policy(
+      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { doc: { read: viaNamed } },
+    );
+    const c = compiled(p);
+    const name = (c.ns!.doc!.read![0] as { rule: string }).rule;
+    const arm = ruleNamed(c, name)!;
+    expect(JSON.stringify(arm.slice(1))).toContain("app/ownedBy");
+    expect(JSON.stringify(arm.slice(1))).not.toContain(":doc/owner");
+    const callee = ruleNamed(c, "app/ownedBy")!;
+    expect(JSON.stringify(callee.slice(1))).toContain(":doc/owner");
+  });
+
+  test("Query.some over a reverse ref compiles", () => {
+    expect(() =>
+      P.policy(
+        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { doc: { read: viaSome } },
+      ),
+    ).not.toThrow();
+  });
+
+  test("a backlink arm grants the docs the caller commented on", async () => {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact([
+      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+      { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":comment/body", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":comment/doc", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":comment/author", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    ]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":user/sub": "u_alice" },
+      { ":db/id": "bob", ":user/sub": "u_bob" },
+      { ":db/id": "d1", ":doc/title": "D1" },
+      { ":db/id": "d2", ":doc/title": "D2" },
+      { ":db/id": "c1", ":comment/body": "hi", ":comment/doc": "d1", ":comment/author": "alice" },
+    ]);
+    const db = conn.db();
+    const policy = compiled(
+      P.policy(
+        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { doc: { read: commentedByMe } },
+      ),
+    );
+    const who = (sub: string, eid: number): Principal => ({
+      kind: "user",
+      class: "member",
+      sub,
+      eid,
+      claims: { sub },
+      db: "acme",
+    });
+    const titles = async (p: Principal, e: number) =>
+      (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident);
+    expect(await titles(who("u_alice", tempids.alice), tempids.d1)).toEqual([":doc/title"]);
+    expect(await titles(who("u_alice", tempids.alice), tempids.d2)).toEqual([]);
+    expect(await titles(who("u_bob", tempids.bob), tempids.d1)).toEqual([]);
+  });
+
+  test("a named-rule arm grants the owner", async () => {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact([
+      { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
+      { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":doc/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    ]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":user/sub": "u_alice" },
+      { ":db/id": "bob", ":user/sub": "u_bob" },
+      { ":db/id": "d1", ":doc/title": "D1", ":doc/owner": "alice" },
+      { ":db/id": "d2", ":doc/title": "D2", ":doc/owner": "bob" },
+    ]);
+    const db = conn.db();
+    const policy = compiled(
+      P.policy(
+        { schema: AppComments, principal: User.sub, classes: ["member"] },
+        { doc: { read: viaNamed } },
+      ),
+    );
+    const who = (sub: string, eid: number): Principal => ({
+      kind: "user",
+      class: "member",
+      sub,
+      eid,
+      claims: { sub },
+      db: "acme",
+    });
+    const titles = async (p: Principal, e: number) =>
+      (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident);
+    expect(await titles(who("u_alice", tempids.alice), tempids.d1)).toEqual([":doc/owner", ":doc/title"]);
+    expect(await titles(who("u_alice", tempids.alice), tempids.d2)).toEqual([]);
   });
 });
 
