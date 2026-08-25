@@ -1957,6 +1957,6 @@ describe("query: aggregates with order/limit and scalar value", () => {
     })
       .orderBy((r) => r.title, "asc")
       .after(null);
-    expect(() => lowerQueryObject(q)).toThrow(/no root to page from/);
+    expect(() => lowerQueryObject(q)).toThrow(/no paging root/);
   });
 });

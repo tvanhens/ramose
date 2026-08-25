@@ -1729,7 +1729,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     }
     if (built.focus === undefined) {
       throw new Error(
-        "ramose/query: after(...) pages by a root entity's id as tie-breaker — a multi-root projection has no root to page from",
+        "ramose/query: after(...) pages by a root entity's id as tie-breaker — a multi-root projection has no paging root",
       );
     }
     const root = nameOf(built.focus);
