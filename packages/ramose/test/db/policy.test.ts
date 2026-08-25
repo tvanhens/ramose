@@ -429,7 +429,7 @@ describe("focus binding — backlink and named rules", () => {
       db: "acme",
     });
     const titles = async (p: Principal, e: number) =>
-      (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident);
+      (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident).sort();
     expect(await titles(who("u_alice", tempids.alice), tempids.d1)).toEqual([":doc/owner", ":doc/title"]);
     expect(await titles(who("u_alice", tempids.alice), tempids.d2)).toEqual([]);
   });
