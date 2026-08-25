@@ -19,6 +19,8 @@
  *
  * This entry and every hook module it re-exports open with `"use client"`
  * so a Next App Router / React Router server-component import compiles.
+ * Read hooks accept `{ initialData, initialT, suspense }` so a server
+ * `db.query` can hydrate the first paint.
  * Keep the directive as the first statement — bundlers and `tsc` emit
  * look for that, and `test/react/use-client.test.ts` pins it.
  */
@@ -27,7 +29,12 @@ export { RamoseProvider, type RamoseProviderProps } from "./RamoseProvider.tsx";
 export { useDb, useRamoseClaims } from "./hooks.ts";
 export { type ConnectionStatus } from "../db/index.ts";
 export { useConnectionStatus } from "./useConnectionStatus.ts";
-export { type Read, type ReadStatus } from "./read.ts";
+export {
+  type Read,
+  type ReadOptions,
+  type ReadStatus,
+  type SuspendedRead,
+} from "./read.ts";
 export { useLiveQuery } from "./useLiveQuery.ts";
 export { useQuery } from "./useQuery.ts";
 export { useLivePull, usePull } from "./usePull.ts";

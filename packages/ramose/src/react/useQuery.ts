@@ -13,22 +13,47 @@
  * - The in-flight state is `isLoading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.
+ *
+ * `initialData` hydrates this key so a server read can paint on the first
+ * client render. `{ suspense: true }` throws until the first answer.
  */
 
 import type { Schema, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { queryAstKey } from "../db/astKey.ts";
-import { type Read, readT } from "./read.ts";
-import { viewDep } from "./seam.ts";
+import {
+  type Read,
+  type ReadOptions,
+  type SuspendedRead,
+  readT,
+} from "./read.ts";
+import { viewDep, viewKeyOf } from "./seam.ts";
 import { useOneShot } from "./useOneShot.ts";
 
-export const useQuery = <C extends Schema.Any, R, Out = readonly R[]>(
+export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
   query: QueryObject<R, Out>,
-): Read<Out, QueryError<Out>> => {
+  options: ReadOptions<Out> & { suspense: true },
+): SuspendedRead<Out, QueryError<Out>>;
+export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
+  db: ReadDb<C>,
+  query: QueryObject<R, Out>,
+  options?: ReadOptions<Out>,
+): Read<Out, QueryError<Out>>;
+export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
+  db: ReadDb<C>,
+  query: QueryObject<R, Out>,
+  options?: ReadOptions<Out>,
+): Read<Out, QueryError<Out>> {
   const astKey = queryAstKey(query);
   return useOneShot(
     () => db.query(query),
     () => readT(db),
     [viewDep(db), astKey],
+    {
+      initialData: options?.initialData,
+      initialT: options?.initialT,
+      suspense: options?.suspense,
+      suspendKey: `${viewKeyOf(db)}\0${astKey}`,
+    },
   );
-};
+}

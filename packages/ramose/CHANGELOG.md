@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### `initialData` and Suspense on the read hooks (part of #196)
+
+`useLiveQuery` / `useQuery` / `useLivePull` / `usePull` take
+`{ initialData, initialT, suspense }`. A server `db.query` hydrates the
+first paint so a Cloudflare-rendered page is not an empty shell.
+Hydration is keyed on the same structural identity the hook already
+uses (view + lowered AST, or pull subject). `{ suspense: true }` throws
+until that key has a value, then `data` is defined. The two compose.
+A hydrated one-shot does not refetch on mount. `"use client"` already
+shipped in #212; the walkthrough is the new [Read on the server](https://ramose.ai/guides/ssr/)
+page.
+
 ### `usePrincipal`, `useRamoseClaims`, and `useOperation` (part of #195)
 
 `usePrincipal(db)` loads `{ eid, class, loading }` from `db.principal()`.

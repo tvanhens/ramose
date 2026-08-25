@@ -4,32 +4,85 @@
  * Shared one-shot engine for `useQuery` / `usePull`: last-write-wins by
  * issue order, previous `data` kept while the next run is in flight,
  * `refetch()` / `retry()` re-issue the same run.
+ *
+ * `initialData` hydrates the first paint for this structural key and
+ * skips the automatic first fetch (the rows already came from the
+ * server). `refetch()` / a later key still run. `{ suspense: true }`
+ * throws until the first settlement; hydrated rows do not suspend.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  READ_INITIAL,
   asError,
   asLoading,
   asSuccess,
+  hydrateRead,
   type Read,
+  type ReadOptions,
   type ReadState,
 } from "./read.ts";
+import { ensureOneShot, evictSuspend, peekSuspend } from "./suspend.ts";
 
 export const useOneShot = <A, E>(
   run: () => Promise<A>,
   basis: () => number | undefined,
   deps: readonly unknown[],
+  options?: ReadOptions<A> & { readonly suspendKey?: string },
 ): Read<A, E> => {
+  const suspendKey = options?.suspendKey;
   const [nudge, setNudge] = useState(0);
-  const refetch = useCallback(() => setNudge((n) => n + 1), []);
-  const [state, set] = useState<ReadState<A, E>>(
-    READ_INITIAL as ReadState<A, E>,
-  );
+  const [state, set] = useState<ReadState<A, E>>(() => {
+    const hydrated = hydrateRead<A, E>(options);
+    if (hydrated.data !== undefined) return hydrated;
+    if (suspendKey !== undefined) {
+      const slot = peekSuspend<A, E>(suspendKey);
+      if (slot?.data !== undefined) {
+        return asSuccess(slot.data, slot.t ?? options?.initialT);
+      }
+    }
+    return hydrated;
+  });
   /** Monotonic run counter, shared across effect runs: the LWW sequence. */
   const runs = useRef({ issued: 0, applied: 0 });
+  /**
+   * Structural key whose rows already arrived (`initialData` or a
+   * just-resolved suspense slot). The effect skips that key — including
+   * StrictMode's remount — until `refetch()` or a later key without rows.
+   */
+  const hydratedKey = useRef<string | undefined>(
+    state.data !== undefined && state.status === "success"
+      ? (suspendKey ?? "hydrated")
+      : undefined,
+  );
+
+  const seen = useRef(deps);
+  const identityChanged =
+    seen.current.length !== deps.length ||
+    seen.current.some((key, i) => key !== deps[i]);
+  if (identityChanged) {
+    seen.current = deps;
+    const next = hydrateRead<A, E>(options);
+    if (next.data !== undefined) {
+      set(next);
+      hydratedKey.current = suspendKey ?? "hydrated";
+    } else {
+      hydratedKey.current = undefined;
+    }
+  }
+
+  const refetch = useCallback(() => {
+    if (suspendKey !== undefined) evictSuspend(suspendKey);
+    hydratedKey.current = undefined;
+    setNudge((n) => n + 1);
+  }, [suspendKey]);
 
   useEffect(() => {
+    if (
+      hydratedKey.current !== undefined &&
+      hydratedKey.current === (suspendKey ?? "hydrated")
+    ) {
+      return;
+    }
     const seq = ++runs.current.issued;
     let disposed = false;
     const land = (
@@ -59,5 +112,22 @@ export const useOneShot = <A, E>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nudge]);
 
-  return { ...state, refetch, retry: refetch };
+  let shown = identityChanged && options?.initialData !== undefined
+    ? hydrateRead<A, E>(options)
+    : state;
+  if (
+    options?.suspense === true &&
+    suspendKey !== undefined &&
+    shown.data === undefined &&
+    shown.error === undefined
+  ) {
+    const slot = ensureOneShot<A, E>(suspendKey, run, basis);
+    if (slot.error !== undefined) throw slot.error;
+    if (slot.data === undefined) throw slot.promise;
+    shown = asSuccess(slot.data, slot.t ?? options.initialT);
+    hydratedKey.current = suspendKey;
+    if (state.data !== slot.data) set(shown);
+  }
+
+  return { ...shown, refetch, retry: refetch };
 };

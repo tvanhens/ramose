@@ -14,7 +14,9 @@ import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, us
 
 Hooks only, no UI. They reach the Ramose server through one client. Read hooks take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
-Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `ConnectionStatus`, `Principal`, `OperationHandle`, `RunResult`, `RamoseProviderProps`.
+Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadOptions`, `ReadStatus`, `SuspendedRead`, `ConnectionStatus`, `Principal`, `OperationHandle`, `RunResult`, `RamoseProviderProps`.
+
+A server read hydrates the first paint: `useLiveQuery(db, query, { initialData: rows, initialT: t })`. `{ suspense: true }` throws until that key has a value, then `data` is defined. Both are keyed on the same structural identity as the subscription. The walkthrough is [Read on the server](/guides/ssr/).
 
 ## RamoseProvider
 
@@ -56,14 +58,14 @@ const TodoList = () => {
 };
 ```
 
-`useLiveQuery(db, query): Read<Out, QueryError>` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes.
+`useLiveQuery(db, query, options?): Read<Out, QueryError>` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes. `options` is `{ initialData, initialT, suspense }`.
 
-- `data` is `undefined` until the first answer, and again right after `db` or `query` change.
+- `data` is `undefined` until the first answer, and again right after `db` or `query` change, unless `initialData` hydrated this key.
 - `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the data stays.
 - `t` is the basis those rows were read at. `status` / `isLoading` cover the first answer; later emissions are not a load. `refetch()` re-reads once without tearing the subscription down. `retry()` re-subscribes — recover a terminal error without unmounting. A reconnect after `Unauthorized` (new session generation, status `live`) re-runs on its own.
 - `key={row.id}`: a selected `id: X.id` is a plain `number`.
 
-A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
+A second form, `useLiveQuery(sub, options?)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
 
 ## useQuery
 
@@ -71,7 +73,7 @@ A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
-`useQuery(db, query): Read<Out, QueryError>` — one `db.query` per view / lowered-AST pair (the same structural key `useLiveQuery` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. `refetch()` re-issues the same run.
+`useQuery(db, query, options?): Read<Out, QueryError>` — one `db.query` per view / lowered-AST pair (the same structural key `useLiveQuery` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. `refetch()` re-issues the same run. `initialData` skips the automatic first fetch; `{ suspense: true }` throws until it settles.
 
 ## useLivePull
 
@@ -79,11 +81,11 @@ A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (
   const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
 ```
 
-`useLivePull(db, subject, shape): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape.
+`useLivePull(db, subject, shape, options?): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape. Same `initialData` / `suspense` options as `useLiveQuery`.
 
 ## usePull
 
-`usePull(db, subject, shape): Read<Pull | null>` — one `db.pull`, same `Read` shape. Previous `data` stays while a later subject is in flight.
+`usePull(db, subject, shape, options?): Read<Pull | null>` — one `db.pull`, same `Read` shape. Previous `data` stays while a later subject is in flight. Same `initialData` / `suspense` options as `useQuery`.
 
 ## useBasis
 
@@ -153,7 +155,7 @@ errorMessage(e); // e.message ?? e._tag ?? String(e)
 - **`error` is the tagged failure.** Every hook reports the class itself, so `errorMessage(error)` works on every hook.
 
 <Next links={[
+  { href: "/guides/ssr/", label: "Read on the server", why: "hydrate a live query from a Worker read" },
   { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },
-  { href: "/reference/client-api/", label: "Client API", why: "the db handle the hooks wrap" },
   { href: "/reference/errors/", label: "Errors", why: "what lands in error and what to show" },
 ]} />

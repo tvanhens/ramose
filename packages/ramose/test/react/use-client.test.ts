@@ -4,10 +4,10 @@
  * Without `"use client"` on the published entry, `import { useLiveQuery } from
  * "ramose/react"` in a Next App Router or React Router server component is
  * a hard build error: the hooks use client-only React APIs and the package
- * never said so. The remaining SSR work (`initialData`, Suspense) is not
- * this file's job — this only pins the one-line unblock so a later edit
- * cannot drop the directive. Deep imports via the `*` export map can land
- * on a hook module directly, so each of those files carries it too.
+ * never said so. `initialData` / Suspense live on the read hooks; this
+ * file only pins the directive so a later edit cannot drop it. Deep
+ * imports via the `*` export map can land on a hook module directly, so
+ * each of those files carries it too.
  */
 
 import { describe, expect, test } from "bun:test";

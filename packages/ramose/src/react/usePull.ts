@@ -13,6 +13,9 @@
  * Changing the subject blanks `data` on the live hook until the new pull
  * lands; the one-shot keeps the previous `data` while the next run is in
  * flight.
+ *
+ * `initialData` hydrates this key so a server pull can paint on the first
+ * client render. `{ suspense: true }` throws until the first answer.
  */
 
 import type {
@@ -24,8 +27,13 @@ import type {
   ReadDb,
   ValidatePull,
 } from "../db/index.ts";
-import { type Read, readT } from "./read.ts";
-import { seamOf, viewDep } from "./seam.ts";
+import {
+  type Read,
+  type ReadOptions,
+  type SuspendedRead,
+  readT,
+} from "./read.ts";
+import { seamOf, viewDep, viewKeyOf } from "./seam.ts";
 import { useLiveSubscription } from "./useLiveQuery.ts";
 import { useOneShot } from "./useOneShot.ts";
 
@@ -33,6 +41,8 @@ import { useOneShot } from "./useOneShot.ts";
 type PullPattern<C extends Schema.Any, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
   : ValidatePull<C, P>;
+
+type PullOut<C extends Schema.Any, P> = Pull<C, P> | null;
 
 /**
  * The subject, flattened to the coordinates the wire would see: `{ id }` to
@@ -51,11 +61,37 @@ const subjectKey = (subject: unknown): string => {
   return JSON.stringify(id ?? subject);
 };
 
-export const useLivePull = <C extends Schema.Any, const P>(
+const patternKeys = new WeakMap<object, string>();
+let nextPatternKey = 1;
+const patternKey = (pattern: unknown): string => {
+  if (typeof pattern === "object" && pattern !== null) {
+    const held = patternKeys.get(pattern);
+    if (held !== undefined) return held;
+    const key = `#${nextPatternKey++}`;
+    patternKeys.set(pattern, key);
+    return key;
+  }
+  return JSON.stringify(pattern);
+};
+
+export function useLivePull<C extends Schema.Any, const P>(
   db: ReadDb<C>,
   subject: EntityRef<C>,
   pattern: PullPattern<C, P>,
-): Read<Pull<C, P> | null, DbError> => {
+  options: ReadOptions<PullOut<C, P>> & { suspense: true },
+): SuspendedRead<PullOut<C, P>, DbError>;
+export function useLivePull<C extends Schema.Any, const P>(
+  db: ReadDb<C>,
+  subject: EntityRef<C>,
+  pattern: PullPattern<C, P>,
+  options?: ReadOptions<PullOut<C, P>>,
+): Read<PullOut<C, P>, DbError>;
+export function useLivePull<C extends Schema.Any, const P>(
+  db: ReadDb<C>,
+  subject: EntityRef<C>,
+  pattern: PullPattern<C, P>,
+  options?: ReadOptions<PullOut<C, P>>,
+): Read<PullOut<C, P>, DbError> {
   const view = viewDep(db);
   const key = subjectKey(subject);
   return useLiveSubscription(
@@ -66,6 +102,10 @@ export const useLivePull = <C extends Schema.Any, const P>(
     [view, key, pattern],
     [view, key, pattern],
     {
+      initialData: options?.initialData,
+      initialT: options?.initialT,
+      suspense: options?.suspense,
+      suspendKey: `${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
       basis: () => readT(db),
       refetch: () => db.pull<P>(subject, pattern),
       seam: {
@@ -75,18 +115,37 @@ export const useLivePull = <C extends Schema.Any, const P>(
       },
     },
   );
-};
+}
 
-export const usePull = <C extends Schema.Any, const P>(
+export function usePull<C extends Schema.Any, const P>(
   db: ReadDb<C>,
   subject: EntityRef<C>,
   pattern: PullPattern<C, P>,
-): Read<Pull<C, P> | null, DbError> => {
+  options: ReadOptions<PullOut<C, P>> & { suspense: true },
+): SuspendedRead<PullOut<C, P>, DbError>;
+export function usePull<C extends Schema.Any, const P>(
+  db: ReadDb<C>,
+  subject: EntityRef<C>,
+  pattern: PullPattern<C, P>,
+  options?: ReadOptions<PullOut<C, P>>,
+): Read<PullOut<C, P>, DbError>;
+export function usePull<C extends Schema.Any, const P>(
+  db: ReadDb<C>,
+  subject: EntityRef<C>,
+  pattern: PullPattern<C, P>,
+  options?: ReadOptions<PullOut<C, P>>,
+): Read<PullOut<C, P>, DbError> {
   const view = viewDep(db);
   const key = subjectKey(subject);
   return useOneShot(
     () => db.pull<P>(subject, pattern),
     () => readT(db),
     [view, key, pattern],
+    {
+      initialData: options?.initialData,
+      initialT: options?.initialT,
+      suspense: options?.suspense,
+      suspendKey: `${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
+    },
   );
-};
+}

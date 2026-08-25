@@ -1,0 +1,90 @@
+---
+title: Read on the server
+description: Run a query in a Worker, pass the rows into useLiveQuery, and skip the empty first paint.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A Worker can already `await db.query(query)`. The missing seam was handing those rows to React so the first paint is the list, not a loading shell. This page is for anyone rendering React on Cloudflare — Next App Router, React Router, or a Worker that returns HTML — who has a live query and does not want the empty flash.
+
+<Learn learn={["Query from a Worker with Ramose.Databases", "Hydrate useLiveQuery with initialData", "Suspend instead of rendering a loading shell"]} before={[{ href: "/guides/workers/", label: "Use it from a Worker" }, { href: "/guides/live-queries/", label: "Live queries" }]} minutes={6} />
+
+## Why the first paint is empty
+
+`useLiveQuery` is a client hook. Without rows from the server it mounts as `status: "loading"` and `data: undefined`, then fills in when the WebSocket answers. On Cloudflare that empty shell is the default path — the same Worker that can read the database is also the one rendering the page.
+
+`"use client"` on `ramose/react` is what lets a server component import the hook. The rest of this page is the hydration seam.
+
+## Read on the Worker
+
+`Ramose.Databases` is the typed client bound to the Ramose server. `db.query` / `db.pull` / `db.basis` are promises; `live` and `livePull` are not on this type. The `examples/kv-style` Worker reads its own write back:
+
+```ts title="examples/kv-style/app.ts#tenant-run"
+        const { t, dbAfter } = yield* tenant.effect.run(addUser, { name: "Ada" });
+        // `dbAfter` carries the min-`t` floor, so this reads its own write
+        const names = yield* dbAfter.effect.query(namesQuery);
+```
+
+The same handle speaks promises in an async loader or server component:
+
+```ts
+const db = ramose.db("todos", Todos);
+const rows = await db.query(todoQuery);
+const { t } = await db.basis();
+```
+
+Pass `rows` and `t` into the client tree as props. How calls travel — a **service binding** when the caller is another Worker in the same stack, the public URL otherwise — is on [Use it from a Worker](/guides/workers/#how-calls-travel).
+
+## Hydrate the live query
+
+The client hook takes the same query the Worker ran. `initialData` is the first paint; the subscription still starts and later emissions replace the seed.
+
+```tsx
+"use client";
+import { useLiveQuery } from "ramose/react";
+
+export function TodoList({
+  rows,
+  t,
+}: {
+  rows: Ramose.Rows<typeof todoQuery>;
+  t: number;
+}) {
+  const { data } = useLiveQuery(db, todoQuery, {
+    initialData: rows,
+    initialT: t,
+  });
+  return (
+    <ul>
+      {(data ?? rows).map((row) => (
+        <li key={row.id}>{row.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+`useQuery` / `useLivePull` / `usePull` take the same options. A hydrated one-shot does not refetch on mount — `refetch()` still does. A hydrated live query keeps listening.
+
+Hydration is keyed on the same identity the hook already uses: the view (`db` / `db.asOf(t)` / `db.history`) plus the lowered query AST, or the pull subject. A changed `.where` is a new key. Pass `initialData` that matches the query you hand the hook; a new key without rows is the empty shell again (live) or the previous rows while the next run is in flight (one-shot).
+
+## Suspend instead of a loading shell
+
+`{ suspense: true }` throws until that key has a value, then `data` is defined. Wrap the tree in React `<Suspense>`, **inside** `<RamoseProvider>` — if the provider is inside the boundary it unmounts while the read is in flight and closes the client. Hydrated rows do not suspend.
+
+```tsx
+const { data } = useLiveQuery(db, todoQuery, { suspense: true });
+// data is Out — not Out | undefined
+```
+
+A terminal failure (`InvalidRequest`, `Unauthorized`, …) throws to the nearest error boundary. Network trouble on a live query is still retried in place.
+
+## Live updates still need a browser
+
+The server read is one shot. After hydrate, `useLiveQuery` is the browser subscription — a WebSocket to the Ramose server, the same as [Live queries](/guides/live-queries/). Server-side handles from `Ramose.Databases` still have no `live` / `livePull`.
+
+<Next links={[
+  { href: "/reference/react/", label: "React hooks", why: "every hook, including the options" },
+  { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs after the first paint" },
+  { href: "/guides/workers/", label: "Use it from a Worker", why: "the server handle this page reads through" },
+]} />

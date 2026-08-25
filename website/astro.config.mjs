@@ -135,6 +135,7 @@ export default defineConfig({
           items: [
             { label: "Deploy", slug: "guides/deploy" },
             { label: "Use it from a Worker", slug: "guides/workers" },
+            { label: "Read on the server", slug: "guides/ssr" },
             { label: "Before production", slug: "guides/before-production" },
             { label: "Troubleshooting and FAQ", slug: "guides/troubleshooting" },
             { label: "Effect (advanced)", slug: "concepts/effect" },

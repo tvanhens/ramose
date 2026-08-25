@@ -64,12 +64,12 @@ Errors are tagged classes. On the app path, `await db.run(…)` / `db.query(…)
 
 ## Live queries need a browser
 
-A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `db.live` needs a WebSocket to the server. Server-side handles from `Ramose.Databases` do not include `live` / `livePull` — those methods are not on the type. Run live queries in the browser through `Ramose.connect`; let your Worker do request-shaped reads and writes.
+A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `db.live` needs a WebSocket to the server. Server-side handles from `Ramose.Databases` do not include `live` / `livePull` — those methods are not on the type. Run live queries in the browser through `Ramose.connect`; let your Worker do request-shaped reads and writes. Hand those rows to React with `initialData` — [Read on the server](/guides/ssr/).
 
 The complete Worker is [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style): four files, type-checked with the repo.
 
 <Next links={[
+  { href: "/guides/ssr/", label: "Read on the server", why: "hand Worker rows to a live query" },
   { href: "/guides/workspaces/", label: "One database per customer", why: "create a customer's database at sign-up" },
-  { href: "/reference/errors/", label: "Errors", why: "every error tag and what the user sees" },
   { href: "/guides/before-production/", label: "Before production", why: "the checklist before real users" },
 ]} />

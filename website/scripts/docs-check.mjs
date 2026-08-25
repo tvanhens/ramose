@@ -70,6 +70,7 @@ const BUDGETS = {
   "guides/workspaces": 900,
   "guides/deploy": 1200,
   "guides/workers": 800,
+  "guides/ssr": 900,
   "guides/before-production": 1000,
   // Raised for the entries covering the bare-specifier `main` hang, schema-change
   // watching, and the corrected port-collision advice (which used to tell readers
@@ -83,7 +84,7 @@ const BUDGETS = {
   // Raised for the aggregate / groupBy / `.after` entries on the query builder,
   // and the thread-window sketch on `again`.
   "reference/client-api": 3600,
-  "reference/react": 1200,
+  "reference/react": 1400,
   "reference/policy": 2150,
   "reference/errors": 1000,
   "reference/server": 2500,

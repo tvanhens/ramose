@@ -3,7 +3,8 @@
 /**
  * `useLiveQuery` — a live query as React `Read` state: `{ data, error,
  * status, isLoading, t, refetch, retry }`, reset when the subscription
- * identity changes.
+ * identity changes. `{ initialData, initialT }` hydrates that identity;
+ * `{ suspense: true }` throws until it has a value.
  *
  * Two rules for consumers:
  *
@@ -45,15 +46,18 @@ import { lowerQueryObject } from "../db/query/index.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { retainLive } from "./liveCache.ts";
 import {
-  READ_INITIAL,
   asError,
   asLoading,
   asSuccess,
+  hydrateRead,
   readT,
   type Read,
+  type ReadOptions,
   type ReadState,
+  type SuspendedRead,
 } from "./read.ts";
 import { seamOf, viewKeyOf } from "./seam.ts";
+import { ensureLive, evictSuspend, peekSuspend } from "./suspend.ts";
 
 type Acquire<A, E> = () => {
   readonly sub: Subscription<A, E>;
@@ -66,10 +70,12 @@ interface LiveSeam {
   readonly onWake: (cb: () => void) => (() => void) | undefined;
 }
 
-interface LiveOptions<A> {
+interface LiveOptions<A, E = unknown> extends ReadOptions<A> {
   readonly basis?: () => number | undefined;
   readonly refetch?: () => Promise<A>;
   readonly seam?: LiveSeam;
+  /** Structural key for `{ suspense: true }` — view + AST, or handle identity. */
+  readonly suspendKey?: string;
 }
 
 /**
@@ -78,14 +84,28 @@ interface LiveOptions<A> {
  * when the subscription identity actually changes (not on a render-fresh
  * handle).
  */
+const firstPaint = <A, E>(
+  options: LiveOptions<A, E> | undefined,
+  suspendKey: string | undefined,
+): ReadState<A, E> => {
+  const hydrated = hydrateRead<A, E>(options);
+  if (hydrated.data !== undefined) return hydrated;
+  if (suspendKey === undefined) return hydrated;
+  const slot = peekSuspend<A, E>(suspendKey);
+  return slot?.data !== undefined
+    ? asSuccess(slot.data, options?.initialT ?? options?.basis?.())
+    : hydrated;
+};
+
 export const useLiveSubscription = <A, E>(
   acquire: Acquire<A, E>,
   deps: readonly unknown[],
   resetKeys: readonly unknown[],
-  options?: LiveOptions<A>,
+  options?: LiveOptions<A, E>,
 ): Read<A, E> => {
-  const [state, setState] = useState<ReadState<A, E>>(
-    READ_INITIAL as ReadState<A, E>,
+  const suspendKey = options?.suspendKey;
+  const [state, setState] = useState<ReadState<A, E>>(() =>
+    firstPaint(options, suspendKey),
   );
   const seen = useRef(resetKeys);
   const identityChanged =
@@ -93,7 +113,7 @@ export const useLiveSubscription = <A, E>(
     seen.current.some((key, i) => key !== resetKeys[i]);
   if (identityChanged) {
     seen.current = resetKeys;
-    setState(READ_INITIAL as ReadState<A, E>);
+    setState(firstPaint(options, suspendKey));
   }
 
   const optionsRef = useRef(options);
@@ -126,6 +146,8 @@ export const useLiveSubscription = <A, E>(
   }, []);
 
   const retry = useCallback(() => {
+    const key = optionsRef.current?.suspendKey;
+    if (key !== undefined) evictSuspend(key);
     setState((prev) => asLoading(prev));
     setEpoch((n) => n + 1);
   }, []);
@@ -183,7 +205,21 @@ export const useLiveSubscription = <A, E>(
     };
   }, [error]);
 
-  return { ...state, refetch, retry };
+  let shown = identityChanged ? firstPaint(options, suspendKey) : state;
+  if (
+    options?.suspense === true &&
+    suspendKey !== undefined &&
+    shown.data === undefined &&
+    shown.error === undefined
+  ) {
+    const slot = ensureLive(suspendKey, acquire);
+    if (slot.error !== undefined) throw slot.error;
+    if (slot.data === undefined) throw slot.promise;
+    shown = asSuccess(slot.data, options.initialT ?? options.basis?.());
+    if (state.data !== slot.data) setState(shown);
+  }
+
+  return { ...shown, refetch, retry };
 };
 
 // Bundlers replace the dotted `process.env.NODE_ENV` via define even
@@ -247,21 +283,58 @@ const useKeyChurnWarning = (key: string): void => {
   prev.current = key;
 };
 
+const isSubscription = (
+  value: unknown,
+): value is Subscription<unknown, unknown> =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as Subscription<unknown, unknown>).subscribe === "function" &&
+  typeof (value as Subscription<unknown, unknown>).close === "function";
+
+const subKeys = new WeakMap<object, string>();
+let nextSubKey = 1;
+const subscriptionKey = (sub: object): string => {
+  const held = subKeys.get(sub);
+  if (held !== undefined) return held;
+  const key = `sub:${nextSubKey++}`;
+  subKeys.set(sub, key);
+  return key;
+};
+
 /** Query form: `db.live(query)`, constructed inside the effect. */
 export function useLiveQuery<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
   query: QueryObject<R, Out>,
+  options: ReadOptions<Out> & { suspense: true },
+): SuspendedRead<Out, QueryError<Out>>;
+export function useLiveQuery<C extends Schema.Any, R, Out = readonly R[]>(
+  db: ReadDb<C>,
+  query: QueryObject<R, Out>,
+  options?: ReadOptions<Out>,
 ): Read<Out, QueryError<Out>>;
 /** Subscription form: a handle built elsewhere; re-subscribes when its identity changes. */
-export function useLiveQuery<A, E>(sub: Subscription<A, E>): Read<A, E>;
+export function useLiveQuery<A, E>(
+  sub: Subscription<A, E>,
+  options: ReadOptions<A> & { suspense: true },
+): SuspendedRead<A, E>;
+export function useLiveQuery<A, E>(
+  sub: Subscription<A, E>,
+  options?: ReadOptions<A>,
+): Read<A, E>;
 export function useLiveQuery(
   source: ReadDb | Subscription<unknown, unknown>,
-  query?: QueryObject<unknown, unknown>,
+  queryOrOptions?: QueryObject<unknown, unknown> | ReadOptions<unknown>,
+  options?: ReadOptions<unknown>,
 ): Read<unknown, unknown> {
-  const owned = query !== undefined;
+  const owned = !isSubscription(source);
+  const query = owned
+    ? (queryOrOptions as QueryObject<unknown, unknown>)
+    : undefined;
+  const opts = owned ? options : (queryOrOptions as ReadOptions<unknown> | undefined);
   const viewKey = owned ? viewKeyOf(source as ReadDb) : "";
-  const structureKey = owned ? queryStructureKey(query) : "";
-  const cacheKey = owned ? liveSubscriptionKey(viewKey, query) : "";
+  const structureKey = owned ? queryStructureKey(query!) : "";
+  const cacheKey = owned ? liveSubscriptionKey(viewKey, query!) : "";
+  const suspendKey = owned ? cacheKey : subscriptionKey(source);
   useKeyChurnWarning(owned ? structureKey : "");
 
   const db = owned ? (source as ReadDb) : undefined;
@@ -278,30 +351,34 @@ export function useLiveQuery(
           owned: false,
         };
       }
-      if (DEV) assertLoweringPurity(query);
+      if (DEV) assertLoweringPurity(query!);
       const seam = seamOf(source as ReadDb);
       // `finalize` is only correct on the raw wire result. A hand-rolled
       // ReadDb without `liveRaw` already emits shaped rows from `live()`.
       if (seam?.liveRaw !== undefined) {
         let finalize: ((result: unknown) => unknown) | undefined;
         try {
-          finalize = lowerQueryObject(query).finalize;
+          finalize = lowerQueryObject(query!).finalize;
         } catch {
           // liveRaw will surface the same lowering failure
         }
         return {
-          sub: retainLive(cacheKey, () => seam.liveRaw!(query), finalize),
+          sub: retainLive(cacheKey, () => seam.liveRaw!(query!), finalize),
           owned: true,
         };
       }
       return {
-        sub: retainLive(cacheKey, () => (source as ReadDb).live(query)),
+        sub: retainLive(cacheKey, () => (source as ReadDb).live(query!)),
         owned: true,
       };
     },
     owned ? [cacheKey] : [source],
     owned ? [viewKey, structureKey] : [source],
     {
+      initialData: opts?.initialData,
+      initialT: opts?.initialT,
+      suspense: opts?.suspense,
+      suspendKey,
       basis: () => readT(dbRef.current),
       refetch:
         owned
