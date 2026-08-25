@@ -363,7 +363,7 @@ Query.from(Todo)                         // every todo…
 | `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number or id cell). Equivalent to `is(N.id, id)` |
 | `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal or id cell). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there |
-| `matching(attr, (v) => cmp)` | bind the value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches` (a `RegExp` with flags throws) |
+| `matching(attr, (v) => cmp)` | bind the value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches`. `startsWith` / `endsWith` / `includes` take `{ ignoreCase: true }`; a `RegExp` with flags throws |
 | `ids()` | project only `{ id }` rows — the cheap live-subscription workhorse |
 | `follow(ref)` / `backlink(ref)` | refocus on the reference's target / on the referrer |
 | `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over referrers through `ref` (`every` / `none` are vacuously true of a record nothing points at) |
@@ -371,7 +371,7 @@ Query.from(Todo)                         // every todo…
 | `select(shape)` / `orderBy(key, dir?, opts?)` / `limit(n)` / `offset(n)` | shape, sort, page — on the server |
 | `stage(fragment)` | lift your own fragment with the same adapter the shipped combinators use |
 
-`Q.or(…)` / `Q.not(…)` combine clauses (generator spelling); join variables are whatever outer handles the branches close over. `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
+`Q.or(…)` / `Q.not(…)` combine clauses (generator spelling); join variables are whatever outer handles the branches close over. `Q.call(fn, …args)` binds an engine function (`+`, `lower-case`, `str`, …) — the names it accepts are listed on [The query language](/reference/query-language/#engine-functions-qcall-can-bind). `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
 
 **Terminals** — methods on the built query value:
 

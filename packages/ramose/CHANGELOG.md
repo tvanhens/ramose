@@ -16,6 +16,15 @@ can spinner independently. `useTransact` is gone.
 rides. Reef's board no longer decodes the JWT or prop-drills `cls` /
 `myEid`.
 
+### Case-insensitive string predicates and `Q.call` (part of #190)
+
+`Q.startsWith` / `Q.endsWith` / `Q.includes` take `{ ignoreCase: true }`,
+lowered through the engine's `lower-case` function. `Q.matches` still
+rejects `RegExp` flags. `Q.call(fn, …args)` is the function-binding
+escape hatch for engine builtins the kernel does not wrap (`+`,
+`lower-case`, `str`, …). The names it accepts are listed on the
+query-language page.
+
 ### Connection status and live `retry()` (part of #194)
 
 `Client.connectionStatus(name?)` and `onConnectionStatus` report

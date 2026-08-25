@@ -244,8 +244,8 @@ export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> 
 
 /**
  * `matching(A, (v) => cmp)`: bind the attr's value and constrain it —
- * `matching(Issue.title, (t) => Q.startsWith(t, "re:"))`. The callback may
- * return one comparison or a whole generator of clauses.
+ * `matching(Issue.title, (t) => Q.startsWith(t, "re:", { ignoreCase: true }))`.
+ * The callback may return one comparison or a whole generator of clauses.
  *
  * Renamed from `where` so the general filter is `.where` / object-literal
  * equality on the fluent chain (#204, #208).
