@@ -158,13 +158,14 @@ result without contributing it. Unknown names fail at build time.
 | Group | Names |
 | --- | --- |
 | Arithmetic | `+` `-` `*` `/` `quot` `rem` `mod` `inc` `dec` `abs` `min` `max` |
-| String | `str` `subs` `lower-case` `upper-case` `trim` `split` |
+| String | `str` `subs` `lower-case` `upper-case` `trim` `split` `clojure.string/join` |
 | Regex | `re-find` `re-matches` `re-seq` |
 | Collections | `count` `identity` `ground` `vector` `tuple` `untuple` |
 | Other | `rand` `rand-int` `now` |
 
-The string functions also answer under `clojure.string/` aliases
-(`clojure.string/lower-case`, `clojure.string/join`, …). Aggregates
+`lower-case`, `upper-case`, `trim`, and `split` also answer under
+`clojure.string/` aliases; `join` answers only as `clojure.string/join`,
+and `str` / `subs` have no prefixed spelling. Aggregates
 (`count`, `sum`, `median`, …) stay cells — `Q.count(e)`, not `Q.call`.
 `get-else` and `missing?` need the database source and are not `Q.call`
 names.
