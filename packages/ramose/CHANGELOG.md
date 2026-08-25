@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### `usePrincipal`, `useRamoseClaims`, and `useOperation` (part of #195)
+
+`usePrincipal(db)` loads `{ eid, class, loading }` from `db.principal()`.
+`useRamoseClaims()` peeks the provider's `TokenSource` synchronously
+(JWT decode, not verified — UI hints). `useOperation(db, op)` is the
+typed write hook: `run` matches `db.run` and returns
+`{ ok: true, value } | { ok: false, error }`. Pending / error are per
+invocation key (`pendingFor` / `errorFor`), so two buttons on one hook
+can spinner independently. `useTransact` is gone.
+
+`TokenSource.peek()` is the sync cache read that `useRamoseClaims`
+rides. Reef's board no longer decodes the JWT or prop-drills `cls` /
+`myEid`.
+
 ### Connection status and live `retry()` (part of #194)
 
 `Client.connectionStatus(name?)` and `onConnectionStatus` report

@@ -12,9 +12,10 @@
  * `useDb(name, schema)` memoises a `Db` from it. On top sit the reads —
  * `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`, `useBasis`
  * (where the basis is) — all returning the same `Read` shape — plus
- * `useConnectionStatus()` (session-backed), `useTransact()` as the
- * pending / error helper around `db.run` (works with or without the
- * provider) and `errorMessage` for toast text.
+ * `useConnectionStatus()` (session-backed), `usePrincipal(db)` /
+ * `useRamoseClaims()` for who the session is, `useOperation(db, op)` as
+ * the pending / error helper around `db.run`, and `errorMessage` for
+ * toast text.
  *
  * This entry and every hook module it re-exports open with `"use client"`
  * so a Next App Router / React Router server-component import compiles.
@@ -23,7 +24,7 @@
  */
 
 export { RamoseProvider, type RamoseProviderProps } from "./RamoseProvider.tsx";
-export { useDb } from "./hooks.ts";
+export { useDb, useRamoseClaims } from "./hooks.ts";
 export { type ConnectionStatus } from "../db/index.ts";
 export { useConnectionStatus } from "./useConnectionStatus.ts";
 export { type Read, type ReadStatus } from "./read.ts";
@@ -31,5 +32,11 @@ export { useLiveQuery } from "./useLiveQuery.ts";
 export { useQuery } from "./useQuery.ts";
 export { useLivePull, usePull } from "./usePull.ts";
 export { useBasis } from "./useBasis.ts";
-export { type RunResult, type Transact, useTransact } from "./useTransact.ts";
+export { type Principal, usePrincipal } from "./usePrincipal.ts";
+export {
+  type OperationHandle,
+  type OperationOptions,
+  type RunResult,
+  useOperation,
+} from "./useOperation.ts";
 export { errorMessage } from "./errors.ts";
