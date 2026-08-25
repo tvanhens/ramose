@@ -6,6 +6,7 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { describe, expect, test } from "bun:test";
+import * as Stream from "effect/Stream";
 import { Component, type ReactNode, Suspense } from "react";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import {
@@ -18,12 +19,14 @@ import {
 } from "./harness.tsx";
 import { fakePeer, type Frame } from "./peer.ts";
 import * as Ramose from "../../src/db/index.ts";
+import { fromStream } from "../../src/db/promise.ts";
 import {
   useDb,
   useLiveQuery,
   usePull,
   useQuery,
 } from "../../src/react/index.ts";
+import { ensureLive, evictSuspend } from "../../src/react/suspend.ts";
 
 registerDom();
 
@@ -229,6 +232,39 @@ describe("initialData", () => {
     expect(peer.frameOps("q")).toHaveLength(1);
   });
 
+  test("useQuery fetches when the key changes under a carried-over initialData", async () => {
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "q"
+          ? { body: { t: 2, result: [[{ title: "fresh" }]] } }
+          : { body: { t: 2, result: [] } },
+    });
+    const seed = [{ title: "seed" }];
+    const { result, rerender } = renderHook(
+      ({ asOf }: { asOf: number }) => {
+        const db = useDb("todos", Todos);
+        return useQuery(db.asOf(asOf), titles, {
+          initialData: seed,
+          initialT: 1,
+        });
+      },
+      { initialProps: { asOf: 1 }, wrapper: wrapperFor(peer) },
+    );
+    expect(peer.frameOps("q")).toHaveLength(0);
+    expect(result.current.status).toBe("success");
+
+    rerender({ asOf: 2 });
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.data).toEqual(seed);
+    await waitFor(() =>
+      expect(result.current.data).toEqual([{ title: "fresh" }]),
+    );
+    expect(peer.frameOps("q")).toHaveLength(1);
+    expect(result.current.status).toBe("success");
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.t).toBe(2);
+  });
+
   test("usePull hydrates null — a missing record is data, not a blank", () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 3, result: { title: "A" } } }),
@@ -337,5 +373,91 @@ describe("{ suspense: true }", () => {
     );
     expect(container.textContent).toBe("loading");
     await waitFor(() => expect(container.textContent).toBe("one"));
+  });
+
+  test("plain useQuery after a suspense read on the same key re-fetches", async () => {
+    ensureDom();
+    let answers = 0;
+    const peer = fakePeer({
+      answer: (frame: Frame) => {
+        if (frame.op === "q") {
+          answers += 1;
+          return {
+            body: {
+              t: answers,
+              result: [[{ title: answers === 1 ? "one" : "two" }]],
+            },
+          };
+        }
+        return { body: { t: 1, result: [] } };
+      },
+    });
+    const Provider = wrapperFor(peer);
+    function Probe({ mode }: { mode: "suspense" | "plain" }) {
+      const db = useDb("todos", Todos).asOf(1);
+      if (mode === "suspense") {
+        const { data } = useQuery(db, titles, { suspense: true });
+        return <div>{`S:${data[0]!.title}`}</div>;
+      }
+      const q = useQuery(db, titles);
+      return (
+        <div>{`P:${q.status}:${String(q.isLoading)}:${q.data?.[0]?.title}`}</div>
+      );
+    }
+    const { container, rerender } = render(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <Probe key="suspense" mode="suspense" />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("S:one"));
+    const afterSuspense = peer.frameOps("q").length;
+    expect(afterSuspense).toBeGreaterThanOrEqual(1);
+
+    rerender(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <Probe key="plain" mode="plain" />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() =>
+      expect(container.textContent).toBe("P:success:false:two"),
+    );
+    expect(peer.frameOps("q").length).toBeGreaterThan(afterSuspense);
+  });
+});
+
+describe("ensureLive", () => {
+  test("a synchronous replay still unsubscribes and closes an owned handle", async () => {
+    const inner = fromStream(
+      Stream.make(7).pipe(Stream.concat(Stream.never)),
+    );
+    await sleep(20);
+    let unsubscribed = false;
+    let closed = false;
+    const sub: Ramose.Subscription<number> = {
+      subscribe(onValue, onError) {
+        const off = inner.subscribe(onValue, onError);
+        return () => {
+          unsubscribed = true;
+          off();
+        };
+      },
+      [Symbol.asyncIterator]: () => inner[Symbol.asyncIterator](),
+      close() {
+        closed = true;
+        inner.close();
+      },
+    };
+    const key = "ensureLive:sync-replay";
+    evictSuspend(key);
+    const slot = ensureLive(key, () => ({ sub, owned: true }));
+    await slot.promise;
+    expect(slot.data).toBe(7);
+    expect(unsubscribed).toBe(true);
+    expect(closed).toBe(true);
+    evictSuspend(key);
   });
 });

@@ -34,10 +34,11 @@ export const useOneShot = <A, E>(
   const [state, set] = useState<ReadState<A, E>>(() => {
     const hydrated = hydrateRead<A, E>(options);
     if (hydrated.data !== undefined) return hydrated;
-    if (suspendKey !== undefined) {
+    if (options?.suspense === true && suspendKey !== undefined) {
       const slot = peekSuspend<A, E>(suspendKey);
       if (slot?.data !== undefined) {
-        return asSuccess(slot.data, slot.t ?? options?.initialT);
+        evictSuspend(suspendKey);
+        return asSuccess(slot.data, slot.t ?? options.initialT);
       }
     }
     return hydrated;
@@ -56,17 +57,22 @@ export const useOneShot = <A, E>(
   );
 
   const seen = useRef(deps);
+  const seedRef = useRef(options?.initialData);
   const identityChanged =
     seen.current.length !== deps.length ||
     seen.current.some((key, i) => key !== deps[i]);
+  const seedChanged = !Object.is(seedRef.current, options?.initialData);
   if (identityChanged) {
     seen.current = deps;
-    const next = hydrateRead<A, E>(options);
-    if (next.data !== undefined) {
-      set(next);
+    seedRef.current = options?.initialData;
+    if (seedChanged && options?.initialData !== undefined) {
       hydratedKey.current = suspendKey ?? "hydrated";
+      set(hydrateRead<A, E>(options));
     } else {
+      // Same `initialData` reference (or none) is for the previous key —
+      // a later key still runs. Keep previous `data` while that run loads.
       hydratedKey.current = undefined;
+      set((prev) => asLoading(prev));
     }
   }
 
@@ -112,9 +118,12 @@ export const useOneShot = <A, E>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nudge]);
 
-  let shown = identityChanged && options?.initialData !== undefined
-    ? hydrateRead<A, E>(options)
-    : state;
+  let shown =
+    identityChanged && seedChanged && options?.initialData !== undefined
+      ? hydrateRead<A, E>(options)
+      : identityChanged
+        ? asLoading(state)
+        : state;
   if (
     options?.suspense === true &&
     suspendKey !== undefined &&
@@ -126,6 +135,7 @@ export const useOneShot = <A, E>(
     if (slot.data === undefined) throw slot.promise;
     shown = asSuccess(slot.data, slot.t ?? options.initialT);
     hydratedKey.current = suspendKey;
+    evictSuspend(suspendKey);
     if (state.data !== slot.data) set(shown);
   }
 

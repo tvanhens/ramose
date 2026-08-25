@@ -70,20 +70,32 @@ export const ensureLive = <A, E>(
   };
   slot.promise = asThenable(
     new Promise<A>((resolve, reject) => {
-      const off = sub.subscribe(
-        (data) => {
-          slot.data = data;
-          off();
-          if (owned) sub.close();
-          resolve(data);
-        },
-        (error) => {
-          slot.error = error;
-          off();
-          if (owned) sub.close();
-          reject(error);
-        },
-      );
+      // `fromStream` / `retainLive` replay a cached latest value inside
+      // `subscribe`, before the unsubscribe handle is assigned. Hoist
+      // `off` and tear down again after `subscribe` returns so a
+      // synchronous replay still unsubscribes and (when we own it)
+      // closes the handle.
+      let off: (() => void) | undefined;
+      let settled = false;
+      const onValue = (data: A): void => {
+        slot.data = data;
+        settled = true;
+        off?.();
+        if (owned && off !== undefined) sub.close();
+        resolve(data);
+      };
+      const onError = (error: E): void => {
+        slot.error = error;
+        settled = true;
+        off?.();
+        if (owned && off !== undefined) sub.close();
+        reject(error);
+      };
+      off = sub.subscribe(onValue, onError);
+      if (settled) {
+        off();
+        if (owned) sub.close();
+      }
     }),
   );
   slot.promise.catch(() => {});

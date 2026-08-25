@@ -90,11 +90,11 @@ const firstPaint = <A, E>(
 ): ReadState<A, E> => {
   const hydrated = hydrateRead<A, E>(options);
   if (hydrated.data !== undefined) return hydrated;
-  if (suspendKey === undefined) return hydrated;
+  if (options?.suspense !== true || suspendKey === undefined) return hydrated;
   const slot = peekSuspend<A, E>(suspendKey);
-  return slot?.data !== undefined
-    ? asSuccess(slot.data, options?.initialT ?? options?.basis?.())
-    : hydrated;
+  if (slot?.data === undefined) return hydrated;
+  evictSuspend(suspendKey);
+  return asSuccess(slot.data, options.initialT ?? options.basis?.());
 };
 
 export const useLiveSubscription = <A, E>(
@@ -216,6 +216,7 @@ export const useLiveSubscription = <A, E>(
     if (slot.error !== undefined) throw slot.error;
     if (slot.data === undefined) throw slot.promise;
     shown = asSuccess(slot.data, options.initialT ?? options.basis?.());
+    evictSuspend(suspendKey);
     if (state.data !== slot.data) setState(shown);
   }
 
