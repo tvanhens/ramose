@@ -19,6 +19,7 @@ import {
   checkAuth,
   compareAuthToWorker,
   compareOperationsToHealth,
+  compareOperationsToPolicy,
   compareWritesToWorker,
   coverageTimeoutMs,
   DEFAULT_JWT_MAX_TTL,
@@ -713,6 +714,26 @@ describe("operations coverage vs /health", () => {
     const error = compareOperationsToHealth(client, { ok: true });
     expect(error).toBeInstanceOf(OperationsCoverageError);
     expect(error?.missing).toEqual(["user/create", "user/set-name"]);
+  });
+
+  test("policy operations coverage: unknown armed name fails; unarmed is fine", () => {
+    expect(compareOperationsToPolicy(undefined, "{}")).toBeUndefined();
+    expect(compareOperationsToPolicy(client, undefined)).toBeUndefined();
+    expect(
+      compareOperationsToPolicy(
+        client,
+        JSON.stringify({ operations: { "user/create": [], "user/set-name": [] } }),
+      ),
+    ).toBeUndefined();
+    expect(
+      compareOperationsToPolicy(client, JSON.stringify({ operations: { "user/create": [] } })),
+    ).toBeUndefined();
+    const error = compareOperationsToPolicy(
+      client,
+      JSON.stringify({ operations: { "user/ghost": [] } }),
+    );
+    expect(error).toBeDefined();
+    expect(error?.message).toMatch(/user\/ghost/);
   });
 
   test("coverage fetch uses the caller's probe.timeoutMs", () => {

@@ -281,7 +281,7 @@ export const IssueDetail = ({
     const body = commentDraft.trim();
     if (body === "" || myEid === undefined) return;
     setCommentDraft("");
-    void run(addComment(db, myEid, issueId, body));
+    void run(addComment(db, issueId, body));
   };
 
   const status = row.status as Status;

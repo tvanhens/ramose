@@ -45,9 +45,8 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="object-storage"></span><span id="r2"></span>**object storage** | Cloudflare R2, where every version of every database is kept. | `Cloudflare.R2.Bucket` |
 | <span id="one-or-many"></span><span id="cardinality"></span>**one value or many** | Whether a field holds one value or a set of values. Labels on an issue are "many". | `Field.many(schema)` — [Many, unique, owned](/guides/catalog/#many-unique-owned) |
 | <span id="open-mode"></span>**open mode** | A server with no policy and no token: every caller is admin. Right for a laptop, wrong for the internet. | env unset — [The three server modes](/guides/permissions/#the-three-server-modes) |
-| <span id="policy"></span><span id="permissions"></span>**policy** | The value that says which roles may read, create, change or remove which fields; compiled to JSON for the server. | [`Ramose.Policy`](/reference/policy/), `RAMOSE_POLICY` |
-| <span id="operation"></span>**operation** | A named write (`issue/move`) run with `db.run`. Not a policy verb (`read` / `create` / `set` / `remove` / `delete`). | [`db.run`](/reference/client-api/#writes), [Write data](/guides/transactions/) |
-| <span id="preset"></span>**preset** | A field the server fills from the caller on create (creator = you). A different client value is refused; the same value is a no-op. | `P.preset(attr, P.principal)` — [Policy verbs](/reference/policy/#policy-verbs) |
+| <span id="policy"></span><span id="permissions"></span>**policy** | The value that says which roles may read which facts (per-datom masks) and which named operations they may run (per-operation arms); compiled to JSON for the server. | [`Ramose.Policy`](/reference/policy/), `RAMOSE_POLICY` |
+| <span id="operation"></span>**operation** | A named write (`issue/move`) run with `db.run`. Policy authorizes it with an `operations:` arm, not a datom verb. | [`db.run`](/reference/client-api/#writes), [Write data](/guides/transactions/) |
 | <span id="pull"></span>**pull** | Read one record by id or unique key with a chosen set of fields; `null` if missing or a required field is absent. | [`db.pull`](/reference/client-api/#pull), `usePull`, `Ramose.Pull` |
 | <span id="query"></span>**query** | A typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past. | [`Query.from`](/reference/client-api/#queries), `db.query`, `useQuery` |
 | <span id="query-budget"></span>**query budget** | A memory limit per query on the server; exceeding it fails the query with a 413 — narrow the query. | `QueryBudgetExceeded`, [`RAMOSE_QUERY_MAX_CELLS`](/reference/server/#query-budget) |
@@ -63,7 +62,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="service-binding"></span>**service binding** | Cloudflare's Worker-to-Worker call; how your Worker reaches the server without a URL. | `Ramose.layer` — [Use it from a Worker](/guides/workers/) |
 | <span id="shape"></span>**shape** | The fields you ask a query or pull to return, including fields of referenced records. | `.select({…})`, `.optional`, `.orDefault(v)`, `Ramose.all(N)` — [Choose the fields](/guides/queries/#choose-the-fields) |
 | <span id="token"></span><span id="jwt"></span>**sign-in token** (JWT) | A signed token the server verifies on every request and never issues; carries `sub`, the database name and the role. | `Ramose.token.jwt` / `.static`, `TokenSource` — [What the token carries](/guides/sign-in/#what-the-token-carries) |
-| <span id="signed-in-user"></span><span id="principal"></span>**signed-in user** (principal) | The record that represents the caller, found by matching the token's `sub` to a unique field. The peer upserts it at session establishment (`sub`, `role`, and matching `ramose.attrs`). In an arm, `me`. | `principal: User.sub`, `me`, `P.principal` (preset), `db.principal()` |
+| <span id="signed-in-user"></span><span id="principal"></span>**signed-in user** (principal) | The record that represents the caller, found by matching the token's `sub` to a unique field. The peer upserts it at session establishment (`sub`, `role`, and matching `ramose.attrs`). In an arm, `me`. | `principal: User.sub`, `me`, `op.principal`, `db.principal()` |
 | <span id="snapshot"></span><span id="root"></span>**snapshot** | A saved index of a whole database at a version. Retention counts snapshots. Reference only. | [`RAMOSE_RETAIN_ROOTS`](/reference/server/#retention) |
 | <span id="stage"></span>**stage** | An Alchemy deployment environment (dev, prod). | `--stage prod` — [Deploy](/guides/deploy/#commands) |
 
@@ -119,7 +118,7 @@ The house style behind the table above: which word goes in the prose, and how an
 | **one value or many** | "single-value / many-valued field" |
 | **open mode** | "open" |
 | **policy** | "permissions" (the topic) / "the policy" (the value) |
-| **preset** | "server-filled field" |
+| **operation arm** | "who may run this write" |
 | **pull** | "read one record" |
 | **query** | "query" |
 | **query budget** | "memory limit per query" |

@@ -271,7 +271,7 @@ export const provisionWorkspace = (db: ReefDb) =>
 
 ## Writes
 
-App writes go through `db.run`. There is no public `db.transact`. Raw `POST /transact` is superuser / seed / `writes: "all"`.
+App writes go through `db.run`. There is no public `db.transact`. Raw `POST /transact` is superuser / seed, or `writes: "all"` when no policy is configured.
 
 **`Ramose.Operation(name, schemas, body)`** — one named write. `name` (`issue/move`) is the wire contract; renaming one, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. Input and output codecs are Effect Schema (`ramose/effect`). Return a handle (or `{ id: handle }`) with `EntityId` in the output schema; `db.run` resolves it after the writer assigns ids.
 
@@ -330,7 +330,7 @@ Rules:
 - A single-value field: `set` replaces the old value. A many-valued field: one `set` per value; `remove(field, value)` removes one value, `remove(field)` removes them all.
 - `delete` removes every fact of the record. History keeps them.
 - A reference field takes the target's id. `put` also accepts a handle, `{ id }` row, `op.principal`, or lookup in a ref slot — not a bare string (rejected as a dangling ref).
-- There is no `preset` on the client; presets are a [policy](/reference/policy/) feature the server applies.
+- Who-did-this fields are written from `op.principal` in the operation body. The client does not send them.
 
 **`OpReport`** is `{ t, txEid, datomCount, dbAfter, output }`. `output` is the encoded return — `report.output.id` after a create that returned a handle. `dbAfter` reads your own write ([glossary](/concepts/glossary/#dbafter)).
 

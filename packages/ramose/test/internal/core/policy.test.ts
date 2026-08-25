@@ -10,13 +10,14 @@ import {
   PolicyMemo,
   PolicyParseError,
   allowsOp,
+  allowsOperation,
   checkTx,
   filterDb,
   isSchemaTx,
   isSuperuser,
+  operationClassAllows,
   parsePolicy,
   policyView,
-  presetOps,
 } from "../../../src/internal/core/policy/index.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
@@ -48,16 +49,15 @@ const POLICY_JSON = {
   ns: {
     doc: {
       read: [A.allow(A.or(A.eq(":doc/owner", A.principal), inOrg))],
-      create: [A.allow(inOrg)],
-      add: [A.allow(A.eq(":doc/owner", A.principal))],
-      retract: [A.allow(A.eq(":doc/owner", A.principal))],
-      retractEntity: [A.allow(A.eq(":doc/owner", A.principal))],
     },
     project: { read: [A.allow(A.ref(":project/org", A.eq(":org/members", A.principal)))] },
     org: { read: [A.allow(A.eq(":org/members", A.principal))] },
     user: { read: [A.allow(A.eq(":user/sub", A.claim("sub")))] },
   },
-  preset: { ":doc/owner": A.principal },
+  operations: {
+    "doc/create": [A.allow(inOrg)],
+    "doc/set-title": [A.allow(A.eq(":doc/owner", A.principal))],
+  },
 };
 
 let conn: Connection;
@@ -105,11 +105,12 @@ const identsOf = async (d: Db, e: number): Promise<string[]> =>
 // ---------------------------------------------------------------------------
 
 describe("parsePolicy", () => {
-  test("accepts the compiled shape and normalizes preset shorthand", () => {
-    const p = parsePolicy({ ...POLICY_JSON, preset: { ":doc/owner": ["attrs", "org"] } });
+  test("accepts the compiled shape and the operations section", () => {
+    const p = parsePolicy(POLICY_JSON);
     expect(p.version).toBe(1);
     expect(p.principal).toBe(":user/sub");
-    expect(p.preset[":doc/owner"]).toEqual({ _tag: "claim", path: ["attrs", "org"] });
+    expect(p.operations!["doc/create"]).toHaveLength(1);
+    expect(p.operations!["doc/set-title"]).toHaveLength(1);
     expect(p.ns!.doc.read).toHaveLength(1);
   });
 
@@ -131,7 +132,8 @@ describe("parsePolicy", () => {
     bad({ attrs: { ":doc/audit": { read: [A.allow({ _tag: "nope" } as never)] } } }, /unknown expr _tag/);
     bad({ attrs: { ":doc/audit": { read: [A.allow(A.class("ghost"))] } } }, /not a declared class/);
     bad({ ns: { ":doc": {} } }, /bare namespace prefix/);
-    bad({ preset: { ":doc/owner": { _tag: "wat" } } }, /unknown operand _tag/);
+    bad({ ns: { doc: { create: [] } } }, /unknown op/);
+    bad({ preset: { ":doc/owner": { _tag: "principal" } } }, /preset is gone/);
     bad({ superuser: "ghost" }, /superuser: "ghost" is not a declared class/);
     bad({ schemaClasses: [] }, /schemaClasses/);
     bad({ schemaClasses: ["ghost"] }, /schemaClasses: "ghost" is not a declared class/);
@@ -163,14 +165,15 @@ describe("parsePolicy", () => {
       ns: {
         doc: {
           read: [{ _tag: "allow", rule: true }],
-          add: [{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }],
         },
       },
-      preset: { ":doc/owner": { _tag: "principal" } },
+      operations: {
+        "doc/set-title": [{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }],
+      },
       rules: [[["policy/doc/add/0", "?me", "?e"], ["?e", ":doc/owner", "?me"]]],
     });
     expect(p.version).toBe(2);
-    expect(p.ns!.doc.add).toEqual([{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }]);
+    expect(p.operations!["doc/set-title"]).toEqual([{ _tag: "allow", class: ["member"], rule: "policy/doc/add/0" }]);
     expect(p.rules).toHaveLength(1);
   });
 
@@ -182,7 +185,6 @@ describe("parsePolicy", () => {
         classes: ["member"],
         attrs: {},
         ns: { doc: { read: [{ _tag: "allow", rule: "missing" }] } },
-        preset: {},
       }),
     ).toThrow(/not in rules/);
   });
@@ -388,154 +390,60 @@ describe("isSchemaTx", () => {
 describe("checkTx", () => {
   const check = (ops: unknown[], p: Principal, d: Db = db) => checkTx(ops, d, policy, p);
 
-  test("an existence ping is not a policy verb (existing no-op, missing tx/missing-entity)", async () => {
-    const ping = (e: unknown) => [[":db/update", e]] as unknown[];
-    // Non-admin, including a principal who cannot `add` this row.
-    expect((await check(ping(ids.d1), alice())).ok).toBe(true);
-    expect((await check(ping(ids.d1), bob())).ok).toBe(true);
-    await expect(check(ping(999_999), alice())).rejects.toMatchObject({
-      code: "tx/missing-entity",
+  test("data tx is superuser-only; everyone else is denied opaquely", async () => {
+    const data = [{ ":doc/title": "anything" }];
+    expect(await check(data, admin())).toEqual({ ok: true, ops: data });
+    expect(await check(data, alice())).toEqual({
+      ok: false,
+      code: "policy",
+      attr: ":db/tx",
+      op: "transact",
     });
-    await expect(check(ping(999_999), bob())).rejects.toMatchObject({
-      code: "tx/missing-entity",
+    expect(await check([[":db/add", ids.d1, ":doc/title", "D1b"]], alice())).toEqual({
+      ok: false,
+      code: "policy",
+      attr: ":db/tx",
+      op: "transact",
     });
-    // A 4-element `:db/update` is still a write and is judged (card-one
-    // replacement may deny on the implicit retract).
-    expect((await check([[":db/update", ids.d1, ":doc/title", "D1b"]], alice())).ok).toBe(true);
-    expect((await check([[":db/update", ids.d1, ":doc/title", "nope"]], bob())).ok).toBe(false);
+    const denied = await check([[":db/add", ids.d2, ":doc/title", "leak"]], alice());
+    expect(Object.keys(denied).sort()).toEqual(["attr", "code", "ok", "op"]);
+    expect(JSON.stringify(denied)).not.toContain(String(ids.d2));
+    expect(JSON.stringify(denied)).not.toContain("leak");
   });
 
-  test("a unique-identity upsert onto an existing entity is `add`, not `create`", async () => {
-    // :doc rules give alice `add` on docs she owns; there is no `create` rule
-    // reachable without a project, so a create would be denied.
-    const p = parsePolicy({
-      ...POLICY_JSON,
-      ns: {
-        ...POLICY_JSON.ns,
-        user: {
-          ...POLICY_JSON.ns.user,
-          add: [A.allow(A.eq(":user/sub", A.claim("sub")))],
-          retract: [A.allow(A.eq(":user/sub", A.claim("sub")))],
-        },
+  test("schema tx is admitted here; schemaClasses is the caller's job", async () => {
+    const schema = [
+      {
+        ":db/ident": ":new/attr",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
       },
-    });
-    const upsert = await checkTx([{ ":user/sub": "u_alice", ":user/name": "Alicia" }], db, p, alice());
-    expect(upsert.ok).toBe(true);
-    // the same shape for a *new* sub is a create → no create rule → denied
-    const create = await checkTx([{ ":user/sub": "u_new", ":user/name": "New" }], db, p, alice());
-    expect(create).toMatchObject({ ok: false, code: "policy", op: "create" });
+    ];
+    expect((await check(schema, alice())).ok).toBe(true);
+    expect((await check(schema, admin())).ok).toBe(true);
+  });
+});
+
+describe("operation arms", () => {
+  test("class gate is sync and deny-by-default", () => {
+    expect(operationClassAllows(policy, "doc/create", alice())).toBe(true);
+    expect(operationClassAllows(policy, "doc/create", anon())).toBe(true);
+    expect(operationClassAllows(policy, "doc/missing", alice())).toBe(false);
   });
 
-  test("create is allowed through a ref asserted in the same tx, and preset is injected", async () => {
-    const r = await check([{ ":db/id": "nd", ":doc/title": "New", ":doc/project": ids.p1 }], alice());
-    expect(r.ok).toBe(true);
-    const injected = (r as { ops: unknown[] }).ops.slice(-1)[0];
-    expect(injected).toEqual([":db/add", "nd", ":doc/owner", ids.alice]);
-    // and the whole thing actually transacts
-    const rep = await conn.transact((r as { ops: unknown[] }).ops);
-    expect((await conn.db().entity(rep.tempids.nd))![":doc/owner"]).toBe(ids.alice);
-    // bob is not in p1's org → denied
-    expect(await check([{ ":doc/title": "Nope", ":doc/project": ids.p1 }], bob())).toMatchObject({
-      ok: false,
-      code: "policy",
-      attr: ":doc/title",
-      op: "create",
+  test("named rule runs against the resolved target", async () => {
+    const ctx = (e: number, p: Principal) => ({
+      db,
+      principal: p,
+      e,
+      memo: new PolicyMemo(),
     });
-  });
-
-  test("a client-supplied preset value on create is denied", async () => {
-    const r = await check([{ ":doc/title": "X", ":doc/project": ids.p1, ":doc/owner": ids.bob }], alice());
-    expect(r).toEqual({ ok: false, code: "policy", attr: ":doc/owner", op: "create" });
-    // re-checking already-injected ops is idempotent (ingress then transactor)
-    const first = await check([{ ":db/id": "nd", ":doc/title": "X", ":doc/project": ids.p1 }], alice());
-    expect(first.ok).toBe(true);
-    expect((await check((first as { ops: unknown[] }).ops, alice())).ok).toBe(true);
-    // on an existing entity a preset attribute is a plain `add`: no exemption,
-    // no magic — it passes only because this policy's doc `add` rule allows it
-    expect((await check([[":db/add", ids.d1, ":doc/owner", ids.bob]], alice())).ok).toBe(true);
-    const p = parsePolicy({ ...POLICY_JSON, attrs: { ...POLICY_JSON.attrs, ":doc/owner": { add: [] } } });
-    expect(await checkTx([[":db/add", ids.d1, ":doc/owner", ids.bob]], db, p, alice())).toEqual({
-      ok: false,
-      code: "policy",
-      attr: ":doc/owner",
-      op: "add",
-    });
-  });
-
-  test("preset that cannot resolve denies the create", async () => {
-    const r = await check([{ ":doc/title": "X", ":doc/project": ids.p1 }], { ...anon(), class: "member" });
-    expect(r).toMatchObject({ ok: false, attr: ":doc/title", op: "create" }); // no eid → inOrg fails first
-    expect(presetOps(policy, anon(), [{ ref: "x", attrs: [":doc/title"] }])).toEqual({
-      ok: false,
-      code: "policy",
-      attr: ":doc/owner",
-      op: "create",
-    });
-  });
-
-  test("retractEntity expands and is denied when any closure datom is denied", async () => {
-    expect((await check([[":db/retractEntity", ids.d1]], alice())).ok).toBe(true);
-    expect(await check([[":db/retractEntity", ids.d2]], alice())).toMatchObject({
-      ok: false,
-      code: "policy",
-      op: "retractEntity",
-    });
-    // an incoming ref from bob's doc is part of d1's closure and drags it down
-    await conn.transact([[":db/add", ids.d2, ":doc/project", ids.d1]]);
-    const d = conn.db();
-    expect(await checkTx([[":db/retractEntity", ids.d1]], d, policy, alice())).toEqual({
-      ok: false,
-      code: "policy",
-      attr: ":doc/project",
-      op: "retractEntity",
-    });
-  });
-
-  test("card-one replacement emits an implicit retract checked against pre-state", async () => {
-    // alice owns d1 → add + retract both allowed
-    expect((await check([[":db/add", ids.d1, ":doc/title", "D1b"]], alice())).ok).toBe(true);
-    // deny `retract` only: the implicit retract is what fails
-    const p = parsePolicy({
-      ...POLICY_JSON,
-      ns: { ...POLICY_JSON.ns, doc: { ...POLICY_JSON.ns.doc, retract: [] } },
-    });
-    expect(await checkTx([[":db/add", ids.d1, ":doc/title", "D1b"]], db, p, alice())).toEqual({
-      ok: false,
-      code: "policy",
-      attr: ":doc/title",
-      op: "retract",
-    });
-    // no pre-existing value → no implicit retract → still allowed under `p`
-    const rep = await conn.transact([{ ":db/id": "d5", ":doc/title": "D5", ":doc/owner": ids.alice }]);
-    const d = conn.db();
-    expect((await checkTx([[":db/add", rep.tempids.d5, ":doc/audit", "x"]], d, p, alice())).ok).toBe(true);
-  });
-
-  test("attributes outside the schema and schema ops are denied for non-admins", async () => {
-    expect(await check([[":db/add", ids.d1, ":ghost/attr", 1]], alice())).toEqual({
-      ok: false,
-      code: "policy",
-      attr: ":ghost/attr",
-      op: "add",
-    });
-    expect(await check([{ ":db/ident": ":new/attr", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }], alice())).toMatchObject({
-      ok: false,
-      code: "policy",
-      attr: ":db/ident",
-    });
-  });
-
-  test("admin skips the check and gets its ops back untouched", async () => {
-    const ops = [{ ":doc/title": "anything" }, [":db/retractEntity", ids.d2]];
-    const r = await check(ops, admin());
-    expect(r).toEqual({ ok: true, ops });
-  });
-
-  test("a denial never carries values or entity ids", async () => {
-    const r = await check([[":db/add", ids.d2, ":doc/title", "leak"]], alice());
-    expect(Object.keys(r).sort()).toEqual(["attr", "code", "ok", "op"]);
-    expect(JSON.stringify(r)).not.toContain(String(ids.d2));
-    expect(JSON.stringify(r)).not.toContain("leak");
+    expect(await allowsOperation(policy, "doc/set-title", ctx(ids.d1, alice()))).toBe(true);
+    expect(await allowsOperation(policy, "doc/set-title", ctx(ids.d2, alice()))).toBe(false);
+    expect(await allowsOperation(policy, "doc/create", ctx(ids.d1, alice()))).toBe(true);
+    expect(await allowsOperation(policy, "doc/create", ctx(ids.d2, alice()))).toBe(false);
+    expect(await allowsOperation(policy, "ghost/op", ctx(ids.d1, alice()))).toBe(false);
   });
 });
 
@@ -556,16 +464,15 @@ const FRAGMENT_POLICY_JSON = {
         { _tag: "allow", rule: "policy/doc/owner" },
         { _tag: "allow", rule: "policy/doc/inOrg" },
       ],
-      create: [{ _tag: "allow", rule: "policy/doc/inOrg" }],
-      add: [{ _tag: "allow", rule: "policy/doc/owner" }],
-      retract: [{ _tag: "allow", rule: "policy/doc/owner" }],
-      retractEntity: [{ _tag: "allow", rule: "policy/doc/owner" }],
     },
     project: { read: [{ _tag: "allow", rule: "policy/project/inOrg" }] },
     org: { read: [{ _tag: "allow", rule: "policy/org/members" }] },
     user: { read: [{ _tag: "allow", rule: "policy/user/self" }] },
   },
-  preset: { ":doc/owner": { _tag: "principal" } },
+  operations: {
+    "doc/create": [{ _tag: "allow", rule: "policy/doc/inOrg" }],
+    "doc/set-title": [{ _tag: "allow", rule: "policy/doc/owner" }],
+  },
   rules: [
     [["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]],
     [
@@ -650,40 +557,22 @@ describe("fragment-rule evaluation", () => {
       classes: ["anonymous", "member", "admin"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
-      preset: {},
     });
     expect(await identsOf(filterDb(db, db, publicRead, noEid), ids.d1)).toContain(":doc/title");
     expect(await identsOf(filterDb(db, db, publicRead, anon()), ids.d1)).toContain(":doc/title");
   });
 
-  test("create follows a ref asserted in the same tx (overlay)", async () => {
-    const r = await checkTx(
-      [{ ":db/id": "nd", ":doc/title": "New", ":doc/project": ids.p1 }],
+  test("operation rule evaluates against the resolved target", async () => {
+    const ctx = (e: number, p: Principal) => ({
       db,
-      frag,
-      alice(),
-    );
-    expect(r.ok).toBe(true);
-    expect((r as { ops: unknown[] }).ops.slice(-1)[0]).toEqual([":db/add", "nd", ":doc/owner", ids.alice]);
-    expect(
-      await checkTx([{ ":doc/title": "Nope", ":doc/project": ids.p1 }], db, frag, bob()),
-    ).toMatchObject({ ok: false, code: "policy", attr: ":doc/title", op: "create" });
-  });
-
-  test("add/retract/retractEntity evaluate against db-before, not the overlay", async () => {
-    expect((await checkTx([[":db/add", ids.d1, ":doc/title", "D1b"]], db, frag, alice())).ok).toBe(true);
-    // d2 has no :doc/audit yet, so this is a pure `add` (no implicit retract)
-    expect(await checkTx([[":db/add", ids.d2, ":doc/audit", "x"]], db, frag, alice())).toMatchObject({
-      ok: false,
-      code: "policy",
-      op: "add",
+      principal: p,
+      e,
+      memo: new PolicyMemo(),
     });
-    expect((await checkTx([[":db/retractEntity", ids.d1]], db, frag, alice())).ok).toBe(true);
-    expect(await checkTx([[":db/retractEntity", ids.d2]], db, frag, alice())).toMatchObject({
-      ok: false,
-      code: "policy",
-      op: "retractEntity",
-    });
+    expect(await allowsOperation(frag, "doc/set-title", ctx(ids.d1, alice()))).toBe(true);
+    expect(await allowsOperation(frag, "doc/set-title", ctx(ids.d2, alice()))).toBe(false);
+    expect(await allowsOperation(frag, "doc/create", ctx(ids.d1, alice()))).toBe(true);
+    expect(await allowsOperation(frag, "doc/create", ctx(ids.d2, alice()))).toBe(false);
   });
 
   test("a rule that blows the query budget is a typed error, not a deny", async () => {
@@ -693,7 +582,6 @@ describe("fragment-rule evaluation", () => {
       classes: ["member"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: "policy/blow" }] } },
-      preset: {},
       rules: [
         [["policy/counts", "?x"], [["ground", 0], "?x"]],
         [["policy/counts", "?x"], ["policy/counts", "?y"], [["+", "?y", 1], "?x"]],
@@ -886,7 +774,6 @@ describe("visible-set materialization", () => {
       classes: ["anonymous", "member", "admin"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
-      preset: {},
     });
     const v = filterDb(db, db, publicRead, alice());
     expect(await query(v, TITLES)).toHaveLength(2);
@@ -898,11 +785,11 @@ describe("visible-set materialization", () => {
     expect(policyView(filterDb(db, db, frag, admin()))).toBeUndefined();
   });
 
-  test("write arms stay on the per-entity path", async () => {
+  test("operation rules stay on the per-entity path", async () => {
     const frag = parsePolicy(FRAGMENT_POLICY_JSON);
     const memo = new PolicyMemo();
     expect(
-      await allowsOp(frag, "add", ":doc/title", { db, principal: alice(), e: ids.d1, memo }),
+      await allowsOperation(frag, "doc/set-title", { db, principal: alice(), e: ids.d1, memo }),
     ).toBe(true);
     expect(memo.visibleSet("policy/doc/owner")).toBeUndefined();
     expect(memo.getRule("policy/doc/owner|" + ids.d1)).toBe(true);
@@ -922,7 +809,6 @@ describe("visible-set materialization", () => {
       classes: ["member"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: "policy/wide" }] } },
-      preset: {},
       rules: [
         [
           ["policy/wide", "?me", "?e"],

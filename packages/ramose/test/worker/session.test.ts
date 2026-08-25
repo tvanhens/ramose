@@ -817,7 +817,6 @@ describe("decideSessionTx: post-commit rule view", () => {
       org: { read: [A.allow(A.eq(":org/members", A.principal))] },
       user: { read: [A.allow(A.eq(":user/sub", A.claim("sub")))] },
     },
-    preset: { ":doc/owner": A.principal },
   });
   const user = (sub: string, eid: number): Principal => ({
     kind: "user",
@@ -942,7 +941,6 @@ describe("sieve security: openSession + decideSessionTx", () => {
       org: { read: [A.allow(A.eq(":org/members", A.principal))] },
       user: { read: [A.allow(A.eq(":user/sub", A.claim("sub")))] },
     },
-    preset: { ":doc/owner": A.principal },
   });
   const user = (sub: string, eid: number): Principal => ({
     kind: "user",

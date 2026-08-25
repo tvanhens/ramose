@@ -421,7 +421,7 @@ describe("the board's writes move the board's live stream", () => {
     const httpBefore = peer.httpPaths.filter((p) => p.endsWith("/query")).length;
 
     peer.holdTransact();
-    const created = createIssue(peer.db, peer.myEid, undefined, {
+    const created = createIssue(peer.db, undefined, {
       title: "Ship the overlay",
       status: "todo",
       priority: "medium",
@@ -471,7 +471,7 @@ describe("the board's writes move the board's live stream", () => {
     const board = live(peer.db.effect.live(boardQuery));
     await awaitLive(board);
 
-    await createIssue(peer.db, peer.myEid, undefined, {
+    await createIssue(peer.db, undefined, {
       title: "Draft",
       status: "todo",
       priority: "low",
@@ -496,7 +496,7 @@ describe("the board's writes move the board's live stream", () => {
       operation: "issue/create",
       reason: "policy",
     });
-    const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
+    const denied = createIssue(peer.db, board.rows![0]!.rank, {
       title: "Ghost",
       status: "todo",
       priority: "none",
@@ -550,7 +550,7 @@ describe("the board's writes move the board's live stream", () => {
   test("pinned asOf still reads the peer, not the overlay", async () => {
     const peer = await inProcessPeer();
     const seedT = peer.conn.t;
-    await createIssue(peer.db, peer.myEid, undefined, {
+    await createIssue(peer.db, undefined, {
       title: "Only in the present",
       status: "todo",
       priority: "none",
@@ -571,12 +571,12 @@ describe("the board's writes move the board's live stream", () => {
 
   test("two clients moving two existing issues both see both moves without refresh", async () => {
     const peer = await inProcessPeer();
-    await createIssue(peer.db, peer.myEid, undefined, {
+    await createIssue(peer.db, undefined, {
       title: "One",
       status: "todo",
       priority: "medium",
     });
-    await createIssue(peer.db, peer.myEid, 1024, {
+    await createIssue(peer.db, 1024, {
       title: "Two",
       status: "todo",
       priority: "medium",
@@ -632,12 +632,12 @@ describe("the board's writes move the board's live stream", () => {
 
   test("two inbound { op: tx } frames (no local pending): both live boards show both moves", async () => {
     const peer = await inProcessPeer();
-    await createIssue(peer.db, peer.myEid, undefined, {
+    await createIssue(peer.db, undefined, {
       title: "One",
       status: "todo",
       priority: "medium",
     });
-    await createIssue(peer.db, peer.myEid, 1024, {
+    await createIssue(peer.db, 1024, {
       title: "Two",
       status: "todo",
       priority: "medium",
@@ -709,13 +709,13 @@ describe("the board's writes move the board's live stream", () => {
 describe("deleting an issue", () => {
   test("a commented issue deletes with its comments", async () => {
     const peer = await inProcessPeer();
-    const created = await createIssue(peer.db, peer.myEid, undefined, {
+    const created = await createIssue(peer.db, undefined, {
       title: "Commented",
       status: "todo",
       priority: "low",
     });
     const issueId = created.output.id as Ramose.Eid<typeof Issue>;
-    await addComment(peer.db, peer.myEid, issueId, "first note");
+    await addComment(peer.db, issueId, "first note");
     const before = await peer.db.query(commentsQuery(issueId));
     expect(before).toHaveLength(1);
 

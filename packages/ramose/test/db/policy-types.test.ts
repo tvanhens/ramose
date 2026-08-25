@@ -17,9 +17,11 @@ import {
   type Expect,
   type Extends,
   Entity,
+  Operation,
   Policy as P,
   Query,
   Ref,
+  defineOperations,
   type Claims,
 } from "../../src/db/internal.ts";
 import type { Var } from "../../src/db/query/kernel.ts";
@@ -176,6 +178,48 @@ const _fixtures = () => {
   claims({ issuer: "i", audience: "a", ttl: 900 }, { sub: "u", db: "acme", class: "admin" }, pol);
 
   const json: string = P.compile(pol, { pulls: [{ title: Doc.title }] });
+
+  const Op = Operation.for(App);
+  const createDocOp = Op(
+    "doc/create",
+    { input: Schema.Struct({}), output: Schema.Struct({}) },
+    () => ({}),
+  );
+  const setTitleOp = Op.patch("doc/set-title", Doc, ["title"]);
+  const registry = defineOperations(App, { createDocOp, setTitleOp });
+  P.policy(
+    {
+      schema: App,
+      principal: User.sub,
+      classes: ["member"],
+      schemaClasses: ["member"],
+      operations: registry,
+    },
+    {
+      operations: {
+        createDocOp: P.class("member"),
+        setTitleOp: { class: "member", rule: (me) => Query.is(Doc.owner, me) },
+        // @ts-expect-error — not a registry key
+        ghostOp: P.class("member"),
+      },
+    },
+  );
+  P.policy(
+    {
+      schema: App,
+      principal: User.sub,
+      classes: ["member"],
+      schemaClasses: ["member"],
+      operations: registry,
+    },
+    {
+      operations: {
+        // @ts-expect-error — a bare (no-on) op takes a class gate only
+        createDocOp: { class: "member", rule: (me: P.Me<typeof User>) => Query.is(Doc.owner, me) },
+      },
+    },
+  );
+
   return json;
 };
 

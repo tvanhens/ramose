@@ -1,4 +1,4 @@
-/** The compiled policy AST: plain, versioned JSON. Rules attach to attributes, a namespace entry is the fallback for its prefix, nothing matching = deny. */
+/** The compiled policy AST: plain, versioned JSON. Reads attach to attributes / namespaces; writes attach to named operations. Nothing matching = deny. */
 
 /** Current wire version: fragment arms + a query `rules` section. */
 export const POLICY_VERSION = 2;
@@ -7,12 +7,12 @@ export const POLICY_LEGACY_VERSION = 1;
 /** Max nesting of `ref` arrows in one v1 expression. */
 export const MAX_REF_DEPTH = 3;
 
-export type PolicyOp = "read" | "add" | "retract" | "retractEntity" | "create";
-export const POLICY_OPS: readonly PolicyOp[] = ["read", "add", "retract", "retractEntity", "create"];
+/** Per-datom / per-namespace verbs. Writes moved to {@link CompiledPolicy.operations}. */
+export type PolicyOp = "read";
+export const POLICY_OPS: readonly PolicyOp[] = ["read"];
 
-/** Denial / toast spelling. Wire ops stay `add` / `retract` / `retractEntity`. */
-export const publicPolicyOp = (op: string): string =>
-  op === "add" ? "set" : op === "retract" ? "remove" : op === "retractEntity" ? "delete" : op;
+/** Denial / toast spelling. Write verbs are gone; the name is kept for read denials. */
+export const publicPolicyOp = (op: string): string => op;
 
 /** Path into `Principal.claims`, e.g. ["sub"] or ["attrs", "org"]. */
 export type ClaimPath = readonly string[];
@@ -79,8 +79,11 @@ export interface CompiledPolicy {
   readonly attrs: Readonly<Record<string, AttrRules>>;
   /** namespace prefix (no leading ':') → fallback rules */
   readonly ns?: Readonly<Record<string, PolicyRules>>;
-  /** attribute ident → value the peer injects on create */
-  readonly preset: Readonly<Record<string, PolicyOperand>>;
+  /**
+   * Wire operation name → allow arms. Deny-by-default: a registered op
+   * with no entry is refused for everyone but the superuser.
+   */
+  readonly operations?: Readonly<Record<string, readonly PolicyArm[]>>;
   /**
    * Query-engine rule definitions (`[[name, ?me, ?e], clause…]`), present
    * on version 2 when any arm names a fragment rule.
@@ -353,14 +356,24 @@ export function parsePolicy(json: unknown): CompiledPolicy {
     }
   }
 
-  const preset: Record<string, PolicyOperand> = {};
-  for (const [ident, value] of Object.entries(obj(o.preset ?? {}, ".preset"))) {
-    const path = `.preset["${ident}"]`;
-    attrIdent(ident, path);
-    // shorthand: a bare claim path
-    preset[ident] = Array.isArray(value)
-      ? parseOperand({ _tag: "claim", path: value }, path)
-      : parseOperand(value, path);
+  if (o.preset !== undefined) {
+    fail(".preset", "preset is gone — write who-did-this fields from op.principal");
+  }
+
+  let operations: Record<string, readonly PolicyArm[]> | undefined;
+  if (o.operations !== undefined && o.operations !== null) {
+    operations = {};
+    for (const [name, arms] of Object.entries(obj(o.operations, ".operations"))) {
+      if (typeof name !== "string" || name.length === 0) {
+        fail(`.operations`, "expected a non-empty operation name");
+      }
+      if (!Array.isArray(arms)) fail(`.operations["${name}"]`, "expected an array of arms");
+      operations[name] = (arms as unknown[]).map((arm, i) =>
+        version === 1
+          ? parseExprArm(arm, `.operations["${name}"][${i}]`, classSet)
+          : parseRuleArm(arm, `.operations["${name}"][${i}]`, classSet, ruleNames),
+      );
+    }
   }
 
   return {
@@ -372,7 +385,7 @@ export function parsePolicy(json: unknown): CompiledPolicy {
     claims: o.claims,
     attrs,
     ns,
-    preset,
+    ...(operations !== undefined ? { operations } : {}),
     ...(ruleDefs !== undefined ? { rules: ruleDefs } : {}),
   };
 }

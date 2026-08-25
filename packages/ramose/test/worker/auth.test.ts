@@ -39,8 +39,11 @@ const token = (db: string, cls: string, sub = "user_ada", attrs?: Record<string,
 // ---- the policy ------------------------------------------------------------
 
 const allow = (expr: unknown) => [{ _tag: "allow", expr }];
-const principal = { _tag: "principal" };
-const eq = (attr: string, operand: unknown = principal) => ({ _tag: "eq", attr, operand });
+const eq = (attr: string, operand?: unknown) => ({
+  _tag: "eq",
+  attr,
+  operand: operand ?? { _tag: "principal" },
+});
 const ref = (attr: string, target: unknown) => ({ _tag: "ref", attr, target });
 /** doc → project → org → members ∋ principal */
 const inOrg = ref(":doc/project", ref(":project/org", eq(":org/members")));
@@ -53,17 +56,12 @@ const POLICY = {
   ns: {
     doc: {
       read: allow({ _tag: "or", exprs: [eq(":doc/owner"), inOrg] }),
-      create: allow(inOrg),
-      add: allow(eq(":doc/owner")),
-      retract: allow(eq(":doc/owner")),
-      retractEntity: allow(eq(":doc/owner")),
     },
     project: { read: allow(ref(":project/org", eq(":org/members"))) },
     org: { read: allow(eq(":org/members")) },
     user: { read: allow(eq(":user/sub", { _tag: "claim", path: ["sub"] })) },
   },
   attrs: { ":doc/audit": { read: allow({ _tag: "class", class: "admin" }) } },
-  preset: { ":doc/owner": principal },
 };
 
 const attr = (ident: string, type: string, extra: Record<string, unknown> = {}) => ({
@@ -371,58 +369,26 @@ describe("reads are a filtered Db", () => {
 });
 
 describe("writes", () => {
-  // Policy on raw `/transact` — specifically `writes: "all"`. Under the
-  // default a member data write is 403 `code: "operations"` before checkWrite.
+  // `writes: "all"` does not open raw data tx once a policy is installed.
   const raw = () => fixture({ RAMOSE_WRITES: "all" });
 
-  test("a denied write fails at ingress with 403 { code: policy } and no values", async () => {
+  test("member data tx is refused even under writes: all", async () => {
     const { peer, eids } = await raw();
     const carol = await token("acme", "member", "user_carol");
     const { status, body } = await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "hacked"]] }, carol));
     expect(status).toBe(403);
-    expect(body.code).toBe("policy");
-    expect(body.attr).toBe(":doc/title");
+    expect(body.code).toBe("operations");
     expect(JSON.stringify(body)).not.toContain("hacked");
     expect(await titles(peer, await token("acme", "member", "user_ada"))).toEqual(["Roadmap"]);
     peer.close();
   });
 
-  test("the owner may write, and `create` injects the preset owner", async () => {
+  test("the owner may not raw-transact data either", async () => {
     const { peer, eids } = await raw();
     const ada = await token("acme", "member", "user_ada");
-    expect((await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "Roadmap v2"]] }, ada))).status).toBe(200);
-    expect(await titles(peer, ada)).toEqual(["Roadmap v2"]);
-
-    const created = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "new", ":doc/title": "Spec", ":doc/project": eids.proj }] }, ada));
-    expect(created.status).toBe(200);
-    expect(Array.isArray(created.body.datoms)).toBe(true);
-    expect(created.body.datoms.length).toBeGreaterThan(0);
-    const owner = await peer.json("/db/acme/pull", post({ eid: created.body.tempids.new, pattern: [":doc/title", ":doc/owner"] }, ada));
-    expect(owner.body.result[":doc/owner"]).toEqual({ ":db/id": eids.ada });
-
-    const first = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "again", ":doc/title": "Idempotent", ":doc/project": eids.proj }], clientTxId: "c1" }, ada));
-    expect(first.status).toBe(200);
-    const replay = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "again", ":doc/title": "Idempotent", ":doc/project": eids.proj }], clientTxId: "c1" }, ada));
-    expect(replay.status).toBe(200);
-    expect(replay.body.t).toBe(first.body.t);
-    expect(replay.body.datoms).toEqual(first.body.datoms);
-    expect(await titles(peer, ada)).toEqual(["Idempotent", "Roadmap v2", "Spec"]);
-    peer.close();
-  });
-
-  test("a client-supplied preset value that is not the peer's is denied", async () => {
-    const { peer, eids } = await raw();
-    const ada = await token("acme", "member", "user_ada");
-    const res = await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj, ":doc/owner": eids.bob }] }, ada));
+    const res = await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "Roadmap v2"]] }, ada));
     expect(res.status).toBe(403);
-    expect(res.body.attr).toBe(":doc/owner");
-    peer.close();
-  });
-
-  test("`create` outside the principal's org is denied", async () => {
-    const { peer, eids } = await raw();
-    const carol = await token("acme", "member", "user_carol");
-    expect((await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj }] }, carol))).status).toBe(403);
+    expect(res.body.code).toBe("operations");
     peer.close();
   });
 

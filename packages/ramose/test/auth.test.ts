@@ -22,7 +22,6 @@ const POLICY = JSON.stringify({
   principal: ":user/sub",
   classes: ["admin", "member", "viewer"],
   attrs: {},
-  preset: {},
 });
 
 describe("claims", () => {

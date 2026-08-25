@@ -267,11 +267,6 @@ function resolveOperand(op: PolicyOperand, p: Principal): unknown {
   }
 }
 
-/** The value a preset attribute gets on create, or undefined if unresolvable. */
-export function presetValue(op: PolicyOperand, p: Principal): unknown {
-  const v = resolveOperand(op, p);
-  return v === null ? undefined : v;
-}
 
 export async function evalExpr(expr: PolicyExpr, ctx: EvalCtx): Promise<boolean> {
   switch (expr._tag) {
@@ -485,6 +480,59 @@ export async function allowsOp(
 
 export function canRead(policy: CompiledPolicy, attrIdent: string, ctx: EvalCtx): Promise<boolean> {
   return allowsOp(policy, "read", attrIdent, ctx);
+}
+
+/**
+ * Class gate for a named operation — no db. `true` when any arm's class
+ * list admits the principal (or has no class list). No arms → deny.
+ */
+function classGateOfExpr(expr: PolicyExpr, principal: Principal): boolean {
+  switch (expr._tag) {
+    case "const":
+      return expr.value;
+    case "class":
+      return holdsClass(principal, expr.class);
+    case "and":
+      return expr.exprs.every((e) => classGateOfExpr(e, principal));
+    case "or":
+      return expr.exprs.some((e) => classGateOfExpr(e, principal));
+    case "not":
+      return !classGateOfExpr(expr.expr, principal);
+    default:
+      // db-dependent: the class gate passes; allowsOperation judges the rule
+      return true;
+  }
+}
+
+export function operationClassAllows(
+  policy: CompiledPolicy,
+  name: string,
+  principal: Principal,
+): boolean {
+  const arms = policy.operations?.[name];
+  if (arms === undefined || arms.length === 0) return false;
+  return arms.some((arm) => {
+    if (isRuleArm(arm)) {
+      return arm.class === undefined || arm.class.some((c) => holdsClass(principal, c));
+    }
+    if (arm._tag === "deny") return false;
+    return classGateOfExpr(arm.expr, principal);
+  });
+}
+
+/**
+ * Full operation check: class gate, then a named rule against `ctx.e`
+ * (the resolved target). Arms with `rule: true` pass on the class gate
+ * alone. No arms → deny.
+ */
+export async function allowsOperation(
+  policy: CompiledPolicy,
+  name: string,
+  ctx: EvalCtx,
+): Promise<boolean> {
+  const arms = policy.operations?.[name];
+  if (arms === undefined || arms.length === 0) return false;
+  return evalArms(arms, ctx, policy.rules, false);
 }
 
 // ---------------------------------------------------------------------------

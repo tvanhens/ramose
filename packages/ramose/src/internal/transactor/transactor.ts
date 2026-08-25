@@ -116,6 +116,11 @@ interface Pending {
    * pre-write provision hook — the ops *are* the provision.
    */
   system?: boolean;
+  /**
+   * Worker already authorized this tx as a named operation. Skips the
+   * raw-transact data deny (schema / superuser only).
+   */
+  fromOperation?: boolean;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
 }
@@ -328,7 +333,7 @@ export class Transactor {
     tx: TxData,
     principal?: Principal,
     clientTxId?: string,
-    extras?: { readonly opOutput?: unknown; readonly system?: boolean },
+    extras?: { readonly opOutput?: unknown; readonly system?: boolean; readonly fromOperation?: boolean },
   ): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
@@ -343,6 +348,7 @@ export class Transactor {
         clientTxId,
         opOutput: extras?.opOutput,
         system: extras?.system || undefined,
+        fromOperation: extras?.fromOperation || undefined,
         resolve,
         reject,
       });
@@ -552,13 +558,14 @@ export class Transactor {
     if (eid !== undefined) p.principal = { ...who, eid };
   }
 
-  /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact, preset injections included. */
+  /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact. */
   private async authorize(p: Pending): Promise<TxData> {
     const policy = this.host.policy;
     if (!policy) return p.tx;
     if (p.system) return p.tx;
     if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
     if (isSuperuser(p.principal, policy)) return p.tx;
+    if (p.fromOperation) return p.tx;
     if (isSchemaTx(p.tx) && canChangeSchema(p.principal, policy)) return p.tx;
     const db = this.conn.db();
     // the Worker usually resolved it already; when its pre-check was skipped, do it here
@@ -756,11 +763,13 @@ export class Transactor {
         principal?: unknown;
         clientTxId?: unknown;
         opOutput?: unknown;
+        fromOperation?: unknown;
       };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
       const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, {
         opOutput: body.opOutput,
+        fromOperation: body.fromOperation === true,
       });
       return json(ack);
     }

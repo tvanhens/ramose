@@ -82,7 +82,7 @@ examples/reef/
 | file | what it is |
 |---|---|
 | `src/domain/schema.ts` | the schema: `user`, `issue`, `comment`, `label` namespaces |
-| `src/domain/policy.ts` | `Ramose.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
+| `src/domain/policy.ts` | `Ramose.Policy.policy` — classes `owner`/`member`/`viewer`, per-datom read masks, per-operation write arms, `issue.privateNote` masked to owner |
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
@@ -116,12 +116,12 @@ examples/reef/
   land in place.
   That note is `Issue.privateNote.optional` in pull shapes (required pulls of
   a masked attribute fail *at compile time* — see `test/policy.test.ts`), and
-  comments — a `useLive` on a per-issue query — carry `preset` authorship.
+  comments — a `useLive` on a per-issue query — carry authorship from `op.principal`.
 - **Invite → viewer** — enforcement is server-side. A viewer's UI is polite
   (no + buttons, a `viewer` badge, the admin note tagged *masked*), but the
   proof is that a forced write — drag a card — applies locally, then comes
   back from the peer as `Unauthorized`; the pending layer drops, the card
-  snaps back, and the toast reads "remove denied on :issue/status".
+  snaps back, and the toast reads "Unauthorized".
 - **Time travel** — immutability. The slider re-renders the whole board via
   `useQuery(db.asOf(t), boardQuery)` — same query, one extra argument —
   `useBasis` is the slider's ceiling, and deleted issues are recovered from

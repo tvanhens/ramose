@@ -415,7 +415,7 @@ export const BoardScreen = ({
                             onClick={() => {
                               if (myEid === undefined) return;
                               void run(
-                                seedSampleIssues(db, myEid, labels.data ?? []),
+                                seedSampleIssues(db, labels.data ?? []),
                               );
                             }}
                           >
@@ -458,7 +458,7 @@ export const BoardScreen = ({
             }
             const column = liveRows.filter((r) => r.status === draft.status);
             void run(
-              createIssue(db, myEid, column[column.length - 1]?.rank, draft),
+              createIssue(db, column[column.length - 1]?.rank, draft),
             ).then((report) => {
               if (report.ok) setSelected(report.value.output.id);
             });

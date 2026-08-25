@@ -19,11 +19,8 @@ import {
   type Db,
   type NodeSource,
   type Principal,
-  type TxData,
   allows,
   anonymousPrincipal,
-  checkTx,
-  publicPolicyOp,
   componentLogger,
   filterDb,
   canChangeSchema,
@@ -432,19 +429,21 @@ export function allowsRawTransact(
   tx: unknown,
   policy?: CompiledPolicy,
 ): boolean {
-  if (writes === "all") return true;
   if (principal !== undefined && isTokenOnly(principal)) return true;
   if (policy !== undefined) {
+    // `writes: "all"` is ignored once a policy is installed — data tx is
+    // superuser-only; schema stays schemaClasses-gated.
     if (principal !== undefined && isSuperuser(principal, policy)) return true;
     return isSchemaTx(tx);
   }
+  if (writes === "all") return true;
   if (principal === undefined || principal.kind === "service") return true;
   return isSchemaTx(tx);
 }
 
 /**
- * `send` carries the ops to forward (preset injections included) and the
- * principal with its entity resolved; `skip` is a no-op `ensure`.
+ * `send` carries the ops to forward and the principal with its entity
+ * resolved; `skip` is a no-op `ensure`.
  */
 export type WriteCheck = { readonly kind: "send"; readonly tx: unknown[]; readonly principal: Principal } | { readonly kind: "skip" };
 
@@ -478,10 +477,9 @@ export async function checkWrite(env: RamoseEnv, principal: Principal, store: No
   }
   if (isTokenOnly(principal)) throw new Unauthorized({});
 
-  const p = await withEid(st.policy, principal, db);
-  const res = await checkTx(tx as TxData, db, st.policy, p);
-  if (!res.ok) throw new Unauthorized({ status: 403, message: `${publicPolicyOp(res.op)} denied on ${res.attr}`, code: res.code, attr: res.attr });
-  return { kind: "send", tx: res.ops, principal: p };
+  // Data tx under a policy: superuser already returned. No per-datom write
+  // vocabulary remains — named operations are the write surface.
+  throw new Unauthorized({ status: 403, code: "policy" });
 }
 
 // ---------------------------------------------------------------------------

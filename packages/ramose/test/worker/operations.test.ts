@@ -520,15 +520,27 @@ describe('writes: "operations" is the peer default', () => {
     ns: {
       user: {
         read: allow({ _tag: "class", class: "member" }),
-        create: allow({ _tag: "class", class: "member" }),
-        add: allow({ _tag: "class", class: "member" }),
       },
       movie: {
         read: allow({ _tag: "class", class: "member" }),
-        create: allow({ _tag: "class", class: "member" }),
-        add: allow({ _tag: "class", class: "member" }),
       },
     },
+    operations: Object.fromEntries(
+      [
+        "movie/set-title",
+        "ping",
+        "user/create",
+        "user/set-name",
+        "user/create-coded",
+        "user/create-put",
+        "user/create-short",
+        "user/update-ghost",
+        "user/put-bootstrap",
+        "user/put-on-movie",
+        "user/put-missing-eid",
+        "user/put-dangling-ref",
+      ].map((name) => [name, allow({ _tag: "class", class: "member" })]),
+    ),
   };
 
   const envOf = () => ({
@@ -584,7 +596,7 @@ describe('writes: "operations" is the peer default', () => {
     seeded.close();
   });
 
-  test('writes: "all" or RAMOSE_WRITES=all restores raw /transact for app tokens', async () => {
+  test('writes: "all" does not restore raw /transact once a policy is installed', async () => {
     const member = await token("movies", "member");
     for (const options of [
       { operations, writes: "all" as const, env: envOf() },
@@ -597,12 +609,13 @@ describe('writes: "operations" is the peer default', () => {
         "/db/movies/transact",
         post({ tx: [{ ":movie/title": "raw-ok" }] }, member),
       );
-      expect(raw.status).toBe(200);
+      expect(raw.status).toBe(403);
+      expect(raw.body.code).toBe("operations");
       peer.close();
     }
   });
 
-  test("policy + writes: all emits writes.all-with-policy once, and does not fail the request", async () => {
+  test("policy + writes: all emits writes.all-with-policy once; data tx stays closed", async () => {
     const from = events.length;
     const peer = makePeer("movies", {
       operations,
@@ -614,11 +627,11 @@ describe('writes: "operations" is the peer default', () => {
       "/db/movies/transact",
       post({ tx: [{ ":movie/title": "open" }] }, member),
     );
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(403);
     const warned = events.slice(from).filter((e) => e.event === "writes.all-with-policy");
     expect(warned).toHaveLength(1);
     expect(warned[0]?.level).toBe("warn");
-    expect(String(warned[0]?.message)).toMatch(/raw \/transact stays open/);
+    expect(String(warned[0]?.message)).toMatch(/only opens raw \/transact when no policy is configured/);
     const second = await peer.json(
       "/db/movies/query",
       post({ query: { find: ["?t"], where: [["?e", ":movie/title", "?t"]] } }, member),

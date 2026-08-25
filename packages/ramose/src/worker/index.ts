@@ -87,7 +87,7 @@ function warnWritesAll(env: RamoseEnv, writes: "all" | "operations"): void {
   writesWarned.add(key);
   plog.warn(WRITES_ALL_POLICY_EVENT, {
     message:
-      'writes is "all" while a policy is installed — raw /transact stays open for app-class tokens',
+      'writes is "all" while a policy is installed — "all" only opens raw /transact when no policy is configured',
   });
 }
 
@@ -352,21 +352,8 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
       clientOpId,
     });
 
-    let tx = prepared.tx;
-    let who = prepared.principal;
-    if (policy !== undefined && tx.length > 0) {
-      const bf = await fetchBasisWithStats(env, db, request);
-      const checked = await checkWrite(env, who, segmentSource(env, db), bf.basis, tx);
-      if (checked.kind === "skip") {
-        return json(
-          { t: bf.basis.t, txEid: 0, tempids: {}, datoms: [], output: await prepared.encodeOutput({}), ...(clientOpId !== undefined ? { clientOpId } : {}) },
-          200,
-          { "x-ramose-ms": String(Date.now() - t0) },
-        );
-      }
-      tx = checked.tx as unknown[];
-      who = checked.principal;
-    }
+    const tx = prepared.tx;
+    const who = prepared.principal;
 
     if (tx.length === 0) {
       const bf = await fetchBasisWithStats(env, db, request);
@@ -395,6 +382,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const forward = JSON.stringify({
       tx: toJson(tx),
       principal: who,
+      fromOperation: true,
       ...(clientOpId !== undefined ? { clientTxId: clientOpId } : {}),
     });
     const res = await transactor().fetch(txUrl("/transact"), {

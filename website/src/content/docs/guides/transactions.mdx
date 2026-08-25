@@ -47,7 +47,7 @@ Reef's "New issue" dialog is one operation; everything inside lands together or 
       priority: input.priority,
       rank: input.rank,
       createdAt: new Date(),
-      creator: input.creatorId,
+      creator: op.principal,
       assignee: input.assigneeId,
       labels: input.labelIds ?? [],
     });

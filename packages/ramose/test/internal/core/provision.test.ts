@@ -15,7 +15,6 @@ const POLICY = parsePolicy({
   principal: ":user/sub",
   classes: ["member", "admin", "viewer"],
   attrs: {},
-  preset: {},
 });
 
 const SCHEMA = [

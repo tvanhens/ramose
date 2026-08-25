@@ -41,7 +41,6 @@ const reefV1 = parsePolicy({
     issue: { read: [A.allow(A.const(true))] },
     comment: { read: [A.allow(A.const(true))] },
   },
-  preset: {},
 });
 
 const reefV2 = parsePolicy({
@@ -54,7 +53,6 @@ const reefV2 = parsePolicy({
     issue: { read: [{ _tag: "allow", rule: true }] },
     comment: { read: [{ _tag: "allow", rule: true }] },
   },
-  preset: {},
 });
 
 const ownV1 = parsePolicy({
@@ -63,7 +61,6 @@ const ownV1 = parsePolicy({
   classes: ["member", "admin"],
   attrs: {},
   ns: { issue: { read: [A.allow(A.eq(":issue/creator", A.principal))] } },
-  preset: {},
 });
 
 const ownV2 = parsePolicy({
@@ -72,7 +69,6 @@ const ownV2 = parsePolicy({
   classes: ["member", "admin"],
   attrs: {},
   ns: { issue: { read: [{ _tag: "allow", rule: "policy/issue/own" }] } },
-  preset: {},
   rules: [[["policy/issue/own", "?me", "?e"], ["?e", ":issue/creator", "?me"]]],
 });
 
@@ -156,7 +152,6 @@ const allV2 = parsePolicy({
   classes: ["member", "admin"],
   attrs: {},
   ns: { issue: { read: [{ _tag: "allow", rule: "policy/issue/all" }] } },
-  preset: {},
   rules: [[["policy/issue/all", "?me", "?e"], ["?e", ":issue/title", "_"]]],
 });
 const fallbackMax = Math.max(8, Math.floor(nIssues / 8));

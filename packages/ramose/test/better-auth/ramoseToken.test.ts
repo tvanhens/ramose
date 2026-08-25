@@ -33,7 +33,6 @@ const POLICY = JSON.stringify({
   principal: ":user/sub",
   classes: ["owner", "member", "viewer"],
   attrs: {},
-  preset: {},
 });
 
 const makeAuth = (options?: {

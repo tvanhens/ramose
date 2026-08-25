@@ -78,6 +78,13 @@ export function grantIdents(policy: CompiledPolicy): Set<string> {
   };
   for (const rules of Object.values(policy.attrs)) walkRules(rules);
   if (policy.ns) for (const rules of Object.values(policy.ns)) walkRules(rules);
+  if (policy.operations) {
+    for (const arms of Object.values(policy.operations)) {
+      for (const arm of arms) {
+        if ("expr" in arm) walkExpr(arm.expr);
+      }
+    }
+  }
   const IDENT = /^:[^/]+\/[^/]+$/;
   const walkForm = (x: unknown): void => {
     if (typeof x === "string") {

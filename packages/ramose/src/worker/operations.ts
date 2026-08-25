@@ -9,7 +9,11 @@ import {
   Db as CoreDb,
   Index,
   Novelty,
+  PolicyMemo,
+  allowsOperation,
+  isSuperuser,
   normalizePullPattern,
+  operationClassAllows,
   processTx,
   pull as enginePull,
   query as engineQuery,
@@ -36,10 +40,11 @@ import {
 } from "../db/Operation.ts";
 import { lowerPullPattern } from "../db/Pull.ts";
 import { tryLowerQueryObject } from "../db/query/index.ts";
-import { checkWrite, viewDb } from "./auth.ts";
+import { authState, checkWrite, viewDb, withEid } from "./auth.ts";
 import type { WritesMode } from "../writes.ts";
-import { BadRequest, OperationRejected } from "./errors.ts";
+import { BadRequest, OperationRejected, Unauthorized } from "./errors.ts";
 import { fetchBasisWithStats, invalidateBasis, segmentSource } from "./peer.ts";
+import { dbFromBasis } from "../internal/replica/basis.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
@@ -170,6 +175,10 @@ export interface ExecuteReady {
  * Resolve, decode, validate the entity, run the full body. Effects run
  * here; accumulated tx ops are returned for the existing write pipeline.
  */
+const policyDenied = (): never => {
+  throw new Unauthorized({ status: 403, code: "policy" });
+};
+
 export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady> {
   const operation = lookupOperation(args.registry, args.name);
   if (operation === undefined) {
@@ -182,6 +191,15 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new BadRequest({ message: msg || "invalid operation input" });
+  }
+
+  const st = authState(args.env);
+  if (st.configured && st.policy === undefined) throw new Unauthorized({});
+  const policy = st.policy;
+  const bypass = policy !== undefined && isSuperuser(args.principal, policy);
+  // Class gate before touching the db. Unarmed ops deny everyone but superuser.
+  if (policy !== undefined && !bypass && !operationClassAllows(policy, operation.name, args.principal)) {
+    policyDenied();
   }
 
   const bf = await fetchBasisWithStats(args.env, args.db, args.request);
@@ -231,6 +249,20 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
       });
     }
     self = eid;
+    if (policy !== undefined && !bypass) {
+      const ruleDb = await dbFromBasis(store, bf.basis);
+      const who = await withEid(policy, args.principal, ruleDb);
+      if (
+        !(await allowsOperation(policy, operation.name, {
+          db: ruleDb,
+          principal: who,
+          e: eid,
+          memo: new PolicyMemo(),
+        }))
+      ) {
+        policyDenied();
+      }
+    }
   }
 
   let collected: () => readonly unknown[] = () => [];

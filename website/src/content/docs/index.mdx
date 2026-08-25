@@ -112,7 +112,7 @@ export const boardQuery = Query.from(Issue)
 <div class="rg-moment">
   <div class="rg-moment-copy">
     <h2 id="permissions-are-part-of-the-database">Permissions are part of the database</h2>
-    <p>One policy says who may read and write each field. The buttons are just polite — the server refuses the write.</p>
+    <p>One policy says who may read each fact and who may run each named write. The buttons are just polite — the server refuses the operation.</p>
     <p>Because the policy and the shapes your screens read are both values, <code>Ramose.Policy.compile(policy, &#123; pulls &#125;)</code> checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.</p>
     <p>Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.</p>
     <p class="rg-cta"><a href="/guides/permissions/">Permissions →</a></p>
@@ -122,11 +122,6 @@ export const boardQuery = Query.from(Issue)
 ```ts title="examples/reef/src/domain/policy.ts#policy-issue"
     issue: {
       read: true,
-      create: P.class("owner", "member"),
-      set: { class: ["owner", "member"], rule: ownIssue },
-      remove: { class: ["owner", "member"], rule: ownIssue },
-      delete: { class: ["owner", "member"], rule: ownIssue },
-      preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
@@ -135,7 +130,7 @@ export const boardQuery = Query.from(Issue)
     },
 ```
 
-    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast remove denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
+    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast Unauthorized; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
 
   </div>
 </div>

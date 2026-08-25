@@ -108,7 +108,7 @@ export const addCommentOp = Op(
   "issue/add-comment",
   {
     on: Issue,
-    input: Schema.Struct({ body: Schema.String, authorId: Schema.Number }),
+    input: Schema.Struct({ body: Schema.String }),
     output: Schema.Struct({}),
     doc: "Add a comment on an issue",
   },
@@ -116,7 +116,7 @@ export const addCommentOp = Op(
     op.put(Comment, {
       body: input.body,
       at: new Date(),
-      author: input.authorId,
+      author: op.principal,
       issue: op.self.eid,
     });
     return {};
@@ -157,7 +157,6 @@ export const createIssueOp = Op(
       status: Issue.status.schema,
       priority: Issue.priority.schema,
       rank: Schema.Number,
-      creatorId: Schema.Number,
       assigneeId: Schema.optional(Schema.Number),
       labelIds: Schema.optional(Schema.Array(Schema.Number)),
     }),
@@ -176,7 +175,7 @@ export const createIssueOp = Op(
       priority: input.priority,
       rank: input.rank,
       createdAt: new Date(),
-      creator: input.creatorId,
+      creator: op.principal,
       assignee: input.assigneeId,
       labels: input.labelIds ?? [],
     });
@@ -273,7 +272,6 @@ export const seedSampleIssuesOp = Op(
   "workspace/seed-sample",
   {
     input: Schema.Struct({
-      creatorId: Schema.Number,
       labels: Schema.Array(
         Schema.Struct({ id: Schema.Number, name: Schema.String }),
       ),
@@ -294,8 +292,8 @@ export const seedSampleIssuesOp = Op(
         priority: sample.priority,
         rank,
         createdAt: new Date(),
-        creator: input.creatorId,
-        assignee: sample.assign ? input.creatorId : undefined,
+        creator: op.principal,
+        assignee: sample.assign ? op.principal : undefined,
         labels: sample.labels.flatMap((name) => {
           const id = labelIds.get(name);
           return id === undefined ? [] : [id];
@@ -334,11 +332,10 @@ export interface NewIssue {
   readonly labelIds?: readonly number[];
 }
 
-/** `creator` is preset by the peer; writing it explicitly is the same datom. */
+/** `creator` is stamped from `op.principal` in the body. */
 // docs:create-issue
 export const createIssue = (
   db: ReefDb,
-  myEid: number,
   lastRankInColumn: number | undefined,
   draft: NewIssue,
 ) =>
@@ -350,7 +347,6 @@ export const createIssue = (
     status: draft.status,
     priority: draft.priority,
     rank: rankAfter(lastRankInColumn),
-    creatorId: myEid,
     ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
     ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
   });
@@ -405,12 +401,8 @@ export const deleteIssue = (db: ReefDb, issueId: number) =>
   db.run(deleteIssueOp, issueId, {});
 // enddocs:delete-issue
 
-export const addComment = (
-  db: ReefDb,
-  myEid: number,
-  issueId: number,
-  body: string,
-) => db.run(addCommentOp, issueId, { body, authorId: myEid });
+export const addComment = (db: ReefDb, issueId: number, body: string) =>
+  db.run(addCommentOp, issueId, { body });
 
 export const deleteComment = (db: ReefDb, commentId: number) =>
   db.run(deleteCommentOp, commentId, {});
@@ -495,6 +487,5 @@ const SAMPLE_ISSUES: readonly {
  */
 export const seedSampleIssues = (
   db: ReefDb,
-  myEid: number,
   labels: readonly { id: number; name: string }[],
-) => db.run(seedSampleIssuesOp, { creatorId: myEid, labels });
+) => db.run(seedSampleIssuesOp, { labels });

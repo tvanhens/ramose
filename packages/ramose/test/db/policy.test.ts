@@ -7,11 +7,13 @@ import {
   Field,
   Schema as DbSchema,
   Entity,
+  Operation,
   Policy as P,
   PolicyError,
   Q,
   Query,
   Ref,
+  defineOperations,
   stored,
 } from "../../src/db/internal.ts";
 
@@ -49,6 +51,31 @@ const inOrg = (me: P.Me<typeof User>) =>
 
 const ownDoc = (me: P.Me<typeof User>) => Query.is(Doc.owner, me);
 
+const Op = Operation.for(App);
+const createDocOp = Op(
+  "doc/create",
+  {
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (_op, _input) => ({}),
+);
+const setTitleOp = Op.patch("doc/set-title", Doc, ["title"]);
+const deleteDocOp = Op(
+  "doc/delete",
+  { on: Doc, input: Schema.Struct({}), output: Schema.Struct({}) },
+  (op) => {
+    op.delete(op.self);
+    return {};
+  },
+);
+const seedDocsOp = Op(
+  "doc/seed",
+  { input: Schema.Struct({}), output: Schema.Struct({}) },
+  () => ({}),
+);
+const ops = defineOperations(App, { createDocOp, setTitleOp, deleteDocOp, seedDocsOp });
+
 const myself = (me: P.Me<typeof User>) =>
   function* (e: Query.Var) {
     yield* Q.eq(e, me);
@@ -68,17 +95,18 @@ const specPolicy = P.policy(
     principal: User.sub,
     classes: ["anonymous", "member", "admin"],
     schemaClasses: ["admin"],
+    operations: ops,
     claims: Schema.Struct({ org: Schema.String }),
   },
   {
     doc: {
       read: [ownDoc, inOrg],
-      create: inOrg,
-      set: ownDoc,
-      remove: ownDoc,
-      delete: ownDoc,
-      preset: [P.preset(Doc.owner, P.principal)],
       attrs: [P.field(Doc.audit, { read: P.class("admin") })],
+    },
+    operations: {
+      createDocOp: P.class("member"),
+      setTitleOp: { class: "member", rule: ownDoc },
+      deleteDocOp: { class: "member", rule: ownDoc },
     },
     project: { read: inProjectOrg },
     org: { read: (me) => Query.is(Org.members, me) },
@@ -138,13 +166,16 @@ describe("compile", () => {
     expect(typeof head[2]).toBe("string");
   });
 
-  test("the same fragment is compiled once and reused across verbs", () => {
+  test("the same fragment is compiled once and reused across operations", () => {
     const c = compiled();
-    const add = (c.ns!.doc!.add![0] as { rule: string }).rule;
-    expect(c.ns!.doc!.retract![0]).toEqual({ _tag: "allow", rule: add });
-    expect(c.ns!.doc!.retractEntity![0]).toEqual({ _tag: "allow", rule: add });
-    expect(c.ns!.doc!.read![0]).toEqual({ _tag: "allow", rule: add });
-    const hits = (c.rules as unknown[][]).filter((r) => (r[0] as unknown[])[0] === add);
+    const set = (c.operations!["doc/set-title"]![0] as { rule: string }).rule;
+    expect(c.operations!["doc/delete"]![0]).toEqual({
+      _tag: "allow",
+      class: ["member"],
+      rule: set,
+    });
+    expect(c.ns!.doc!.read![0]).toEqual({ _tag: "allow", rule: set });
+    const hits = (c.rules as unknown[][]).filter((r) => (r[0] as unknown[])[0] === set);
     expect(hits).toHaveLength(1);
   });
 
@@ -158,8 +189,15 @@ describe("compile", () => {
     expect(body).toContain(":org/members");
   });
 
-  test("preset compiles to a principal operand keyed by ident", () => {
-    expect(compiled().preset).toEqual({ ":doc/owner": { _tag: "principal" } });
+  test("operations lower to wire names; unarmed registered ops are listed", () => {
+    const c = compiled();
+    expect(c.operations!["doc/create"]).toEqual([{ _tag: "allow", class: ["member"], rule: true }]);
+    expect(c.operations!["doc/set-title"]![0]).toEqual({
+      _tag: "allow",
+      class: ["member"],
+      rule: expect.any(String),
+    });
+    expect(specPolicy.unarmedOperations).toEqual(["doc/seed"]);
   });
 
   test("claims lower to an opaque JSON description", () => {
@@ -373,6 +411,45 @@ describe("deploy-time errors", () => {
       P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}),
     ).not.toThrow();
     expect(() => P.compile(P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}))).not.toThrow();
+  });
+
+  test("write verbs on a namespace are a PolicyError", () => {
+    expect(() =>
+      P.policy(
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+        // @ts-expect-error — create is gone
+        { doc: { read: true, create: P.class("member") } },
+      ),
+    ).toThrow(/write verbs are gone/);
+  });
+
+  test("operations: needs the registry on the head", () => {
+    expect(() =>
+      P.policy(
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+        { operations: { createDocOp: P.class("member") } } as never,
+      ),
+    ).toThrow(/needs the registry/);
+  });
+
+  test("a bare operation cannot name a rule fragment", () => {
+    expect(() =>
+      P.policy(
+        {
+          schema: App,
+          principal: User.sub,
+          classes: ["member"],
+          schemaClasses: ["member"],
+          operations: ops,
+        },
+        {
+          operations: {
+            // @ts-expect-error — a bare (no-on) op takes a class gate only
+            seedDocsOp: { class: "member", rule: ownDoc },
+          },
+        },
+      ),
+    ).toThrow(/class gate only/);
   });
 
   test("an empty fragment is a PolicyError — public is `true`", () => {

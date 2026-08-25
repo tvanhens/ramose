@@ -51,7 +51,6 @@ const FRAGMENT_POLICY_JSON = {
     org: { read: [{ _tag: "allow" as const, rule: "policy/org/members" }] },
     user: { read: [{ _tag: "allow" as const, rule: "policy/user/self" }] },
   },
-  preset: { ":doc/owner": { _tag: "principal" as const } },
   rules: [
     [["policy/doc/owner", "?me", "?e"], ["?e", ":doc/owner", "?me"]],
     [
@@ -163,7 +162,6 @@ describe("clause provenance and planner rewrite", () => {
       classes: ["member", "admin"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
-      preset: {},
     });
     const v = filterDb(db, db, pub, alice());
     const ast = parseQuery({ find: ["?t"], where: [["?e", ":doc/title", "?t"]] });
@@ -282,7 +280,6 @@ describe("budget attribution", () => {
       classes: ["member"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: "policy/blow" }] } },
-      preset: {},
       rules: [
         [["policy/counts", "?x"], [["ground", 0], "?x"]],
         [["policy/counts", "?x"], ["policy/counts", "?y"], [["+", "?y", 1], "?x"]],
@@ -315,7 +312,6 @@ describe("budget attribution", () => {
       classes: ["member"],
       attrs: {},
       ns: { doc: { read: [{ _tag: "allow", rule: true }] } },
-      preset: {},
     });
     const v = filterDb(db, db, pub, alice());
     let err: unknown;

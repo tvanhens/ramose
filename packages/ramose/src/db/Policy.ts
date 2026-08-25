@@ -14,7 +14,6 @@ import type {
   AttrRules,
   CompiledPolicy,
   PolicyOperand,
-  PolicyOp,
   PolicyRuleArm,
   PolicyRules,
 } from "../internal/core/policy/ast.ts";
@@ -27,6 +26,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AnyOperation, AnyOperations } from "./Operation.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
   Q,
@@ -45,21 +45,12 @@ export { PolicyError };
 // ── shapes ─────────────────────────────────────────────────────────────────
 
 export type Operand = PolicyOperand;
-/** Public policy keys. Compile to wire `add` / `retract` / `retractEntity`. */
-export type Op = "read" | "set" | "remove" | "delete" | "create";
-export const PUBLIC_POLICY_OPS: readonly Op[] = ["read", "set", "remove", "delete", "create"];
-
-const toWireOp = (op: Op): PolicyOp =>
-  op === "set" ? "add" : op === "remove" ? "retract" : op === "delete" ? "retractEntity" : op;
+/** Public per-datom policy key. Writes are named operations, not datom verbs. */
+export type Op = "read";
+export const PUBLIC_POLICY_OPS: readonly Op[] = ["read"];
 
 /** A stamped attribute (`User.sub`) — anything carrying `ident` + attr shape. */
 export type AttrRef = AnyField & { readonly ident: string };
-
-export interface Preset {
-  readonly _tag: "Preset";
-  readonly attr: string;
-  readonly operand: Operand;
-}
 
 /**
  * The namespace the principal mapping names. `User.sub` under catalog `C`
@@ -138,7 +129,7 @@ export type ArmValue<M, N extends AnyEntity = AnyEntity, CL extends string = str
   | ClassGate<true | FragFn<M, N>, CL>
   | ClassConfig<M, N, CL>;
 
-/** Arms per op; an array is OR. */
+/** Arms per op; an array is OR. Only `read` — writes are {@link OperationArms}. */
 export type RuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
   readonly [K in Op]?: ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[];
 };
@@ -154,8 +145,34 @@ export type NsRuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = s
   N,
   CL
 > & {
-  readonly preset?: readonly Preset[];
   readonly attrs?: readonly AttrRule<M, N, CL>[];
+};
+
+/**
+ * Class-only arm: a bare (no-`on`) operation cannot name a rule fragment.
+ * `rule` may only be `true` (or omitted).
+ */
+export type ClassOnlyArm<CL extends string = string> =
+  | true
+  | ClassGate<true, CL>
+  | { readonly class: CL | readonly CL[]; readonly rule?: true };
+
+/** An operation with `on:` takes a full arm (class + optional rule). */
+export type OperationArmValue<
+  O extends AnyOperation,
+  M,
+  CL extends string = string,
+> = O["on"] extends AnyEntity
+  ? ArmValue<M, O["on"], CL> | readonly ArmValue<M, O["on"], CL>[]
+  : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[];
+
+/** Typed keys off the registry — no string op names in app code. */
+export type OperationArms<
+  Ops extends AnyOperations,
+  M,
+  CL extends string = string,
+> = {
+  readonly [K in keyof Ops["operations"]]?: OperationArmValue<Ops["operations"][K], M, CL>;
 };
 
 export interface PolicyHead<
@@ -179,15 +196,20 @@ export interface PolicyHead<
   readonly schemaClasses?: readonly CL[number][];
   /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
+  /** The app's operations registry — types the body's `operations:` keys. */
+  readonly operations?: AnyOperations;
 }
 
 export type PolicyArms<
   C extends AnySchema,
   M,
   CL extends readonly string[] = readonly string[],
+  Ops extends AnyOperations | undefined = undefined,
 > = {
   readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
-};
+} & (Ops extends AnyOperations
+  ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
+  : { readonly operations?: undefined });
 
 interface CompiledArm {
   readonly classes?: readonly string[];
@@ -198,7 +220,6 @@ interface NsRules {
   readonly prefix: string;
   readonly rules: Readonly<Record<string, readonly CompiledArm[]>>;
   readonly attrs: Readonly<Record<string, Readonly<Record<string, readonly CompiledArm[]>>>>;
-  readonly preset: Readonly<Record<string, Operand>>;
 }
 
 /** A policy bound to its catalog. `compile` lowers it to the wire JSON. */
@@ -216,6 +237,10 @@ export interface Policy<
   readonly claims?: Schema.Struct<Schema.Struct.Fields>;
   /** catalog namespace key → normalised rules */
   readonly ns: Readonly<Record<string, NsRules>>;
+  /** wire op name → compiled arms */
+  readonly operations: Readonly<Record<string, readonly CompiledArm[]>>;
+  /** registered op names with no arm — superuser-only */
+  readonly unarmedOperations: readonly string[];
   /** lowered query-engine rule definitions */
   readonly ruleDefs: readonly unknown[];
   /** idents whose attribute rule narrows their namespace's `read` */
@@ -276,7 +301,7 @@ export const claimOf = <CF extends Schema.Struct.Fields>(
 ): ClaimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }> =>
   claimAccess<{ readonly [K in keyof CF & string]: ClaimOperand }>();
 
-/** The principal's resolved entity id — a preset operand, not a rule. */
+/** The principal's resolved entity id — a claim-style operand, not a rule. */
 export const principal: Operand = { _tag: "principal" };
 
 const identOf = (a: AttrRef): string => {
@@ -295,8 +320,7 @@ const isClassConfig = (v: unknown): v is ClassConfig<unknown> =>
   !Array.isArray(v) &&
   !isClassGate(v) &&
   "class" in v &&
-  (v as { _tag?: unknown })._tag !== "AttrRule" &&
-  (v as { _tag?: unknown })._tag !== "Preset";
+  (v as { _tag?: unknown })._tag !== "AttrRule";
 
 /**
  * JWT class gate. `P.class("member")` is a public arm for that class;
@@ -318,13 +342,7 @@ export const classFn = <const Cls extends string>(...classes: Cls[]): ClassFn<Cl
 };
 export { classFn as class };
 
-/** The peer sets `attr` on `create`. Client-supplied values are `Unauthorized`. */
-export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => {
-  if (operand._tag === "lit") fail(`preset(${identOf(attr)}) takes a claim or the principal`, identOf(attr));
-  return { _tag: "Preset", attr: identOf(attr), operand };
-};
-
-/** Field rule; narrows (ANDs with) its entity rule. */
+/** Field rule; narrows (ANDs with) its entity rule. Only `read` arms. */
 export const field = <
   A extends AttrRef,
   M,
@@ -570,10 +588,12 @@ const checkArmFocus = (
 /**
  * Build a policy. `policy(head, arms)` is head/body shaped like `Query.q`:
  * `principal: User.sub` derives `me`, and every inline arm is checked as
- * `(me) => fragment` with `me` fully typed. Unknown idents, undeclared
- * classes and unknown namespace keys fail here. `superuser` / `schemaClasses`
- * are required to resolve to at least one class that may install schema;
- * `P.class(superuser)` in an arm is unreachable and rejected.
+ * `(me) => fragment` with `me` fully typed. Writes are the `operations:`
+ * section — keys are the app registry's bindings, lowered to op names on
+ * the wire. Unknown idents, undeclared classes and unknown namespace keys
+ * fail here. `superuser` / `schemaClasses` are required to resolve to at
+ * least one class that may install schema; `P.class(superuser)` in an arm
+ * is unreachable and rejected.
  */
 export function policy<
   const C extends AnySchema,
@@ -581,6 +601,7 @@ export function policy<
   const CL extends readonly string[],
   const SU extends CL[number] | undefined = undefined,
   CF extends Schema.Struct.Fields = Schema.Struct.Fields,
+  const Ops extends AnyOperations | undefined = undefined,
 >(
   head: {
     readonly schema: C;
@@ -589,8 +610,9 @@ export function policy<
     readonly superuser?: SU & CL[number];
     readonly schemaClasses?: readonly CL[number][];
     readonly claims?: Schema.Struct<CF>;
+    readonly operations?: Ops;
   },
-  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<ArmClasses<CL, SU>>>,
+  arms: PolicyArms<C, PrincipalMe<C, I>, NoInfer<ArmClasses<CL, SU>>, Ops>,
 ): Policy<C, CL, SU> {
   if (head == null || typeof head !== "object" || head.schema == null) {
     fail("policy(head, arms) takes a head { schema, principal, classes }");
@@ -692,19 +714,30 @@ export function policy<
       if (v === undefined) continue;
       const list = Array.isArray(v) ? (v as readonly ArmValue<unknown>[]) : [v as ArmValue<unknown>];
       if (list.length === 0) continue;
-      const wire = toWireOp(op);
-      out[wire] = list.map((arm, i) =>
-        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, entityKey, fieldIdents),
+      out[op] = list.map((arm, i) =>
+        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, op, entityKey, fieldIdents),
       );
     }
     return out;
   };
 
+  const REJECTED_WRITE_KEYS = new Set(["set", "remove", "delete", "create", "preset"]);
+
   const ns: Record<string, NsRules> = {};
   const maskedReads = new Set<string>();
+  const body = arms as Record<string, unknown>;
+  const operationSpec = body.operations as Record<string, unknown> | undefined;
 
-  for (const [nsKey, nsSpec] of Object.entries(arms as Record<string, NsRuleSpec<unknown> | undefined>)) {
-    if (nsSpec === undefined) continue;
+  for (const [nsKey, rawSpec] of Object.entries(body)) {
+    if (nsKey === "operations" || rawSpec === undefined) continue;
+    const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
+    for (const key of Object.keys(nsSpec)) {
+      if (REJECTED_WRITE_KEYS.has(key)) {
+        fail(
+          `ns.${nsKey}.${key}: write verbs are gone — authorize ${key} on the named operation in operations:`,
+        );
+      }
+    }
     const declared = (
       schema.entities as Record<
         string,
@@ -726,6 +759,11 @@ export function policy<
       if (!fieldIdents.has(a.attr)) {
         fail(`${where}.attrs: ${a.attr} is not a field of the ${nsKey} entity`, a.attr);
       }
+      for (const key of Object.keys(a.rules as object)) {
+        if (REJECTED_WRITE_KEYS.has(key)) {
+          fail(`${where}.attrs["${a.attr}"].${key}: attribute write arms are gone — use operations:`);
+        }
+      }
       const r = compileSpec(
         a.rules,
         `${where}.attrs["${a.attr}"]`,
@@ -737,18 +775,52 @@ export function policy<
       if (r.read !== undefined) maskedReads.add(a.attr);
     }
 
-    const presetMap: Record<string, Operand> = {};
-    for (const p of nsSpec.preset ?? []) {
-      if (p?._tag !== "Preset") fail(`${where}.preset expects P.preset(...)`);
-      if (!idents.has(p.attr)) fail(`${where}.preset: ${p.attr} is not in the schema`, p.attr);
-      if (!fieldIdents.has(p.attr)) {
-        fail(`${where}.preset: ${p.attr} is not a field of the ${nsKey} entity`, p.attr);
-      }
-      presetMap[p.attr] = p.operand;
-    }
-
-    ns[nsKey] = { prefix, rules, attrs, preset: presetMap };
+    ns[nsKey] = { prefix, rules, attrs };
   }
+
+  const compiledOps: Record<string, readonly CompiledArm[]> = {};
+  const registry = head.operations;
+  if (operationSpec !== undefined) {
+    if (registry === undefined || registry._tag !== "Operations") {
+      fail("operations: needs the registry on the policy head (head.operations)");
+    }
+    const bound = registry.operations as Record<string, AnyOperation>;
+    for (const [key, raw] of Object.entries(operationSpec)) {
+      if (raw === undefined) continue;
+      const operation = bound[key];
+      if (operation === undefined || operation._tag !== "Operation") {
+        fail(`operations.${key}: ${JSON.stringify(key)} is not a key of the registry`);
+      }
+      const wireName = operation.name;
+      if (typeof wireName !== "string" || wireName.length === 0) {
+        fail(`operations.${key}: operation has no name`);
+      }
+      const list = Array.isArray(raw) ? raw : [raw];
+      if (list.length === 0) continue;
+      const on = operation.on as { ns?: string; fields?: Record<string, { readonly ident?: unknown }> } | undefined;
+      const fieldIdents = on !== undefined ? entityFieldIdents(on) : new Set<string>();
+      const entityKey = on?.ns ?? `op/${wireName}`;
+      compiledOps[wireName] = list.map((arm, i) => {
+        const where = `operations.${key}${list.length > 1 ? `[${i}]` : ""}`;
+        const { body } = unwrapGate(arm as ArmValue<unknown>);
+        if (body !== true && on === undefined) {
+          fail(`${where}: a bare (no-on) operation takes a class gate only`);
+        }
+        return compileArm(
+          arm as ArmValue<unknown>,
+          where,
+          `op/${wireName}`,
+          "run",
+          entityKey,
+          fieldIdents,
+        );
+      });
+    }
+  }
+
+  const registeredNames = registry !== undefined ? [...registry.names()] : [];
+  const armed = new Set(Object.keys(compiledOps));
+  const unarmedOperations = registeredNames.filter((n) => !armed.has(n));
 
   const ruleDefs = lowerNamedRules(pending);
   const parsedRules = parseRuleDefs(ruleDefs, idents, "rules");
@@ -763,6 +835,8 @@ export function policy<
     schemaClasses,
     claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
     ns,
+    operations: compiledOps,
+    unarmedOperations,
     ruleDefs,
     maskedReads,
   };
@@ -799,13 +873,12 @@ const toWireRules = (rules: Readonly<Record<string, readonly CompiledArm[]>>): P
  *
  * Fragment arms compile to named query rules in `rules`; `true` is the empty
  * fragment (public) and does not emit a rule. `RAMOSE_POLICY` is a Cloudflare
- * plain-text binding capped at 5.1 kB, so only written arms and the rules
- * they need are serialised.
+ * plain-text binding capped at 5.1 kB, so only surviving read / operation
+ * arms and the rules they need are serialised.
  */
 const lower = (p: Policy): CompiledPolicy => {
   const attrs: Record<string, AttrRules> = {};
   const ns: Record<string, PolicyRules> = {};
-  const preset: Record<string, Operand> = {};
 
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     const declared = (p.schema.entities as Record<string, { fields: Record<string, unknown> }>)[nsKey]!;
@@ -817,7 +890,11 @@ const lower = (p: Policy): CompiledPolicy => {
       const narrowed = toWireRules(own);
       if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed;
     }
-    Object.assign(preset, entry.preset);
+  }
+
+  const operations: Record<string, readonly PolicyRuleArm[]> = {};
+  for (const [name, arms] of Object.entries(p.operations)) {
+    operations[name] = arms.map(toWireArm);
   }
 
   return {
@@ -829,7 +906,7 @@ const lower = (p: Policy): CompiledPolicy => {
     claims: claimsJson(p.claims),
     attrs,
     ns,
-    preset,
+    ...(Object.keys(operations).length > 0 ? { operations } : {}),
     ...(p.ruleDefs.length > 0 ? { rules: p.ruleDefs } : {}),
   };
 };
@@ -837,7 +914,33 @@ const lower = (p: Policy): CompiledPolicy => {
 export interface CompileOptions {
   /** app pull patterns, checked for read-masked attributes used as required */
   readonly pulls?: readonly unknown[];
+  /**
+   * The operations registry this deploy ships. Every `operations:` key
+   * must be a registered op; registered ops with no arm are listed as
+   * superuser-only (deny everyone else).
+   */
+  readonly operations?: AnyOperations;
 }
+
+/**
+ * Deploy-time coverage: every armed name must be in the registry.
+ * Unarmed registered ops are returned — they deny everyone but superuser.
+ */
+export const checkOperationsPolicyCoverage = (
+  registry: AnyOperations,
+  armed: ReadonlySet<string> | readonly string[],
+): { readonly unarmed: readonly string[] } => {
+  const names = new Set(registry.names());
+  const have = armed instanceof Set ? armed : new Set(armed);
+  for (const name of have) {
+    if (!names.has(name)) {
+      fail(
+        `operations: ${JSON.stringify(name)} is not in the registry — typed keys lower to the operation's name`,
+      );
+    }
+  }
+  return { unarmed: [...names].filter((n) => !have.has(n)).sort() };
+};
 
 const isStringField = (field: AnyField): boolean =>
   inferDbValueType(field.schema, field.valueType) === "string";
@@ -928,6 +1031,9 @@ export const compile = (p: Policy, options?: CompileOptions): string => {
   if (p?._tag !== "Policy") fail("compile() expects a policy(...) value");
   checkPrincipalProvisioning(p.schema, p.principal);
   if (options?.pulls) checkPulls(p, options.pulls);
+  if (options?.operations !== undefined) {
+    checkOperationsPolicyCoverage(options.operations, Object.keys(p.operations));
+  }
   const compiled = lower(p);
   const json = JSON.stringify(compiled);
   try {

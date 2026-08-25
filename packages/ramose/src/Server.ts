@@ -45,11 +45,12 @@ import * as Schedule from "effect/Schedule";
 import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 import { installCatalog } from "./Database.ts";
-import { InvalidRequest, NetworkError, OperationsCoverageError } from "./db/Errors.ts";
+import { InvalidRequest, NetworkError, OperationsCoverageError, PolicyError } from "./db/Errors.ts";
 import {
   type AnyOperations,
   checkOperationsCoverage,
 } from "./db/Operation.ts";
+import { checkOperationsPolicyCoverage } from "./db/Policy.ts";
 import { trimSlashes } from "./db/http.ts";
 import type { Schema } from "./db/index.ts";
 import {
@@ -556,7 +557,7 @@ export const compareWritesToWorker = (
 
 /** @internal The pairing the issue asks to warn on, not fail the deploy. */
 export const WRITES_ALL_POLICY_WARNING =
-  'ramose: writes is "all" while a policy is installed — raw /transact stays open for app-class tokens. Set writes: "operations" (the default) or RAMOSE_WRITES=operations to close it; "all" is the explicit opt-out for admin/seed tooling.';
+  'ramose: writes is "all" while a policy is installed — "all" only opens raw /transact when no policy is configured. Data tx stays superuser-only; schema stays schemaClasses-gated.';
 
 /** @internal Match the Worker's `writes.unrecognized` startup log. */
 export const unrecognizedWritesWarningMessage = (value: unknown): string =>
@@ -574,7 +575,7 @@ const workerPolicyOf = (worker: unknown): unknown => {
 
 /**
  * @internal Warning (not a deploy error) when a policy is installed and
- * raw `/transact` is still open for app-class tokens.
+ * `writes: "all"` is set — that flag is ignored for data txs.
  */
 export const writesAllPolicyWarning = (
   writes: WritesMode | undefined,
@@ -632,6 +633,34 @@ export const compareOperationsToHealth = (
     return undefined;
   } catch (error) {
     if (error instanceof OperationsCoverageError) return error;
+    throw error;
+  }
+};
+
+/**
+ * @internal `Server({ operations })` vs compiled `auth.policy` `operations:`.
+ * An armed name that is not registered fails the deploy. Unarmed registered
+ * ops are allowed (superuser-only). Unset policy or operations skips.
+ */
+export const compareOperationsToPolicy = (
+  operations: AnyOperations | undefined,
+  policyJson: string | undefined,
+): PolicyError | undefined => {
+  if (operations === undefined || !isBound(policyJson)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(policyJson);
+  } catch {
+    return undefined;
+  }
+  if (parsed == null || typeof parsed !== "object") return undefined;
+  const armed = (parsed as { operations?: unknown }).operations;
+  if (armed == null || typeof armed !== "object" || Array.isArray(armed)) return undefined;
+  try {
+    checkOperationsPolicyCoverage(operations, Object.keys(armed));
+    return undefined;
+  } catch (error) {
+    if (error instanceof PolicyError) return error;
     throw error;
   }
 };
@@ -931,6 +960,11 @@ const attributes = Effect.fn(function* (
     const badOps = compareOperationsToHealth(props.operations, body);
     if (badOps !== undefined) {
       return yield* Effect.fail(badOps);
+    }
+    const policyJson = isBound(props.auth?.policy) ? props.auth.policy : undefined;
+    const badPolicyOps = compareOperationsToPolicy(props.operations, policyJson);
+    if (badPolicyOps !== undefined) {
+      return yield* Effect.fail(badPolicyOps);
     }
   }
   const token = redact(props.token);
