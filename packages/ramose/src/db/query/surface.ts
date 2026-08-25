@@ -5,6 +5,7 @@
  * is the kernel.)
  */
 
+export { decodeCursor, encodeCursor } from "./cursor.ts";
 export { enrich, isCursor, q, refine, rule } from "./query.ts";
 export type {
   AnyQueryObject,
@@ -22,24 +23,32 @@ export { from } from "./fluent.ts";
 export type { EntityRow, FluentQuery, RefIdCell, WhereEq } from "./fluent.ts";
 
 export {
+  any,
   assertedBy,
   backlink,
   byId,
   entities,
   every,
   follow,
+  gt,
+  gte,
   has,
   ids,
+  includes,
   is,
   limit,
+  lt,
+  lte,
   matching,
   missing,
   none,
+  not,
   offset,
   orderBy,
   select,
   some,
   stage,
+  startsWith,
   updatedSince,
 } from "./lib.ts";
 export type { FilterStage, FollowStage, HatchIdRow, IdRow, TraversalStage } from "./lib.ts";

@@ -169,7 +169,9 @@ charged against the existing query budget, so a runaway recursion is a
 answer (a miss is `NotOne`); `q.after(cursor)` turns the result into a
 keyset `Page` — the sort-key cells ride in `find` past the projection, the
 entity id joins the order as a tie-breaker, and the next cursor is minted
-from the last row. None of these delegate through `q.open` — a cursor is
+from the last row. `Query.encodeCursor(q, cursor)` / `Query.decodeCursor`
+round-trip that cursor through a URL; Instant keys rehydrate as `Date`.
+None of these delegate through `q.open` — a cursor is
 post-processing for the outermost query; strip it with `q.logic()`. Conditional
 clauses in the fluent spelling are ordinary JavaScript
 (`if (assignee) q = q.where({ assignee })`).

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### App-surface disjunction, comparators, and serializable cursors (part of #192)
+
+`Query.any(...stages)` is a fluent disjunction (`Q.or`); `Query.not(stage)`
+negates a stage. Attr-level comparator sugar on `matching`: `Query.gt` /
+`Query.gte` / `Query.lt` / `Query.lte` / `Query.startsWith` / `Query.includes`
+— namespace-constrained the same way `is` is. `Query.encodeCursor(q, cursor)` /
+`Query.decodeCursor(q, token)` pack a keyset cursor for a URL so Instant keys
+rehydrate as `Date`.
+
 ### Generator projections keep one row per source (part of #191)
 
 A record of value cells (`{ title: t.v }`) no longer collapses two
