@@ -10,11 +10,24 @@
 
 import { describe, expect, test } from "bun:test";
 import { parsePolicy } from "../../../packages/ramose/src/internal/core/policy/ast.ts";
+import { checkTx } from "../../../packages/ramose/src/internal/core/policy/check.ts";
+import { Connection } from "../../../packages/ramose/src/internal/core/conn.ts";
+import type { Principal } from "../../../packages/ramose/src/internal/core/index.ts";
+import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
 import * as Ramose from "ramose";
 import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
+
+const who = (cls: "owner" | "member" | "viewer", sub: string, eid?: number): Principal => ({
+  kind: "user",
+  class: cls,
+  sub,
+  ...(eid !== undefined ? { eid } : {}),
+  claims: { sub },
+  db: "reef",
+});
 
 describe("reef policy", () => {
   test("compiles to wire JSON that core accepts", () => {
@@ -56,13 +69,54 @@ describe("reef policy", () => {
     expect(parsed.ns?.issue?.read).toEqual([{ _tag: "allow", rule: true }]);
   });
 
+  test("label.create admits owner and member", () => {
+    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
+    expect(parsed.ns?.label?.create).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
+  });
+
+  test("an owner may create and edit their own issue; another owner may not", async () => {
+    const compiled = parsePolicy(JSON.parse(compiledPolicy()));
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Reef) as never);
+    const seeded = await conn.transact([
+      { ":db/id": "ada", ":user/sub": "user_ada", ":user/role": "owner" },
+      { ":db/id": "bea", ":user/sub": "user_bea", ":user/role": "owner" },
+      {
+        ":db/id": "iss",
+        ":issue/title": "Mine",
+        ":issue/status": "todo",
+        ":issue/priority": "none",
+        ":issue/rank": 1,
+        ":issue/createdAt": 1,
+        ":issue/creator": "ada",
+      },
+    ]);
+    const ada = who("owner", "user_ada", seeded.tempids.ada);
+    const bea = who("owner", "user_bea", seeded.tempids.bea);
+    const db = conn.db();
+    expect((await checkTx([{ ":label/name": "Bug", ":label/color": "#f00" }], db, compiled, ada)).ok).toBe(true);
+    expect((await checkTx([[":db/add", seeded.tempids.iss, ":issue/title", "Renamed"]], db, compiled, ada)).ok).toBe(
+      true,
+    );
+    const denied = await checkTx([[":db/add", seeded.tempids.iss, ":issue/title", "Hacked"]], db, compiled, bea);
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.attr).toBe(":issue/title");
+    const viewerDenied = await checkTx(
+      [{ ":label/name": "Nope", ":label/color": "#000" }],
+      db,
+      compiled,
+      who("viewer", "user_ada", seeded.tempids.ada),
+    );
+    expect(viewerDenied.ok).toBe(false);
+  });
+
   test("own-issue / own-comment fragments compile to named rules", () => {
     const parsed = parsePolicy(JSON.parse(compiledPolicy()));
     const add = parsed.ns?.issue?.add;
     expect(add).toHaveLength(1);
     expect(add![0]).toEqual({
       _tag: "allow",
-      class: ["member"],
+      class: ["owner", "member"],
       rule: expect.any(String),
     });
     const name = (add![0] as { rule: string }).rule;

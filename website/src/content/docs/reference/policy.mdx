@@ -53,14 +53,14 @@ export const policy = Ramose.policy(
     },
     label: {
       read: true,
-      create: P.class("member"),
+      create: P.class("owner", "member"),
     },
     issue: {
       read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
+      create: P.class("owner", "member"),
+      set: { class: ["owner", "member"], rule: ownIssue },
+      remove: { class: ["owner", "member"], rule: ownIssue },
+      delete: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
@@ -70,9 +70,9 @@ export const policy = Ramose.policy(
     },
     comment: {
       read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
+      create: P.class("owner", "member"),
+      remove: { class: ["owner", "member"], rule: ownComment },
+      delete: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },
@@ -176,12 +176,12 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 | field | meaning |
 | --- | --- |
 | `superuser` | bypass: unfiltered reads, unchecked writes; `explain`, `/admin/*`. `P.class(superuser)` is unreachable |
-| `schemaClasses` | who may grow schema (default `[superuser]`); still runs the rules |
+| `schemaClasses` | who may grow schema (default `[superuser]`); runs the rules |
 | `anonymous` | given to a caller with no token, **only if the policy declares it**; otherwise token-less calls are `Unauthorized` |
 | `$token` | the `RAMOSE_TOKEN` holder under a policy; cannot be declared, so no rule admits it |
 
 :::caution
-A class named `admin` is ordinary unless named `superuser`. `anonymous` is the internet; declare it on purpose.
+Class `admin` is ordinary unless named `superuser`. `anonymous` is the internet; declare it on purpose.
 :::
 
 ## Where the checks run

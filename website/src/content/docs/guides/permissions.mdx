@@ -57,17 +57,17 @@ export const policy = Ramose.policy(
     },
     label: {
       read: true,
-      create: P.class("member"),
+      create: P.class("owner", "member"),
     },
 ```
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-issue · examples/reef/src/domain/policy.ts#policy-comment"
     issue: {
       read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
+      create: P.class("owner", "member"),
+      set: { class: ["owner", "member"], rule: ownIssue },
+      remove: { class: ["owner", "member"], rule: ownIssue },
+      delete: { class: ["owner", "member"], rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
@@ -78,9 +78,9 @@ export const policy = Ramose.policy(
 
     comment: {
       read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
+      create: P.class("owner", "member"),
+      remove: { class: ["owner", "member"], rule: ownComment },
+      delete: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
 ```
@@ -92,7 +92,7 @@ Read it as:
 | `principal: User.sub` · `classes: ["owner", "member", "viewer"]` · `schemaClasses: ["owner"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. Owners may install schema. |
 | `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; owners reach the same rules. |
 | `issue.read: true` · `attrs: privateNote read: owner` | Everyone sees issues — except `privateNote`, which only owners receive. A screen that wants it must ask for it as `.optional`. |
-| `issue.set / remove / delete: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
+| `issue.set / remove / delete: ownIssue` | Owners and members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |
 | `preset: creator = principal` | The server stamps `creator` to the caller on create. |
 | (nothing) | Anything not mentioned is denied: no `set` arm on `label`, so members cannot recolour labels. |
 

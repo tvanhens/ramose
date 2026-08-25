@@ -55,16 +55,16 @@ export const policy = Ramose.policy(
     },
     label: {
       read: true,
-      create: P.class("member"),
+      create: P.class("owner", "member"),
     },
     // enddocs:policy-setup
     // docs:policy-issue
     issue: {
       read: true,
-      create: P.class("member"),
-      set: { class: "member", rule: ownIssue },
-      remove: { class: "member", rule: ownIssue },
-      delete: { class: "member", rule: ownIssue },
+      create: P.class("owner", "member"),
+      set: { class: ["owner", "member"], rule: ownIssue },
+      remove: { class: ["owner", "member"], rule: ownIssue },
+      delete: { class: ["owner", "member"], rule: ownIssue },
       // docs:policy-preset
       preset: [P.preset(Issue.creator, P.principal)],
       // enddocs:policy-preset
@@ -80,9 +80,9 @@ export const policy = Ramose.policy(
     // docs:policy-comment
     comment: {
       read: true,
-      create: P.class("member"),
-      remove: { class: "member", rule: ownComment },
-      delete: { class: "member", rule: ownComment },
+      create: P.class("owner", "member"),
+      remove: { class: ["owner", "member"], rule: ownComment },
+      delete: { class: ["owner", "member"], rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
     // enddocs:policy-comment

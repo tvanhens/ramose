@@ -3,7 +3,7 @@
  *
  * Every workspace is its own Ramose database (`ramose.db(slug, Reef)`), so
  * this catalog is installed once per workspace at creation time, from the
- * browser, under the creator's admin-class JWT. Refs are targeted
+ * browser, under the creator's owner-class JWT. Refs are targeted
  * (`Ramose.Ref(User)`) so navigational queries can join through them
  * (`Issue.assignee.name`).
  */
