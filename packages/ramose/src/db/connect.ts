@@ -63,15 +63,6 @@ export interface Client {
   checkOperations(): Promise<void>;
 }
 
-/**
- * A `Client` for app callers — a browser app, a script — so nothing
- * outside Effect land needs a `ManagedRuntime` just to build the client and
- * close its sockets. A thin wrapper over the factory `layer` uses, not a
- * second client; `layer` lives on `ramose/db/effect`.
- *
- * A provisioning mistake (malformed URL, no `fetch`) throws synchronously:
- * the same defects `layer` dies with.
- */
 const healthOperationsOf = (body: unknown): string[] => {
   if (typeof body !== "object" || body === null) return [];
   const listed = (body as { operations?: unknown }).operations;
@@ -108,6 +99,15 @@ const checkClientOperations = async (options: ClientOptions): Promise<void> => {
   checkOperationsCoverage(options.operations, healthOperationsOf(body));
 };
 
+/**
+ * A `Client` for app callers — a browser app, a script — so nothing
+ * outside Effect land needs a `ManagedRuntime` just to build the client and
+ * close its sockets. A thin wrapper over the factory `layer` uses, not a
+ * second client; `layer` lives on `ramose/db/effect`.
+ *
+ * A provisioning mistake (malformed URL, no `fetch`) throws synchronously:
+ * the same defects `layer` dies with.
+ */
 export const connect = (options: ClientOptions): Client => {
   const { databases, close } = makeDatabases(configFromClientOptions(options));
   return {
