@@ -11,7 +11,6 @@
 import { afterAll, beforeEach, describe, expect } from "bun:test";
 import * as Alchemy from "alchemy";
 import * as Test from "alchemy/Test/Bun";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as net from "node:net";
@@ -187,9 +186,9 @@ describe("Ramose.Server", () => {
         ),
       );
       expect(result._tag).toBe("Failure");
-      const error = result._tag === "Failure" ? Cause.squash(result.cause) : undefined;
-      expect(error).toBeInstanceOf(OperationsCoverageError);
-      expect((error as OperationsCoverageError).missing).toEqual(["user/set-name"]);
+      if (result._tag !== "Failure") return;
+      expect(result.failure).toBeInstanceOf(OperationsCoverageError);
+      expect((result.failure as OperationsCoverageError).missing).toEqual(["user/set-name"]);
       expect(String(result)).toMatch(/missing operations: user\/set-name/);
     }),
   );
