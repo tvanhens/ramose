@@ -231,11 +231,16 @@ describe("the `/db` barrel's public names", () => {
         // the database-name rule (issue #37)
         "DATABASE_NAME_RE",
         "isDatabaseName",
-        // operations (issue #160)
+        // operations (issue #160 / #172)
         "EntityId",
         "Operation",
         "Operations",
         "PrefixHalt",
+        "defineOperations",
+        "checkOperationsCoverage",
+        "operationNames",
+        "operationCards",
+        "OperationsCoverageError",
         // nominal tempids (#178)
         "tempid",
         // errors
