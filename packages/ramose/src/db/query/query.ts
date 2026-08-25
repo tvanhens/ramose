@@ -583,7 +583,13 @@ const bindGroupKey = (
     });
     return v;
   }
-  const cmd = info.reverse ? Q.fact(Q._, attr, focus) : Q.fact(focus, attr);
+  if (info.reverse) {
+    // Bind the referring entity — `Q.fact(Q._, attr, focus)` would reuse
+    // `focus` as the value var and group by the select root.
+    ctx.clauses.push(Q.fact(v, attr, focus));
+    return v;
+  }
+  const cmd = Q.fact(focus, attr);
   ctx.clauses.push(cmd);
   return cmd.handle.v;
 };

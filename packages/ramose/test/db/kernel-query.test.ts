@@ -1949,6 +1949,48 @@ describe("query: aggregates with order/limit and scalar value", () => {
     expect(b.map((o) => o.dir)).toEqual(["asc", "desc"]);
   });
 
+  test("bare card-one backlink group key binds the referrer, not the focus", async () => {
+    const Child = Entity("aggchild", { title: Field(Schema.String) });
+    const Parent = Entity("aggparent", {
+      name: Field(Schema.String),
+      kid: Field.owned(Ref(() => Child)),
+    });
+    const Family = DbSchema({ aggchild: Child, aggparent: Parent });
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("family", Family);
+    await db.install();
+    await run(
+      seedWrite(db, function* (tx) {
+        const child = yield* tx.entity();
+        yield* child.set(Child.title, "only");
+        const parent = yield* tx.entity();
+        yield* parent.set(Parent.name, "Ada");
+        yield* parent.set(Parent.kid, child.eid as never);
+      }),
+    );
+
+    const q = Query.from(Child).select({ p: Parent.kid.reverse }, { n: Q.count(Q.focus) });
+    const { query } = lowerQueryObject(q);
+    const find = query.find as unknown[];
+    const parentVar = find[0];
+    const countOf = (find[1] as [string, string])[1];
+    expect(parentVar).not.toEqual(countOf);
+
+    const parents = await db.query(Query.from(Parent).select({ id: Parent.id, name: Parent.name }));
+    const children = await db.query(Query.from(Child).select({ id: Child.id, title: Child.title }));
+    const rows = await db.query(q);
+    expect(rows).toHaveLength(1);
+    const pId =
+      typeof rows[0].p === "object" && rows[0].p !== null && "id" in rows[0].p
+        ? (rows[0].p as { id: number }).id
+        : Number(rows[0].p);
+    expect(pId).toBe(parents[0].id);
+    expect(pId).not.toBe(children[0].id);
+    expect(rows[0].n).toBe(1);
+
+    await peer.dispose();
+  });
+
   test("after() on a multi-root projection raises a ramose/query error", () => {
     const q = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
