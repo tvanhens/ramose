@@ -352,7 +352,9 @@ export function useLiveQuery(
   const viewKey = owned ? viewKeyOf(source as ReadDb) : "";
   const structureKey = owned ? queryStructureKey(query!) : "";
   const cacheKey = owned ? liveSubscriptionKey(viewKey, query!) : "";
-  const suspendKey = owned ? cacheKey : subscriptionKey(source);
+  const suspendKey = owned
+    ? `live\0${cacheKey}`
+    : `live\0${subscriptionKey(source)}`;
   useKeyChurnWarning(owned ? structureKey : "");
 
   const db = owned ? (source as ReadDb) : undefined;

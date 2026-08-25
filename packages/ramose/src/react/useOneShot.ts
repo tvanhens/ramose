@@ -50,12 +50,13 @@ export const useOneShot = <A, E>(
   /** Monotonic run counter, shared across effect runs: the LWW sequence. */
   const runs = useRef({ issued: 0, applied: 0 });
   /**
-   * Structural key whose rows already arrived (`initialData` or a
-   * just-resolved suspense slot). The effect skips that key — including
-   * StrictMode's remount — until `refetch()` or a later key without rows.
+   * Structural key whose rows came from `initialData`. The effect skips
+   * that key — including StrictMode's remount — until `refetch()` or a
+   * later key. A peeked suspense slot is first paint only: the effect
+   * still revalidates so a later mount is not stuck on a stale cache.
    */
   const hydratedKey = useRef<string | undefined>(
-    state.data !== undefined && state.status === "success"
+    options?.initialData !== undefined && state.status === "success"
       ? (suspendKey ?? "hydrated")
       : undefined,
   );
@@ -141,7 +142,6 @@ export const useOneShot = <A, E>(
     }
     if (slot.data === undefined) throw slot.promise;
     shown = asSuccess(slot.data, slot.t ?? options.initialT);
-    hydratedKey.current = suspendKey;
     if (state.data !== slot.data) set(shown);
   }
 

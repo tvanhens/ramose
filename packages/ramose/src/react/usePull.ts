@@ -105,7 +105,7 @@ export function useLivePull<C extends Schema.Any, const P>(
       initialData: options?.initialData,
       initialT: options?.initialT,
       suspense: options?.suspense,
-      suspendKey: `${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
+      suspendKey: `live\0${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
       basis: () => readT(db),
       refetch: () => db.pull<P>(subject, pattern),
       seam: {
@@ -145,7 +145,7 @@ export function usePull<C extends Schema.Any, const P>(
       initialData: options?.initialData,
       initialT: options?.initialT,
       suspense: options?.suspense,
-      suspendKey: `${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
+      suspendKey: `one\0${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
     },
   );
 }

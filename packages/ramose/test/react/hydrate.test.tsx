@@ -474,7 +474,97 @@ describe("{ suspense: true }", () => {
       }),
     );
     await waitFor(() => expect(container.textContent).toBe("oneone"));
-    expect(peer.frameOps("q").length).toBeLessThan(4);
+    expect(peer.frameOps("q").length).toBeLessThan(8);
+  });
+
+  test("a later suspense remount revalidates instead of latching the slot", async () => {
+    ensureDom();
+    let answers = 0;
+    const peer = fakePeer({
+      answer: (frame: Frame) => {
+        if (frame.op === "q") {
+          answers += 1;
+          return {
+            body: {
+              t: answers,
+              result: [[{ title: answers === 1 ? "one" : "two" }]],
+            },
+          };
+        }
+        return { body: { t: 1, result: [] } };
+      },
+    });
+    const Provider = wrapperFor(peer);
+    function Probe() {
+      const { data } = useQuery(useDb("todos", Todos).asOf(1), titles, {
+        suspense: true,
+      });
+      return <div>{data[0]!.title}</div>;
+    }
+    const { container, rerender } = render(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <Probe key="a" />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("one"));
+    rerender(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <Probe key="b" />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("two"));
+  });
+
+  test("useQuery does not latch a live suspense slot for the same query", async () => {
+    ensureDom();
+    let answers = 0;
+    const peer = fakePeer({
+      answer: (frame: Frame) => {
+        if (frame.op === "q") {
+          answers += 1;
+          return {
+            body: {
+              t: answers,
+              result: [[{ title: answers === 1 ? "live" : "oneshot" }]],
+            },
+          };
+        }
+        return { body: { t: answers, result: [] } };
+      },
+    });
+    const Provider = wrapperFor(peer);
+    function LiveProbe() {
+      const { data } = useLiveQuery(useDb("todos", Todos).asOf(1), titles, {
+        suspense: true,
+      });
+      return <div>{`L:${data[0]!.title}`}</div>;
+    }
+    function OneProbe() {
+      const { data } = useQuery(useDb("todos", Todos).asOf(1), titles, {
+        suspense: true,
+      });
+      return <div>{`Q:${data[0]!.title}`}</div>;
+    }
+    const { container, rerender } = render(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <LiveProbe />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("L:live"));
+    rerender(
+      <Provider>
+        <Suspense fallback={<div>loading</div>}>
+          <OneProbe />
+        </Suspense>
+      </Provider>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("Q:oneshot"));
   });
 
   test("a fresh mount after a suspense error re-acquires", async () => {

@@ -53,7 +53,7 @@ export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
       initialData: options?.initialData,
       initialT: options?.initialT,
       suspense: options?.suspense,
-      suspendKey: `${viewKeyOf(db)}\0${astKey}`,
+      suspendKey: `one\0${viewKeyOf(db)}\0${astKey}`,
     },
   );
 }
