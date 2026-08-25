@@ -262,6 +262,9 @@ describe("Field composition merge", () => {
     expect(string().isOptional).toBe(false);
     expect(string({ optional: true }).isOptional).toBe(true);
     expect(Field(Schema.String).isOptional).toBe(false);
+    // Type-level Opt stays false unless `{ optional: true }` — unchanged.
+    // Runtime still reads the AST. Widen through boolean so tsc does not
+    // fight the existing OptionalOf inference.
     const runtimeOptional = (field: { readonly isOptional: boolean }): boolean =>
       field.isOptional;
     expect(runtimeOptional(Field(stored(Schema.UndefinedOr(Schema.String), "string")))).toBe(
