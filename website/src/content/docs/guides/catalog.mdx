@@ -154,7 +154,7 @@ A database installed before required-at-transact reads every card-one field as r
 
 ## The signed-in user row
 
-The peer upserts the principal entity at first login (`sub`, `role` when that attr exists, and matching `ramose.attrs`). Any other required field on that entity makes session establishment itself `tx/required` (409). Mark those fields `optional: true` — Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` fail closed if a required field is unprovisionable.
+The peer always writes the principal ident (`sub`) and `role` when that attr exists. It *may* stamp matching `ramose.attrs` at login, but those keys are per-token and never guaranteed — they do not make a required field provisionable. Any other required field on that entity makes session establishment itself `tx/required` (409). Mark those fields `optional: true` — Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` fail closed if a required field is unprovisionable.
 
 ## Changing a schema later
 

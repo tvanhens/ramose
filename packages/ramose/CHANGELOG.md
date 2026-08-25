@@ -51,6 +51,21 @@ another entity is `retractEntity`'d — reject with `TxRejected`
 `tx/required` on both the worker path and the optimistic overlay. A `put` whose tempid unified
 with an existing row is an update and passes.
 
+`op.update` (and `tx.update`) is the partial verb: addressed by eid /
+handle / branded cell / lookup, or by a map with at least one
+`unique: "upsert"` field (type-enforced). It never creates. A missing
+row is `tx/missing-entity`; a subject of the wrong entity is
+`tx/wrong-entity`. `put(Entity, { uniqueKey })` as key-only
+ensure-exists is a compile error — that is `update`.
+
+Zero Effect types on the promise `Op` surface.
+
+### Decision-7 rollout hazards (part of #279, tracker #205)
+
+Docs and the principal deploy-check for the three operational hazards
+of the required-at-transact default flip, none of which block
+pre-release (breakage is allowed). Remaining work stays on #279.
+
 Requiredness is stored as `:db/optional`. Installs from before this
 flip never wrote that datom, so after deploying the new code every
 card-one attr reads as required until `install()` runs again — a hard
@@ -61,8 +76,10 @@ because schema attrs stay `:db/`-exempt from the required check. The
 same flip is why raw-datom schema literals in the test suite grew
 `:db/optional`.
 
-The peer provisions the signed-in user with `sub`, `role`, and matching
-`ramose.attrs` only. A required field beyond those makes first login
+The peer always writes the principal ident and the `role` sibling
+(when that attr exists). Matching `ramose.attrs` are per-token and
+never guaranteed — they do not make a required field provisionable.
+A required field beyond principal + role makes first login
 `tx/required`. `policy()` / `compile()` fail closed when the principal
 entity has unprovisionable required fields.
 
@@ -70,21 +87,6 @@ entity has unprovisionable required fields.
 schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`).
 The inference is unchanged; fail-closed "say `optional: true`
 explicitly" is #185's doctrine.
-
-### Decision-7 rollout hazards (part of #279, tracker #205)
-
-Docs and the principal deploy-check for the three operational hazards
-of the required-at-transact default flip, none of which block
-pre-release (breakage is allowed). Remaining work stays on #279.
-
-`op.update` (and `tx.update`) is the partial verb: addressed by eid /
-handle / branded cell / lookup, or by a map with at least one
-`unique: "upsert"` field (type-enforced). It never creates. A missing
-row is `tx/missing-entity`; a subject of the wrong entity is
-`tx/wrong-entity`. `put(Entity, { uniqueKey })` as key-only
-ensure-exists is a compile error — that is `update`.
-
-Zero Effect types on the promise `Op` surface.
 
 ### Schema evolution guard on `install()` (tracker #187)
 

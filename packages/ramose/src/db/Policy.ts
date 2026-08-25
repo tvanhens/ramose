@@ -785,11 +785,13 @@ export interface CompileOptions {
 }
 
 /**
- * The peer upserts the principal with `sub`, `role` (when that attr
- * exists), and matching `ramose.attrs`. Any other required card-one
- * field on that entity makes first login `tx/required`. Fail closed
- * at deploy — mark those fields `optional: true` (or use a schema AST
- * that admits `undefined`).
+ * Fail closed at deploy: only the principal ident, the `role` sibling,
+ * and optional / card-many fields are provisionable. The peer *may*
+ * stamp matching `ramose.attrs` at login, but those keys are per-token
+ * and never guaranteed — they do not make a required field
+ * provisionable. A required card-one field beyond principal + role
+ * makes first login `tx/required`. Mark those fields `optional: true`
+ * (or use a schema AST that admits `undefined`).
  */
 export const checkPrincipalProvisioning = (
   schema: AnySchema,
