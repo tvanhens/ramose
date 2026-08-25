@@ -423,7 +423,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         if (typeof raw.clientTxId === "string" && raw.clientTxId.length > 0) clientTxId = raw.clientTxId;
       }
       const mode = writes ?? resolveWrites(undefined, this.env.RAMOSE_WRITES);
-      if (!allowsRawTransact(mode, principal, tx)) {
+      if (!allowsRawTransact(mode, principal, tx, authState(this.env).policy)) {
         return json({ error: "raw transact is disabled; use operations", code: "operations" }, 403);
       }
       const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));

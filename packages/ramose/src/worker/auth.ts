@@ -421,6 +421,10 @@ function schemaIdents(tx: readonly unknown[]): string[] | undefined {
  * `"all"` is open. Superuser and `$token` keep it under `"operations"`.
  * Schema-only txs are exempt — `checkWrite` already polices them
  * (unknown ident stays 403 schema-class; already-deployed subset is a skip).
+ *
+ * No compiled policy is open mode: service ingress is unrestricted. The
+ * display class `"admin"` is a label, not a bypass key — an app-class
+ * caller still needs the operations restriction.
  */
 export function allowsRawTransact(
   writes: WritesMode,
@@ -430,8 +434,11 @@ export function allowsRawTransact(
 ): boolean {
   if (writes === "all") return true;
   if (principal !== undefined && isTokenOnly(principal)) return true;
-  if (policy === undefined) return true;
-  if (principal !== undefined && isSuperuser(principal, policy)) return true;
+  if (policy !== undefined) {
+    if (principal !== undefined && isSuperuser(principal, policy)) return true;
+    return isSchemaTx(tx);
+  }
+  if (principal === undefined || principal.kind === "service") return true;
   return isSchemaTx(tx);
 }
 

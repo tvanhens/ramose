@@ -39,7 +39,7 @@ export function policyOf(env: Pick<RamoseEnv, "RAMOSE_POLICY">): PolicyState {
   return state;
 }
 
-/** No attribute has a rule, so every non-admin op is denied. */
+/** No attribute has a rule and no superuser — every op is denied. */
 const DENY_ALL: CompiledPolicy = { version: 1, principal: ":db/ident", classes: ["admin"], attrs: {}, preset: {} };
 
 /**
