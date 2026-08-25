@@ -12,6 +12,7 @@ import {
   allowsOp,
   checkTx,
   filterDb,
+  isSchemaTx,
   isSuperuser,
   parsePolicy,
   policyView,
@@ -360,6 +361,29 @@ describe("filtered Db", () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe("isSchemaTx", () => {
+  const ensure = {
+    ":db/ident": ":doc/title",
+    ":db/valueType": ":db.type/string",
+    ":db/cardinality": ":db.cardinality/one",
+    ":db/optional": true,
+  };
+
+  test("a map-form ensure of :db/* scalars is schema", () => {
+    expect(isSchemaTx([ensure])).toBe(true);
+    expect(isSchemaTx([ensure, { ...ensure, ":db/ident": ":doc/audit", ":db/index": true }])).toBe(true);
+  });
+
+  test("empty, vector, extra app keys, nested maps, and :db/id are not schema", () => {
+    expect(isSchemaTx([])).toBe(false);
+    expect(isSchemaTx([[":db/add", 1, ":doc/title", "x"]])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":doc/title": "PWNED" }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":doc/owner": { ":db/id": 1, ":doc/title": "PWNED" } }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":db/id": 42 }])).toBe(false);
+    expect(isSchemaTx([{ ...ensure, ":db/id": "attr" }])).toBe(false);
+  });
+});
 
 describe("checkTx", () => {
   const check = (ops: unknown[], p: Principal, d: Db = db) => checkTx(ops, d, policy, p);

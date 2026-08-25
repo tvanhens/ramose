@@ -23,14 +23,23 @@ export type CheckTxResult = { readonly ok: true; readonly ops: unknown[] } | Pol
 const deny = (attr: string, op: string): PolicyDenied => ({ ok: false, code: "policy", attr, op });
 
 /**
- * Every op is a map form carrying `:db/ident` — i.e. an `ensure`.
+ * Every op is a map-form `ensure`: a `:db/ident` plus only `:db/*`
+ * scalars. Extra app keys, nested maps, reverse refs, and `:db/id`
+ * (which would aim the install at an existing entity) are not schema.
  * Empty `tx` is not schema (nothing to ensure).
  */
 export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[] {
   if (!Array.isArray(tx) || tx.length === 0) return false;
   for (const op of tx) {
     if (typeof op !== "object" || op === null || Array.isArray(op)) return false;
-    if (typeof (op as Record<string, unknown>)[":db/ident"] !== "string") return false;
+    const m = op as Record<string, unknown>;
+    if (typeof m[":db/ident"] !== "string") return false;
+    if (m[":db/id"] !== undefined) return false;
+    for (const [k, v] of Object.entries(m)) {
+      if (!k.startsWith(":db/")) return false;
+      const t = typeof v;
+      if (t !== "string" && t !== "number" && t !== "boolean") return false;
+    }
   }
   return true;
 }

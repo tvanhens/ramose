@@ -454,6 +454,29 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
+  test("a schema class cannot smuggle an app write inside an ensure map", async () => {
+    const { peer, eids } = await fixture({
+      RAMOSE_WRITES: "all",
+      RAMOSE_POLICY: JSON.stringify({ ...POLICY, schemaClasses: ["member"] }),
+    });
+    const member = await token("acme", "member", "user_ada");
+    const mixed = {
+      tx: [
+        {
+          ...attr(":junk/one", "string"),
+          ":doc/owner": { ":db/id": eids.solo, ":doc/title": "PWNED" },
+        },
+      ],
+    };
+    const res = await peer.json("/db/acme/transact", post(mixed, member));
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("policy");
+    expect(await titles(peer, member)).toEqual(["Roadmap"]);
+    const asAdmin = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [[eids.solo, ":doc/title", "?t"]] } }, await token("acme", "admin")));
+    expect(asAdmin.body.result).toEqual([["Carol private"]]);
+    peer.close();
+  });
+
   test("explain and /admin/* are admin-only; /info reduces to { db, t, principal }", async () => {
     const { peer } = await fixture();
     const member = await token("acme", "member");

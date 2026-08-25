@@ -169,6 +169,9 @@ describe("allowsRawTransact", () => {
     expect(allowsRawTransact("operations", service, dataTx)).toBe(true);
     expect(allowsRawTransact("all", member, dataTx)).toBe(true);
     expect(allowsRawTransact("operations", member, schemaTx)).toBe(true);
+    expect(
+      allowsRawTransact("operations", member, [{ ...schemaTx[0], ":doc/title": "PWNED" }]),
+    ).toBe(false);
   });
 });
 
