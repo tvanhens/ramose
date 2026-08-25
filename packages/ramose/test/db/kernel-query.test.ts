@@ -793,7 +793,8 @@ describe("db.query end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return { owner: name.v, n: Q.count(issue) };
     });
-    expect(lowerQueryObject(perOwner).query.with).toBeUndefined();
+    // the group-key value (`name.v`) also keeps its binding record in :with
+    expect(lowerQueryObject(perOwner).query.with).toHaveLength(1);
 
     // grouped: the duplicate values stay two rows inside their group too
     const perDone = Query.q(function* () {
@@ -808,6 +809,59 @@ describe("db.query end to end", () => {
       { done: false, total: 4 },
       { done: true, total: 4 },
     ] as never);
+
+    await peer.dispose();
+  });
+
+  test("duplicate-value entities project as two rows; Q.distinct keeps one", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    await run(
+      seedWrite(db, function* (tx) {
+        const dupe = yield* tx.entity();
+        yield* dupe.set(Issue.title, "fix the flake");
+        yield* dupe.set(Issue.done, true);
+        yield* dupe.set(Issue.rank, 9);
+        yield* dupe.set(Issue.owner, ids.ada!.id as never);
+      }),
+    );
+
+    const titles = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v };
+    });
+    const rows = await db.query(titles);
+    expect(rows.filter((r) => r.title === "fix the flake")).toHaveLength(2);
+    expect(rows).toHaveLength(4);
+    expect(lowerQueryObject(titles).query.with).toHaveLength(1);
+
+    const unique = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return Q.distinct({ title: t.v });
+    });
+    const distinctRows = await db.query(unique);
+    expect(distinctRows.filter((r) => r.title === "fix the flake")).toHaveLength(1);
+    expect(distinctRows).toHaveLength(3);
+    expect(lowerQueryObject(unique).query.with).toBeUndefined();
+
+    const viaRows = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return Q.distinct(Q.rows({ title: t.v }));
+    });
+    expect(await db.query(viaRows)).toHaveLength(3);
+
+    // select is already over the record — still two rows, no Q.distinct needed
+    const selected = Query.from(Issue)
+      .where({ title: "fix the flake" })
+      .select({ title: Issue.title });
+    expect(await db.query(selected)).toHaveLength(2);
+
+    expect(() => Q.distinct(Q.value(Q.var()))).toThrow(/scalar/);
 
     await peer.dispose();
   });

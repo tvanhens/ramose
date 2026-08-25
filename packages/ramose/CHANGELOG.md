@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Generator projections keep one row per source (part of #191)
+
+A record of value cells (`{ title: t.v }`) no longer collapses two
+entities that share a projected value into one row. Lowering puts the
+binding record in `:with`, the same way aggregates already do.
+`Q.distinct({ title: t.v })` opts back into unique projected tuples.
+`select(...)` / `Q.pull` are unchanged — they already project through
+the focus record.
+
 ### Case-insensitive string predicates and `Q.call` (part of #190)
 
 `Q.startsWith` / `Q.endsWith` / `Q.includes` take `{ ignoreCase: true }`,

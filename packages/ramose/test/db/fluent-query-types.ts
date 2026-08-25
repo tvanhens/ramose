@@ -193,6 +193,19 @@ const openCount = Query.q(function* () {
   yield* Query.is(Issue.done, false)(issue);
   return Q.value(Q.count(issue));
 });
+
+const uniqueTitles = Query.q(function* () {
+  const issue = yield* Query.entities(Issue);
+  const t = yield* Q.fact(issue, Issue.title);
+  return Q.distinct({ title: t.v });
+});
+type _distinctRow = Expect<
+  Equal<Row<typeof uniqueTitles>, { readonly title: string }>
+>;
+const _distinctRun = db.query(uniqueTitles);
+type _distinctOut = Expect<
+  Equal<typeof _distinctRun, Promise<readonly { readonly title: string }[]>>
+>;
 const _openRun = db.query(openCount);
 type _openVal = Expect<Equal<typeof _openRun, Promise<number>>>;
 type _openRow = Expect<Equal<Row<typeof openCount>, number>>;

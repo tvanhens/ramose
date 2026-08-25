@@ -378,7 +378,20 @@ export interface ValueSpec<T = unknown> {
   readonly _out?: T;
 }
 
-export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord | ValueSpec<any>;
+/**
+ * `Q.distinct({ … })` — opt into unique projected tuples. The default is
+ * one row per source record; this is the set of projected cells.
+ */
+export interface DistinctSpec<Row = unknown> {
+  readonly _tag: "distinctSpec";
+  readonly inner: PullSpec<any> | RowsSpec<any> | CellRecord;
+  readonly _row?: Row;
+}
+
+/** A row projection `Q.distinct` may wrap — not a scalar `Q.value`. */
+export type Distinctable = PullSpec<any> | RowsSpec<any> | CellRecord | DistinctSpec<any>;
+
+export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord | ValueSpec<any> | DistinctSpec<any>;
 
 export const isPullSpec = (x: unknown): x is PullSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "pullSpec";
@@ -388,6 +401,8 @@ export const isAggSpec = (x: unknown): x is AggSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "aggSpec";
 export const isValueSpec = (x: unknown): x is ValueSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "valueSpec";
+export const isDistinctSpec = (x: unknown): x is DistinctSpec =>
+  typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "distinctSpec";
 
 /**
  * The fluent/lib `.select(shape, extras)` focus. `Q.count(Q.focus)` in
@@ -417,15 +432,17 @@ export type CellValue<C> = C extends Var<infer T>
 export type RecordRow<R> = { readonly [K in keyof R]: CellValue<R[K]> };
 
 /** The row a projection value denotes. */
-export type RowOfProjection<P> = P extends ValueSpec<infer T>
-  ? T
-  : P extends PullSpec<infer R>
-    ? R
-    : P extends RowsSpec<infer R>
+export type RowOfProjection<P> = P extends DistinctSpec<infer R>
+  ? R
+  : P extends ValueSpec<infer T>
+    ? T
+    : P extends PullSpec<infer R>
       ? R
-      : P extends CellRecord
-        ? RecordRow<P>
-        : never;
+      : P extends RowsSpec<infer R>
+        ? R
+        : P extends CellRecord
+          ? RecordRow<P>
+          : never;
 
 // ── Q ───────────────────────────────────────────────────────────────────────
 
@@ -594,6 +611,39 @@ const agg = <T>(fn: AggSpec["fn"], v: AnyVar): AggSpec<T> => {
   return { _tag: "aggSpec", fn, v };
 };
 
+/** Unwrap / validate the projection `Q.distinct` wraps. */
+const distinctInner = (proj: unknown): DistinctSpec["inner"] => {
+  if (isDistinctSpec(proj)) return proj.inner;
+  if (isValueSpec(proj)) {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.value is a scalar, not a set of rows",
+    );
+  }
+  if (isPullSpec(proj) || isRowsSpec(proj)) return proj;
+  if (
+    isVar(proj) ||
+    isAggSpec(proj) ||
+    isBlank(proj) ||
+    proj === null ||
+    typeof proj !== "object" ||
+    Array.isArray(proj)
+  ) {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.pull, Q.rows({ … }), or a record of bound handles",
+    );
+  }
+  const tag = (proj as { _tag?: unknown })._tag;
+  if (typeof tag === "string") {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.pull, Q.rows({ … }), or a record of bound handles",
+    );
+  }
+  if (Object.keys(proj).length === 0) {
+    throw new Error("ramose/query: the body returned an empty projection — name at least one cell");
+  }
+  return proj as CellRecord;
+};
+
 /**
  * The kernel, as one namespace. Everything here is an inert description;
  * `db.query` is where computation (and Effect) begins.
@@ -694,6 +744,17 @@ export const Q = {
   },
 
   /**
+   * Unique projected tuples. The default is one row per source record
+   * — two issues with the same title are two rows. Wrap the same
+   * record (or `Q.rows` / `Q.pull`) to keep one row when every
+   * projected cell agrees.
+   */
+  distinct: <const P extends Distinctable>(proj: P): DistinctSpec<RowOfProjection<P>> => ({
+    _tag: "distinctSpec",
+    inner: distinctInner(proj),
+  }),
+
+  /**
    * The `.select(shape, extras)` focus. Write `Q.count(Q.focus)` in the
    * extras record; lowering rewrites it to the pipeline's current focus.
    */
@@ -703,13 +764,18 @@ export const Q = {
   row: <Base extends Projection, const Extra extends CellRecord>(
     base: Base,
     extra: Extra,
-  ): RowsSpec<RowOfProjection<Base> & RecordRow<Extra>> => {
+  ): Base extends DistinctSpec<any>
+    ? DistinctSpec<RowOfProjection<Base> & RecordRow<Extra>>
+    : RowsSpec<RowOfProjection<Base> & RecordRow<Extra>> => {
+    if (isDistinctSpec(base)) {
+      return Q.distinct(Q.row(base.inner, extra)) as never;
+    }
     const cells = isRowsSpec(base)
       ? { ...base.cells, ...extra }
       : isPullSpec(base)
         ? { ...extra, ["…"]: base }
         : { ...(base as CellRecord), ...extra };
-    return { _tag: "rowsSpec", cells: cells as CellRecord };
+    return { _tag: "rowsSpec", cells: cells as CellRecord } as never;
   },
 
   // ── aggregate cells ──────────────────────────────────────────────────────

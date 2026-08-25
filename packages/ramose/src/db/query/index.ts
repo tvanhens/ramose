@@ -18,6 +18,7 @@ export {
   type BuildCtx,
   type Cell,
   type CellRecord,
+  type DistinctSpec,
   type FactHandle,
   type Fragment,
   type Projection,

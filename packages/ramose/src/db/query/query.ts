@@ -47,6 +47,7 @@ import {
   isRowsSpec,
   isAggSpec,
   isValueSpec,
+  isDistinctSpec,
   isVar,
   isBlank,
   collectBody,
@@ -61,6 +62,7 @@ import {
   type CmpCommand,
   type EidCell,
   type CellRecord,
+  type DistinctSpec,
   type FactCommand,
   type Fragment,
   type Position,
@@ -330,7 +332,7 @@ export const isQueryObject = (x: unknown): x is AnyQueryObject =>
 /** What one build pass of a query value produced. */
 interface Built {
   readonly clauses: BClause[];
-  readonly proj: Projection | IdsSpec;
+  readonly proj: Exclude<Projection, DistinctSpec<any>> | IdsSpec;
   /** The select/pipeline focus — what `open` hands back, and what the
    * cursor's sort paths walk from. */
   readonly focus: AnyVar | undefined;
@@ -340,6 +342,8 @@ interface Built {
   /** Ident-path → group-key var from `expandShapeToCells` (nested hops
    * included). Empty when the projection is not `select(shape, extras)`. */
   readonly groupKeys: ReadonlyMap<string, AnyVar>;
+  /** `Q.distinct(...)` — unique projected tuples, no row-provenance `:with`. */
+  readonly distinct: boolean;
 }
 
 /** Fingerprint a sort path so an attribute-key `orderBy` can reuse the
@@ -370,7 +374,13 @@ const runInto = (
   const out = qv.body();
   if (isPipeline(out)) return assemblePipeline(out, ctx, stripCursor);
   if (isGen(out)) {
-    const proj = runBody(out, ctx);
+    const raw = runBody(out, ctx);
+    let distinct = false;
+    let proj: unknown = raw;
+    while (isDistinctSpec(proj)) {
+      distinct = true;
+      proj = proj.inner;
+    }
     return {
       clauses: ctx.clauses,
       proj: normalizeProj(proj),
@@ -379,6 +389,7 @@ const runInto = (
       limit: undefined,
       offset: undefined,
       groupKeys: new Map(),
+      distinct,
     };
   }
   throw new Error(
@@ -397,7 +408,7 @@ const normalizeProj = (proj: unknown): Projection | IdsSpec => {
     return cells;
   }
   throw new Error(
-    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), Q.value(...), a record of bound handles, or a focus var for bare ids",
+    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), Q.value(...), Q.distinct({ … }), a record of bound handles, or a focus var for bare ids",
   );
 };
 
@@ -477,6 +488,7 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     limit,
     offset,
     groupKeys,
+    distinct: false,
   };
 };
 
@@ -1568,6 +1580,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       });
       return;
     }
+    if (isDistinctSpec(cell)) {
+      throw new Error(
+        "ramose/query: Q.distinct(...) wraps the whole projection, not one cell",
+      );
+    }
     if (typeof cell === "object" && cell !== null) {
       for (const [k, sub] of Object.entries(cell as CellRecord)) {
         flattenCell([...path, k], sub as Cell);
@@ -1636,18 +1653,30 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   // ── clauses + cursor ─────────────────────────────────────────────────────
   const projVars = new Set<number>();
-  /** Aggregated *value* vars: their rows must not collapse — see `withVars`. */
-  const aggValueVars = new Set<number>();
+  /** Value vars whose rows must not collapse — see `withVars`. Aggregates
+   * always join; a plain projected value joins unless `Q.distinct`. */
+  const provenanceVars = new Set<number>();
+  const addProvenance = (v: AnyVar): void => {
+    // an entity (or tx) var is an identity — its bindings are already
+    // distinct rows; a value var is not, so it needs row provenance
+    if (v.kind !== "entity" && v.kind !== "tx") provenanceVars.add(v.id);
+  };
   const collectProjVars = (cell: Cell): void => {
-    if (isVar(cell)) projVars.add(cell.id);
-    else if (isAggSpec(cell)) {
+    if (isVar(cell)) {
+      projVars.add(cell.id);
+      if (!built.distinct) addProvenance(cell);
+    } else if (isAggSpec(cell)) {
       const v = isFocusSentinel(cell.v) ? (built.focus ?? cell.v) : cell.v;
       projVars.add(v.id);
-      // an entity (or tx) var is an identity — its bindings are already
-      // distinct rows; a value var is not, so it needs row provenance
-      if (v.kind !== "entity" && v.kind !== "tx") aggValueVars.add(v.id);
+      // aggregates always keep row provenance — set semantics would
+      // collapse the rows they summarize
+      addProvenance(v);
     } else if (isPullSpec(cell)) projVars.add(cell.focus.id);
-    else if (typeof cell === "object" && cell !== null) {
+    else if (isDistinctSpec(cell)) {
+      throw new Error(
+        "ramose/query: Q.distinct(...) wraps the whole projection, not one cell",
+      );
+    } else if (typeof cell === "object" && cell !== null) {
       for (const sub of Object.values(cell as CellRecord)) collectProjVars(sub as Cell);
     }
   };
@@ -1719,25 +1748,27 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return f !== undefined && Boolean(f(...vals));
     });
 
-  // Aggregating over a *value* var must not collapse rows that agree on the
-  // value: two entities with the same rank are two rows to a sum. The entity
-  // position of each fact that binds an aggregated value rides in `:with` —
-  // distinctness includes it without projecting it (the nav lowering carried
-  // its root the same way). An e-var already in the projection is grouping,
-  // not multiplicity, and stays out.
+  // A projected *value* var must not collapse rows that agree on the value:
+  // two entities with the same title are two rows (and two entities with
+  // the same rank are two rows to a sum). The entity position of each fact
+  // that binds the value rides in `:with` — distinctness includes it
+  // without projecting it (the nav lowering carried its root the same
+  // way). An e-var already in the projection is grouping, not
+  // multiplicity, and stays out. `Q.distinct` skips this for plain
+  // projected cells; aggregates still join so a sum sees every row.
   // Top-level facts only: a var bound solely inside an or/not group is not
   // bound at the query's top level, so it cannot ride `:with`.
   const withVars: string[] = [];
-  if (aggValueVars.size > 0) {
+  if (provenanceVars.size > 0) {
     const seen = new Set<number>();
     for (const c of clauses) {
       if (c._tag !== "fact") continue;
       const v = c.vVar ?? c.v0;
-      const bindsAgg =
-        (isVar(v) && aggValueVars.has(v.id)) ||
-        (c.txVar !== undefined && aggValueVars.has(c.txVar.id)) ||
-        (c.opVar !== undefined && aggValueVars.has(c.opVar.id));
-      if (!bindsAgg) continue;
+      const bindsValue =
+        (isVar(v) && provenanceVars.has(v.id)) ||
+        (c.txVar !== undefined && provenanceVars.has(c.txVar.id)) ||
+        (c.opVar !== undefined && provenanceVars.has(c.opVar.id));
+      if (!bindsValue) continue;
       const e = c.eVar ?? c.e0;
       if (isVar(e) && !projVars.has(e.id) && !seen.has(e.id)) {
         seen.add(e.id);

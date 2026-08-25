@@ -371,7 +371,7 @@ Query.from(Todo)                         // every todo…
 | `select(shape)` / `orderBy(key, dir?, opts?)` / `limit(n)` / `offset(n)` | shape, sort, page — on the server |
 | `stage(fragment)` | lift your own fragment with the same adapter the shipped combinators use |
 
-`Q.or(…)` / `Q.not(…)` combine clauses (generator spelling); join variables are whatever outer handles the branches close over. `Q.call(fn, …args)` binds an engine function (`+`, `lower-case`, `str`, …) — the names it accepts are listed on [The query language](/reference/query-language/#engine-functions-qcall-can-bind). `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
+`Q.or(…)` / `Q.not(…)` combine clauses (generator spelling); join variables are whatever outer handles the branches close over. `Q.call(fn, …args)` binds an engine function (`+`, `lower-case`, `str`, …) — the names it accepts are listed on [The query language](/reference/query-language/#engine-functions-qcall-can-bind). A generator record of value cells is one row per source; `Q.distinct({ … })` keeps unique projected tuples ([The query language](/reference/query-language/#projection-keeps-one-row-per-source)). `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
 
 **Terminals** — methods on the built query value:
 

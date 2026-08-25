@@ -95,9 +95,34 @@ Query.from(Issue).where({ owner: me });
 so `db.query(q)` takes no bindings argument. Output is the type of the
 body's one return expression — `Q.pull(focus, shape)` for one root,
 `Q.rows({ … })` (or a plain record of handles) for several, `Q.value(...)`
-for a scalar, a bare focus var for ids — so inference is sound and there
-is no declared `find`. `orderBy` / `limit` / `offset` live on the query
-value, so a generator projection can be sorted and limited.
+for a scalar, `Q.distinct({ … })` for unique projected tuples, a bare
+focus var for ids — so inference is sound and there is no declared
+`find`. `orderBy` / `limit` / `offset` live on the query value, so a
+generator projection can be sorted and limited.
+
+## Projection keeps one row per source
+
+`select(...)` and `Q.pull` project through the matched record, so two
+issues with the same title are two rows. A generator record of value
+cells — `return { title: t.v }` — would otherwise collapse those two
+into one: the engine keeps unique projected tuples, and a title is not
+an identity. The default is now the same as `select`: the record that
+bound each projected value rides along, so the two issues stay two
+rows. `Q.distinct({ title: t.v })` is the opt-in for unique titles —
+one row when every projected cell agrees.
+
+```ts
+// two issues titled "fix" → two rows
+return { title: t.v };
+
+// the same two issues → one row
+return Q.distinct({ title: t.v });
+```
+
+`select` / `Q.pull` already identify each row by the focus record;
+wrapping them in `Q.distinct` does not change that. Aggregates still
+count every matching row either way — `Q.distinct` is about the
+projected cells, not the rows a `sum` or `count` sees.
 
 ## Membership is derived
 
