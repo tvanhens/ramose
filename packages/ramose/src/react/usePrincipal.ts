@@ -68,8 +68,7 @@ export const usePrincipal = <C extends Schema.Any>(
       cancelled = true;
       off?.();
     };
-    // load closes over db; view is the structural identity
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // load closes over db; view is the structural identity of the connection
   }, [view]);
 
   return state;
