@@ -111,7 +111,7 @@ These three are the function, not bag keys.
 
 | option | default | effect |
 | --- | --- | --- |
-| `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. A field is also optional when the Effect schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`, `Schema.optional`) — say `{ optional: true }` explicitly if you mean it. |
+| `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. A field is also optional when the Effect schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`, `Schema.optional`) — say `optional: true` explicitly if you mean it. |
 | `index` | true when the field is unique | keeps a value-ordered index, so you can look a record up by value |
 | `doc` | none | a description stored with the field |
 
