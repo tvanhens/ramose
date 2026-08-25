@@ -246,6 +246,11 @@ note demands. The verifier (`worker/auth.ts`) branches on presence:
   with no `db` argument mints the identity token straight from the session —
   no `classOf`, no org lookup, response `{ token, exp }`. The `{ db }` form
   keeps minting compat tokens until stage 1 completes.
+- **The token-shape decision is itself an unblock for offline-first.** The
+  offline program's persisted-credential work (W6) is sequenced on this
+  design precisely because an identity-only token is a far smaller liability
+  to persist in browser storage than today's authorization-bearing token.
+  Treat the shape as settled early, even if the resolver ships later.
 
 ## 5. The resolver
 
@@ -301,7 +306,10 @@ revoke op's effect can notify the target database's transactor
 revocation watermark replicas check when they next touch a session for that
 `sub`, forcing an `auth` round-trip or close. That path needs a
 transactor→replica signal that doesn't exist yet, which is exactly why it's
-staged, not assumed.
+staged, not assumed. Offline-first raises the stakes on this choice: a
+rule-view resync becomes a full re-dump plus a disk-store rebuild (§10), so
+the push design should prefer targeted per-`sub` session kicks over anything
+that widens resync triggers.
 
 ## 6. Bootstrap and seeding
 
@@ -383,7 +391,21 @@ Resolves the #183 questions deliberately deferred to this design:
 - `usePrincipal(db)` already answers "who am I here" from the server; with
   the JWT no longer carrying class, the unverified-claims fallback
   (`claims?.ramose?.class` in Reef's screens) is deleted rather than fixed —
-  one source of truth remains.
+  one source of truth remains. (Ordering note: that fallback currently masks
+  offline identity degradation, so the offline program's durable cached
+  principal must land before the fallback is removed — see §10.)
+- **The resolved principal is a client-visible contract, defined once.**
+  With class off the token, the session auth-ack and `GET /db/:name/info`
+  (`{ eid, class }`) become the *only* client-side source of "who am I in
+  this database". Three consumers key durable state on it — #183's
+  principal-swap cache keying, offline-first's cached principal per
+  `(db, sub)` (W2), and its persisted-store partitioning (W3) — so this
+  design fixes the contract rather than leaving it implicit: `sub` is the
+  canonical identity/partition key; the per-db resolved `{ eid, class }` is
+  surfaced on the auth ack and `/info`; and any client-cached copy is
+  **UX-only, never authorization** (the same rule the Better Auth plugin
+  already states for its `class` field), because the server re-resolves on
+  every request and every replay.
 
 ## 8. Agent principals and API keys (#209)
 
@@ -402,6 +424,17 @@ same audit surface:
   is `revokeApiKeyOp` — effective at resolver latency, no TTL involved.
 - Grants for agents are ordinary grant rows; "what did the agent do" is
   provenance + `history`, as #209 frames it.
+- **The "agent class" half of #209's recipe needs no directory support.**
+  An app that wants narrower agent arms declares an `agent` class in its
+  policy and grants it like any other — the directory grants whatever class
+  string the target policy declares (the same decoupling that motivates
+  `grant.admin`). Recipe: `classes: [..., "agent"]`; op arms
+  `{ class: ["member", "agent"], rule }`; grant row
+  `{ principal: <agent>, db, class: "agent" }`.
+- **API keys are a directory-mode feature.** `apiKey` rows live in `_dir`,
+  so static-claims deployments get JWT-bearing agents only — consistent with
+  #209's claims fallback, but worth stating so nobody expects `rk_` keys
+  from a static deployment.
 
 ## 9. `learn()` alignment (#209)
 
@@ -412,13 +445,70 @@ description, the caller's class there" card. Live by construction. The
 static-claims fallback (`learn()` enumerates from the token) stays as
 specified there; both paths sit behind the same tool surface.
 
-## 10. Staged D1 removal
+Scope boundary: only the top-level card query is directory data. Drill-down
+(`learn("acme")` → namespaces and operations, `learn("acme/op:…")`) reads
+the operations registry and the compiled policy — deployment-wide worker
+state that #209 assigns to the compiled policy, not to this design. A
+consequence worth naming: a deployment has one registry and one app policy,
+so in a multi-db deployment drill-down returns the same operations for every
+database; only the caller's class (and so which arms admit them) differs per
+db, via the grant. Also a transport note in the directory's favor: MCP is
+streamable HTTP, so every `query`/`pull`/`run` re-resolves through the
+resolver memo — MCP agents see revocation at ≤60 s, tighter than any
+long-lived socket.
+
+## 10. Offline-first interactions
+
+The offline-first program (design note, 2026-08-25) is sequenced shortly
+after this design and builds directly on it. The relationship is mostly
+synergy; these are the binding points:
+
+- **Token shape unblocks W6** (§4): persisted identity tokens are the
+  smaller liability; that work waits on the shape decision, not the
+  resolver.
+- **One resolved-principal contract** (§7): #183's cache keying, W2's
+  durable cached principal, and W3's store partitioning all consume the same
+  ack/`info` contract and key on `sub`. Build it once.
+- **Sequencing: directory stage 1 before offline phase 3.** Offline cold
+  start fails today on three auth-Worker dependencies — session fetch,
+  workspace list, JWT mint. The directory removes the workspace list from
+  that list structurally: it becomes a `_dir` live query, and since `_dir`
+  is an ordinary database with a tiny per-principal projection, the offline
+  program's persisted store (W3) makes the workspace list work offline for
+  free. Corollary: build no offline cache for the Better Auth REST
+  workspace list — it is throwaway the day stage 1 lands. Offline phases
+  1–2 are independent of this design and can interleave freely.
+- **"Grant revoked" is a stable, classifiable failure.** Offline stretches
+  the write path to days, so two contracts are fixed here: (1) queued-write
+  replay re-resolves grants per operation (the resolver runs per request),
+  so offline revocation is enforced at replay with no extra machinery — the
+  rejection is a terminal `Unauthorized` (server rejection: drop the layer,
+  surface via the error channel), never a retryable transport error;
+  (2) session open on a formerly-granted database (401) is a first-class
+  client state — the db also disappears from the `_dir` live list, and the
+  defined client behavior is: wipe that db's persisted store, drop its
+  outbox, surface it. This adds a third trigger to offline's "wipe on
+  identity change / rule-view resync" rule.
+- **Reef cleanup ordering** (§7): W2's durable cached principal lands
+  first; the unverified JWT-class UI fallback is deleted second.
+- **Directory operations compose with offline as-is**: `grantOp`/`inviteOp`
+  queue like any operation; `createDbOp` is effect-first, so it correctly
+  has an empty optimistic prefix — exactly the documented "everything
+  before your first effect works offline; the effect waits for the network"
+  boundary.
+- **Resync cost pressures the push-invalidation design** (§5): offline
+  turns a rule-view resync into a full re-dump plus disk-store rebuild, and
+  grant changes trigger exactly those resyncs. Acceptable at realistic
+  grant-change frequency, but it commits the v2 push design to targeted
+  per-`sub` session kicks rather than broader resync triggers.
+
+## 11. Staged D1 removal
 
 | Stage | Moves | Mechanism | Gate |
 | --- | --- | --- | --- |
 | 1 | `organization`, `member`, `invitation` → `_dir` `db`/`grant`/`invite` | Migration op reads Better Auth's org API once and seeds `_dir` (org slug → db name, `member.role` through Reef's `classOfRole` → grant class, role owner/admin → `admin: true`); then Reef drops the org plugin, mint goes identity-only, UI queries `_dir` | none — this is the core |
 | 2 | `jwks` → Durable Object storage (or Workers secrets) | Wanted regardless: the pinning ritual exists because `BetterAuthSecret` (encrypting `jwks.privateKey`) lives only in Alchemy state, so a cache miss remints it and orphans the keys. Keys in DO storage keyed by deployment, rotated in place, published unchanged at `/api/auth/jwks` | independent of stage 1 |
-| 3 | `user`, `account`, `session`, `verification` → Better Auth adapter backed by Ramose (`_auth`, sibling of `_dir`) | Adapter implements Better Auth's CRUD contract over named system operations | **erasure story** (§11) + adapter-contract gaps: composite uniqueness (`user.email` is single-attr and fine; `member` is gone by then), sort/limit/IN (query surface exists post-#299), hard deletes (retraction suffices *only* under shredding) |
+| 3 | `user`, `account`, `session`, `verification` → Better Auth adapter backed by Ramose (`_auth`, sibling of `_dir`) | Adapter implements Better Auth's CRUD contract over named system operations | **erasure story** (§12) + adapter-contract gaps: composite uniqueness (`user.email` is single-attr and fine; `member` is gone by then), sort/limit/IN (query surface exists post-#299), hard deletes (retraction suffices *only* under shredding) |
 | 4 | bootstrap circularity | Dissolved by §6: minting never reads the directory; the peer never calls the auth service; deploy seeds via `$token`. The resource graph stays a DAG | falls out |
 
 Recommendation for the "identity in `_dir` or a sibling" open question:
@@ -431,7 +521,7 @@ by one string when stage 3 lands.
 End state: one storage system (DO + R2), no D1, no migration files; identity,
 grants, and databases as policy-guarded, live-queryable, auditable data.
 
-## 11. Erasure: crypto-shredding sketch (stage 3 gate)
+## 12. Erasure: crypto-shredding sketch (stage 3 gate)
 
 Secrets in an append-only, time-travelable store are readable forever via
 `asOf` — deletion is retraction, not excision (documented engine behavior).
@@ -459,25 +549,49 @@ Leading candidate, as the issue anticipates: **crypto-shredding**.
   before 1.0 with or without stage 3 — §4 stops the leak at the source
   (profile stops riding tokens), and shredded fields are the candidate
   answer for app data too.
+- Client-persisted projections (offline-first W3) are an
+  eventual-consistency boundary: shredding makes server-side history
+  unreadable immediately, but a device's disk cache only converges on its
+  next sync — the same property as any client cache; a device that never
+  reconnects keeps its stale bytes. State this in the erasure docs rather
+  than implying stronger reach.
 
 ## Open questions (remaining)
 
-1. Exact combinator spellings for the directory policy arms (§3 sketch), and
-   whether directory operations are hand-written or lean on #302's generated
-   CRUD + arms.
-2. Push invalidation for live sockets (§5): transactor revocation watermark
-   vs replica-side epoch check — needs a small transactor→replica signal
-   design.
-3. Profile propagation into `_dir` principal rows: mint-side provision vs
-   OIDC top-level claims (§4).
-4. Whether `grant.class` becomes card-many (multi-class grants) before or
-   after 1.0 — the seam supports either.
-5. `_dir` catalog/policy versioning across engine upgrades: evolution guard
-   semantics for a package-owned schema (likely: additive-only, enforced in
-   CI like the wire contract).
-6. Stage-3 adapter details once Better Auth's full contract is pinned down
-   (this repo doesn't vendor it) — sort/limit/IN coverage, session sweep
-   cadence.
+**Decisions needed from the owner** (recommendation listed first):
+
+1. **Directory mode switch** — explicit `Server({ directory: true })`
+   (recommended) vs implied by seed input vs always-on (§4, §6).
+2. **Static-claims long-term** — permanent mode for directory-less
+   deployments (recommended, §4) vs migration-compat only, removed at 1.0.
+3. **Identity location for stage 3** — sibling `_auth` (recommended, §11)
+   vs inside `_dir`.
+4. **Erasure approach** — crypto-shredding (recommended, §12) vs true
+   excision vs "secrets never enter Ramose".
+5. **Profile propagation** — auth service writes profile at mint-side
+   provision (recommended) vs peer copies standard OIDC top-level claims vs
+   no profile plumbing at all (§4).
+6. **Directory admin vocabulary** — `grant.admin` boolean (recommended, §2)
+   vs per-db directory roles.
+7. **Multi-class grants** — single class per grant at 1.0 (recommended; the
+   seam supports widening later) vs card-many now (§2).
+8. **Revocation latency at launch** — v1 bounded staleness (recommended,
+   §5) vs designing push invalidation before shipping.
+
+**Deferred design work** (not owner decisions):
+
+- Exact combinator spellings for the directory policy arms (§3 sketch), and
+  whether directory operations are hand-written or lean on #302's generated
+  CRUD + arms.
+- Push-invalidation mechanism detail (§5, §10): transactor revocation
+  watermark vs replica-side epoch check — needs a small transactor→replica
+  signal design, constrained to targeted per-`sub` kicks by offline-first.
+- `_dir` catalog/policy versioning across engine upgrades: evolution guard
+  semantics for a package-owned schema (likely: additive-only, enforced in
+  CI like the wire contract).
+- Stage-3 adapter details once Better Auth's full contract is pinned down
+  (this repo doesn't vendor it) — sort/limit/IN coverage, session sweep
+  cadence.
 
 ## Constraints honored
 
