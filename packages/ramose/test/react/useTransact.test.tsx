@@ -1,10 +1,10 @@
 /**
  * The useTransact contract:
  *
- * - a successful `run` resolves the value, and `pending` flips
+ * - a successful `run` resolves `{ ok: true, value }`, and `pending` flips
  *   true → false around it;
- * - a failing `run` calls `onError` with the tagged error and lands the
- *   same value on `error`;
+ * - a failing `run` resolves `{ ok: false, error }`, calls `onError` with
+ *   the tagged error, and lands the same value on `error`;
  * - `error` clears on the next successful run, and on `clearError`;
  * - concurrent runs settle independently: the last settler wins `error`;
  * - an unmounted component touches no state when a late run settles, but
@@ -16,7 +16,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import { Unauthorized } from "../../src/db/index.ts";
 import { act, renderHook } from "@testing-library/react";
-import { errorMessage, useTransact } from "../../src/react/index.ts";
+import { errorMessage, useTransact, type RunResult } from "../../src/react/index.ts";
 
 GlobalRegistrator.register();
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,12 +34,12 @@ const gate = <A,>() => {
 };
 
 describe("useTransact", () => {
-  test("success resolves the value and pending flips true → false", async () => {
+  test("success resolves { ok, value } and pending flips true → false", async () => {
     const { result } = renderHook(() => useTransact());
     expect(result.current.pending).toBe(false);
 
     const g = gate<number>();
-    let outcome!: Promise<number | undefined>;
+    let outcome!: Promise<{ ok: true; value: number } | { ok: false; error: unknown }>;
     act(() => {
       outcome = result.current.run(g.promise);
     });
@@ -47,7 +47,7 @@ describe("useTransact", () => {
 
     g.resolve(42);
     const value = await act(() => outcome);
-    expect(value).toBe(42);
+    expect(value).toEqual({ ok: true, value: 42 });
     expect(result.current.pending).toBe(false);
     expect(result.current.error).toBeUndefined();
   });
@@ -57,8 +57,8 @@ describe("useTransact", () => {
 
     const a = gate<void>();
     const b = gate<void>();
-    let ranA!: Promise<void>;
-    let ranB!: Promise<void>;
+    let ranA!: Promise<RunResult<void>>;
+    let ranB!: Promise<RunResult<void>>;
     act(() => {
       ranA = result.current.run(a.promise);
       ranB = result.current.run(b.promise);
@@ -90,7 +90,7 @@ describe("useTransact", () => {
       outcome = await result.current.run(Promise.reject(denied));
     });
 
-    expect(outcome).toBeUndefined();
+    expect(outcome).toEqual({ ok: false, error: denied });
     expect(seen).toEqual([denied]);
     expect(result.current.error).toBe(denied);
     expect(result.current.pending).toBe(false);
@@ -130,13 +130,13 @@ describe("useTransact", () => {
     await act(async () => {
       value = await result.current.run(() => Promise.resolve(7));
     });
-    expect(value).toBe(7);
+    expect(value).toEqual({ ok: true, value: 7 });
     expect(result.current.error).toBeUndefined();
 
     await act(async () => {
       value = await result.current.run(() => Promise.reject(denied));
     });
-    expect(value).toBeUndefined();
+    expect(value).toEqual({ ok: false, error: denied });
     expect(result.current.error).toBe(denied);
   });
 
@@ -167,7 +167,7 @@ describe("useTransact", () => {
     const { result } = renderHook(() => useTransact());
 
     const g = gate<void>();
-    let ranA!: Promise<void>;
+    let ranA!: Promise<RunResult<never>>;
     act(() => {
       ranA = result.current.run(
         g.promise.then(() => Promise.reject(denied)),
@@ -191,7 +191,7 @@ describe("useTransact", () => {
     const { result, unmount } = renderHook(() => useTransact());
 
     const g = gate<string>();
-    let outcome!: Promise<string | undefined>;
+    let outcome!: Promise<{ ok: true; value: string } | { ok: false; error: unknown }>;
     act(() => {
       outcome = result.current.run(g.promise);
     });
@@ -202,7 +202,7 @@ describe("useTransact", () => {
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
       g.resolve("late");
-      expect(await outcome).toBe("late");
+      expect(await outcome).toEqual({ ok: true, value: "late" });
     } finally {
       console.error = noisy;
     }
@@ -217,7 +217,7 @@ describe("useTransact", () => {
     );
 
     const g = gate<void>();
-    let outcome!: Promise<void>;
+    let outcome!: Promise<RunResult<never>>;
     act(() => {
       outcome = result.current.run(g.promise.then(() => Promise.reject(denied)));
     });

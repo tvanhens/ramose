@@ -10,11 +10,10 @@
  * `RamoseProvider` owns one `Client` per subtree (connect on mount / prop
  * change, close on unmount / prop change, StrictMode-safe), and
  * `useDb(name, schema)` memoises a `Db` from it. On top sit the reads —
- * `useLive` (standing query as state), `useQuery` (one-shot `db.query` as
- * `Async`), `usePull` (standing `db.livePull` as `Live`), `useBasis`
- * (where the basis is) — plus `useTransact()` as the pending / error
- * helper around `db.run` (works with or without the provider) and
- * `errorMessage` for toast text.
+ * `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`, `useBasis`
+ * (where the basis is) — all returning the same `Read` shape — plus
+ * `useTransact()` as the pending / error helper around `db.run` (works
+ * with or without the provider) and `errorMessage` for toast text.
  *
  * This entry and every hook module it re-exports open with `"use client"`
  * so a Next App Router / React Router server-component import compiles.
@@ -24,9 +23,10 @@
 
 export { RamoseProvider, type RamoseProviderProps } from "./RamoseProvider.tsx";
 export { useDb } from "./hooks.ts";
-export { type Live, useLive } from "./useLive.ts";
-export { type Async, useQuery } from "./useQuery.ts";
-export { usePull } from "./usePull.ts";
+export { type Read, type ReadStatus } from "./read.ts";
+export { useLiveQuery } from "./useLiveQuery.ts";
+export { useQuery } from "./useQuery.ts";
+export { useLivePull, usePull } from "./usePull.ts";
 export { useBasis } from "./useBasis.ts";
-export { type Transact, useTransact } from "./useTransact.ts";
+export { type RunResult, type Transact, useTransact } from "./useTransact.ts";
 export { errorMessage } from "./errors.ts";

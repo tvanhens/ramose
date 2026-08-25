@@ -1717,3 +1717,366 @@ describe("Query.from — fluent app spelling", () => {
     );
   });
 });
+
+// ── #189: orderBy/limit on Query.q, Q.value, fluent aggregate select ───────
+
+describe("query: aggregates with order/limit and scalar value", () => {
+  test("Query.q(...).orderBy(r => r.n).limit(n) is top-N by aggregate", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const top = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      return { owner: name.v, n: Q.count(issue) };
+    })
+      .orderBy((r) => r.n, "desc")
+      .limit(1);
+
+    const { query } = lowerQueryObject(top);
+    expect(query.limit).toBe(1);
+    expect(query.order).toEqual([{ var: expect.stringMatching(/^\?q/), dir: "desc", empty: "last" }]);
+
+    const rows = await db.query(top);
+    expect(rows).toEqual([{ owner: "Ada", n: 2 }] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy a bound var sorts by a joined field", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byOwner = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, owner: name.v };
+    }).orderBy((r) => r.owner, "asc");
+
+    const rows = await db.query(byOwner);
+    expect(rows.map((r) => r.owner)).toEqual(["Ada", "Ada", "Grace"]);
+    expect(rows.map((r) => r.title).sort()).toEqual([
+      "archive the docs",
+      "fix the flake",
+      "ship the release",
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("Q.value(Q.count(e)) is a number, 0 over no matches", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const open = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.done, false)(issue);
+      return Q.value(Q.count(issue));
+    });
+    expect(lowerQueryObject(open).query.find).toEqual([["count", expect.stringMatching(/^\?q/)], "."]);
+    expect(await db.query(open)).toBe(2);
+
+    const none = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      return Q.value(Q.count(issue));
+    });
+    expect(await db.query(none)).toBe(0);
+
+    await peer.dispose();
+  });
+
+  test("fluent select(shape, extras) groups by the shape and counts the focus", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const top = Query.from(Issue)
+      .select({ owner: Issue.owner.select({ name: User.name }) }, { n: Q.count(Q.focus) })
+      .orderBy((r) => r.n, "desc")
+      .limit(1);
+
+    const rows = await db.query(top);
+    expect(rows).toEqual([{ owner: { name: "Ada" }, n: 2 }] as never);
+
+    const piped = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ owner: Issue.owner.select({ name: User.name }) }, { n: Q.count(Q.focus) }),
+        Query.orderBy("n", "desc"),
+        Query.limit(1),
+      ),
+    );
+    expect(await db.query(piped)).toEqual(rows);
+
+    const viaCb = Query.from(Issue).select({ done: Issue.done }, (e) => ({ n: Q.count(e) }));
+    const grouped = [...(await db.query(viaCb))].sort((a, b) => Number(a.done) - Number(b.done));
+    expect(grouped).toEqual([
+      { done: false, n: 2 },
+      { done: true, n: 1 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy on a multi-root projection no longer promises a missing API", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, n: Q.count(issue) };
+    }).orderBy((r) => r.title, "asc");
+    expect(() => lowerQueryObject(q)).not.toThrow(/bound vars/);
+    const { query } = lowerQueryObject(q);
+    expect(query.order).toEqual([{ var: expect.stringMatching(/^\?q/), dir: "asc", empty: "last" }]);
+  });
+
+  test("select id + count reads a number and orders by the id, not the count", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const grouped = Query.from(Issue).select({ id: Issue.id }, { n: Q.count(Q.focus) });
+    const rows = await db.query(grouped);
+    expect(rows.every((r) => typeof r.id === "number")).toBe(true);
+    expect(rows.every((r) => r.n === 1)).toBe(true);
+    expect(rows).toHaveLength(3);
+
+    const desc = await db.query(grouped.orderBy((r) => r.id, "desc"));
+    const asc = await db.query(grouped.orderBy((r) => r.id, "asc"));
+    expect(desc.map((r) => r.id)).toEqual([...asc.map((r) => r.id)].reverse());
+
+    const nested = Query.from(Comment).select(
+      { issue: Comment.issue.select({ id: Issue.id, title: Issue.title }) },
+      { n: Q.count(Q.focus) },
+    );
+    const nestedRows = await db.query(nested);
+    expect(nestedRows.every((r) => typeof r.issue.id === "number")).toBe(true);
+    expect(nestedRows.every((r) => typeof r.issue.title === "string")).toBe(true);
+
+    await peer.dispose();
+  });
+
+  test("select extras keep optional and defaulted group keys", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const optional = Query.from(User).select({ age: User.age.optional }, { n: Q.count(Q.focus) });
+    const optionalRows = [...(await db.query(optional))].sort(
+      (a, b) => Number(a.age ?? -1) - Number(b.age ?? -1),
+    );
+    expect(optionalRows).toHaveLength(3);
+    expect(optionalRows.reduce((s, r) => s + r.n, 0)).toBe(3);
+    expect(optionalRows.some((r) => r.age == null)).toBe(true);
+
+    const defaulted = Query.from(User).select({ age: User.age.orDefault(0) }, { n: Q.count(Q.focus) });
+    const defaultRows = [...(await db.query(defaulted))].sort((a, b) => a.age - b.age);
+    expect(defaultRows).toEqual([
+      { age: 0, n: 1 },
+      { age: 36, n: 1 },
+      { age: 45, n: 1 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy a nested select key walks from the focus", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byOwner = Query.from(Issue)
+      .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
+      .orderBy((r) => r.owner.name, "asc");
+    const where = lowerQueryObject(byOwner).query.where as readonly unknown[];
+    // The pull's required clauses also mention these idents. The sort path
+    // is the or-join that walks both hops from the Issue — the pre-fix
+    // no-op hung only `:user/name` off the issue var.
+    const orderJoin = where.find((clause) => {
+      const s = JSON.stringify(clause);
+      return s.includes('"or-join"') && s.includes('":issue/owner"') && s.includes('":user/name"');
+    });
+    expect(orderJoin).toBeDefined();
+    const asc = await db.query(byOwner);
+    expect(asc.map((r) => r.owner.name)).toEqual(["Ada", "Ada", "Grace"]);
+
+    const desc = await db.query(
+      Query.from(Issue)
+        .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
+        .orderBy((r) => r.owner.name, "desc"),
+    );
+    expect(desc.map((r) => r.owner.name)).toEqual(["Grace", "Ada", "Ada"]);
+
+    await peer.dispose();
+  });
+
+  test("logic() after one() / after() returns the rows array", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const taken = Query.from(Issue).select({ title: Issue.title }).orderBy("title").one();
+    const rows = await db.query(taken.logic());
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows).toHaveLength(3);
+
+    const paged = Query.from(Issue).select({ title: Issue.title }).orderBy("title").after(null);
+    const unpaged = await db.query(paged.logic());
+    expect(Array.isArray(unpaged)).toBe(true);
+    expect((unpaged as { rows?: unknown }).rows).toBeUndefined();
+
+    await peer.dispose();
+  });
+
+  test("mixed orderBy spellings keep call order as sort-key precedence", () => {
+    const rankThenTitle = Query.from(Issue)
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy((r) => r.rank, "desc")
+      .orderBy("title", "asc");
+    const titleThenRank = Query.from(Issue)
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy("title", "asc")
+      .orderBy((r) => r.rank, "desc");
+    const a = lowerQueryObject(rankThenTitle).query.order as readonly { var: string; dir: string }[];
+    const b = lowerQueryObject(titleThenRank).query.order as readonly { var: string; dir: string }[];
+    expect(a.map((o) => o.dir)).toEqual(["desc", "asc"]);
+    expect(b.map((o) => o.dir)).toEqual(["asc", "desc"]);
+  });
+
+  test("bare card-one backlink group key binds the referrer, not the focus", async () => {
+    const Child = Entity("aggchild", { title: Field(Schema.String) });
+    const Parent = Entity("aggparent", {
+      name: Field(Schema.String),
+      kid: Field.owned(Ref(() => Child)),
+    });
+    const Family = DbSchema({ aggchild: Child, aggparent: Parent });
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("family", Family);
+    await db.install();
+    await run(
+      seedWrite(db, function* (tx) {
+        const child = yield* tx.entity();
+        yield* child.set(Child.title, "only");
+        const parent = yield* tx.entity();
+        yield* parent.set(Parent.name, "Ada");
+        yield* parent.set(Parent.kid, child.eid as never);
+      }),
+    );
+
+    const q = Query.from(Child).select({ p: Parent.kid.reverse }, { n: Q.count(Q.focus) });
+    const { query } = lowerQueryObject(q);
+    const find = query.find as unknown[];
+    const parentVar = find[0];
+    const countOf = (find[1] as [string, string])[1];
+    expect(parentVar).not.toEqual(countOf);
+
+    const parents = await db.query(Query.from(Parent).select({ id: Parent.id, name: Parent.name }));
+    const children = await db.query(Query.from(Child).select({ id: Child.id, title: Child.title }));
+    const rows = await db.query(q);
+    expect(rows).toHaveLength(1);
+    const pId =
+      typeof rows[0].p === "object" && rows[0].p !== null && "id" in rows[0].p
+        ? (rows[0].p as { id: number }).id
+        : Number(rows[0].p);
+    expect(pId).toBe(parents[0].id);
+    expect(pId).not.toBe(children[0].id);
+    expect(rows[0].n).toBe(1);
+
+    await peer.dispose();
+  });
+
+  test("orderBy a group-key string or attribute reuses the :find var", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const piped = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+      ),
+    );
+    const fluent = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy(Issue.title, "desc");
+    const byString = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy("title", "desc");
+    const byPicker = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy((r) => r.title, "desc");
+
+    const pipeLowered = lowerQueryObject(piped).query;
+    const fluentLowered = lowerQueryObject(fluent).query;
+    expect(fluentLowered).toEqual(pipeLowered);
+    expect(lowerQueryObject(byString).query).toEqual(pipeLowered);
+    expect(lowerQueryObject(byPicker).query).toEqual(pipeLowered);
+
+    const orderVar = (pipeLowered.order as readonly { var: string }[])[0]!.var;
+    expect(pipeLowered.find).toContain(orderVar);
+    expect(JSON.stringify(pipeLowered.where)).not.toContain("or-join");
+
+    const titles = ["ship the release", "fix the flake", "archive the docs"] as const;
+    expect((await db.query(piped)).map((r) => r.title)).toEqual([...titles]);
+    expect((await db.query(fluent)).map((r) => r.title)).toEqual([...titles]);
+
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue)
+          .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+          .orderBy(Issue.rank, "asc"),
+      ),
+    ).toThrow(/not a group key/);
+
+    await peer.dispose();
+  });
+
+  test("pipe orderBy after extras then ids() / select raises a ramose/query error, not TypeError", () => {
+    const afterIds = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+        Query.ids(),
+      ),
+    );
+    expect(() => lowerQueryObject(afterIds)).toThrow(/no column "title"/);
+    expect(() => lowerQueryObject(afterIds)).not.toThrow(/path\.map/);
+
+    const afterSelect = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+        Query.select({ title: Issue.title }),
+      ),
+    );
+    expect(() => lowerQueryObject(afterSelect)).not.toThrow(/path\.map/);
+    const { query } = lowerQueryObject(afterSelect);
+    expect(query.order).toEqual([
+      { var: expect.stringMatching(/^\?o/), dir: "desc", empty: "last" },
+    ]);
+
+    expect(() =>
+      lowerQueryObject(Query.from(Issue).select({ title: Issue.title }, { n: Q.count(Q.focus) }).orderBy("title", "desc").ids()),
+    ).toThrow(/no column "title"/);
+  });
+
+  test("after() on a multi-root projection raises a ramose/query error", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, n: Q.count(issue) };
+    })
+      .orderBy((r) => r.title, "asc")
+      .after(null);
+    expect(() => lowerQueryObject(q)).toThrow(/no paging root/);
+  });
+});

@@ -1,35 +1,35 @@
 "use client";
 
 /**
- * `useLive` — a standing read as React state: `{ rows, error, ticks }`,
- * reset when the subscription identity changes.
+ * `useLiveQuery` — a live query as React `Read` state: `{ data, error,
+ * status, isLoading, t, refetch }`, reset when the subscription identity
+ * changes.
  *
  * Two rules for consumers:
  *
- * - `useLive(db, query)` constructs a shared raw standing read inside the
+ * - `useLiveQuery(db, query)` constructs a shared raw live read inside the
  *   effect, keyed on the view and the lowered query AST. Neither needs a
  *   provider. Two sites with the same AST share one raw subscription
  *   (refcount; last unmount tears it down); each hook applies its own
  *   `finalize` (take-unwrap / page-wrap) on read, so `one()` and `.limit(1)`
  *   share the wire result without swapping shapes.
  * - The view is structural (`DbSeam.key`), the query is structural
- *   (canonical serialization of the lowered AST). `useLive(db.asOf(t), q)`
- *   built inline re-subscribes per `t`, not per render — the same rule as
- *   `useQuery` / `usePull`. Put changing values in the query
+ *   (canonical serialization of the lowered AST). `useLiveQuery(db.asOf(t),
+ *   q)` built inline re-subscribes per `t`, not per render — the same rule
+ *   as `useQuery` / `useLivePull`. Put changing values in the query
  *   (`where({ issue: issueId })`). Same literals → same key, even when the
  *   object is new every render. Changing an inline literal changes the AST
  *   key and resubscribes — that is the point.
  *
- * Subscription form (`useLive(sub)`) keys on handle **identity**. The hook
- * never `close()`s a handle it did not create — only `off()`.
- * `useLive(db.live(q))` built inline is a new subscription every render
- * and will re-subscribe forever — use the query form instead. A caller-
- * owned handle is never share-cached.
+ * Subscription form (`useLiveQuery(sub)`) keys on handle **identity**. The
+ * hook never `close()`s a handle it did not create — only `off()`.
+ * `useLiveQuery(db.live(q))` built inline is a new subscription every
+ * render and will re-subscribe forever — use the query form instead. A
+ * caller-owned handle is never share-cached.
  */
 
 import type {
   Schema,
-  DbError,
   QueryError,
   QueryObject,
   ReadDb,
@@ -41,38 +41,32 @@ import {
   queryStructureKey,
 } from "../db/astKey.ts";
 import { lowerQueryObject } from "../db/query/index.ts";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { retainLive } from "./liveCache.ts";
+import {
+  READ_INITIAL,
+  asError,
+  asLoading,
+  asSuccess,
+  readT,
+  type Read,
+  type ReadState,
+} from "./read.ts";
 import { seamOf, viewKeyOf } from "./seam.ts";
-
-/** What a standing read looks like from a component. */
-export interface Live<A, E = DbError> {
-  /** The last emission; `undefined` until the first (and again right after the inputs change). */
-  readonly rows: A | undefined;
-  /**
-   * Terminal failure of the subscription. Transient errors never land here —
-   * `live` retries them in place — and completion (a pinned `asOf` /
-   * `history` view emitted its one pass) is not an error: `rows` stays.
-   */
-  readonly error: E | undefined;
-  /** Emissions after the first — how many times the basis moved under this subscription. */
-  readonly ticks: number;
-}
-
-const INITIAL: Live<never, never> = {
-  rows: undefined,
-  error: undefined,
-  ticks: 0,
-};
 
 type Acquire<A, E> = () => {
   readonly sub: Subscription<A, E>;
   readonly owned: boolean;
 };
 
+interface LiveOptions<A> {
+  readonly basis?: () => number | undefined;
+  readonly refetch?: () => Promise<A>;
+}
+
 /**
- * Drive a {@link Subscription} as `Live` state. `acquire` runs inside the
- * effect; the hook closes only handles it created. `resetKeys` blanks `rows`
+ * Drive a {@link Subscription} as `Read` state. `acquire` runs inside the
+ * effect; the hook closes only handles it created. `resetKeys` blanks `data`
  * when the subscription identity actually changes (not on a render-fresh
  * handle).
  */
@@ -80,35 +74,70 @@ export const useLiveSubscription = <A, E>(
   acquire: Acquire<A, E>,
   deps: readonly unknown[],
   resetKeys: readonly unknown[],
-): Live<A, E> => {
-  const [state, setState] = useState<Live<A, E>>(INITIAL as Live<A, E>);
+  options?: LiveOptions<A>,
+): Read<A, E> => {
+  const [state, setState] = useState<ReadState<A, E>>(
+    READ_INITIAL as ReadState<A, E>,
+  );
   const seen = useRef(resetKeys);
   const identityChanged =
     seen.current.length !== resetKeys.length ||
     seen.current.some((key, i) => key !== resetKeys[i]);
   if (identityChanged) {
     seen.current = resetKeys;
-    setState(INITIAL as Live<A, E>);
+    setState(READ_INITIAL as ReadState<A, E>);
   }
+
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const refetchRuns = useRef({ issued: 0, applied: 0 });
+  const [nudge, setNudge] = useState(0);
+
+  const refetch = useCallback(() => {
+    const opts = optionsRef.current;
+    if (opts?.refetch !== undefined) {
+      const seq = ++refetchRuns.current.issued;
+      setState((prev) => asLoading(prev));
+      void opts
+        .refetch()
+        .then((data) => {
+          if (seq < refetchRuns.current.applied) return;
+          refetchRuns.current.applied = seq;
+          setState(asSuccess(data, opts.basis?.()));
+        })
+        .catch((error: E) => {
+          if (seq < refetchRuns.current.applied) return;
+          refetchRuns.current.applied = seq;
+          setState((prev) => asError(prev, error));
+        });
+      return;
+    }
+    setNudge((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     const { sub, owned } = acquire();
-    let emissions = 0;
     let cancelled = false;
     const off = sub.subscribe(
-      (rows) => {
+      (data) => {
         if (cancelled) return;
-        const ticks = emissions;
-        emissions += 1;
+        const t = optionsRef.current?.basis?.();
         setState((prev) =>
-          prev.rows === rows && prev.ticks === ticks && prev.error === undefined
+          prev.data === data &&
+          prev.t === t &&
+          prev.error === undefined &&
+          !prev.isLoading
             ? prev
-            : { rows, error: undefined, ticks },
+            : asSuccess(data, t),
         );
       },
       (error) => {
         if (cancelled) return;
-        setState((prev) => (prev.error === error ? prev : { ...prev, error }));
+        setState((prev) =>
+          prev.error === error && !prev.isLoading
+            ? prev
+            : asError(prev, error),
+        );
       },
     );
     return () => {
@@ -116,11 +145,12 @@ export const useLiveSubscription = <A, E>(
       off();
       if (owned) sub.close();
     };
-    // acquire closes over the same values as deps
+    // acquire closes over the same values as deps; nudge remounts a
+    // caller-owned handle on refetch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, nudge]);
 
-  return state;
+  return { ...state, refetch };
 };
 
 // Bundlers replace the dotted `process.env.NODE_ENV` via define even
@@ -136,7 +166,7 @@ try {
 }
 
 const CHURN_WARNING =
-  "ramose/react: useLive subscription key changed between renders. " +
+  "ramose/react: useLiveQuery subscription key changed between renders. " +
   "Queries are keyed structurally on the lowered AST — a value minted " +
   "each render (e.g. where({ at: new Date() })) tears the subscription " +
   "down. Hoist the query or keep bound values stable.";
@@ -145,7 +175,7 @@ const CHURN_WARNING =
  * Consecutive query-half key changes before the dev warning fires.
  * One legitimate navigation (`issueId` A → B) is silent; a `Date.now()`
  * footgun changes every render and trips this. A same-key follow-up
- * (the hook blanking `rows` via setState) does not reset the streak;
+ * (the hook blanking `data` via setState) does not reset the streak;
  * two quiet same-key renders do — that is a settled navigation.
  */
 const CHURN_STREAK = 3;
@@ -185,21 +215,27 @@ const useKeyChurnWarning = (key: string): void => {
 };
 
 /** Query form: `db.live(query)`, constructed inside the effect. */
-export function useLive<C extends Schema.Any, R, Out = readonly R[]>(
+export function useLiveQuery<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
   query: QueryObject<R, Out>,
-): Live<Out, QueryError<Out>>;
+): Read<Out, QueryError<Out>>;
 /** Subscription form: a handle built elsewhere; re-subscribes when its identity changes. */
-export function useLive<A, E>(sub: Subscription<A, E>): Live<A, E>;
-export function useLive(
+export function useLiveQuery<A, E>(sub: Subscription<A, E>): Read<A, E>;
+export function useLiveQuery(
   source: ReadDb | Subscription<unknown, unknown>,
   query?: QueryObject<unknown, unknown>,
-): Live<unknown, unknown> {
+): Read<unknown, unknown> {
   const owned = query !== undefined;
   const viewKey = owned ? viewKeyOf(source as ReadDb) : "";
   const structureKey = owned ? queryStructureKey(query) : "";
   const cacheKey = owned ? liveSubscriptionKey(viewKey, query) : "";
   useKeyChurnWarning(owned ? structureKey : "");
+
+  const db = owned ? (source as ReadDb) : undefined;
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const dbRef = useRef(db);
+  dbRef.current = db;
 
   return useLiveSubscription(
     () => {
@@ -232,5 +268,12 @@ export function useLive(
     },
     owned ? [cacheKey] : [source],
     owned ? [viewKey, structureKey] : [source],
+    {
+      basis: () => readT(dbRef.current),
+      refetch:
+        owned
+          ? () => (dbRef.current as ReadDb).query(queryRef.current!)
+          : undefined,
+    },
   );
 }

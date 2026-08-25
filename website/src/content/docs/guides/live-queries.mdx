@@ -1,6 +1,6 @@
 ---
 title: Live queries
-description: Make a screen update itself with useLive — what re-runs, where it works, what it costs.
+description: Make a screen update itself with useLiveQuery — what re-runs, where it works, what it costs.
 ---
 import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
@@ -8,23 +8,23 @@ import Next from "../../../components/Next.astro";
 
 A live query answers itself: hand it the query you would run once, and you get the rows now and the rows again every time the database changes. This page is for React developers who have run a query and want the screen to stay current.
 
-<Learn learn={["Read a query live with useLive", "What re-runs, and when", "Where live queries work (and where they don't)"]} before={[{ href: "/guides/queries/", label: "Read data" }]} minutes={6} />
+<Learn learn={["Read a query live with useLiveQuery", "What re-runs, and when", "Where live queries work (and where they don't)"]} before={[{ href: "/guides/queries/", label: "Read data" }]} minutes={6} />
 
 ## In React
 
 Reef's board is one **live query** — a query that re-runs itself whenever the database changes and hands your screen new rows ([glossary](/concepts/glossary/#live-query)):
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+  const board = useLiveQuery(db, boardQuery);
+  const people = useLiveQuery(db, peopleQuery);
+  const labels = useLiveQuery(db, labelsQuery);
 ```
 
-`useLive(db, query)` returns `{ rows, error, ticks }`. `rows` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `ticks` counts **updates** ([glossary](/concepts/glossary/#tick)) — a local write applied on the overlay, or a filtered transaction arriving on the **WebSocket connection** ([glossary](/concepts/glossary/#connection)). Render with `key={row.id}`.
+`useLiveQuery(db, query)` returns `Read`: `data`, a tagged `error`, `status` / `isLoading`, the basis `t`, and `refetch()`. `data` is `undefined` until the first answer; `error` is set only when the query can never succeed (bad request, a wrong database name, no permission, memory limit); `t` is the **version number** those rows were read at ([glossary](/concepts/glossary/#version-number)) — a local write applied on the overlay, or a filtered transaction arriving on the **WebSocket connection** ([glossary](/concepts/glossary/#connection)). Render with `key={row.id}`.
 
 ## See it
 
-Open the same workspace in two windows and drag a card. The window you dragged in moves immediately; the other window follows within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={ticks}` re-triggers the animation):
+Open the same workspace in two windows and drag a card. The window you dragged in moves immediately; the other window follows within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={basis}` from `board.t` re-triggers the animation):
 
 <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:260-263" />
 
@@ -37,14 +37,14 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 - **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.query`.
 - **Only news is emitted.** Identical results are not emitted again, so a write the query does not see is not a re-render.
 - **Dropped connections recover on their own** — retries back off from 250 ms to 5 s and the connection reconnects in place.
-- **A pinned view emits once and completes.** `useLive(db.asOf(t), query)` has no news to deliver; `rows` stays.
+- **A pinned view emits once and completes.** `useLiveQuery(db.asOf(t), query)` has no news to deliver; `data` stays.
 
 ## Live reads of one record
 
-`usePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
+`useLivePull` is the same idea for one record. Reef's issue panel keeps one open on the selected issue; every emission — an edit from any window — resets the drafts:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
+  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
 ```
 
 The subject is compared by value, not by identity — a branded `row.id` (or a number) written inline is fine.
@@ -70,7 +70,7 @@ for await (const rows of live) {
 }
 ```
 
-That loop runs until you `close()` it (or break), re-emitting the whole result set on every update. In React, `useLive` does this for you. Effect users who want a Stream use `db.effect.live` — [Effect (advanced)](/concepts/effect/).
+That loop runs until you `close()` it (or break), re-emitting the whole result set on every update. In React, `useLiveQuery` does this for you. Effect users who want a Stream use `db.effect.live` — [Effect (advanced)](/concepts/effect/).
 
 ## What it costs
 
@@ -78,15 +78,15 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 ## Inline values
 
-`useLive` keys its subscription on the lowered query AST, not object identity. Two components that build the same query share one subscription. Put changing values in `.where` — no bindings argument:
+`useLiveQuery` keys its subscription on the lowered query AST, not object identity. Two components that build the same query share one subscription. Put changing values in `.where` — no bindings argument:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#comments-live"
-  const comments = useLive(db, commentsQuery(issueId));
+  const comments = useLiveQuery(db, commentsQuery(issueId));
 ```
 
 Same `issueId` → same key → same shared subscription, even when the query object is new every render. A different `issueId` is a different AST: the hook resubscribes. That is the point. Unstable values (`where({ at: new Date() })`) churn the key every render — keep bound values stable.
 
-`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so a new page resubscribes, which is what a new page wants. A subscription you built yourself can be passed directly (`useLive(sub)`) — see [React hooks](/reference/react/).
+`db.asOf(t)` inline is fine — views compare by value. Derived query values (`q.one()`, `q.after(cursor)`) mint a new object each call, so a new page resubscribes, which is what a new page wants. A subscription you built yourself can be passed directly (`useLiveQuery(sub)`) — see [React hooks](/reference/react/).
 
 <Next links={[
   { href: "/guides/permissions/", label: "Permissions", why: "who may read and write each field" },

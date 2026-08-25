@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: Every export of ramose/react — `RamoseProvider`, `useDb`, `useLive`, `useQuery`, `usePull`, `useBasis`, `useTransact`, `errorMessage` — example first.
+description: ramose/react — `RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useTransact`, `errorMessage`.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -9,12 +9,12 @@ The exact surface of `ramose/react`, one section per export. This page is for Re
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ```tsx
-import { RamoseProvider, useDb, useLive, useQuery, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
+import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
 ```
 
-Hooks only, no UI. They reach the Ramose server through one client. `useLive`, `useQuery`, `usePull` and `useBasis` take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
+Hooks only, no UI. They reach the Ramose server through one client. Read hooks take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
-The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`), `Async` (`useQuery`), `Transact` (`useTransact`) and `RamoseProviderProps`.
+Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, and `refetch()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `Transact`, `RunResult`, `RamoseProviderProps`.
 
 ## RamoseProvider
 
@@ -39,16 +39,16 @@ The result types are exported alongside the hooks: `Live` (`useLive`, `usePull`)
 
 `useDb(name, schema): Db<C>` — `client.db(name, schema)` from the nearest provider, kept stable on `[client, name, schema]`. Pass a module-scope schema. Throws outside a provider.
 
-## useLive
+## useLiveQuery
 
 ```tsx title="examples/todos/src/App.tsx#todo-list"
 const TodoList = () => {
-  const { rows, error } = useLive(db, todoQuery);
+  const { data, error } = useLiveQuery(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
+  if (data === undefined) return <p>loading…</p>;
   return (
     <ul>
-      {rows.map((row) => (
+      {data.map((row) => (
         <TodoRowView key={row.id} row={row} />
       ))}
     </ul>
@@ -56,14 +56,14 @@ const TodoList = () => {
 };
 ```
 
-`useLive(db, query): { rows, error, ticks }` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes.
+`useLiveQuery(db, query): Read<Out, QueryError>` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes.
 
-- `rows` is `undefined` until the first answer, and again right after `db` or `query` change.
-- `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the rows stay.
-- `ticks` counts updates after the first — Reef's "live" pill pulses on it.
+- `data` is `undefined` until the first answer, and again right after `db` or `query` change.
+- `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the data stays.
+- `t` is the basis those rows were read at. `status` / `isLoading` cover the first answer; later emissions are not a load. `refetch()` re-reads once without tearing the subscription down.
 - `key={row.id}`: a selected `id: X.id` is a plain `number`.
 
-A second form, `useLive(sub)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
+A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
 
 ## useQuery
 
@@ -71,15 +71,19 @@ A second form, `useLive(sub)`, drains a `Subscription` you built yourself (`db.l
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
 ```
 
-`useQuery(db, query): { data, error, loading }` — one `db.query` per view / lowered-AST pair (the same structural key `useLive` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one.
+`useQuery(db, query): Read<Out, QueryError>` — one `db.query` per view / lowered-AST pair (the same structural key `useLiveQuery` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. `refetch()` re-issues the same run.
+
+## useLivePull
+
+```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
+  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
+```
+
+`useLivePull(db, subject, shape): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape.
 
 ## usePull
 
-```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
-```
-
-`usePull(db, subject, shape): { rows: Pull | null, error, ticks }` — one record, live. `rows` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape.
+`usePull(db, subject, shape): Read<Pull | null>` — one `db.pull`, same `Read` shape. Previous `data` stays while a later subject is in flight.
 
 ## useBasis
 
@@ -87,7 +91,7 @@ A second form, `useLive(sub)`, drains a `Subscription` you built yourself (`db.l
   const maxT = useBasis(db);
 ```
 
-`useBasis(db): number | undefined` — the **version number** this view reads at ([glossary](/concepts/glossary/#version-number)), refreshed on every update. Reef uses it as the slider's upper bound. `useBasis(db.asOf(t))` answers `t` at once with no request.
+`useBasis(db): number | undefined` — the **version number** this view reads at ([glossary](/concepts/glossary/#version-number)), from `session.t` on a live view (no `GET /info` per update). Reef uses it as the slider's upper bound. `useBasis(db.asOf(t))` answers `t` at once with no request.
 
 ## useTransact
 
@@ -103,9 +107,9 @@ A second form, `useLive(sub)`, drains a `Subscription` you built yourself (`db.l
   const { run } = useTransact();
 ```
 
-`useTransact(options?): { run, pending, error, clearError }` — pending / error helper for a promise from an event handler. Not the write API: that is `db.run`. Typical call is `run(moveIssue(db, id, status, rank))`. Needs no provider and takes no `db`.
+`useTransact<E>(options?): { run, pending, error, clearError }` — pending / error helper for a promise from an event handler. Not the write API: that is `db.run`. Typical call is `run(moveIssue(db, id, status, rank))`. Needs no provider and takes no `db`. `error` is the tracked `E`.
 
-- `run(work): Promise<A | undefined>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `onError`.
+- `run(work): Promise<{ ok: true, value } | { ok: false, error }>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `onError`.
 - `pending` is `true` while any run is in flight; `error` holds the last failure until a run succeeds or `clearError()`; `onError` fires per failure.
 
 ## errorMessage
@@ -119,10 +123,10 @@ errorMessage(e); // e.message ?? e._tag ?? String(e)
 ## Rules
 
 - **Stable token source.** Build it once per sign-in, not per render.
-- **Inline query values.** `useLive` and `useQuery` key on the lowered AST — `useLive(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. Hoist shapes for `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
+- **Inline query values.** `useLiveQuery` and `useQuery` key on the lowered AST — `useLiveQuery(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. Hoist shapes for `useLivePull` / `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
 - **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
 - **`key={row.id}`** in lists; the id is a `number`.
-- **`error` is the tagged failure.** `useLive`, `useQuery`, `usePull` and `useTransact` report the class itself, so `errorMessage(error)` works on every hook.
+- **`error` is the tagged failure.** Every hook reports the class itself, so `errorMessage(error)` works on every hook.
 
 <Next links={[
   { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },

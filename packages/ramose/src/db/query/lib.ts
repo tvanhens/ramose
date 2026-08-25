@@ -28,13 +28,14 @@ import type {
 import type { FocusMismatch, InFocus, OwnerOf, RefTarget, ReverseOk } from "./focus.ts";
 import {
   Q,
+  type AggSpec,
   type AnyVar,
   type AttrLike,
   type EidCell,
   type QueryGen,
   type Var,
 } from "./kernel.ts";
-import { isPipeline, type Pipeline, type PipeStage } from "./query.ts";
+import { isPipeline, type Pipeline, type PipeStage, type SelectExtra } from "./query.ts";
 
 // ── the pipeline value ──────────────────────────────────────────────────────
 
@@ -357,13 +358,34 @@ type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
   ? unknown
   : FocusMismatch;
 
-/** Contribute the projection — what a generator body says with its return. */
-export const select =
-  <const S extends Shape>(shape: S & ValidShape<S>) =>
-  <N extends AnyEntity>(
+/** Contribute the projection — what a generator body says with its return.
+ * A second argument adds aggregate cells beside the shape
+ * (`.select({ name: User.name }, { n: Q.count(Q.focus) })`). */
+export const select: {
+  <const S extends Shape>(
+    shape: S & ValidShape<S>,
+  ): <N extends AnyEntity>(
     q: Pipeline<any, N> & SelectArg<S, N>,
-  ): Pipeline<SelectResult<S>, N> =>
-    addStage(assertPipeline(q, "select"), { kind: "select", shape: shape as Shape });
+  ) => Pipeline<SelectResult<S>, N>;
+  <const S extends Shape, const Extra>(
+    shape: S & ValidShape<S>,
+    extra: (e: Var<EidCell>) => Extra & { readonly [K in keyof Extra]: AggSpec<any> },
+  ): <N extends AnyEntity>(
+    q: Pipeline<any, N> & SelectArg<S, N>,
+  ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
+  <const S extends Shape, const Extra>(
+    shape: S & ValidShape<S>,
+    extra: Extra & { readonly [K in keyof Extra]: AggSpec<any> },
+  ): <N extends AnyEntity>(
+    q: Pipeline<any, N> & SelectArg<S, N>,
+  ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
+} = ((shape: Shape, extra?: SelectExtra) =>
+  <N extends AnyEntity>(q: Pipeline<any, N>): Pipeline<any, N> =>
+    addStage(assertPipeline(q, "select"), {
+      kind: "select",
+      shape,
+      extra,
+    })) as never;
 
 type OrderKeyArg<K, Row, N extends AnyEntity> = [K] extends [string]
   ? [K] extends [keyof Row]
