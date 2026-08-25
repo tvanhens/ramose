@@ -35,8 +35,9 @@
  * | `OperationRejected`   | named operation refused (409)              |
  *
  * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link PolicyError} (policy failed to compile — deploy time). A runtime
- * policy denial is {@link Unauthorized} or {@link TxRejected} with
+ * {@link PolicyError} (policy failed to compile — deploy time),
+ * {@link IncompatibleSchema} (`install()` refused a data-model split).
+ * A runtime policy denial is {@link Unauthorized} or {@link TxRejected} with
  * `code: "policy"`. A query that cannot lower is {@link InvalidRequest}.
  *
  * Wire shapes the classifier understands:
@@ -50,7 +51,13 @@
  */
 
 import * as Data from "effect/Data";
-export { PolicyError } from "./SchemaErrors.ts";
+export {
+  IncompatibleSchema,
+  PolicyError,
+  type IncompatibleKind,
+  type InstallOptions,
+  type SchemaChange,
+} from "./SchemaErrors.ts";
 
 /** A transaction was rejected by validation / tempid / unique / policy (409). */
 export class TxRejected extends Data.TaggedError("TxRejected")<{

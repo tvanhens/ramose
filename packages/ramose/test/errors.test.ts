@@ -19,6 +19,7 @@ import {
   OperationRejected,
 } from "../src/db/Errors.ts";
 import {
+  IncompatibleSchema,
   isDatabaseError as isDatabaseErrorFromBarrel,
   PolicyError,
 } from "../src/db/index.ts";
@@ -241,5 +242,14 @@ describe("isDatabaseError", () => {
     expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
     expect(new PolicyError({ message: "bad rule" })._tag).toBe("PolicyError");
     expect(isDatabaseError(new PolicyError({ message: "bad rule" }))).toBe(false);
+  });
+
+  test("IncompatibleSchema is on the barrel and is not a DbError", () => {
+    const e = new IncompatibleSchema({
+      message: "flip",
+      changes: [{ ident: ":note/title", kind: "valueType" }],
+    });
+    expect(e._tag).toBe("IncompatibleSchema");
+    expect(isDatabaseError(e)).toBe(false);
   });
 });

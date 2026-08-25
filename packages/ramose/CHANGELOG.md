@@ -20,6 +20,28 @@ install from the browser; they no longer receive a bypass-class JWT.
 Open mode still reports `class: "admin"` as a display label. There is
 no `isAdmin`.
 
+### Type-bearing field options live on the function (part of #186, tracker #205)
+
+`cardinality`, `unique` and `owned` are gone from `FieldOptions`.
+Annotating a shared options bag can no longer widen them while the
+runtime keeps what you wrote. The constructors are the identity:
+
+```ts
+Field.many(Ref(Label))
+Field.unique(string(), "upsert")   // colliding write unifies
+Field.unique(string(), "strict")   // colliding write is rejected
+Field.owned(Ref(Part))
+```
+
+They compose (`Field.many(Field.owned(Ref(Part)))`). The options bag
+keeps `doc`, `index` and `optional`. `valueType` stays out (brand with
+`stored`). `"upsert"` / `"strict"` are named for the collision — wire
+remains `:db.unique/identity` / `:db.unique/value`.
+
+**Breaking:** `string({ unique: "upsert" })`,
+`Field(schema, { cardinality: "many" })` and `{ owned: true }` are
+type and runtime errors. No deprecation window (tracker #205).
+
 ### `Ramose.Enum` members and fail-closed `valueType` (part of #185, tracker #205)
 
 `Enum([...])` still brands a string-literal union as `:db.type/string`.
@@ -54,9 +76,21 @@ row is `tx/missing-entity`; a subject of the wrong entity is
 `tx/wrong-entity`. `put(Entity, { uniqueKey })` as key-only
 ensure-exists is a compile error — that is `update`.
 
-Zero Effect types on the promise `Op` surface. Schema evolution when
-adding a new required field to existing rows is #187 — `install()`
-does not yet detect it.
+Zero Effect types on the promise `Op` surface.
+
+### Schema evolution guard on `install()` (tracker #187)
+
+`install()` reads the installed attribute set first and fails with
+`IncompatibleSchema` when a value type, cardinality, or uniqueness
+would flip, or when a new required field lands on a namespace that
+already has entities. The error lists every incompatible ident and
+tells you a default or a migration step is required. Compatible
+changes — a new optional field, a new namespace, a `doc` edit — still
+apply silently. Dropping `unique` is a no-op (`attributeTx` cannot
+retract it). An optional→required flip retracts `:db/optional` so the
+peer actually requires the field. The opt-in is
+`install({ allowIncompatible: [":ident"] })`. There is no second
+install API.
 
 ### One `EntityRef` vocabulary (tracker #178)
 

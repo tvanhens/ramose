@@ -8,7 +8,7 @@ Every error a call can fail with, what it means, and what to do about it. This p
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
-Every error is a tagged class and `DbError` is the union of the nine request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, and a policy that does not compile throws `PolicyError` — neither is a `DbError`. A query that cannot lower fails as `InvalidRequest`. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself. Match with `try/catch`, `instanceof`, or `_tag`. `Ramose.isDatabaseError(e)` is the type guard.
+Every error is a tagged class and `DbError` is the union of the nine request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, a policy that did not compile throws `PolicyError`, and `install()` can fail with `IncompatibleSchema` — none of those three is a `DbError`. A query that cannot lower fails as `InvalidRequest`. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself. Match with `try/catch`, `instanceof`, or `_tag`. `Ramose.isDatabaseError(e)` is the type guard.
 
 ```ts
 try {
@@ -37,6 +37,7 @@ try {
 | `NotOne` | `.oneOrFail()` did not see exactly one row | zero matches, or two (the server is asked for two so a second row is seen); `found` is `0` or `2` |
 | `PolicyError` | a policy did not compile against its schema | undeclared ident, a pull that requires a read-masked field; deploy time, not a request |
 | `OperationsCoverageError` | the peer is missing an operation id the client ships | client/peer registry drift; deploy (`Server({ operations })`) or `checkOperations()`; not a request |
+| `IncompatibleSchema` | `install()` refused a data-model split | value type, cardinality, or adding/changing uniqueness, or a new required field on a record type that already has rows; lists the idents. Pass `install({ allowIncompatible: [":ident"] })` to apply them anyway. Not a request — the write never left the client |
 
 ## What the user sees
 

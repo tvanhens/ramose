@@ -13,6 +13,7 @@ import type {
   Equal,
   Expect,
   Extends,
+  IncompatibleSchema,
   ReadDb,
   Tx,
   Eid,
@@ -80,7 +81,9 @@ const installed = db.effect.install();
 type _installReport = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _installErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
+type _installErr = Expect<
+  Equal<Effect.Error<typeof installed>, DbError | IncompatibleSchema>
+>;
 
 // ── builder types are catalog-generic ──────────────────────────────────────
 

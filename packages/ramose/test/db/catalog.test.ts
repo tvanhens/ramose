@@ -22,9 +22,9 @@ import {
 } from "../../src/db/internal.ts";
 
 const User = Entity("user", {
-  name: Field(Schema.String, { unique: "upsert", doc: "display name" }),
+  name: Field.unique(Schema.String, "upsert", { doc: "display name" }),
   age: Field(Long, { optional: true }),
-  friends: Field(Ref.self, { cardinality: "many" }),
+  friends: Field.many(Ref.self),
   bestFriend: Field(Ref.self, { optional: true }),
 });
 
@@ -269,7 +269,7 @@ describe("reshapePullResult", () => {
   const Node = Entity("node", {
     label: Field(Schema.String),
     next: Field(Ref.self),
-    kids: Field(Ref.self, { cardinality: "many" }),
+    kids: Field.many(Ref.self),
   });
 
   test("IR stub remaps to the shape's id key and is not dropped", () => {

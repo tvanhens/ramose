@@ -15,7 +15,7 @@ Every exported name of `ramose/db`, with its signature and a short example. This
 - **Reads shrink, writes fail.** Fields you may not read are absent; a write you may not make is `Unauthorized`.
 - **Live queries need a WebSocket.** `db.live` and `db.livePull` retry network trouble on their own.
 - **Setup mistakes throw, they are not errors.** A malformed URL or missing `fetch` throws from `connect`; a `DbError` is always about a request.
-- **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one.
+- **Install is explicit.** `db.install()` writes the schema and is safe to run twice; naming a database never creates one. Incompatible flips fail with `IncompatibleSchema` unless you pass `allowIncompatible`.
 
 *The app path is promises: `await db.query(…)`, `await db.run(…)`. Effect is an [advanced hatch](/concepts/effect/) (`db.effect`, `ramose/effect`, `ramose/db/effect`).*
 
@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `IDENT_NAME_RE` · `isIdentName` · `RESERVED_FIELD_KEYS` · `isReservedFieldKey` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `IDENT_NAME_RE` · `isIdentName` · `RESERVED_FIELD_KEYS` · `isReservedFieldKey` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `IncompatibleSchema` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -65,31 +65,29 @@ export const Todos = Ramose.Schema({ todo: Todo });
 
 **`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields` and `_tag` are reserved.
 
-**Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag and composes with `Field.many` / `Field.unique`.
+**Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each takes `doc` / `index` / `optional` and composes with `Field.many` / `Field.unique` / `Field.owned`.
 
 ```ts
 Ramose.string()
-Ramose.string({ unique: "upsert" })
 Ramose.Field.unique(Ramose.string(), "upsert")
 Ramose.Field.many(Ramose.Ref(Label))
+Ramose.Field.owned(Ramose.Ref(Part))
 Ramose.Enum(["low", "med", "high"])
 ```
 
-**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). When the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST, wrap it with `stored(schema, vt)`.
+**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). When the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST, wrap it with `stored(schema, vt)`. Cardinality, uniqueness and ownership are `Field.many`, `Field.unique(schema, "upsert" \| "strict")`, `Field.owned`.
 
 ```ts
 import { Schema } from "ramose/effect";
 Ramose.Field(Schema.String)
 Ramose.Field(Ramose.stored(Schema.Literals(["todo", "done"]), "string"))
-Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
+Ramose.Field.many(Ramose.Ref(Label))
 ```
 
 | option | values | default |
 | --- | --- | --- |
-| `cardinality` | `"one"` · `"many"` | `"one"` |
-| `unique` | `"upsert"` · `"strict"` | — |
-| `index` | `boolean` | `true` when `unique` is set, else `false` |
-| `owned` | `boolean` | `false` |
+| `optional` | `boolean` | `false` |
+| `index` | `boolean` | `true` when unique |
 | `doc` | `string` | — |
 
 **`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key must be the entity name (`todo`), so `ns.todo` and `:todo/*` cannot drift. `Schema([User, Label])` keys each by name. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
@@ -264,7 +262,7 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
   db.run(deleteTodoOp, eid, {});
 ```
 
-**`db.install(): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Under a policy only a schema class may run it (default `[superuser]`). Reef's workspace provision runs install as an operation effect, then seeds labels.
+**`db.install(options?): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Reads the installed fields first and fails with `IncompatibleSchema` when a value type, cardinality, uniqueness, or a new required field on existing rows would change. Pass `{ allowIncompatible: [":ident"] }` to apply those idents anyway. Under a policy only a schema class may run it (default `[superuser]`). Reef's workspace provision runs install as an operation effect, then seeds labels.
 
 ```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>
@@ -390,7 +388,7 @@ export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
     .orderBy(Comment.at, "asc");
 ```
 
-**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ owned: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
+**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `Field.owned` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts#board-shape"
 export const boardShape = {
@@ -506,6 +504,7 @@ export const issueExtraShape = {
 | `Ramose.DbError` | the union of the nine request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
 | `Ramose.PolicyError` | a policy did not compile against its schema — deploy time, not a request |
+| `Ramose.IncompatibleSchema` | `install()` refused a value-type / cardinality / uniqueness flip, or a new required field on existing rows |
 | `Ramose.isDatabaseError` | type guard for the nine `DbError` members |
 | `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
 
@@ -515,7 +514,7 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 ## Errors
 
-Nine tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError` `OperationRejected`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). A policy that does not compile throws `PolicyError`. Match with `try/catch` and `instanceof` / `_tag`; `Ramose.isDatabaseError(e)` is the guard. Each is described on [Errors](/reference/errors/).
+Nine tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError` `OperationRejected`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). A policy that does not compile throws `PolicyError`. `install()` can fail with `IncompatibleSchema`. Match with `try/catch` and `instanceof` / `_tag`; `Ramose.isDatabaseError(e)` is the guard. Each is described on [Errors](/reference/errors/).
 
 ```ts
 try {
