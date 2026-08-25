@@ -30,7 +30,8 @@ export function useConnectionStatus<C extends Schema.Any>(
   db: ReadDb<C>,
 ): ConnectionStatus;
 export function useConnectionStatus(db?: ReadDb): ConnectionStatus {
-  const client = useContext(RamoseContext);
+  const ctx = useContext(RamoseContext);
+  const client = ctx?.client ?? null;
   if (db === undefined && client === null) {
     throw new Error(
       "useConnectionStatus: no <RamoseProvider> above this component. " +

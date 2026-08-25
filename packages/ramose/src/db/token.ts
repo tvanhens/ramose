@@ -45,6 +45,11 @@ export interface TokenSource {
    * refresh — this is a peek, never a refresh.
    */
   readonly claims: () => Promise<Claims>;
+  /**
+   * Cached payload, or `undefined` if nothing has been minted yet.
+   * Synchronous — UI hints only, never a mint or refresh.
+   */
+  readonly peek: () => Claims | undefined;
   /** Drop the cache: sign-out, tenant switch. The next read mints. */
   readonly invalidate: () => void;
 }
@@ -204,6 +209,7 @@ const jwt = (
       cached !== undefined
         ? Promise.resolve(cached.claims)
         : mintNow().then((minted) => minted.claims),
+    peek: () => cached?.claims,
     invalidate: () => {
       epoch += 1;
       cached = undefined;
@@ -216,8 +222,25 @@ const jwt = (
 const staticSource = (value: string): TokenSource => ({
   token: () => Promise.resolve(value),
   claims: () => Promise.resolve(decodeClaims(value)),
+  peek: () => decodeClaims(value),
   invalidate: () => {},
 });
+
+/**
+ * Synchronous claims from a {@link TokenInput}: a string is decoded now, a
+ * {@link TokenSource} answers from its cache, a mint function is `undefined`
+ * until something has called `token()` / `claims()`.
+ */
+export const peekClaims = (
+  token: TokenInput | undefined,
+): Claims | undefined => {
+  if (token === undefined) return undefined;
+  if (typeof token === "string") return decodeClaims(token);
+  if (isTokenSource(token) && typeof token.peek === "function") {
+    return token.peek();
+  }
+  return undefined;
+};
 
 /**
  * The shipped token sources.

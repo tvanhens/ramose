@@ -38,7 +38,6 @@ const ICON_PATHS = {
   bolt: "M13 2 3 14h9l-1 8 10-12h-9l1-8z",
   message: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
   eye: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zm11 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
-  grip: "M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01",
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;
@@ -115,14 +114,12 @@ export const LogoMark = ({ size = 28 }: { size?: number }) => (
   </span>
 );
 
-export const Logo = ({ size = 28, wordmark = true }: { size?: number; wordmark?: boolean }) => (
+export const Logo = ({ size = 28 }: { size?: number }) => (
   <span {...stylex.props(logoStyles.lockup)}>
     <LogoMark size={size} />
-    {wordmark && (
-      <span {...stylex.props(logoStyles.wordmark)} style={{ fontSize: size * 0.72 }}>
-        Reef
-      </span>
-    )}
+    <span {...stylex.props(logoStyles.wordmark)} style={{ fontSize: size * 0.72 }}>
+      Reef
+    </span>
   </span>
 );
 
@@ -171,10 +168,6 @@ const button = stylex.create({
     backgroundColor: { default: "transparent", ":hover": colors.surfaceHover },
     color: { default: colors.textMuted, ":hover": colors.text },
   },
-  danger: {
-    backgroundColor: { default: colors.dangerSoft, ":hover": colors.danger },
-    color: { default: colors.danger, ":hover": "#fff" },
-  },
   sm: {
     paddingBlock: "3px",
     paddingInline: space.sm,
@@ -200,7 +193,7 @@ export const Button = ({
   size,
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "ghost" | "subtle" | "danger";
+  variant?: "primary" | "ghost" | "subtle";
   size?: "sm";
 }) => (
   <button
@@ -216,14 +209,12 @@ export const IconButton = ({
   label,
   size,
   tone = "subtle",
-  iconSize,
   ...props
 }: Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
   icon: IconName;
   label: string;
   size?: "sm";
-  tone?: "subtle" | "ghost" | "danger";
-  iconSize?: number;
+  tone?: "subtle" | "danger";
 }) => (
   <button
     type="button"
@@ -232,13 +223,13 @@ export const IconButton = ({
     {...props}
     {...stylex.props(
       button.base,
-      tone === "ghost" ? button.ghost : button.subtle,
+      button.subtle,
       button.icon,
       size === "sm" && button.iconSm,
       tone === "danger" && button.iconDanger,
     )}
   >
-    <Icon name={icon} size={iconSize ?? (size === "sm" ? 14 : 16)} />
+    <Icon name={icon} size={size === "sm" ? 14 : 16} />
   </button>
 );
 
@@ -569,7 +560,7 @@ const avatar = stylex.create({
   },
 });
 
-const AVATAR_SIZES = { sm: [22, 10], md: [28, 12], lg: [40, 15] } as const;
+const AVATAR_SIZES = { sm: [22, 10], md: [28, 12] } as const;
 
 export const Avatar = ({
   name,
@@ -599,7 +590,7 @@ export const Avatar = ({
 
 // ── priority ─────────────────────────────────────────────────────────────────
 
-export const PRIORITY_TINTS = [
+const PRIORITY_TINTS = [
   "#6b7588",
   "#8b93a3",
   "#5b8cff",

@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### App-surface disjunction, comparators, and serializable cursors (part of #192)
+
+`Query.any(...stages)` is a fluent disjunction (`Q.or`); `Query.not(stage)`
+negates a stage. Attr-level comparator sugar on `matching`: `Query.gt` /
+`Query.gte` / `Query.lt` / `Query.lte` / `Query.startsWith` / `Query.includes`
+— namespace-constrained the same way `is` is. `Query.encodeCursor(q, cursor)` /
+`Query.decodeCursor(q, token)` pack a keyset cursor for a URL so Instant keys
+rehydrate as `Date`.
+
+### `usePrincipal`, `useRamoseClaims`, and `useOperation` (part of #195)
+
+`usePrincipal(db)` loads `{ eid, class, loading }` from `db.principal()`.
+`useRamoseClaims()` peeks the provider's `TokenSource` synchronously
+(JWT decode, not verified — UI hints). `useOperation(db, op)` is the
+typed write hook: `run` matches `db.run` and returns
+`{ ok: true, value } | { ok: false, error }`. Pending / error are per
+invocation key (`pendingFor` / `errorFor`), so two buttons on one hook
+can spinner independently. `useTransact` is gone.
+
+`TokenSource.peek()` is the sync cache read that `useRamoseClaims`
+rides. Reef's board no longer decodes the JWT or prop-drills `cls` /
+`myEid`.
+
+### Generator projections keep one row per source (part of #191)
+
+A record of value cells (`{ title: t.v }`) no longer collapses two
+entities that share a projected value into one row. Lowering puts the
+binding record in `:with`, the same way aggregates already do.
+`Q.distinct({ title: t.v })` opts back into unique projected tuples.
+`select(...)` / `Q.pull` are unchanged — they already project through
+the focus record.
+
+### Case-insensitive string predicates and `Q.call` (part of #190)
+
+`Q.startsWith` / `Q.endsWith` / `Q.includes` take `{ ignoreCase: true }`,
+lowered through the engine's `lower-case` function. `Q.matches` still
+rejects `RegExp` flags. `Q.call(fn, …args)` is the function-binding
+escape hatch for engine builtins the kernel does not wrap (`+`,
+`lower-case`, `str`, …). The names it accepts are listed on the
+query-language page.
+
 ### Connection status and live `retry()` (part of #194)
 
 `Client.connectionStatus(name?)` and `onConnectionStatus` report

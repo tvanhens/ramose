@@ -8,7 +8,6 @@
 
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
-import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import {
   Comment,
@@ -90,11 +89,6 @@ export const provisionWorkspaceOp = Op(
     return { ready: true };
   },
 );
-
-// docs:provision-workspace
-export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).then(() => undefined);
-// enddocs:provision-workspace
 
 export const moveIssueOp = Op.patch("issue/move", Issue, ["status", "rank"], {
   doc: "Move an issue to a new column and rank",
@@ -332,81 +326,6 @@ export interface NewIssue {
   readonly labelIds?: readonly number[];
 }
 
-/** `creator` is stamped from `op.principal` in the body. */
-// docs:create-issue
-export const createIssue = (
-  db: ReefDb,
-  lastRankInColumn: number | undefined,
-  draft: NewIssue,
-) =>
-  db.run(createIssueOp, {
-    title: draft.title,
-    ...(draft.description != null && draft.description !== ""
-      ? { description: draft.description }
-      : {}),
-    status: draft.status,
-    priority: draft.priority,
-    rank: rankAfter(lastRankInColumn),
-    ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
-    ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
-  });
-// enddocs:create-issue
-
-/** Drag-and-drop: `update` of status and rank. */
-// docs:move-issue
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) => db.run(moveIssueOp, issueId, { status, rank });
-// enddocs:move-issue
-
-/** Status change from the detail panel — keeps the rank (column position). */
-export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
-  db.run(setStatusOp, issueId, { status });
-
-export const setTitle = (db: ReefDb, issueId: number, title: string) =>
-  db.run(setTitleOp, issueId, { title });
-
-// docs:set-description
-export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.run(setDescriptionOp, issueId, { text });
-// enddocs:set-description
-
-export const setPriority = (db: ReefDb, issueId: number, priority: Priority) =>
-  db.run(setPriorityOp, issueId, { priority });
-
-export const setAssignee = (
-  db: ReefDb,
-  issueId: number,
-  assigneeId: number | undefined,
-) => db.run(setAssigneeOp, issueId, { assigneeId });
-
-// docs:toggle-label
-export const toggleLabel = (
-  db: ReefDb,
-  issueId: number,
-  labelId: number,
-  on: boolean,
-) => db.run(toggleLabelOp, issueId, { labelId, on });
-// enddocs:toggle-label
-
-/** Owner-only by policy: everyone else gets `Unauthorized` from the peer. */
-export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
-  db.run(setPrivateNoteOp, issueId, { note });
-
-// docs:delete-issue
-export const deleteIssue = (db: ReefDb, issueId: number) =>
-  db.run(deleteIssueOp, issueId, {});
-// enddocs:delete-issue
-
-export const addComment = (db: ReefDb, issueId: number, body: string) =>
-  db.run(addCommentOp, issueId, { body });
-
-export const deleteComment = (db: ReefDb, commentId: number) =>
-  db.run(deleteCommentOp, commentId, {});
-
 // ── sample data ──────────────────────────────────────────────────────────────
 
 /** A realistic starter board, for the empty state. Label names map to ids. */
@@ -479,13 +398,3 @@ const SAMPLE_ISSUES: readonly {
     labels: ["infra", "feature"],
   },
 ];
-
-/**
- * Seed the sample board in one operation. Ranks are spaced by column so
- * later drags have room in between; issues are created by (and, when marked,
- * assigned to) the caller.
- */
-export const seedSampleIssues = (
-  db: ReefDb,
-  labels: readonly { id: number; name: string }[],
-) => db.run(seedSampleIssuesOp, { labels });

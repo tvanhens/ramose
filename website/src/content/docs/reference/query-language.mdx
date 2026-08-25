@@ -63,7 +63,13 @@ cast:
   position on the wire); the handle exposes `{ e, v, t, tx, op }`, so
   time-based questions are ordinary clauses (`f.t` reads as the basis `t`).
 - Value comparisons — `Q.eq`, `Q.gt`, `Q.startsWith`, `Q.in`, … over bound
-  vars.
+  vars. `Q.startsWith` / `Q.endsWith` / `Q.includes` take
+  `{ ignoreCase: true }`, which folds both sides through the engine's
+  `lower-case` function before the predicate. `Q.matches` still rejects
+  `RegExp` flags — there is no inline `(?i)`.
+- `Q.call(fn, …args)` — a function-binding clause: `yield* Q.call("+", a, 1)`
+  binds the result so the next clause can name it. The names it accepts are
+  the engine functions listed below.
 - `Q.or` / `Q.not` — take sub-generators; closure capture over outer
   handles supplies the join-variable lists. No explicit var lists, ever.
 - Rule invocation — yielding a rule application records an inert call
@@ -89,9 +95,34 @@ Query.from(Issue).where({ owner: me });
 so `db.query(q)` takes no bindings argument. Output is the type of the
 body's one return expression — `Q.pull(focus, shape)` for one root,
 `Q.rows({ … })` (or a plain record of handles) for several, `Q.value(...)`
-for a scalar, a bare focus var for ids — so inference is sound and there
-is no declared `find`. `orderBy` / `limit` / `offset` live on the query
-value, so a generator projection can be sorted and limited.
+for a scalar, `Q.distinct({ … })` for unique projected tuples, a bare
+focus var for ids — so inference is sound and there is no declared
+`find`. `orderBy` / `limit` / `offset` live on the query value, so a
+generator projection can be sorted and limited.
+
+## Projection keeps one row per source
+
+`select(...)` and `Q.pull` project through the matched record, so two
+issues with the same title are two rows. A generator record of value
+cells — `return { title: t.v }` — would otherwise collapse those two
+into one: the engine keeps unique projected tuples, and a title is not
+an identity. The default is now the same as `select`: the record that
+bound each projected value rides along, so the two issues stay two
+rows. `Q.distinct({ title: t.v })` is the opt-in for unique titles —
+one row when every projected cell agrees.
+
+```ts
+// two issues titled "fix" → two rows
+return { title: t.v };
+
+// the same two issues → one row
+return Q.distinct({ title: t.v });
+```
+
+`select` / `Q.pull` already identify each row by the focus record;
+wrapping them in `Q.distinct` does not change that. Aggregates still
+count every matching row either way — `Q.distinct` is about the
+projected cells, not the rows a `sum` or `count` sees.
 
 ## Membership is derived
 
@@ -138,10 +169,39 @@ charged against the existing query budget, so a runaway recursion is a
 answer (a miss is `NotOne`); `q.after(cursor)` turns the result into a
 keyset `Page` — the sort-key cells ride in `find` past the projection, the
 entity id joins the order as a tie-breaker, and the next cursor is minted
-from the last row. None of these delegate through `q.open` — a cursor is
+from the last row. `Query.encodeCursor(q, cursor)` / `Query.decodeCursor`
+round-trip that cursor through a URL; Instant keys rehydrate as `Date`.
+None of these delegate through `q.open` — a cursor is
 post-processing for the outermost query; strip it with `q.logic()`. Conditional
 clauses in the fluent spelling are ordinary JavaScript
 (`if (assignee) q = q.where({ assignee })`).
+
+## Engine functions `Q.call` can bind
+
+`Q.call` is the escape hatch for builtins the kernel does not wrap as
+comparisons or aggregate cells. A call is a clause: you cannot obtain the
+result without contributing it. Unknown names fail at build time.
+
+| Group | Names |
+| --- | --- |
+| Arithmetic | `+` `-` `*` `/` `quot` `rem` `mod` `inc` `dec` `abs` `min` `max` |
+| String | `str` `subs` `lower-case` `upper-case` `trim` `split` `clojure.string/join` |
+| Regex | `re-find` `re-matches` `re-seq` |
+| Collections | `count` `identity` `ground` `vector` `tuple` `untuple` |
+| Other | `rand` `rand-int` `now` |
+
+`lower-case`, `upper-case`, `trim`, and `split` also answer under
+`clojure.string/` aliases; `join` answers only as `clojure.string/join`,
+and `str` / `subs` have no prefixed spelling. Aggregates
+(`count`, `sum`, `median`, …) stay cells — `Q.count(e)`, not `Q.call`.
+`get-else` and `missing?` need the database source and are not `Q.call`
+names.
+
+```ts
+const next = yield* Q.call("+", age, 1);
+const folded = yield* Q.call("lower-case", title);
+yield* Q.includes(folded, needle);
+```
 
 ## Effect stops at the boundary
 

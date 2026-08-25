@@ -1,26 +1,31 @@
 /**
- * The useTransact contract:
+ * The useOperation contract:
  *
  * - a successful `run` resolves `{ ok: true, value }`, and `pending` flips
  *   true → false around it;
  * - a failing `run` resolves `{ ok: false, error }`, calls `onError` with
  *   the tagged error, and lands the same value on `error`;
  * - `error` clears on the next successful run, and on `clearError`;
+ * - pending / error are per invocation key — two entities spinner
+ *   independently;
  * - concurrent runs settle independently: the last settler wins `error`;
  * - an unmounted component touches no state when a late run settles, but
  *   `onError` still fires (the toast host outlives the form);
  * - `errorMessage` is `e.message ?? e._tag ?? String(e)`.
  */
 
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Unauthorized } from "../../src/db/index.ts";
+import type { Db, Operation, OpReport } from "../../src/db/index.ts";
 import { act, renderHook } from "@testing-library/react";
-import { errorMessage, useTransact, type RunResult } from "../../src/react/index.ts";
+import {
+  errorMessage,
+  useOperation,
+  type RunResult,
+} from "../../src/react/index.ts";
+import { registerDom, Todo } from "./harness.tsx";
 
-GlobalRegistrator.register();
-(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-afterAll(() => GlobalRegistrator.unregister());
+registerDom();
 
 /** A promise the test settles by hand, so `pending` can be observed mid-run. */
 const gate = <A,>() => {
@@ -33,45 +38,87 @@ const gate = <A,>() => {
   return { promise, resolve, reject };
 };
 
-describe("useTransact", () => {
+const report = (output: unknown = {}): OpReport<unknown> =>
+  ({
+    t: 1,
+    txEid: 1,
+    datomCount: 0,
+    output,
+    dbAfter: {},
+  }) as OpReport<unknown>;
+
+const fakeDb = (
+  run: (operation: unknown, a: unknown, b?: unknown) => Promise<OpReport<unknown>>,
+): Db => ({ run } as unknown as Db);
+
+const bareOp = {
+  _tag: "Operation",
+  name: "todo/add",
+  on: undefined,
+} as unknown as Operation<string, { title: string }, { id: number }, undefined>;
+
+const onOp = {
+  _tag: "Operation",
+  name: "todo/set-done",
+  on: Todo,
+} as unknown as Operation<
+  string,
+  { done: boolean },
+  Record<string, never>,
+  typeof Todo
+>;
+
+describe("useOperation", () => {
   test("success resolves { ok, value } and pending flips true → false", async () => {
-    const { result } = renderHook(() => useTransact());
+    const g = gate<OpReport<unknown>>();
+    const db = fakeDb(() => g.promise);
+    const { result } = renderHook(() => useOperation(db, bareOp));
     expect(result.current.pending).toBe(false);
 
-    const g = gate<number>();
-    let outcome!: Promise<{ ok: true; value: number } | { ok: false; error: unknown }>;
+    let outcome!: Promise<RunResult<OpReport<unknown>>>;
     act(() => {
-      outcome = result.current.run(g.promise);
+      outcome = result.current.run({ title: "x" });
     });
     expect(result.current.pending).toBe(true);
 
-    g.resolve(42);
-    const value = await act(() => outcome);
-    expect(value).toEqual({ ok: true, value: 42 });
+    const value = report({ id: 42 });
+    g.resolve(value);
+    const settled = await act(() => outcome);
+    expect(settled).toEqual({ ok: true, value });
     expect(result.current.pending).toBe(false);
     expect(result.current.error).toBeUndefined();
   });
 
-  test("pending counts concurrent runs", async () => {
-    const { result } = renderHook(() => useTransact());
+  test("pendingFor is per entity so two buttons spinner independently", async () => {
+    const waits = new Map<number, ReturnType<typeof gate<OpReport<unknown>>>>();
+    const db = fakeDb((_op, entity) => {
+      const g = gate<OpReport<unknown>>();
+      waits.set(entity as number, g);
+      return g.promise;
+    });
+    const { result } = renderHook(() => useOperation(db, onOp));
 
-    const a = gate<void>();
-    const b = gate<void>();
-    let ranA!: Promise<RunResult<void>>;
-    let ranB!: Promise<RunResult<void>>;
+    let ranA!: Promise<RunResult<OpReport<unknown>>>;
+    let ranB!: Promise<RunResult<OpReport<unknown>>>;
     act(() => {
-      ranA = result.current.run(a.promise);
-      ranB = result.current.run(b.promise);
+      ranA = result.current.run(1, { done: true });
+      ranB = result.current.run(2, { done: false });
     });
     expect(result.current.pending).toBe(true);
+    expect(result.current.pendingFor(1)).toBe(true);
+    expect(result.current.pendingFor(2)).toBe(true);
+    expect(result.current.pendingFor(3)).toBe(false);
 
-    a.resolve();
+    waits.get(1)!.resolve(report());
     await act(() => ranA);
+    expect(result.current.pendingFor(1)).toBe(false);
+    expect(result.current.pendingFor(2)).toBe(true);
     expect(result.current.pending).toBe(true);
 
-    b.resolve();
+    waits.get(2)!.resolve(report());
     await act(() => ranB);
     expect(result.current.pending).toBe(false);
+    expect(result.current.pendingFor(2)).toBe(false);
   });
 
   test("failure calls onError with the Unauthorized instance and sets error", async () => {
@@ -81,18 +128,21 @@ describe("useTransact", () => {
       attr: ":issue/status",
     });
     const seen: unknown[] = [];
+    const db = fakeDb(() => Promise.reject(denied));
     const { result } = renderHook(() =>
-      useTransact({ onError: (e) => seen.push(e) }),
+      useOperation(db, onOp, { onError: (e) => seen.push(e) }),
     );
 
     let outcome: unknown;
     await act(async () => {
-      outcome = await result.current.run(Promise.reject(denied));
+      outcome = await result.current.run(7, { done: true });
     });
 
     expect(outcome).toEqual({ ok: false, error: denied });
     expect(seen).toEqual([denied]);
     expect(result.current.error).toBe(denied);
+    expect(result.current.errorFor(7)).toBe(denied);
+    expect(result.current.errorFor(8)).toBeUndefined();
     expect(result.current.pending).toBe(false);
   });
 
@@ -108,10 +158,11 @@ describe("useTransact", () => {
     };
     window.addEventListener("unhandledrejection", onWindow);
     process.on("unhandledRejection", onProcess);
-    const { result } = renderHook(() => useTransact());
+    const db = fakeDb(() => Promise.reject(denied));
+    const { result } = renderHook(() => useOperation(db, bareOp));
     try {
       await act(async () => {
-        void result.current.run(Promise.reject(denied));
+        void result.current.run({ title: "x" });
       });
       await Bun.sleep(20);
       expect(result.current.error).toBe(denied);
@@ -122,78 +173,75 @@ describe("useTransact", () => {
     }
   });
 
-  test("run(() => Promise) thunk form resolves and records error", async () => {
-    const denied = new Unauthorized({ message: "thunk" });
-    const { result } = renderHook(() => useTransact());
-
-    let value: unknown;
-    await act(async () => {
-      value = await result.current.run(() => Promise.resolve(7));
-    });
-    expect(value).toEqual({ ok: true, value: 7 });
-    expect(result.current.error).toBeUndefined();
-
-    await act(async () => {
-      value = await result.current.run(() => Promise.reject(denied));
-    });
-    expect(value).toEqual({ ok: false, error: denied });
-    expect(result.current.error).toBe(denied);
-  });
-
   test("error clears on the next successful run, and on clearError", async () => {
     const denied = new Unauthorized({ message: "no" });
-    const { result } = renderHook(() => useTransact());
+    let fail = true;
+    const db = fakeDb(() =>
+      fail ? Promise.reject(denied) : Promise.resolve(report()),
+    );
+    const { result } = renderHook(() => useOperation(db, bareOp));
 
     await act(async () => {
-      await result.current.run(Promise.reject(denied));
+      await result.current.run({ title: "x" });
     });
     expect(result.current.error).toBe(denied);
 
+    fail = false;
     await act(async () => {
-      await result.current.run(Promise.resolve("ok"));
+      await result.current.run({ title: "y" });
     });
     expect(result.current.error).toBeUndefined();
 
+    fail = true;
     await act(async () => {
-      await result.current.run(Promise.reject(denied));
+      await result.current.run({ title: "z" });
     });
     expect(result.current.error).toBe(denied);
     act(() => result.current.clearError());
     expect(result.current.error).toBeUndefined();
+    expect(result.current.errorFor({ title: "z" })).toBeUndefined();
   });
 
   test("the last settler wins error: a late failure re-sets it after a success cleared it", async () => {
     const denied = new Unauthorized({ message: "late denial" });
-    const { result } = renderHook(() => useTransact());
+    const g = gate<OpReport<unknown>>();
+    let n = 0;
+    const db = fakeDb(() => {
+      n += 1;
+      return n === 1
+        ? g.promise.then(() => Promise.reject(denied))
+        : Promise.resolve(report());
+    });
+    const { result } = renderHook(() => useOperation(db, onOp));
 
-    const g = gate<void>();
-    let ranA!: Promise<RunResult<never>>;
+    let ranA!: Promise<RunResult<OpReport<Record<string, never>>>>;
     act(() => {
-      ranA = result.current.run(
-        g.promise.then(() => Promise.reject(denied)),
-      );
+      ranA = result.current.run(1, { done: true });
     });
 
     await act(async () => {
-      await result.current.run(Promise.resolve("ok"));
+      await result.current.run(2, { done: false });
     });
     expect(result.current.error).toBeUndefined();
 
-    g.resolve();
+    g.resolve(report());
     await act(async () => {
       await ranA;
     });
     expect(result.current.error).toBe(denied);
+    expect(result.current.errorFor(1)).toBe(denied);
+    expect(result.current.errorFor(2)).toBeUndefined();
     expect(result.current.pending).toBe(false);
   });
 
   test("a run settling after unmount touches no state", async () => {
-    const { result, unmount } = renderHook(() => useTransact());
+    const g = gate<OpReport<unknown>>();
+    const db = fakeDb(() => g.promise);
+    const { result, unmount } = renderHook(() => useOperation(db, bareOp));
 
-    const g = gate<string>();
-    let outcome!: Promise<{ ok: true; value: string } | { ok: false; error: unknown }>;
+    let outcome!: Promise<RunResult<OpReport<unknown>>>;
     act(() => {
-      outcome = result.current.run(g.promise);
+      outcome = result.current.run({ title: "x" });
     });
     unmount();
 
@@ -201,8 +249,8 @@ describe("useTransact", () => {
     const complaints: unknown[] = [];
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
-      g.resolve("late");
-      expect(await outcome).toEqual({ ok: true, value: "late" });
+      g.resolve(report());
+      expect(await outcome).toEqual({ ok: true, value: report() });
     } finally {
       console.error = noisy;
     }
@@ -212,14 +260,15 @@ describe("useTransact", () => {
   test("a failure settling after unmount still fires onError, without touching state", async () => {
     const denied = new Unauthorized({ message: "denied after navigate-away" });
     const seen: unknown[] = [];
+    const g = gate<OpReport<unknown>>();
+    const db = fakeDb(() => g.promise.then(() => Promise.reject(denied)));
     const { result, unmount } = renderHook(() =>
-      useTransact({ onError: (e) => seen.push(e) }),
+      useOperation(db, onOp, { onError: (e) => seen.push(e) }),
     );
 
-    const g = gate<void>();
-    let outcome!: Promise<RunResult<never>>;
+    let outcome!: Promise<RunResult<OpReport<Record<string, never>>>>;
     act(() => {
-      outcome = result.current.run(g.promise.then(() => Promise.reject(denied)));
+      outcome = result.current.run(1, { done: true });
     });
     unmount();
 
@@ -227,13 +276,26 @@ describe("useTransact", () => {
     const complaints: unknown[] = [];
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
-      g.resolve();
+      g.resolve(report());
       await outcome;
     } finally {
       console.error = noisy;
     }
     expect(seen).toEqual([denied]);
     expect(complaints).toEqual([]);
+  });
+
+  test("contextual run passes entity then input to db.run", async () => {
+    const calls: unknown[] = [];
+    const db = fakeDb(async (operation, a, b) => {
+      calls.push([operation, a, b]);
+      return report();
+    });
+    const { result } = renderHook(() => useOperation(db, onOp));
+    await act(async () => {
+      await result.current.run(9, { done: true });
+    });
+    expect(calls).toEqual([[onOp, 9, { done: true }]]);
   });
 });
 

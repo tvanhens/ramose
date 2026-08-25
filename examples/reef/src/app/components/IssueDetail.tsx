@@ -9,7 +9,14 @@
  * write-denied below `admin`.
  */
 
-import { errorMessage, useLivePull, useLiveQuery, useTransact } from "ramose/react";
+import {
+  errorMessage,
+  useLivePull,
+  useLiveQuery,
+  useOperation,
+  usePrincipal,
+  useRamoseClaims,
+} from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useEffect, useState } from "react";
 import {
@@ -23,16 +30,16 @@ import {
 } from "../../domain/queries.ts";
 import type { Class } from "../../domain/policy.ts";
 import {
-  addComment,
-  deleteComment,
-  deleteIssue,
-  setAssignee,
-  setDescription,
-  setPriority,
-  setPrivateNote,
-  setStatus,
-  setTitle,
-  toggleLabel,
+  addCommentOp,
+  deleteCommentOp,
+  deleteIssueOp,
+  setAssigneeOp,
+  setDescriptionOp,
+  setPriorityOp,
+  setPrivateNoteOp,
+  setStatusOp,
+  setTitleOp,
+  toggleLabelOp,
 } from "../mutations.ts";
 import {
   Issue,
@@ -233,8 +240,6 @@ const isMac =
 export const IssueDetail = ({
   db,
   row,
-  myEid,
-  cls,
   labels,
   people,
   onClose,
@@ -242,16 +247,34 @@ export const IssueDetail = ({
   db: ReefDb;
   /** The live board row — already re-rendering on every overlay apply. */
   row: BoardRow;
-  myEid: number | undefined;
-  cls: Class;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;
 }) => {
   const issueId = row.id;
   const toast = useToast();
-  const { run } = useTransact({
+  const claims = useRamoseClaims();
+  const { eid, class: principalClass } = usePrincipal(db, {
     onError: (error) => toast("error", errorMessage(error)),
+  });
+  const myEid = eid ?? undefined;
+  const cls = (principalClass ?? claims?.ramose?.class ?? "viewer") as Class;
+  const onWriteError = (error: unknown) => toast("error", errorMessage(error));
+  const setTitle = useOperation(db, setTitleOp, { onError: onWriteError });
+  const setDescription = useOperation(db, setDescriptionOp, {
+    onError: onWriteError,
+  });
+  const setStatus = useOperation(db, setStatusOp, { onError: onWriteError });
+  const setPriority = useOperation(db, setPriorityOp, { onError: onWriteError });
+  const setAssignee = useOperation(db, setAssigneeOp, { onError: onWriteError });
+  const toggleLabel = useOperation(db, toggleLabelOp, { onError: onWriteError });
+  const setPrivateNote = useOperation(db, setPrivateNoteOp, {
+    onError: onWriteError,
+  });
+  const removeIssue = useOperation(db, deleteIssueOp, { onError: onWriteError });
+  const comment = useOperation(db, addCommentOp, { onError: onWriteError });
+  const removeComment = useOperation(db, deleteCommentOp, {
+    onError: onWriteError,
   });
 
   const [title, setTitleDraft] = useState("");
@@ -281,7 +304,7 @@ export const IssueDetail = ({
     const body = commentDraft.trim();
     if (body === "" || myEid === undefined) return;
     setCommentDraft("");
-    void run(addComment(db, issueId, body));
+    void comment.run(issueId, { body });
   };
 
   const status = row.status as Status;
@@ -302,7 +325,11 @@ export const IssueDetail = ({
           icon="trash"
           label="Delete issue"
           tone="danger"
-          onClick={() => void run(deleteIssue(db, issueId))}
+          onClick={() =>
+            // docs:delete-issue
+            void removeIssue.run(issueId, {})
+            // enddocs:delete-issue
+          }
         />
         <IconButton icon="x" label="Close panel" onClick={onClose} />
       </div>
@@ -318,7 +345,7 @@ export const IssueDetail = ({
             }}
             onBlur={() => {
               if (title.trim() !== "" && title !== row.title) {
-                void run(setTitle(db, issueId, title.trim()));
+                void setTitle.run(issueId, { title: title.trim() });
               }
             }}
           />
@@ -342,7 +369,7 @@ export const IssueDetail = ({
             <Select
               value={row.status}
               onChange={(e) =>
-                void run(setStatus(db, issueId, e.target.value as Status))
+                void setStatus.run(issueId, { status: e.target.value as Status })
               }
             >
               {Issue.status.members.map((s) => (
@@ -357,7 +384,9 @@ export const IssueDetail = ({
             <Select
               value={row.priority}
               onChange={(e) =>
-                void run(setPriority(db, issueId, e.target.value as Priority))
+                void setPriority.run(issueId, {
+                  priority: e.target.value as Priority,
+                })
               }
             >
               {Issue.priority.members.map((p) => (
@@ -372,13 +401,10 @@ export const IssueDetail = ({
             <Select
               value={row.assignee?.id ?? ""}
               onChange={(e) =>
-                void run(
-                  setAssignee(
-                    db,
-                    issueId,
+                void setAssignee.run(issueId, {
+                  assigneeId:
                     e.target.value === "" ? undefined : Number(e.target.value),
-                  ),
-                )
+                })
               }
             >
               <option value="">Unassigned</option>
@@ -400,7 +426,11 @@ export const IssueDetail = ({
                     name={label.name}
                     color={label.color}
                     on={on}
-                    onToggle={() => void run(toggleLabel(db, issueId, label.id, !on))}
+                    onToggle={() =>
+                      // docs:toggle-label
+                      void toggleLabel.run(issueId, { labelId: label.id, on: !on })
+                      // enddocs:toggle-label
+                    }
                   />
                 );
               })}
@@ -416,7 +446,9 @@ export const IssueDetail = ({
             onChange={(e) => setDescriptionDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && description !== (extra.description ?? "")) {
-                void run(setDescription(db, issueId, description.trim()));
+                // docs:set-description
+                void setDescription.run(issueId, { text: description.trim() });
+                // enddocs:set-description
               }
             }}
           />
@@ -438,7 +470,7 @@ export const IssueDetail = ({
             onChange={(e) => setNoteDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && note !== (extra.privateNote ?? "")) {
-                void run(setPrivateNote(db, issueId, note.trim()));
+                void setPrivateNote.run(issueId, { note: note.trim() });
               }
             }}
           />
@@ -483,7 +515,7 @@ export const IssueDetail = ({
                         size="sm"
                         label="Delete comment"
                         tone="danger"
-                        onClick={() => void run(deleteComment(db, comment.id))}
+                        onClick={() => void removeComment.run(comment.id, {})}
                       />
                     </span>
                   </div>

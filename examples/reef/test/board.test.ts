@@ -38,13 +38,14 @@ import {
   type ReefDb,
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
+import { rankAfter } from "../src/domain/rank.ts";
 import {
-  addComment,
-  createIssue,
-  deleteIssue,
-  moveIssue,
+  addCommentOp,
+  createIssueOp,
+  deleteIssueOp,
+  moveIssueOp,
   operations,
-  setTitle,
+  setTitleOp,
 } from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
 import { tryLowerQueryObject } from "../../../packages/ramose/src/db/query/index.ts";
@@ -52,6 +53,34 @@ import { seedWrite } from "../../../packages/ramose/src/db/internal.ts";
 import { openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
+
+const createIssue = (
+  db: ReefDb,
+  lastRank: number | undefined,
+  draft: { title: string; status: "backlog" | "todo" | "doing" | "done"; priority: "none" | "low" | "medium" | "high" | "urgent" },
+) =>
+  db.run(createIssueOp, {
+    title: draft.title,
+    status: draft.status,
+    priority: draft.priority,
+    rank: rankAfter(lastRank),
+  });
+
+const moveIssue = (
+  db: ReefDb,
+  issueId: number,
+  status: "backlog" | "todo" | "doing" | "done",
+  rank: number,
+) => db.run(moveIssueOp, issueId, { status, rank });
+
+const setTitle = (db: ReefDb, issueId: number, title: string) =>
+  db.run(setTitleOp, issueId, { title });
+
+const addComment = (db: ReefDb, issueId: number, body: string) =>
+  db.run(addCommentOp, issueId, { body });
+
+const deleteIssue = (db: ReefDb, issueId: number) =>
+  db.run(deleteIssueOp, issueId, {});
 
 const awaitLive = async (
   board: { rows: unknown; error: unknown },
@@ -796,7 +825,7 @@ describe("refresh open is one session, not two", () => {
     };
 
     const ws = await openWorkspace("coral-team", false, opts);
-    expect(ws.cls).toBe("owner");
+    expect((await ws.token.claims()).ramose?.class).toBe("owner");
     expect(counted.connects).toBe(0);
     expect(peer.sockets()).toBe(0);
     expect(peer.resyncDumps()).toEqual([]);
@@ -847,7 +876,7 @@ describe("refresh open is one session, not two", () => {
     };
 
     const ws = await openWorkspace("coral-team", false, opts);
-    expect(ws.cls).toBe("viewer");
+    expect((await ws.token.claims()).ramose?.class).toBe("viewer");
     expect(counted.connects).toBe(0);
 
     const client = counted.connect({

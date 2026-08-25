@@ -9,6 +9,10 @@
  *     unbound position mints a typed var; the handle exposes
  *     `{ e, v, t, tx, op }`, so time-based questions are ordinary clauses.
  *   - Value comparisons (`Q.eq`, `Q.gt`, `Q.startsWith`, …) over bound vars.
+ *     String predicates take `{ ignoreCase: true }`, lowered through the
+ *     engine's `lower-case` function.
+ *   - `Q.call(fn, …args)` — function-binding clause; the engine's builtin
+ *     set as an escape hatch (`lower-case`, `str`, arithmetic, …).
  *   - `Q.or` / `Q.not` — take sub-generators; closure capture over outer
  *     handles supplies the join-variable lists. No explicit var lists, ever.
  *   - Rule invocation (`query.ts`) — yielding a rule application records an
@@ -21,6 +25,7 @@
  * fresh vars make self-joins hygienic with no alpha-renaming machinery.
  */
 
+import { FUNCTIONS } from "../../internal/core/query/builtins.ts";
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
 import type { InFocus } from "./focus.ts";
@@ -170,6 +175,24 @@ export interface CmpCommand extends Yieldable<void> {
   /** engine builtin name: `=`, `not=`, `<`, `starts-with?`, `re-find?`, `in` … */
   readonly op: string;
   readonly args: readonly Position[];
+  /** Fold both sides through `lower-case` before the predicate. */
+  readonly ignoreCase?: boolean;
+}
+
+/**
+ * A function-binding clause: `[(fn arg…) ?ret]`. `yield*` answers the
+ * bound result var so the next clause can name it.
+ */
+export interface FnBindCommand extends Yieldable<AnyVar> {
+  readonly _tag: "fnBind";
+  readonly fn: string;
+  readonly args: readonly Position[];
+  readonly ret: AnyVar;
+}
+
+/** `{ ignoreCase: true }` on {@link Q.startsWith} / {@link Q.endsWith} / {@link Q.includes}. */
+export interface StringPredOpts {
+  readonly ignoreCase?: boolean;
 }
 
 export interface OrCommand extends Yieldable<void> {
@@ -208,6 +231,7 @@ export interface SpliceCommand extends Yieldable<any> {
 export type AnyCommand =
   | FactCommand<any>
   | CmpCommand
+  | FnBindCommand
   | OrCommand
   | NotCommand
   | MemberCommand
@@ -242,6 +266,7 @@ export interface CallClause {
 export type BClause =
   | FactCommand<any>
   | CmpCommand
+  | FnBindCommand
   | MemberClause
   | OrClause
   | NotClause
@@ -292,6 +317,9 @@ const dispatch = (cmd: AnyCommand, ctx: BuildCtx): unknown => {
     case "cmp":
       ctx.clauses.push(cmd);
       return undefined;
+    case "fnBind":
+      ctx.clauses.push(cmd);
+      return cmd.ret;
     case "or":
       ctx.clauses.push({ _tag: "orGroup", branches: cmd.branches.map(collectBody) });
       return undefined;
@@ -350,7 +378,20 @@ export interface ValueSpec<T = unknown> {
   readonly _out?: T;
 }
 
-export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord | ValueSpec<any>;
+/**
+ * `Q.distinct({ … })` — opt into unique projected tuples. The default is
+ * one row per source record; this is the set of projected cells.
+ */
+export interface DistinctSpec<Row = unknown> {
+  readonly _tag: "distinctSpec";
+  readonly inner: PullSpec<any> | RowsSpec<any> | CellRecord;
+  readonly _row?: Row;
+}
+
+/** A row projection `Q.distinct` may wrap — not a scalar `Q.value`. */
+export type Distinctable = PullSpec<any> | RowsSpec<any> | CellRecord | DistinctSpec<any>;
+
+export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord | ValueSpec<any> | DistinctSpec<any>;
 
 export const isPullSpec = (x: unknown): x is PullSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "pullSpec";
@@ -360,6 +401,8 @@ export const isAggSpec = (x: unknown): x is AggSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "aggSpec";
 export const isValueSpec = (x: unknown): x is ValueSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "valueSpec";
+export const isDistinctSpec = (x: unknown): x is DistinctSpec =>
+  typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "distinctSpec";
 
 /**
  * The fluent/lib `.select(shape, extras)` focus. `Q.count(Q.focus)` in
@@ -389,15 +432,17 @@ export type CellValue<C> = C extends Var<infer T>
 export type RecordRow<R> = { readonly [K in keyof R]: CellValue<R[K]> };
 
 /** The row a projection value denotes. */
-export type RowOfProjection<P> = P extends ValueSpec<infer T>
-  ? T
-  : P extends PullSpec<infer R>
-    ? R
-    : P extends RowsSpec<infer R>
+export type RowOfProjection<P> = P extends DistinctSpec<infer R>
+  ? R
+  : P extends ValueSpec<infer T>
+    ? T
+    : P extends PullSpec<infer R>
       ? R
-      : P extends CellRecord
-        ? RecordRow<P>
-        : never;
+      : P extends RowsSpec<infer R>
+        ? R
+        : P extends CellRecord
+          ? RecordRow<P>
+          : never;
 
 // ── Q ───────────────────────────────────────────────────────────────────────
 
@@ -471,14 +516,38 @@ const refTargetNs = (attr: AttrLike | undefined): string | undefined => {
   }
 };
 
-const cmp = (op: string, ...args: Position[]): CmpCommand => ({
+const cmp = (op: string, args: readonly Position[], ignoreCase = false): CmpCommand => ({
   _tag: "cmp",
   op,
   args,
+  ...(ignoreCase ? { ignoreCase: true as const } : {}),
   [Symbol.iterator]() {
     return yieldSelf<void>(this);
   },
 });
+
+const stringPred =
+  (op: string) =>
+  (v: Operand<string>, needle: Operand<string>, opts?: StringPredOpts): CmpCommand =>
+    cmp(op, [v, needle], opts?.ignoreCase === true);
+
+const fnBind = (fn: string, args: readonly Position[]): FnBindCommand => {
+  if (typeof fn !== "string" || fn.length === 0 || !Object.hasOwn(FUNCTIONS, fn)) {
+    throw new Error(
+      `ramose/query: Q.call(${JSON.stringify(fn)}) is not an engine function — the documented builtins are the names Q.call accepts`,
+    );
+  }
+  const ret = mkVar("value");
+  return {
+    _tag: "fnBind",
+    fn,
+    args,
+    ret,
+    [Symbol.iterator]() {
+      return yieldSelf<AnyVar>(this);
+    },
+  };
+};
 
 /**
  * When `e` is a namespace-branded var, the attr must be a member of that
@@ -542,6 +611,39 @@ const agg = <T>(fn: AggSpec["fn"], v: AnyVar): AggSpec<T> => {
   return { _tag: "aggSpec", fn, v };
 };
 
+/** Unwrap / validate the projection `Q.distinct` wraps. */
+const distinctInner = (proj: unknown): DistinctSpec["inner"] => {
+  if (isDistinctSpec(proj)) return proj.inner;
+  if (isValueSpec(proj)) {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.value is a scalar, not a set of rows",
+    );
+  }
+  if (isPullSpec(proj) || isRowsSpec(proj)) return proj;
+  if (
+    isVar(proj) ||
+    isAggSpec(proj) ||
+    isBlank(proj) ||
+    proj === null ||
+    typeof proj !== "object" ||
+    Array.isArray(proj)
+  ) {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.pull, Q.rows({ … }), or a record of bound handles",
+    );
+  }
+  const tag = (proj as { _tag?: unknown })._tag;
+  if (typeof tag === "string") {
+    throw new Error(
+      "ramose/query: Q.distinct(...) wraps a row projection — Q.pull, Q.rows({ … }), or a record of bound handles",
+    );
+  }
+  if (Object.keys(proj).length === 0) {
+    throw new Error("ramose/query: the body returned an empty projection — name at least one cell");
+  }
+  return proj as CellRecord;
+};
+
 /**
  * The kernel, as one namespace. Everything here is an inert description;
  * `db.query` is where computation (and Effect) begins.
@@ -562,23 +664,28 @@ export const Q = {
   _: BLANK,
 
   // ── comparisons over bound vars ──────────────────────────────────────────
-  eq: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("=", a, b),
-  ne: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("not=", a, b),
-  lt: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("<", a, b),
-  lte: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("<=", a, b),
-  gt: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp(">", a, b),
-  gte: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp(">=", a, b),
-  startsWith: (v: Operand<string>, prefix: Operand<string>): CmpCommand =>
-    cmp("starts-with?", v, prefix),
-  endsWith: (v: Operand<string>, suffix: Operand<string>): CmpCommand =>
-    cmp("ends-with?", v, suffix),
-  includes: (v: Operand<string>, needle: Operand<string>): CmpCommand =>
-    cmp("includes?", v, needle),
-  /** `re-find?` compiles the pattern with no flags — see the nav surface. */
+  eq: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("=", [a, b]),
+  ne: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("not=", [a, b]),
+  lt: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("<", [a, b]),
+  lte: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp("<=", [a, b]),
+  gt: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp(">", [a, b]),
+  gte: <T>(a: Operand<T>, b: Operand<T>): CmpCommand => cmp(">=", [a, b]),
+  startsWith: stringPred("starts-with?"),
+  endsWith: stringPred("ends-with?"),
+  includes: stringPred("includes?"),
+  /** `re-find?` compiles the pattern with no flags — there is no inline `(?i)`. */
   matches: (v: Operand<string>, re: RegExp | string): CmpCommand =>
-    cmp("re-find?", re, v),
+    cmp("re-find?", [re, v]),
   in: <T>(v: Operand<T>, values: readonly T[]): CmpCommand =>
-    cmp("in", v, values),
+    cmp("in", [v, values]),
+
+  /**
+   * Bind the result of an engine function: `yield* Q.call("+", a, 1)` is
+   * `[(+ ?a 1) ?ret]`. The names `Q.call` accepts are the engine's
+   * function set (`lower-case`, `str`, arithmetic, …) — documented on
+   * the query-language page.
+   */
+  call: (fn: string, ...args: Position[]): FnBindCommand => fnBind(fn, args),
 
   /**
    * Disjunction of sub-bodies. Join variables are whatever outer handles
@@ -637,6 +744,17 @@ export const Q = {
   },
 
   /**
+   * Unique projected tuples. The default is one row per source record
+   * — two issues with the same title are two rows. Wrap the same
+   * record (or `Q.rows` / `Q.pull`) to keep one row when every
+   * projected cell agrees.
+   */
+  distinct: <const P extends Distinctable>(proj: P): DistinctSpec<RowOfProjection<P>> => ({
+    _tag: "distinctSpec",
+    inner: distinctInner(proj),
+  }),
+
+  /**
    * The `.select(shape, extras)` focus. Write `Q.count(Q.focus)` in the
    * extras record; lowering rewrites it to the pipeline's current focus.
    */
@@ -646,13 +764,18 @@ export const Q = {
   row: <Base extends Projection, const Extra extends CellRecord>(
     base: Base,
     extra: Extra,
-  ): RowsSpec<RowOfProjection<Base> & RecordRow<Extra>> => {
+  ): Base extends DistinctSpec<any>
+    ? DistinctSpec<RowOfProjection<Base> & RecordRow<Extra>>
+    : RowsSpec<RowOfProjection<Base> & RecordRow<Extra>> => {
+    if (isDistinctSpec(base)) {
+      return Q.distinct(Q.row(base.inner, extra)) as never;
+    }
     const cells = isRowsSpec(base)
       ? { ...base.cells, ...extra }
       : isPullSpec(base)
         ? { ...extra, ["…"]: base }
         : { ...(base as CellRecord), ...extra };
-    return { _tag: "rowsSpec", cells: cells as CellRecord };
+    return { _tag: "rowsSpec", cells: cells as CellRecord } as never;
   },
 
   // ── aggregate cells ──────────────────────────────────────────────────────

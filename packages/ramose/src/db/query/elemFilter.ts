@@ -119,6 +119,10 @@ const collectVarIds = (list: readonly BClause[], into: Set<number>): void => {
       case "cmp":
         for (const a of c.args) if (isVar(a)) into.add(a.id);
         break;
+      case "fnBind":
+        for (const a of c.args) if (isVar(a)) into.add(a.id);
+        into.add(c.ret.id);
+        break;
       case "memberOf":
         into.add(c.v.id);
         break;
@@ -215,6 +219,10 @@ export const lowerElemFilter = (
         return err(
           `a named rule does not lower to a pull filter on ${attr.ident} — the pull phase has no rule engine; inline the fragment instead`,
         );
+      case "fnBind":
+        return err(
+          `Q.call does not lower to a pull filter on ${attr.ident} — the pull phase has no function bindings; constrain the rows in the query itself`,
+        );
       default:
         return err(
           `a clause in the where filter on ${attr.ident} neither constrains the element nor chains from it — a pull-phase filter walks paths from each element; it cannot join two chains on a shared var or correlate with other clauses`,
@@ -306,7 +314,12 @@ export const lowerElemFilter = (
     );
   };
 
-  const cmpPred = (op: string, args: readonly Position[], v: AnyVar): PullElemPred => {
+  const cmpPred = (op: string, args: readonly Position[], v: AnyVar, ignoreCase?: boolean): PullElemPred => {
+    if (ignoreCase) {
+      err(
+        `the where filter on ${attr.ident}: ignoreCase does not lower to a pull filter — constrain the rows in the query itself, or compare against a lowercased literal`,
+      );
+    }
     const other = args.find((a) => !(isVar(a) && a.id === v.id));
     if (isVar(other)) {
       err(
@@ -358,13 +371,14 @@ export const lowerElemFilter = (
       case "fact":
         return factPred(c, v, list);
       case "cmp":
-        return cmpPred(c.op, c.args, v);
+        return cmpPred(c.op, c.args, v, c.ignoreCase);
       case "orGroup":
         return { or: c.branches.map((b) => andOf(predsOfList(b, v))) };
       case "notGroup":
         return { not: andOf(predsOfList(c.clauses, v)) };
       case "memberOf":
       case "ruleCall":
+      case "fnBind":
         return rejectClause(c);
     }
   };

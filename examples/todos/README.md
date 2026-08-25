@@ -34,7 +34,7 @@ build examples/todos` builds the same bundle for production.
 | `resources.ts` / `alchemy.run.ts` | `Ramose.Server({ databases: { todos: Todos } })`: the owned peer and the catalog seeder |
 | `src/db.ts` | one client, closed with the page. `db`, nothing else |
 | `src/todos.ts` | `Ramose.Query.from` + writes, so the test drives exactly what the UI does |
-| `src/App.tsx` | the UI on `useLiveQuery` + `useTransact` from `ramose/react` — no hand-rolled hooks |
+| `src/App.tsx` | the UI on `useLiveQuery` + `useOperation` from `ramose/react` — no hand-rolled hooks |
 | `test/todos.test.ts` | those helpers against a real engine `Connection` over both wires |
 
 `src/db.ts` is the whole client:
@@ -65,13 +65,13 @@ export type TodoRow = Ramose.Row<typeof todoQuery>;
 
 `src/App.tsx` renders it with the shipped hooks — `useLiveQuery(db, todoQuery)`
 memoises `db.live(todoQuery)` on `[db, query]` and tears down by fiber
-interruption; `useTransact().run` runs a write from an event handler:
+interruption; `useOperation(db, op).run` runs a write from an event handler:
 
 ```tsx
 const { data, error } = useLiveQuery(db, todoQuery);
 // …
-const { run } = useTransact();
-onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
+const { run } = useOperation(db, setDoneOp);
+onChange={(e) => void run(row.id, { done: e.target.checked })}
 ```
 
 A write bumps the connection's basis, so the standing stream re-runs with no

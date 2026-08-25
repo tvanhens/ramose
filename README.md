@@ -25,7 +25,7 @@ A schema, a live query, and a typed write — that is the whole app:
 
 ```tsx
 import * as Ramose from "ramose/db";
-import { useLiveQuery, useTransact } from "ramose/react";
+import { useLiveQuery, useOperation } from "ramose/react";
 
 const Todo = Ramose.Entity("todo", {
   title: Ramose.string(),
@@ -42,10 +42,10 @@ const todos = Ramose.Query.from(Todo);
 
 const Todos = () => {
   const { data } = useLiveQuery(db, todos);   // re-runs itself whenever the data changes
-  const { run } = useTransact();
+  const { run } = useOperation(db, setDoneOp);
 
   const toggle = (todo: Ramose.Row<typeof todos>) =>
-    run(db.run(setDoneOp, todo.id, { done: !todo.done }));
+    run(todo.id, { done: !todo.done });
 
   return (
     <ul>

@@ -2,7 +2,7 @@
  * One open workspace: header, live kanban, issue panel, time travel.
  *
  * Everything on screen is derived from three `useLiveQuery(db, query)` reads
- * against the session overlay; every write goes through `useTransact` so
+ * against the session overlay; every write goes through `useOperation` so
  * the pending layer paints before the Transactor acks. The peer's policy
  * may still deny a write — the layer drops, the board snaps back, and the
  * denial becomes a toast (enforcement is server-side; the UI is a hint).
@@ -15,8 +15,10 @@ import {
   useConnectionStatus,
   useDb,
   useLiveQuery,
+  useOperation,
+  usePrincipal,
   useQuery,
-  useTransact,
+  useRamoseClaims,
 } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useCallback, useEffect, useState } from "react";
@@ -41,7 +43,14 @@ import { authClient, inviteMember, listWorkspaces, type SessionUser } from "../a
 import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
-import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
+import { rankAfter } from "../../domain/rank.ts";
+import type { Class } from "../../domain/policy.ts";
+import {
+  createIssueOp,
+  moveIssueOp,
+  seedSampleIssuesOp,
+  type NewIssue,
+} from "../mutations.ts";
 import { type Workspace } from "../ramose.ts";
 import { useBoardSelection } from "../route.tsx";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
@@ -108,7 +117,6 @@ const styles = stylex.create({
   wide: {
     display: { default: "inline-flex", "@media (max-width: 760px)": "none" },
   },
-  crumbSep: { color: colors.textFaint, display: "inline-flex", marginInline: "2px" },
   wsName: { fontWeight: 700, fontSize: type.md, color: colors.text },
   wsSlug: {
     fontFamily: type.mono,
@@ -247,32 +255,25 @@ export const BoardScreen = ({
   user: SessionUser;
   onLeave: () => void;
 }) => {
-  const { cls, slug } = workspace;
+  const { slug } = workspace;
   const toast = useToast();
   // docs:use-db
   const db = useDb(slug, Reef);
   // enddocs:use-db
-  const [myEid, setMyEid] = useState<number | undefined>(undefined);
-  const [selfReady, setSelfReady] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void db.principal().then(
-      (who) => {
-        if (cancelled) return;
-        setMyEid(who.eid ?? undefined);
-        setSelfReady(true);
-      },
-      (err) => {
-        if (cancelled) return;
-        toast("error", errorMessage(err));
-        setSelfReady(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [db, toast]);
+  // docs:use-ramose-claims
+  const claims = useRamoseClaims();
+  // enddocs:use-ramose-claims
+  // docs:use-principal
+  const {
+    eid,
+    class: principalClass,
+    loading: selfLoading,
+  } = usePrincipal(db, {
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+  // enddocs:use-principal
+  const myEid = eid ?? undefined;
+  const cls = (principalClass ?? claims?.ramose?.class ?? "viewer") as Class;
 
   // docs:use-live-board
   const board = useLiveQuery(db, boardQuery);
@@ -286,13 +287,14 @@ export const BoardScreen = ({
   const [invite, setInvite] = useState(false);
   const [timeTraveling, setTimeTraveling] = useState(false);
 
-  // docs:use-transact
+  const onWriteError = (error: unknown) => toast("error", errorMessage(error));
+  // docs:use-operation
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
-  const { run } = useTransact({
-    onError: (error) => toast("error", errorMessage(error)),
-  });
-  // enddocs:use-transact
+  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
+  // enddocs:use-operation
+  const seed = useOperation(db, seedSampleIssuesOp, { onError: onWriteError });
+  const create = useOperation(db, createIssueOp, { onError: onWriteError });
 
   useEscape(
     useCallback(() => {
@@ -337,7 +339,7 @@ export const BoardScreen = ({
     }
     return <Loading text={`opening ${slug}…`} />;
   }
-  if (!selfReady) {
+  if (selfLoading) {
     return <Loading text={`opening ${slug}…`} />;
   }
 
@@ -425,7 +427,9 @@ export const BoardScreen = ({
               onSelect={(id) => setSelected(id)}
               onNew={(status) => setDraftStatus(status)}
               onMove={(id, status, rank) =>
-                void run(moveIssue(db, id, status, rank))
+                // docs:move-issue
+                void move.run(id, { status, rank })
+                // enddocs:move-issue
               }
             />
             {liveRows.length === 0 && (
@@ -451,9 +455,9 @@ export const BoardScreen = ({
                             variant="primary"
                             onClick={() => {
                               if (myEid === undefined) return;
-                              void run(
-                                seedSampleIssues(db, labels.data ?? []),
-                              );
+                              void seed.run({
+                                labels: labels.data ?? [],
+                              });
                             }}
                           >
                             <Icon name="sparkles" size={14} /> Add sample issues
@@ -473,8 +477,6 @@ export const BoardScreen = ({
             <IssueDetail
               db={db}
               row={selectedRow}
-              myEid={myEid}
-              cls={cls}
               labels={labels.data ?? []}
               people={people.data ?? []}
               onClose={() => setSelected(null)}
@@ -494,18 +496,32 @@ export const BoardScreen = ({
               return;
             }
             const column = liveRows.filter((r) => r.status === draft.status);
-            void run(
-              createIssue(db, column[column.length - 1]?.rank, draft),
-            ).then((report) => {
-              if (report.ok) setSelected(report.value.output.id);
-            });
+            void create
+              .run({
+                title: draft.title,
+                ...(draft.description != null && draft.description !== ""
+                  ? { description: draft.description }
+                  : {}),
+                status: draft.status,
+                priority: draft.priority,
+                rank: rankAfter(column[column.length - 1]?.rank),
+                ...(draft.assigneeId != null
+                  ? { assigneeId: draft.assigneeId }
+                  : {}),
+                ...(draft.labelIds !== undefined
+                  ? { labelIds: draft.labelIds }
+                  : {}),
+              })
+              .then((report) => {
+                if (report.ok) setSelected(report.value.output.id);
+              });
             setDraftStatus(null);
           }}
         />
       )}
 
       {invite && (
-        <InviteDialog slug={slug} user={user} onClose={() => setInvite(false)} />
+        <InviteDialog slug={slug} onClose={() => setInvite(false)} />
       )}
     </div>
   );
@@ -686,11 +702,9 @@ const NewIssueDialog = ({
 
 const InviteDialog = ({
   slug,
-  user,
   onClose,
 }: {
   slug: string;
-  user: SessionUser;
   onClose: () => void;
 }) => {
   const toast = useToast();

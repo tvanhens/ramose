@@ -233,7 +233,8 @@ export interface FluentQuery<
 > extends QueryObject<Row, Out> {
   /**
    * Conjunction of equality filters, keys typechecked from the entity's
-   * fields; or one-or-more stage fragments (`Query.some`, `Query.matching`, …).
+   * fields; or one-or-more stage fragments (`Query.some`, `Query.any`,
+   * `Query.gt`, `Query.matching`, …).
    */
   where<const W extends WhereEq<N>>(eq: W): FluentQuery<N, Row, Out>;
   where(

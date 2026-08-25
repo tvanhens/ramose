@@ -1,11 +1,18 @@
 /**
  * @internal The one context this package carries: the `Client` the nearest
- * `RamoseProvider` owns. Deliberately not exported from the package — the
- * public way in is `useDb()`, and the public way to put one in the tree
- * is `<RamoseProvider>`.
+ * `RamoseProvider` owns, plus the `token` it was built with (so
+ * `useRamoseClaims` can peek without a second source of truth).
+ * Deliberately not exported from the package — the public way in is
+ * `useDb()` / `useRamoseClaims()`, and the public way to put one in the
+ * tree is `<RamoseProvider>`.
  */
 
-import type { Client } from "../db/index.ts";
+import type { Client, TokenInput } from "../db/index.ts";
 import { createContext } from "react";
 
-export const RamoseContext = createContext<Client | null>(null);
+export interface RamoseContextValue {
+  readonly client: Client;
+  readonly token: TokenInput | undefined;
+}
+
+export const RamoseContext = createContext<RamoseContextValue | null>(null);

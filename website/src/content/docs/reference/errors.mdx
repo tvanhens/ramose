@@ -43,15 +43,13 @@ try {
 
 Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.message ?? e._tag ?? String(e)`.
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-operation"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
-  const { run } = useTransact({
-    onError: (error) => toast("error", errorMessage(error)),
-  });
+  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
 ```
 
-`useTransact` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLive`, `useQuery`, `usePull` — report the same tagged error.
+`useOperation` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLiveQuery`, `useQuery`, `usePull` — report the same tagged error.
 
 | tag | what to show | what to do |
 | --- | --- | --- |

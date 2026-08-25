@@ -304,10 +304,12 @@ describe("claims() is the decoded payload, UI hints only", () => {
       });
     });
 
+    expect(source.peek()).toBeUndefined();
     const claims = await source.claims();
     expect(claims.ramose?.class).toBe("member");
     expect(claims.sub).toBe("user_01HQ8ZK");
     expect(mints).toBe(1);
+    expect(source.peek()?.ramose?.class).toBe("member");
 
     // the token read reuses what claims() minted
     await read(source);
@@ -319,11 +321,13 @@ describe("claims() is the decoded payload, UI hints only", () => {
     const source = token.static(jwt);
     expect(await read(source)).toBe(jwt);
     expect((await source.claims()).ramose?.class).toBe("admin");
+    expect(source.peek()?.ramose?.class).toBe("admin");
 
     // not a JWT: no claims, but the credential still flows
     const opaque = token.static("s3cret");
     expect(await read(opaque)).toBe("s3cret");
     expect(await opaque.claims()).toEqual({});
+    expect(opaque.peek()).toEqual({});
     opaque.invalidate(); // a no-op, not an error
     expect(await read(opaque)).toBe("s3cret");
   });

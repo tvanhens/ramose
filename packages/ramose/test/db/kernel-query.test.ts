@@ -793,7 +793,8 @@ describe("db.query end to end", () => {
       const name = yield* Q.fact(owner, User.name);
       return { owner: name.v, n: Q.count(issue) };
     });
-    expect(lowerQueryObject(perOwner).query.with).toBeUndefined();
+    // the group-key value (`name.v`) also keeps its binding record in :with
+    expect(lowerQueryObject(perOwner).query.with).toHaveLength(1);
 
     // grouped: the duplicate values stay two rows inside their group too
     const perDone = Query.q(function* () {
@@ -808,6 +809,59 @@ describe("db.query end to end", () => {
       { done: false, total: 4 },
       { done: true, total: 4 },
     ] as never);
+
+    await peer.dispose();
+  });
+
+  test("duplicate-value entities project as two rows; Q.distinct keeps one", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    await run(
+      seedWrite(db, function* (tx) {
+        const dupe = yield* tx.entity();
+        yield* dupe.set(Issue.title, "fix the flake");
+        yield* dupe.set(Issue.done, true);
+        yield* dupe.set(Issue.rank, 9);
+        yield* dupe.set(Issue.owner, ids.ada!.id as never);
+      }),
+    );
+
+    const titles = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return { title: t.v };
+    });
+    const rows = await db.query(titles);
+    expect(rows.filter((r) => r.title === "fix the flake")).toHaveLength(2);
+    expect(rows).toHaveLength(4);
+    expect(lowerQueryObject(titles).query.with).toHaveLength(1);
+
+    const unique = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return Q.distinct({ title: t.v });
+    });
+    const distinctRows = await db.query(unique);
+    expect(distinctRows.filter((r) => r.title === "fix the flake")).toHaveLength(1);
+    expect(distinctRows).toHaveLength(3);
+    expect(lowerQueryObject(unique).query.with).toBeUndefined();
+
+    const viaRows = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const t = yield* Q.fact(issue, Issue.title);
+      return Q.distinct(Q.rows({ title: t.v }));
+    });
+    expect(await db.query(viaRows)).toHaveLength(3);
+
+    // select is already over the record — still two rows, no Q.distinct needed
+    const selected = Query.from(Issue)
+      .where({ title: "fix the flake" })
+      .select({ title: Issue.title });
+    expect(await db.query(selected)).toHaveLength(2);
+
+    expect(() => (Q.distinct as (p: unknown) => unknown)(Q.value(Q.var()))).toThrow(/scalar/);
 
     await peer.dispose();
   });
@@ -2078,5 +2132,279 @@ describe("query: aggregates with order/limit and scalar value", () => {
       .orderBy((r) => r.title, "asc")
       .after(null);
     expect(() => lowerQueryObject(q)).toThrow(/no paging root/);
+  });
+});
+
+describe("query: ignoreCase string predicates and Q.call", () => {
+  test("ignoreCase lowers through the lower-case builtin", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.includes(title.v, "SHIP", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const { query } = lowerQueryObject(q);
+    const where = query.where as unknown[];
+    const folds = where.filter(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "lower-case",
+    ) as unknown[][];
+    expect(folds).toHaveLength(1);
+    expect((folds[0]![0] as unknown[])[0]).toBe("lower-case");
+    const lowered = folds[0]![1] as string;
+    expect(where).toContainEqual([["includes?", lowered, "ship"]]);
+  });
+
+  test("startsWith and endsWith take the same ignoreCase option", () => {
+    const starts = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.startsWith(title.v, "FIX", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const ends = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      yield* Q.endsWith(title.v, "FLAKE", { ignoreCase: true });
+      return { title: title.v };
+    });
+    const startWhere = lowerQueryObject(starts).query.where as unknown[];
+    const endWhere = lowerQueryObject(ends).query.where as unknown[];
+    expect(JSON.stringify(startWhere)).toContain("starts-with?");
+    expect(JSON.stringify(startWhere)).toContain("lower-case");
+    expect(JSON.stringify(startWhere)).toContain('"fix"');
+    expect(JSON.stringify(endWhere)).toContain("ends-with?");
+    expect(JSON.stringify(endWhere)).toContain('"flake"');
+  });
+
+  test("two bound sides both fold through lower-case", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      const needle = Q.var<string>();
+      yield* Q.includes(title.v, needle, { ignoreCase: true });
+      return { title: title.v };
+    });
+    const where = lowerQueryObject(q).query.where as unknown[];
+    const folds = where.filter(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "lower-case",
+    );
+    expect(folds).toHaveLength(2);
+  });
+
+  test("Q.call lowers to a function-binding clause", () => {
+    const q = Query.q(function* () {
+      const user = yield* Query.entities(User);
+      const age = yield* Q.fact(user, User.age);
+      const next = yield* Q.call("+", age.v, 1);
+      return { next };
+    });
+    const { query } = lowerQueryObject(q);
+    const where = query.where as unknown[];
+    const bind = where.find(
+      (c) => Array.isArray(c) && Array.isArray(c[0]) && (c[0] as unknown[])[0] === "+",
+    ) as unknown[];
+    expect(bind).toBeDefined();
+    expect((bind[0] as unknown[])[2]).toBe(1);
+    expect(typeof bind[1]).toBe("string");
+    expect(query.find).toContain(bind[1]);
+  });
+
+  test("Q.call rejects a name the engine does not ship", () => {
+    expect(() => Q.call("no-such-fn", 1)).toThrow(/not an engine function/);
+    // `in` would walk Object.prototype — constructor/toString must not bind
+    expect(() => Q.call("constructor", 1)).toThrow(/not an engine function/);
+    expect(() => Q.call("toString", 1)).toThrow(/not an engine function/);
+    expect(() => Q.call("__proto__", 1)).toThrow(/not an engine function/);
+  });
+
+  test("ignoreCase search is end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const sensitive = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.includes(t, "SHIP")))
+      .select({ title: Issue.title });
+    expect(await db.query(sensitive)).toEqual([]);
+
+    const folded = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.includes(t, "SHIP", { ignoreCase: true })))
+      .select({ title: Issue.title });
+    expect(await db.query(folded)).toEqual([{ title: "ship the release" }]);
+
+    const prefix = Query.from(Issue)
+      .where(Query.matching(Issue.title, (t) => Q.startsWith(t, "FIX", { ignoreCase: true })))
+      .select({ title: Issue.title });
+    expect(await db.query(prefix)).toEqual([{ title: "fix the flake" }]);
+
+    await peer.dispose();
+  });
+
+  test("Q.call arithmetic binding is end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const q = Query.q(function* () {
+      const user = yield* Query.entities(User);
+      const name = yield* Q.fact(user, User.name);
+      const age = yield* Q.fact(user, User.age);
+      const next = yield* Q.call("+", age.v, 1);
+      yield* Q.eq(next, 37);
+      return { name: name.v, next };
+    });
+    expect(await db.query(q)).toEqual([{ name: "Ada", next: 37 }]);
+
+    await peer.dispose();
+  });
+
+  test("ignoreCase does not lower to a pull-phase filter", () => {
+    expect(() =>
+      lowerQueryObject(
+        Query.from(User).select({
+          tags: values(User.tags, { where: [(v) => Q.includes(v, "A", { ignoreCase: true })] }),
+        }),
+      ),
+    ).toThrow(/ignoreCase does not lower to a pull filter/);
+  });
+});
+
+describe("query: any, comparators, serializable cursors", () => {
+  test("Query.any is a fluent disjunction; Query.not negates it", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const hit = Query.from(Issue)
+      .where(Query.any(Query.startsWith(Issue.title, "ship"), Query.gt(Issue.rank, 2)))
+      .select({ title: Issue.title })
+      .orderBy(Issue.title, "asc");
+    expect((await db.query(hit)).map((r) => r.title)).toEqual(["ship the release"]);
+
+    const either = Query.from(Issue)
+      .where(Query.any(Query.startsWith(Issue.title, "fix"), Query.startsWith(Issue.title, "ship")))
+      .select({ title: Issue.title })
+      .orderBy(Issue.title, "asc");
+    expect((await db.query(either)).map((r) => r.title)).toEqual([
+      "fix the flake",
+      "ship the release",
+    ]);
+
+    const miss = Query.from(Issue)
+      .where(Query.not(Query.any(Query.startsWith(Issue.title, "fix"), Query.startsWith(Issue.title, "ship"))))
+      .select({ title: Issue.title });
+    expect((await db.query(miss)).map((r) => r.title)).toEqual(["archive the docs"]);
+
+    expect(() => Query.any()).toThrow(/at least one stage/);
+    await peer.dispose();
+  });
+
+  test("attr comparators lower through matching and bind inline values", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const ranked = Query.from(Issue)
+      .where(Query.gte(Issue.rank, 2))
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy(Issue.rank, "asc");
+    expect(await db.query(ranked)).toEqual([
+      { title: "archive the docs", rank: 2 },
+      { title: "ship the release", rank: 3 },
+    ]);
+
+    const below = Query.from(Issue)
+      .where(Query.lt(Issue.rank, 2))
+      .select({ title: Issue.title });
+    expect(await db.query(below)).toEqual([{ title: "fix the flake" }]);
+
+    const lte = Query.from(Issue)
+      .where(Query.lte(Issue.rank, 1))
+      .select({ title: Issue.title });
+    expect(await db.query(lte)).toEqual([{ title: "fix the flake" }]);
+
+    const prefix = Query.from(Issue)
+      .where(Query.startsWith(Issue.title, "FIX", { ignoreCase: true }))
+      .select({ title: Issue.title });
+    expect(await db.query(prefix)).toEqual([{ title: "fix the flake" }]);
+
+    const contains = Query.from(Issue)
+      .where(Query.includes(Issue.title, "SHIP", { ignoreCase: true }))
+      .select({ title: Issue.title });
+    expect(await db.query(contains)).toEqual([{ title: "ship the release" }]);
+
+    const viaMatching = Query.from(Issue)
+      .where(Query.matching(Issue.rank, (v) => Q.gte(v, 2)))
+      .select({ title: Issue.title, rank: Issue.rank })
+      .orderBy(Issue.rank, "asc");
+    expect(await db.query(ranked)).toEqual(await db.query(viaMatching));
+
+    const { query } = lowerQueryObject(
+      Query.from(Issue).where(Query.gt(Issue.rank, 2)).select({ title: Issue.title }),
+    );
+    expect(JSON.stringify(query.where)).toContain(">");
+    await peer.dispose();
+  });
+
+  test("encodeCursor / decodeCursor re-types Instant keys for a URL round-trip", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    const ids = await seed(db);
+
+    await run(
+      seedWrite(db, function* (tx) {
+        const c2 = yield* tx.entity();
+        yield* c2.set(Comment.issue, ids.ship!.id as never);
+        yield* c2.set(Comment.author, ids.grace!.id as never);
+        yield* c2.set(Comment.text, "later");
+        yield* c2.set(Comment.at, new Date("2026-01-02T00:00:00.000Z"));
+        const c3 = yield* tx.entity();
+        yield* c3.set(Comment.issue, ids.docs!.id as never);
+        yield* c3.set(Comment.author, ids.ada!.id as never);
+        yield* c3.set(Comment.text, "latest");
+        yield* c3.set(Comment.at, new Date("2026-01-03T00:00:00.000Z"));
+      }),
+    );
+
+    const byAt = Query.from(Comment)
+      .select({ text: Comment.text, at: Comment.at })
+      .orderBy(Comment.at, "asc")
+      .limit(1);
+
+    const p1 = await db.query(byAt.after(null));
+    expect(p1.rows.map((r) => r.text)).toEqual(["on it"]);
+    expect(p1.cursor).not.toBeNull();
+    expect(p1.cursor!.keys[0]).toBeInstanceOf(Date);
+
+    const token = Query.encodeCursor(byAt, p1.cursor!);
+    expect(token.startsWith("r1.")).toBe(true);
+    // URLSearchParams must not mangle the token
+    expect(new URLSearchParams({ c: token }).get("c")).toBe(token);
+
+    const restored = Query.decodeCursor(byAt, token);
+    expect(restored.keys[0]).toBeInstanceOf(Date);
+    expect((restored.keys[0] as Date).getTime()).toBe((p1.cursor!.keys[0] as Date).getTime());
+
+    const p2 = await db.query(byAt.after(restored));
+    expect(p2.rows.map((r) => r.text)).toEqual(["later"]);
+    const p3 = await db.query(byAt.after(Query.decodeCursor(byAt, Query.encodeCursor(byAt, p2.cursor!))));
+    expect(p3.rows.map((r) => r.text)).toEqual(["latest"]);
+    // a full page still carries a cursor — the short/empty page is the end
+    const p4 = await db.query(byAt.after(Query.decodeCursor(byAt, Query.encodeCursor(byAt, p3.cursor!))));
+    expect(p4.rows).toEqual([]);
+    expect(p4.cursor).toBeNull();
+
+    // a JSON-stringified Date key sorts as a string — the codec's reason
+    const naive = JSON.parse(JSON.stringify(p1.cursor)) as { keys: unknown[] };
+    expect(typeof naive.keys[0]).toBe("string");
+    expect(naive.keys[0] instanceof Date).toBe(false);
+
+    expect(() => Query.encodeCursor(byAt, { _tag: "Cursor", keys: [1] })).toThrow(/does not fit/);
+    expect(() => Query.decodeCursor(byAt, "nope")).toThrow(/encodeCursor produced/);
+    expect(() =>
+      Query.encodeCursor(Query.from(Issue).select({ title: Issue.title }), p1.cursor!),
+    ).toThrow(/sorted query/);
+
+    await peer.dispose();
   });
 });

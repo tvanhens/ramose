@@ -14,7 +14,7 @@ A database is a name. Naming it creates it. This page is for anyone who wants ea
 
 A **workspace** is one customer's isolated data, one database ([glossary](/concepts/glossary/#workspace)). In Reef you make one by typing a name and clicking Create: the name becomes a slug, and the slug becomes the database.
 
-<Shot src="/reef/workspace-create.png" alt="Reef's workspace picker: a New workspace form with Tidepool typed in and, beneath the field, a preview of the ramose.db install call it will run" caption="Typing a name previews the call; Create runs it. The database exists after that first write." code="examples/reef/src/app/screens/WorkspacesScreen.tsx:385-393" />
+<Shot src="/reef/workspace-create.png" alt="Reef's workspace picker: a New workspace form with Tidepool typed in and, beneath the field, a preview of the ramose.db install call it will run" caption="Typing a name previews the call; Create runs it. The database exists after that first write." code="examples/reef/src/app/screens/WorkspacesScreen.tsx:384-392" />
 
 *Writes are named operations (`await db.run(…)`). Effect is an [advanced hatch](/concepts/effect/).*
 
@@ -25,8 +25,7 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const raw = (await token.claims()).ramose?.class;
-  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
+  await token.claims();
 
     const connect = options?.connect ?? Ramose.connect;
     const ramose = connect({
@@ -36,7 +35,7 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
       webSocket: options?.webSocket,
     });
     try {
-      await provisionWorkspace(ramose.db(slug, Reef));
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
     } finally {
       await ramose.close();
     }
@@ -44,9 +43,8 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
 
 `ramose.db(slug, Reef)` is a pure call: no network, no create step. The first write makes the database real, and Reef's first write **installs** the schema — writes it in as an ordinary write ([glossary](/concepts/glossary/#install)) — then seeds labels. The peer upserts your `user` row (`sub`, `role`, name, email) at session establishment:
 
-```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
-export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).then(() => undefined);
+```ts title="examples/reef/src/app/ramose.ts#provision-workspace"
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
 ```
 
 `db.install()` is safe to run twice: an already-deployed schema is a silent no-op, including from a member token. A new ident still requires a `schemaClasses` class — Reef's first install runs under the creator's owner token.

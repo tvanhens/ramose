@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: "`RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useConnectionStatus`, `useTransact`, `errorMessage`."
+description: "`RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useConnectionStatus`, `usePrincipal`, `useRamoseClaims`, `useOperation`, `errorMessage`."
 ---
 import Next from "../../../components/Next.astro";
 
@@ -9,12 +9,12 @@ The exact surface of `ramose/react`, one section per export. This page is for Re
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ```tsx
-import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useConnectionStatus, useTransact, errorMessage } from "ramose/react";
+import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useConnectionStatus, usePrincipal, useRamoseClaims, useOperation, errorMessage } from "ramose/react";
 ```
 
 Hooks only, no UI. They reach the Ramose server through one client. Read hooks take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
-Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `ConnectionStatus`, `Transact`, `RunResult`, `RamoseProviderProps`.
+Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `ConnectionStatus`, `Principal`, `OperationHandle`, `RunResult`, `RamoseProviderProps`.
 
 ## RamoseProvider
 
@@ -97,24 +97,44 @@ A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (
 
 `useConnectionStatus(): ConnectionStatus` and `useConnectionStatus(db): ConnectionStatus` — `"connecting" | "live" | "reconnecting" | "offline" | "closed"`, from the session the client already tracks (`generation`, `connects`, `closed`, `onWake`). The no-argument form needs a provider and rolls up every session that client has opened. The `db` form is per database and needs no provider. `"offline"` is an HTTPS-only client (no WebSocket) or `navigator.onLine === false`. Reef's header pill reads this instead of inferring "live" from `error === undefined`.
 
-## useTransact
+## usePrincipal
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
-  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
-  // a toast — enforcement is server-side, the UI is only a hint.
-  const { run } = useTransact({
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-principal"
+  const {
+    eid,
+    class: principalClass,
+    loading: selfLoading,
+  } = usePrincipal(db, {
     onError: (error) => toast("error", errorMessage(error)),
   });
 ```
 
-```tsx title="examples/todos/src/App.tsx#todo-row-transact"
-  const { run } = useTransact();
+`usePrincipal(db, options?): { eid, class, loading }` — who this session is, from `db.principal()` (cached per session generation). `eid` is `undefined` while loading, `null` until the principal row exists, then the branded id. `class` is the peer's class string. Needs no provider. `onError` fires if `/info` cannot name a principal.
+
+## useRamoseClaims
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-ramose-claims"
+  const claims = useRamoseClaims();
 ```
 
-`useTransact<E>(options?): { run, pending, error, clearError }` — pending / error helper for a promise from an event handler. Not the write API: that is `db.run`. Typical call is `run(moveIssue(db, id, status, rank))`. Needs no provider and takes no `db`. `error` is the tracked `E`.
+`useRamoseClaims(): Claims | undefined` — the provider's token payload, decoded, **not** verified (`ramose.class`, `sub`, `exp`). Synchronous when the `TokenSource` already has a cached JWT. Throws outside a provider.
 
-- `run(work): Promise<{ ok: true, value } | { ok: false, error }>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `onError`.
-- `pending` is `true` while any run is in flight; `error` holds the last failure until a run succeeds or `clearError()`; `onError` fires per failure.
+## useOperation
+
+```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-operation"
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
+  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
+```
+
+```tsx title="examples/todos/src/App.tsx#todo-row-operation"
+  const { run } = useOperation(db, setDoneOp);
+```
+
+`useOperation(db, op, options?): { run, pending, pendingFor, error, errorFor, clearError }` — typed write hook for one operation. `run` matches `db.run`: `(input)` or `(entity, input)`. Needs no provider.
+
+- `run(...): Promise<{ ok: true, value } | { ok: false, error }>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `errorFor` / `onError`.
+- `pendingFor(key)` is `true` while that invocation is in flight (contextual ops key on the entity), so two buttons on one hook instance can spinner independently. `pending` is any in flight; `error` is the last settler.
 
 ## errorMessage
 

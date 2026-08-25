@@ -49,7 +49,7 @@ Reef's workspace provision is still `await db.run(…)` on the app path:
       webSocket: options?.webSocket,
     });
     try {
-      await provisionWorkspace(ramose.db(slug, Reef));
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
     } finally {
       await ramose.close();
     }

@@ -18,6 +18,7 @@ export {
   type BuildCtx,
   type Cell,
   type CellRecord,
+  type DistinctSpec,
   type FactHandle,
   type Fragment,
   type Projection,
@@ -29,6 +30,7 @@ export {
   type Var,
 } from "./kernel.ts";
 
+export { decodeCursor, encodeCursor } from "./cursor.ts";
 export {
   enrich,
   isCursor,
@@ -62,24 +64,32 @@ export { from } from "./fluent.ts";
 export type { EntityRow, FluentQuery, RefIdCell, WhereEq } from "./fluent.ts";
 
 export {
+  any,
   assertedBy,
   backlink,
   byId,
   entities,
   every,
   follow,
+  gt,
+  gte,
   has,
   ids,
+  includes,
   is,
   limit,
+  lt,
+  lte,
   matching,
   missing,
   none,
+  not,
   offset,
   orderBy,
   select,
   some,
   stage,
+  startsWith,
   updatedSince,
   type FilterStage,
   type FollowStage,

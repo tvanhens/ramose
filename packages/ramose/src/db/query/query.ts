@@ -47,6 +47,7 @@ import {
   isRowsSpec,
   isAggSpec,
   isValueSpec,
+  isDistinctSpec,
   isVar,
   isBlank,
   collectBody,
@@ -61,6 +62,7 @@ import {
   type CmpCommand,
   type EidCell,
   type CellRecord,
+  type DistinctSpec,
   type FactCommand,
   type Fragment,
   type Position,
@@ -79,9 +81,9 @@ import {
  * Where a page ended — feed it to `q.after` to get the next one. Opaque: the
  * `keys` are the last row's sort-key values (the entity-id tie-breaker
  * included), and they mean something only to the query that minted them —
- * `.after` rejects a cursor whose shape does not fit. Keep it in memory
- * between pages; it is not designed to survive serialization (a `Date` key
- * that round-trips as a string would sort as one).
+ * `.after` rejects a cursor whose shape does not fit. Hold it in memory, or
+ * round-trip through `Query.encodeCursor` / `Query.decodeCursor` so Instant
+ * keys stay `Date`s (a JSON-stringified `Date` sorts as a string).
  */
 export interface Cursor {
   readonly _tag: "Cursor";
@@ -330,7 +332,7 @@ export const isQueryObject = (x: unknown): x is AnyQueryObject =>
 /** What one build pass of a query value produced. */
 interface Built {
   readonly clauses: BClause[];
-  readonly proj: Projection | IdsSpec;
+  readonly proj: Exclude<Projection, DistinctSpec<any>> | IdsSpec;
   /** The select/pipeline focus — what `open` hands back, and what the
    * cursor's sort paths walk from. */
   readonly focus: AnyVar | undefined;
@@ -340,6 +342,8 @@ interface Built {
   /** Ident-path → group-key var from `expandShapeToCells` (nested hops
    * included). Empty when the projection is not `select(shape, extras)`. */
   readonly groupKeys: ReadonlyMap<string, AnyVar>;
+  /** `Q.distinct(...)` — unique projected tuples, no row-provenance `:with`. */
+  readonly distinct: boolean;
 }
 
 /** Fingerprint a sort path so an attribute-key `orderBy` can reuse the
@@ -370,7 +374,13 @@ const runInto = (
   const out = qv.body();
   if (isPipeline(out)) return assemblePipeline(out, ctx, stripCursor);
   if (isGen(out)) {
-    const proj = runBody(out, ctx);
+    const raw = runBody(out, ctx);
+    let distinct = false;
+    let proj: unknown = raw;
+    while (isDistinctSpec(proj)) {
+      distinct = true;
+      proj = proj.inner;
+    }
     return {
       clauses: ctx.clauses,
       proj: normalizeProj(proj),
@@ -379,6 +389,7 @@ const runInto = (
       limit: undefined,
       offset: undefined,
       groupKeys: new Map(),
+      distinct,
     };
   }
   throw new Error(
@@ -386,8 +397,11 @@ const runInto = (
   );
 };
 
-const normalizeProj = (proj: unknown): Projection | IdsSpec => {
+const normalizeProj = (proj: unknown): Exclude<Projection, DistinctSpec<any>> | IdsSpec => {
   if (isVar(proj)) return { _tag: "idsSpec", v: proj };
+  if (isDistinctSpec(proj)) {
+    throw new Error("ramose/query: Q.distinct(...) wraps the whole projection, not one cell");
+  }
   if (isPullSpec(proj) || isRowsSpec(proj) || isValueSpec(proj)) return proj;
   if (typeof proj === "object" && proj !== null && !Array.isArray(proj)) {
     const cells = proj as CellRecord;
@@ -397,7 +411,7 @@ const normalizeProj = (proj: unknown): Projection | IdsSpec => {
     return cells;
   }
   throw new Error(
-    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), Q.value(...), a record of bound handles, or a focus var for bare ids",
+    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), Q.value(...), Q.distinct({ … }), a record of bound handles, or a focus var for bare ids",
   );
 };
 
@@ -477,6 +491,7 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     limit,
     offset,
     groupKeys,
+    distinct: false,
   };
 };
 
@@ -1175,6 +1190,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         case "cmp":
           for (const a of c.args) if (isVar(a)) into.add(a.id);
           break;
+        case "fnBind":
+          for (const a of c.args) if (isVar(a)) into.add(a.id);
+          into.add(c.ret.id);
+          break;
         case "memberOf":
           into.add(c.v.id);
           break;
@@ -1221,7 +1240,13 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           break;
         }
         case "cmp":
-          out.push(...lowerCmp(c.op, c.args));
+          out.push(...lowerCmp(c));
+          break;
+        case "fnBind":
+          out.push([
+            [c.fn, ...c.args.map((a) => lowerPos(a, `Q.call("${c.fn}")`))],
+            nameOf(c.ret),
+          ]);
           break;
         case "memberOf": {
           // entailment skip: a sibling fact already constrains this var
@@ -1313,6 +1338,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           case "cmp":
             for (const a of c.args) if (isVar(a) && a.id === id) found = a;
             break;
+          case "fnBind":
+            for (const a of c.args) if (isVar(a) && a.id === id) found = a;
+            if (c.ret.id === id) found = c.ret;
+            break;
           case "memberOf":
             if (c.v.id === id) found = c.v;
             break;
@@ -1385,7 +1414,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return clause;
   };
 
-  const lowerCmp = (op: string, args: readonly Position[]): unknown[][] => {
+  const lowerCmp = (c: CmpCommand): unknown[][] => {
+    const { op, args, ignoreCase } = c;
     // f.t compares as a basis t: the wire slot binds the tx *eid*, so a
     // numeric operand converts by the stable tx partition base
     const tSided = args.some((a) => isVar(a) && a.kind === "t");
@@ -1419,6 +1449,30 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       // per match, not one per value
       return [[["ground", values], [nameOf(subject), "..."]]];
     }
+    if (ignoreCase) {
+      if (args.some(isAggSpec)) {
+        throw new Error(
+          "ramose/query: ignoreCase cannot wrap an aggregate comparison — :having does not bind functions; write the comparison at the query's top level without ignoreCase, or fold through Q.call(\"lower-case\") before aggregating",
+        );
+      }
+      const extras: unknown[][] = [];
+      const folded = args.map((a) => {
+        if (isVar(a)) {
+          const out = freshName("l");
+          extras.push([["lower-case", nameOf(a)], out]);
+          return out;
+        }
+        if (isBlank(a) || a === undefined) {
+          throw new Error("ramose/query: ignoreCase needs a bound var or a string on each side");
+        }
+        const v = unwrapEidLike(a);
+        if (typeof v !== "string") {
+          throw new Error("ramose/query: ignoreCase applies to strings");
+        }
+        return v.toLowerCase();
+      });
+      return [...extras, [[op, ...folded]]];
+    }
     return [[[op, ...args.map(operand)]]];
   };
 
@@ -1434,8 +1488,14 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const havingCmps: CmpCommand[] = [];
   const rowClauses: BClause[] = [];
   for (const c of clauses) {
-    if (c._tag === "cmp" && c.args.some(isAggSpec)) havingCmps.push(c);
-    else rowClauses.push(c);
+    if (c._tag === "cmp" && c.args.some(isAggSpec)) {
+      if (c.ignoreCase) {
+        throw new Error(
+          "ramose/query: ignoreCase cannot wrap an aggregate comparison — :having does not bind functions",
+        );
+      }
+      havingCmps.push(c);
+    } else rowClauses.push(c);
   }
   const nameCells = havingCmps.length > 0;
   /** Two `AggSpec` values with one fn over one var are the same cell —
@@ -1523,6 +1583,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       });
       return;
     }
+    if (isDistinctSpec(cell)) {
+      throw new Error(
+        "ramose/query: Q.distinct(...) wraps the whole projection, not one cell",
+      );
+    }
     if (typeof cell === "object" && cell !== null) {
       for (const [k, sub] of Object.entries(cell as CellRecord)) {
         flattenCell([...path, k], sub as Cell);
@@ -1591,18 +1656,30 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   // ── clauses + cursor ─────────────────────────────────────────────────────
   const projVars = new Set<number>();
-  /** Aggregated *value* vars: their rows must not collapse — see `withVars`. */
-  const aggValueVars = new Set<number>();
+  /** Value vars whose rows must not collapse — see `withVars`. Aggregates
+   * always join; a plain projected value joins unless `Q.distinct`. */
+  const provenanceVars = new Set<number>();
+  const addProvenance = (v: AnyVar): void => {
+    // an entity (or tx) var is an identity — its bindings are already
+    // distinct rows; a value var is not, so it needs row provenance
+    if (v.kind !== "entity" && v.kind !== "tx") provenanceVars.add(v.id);
+  };
   const collectProjVars = (cell: Cell): void => {
-    if (isVar(cell)) projVars.add(cell.id);
-    else if (isAggSpec(cell)) {
+    if (isVar(cell)) {
+      projVars.add(cell.id);
+      if (!built.distinct) addProvenance(cell);
+    } else if (isAggSpec(cell)) {
       const v = isFocusSentinel(cell.v) ? (built.focus ?? cell.v) : cell.v;
       projVars.add(v.id);
-      // an entity (or tx) var is an identity — its bindings are already
-      // distinct rows; a value var is not, so it needs row provenance
-      if (v.kind !== "entity" && v.kind !== "tx") aggValueVars.add(v.id);
+      // aggregates always keep row provenance — set semantics would
+      // collapse the rows they summarize
+      addProvenance(v);
     } else if (isPullSpec(cell)) projVars.add(cell.focus.id);
-    else if (typeof cell === "object" && cell !== null) {
+    else if (isDistinctSpec(cell)) {
+      throw new Error(
+        "ramose/query: Q.distinct(...) wraps the whole projection, not one cell",
+      );
+    } else if (typeof cell === "object" && cell !== null) {
       for (const sub of Object.values(cell as CellRecord)) collectProjVars(sub as Cell);
     }
   };
@@ -1674,25 +1751,27 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return f !== undefined && Boolean(f(...vals));
     });
 
-  // Aggregating over a *value* var must not collapse rows that agree on the
-  // value: two entities with the same rank are two rows to a sum. The entity
-  // position of each fact that binds an aggregated value rides in `:with` —
-  // distinctness includes it without projecting it (the nav lowering carried
-  // its root the same way). An e-var already in the projection is grouping,
-  // not multiplicity, and stays out.
+  // A projected *value* var must not collapse rows that agree on the value:
+  // two entities with the same title are two rows (and two entities with
+  // the same rank are two rows to a sum). The entity position of each fact
+  // that binds the value rides in `:with` — distinctness includes it
+  // without projecting it (the nav lowering carried its root the same
+  // way). An e-var already in the projection is grouping, not
+  // multiplicity, and stays out. `Q.distinct` skips this for plain
+  // projected cells; aggregates still join so a sum sees every row.
   // Top-level facts only: a var bound solely inside an or/not group is not
   // bound at the query's top level, so it cannot ride `:with`.
   const withVars: string[] = [];
-  if (aggValueVars.size > 0) {
+  if (provenanceVars.size > 0) {
     const seen = new Set<number>();
     for (const c of clauses) {
       if (c._tag !== "fact") continue;
       const v = c.vVar ?? c.v0;
-      const bindsAgg =
-        (isVar(v) && aggValueVars.has(v.id)) ||
-        (c.txVar !== undefined && aggValueVars.has(c.txVar.id)) ||
-        (c.opVar !== undefined && aggValueVars.has(c.opVar.id));
-      if (!bindsAgg) continue;
+      const bindsValue =
+        (isVar(v) && provenanceVars.has(v.id)) ||
+        (c.txVar !== undefined && provenanceVars.has(c.txVar.id)) ||
+        (c.opVar !== undefined && provenanceVars.has(c.opVar.id));
+      if (!bindsValue) continue;
       const e = c.eVar ?? c.e0;
       if (isVar(e) && !projVars.has(e.id) && !seen.has(e.id)) {
         seen.add(e.id);

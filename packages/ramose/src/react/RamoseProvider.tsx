@@ -64,6 +64,8 @@ export const RamoseProvider = (props: RamoseProviderProps) => {
   }, [client]);
 
   return (
-    <RamoseContext.Provider value={client}>{children}</RamoseContext.Provider>
+    <RamoseContext.Provider value={{ client, token }}>
+      {children}
+    </RamoseContext.Provider>
   );
 };

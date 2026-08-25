@@ -26,4 +26,3 @@ export const roles = {
 
 /** The roles the invite dialog offers (creators are `owner` automatically). */
 export const INVITABLE_ROLES = ["admin", "member", "viewer"] as const;
-export type InvitableRole = (typeof INVITABLE_ROLES)[number];
