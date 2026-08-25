@@ -37,7 +37,6 @@ import {
   DB_UNIQUE,
   DB_VALUE_TYPE,
   VALUE_TYPE_IDENTS,
-  FIRST_USER_EID,
   isTxEid,
   txEid,
 } from "./schema.ts";
@@ -267,7 +266,9 @@ export async function expandTx(
         const id = db.schema.entid(form);
         if (id !== undefined) return id;
         const created = newIdents.get(form);
-        if (created !== undefined && created !== form) return resolveEntity(created, allocate);
+        // The ident's backing entity is a subject of the `:db/ident` add —
+        // allocate even when the caller is resolving a ref value.
+        if (created !== undefined && created !== form) return resolveEntity(created, true);
         throw new TxError(`unknown ident ${form}`, "tx/unknown-ident");
       }
       // tempid (possibly aliased to another tempid via a shared unique-identity value)
@@ -450,13 +451,43 @@ export async function expandTx(
     }
   };
 
+  // Tempid subjects of add/update — a ref may resolve these. A tempid that
+  // appears only as a ref value is a dangling mint and is rejected.
+  const subjectTempids = new Set<string>();
+  for (const op of ops) {
+    if (op.kind !== "add" && op.kind !== "update") continue;
+    if (isTempid(op.e) && !TX_TEMPID.has(op.e)) {
+      subjectTempids.add(aliasOf(op.e));
+      subjectTempids.add(op.e);
+    }
+  }
+
   // --- Value coercion --------------------------------------------------------
-  const valueFor = async (attr: Attribute, v: unknown): Promise<TaggedValue> => {
+  const valueFor = async (
+    attr: Attribute,
+    v: unknown,
+    bindRef = false,
+  ): Promise<TaggedValue> => {
     if (v === undefined || v === null) throw new TxError(`nil value for ${attr.ident}`);
     if (attr.valueType === ValueTag.Ref) {
-      if (typeof v === "number") return { vt: ValueTag.Ref, v };
-      const id = await resolveEntity(v, true);
-      if (id === undefined) throw new TxError(`cannot resolve ref value ${JSON.stringify(v)} for ${attr.ident}`);
+      if (typeof v === "number") {
+        if (!Number.isSafeInteger(v) || v < 0) throw new TxError(`bad entity id ${v}`);
+        if (bindRef && !(await entityPresent(v))) {
+          throw new TxError(`entity ${v} does not exist`, "tx/missing-entity");
+        }
+        return { vt: ValueTag.Ref, v };
+      }
+      const allocate = bindRef && isTempid(v) && subjectTempids.has(aliasOf(v));
+      const id = await resolveEntity(v, allocate);
+      if (id === undefined) {
+        throw new TxError(
+          `cannot resolve ref value ${JSON.stringify(v)} for ${attr.ident}`,
+          "tx/missing-entity",
+        );
+      }
+      if (bindRef && !(await entityPresent(id))) {
+        throw new TxError(`entity ${id} does not exist`, "tx/missing-entity");
+      }
       return { vt: ValueTag.Ref, v: id };
     }
     try {
@@ -576,7 +607,7 @@ export async function expandTx(
         throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
       }
       await assertUpdateTarget(e, attr);
-      const tv = await valueFor(attr, op.v);
+      const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
       continue;
@@ -584,20 +615,14 @@ export async function expandTx(
     const e = await resolveEntity(op.e, op.kind === "add");
     if (e === undefined) continue;
     if (op.kind === "add") {
-      const tv = await valueFor(attr, op.v);
+      await assertUpdateTarget(e, attr);
+      const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
     } else {
       const tv = op.hasV ? await valueFor(attr, op.v) : undefined;
       await emitRetract(e, attr, tv);
     }
-  }
-
-  const created = new Set<number>(newEntities);
-  for (const op of expanded) {
-    if (op.kind !== "add") continue;
-    if (isTxEid(op.e) || op.e < FIRST_USER_EID) continue;
-    if (!(await db.exists(op.e))) created.add(op.e);
   }
 
   const requiredOfNs = (ns: string): Attribute[] =>
@@ -619,13 +644,33 @@ export async function expandTx(
     return missing;
   };
 
-  for (const e of created) {
-    if (retracted.has(e) || isTxEid(e) || e < FIRST_USER_EID) continue;
-    const nss = appNamespacesOf(await presentIdents(e));
-    if (nss.size === 0) continue;
-    const missing = await missingRequired(e, nss);
+  const dbAppNamespaces = async (e: number): Promise<Set<string>> => {
+    if (!(await db.exists(e)) || retracted.has(e)) return new Set();
+    const row = await db.entity(e);
+    if (row === undefined) return new Set();
+    return appNamespacesOf(Object.keys(row).filter((k) => k !== ":db/id"));
+  };
+
+  // First datom in a new app namespace is a creation in that namespace —
+  // required fields must be present, including on an existing entity (H1/H2).
+  const touched = new Set<number>();
+  for (const op of expanded) {
+    if (op.kind !== "add" || isTxEid(op.e)) continue;
+    touched.add(op.e);
+  }
+
+  for (const e of touched) {
+    if (retracted.has(e) || isTxEid(e)) continue;
+    const before = await dbAppNamespaces(e);
+    const after = appNamespacesOf(await presentIdents(e));
+    const born = new Set<string>();
+    for (const ns of after) {
+      if (!before.has(ns)) born.add(ns);
+    }
+    if (born.size === 0) continue;
+    const missing = await missingRequired(e, born);
     if (missing.length > 0) {
-      const entity = [...nss][0] ?? "entity";
+      const entity = [...born][0] ?? "entity";
       throw new TxError(
         `entity ${entity} is missing required fields: ${missing.join(", ")}`,
         "tx/required",
@@ -637,7 +682,7 @@ export async function expandTx(
     if (op.kind !== "retract" || op.implicit) continue;
     if (op.attr.cardinality !== "one" || op.attr.optional) continue;
     if (op.attr.ident.startsWith(":db/")) continue;
-    if (retracted.has(op.e) || isTxEid(op.e) || op.e < FIRST_USER_EID) continue;
+    if (retracted.has(op.e) || isTxEid(op.e)) continue;
     const vals = await current(op.e, op.attr.id);
     if (vals.size > 0) continue;
     const nss = appNamespacesOf(await presentIdents(op.e));
