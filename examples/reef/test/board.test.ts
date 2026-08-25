@@ -402,7 +402,7 @@ describe("the board's writes move the board's live stream", () => {
     const created = createIssue(peer.db, peer.myEid, undefined, {
       title: "Ship the overlay",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await awaitLive(board, () => titles(board.rows).includes("Ship the overlay"));
     expect(titles(board.rows)).toEqual(["Ship the overlay"]);
@@ -452,7 +452,7 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "Draft",
       status: "todo",
-      priority: 1,
+      priority: "low",
     });
     await awaitLive(board, () => titles(board.rows).includes("Draft"));
     const issueId = board.rows![0]!.id;
@@ -477,7 +477,7 @@ describe("the board's writes move the board's live stream", () => {
     const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
       title: "Ghost",
       status: "todo",
-      priority: 0,
+      priority: "none",
     }).then(
       () => {
         throw new Error("expected failure");
@@ -508,7 +508,7 @@ describe("the board's writes move the board's live stream", () => {
       {
         ":issue/title": "From another tab",
         ":issue/status": "doing",
-        ":issue/priority": 3,
+        ":issue/priority": "high",
         ":issue/rank": 1024,
         ":issue/createdAt": new Date(),
         ":issue/creator": peer.myEid,
@@ -531,7 +531,7 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "Only in the present",
       status: "todo",
-      priority: 0,
+      priority: "none",
     });
 
     const qBefore = peer.queryOps().length;
@@ -552,12 +552,12 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "One",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await createIssue(peer.db, peer.myEid, 1024, {
       title: "Two",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
 
     const other = peer.openClient();
@@ -613,12 +613,12 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "One",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await createIssue(peer.db, peer.myEid, 1024, {
       title: "Two",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
 
     const other = peer.openClient();

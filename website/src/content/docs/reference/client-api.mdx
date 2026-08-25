@@ -103,7 +103,7 @@ Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
 | `Ramose.timestamp()` | `Date` | instant |
 | `Ramose.uuid()` | canonical uuid `string` | uuid |
 | `Ramose.bytes()` | `Uint8Array` | bytes |
-| `Ramose.Enum(["low", "med"])` | `"low" \| "med"` | string |
+| `Ramose.Enum(["low", "med"])` | `"low" \| "med"` (the field also has `.members`) | string |
 | `Ramose.Ref(User)` | `number` (the target's id); enables nested `.select({ … })` and `.reverse` in shapes, `Query.follow` / `Query.backlink` in queries | ref |
 | `Ramose.Ref(() => Other)` | the same, thunk form for cycles | ref |
 | `Ramose.Ref.self` | a reference to the same record type | ref |
@@ -115,9 +115,8 @@ Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as the advanced-form v
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string({ optional: true }),
-  status: Ramose.Enum(STATUSES),
-  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-  priority: Ramose.int(),
+  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
+  priority: Ramose.Enum(["none", "low", "medium", "high", "urgent"]),
   /** Fractional order inside a column; drag-and-drop writes midpoints. */
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),

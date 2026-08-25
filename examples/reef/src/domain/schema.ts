@@ -38,16 +38,12 @@ export const Label = Ramose.Entity("label", {
 });
 // enddocs:label-entity
 
-export const STATUSES = ["backlog", "todo", "doing", "done"] as const;
-export type Status = (typeof STATUSES)[number];
-
 // docs:issue-entity
 export const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
   description: Ramose.string({ optional: true }),
-  status: Ramose.Enum(STATUSES),
-  /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-  priority: Ramose.int(),
+  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
+  priority: Ramose.Enum(["none", "low", "medium", "high", "urgent"]),
   /** Fractional order inside a column; drag-and-drop writes midpoints. */
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
@@ -78,6 +74,9 @@ export const Reef = Ramose.Schema({
 
 export type Reef = typeof Reef;
 
+export type Status = Ramose.ValueOf<typeof Issue.status>;
+export type Priority = Ramose.ValueOf<typeof Issue.priority>;
+
 // ── shared vocabulary ────────────────────────────────────────────────────────
 
 export const STATUS_LABELS: Record<Status, string> = {
@@ -87,4 +86,10 @@ export const STATUS_LABELS: Record<Status, string> = {
   done: "Done",
 };
 
-export const PRIORITIES = ["No priority", "Low", "Medium", "High", "Urgent"] as const;
+export const PRIORITY_LABELS: Record<Priority, string> = {
+  none: "No priority",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};

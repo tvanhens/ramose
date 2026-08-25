@@ -8,6 +8,7 @@ import {
   Long,
   Ref as refSchema,
   Uuid,
+  enumMembersOf,
   enumSchema,
   rememberValueType,
   tryInferDbValueType,
@@ -91,7 +92,8 @@ type MergeOptional<Opt extends boolean, O> = Named<O, "optional"> extends true
 /**
  * Fail-closed argument for `Field(schema)` when inference cannot name
  * `:db.type/*`. The brand key is the instruction — wrap with
- * {@link import("./valueTypes.ts").stored}.
+ * {@link import("./valueTypes.ts").stored}, or use {@link Enum} for a
+ * string-literal set. The demand is at this call, not at `install()`.
  */
 type InferableSchema<S extends SchemaNS.Top> = InferDbValueType<S> extends DbValueType
   ? S
@@ -155,7 +157,7 @@ const rejectRetiredValueType = (options?: object): void => {
 
 const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => {
   rejectRetiredValueType(options);
-  return {
+  const field = {
     _tag: "Field" as const,
     schema,
     cardinality: options?.cardinality ?? "one",
@@ -166,6 +168,8 @@ const makeField = (schema: SchemaNS.Top, options?: FieldOptions): AnyField => {
     valueType: tryInferDbValueType(schema),
     isOptional: options?.optional === true || schemaAllowsUndefined(schema),
   };
+  const members = enumMembersOf(schema);
+  return members !== undefined ? Object.assign(field, { members }) : field;
 };
 
 const schemaAllowsUndefined = (schema: { readonly ast?: { readonly _tag?: unknown; readonly types?: readonly { readonly _tag?: unknown }[] } }): boolean => {
@@ -375,7 +379,7 @@ type EnumField<L extends readonly [string, ...string[]]> = Field<
   "string",
   false,
   false
->;
+> & { readonly members: L };
 
 type EnumFieldOpts<
   L extends readonly [string, ...string[]],
@@ -387,11 +391,12 @@ type EnumFieldOpts<
   "string",
   OwnedOf<O>,
   OptionalOf<O>
->;
+> & { readonly members: L };
 
 /**
  * Closed string set. Stored as `:db.type/string`. `Enum(["low", "med"])`
- * types the field as `"low" | "med"`.
+ * types the field as `"low" | "med"` and carries the members on the
+ * field (`Issue.status.members`) so the UI does not restate the list.
  */
 export const Enum: {
   <const L extends readonly [string, ...string[]]>(values: L): EnumField<L>;
