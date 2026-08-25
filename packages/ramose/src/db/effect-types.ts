@@ -15,8 +15,7 @@ export type EffectOf<A, E = never, R = never> = Effect.Effect<A, E, R>;
 export type RedactedOf<A> = Redacted.Redacted<A>;
 import type { AnySchema } from "./Schema.ts";
 import type { DbPrincipal, QueryError, TxReport } from "./Db.ts";
-import type { IncompatibleSchema, InstallOptions } from "./evolution.ts";
-import type { DbError } from "./Errors.ts";
+import type { DbError, IncompatibleSchema, InstallOptions } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {

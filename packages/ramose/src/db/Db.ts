@@ -30,12 +30,16 @@ import {
   installedOptionalQuery,
   installedUniqueQuery,
   namespacesNeedingOccupancy,
-  type InstallOptions,
   type InstalledAttr,
 } from "./evolution.ts";
-export { IncompatibleSchema } from "./evolution.ts";
-export type { InstallOptions, SchemaChange } from "./evolution.ts";
-import { type DbError, InvalidRequest, NotOne } from "./Errors.ts";
+import {
+  type DbError,
+  type InstallOptions,
+  InvalidRequest,
+  NotOne,
+} from "./Errors.ts";
+export { IncompatibleSchema } from "./Errors.ts";
+export type { InstallOptions, SchemaChange } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
