@@ -8,8 +8,10 @@
 the query: canonical JSON of `lowerPullPattern`, not object identity.
 A render-fresh `{ title: Todo.title }` with `{ suspense: true }` settles
 instead of minting a new suspend slot (and a new `db.pull`) on every
-retry render. Evicting a still-pending live slot closes the standing
-read instead of leaving it open until the first emission.
+retry render. `.optional` is folded into the key (it never reaches the
+wire) so a required shape and an optional one do not share a slot.
+Evicting a still-pending live slot closes the standing read instead of
+leaving it open until the first emission.
 
 ### `initialData` and Suspense on the read hooks (part of #196)
 

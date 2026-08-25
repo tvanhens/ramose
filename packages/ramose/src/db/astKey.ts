@@ -4,7 +4,9 @@
  * The key is a deterministic serialization of the lowered query AST — the
  * same JSON that goes on the wire (`POST /db/:name/query`) — not a second
  * IR. Object keys are sorted so insertion order cannot fork the key.
- * Pull patterns use the same canonical JSON of `lowerPullPattern`.
+ * Pull patterns use the same canonical JSON of `lowerPullPattern`, plus
+ * a client-only `optional` marker — optionality is applied by
+ * `reshapePullResult` and never reaches the wire.
  *
  * `queryAstKey` is memoized on the query object (hoisted queries lower
  * once; a render-fresh object lowers again). An impure generator body
@@ -16,7 +18,12 @@
  */
 
 import { toJson } from "../internal/core/json.ts";
-import { lowerPullPattern } from "./Pull.ts";
+import {
+  inspectPullField,
+  isAgain,
+  isAllShape,
+  lowerPullPattern,
+} from "./Pull.ts";
 import { lowerQueryObject, type AnyQueryObject } from "./query/index.ts";
 
 const astKeyMemo = new WeakMap<object, string>();
@@ -73,10 +80,43 @@ export const queryAstKey = (query: AnyQueryObject): string => {
 export const queryStructureKey = (query: AnyQueryObject): string =>
   queryAstKey(query);
 
+/**
+ * Lowered peer shape plus a client-only `optional` flag. `.optional` is
+ * applied by `reshapePullResult` and never emitted by `lowerPullPattern`,
+ * so two maps that differ only there would otherwise share a key and
+ * a suspense slot while producing different `data`.
+ */
+const withOptionalMarkers = (pattern: unknown): unknown => {
+  if (isAgain(pattern) || isAllShape(pattern) || Array.isArray(pattern)) {
+    return lowerPullPattern(pattern);
+  }
+  if (typeof pattern !== "object" || pattern === null) {
+    return lowerPullPattern(pattern);
+  }
+  const lowered = lowerPullPattern(pattern);
+  if (!Array.isArray(lowered)) return lowered;
+  const fields = Object.entries(pattern as Record<string, unknown>);
+  return lowered.map((spec, i) => {
+    const field = fields[i]?.[1];
+    if (field === undefined || spec === null || typeof spec !== "object") {
+      return spec;
+    }
+    const info = inspectPullField(field);
+    const out: Record<string, unknown> = {
+      ...(spec as Record<string, unknown>),
+    };
+    if (info.optional) out.optional = true;
+    if (info.nestedPattern !== undefined && "sub" in out) {
+      out.sub = withOptionalMarkers(info.nestedPattern);
+    }
+    return out;
+  });
+};
+
 /** Always compute a pull-pattern key — used when the object is new. */
 export const computePullPatternKey = (pattern: unknown): string => {
   try {
-    return canonicalAstKey(lowerPullPattern(pattern));
+    return canonicalAstKey(withOptionalMarkers(pattern));
   } catch (e) {
     // Same rule as {@link computeAstKey}: a per-call token would change
     // the suspend key every retry render and hot-loop. Key on the
@@ -87,9 +127,10 @@ export const computePullPatternKey = (pattern: unknown): string => {
 };
 
 /**
- * Structural identity of a pull pattern: the lowered peer shape.
- * Memoized on the pattern object — hoisted shapes lower once; a
- * render-fresh `{ title: Todo.title }` lowers again (small).
+ * Structural identity of a pull pattern: the lowered peer shape plus
+ * client-only `.optional` markers. Memoized on the pattern object —
+ * hoisted shapes lower once; a render-fresh `{ title: Todo.title }`
+ * lowers again (small).
  */
 export const pullPatternKey = (pattern: unknown): string => {
   if (typeof pattern === "object" && pattern !== null) {

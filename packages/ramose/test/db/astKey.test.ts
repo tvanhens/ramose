@@ -10,6 +10,7 @@ import {
   Entity,
   Field,
   Query,
+  Ref,
   assertLoweringPurity,
   again,
   canonicalAstKey,
@@ -200,6 +201,29 @@ describe("pullPatternKey", () => {
     const kb = pullPatternKey(again(1));
     expect(ka).toMatch(/^\0error:/);
     expect(kb).toBe(ka);
+  });
+
+  test(".optional is part of the key — required and optional maps do not collide", () => {
+    expect(pullPatternKey({ title: Todo.title })).not.toBe(
+      pullPatternKey({ title: Todo.title.optional }),
+    );
+    expect(pullPatternKey({ title: Todo.title.optional })).toBe(
+      pullPatternKey({ title: Todo.title.optional }),
+    );
+  });
+
+  test("nested ref.select(shape).optional is a different key from required select", () => {
+    const Person = Entity("person", {
+      name: Field(Schema.String),
+      buddy: Field(Ref.self, { optional: true }),
+    });
+    const required = {
+      buddy: Person.buddy.select({ name: Person.name }),
+    };
+    const optional = {
+      buddy: Person.buddy.select({ name: Person.name }).optional,
+    };
+    expect(pullPatternKey(required)).not.toBe(pullPatternKey(optional));
   });
 });
 

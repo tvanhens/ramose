@@ -280,6 +280,30 @@ describe("usePull (one-shot)", () => {
     expect(peer.frameOps("pull")).toHaveLength(1);
   });
 
+  test("switching a shape from required to .optional re-runs", async () => {
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { body: { t: 3, result: { title: "A" } } }
+          : { body: { t: 3, result: [] } },
+    });
+    const { result, rerender } = renderHook(
+      ({ optional }: { optional: boolean }) =>
+        usePull(
+          useDb("todos", Todos).asOf(3),
+          17,
+          optional ? { title: Todo.title.optional } : { title: Todo.title },
+        ),
+      { wrapper: wrapperFor(peer), initialProps: { optional: false } },
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ title: "A" }));
+    expect(peer.frameOps("pull")).toHaveLength(1);
+
+    rerender({ optional: true });
+    await waitFor(() => expect(peer.frameOps("pull")).toHaveLength(2));
+    expect(result.current.data).toEqual({ title: "A" });
+  });
+
   test("a render-fresh inline pattern does not re-run after the first result", async () => {
     const peer = fakePeer({
       answer: (frame: Frame) =>
