@@ -2157,6 +2157,10 @@ describe("query: ignoreCase string predicates and Q.call", () => {
 
   test("Q.call rejects a name the engine does not ship", () => {
     expect(() => Q.call("no-such-fn", 1)).toThrow(/not an engine function/);
+    // `in` would walk Object.prototype — constructor/toString must not bind
+    expect(() => Q.call("constructor", 1)).toThrow(/not an engine function/);
+    expect(() => Q.call("toString", 1)).toThrow(/not an engine function/);
+    expect(() => Q.call("__proto__", 1)).toThrow(/not an engine function/);
   });
 
   test("ignoreCase search is end to end", async () => {

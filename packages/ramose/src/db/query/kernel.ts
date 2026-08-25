@@ -515,7 +515,7 @@ const stringPred =
     cmp(op, [v, needle], opts?.ignoreCase === true);
 
 const fnBind = (fn: string, args: readonly Position[]): FnBindCommand => {
-  if (typeof fn !== "string" || fn.length === 0 || !(fn in FUNCTIONS)) {
+  if (typeof fn !== "string" || fn.length === 0 || !Object.hasOwn(FUNCTIONS, fn)) {
     throw new Error(
       `ramose/query: Q.call(${JSON.stringify(fn)}) is not an engine function — the documented builtins are the names Q.call accepts`,
     );
