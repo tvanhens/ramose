@@ -88,8 +88,10 @@ Query.from(Issue).where({ owner: me });
 
 so `db.query(q)` takes no bindings argument. Output is the type of the
 body's one return expression — `Q.pull(focus, shape)` for one root,
-`Q.rows({ … })` (or a plain record of handles) for several, a bare focus
-var for ids — so inference is sound and there is no declared `find`.
+`Q.rows({ … })` (or a plain record of handles) for several, `Q.value(...)`
+for a scalar, a bare focus var for ids — so inference is sound and there
+is no declared `find`. `orderBy` / `limit` / `offset` live on the query
+value, so a generator projection can be sorted and limited.
 
 ## Membership is derived
 

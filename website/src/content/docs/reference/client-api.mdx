@@ -374,6 +374,8 @@ Query.from(Todo)                         // every todo…
 **Terminals** — methods on the built query value:
 
 ```ts
+q.orderBy(key, dir?, opts?)  // sort: column name, attribute, bound var / cell, or r => r.n
+q.limit(n) / q.offset(n)     // page on the server
 q.one()          // at most one row — Row | null; forces :limit 1
 q.oneOrFail()    // exactly one row — Row, or fails with NotOne; forces :limit 2
 q.after(cursor)  // keyset page — resolves to { rows, cursor }
@@ -421,18 +423,26 @@ const thread = (root: Ramose.Eid<typeof Comment>) =>
 // Query.is(Comment.id, root) is the same filter as Query.byId(root)
 ```
 
-**Aggregates.** When the answer is a number, project an aggregate cell in a record — the generator spelling. `Q.count(handle)`, `Q.countDistinct`, `Q.sum`, `Q.avg`, `Q.min`, `Q.max` are cells; the record's other cells are the group keys, and a record of only aggregates is **exactly one row** for the whole match set — over an empty match set each fn answers for the empty set (`count` / `countDistinct` / `sum` are `0`, `avg` / `min` / `max` are `null`), the same rule SQL's ungrouped aggregates follow. A grouped record is `[]` over no rows: no rows, no groups.
+**Aggregates.** `Q.value(Q.count(e))` is a scalar — `db.query` resolves to a `number` (`0` over no matches). Grouped aggregates stay a record: `Q.count` / `Q.countDistinct` / `Q.sum` / `Q.avg` / `Q.min` / `Q.max` are cells; the other cells are the group keys. A record of only aggregates (no `Q.value`) is **exactly one row** for the whole match set — empty-set answers are `0` for count/sum and `null` for avg/min/max. A grouped record is `[]` over no rows. `orderBy` / `limit` on the query value write top-N. Fluent `select` takes the same cells beside a shape (`Q.focus` is the queried record).
 
 ```ts
+const open = await db.query(Query.q(function* () {
+  const issue = yield* Query.entities(Issue);
+  return Q.value(Q.count(issue));
+}));
+// number
+
 const perStatus = Query.q(function* () {
   const issue = yield* Query.entities(Issue);
   const s = yield* Q.fact(issue, Issue.status);
   return { status: s.v, n: Q.count(issue) };
-});
-// readonly { status: string; n: number }[] — one row per status
-```
+}).orderBy((r) => r.n, "desc").limit(10);
+// readonly { status: string; n: number }[]
 
-Aggregate cells replace the pull shape, so they do not combine with `select` or paging.
+Query.from(Issue)
+  .select({ status: Issue.status }, { n: Q.count(Q.focus) })
+  .orderBy((r) => r.n, "desc")
+```
 
 **Keyset paging.** `q.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
 

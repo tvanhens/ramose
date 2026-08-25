@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Aggregates with order/limit and a scalar terminal (tracker #189)
+
+`orderBy` / `limit` / `offset` are methods on `QueryObject`, so both
+spellings reach them: `Query.q(function* () { … }).orderBy(r => r.n, "desc").limit(10)`.
+`orderBy` accepts a selected column, an attribute path, a bound var /
+projected cell, or a picker of one — joined-field sorting is `follow` plus
+ordering that cell. `Q.value(Q.count(e))` is a scalar (`number`, not
+`[{ n }]`); empty-set count is `0`. Fluent / pipe `select` takes aggregate
+cells beside a shape (`.select(shape, { n: Q.count(Q.focus) })`). The dead
+error that promised "a multi-root projection orders by its own bound vars"
+is gone — that is now the API.
+
 ### Required-at-transact and `op.update` (tracker #205)
 
 The default entity row's presence claim is now true at write time.

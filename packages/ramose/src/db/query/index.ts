@@ -8,6 +8,7 @@
 export {
   Q,
   isVar,
+  isValueSpec,
   mkVar,
   runBody,
   type AnyCommand,
@@ -24,6 +25,7 @@ export {
   type QueryGen,
   type RowOfProjection,
   type RowsSpec,
+  type ValueSpec,
   type Var,
 } from "./kernel.ts";
 
@@ -48,9 +50,12 @@ export {
   type PipeStage,
   type QueryBody,
   type QueryObject,
+  type QueryOrder,
+  type QueryOrderKey,
   type Row,
   type Rows,
   type RuleValue,
+  type SelectExtra,
 } from "./query.ts";
 
 export { from } from "./fluent.ts";

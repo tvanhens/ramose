@@ -30,7 +30,22 @@ import {
   select as selectStage,
   type IdRow,
 } from "./lib.ts";
-import { makeQueryObject, type Cursor, type Pipeline, type QueryObject } from "./query.ts";
+import {
+  isAggSpec,
+  isVar,
+  type AggSpec,
+  type CellRecord,
+  type EidCell,
+  type Var,
+} from "./kernel.ts";
+import {
+  makeQueryObject,
+  type Cursor,
+  type Pipeline,
+  type QueryObject,
+  type QueryOrder,
+  type QueryOrderKey,
+} from "./query.ts";
 
 // ── default row ─────────────────────────────────────────────────────────────
 
@@ -228,13 +243,22 @@ export interface FluentQuery<
     ...stages: ReadonlyArray<(q: Pipeline<Row, N>) => Pipeline<Row, N>>
   ): FluentQuery<N, Row, Out>;
 
-  /** Narrow / reshape the row. Without this, the default is the full entity. */
+  /** Narrow / reshape the row. Without this, the default is the full entity.
+   * A second argument adds aggregate cells beside the shape. */
   select<const S extends Shape>(
     shape: S & ValidShape<S> & FocusShape<N, S>,
   ): FluentQuery<N, SelectResult<S>>;
+  select<const S extends Shape, const Extra>(
+    shape: S & ValidShape<S> & FocusShape<N, S>,
+    extra: (e: Var<EidCell>) => Extra & { readonly [K in keyof Extra]: AggSpec<any> },
+  ): FluentQuery<N, SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }>;
+  select<const S extends Shape, const Extra>(
+    shape: S & ValidShape<S> & FocusShape<N, S>,
+    extra: Extra & { readonly [K in keyof Extra]: AggSpec<any> },
+  ): FluentQuery<N, SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }>;
 
   orderBy(
-    key: (string & keyof Row) | FocusAttr<N>,
+    key: QueryOrderKey<Row> | FocusAttr<N>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): FluentQuery<N, Row, Out>;
@@ -256,15 +280,21 @@ const makeFluent = <N extends AnyEntity, Row>(
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
+  orders: readonly QueryOrder[] = [],
+  limitN?: number,
+  offsetN?: number,
 ): FluentQuery<N, Row> => {
   const qv = makeQueryObject<Row>(
     () => withDefaultShape(pipe),
     stripCursor,
     take,
     seek,
+    orders,
+    limitN,
+    offsetN,
   );
   const next = (nextPipe: Pipeline): FluentQuery<N, any> =>
-    makeFluent(ns, nextPipe, stripCursor, take, seek);
+    makeFluent(ns, nextPipe, stripCursor, take, seek, orders, limitN, offsetN);
 
   const fluent = qv as FluentQuery<N, Row>;
   fluent.where = ((
@@ -281,29 +311,37 @@ const makeFluent = <N extends AnyEntity, Row>(
     }
     return next(applyEq(pipe, ns, arg as Record<string, unknown>));
   }) as FluentQuery<N, Row>["where"];
-  fluent.select = ((shape: Shape & ValidShape<Shape>) =>
-    next(selectStage(shape)(pipe as never))) as FluentQuery<N, Row>["select"];
-  fluent.orderBy = (key, dir, opts) =>
-    next(orderByStage(key as string | PathCarrier, dir, opts)(pipe as never));
+  fluent.select = ((shape: Shape & ValidShape<Shape>, extra?: CellRecord | ((e: Var<EidCell>) => CellRecord)) =>
+    extra === undefined
+      ? next(selectStage(shape)(pipe as never))
+      : next(selectStage(shape, extra as never)(pipe as never))) as FluentQuery<N, Row>["select"];
+  fluent.orderBy = (key, dir, opts) => {
+    if (typeof key === "function" || isVar(key) || isAggSpec(key)) {
+      return makeFluent(ns, pipe, stripCursor, take, seek, [
+        ...orders,
+        { key, dir: dir ?? "asc", empty: opts?.empty ?? "last" },
+      ], limitN, offsetN);
+    }
+    return next(orderByStage(key as string | PathCarrier, dir, opts)(pipe as never));
+  };
   fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
   fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
-  fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek);
+  fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek, orders, limitN, offsetN);
   // terminals stay on the same object so `.where(…).one()` typechecks
   const baseOne = qv.one.bind(qv);
   const baseFail = qv.oneOrFail.bind(qv);
   const baseAfter = qv.after.bind(qv);
-  const baseLogic = qv.logic.bind(qv);
   fluent.one = () => {
     const taken = baseOne();
-    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek) as never;
+    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek, taken.orders, taken.limitN, taken.offsetN) as never;
   };
   fluent.oneOrFail = () => {
     const taken = baseFail();
-    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek) as never;
+    return makeFluent(ns, pipe, taken.stripCursor, taken.take, taken.seek, taken.orders, taken.limitN, taken.offsetN) as never;
   };
   fluent.after = (cursor) => {
     const paged = baseAfter(cursor);
-    return makeFluent(ns, pipe, paged.stripCursor, paged.take, paged.seek) as never;
+    return makeFluent(ns, pipe, paged.stripCursor, paged.take, paged.seek, paged.orders, paged.limitN, paged.offsetN) as never;
   };
   fluent.logic = () => makeFluent(ns, pipe, true) as never;
   return fluent;

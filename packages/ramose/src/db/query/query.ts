@@ -33,12 +33,20 @@ import {
   pathOf,
   revsOf,
 } from "../shapes.ts";
-import { lowerPullPattern, reshapePullResult } from "../Pull.ts";
+import {
+  inspectPullField,
+  isAgain,
+  isAllShape,
+  lowerPullPattern,
+  reshapePullResult,
+} from "../Pull.ts";
 import {
   Q,
+  isFocusSentinel,
   isPullSpec,
   isRowsSpec,
   isAggSpec,
+  isValueSpec,
   isVar,
   isBlank,
   mkVar,
@@ -60,6 +68,7 @@ import {
   type QueryGen,
   type RowOfProjection,
   type SpliceCommand,
+  type ValueSpec,
   type Var,
 } from "./kernel.ts";
 
@@ -98,16 +107,27 @@ export interface Page<Row = unknown> {
 
 // ── the pipeline value (built by `entities` + the pipe stages in lib.ts) ────
 
-export interface BuiltOrder {
-  readonly path: readonly string[];
-  readonly revs: readonly boolean[];
-  readonly dir: OrderDir;
-  readonly empty: OrderEmpty;
-}
+export type BuiltOrder =
+  | {
+      readonly kind: "path";
+      readonly path: readonly string[];
+      readonly revs: readonly boolean[];
+      readonly dir: OrderDir;
+      readonly empty: OrderEmpty;
+    }
+  | {
+      readonly kind: "cell";
+      readonly cell: Cell;
+      readonly dir: OrderDir;
+      readonly empty: OrderEmpty;
+    };
+
+/** Extra aggregate cells on a `select` — a record, or a callback of the focus. */
+export type SelectExtra = CellRecord | ((focus: AnyVar) => CellRecord);
 
 export type PipeStage =
   | { readonly kind: "frag"; readonly frag: Fragment<AnyVar, unknown> }
-  | { readonly kind: "select"; readonly shape: Shape }
+  | { readonly kind: "select"; readonly shape: Shape; readonly extra?: SelectExtra }
   | {
       readonly kind: "orderBy";
       readonly key: string | PathCarrier;
@@ -117,6 +137,23 @@ export type PipeStage =
   | { readonly kind: "limit"; readonly n: number }
   | { readonly kind: "offset"; readonly n: number }
   | { readonly kind: "ids" };
+
+/**
+ * What {@link QueryObject.orderBy} accepts: a selected column name, an
+ * attribute path, a bound var / aggregate cell, or a picker of a projected
+ * cell (`r => r.n`).
+ */
+export type QueryOrderKey<Row = unknown> =
+  | (string & keyof Row)
+  | AnyVar
+  | AggSpec<any>
+  | ((row: Row) => unknown);
+
+export interface QueryOrder {
+  readonly key: unknown;
+  readonly dir: OrderDir;
+  readonly empty: OrderEmpty;
+}
 
 /**
  * The pipe surface's incremental builder for the same body value
@@ -171,7 +208,7 @@ interface OpenCommand<Row> extends SpliceCommand {
  * inferred row; `Out` is what a terminal resolves to — the rows array by
  * default, one row (or `null`) after {@link QueryObject.one} /
  * {@link QueryObject.oneOrFail}, a {@link Page} after
- * {@link QueryObject.after}.
+ * {@link QueryObject.after}, a scalar after {@link Q.value}.
  */
 export interface QueryObject<Row = unknown, Out = readonly Row[]> {
   readonly _tag: "Query";
@@ -183,6 +220,12 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
   readonly take: "one" | "oneOrFail" | undefined;
   /** @internal the keyset cursor `after(...)` seeks past; `null` is page one. */
   readonly seek: Cursor | null | undefined;
+  /** @internal `orderBy` keys stored on the query value (both spellings). */
+  readonly orders: readonly QueryOrder[];
+  /** @internal `limit(n)` stored on the query value. */
+  readonly limitN: number | undefined;
+  /** @internal `offset(n)` stored on the query value. */
+  readonly offsetN: number | undefined;
 
   /**
    * Delegate this whole query into an enclosing build: its clauses inline,
@@ -193,7 +236,29 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
 
   /** This query without its cursor (orderBy/limit/offset/one/after) — the
    * logic composes; the cursor was post-processing for the outermost query. */
-  logic(): QueryObject<Row>;
+  logic(): QueryObject<Row, Out>;
+
+  /**
+   * Sort by a selected column, an attribute path, a bound var / projected
+   * cell, or a picker of one (`r => r.n`). Reaches both the fluent chain
+   * and `Query.q` generator values. The fluent override keeps row-typed
+   * string keys (`keyof Row`) and focus-typed attributes.
+   */
+  orderBy(key: (row: Row) => unknown, dir?: OrderDir, opts?: { readonly empty?: OrderEmpty }): QueryObject<Row, Out>;
+  orderBy(
+    // `any` so FluentQuery's row-typed override stays assignable to
+    // `QueryObject<any>` (`AnyQueryObject`); the fluent chain keeps
+    // `keyof Row` / `FocusAttr<N>` checking.
+    key: any,
+    dir?: OrderDir,
+    opts?: { readonly empty?: OrderEmpty },
+  ): QueryObject<Row, Out>;
+
+  /** Keep at most `n` rows. */
+  limit(n: number): QueryObject<Row, Out>;
+
+  /** Drop `n` rows from the front of the (ordered) result. */
+  offset(n: number): QueryObject<Row, Out>;
 
   /**
    * At most one row. Lowering forces `limit 1`; the result is that row or
@@ -285,7 +350,7 @@ const runInto = (
 
 const normalizeProj = (proj: unknown): Projection | IdsSpec => {
   if (isVar(proj)) return { _tag: "idsSpec", v: proj };
-  if (isPullSpec(proj) || isRowsSpec(proj)) return proj;
+  if (isPullSpec(proj) || isRowsSpec(proj) || isValueSpec(proj)) return proj;
   if (typeof proj === "object" && proj !== null && !Array.isArray(proj)) {
     const cells = proj as CellRecord;
     if (Object.keys(cells).length === 0) {
@@ -294,7 +359,7 @@ const normalizeProj = (proj: unknown): Projection | IdsSpec => {
     return cells;
   }
   throw new Error(
-    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), a record of bound handles, or a focus var for bare ids",
+    "ramose/query: the body must return its projection — Q.pull(focus, shape), Q.rows({ … }), Q.value(...), a record of bound handles, or a focus var for bare ids",
   );
 };
 
@@ -309,6 +374,7 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   ctx.clauses.push({ _tag: "memberOf", ns: pipe.ns, v: root });
   let focus: AnyVar = root;
   let select: Shape | undefined;
+  let extraCells: CellRecord | undefined;
   let selectFocus: AnyVar = root;
   let projectIds = false;
   const order: BuiltOrder[] = [];
@@ -329,13 +395,17 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
       case "select":
         select = st.shape;
         selectFocus = focus;
+        extraCells =
+          st.extra === undefined
+            ? undefined
+            : rewriteExtra(typeof st.extra === "function" ? st.extra(focus) : st.extra, focus);
         projectIds = false;
         break;
       case "ids":
         projectIds = true;
         break;
       case "orderBy":
-        order.push(resolveOrderKey(st, select));
+        order.push(resolveOrderKey(st, select, extraCells));
         break;
       case "limit":
         limit = st.n;
@@ -350,12 +420,17 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     limit = undefined;
     offset = undefined;
   }
+  let proj: Projection | IdsSpec;
+  if (select !== undefined && !projectIds && extraCells !== undefined) {
+    proj = { ...expandShapeToCells(selectFocus, select, ctx), ...extraCells };
+  } else if (select !== undefined && !projectIds) {
+    proj = { _tag: "pullSpec", focus: selectFocus, shape: select };
+  } else {
+    proj = { _tag: "idsSpec", v: focus };
+  }
   return {
     clauses: ctx.clauses,
-    proj:
-      select !== undefined && !projectIds
-        ? { _tag: "pullSpec", focus: selectFocus, shape: select }
-        : { _tag: "idsSpec", v: focus },
+    proj,
     focus: select !== undefined && !projectIds ? selectFocus : focus,
     order,
     limit,
@@ -367,7 +442,11 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
 const resolveOrderKey = (
   st: Extract<PipeStage, { kind: "orderBy" }>,
   select: Shape | undefined,
+  extra?: CellRecord,
 ): BuiltOrder => {
+  if (typeof st.key === "string" && extra !== undefined && extra[st.key] !== undefined) {
+    return { kind: "cell", cell: extra[st.key]!, dir: st.dir, empty: st.empty };
+  }
   let carrier: PathCarrier;
   if (typeof st.key === "string") {
     if (select === undefined) {
@@ -399,7 +478,90 @@ const resolveOrderKey = (
       `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
-  return { path, revs: revsOf(carrier), dir: st.dir, empty: st.empty };
+  return { kind: "path", path, revs: revsOf(carrier), dir: st.dir, empty: st.empty };
+};
+
+const isPathCarrier = (x: unknown): x is PathCarrier =>
+  typeof x === "object" && x !== null && typeof (x as { ident?: unknown }).ident === "string";
+
+/** Bind a select shape as group-key cells (aggregates cannot group by a pull). */
+const expandShapeToCells = (focus: AnyVar, shape: Shape, ctx: BuildCtx): CellRecord => {
+  const cells: Record<string, Cell> = {};
+  for (const [key, field] of Object.entries(shape)) {
+    const info = inspectPullField(field);
+    const attr = info.attr as PathCarrier | undefined;
+    if (attr === undefined || typeof attr.ident !== "string") {
+      throw new Error(`ramose/query: select(..., aggregates) field "${key}" is not an attribute`);
+    }
+    if (info.many) {
+      throw new Error(
+        `ramose/query: select(..., aggregates) cannot group by a cardinality-many field ("${key}")`,
+      );
+    }
+    if (isAgain(info.nestedPattern) || isAllShape(info.nestedPattern)) {
+      throw new Error(
+        `ramose/query: select(..., aggregates) cannot group by all(...) or again(...) ("${key}")`,
+      );
+    }
+    if (attr.ident === ":db/id") {
+      cells[key] = focus;
+      continue;
+    }
+    if (info.nestedPattern !== undefined && typeof info.nestedPattern === "object") {
+      const target = mkVar<EidCell>("entity");
+      const cmd = info.reverse ? Q.fact(target, attr, focus) : Q.fact(focus, attr, target);
+      ctx.clauses.push(cmd);
+      cells[key] = expandShapeToCells(target, info.nestedPattern as Shape, ctx);
+      continue;
+    }
+    const cmd = info.reverse ? Q.fact(Q._, attr, focus) : Q.fact(focus, attr);
+    ctx.clauses.push(cmd);
+    cells[key] = cmd.handle.v;
+  }
+  return cells;
+};
+
+const rewriteExtra = (extra: CellRecord, focus: AnyVar): CellRecord => {
+  const out: Record<string, Cell> = {};
+  for (const [key, cell] of Object.entries(extra)) {
+    if (isAggSpec(cell)) {
+      out[key] = isFocusSentinel(cell.v) ? { ...cell, v: focus } : cell;
+      continue;
+    }
+    if (cell !== null && typeof cell === "object" && !isVar(cell) && !isPullSpec(cell) && !isValueSpec(cell)) {
+      out[key] = rewriteExtra(cell as CellRecord, focus);
+      continue;
+    }
+    throw new Error(
+      `ramose/query: select(..., extras) cells are aggregates — "${key}" is not Q.count / Q.sum / …`,
+    );
+  }
+  return out;
+};
+
+const pullShapeCells = (shape: Shape): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(shape)) {
+    const info = inspectPullField(field);
+    if (
+      info.nestedPattern !== undefined &&
+      typeof info.nestedPattern === "object" &&
+      !isAgain(info.nestedPattern) &&
+      !isAllShape(info.nestedPattern)
+    ) {
+      out[key] = pullShapeCells(info.nestedPattern as Shape);
+    } else {
+      out[key] = info.attr;
+    }
+  }
+  return out;
+};
+
+const projectionCells = (proj: Projection | IdsSpec): unknown => {
+  if (isValueSpec(proj)) return proj.cell;
+  if (isIdsSpec(proj)) return { id: proj.v };
+  if (isPullSpec(proj)) return pullShapeCells(proj.shape);
+  return isRowsSpec(proj) ? proj.cells : proj;
 };
 
 // ── Query.q ─────────────────────────────────────────────────────────────────
@@ -409,35 +571,54 @@ export type QueryBody<P, Prj> = (p: P) => QueryGen<Prj> | Pipeline<any>;
 
 type RowFromBody<B> = B extends () => infer Out
   ? Out extends QueryGen<infer Prj>
-    ? Prj extends AnyVar
-      ? { readonly id: number }
-      : RowOfProjection<Prj>
+    ? Prj extends ValueSpec<infer T>
+      ? T
+      : Prj extends AnyVar
+        ? { readonly id: number }
+        : RowOfProjection<Prj>
     : Out extends Pipeline<infer Row>
       ? Row
       : never
   : never;
 
-export const makeQueryObject = <Row>(
+type IsValueBody<B> = B extends () => QueryGen<infer Prj> ? (Prj extends ValueSpec<any> ? true : false) : false;
+
+type OutFromBody<B> = IsValueBody<B> extends true ? RowFromBody<B> : readonly RowFromBody<B>[];
+
+export const makeQueryObject = <Row, Out = readonly Row[]>(
   body: () => unknown,
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
-): QueryObject<Row> => {
-  const self: QueryObject<Row> = {
+  orders: readonly QueryOrder[] = [],
+  limitN?: number,
+  offsetN?: number,
+): QueryObject<Row, Out> => {
+  const self: QueryObject<Row, Out> = {
     _tag: "Query",
     body,
     stripCursor,
     take,
     seek,
-    open: (() => openCommand(self)) as QueryObject<Row>["open"],
-    logic: () => makeQueryObject<Row>(body, true),
+    orders,
+    limitN,
+    offsetN,
+    open: (() => openCommand(self)) as QueryObject<Row, Out>["open"],
+    logic: () => makeQueryObject<Row, Out>(body, true) as QueryObject<Row, Out>,
+    orderBy: (key, dir = "asc", opts) =>
+      makeQueryObject<Row, Out>(body, stripCursor, take, seek, [
+        ...orders,
+        { key, dir, empty: opts?.empty ?? "last" },
+      ], limitN, offsetN),
+    limit: (n) => makeQueryObject<Row, Out>(body, stripCursor, take, seek, orders, n, offsetN),
+    offset: (n) => makeQueryObject<Row, Out>(body, stripCursor, take, seek, orders, limitN, n),
     one: () => {
       if (seek !== undefined) {
         throw new Error(
           "ramose/query: one() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
         );
       }
-      return makeQueryObject(body, stripCursor, "one") as never;
+      return makeQueryObject(body, stripCursor, "one", undefined, orders, limitN, offsetN) as never;
     },
     oneOrFail: () => {
       if (seek !== undefined) {
@@ -445,7 +626,7 @@ export const makeQueryObject = <Row>(
           "ramose/query: oneOrFail() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
         );
       }
-      return makeQueryObject(body, stripCursor, "oneOrFail") as never;
+      return makeQueryObject(body, stripCursor, "oneOrFail", undefined, orders, limitN, offsetN) as never;
     },
     after: (cursor) => {
       if (take !== undefined) {
@@ -458,7 +639,7 @@ export const makeQueryObject = <Row>(
           "ramose/query: after(...) takes the previous page's cursor, or null for the first page",
         );
       }
-      return makeQueryObject(body, stripCursor, undefined, cursor) as never;
+      return makeQueryObject(body, stripCursor, undefined, cursor, orders, limitN, offsetN) as never;
     },
   };
   return self;
@@ -471,7 +652,7 @@ export const makeQueryObject = <Row>(
  */
 export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   body: B,
-): QueryObject<RowFromBody<B>> {
+): QueryObject<RowFromBody<B>, OutFromBody<B>> {
   if (typeof body !== "function") {
     throw new Error("ramose/query: Query.q(body) takes a generator or a function returning a pipeline");
   }
@@ -570,7 +751,15 @@ const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
     _tag: "splice",
     splice: (ctx) => {
       const built = runInto(qv, ctx, qv.stripCursor);
-      if (built.order.length > 0 || built.limit !== undefined || built.offset !== undefined || qv.take !== undefined || qv.seek !== undefined) {
+      const hasCursor =
+        built.order.length > 0 ||
+        built.limit !== undefined ||
+        built.offset !== undefined ||
+        qv.take !== undefined ||
+        qv.seek !== undefined ||
+        (!qv.stripCursor &&
+          (qv.orders.length > 0 || qv.limitN !== undefined || qv.offsetN !== undefined));
+      if (hasCursor) {
         throw new Error(
           "ramose/query: a query with a cursor (orderBy/limit/offset/one/after) does not delegate — the cursor is post-processing for the outermost query; extend then order, or strip it explicitly with q.logic()",
         );
@@ -1046,7 +1235,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   /** Two `AggSpec` values with one fn over one var are the same cell —
    * `Q.gt(Q.count(e), 5)` names the projected `Q.count(e)` without having
    * to be the same object. */
-  const aggKey = (a: AggSpec): string => `${a.fn}:${a.v.id}`;
+  const aggKey = (a: AggSpec): string => {
+    const id = isFocusSentinel(a.v) && built.focus !== undefined ? built.focus.id : a.v.id;
+    return `${a.fn}:${id}`;
+  };
   /** The `:find` alias of each projected aggregate cell (set while the
    * projection flattens; every aggregate is aliased when `:having` names
    * any, so summarized-var name collisions cannot arise). */
@@ -1085,11 +1277,19 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return;
     }
     if (isAggSpec(cell)) {
+      const v = isFocusSentinel(cell.v)
+        ? built.focus ??
+          (() => {
+            throw new Error(
+              "ramose/query: Q.focus needs a select focus — use it in .select(shape, extras) or Q.pull",
+            );
+          })()
+        : cell.v;
       const read =
-        cell.v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
+        v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
           ? (x: unknown) => (typeof x === "number" ? x - TX_BASE : x)
           : (x: unknown) => x;
-      let elem: unknown = [cell.fn, nameOf(cell.v)];
+      let elem: unknown = [cell.fn, nameOf(v)];
       // `:having` names an aggregate by its `(as … ?alias)` name; aliasing
       // every aggregate keeps summarized-var names from colliding
       if (nameCells) {
@@ -1127,9 +1327,20 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   };
 
   let finalizeRows: (tuples: unknown[][]) => unknown;
+  let scalar = false;
 
   const proj = built.proj;
-  if (isIdsSpec(proj)) {
+  if (isValueSpec(proj)) {
+    flattenCell(["$"], proj.cell as Cell);
+    find.push(flats[0]!.elem, ".");
+    scalar = true;
+    const aggFn = flats[0]!.agg;
+    finalizeRows = (raw) => {
+      const empty = aggFn !== undefined ? EMPTY_AGG[aggFn] : null;
+      if (raw.length === 0) return aggFn !== undefined && emptyRowPasses() ? [empty] : [];
+      return raw;
+    };
+  } else if (isIdsSpec(proj)) {
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) =>
       tuples.map((t) =>
@@ -1179,10 +1390,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const collectProjVars = (cell: Cell): void => {
     if (isVar(cell)) projVars.add(cell.id);
     else if (isAggSpec(cell)) {
-      projVars.add(cell.v.id);
+      const v = isFocusSentinel(cell.v) ? (built.focus ?? cell.v) : cell.v;
+      projVars.add(v.id);
       // an entity (or tx) var is an identity — its bindings are already
       // distinct rows; a value var is not, so it needs row provenance
-      if (cell.v.kind !== "entity" && cell.v.kind !== "tx") aggValueVars.add(cell.v.id);
+      if (v.kind !== "entity" && v.kind !== "tx") aggValueVars.add(v.id);
     } else if (isPullSpec(cell)) projVars.add(cell.focus.id);
     else if (typeof cell === "object" && cell !== null) {
       for (const sub of Object.values(cell as CellRecord)) collectProjVars(sub as Cell);
@@ -1190,6 +1402,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   };
   if (isIdsSpec(proj)) projVars.add(proj.v.id);
   else if (isPullSpec(proj)) projVars.add(proj.focus.id);
+  else if (isValueSpec(proj)) collectProjVars(proj.cell as Cell);
   else collectProjVars(isRowsSpec(proj) ? proj.cells : (proj as CellRecord));
 
   where.unshift(...lowerClauses(rowClauses, projVars));
@@ -1283,16 +1496,96 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   }
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
-  if (built.order.length > 0) {
-    if (built.focus === undefined) {
-      throw new Error("ramose/query: orderBy needs the select focus — a multi-root projection orders by its own bound vars");
+
+  const orderFromPicked = (picked: unknown, label: string, dir: OrderDir, empty: OrderEmpty): void => {
+    if (isVar(picked)) {
+      const v = isFocusSentinel(picked)
+        ? built.focus ??
+          (() => {
+            throw new Error("ramose/query: Q.focus needs a select focus — order a projected cell instead");
+          })()
+        : picked;
+      order.push({ var: nameOf(v), dir, empty });
+      return;
     }
-    const root = nameOf(built.focus);
-    for (const o of built.order) {
-      const bound = lowerOrderPath(root, o.path, o.revs);
+    if (isAggSpec(picked)) {
+      const v = isFocusSentinel(picked.v)
+        ? built.focus ??
+          (() => {
+            throw new Error("ramose/query: Q.focus needs a select focus — order a projected cell instead");
+          })()
+        : picked.v;
+      // the engine orders an aggregate by the summarized variable
+      order.push({ var: nameOf(v), dir, empty });
+      return;
+    }
+    if (isPathCarrier(picked)) {
+      if (cardsOf(picked).includes("many")) {
+        throw new Error(
+          `ramose/query: orderBy(${pathOf(picked).join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+        );
+      }
+      if (built.focus === undefined) {
+        throw new Error(
+          "ramose/query: orderBy(attribute) needs a select focus — order a multi-root projection by a projected cell or bound var",
+        );
+      }
+      const bound = lowerOrderPath(nameOf(built.focus), pathOf(picked), revsOf(picked));
       where.push(...bound.clauses);
-      order.push({ var: bound.var, dir: o.dir, empty: o.empty });
+      order.push({ var: bound.var, dir, empty });
+      return;
     }
+    throw new Error(
+      `ramose/query: ${label} did not pick a bound var, projected cell, or attribute`,
+    );
+  };
+
+  const lookupCell = (tree: unknown, key: string): unknown => {
+    if (tree !== null && typeof tree === "object" && !Array.isArray(tree)) {
+      return (tree as Record<string, unknown>)[key];
+    }
+    return undefined;
+  };
+
+  if (built.order.length > 0) {
+    for (const o of built.order) {
+      if (o.kind === "cell") {
+        orderFromPicked(o.cell, "orderBy", o.dir, o.empty);
+      } else {
+        if (built.focus === undefined) {
+          throw new Error(
+            "ramose/query: orderBy(attribute) needs a select focus — order a multi-root projection by a projected cell or bound var",
+          );
+        }
+        const bound = lowerOrderPath(nameOf(built.focus), o.path, o.revs);
+        where.push(...bound.clauses);
+        order.push({ var: bound.var, dir: o.dir, empty: o.empty });
+      }
+    }
+  }
+
+  if (!qv.stripCursor) {
+    const cells = projectionCells(proj);
+    for (const o of qv.orders) {
+      let picked: unknown = o.key;
+      if (typeof o.key === "function") {
+        picked = (o.key as (row: unknown) => unknown)(cells);
+      } else if (typeof o.key === "string") {
+        picked = lookupCell(cells, o.key);
+        if (picked === undefined) {
+          throw new Error(
+            `ramose/query: orderBy("${o.key}") — the projection has no column "${o.key}"`,
+          );
+        }
+      }
+      orderFromPicked(picked, "orderBy", o.dir, o.empty);
+    }
+  }
+
+  if (isValueSpec(proj) && (order.length > 0 || qv.limitN !== undefined || qv.offsetN !== undefined || qv.seek !== undefined)) {
+    throw new Error(
+      "ramose/query: Q.value is a single value — orderBy / limit / offset / after page rows",
+    );
   }
 
   const boundCount = (n: number | undefined, what: string): number | undefined => {
@@ -1305,10 +1598,14 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const take = qv.stripCursor ? undefined : qv.take;
   const seek = qv.stripCursor ? undefined : qv.seek;
   // `one()` asks for one row; `oneOrFail()` asks for two so a second match
-  // is witnessed. A `limit(n)` stage does not widen that — take wins.
+  // is witnessed. A `limit(n)` on the query value wins over a pipeline stage.
   const limit =
-    take === "one" ? 1 : take === "oneOrFail" ? 2 : boundCount(built.limit, "limit");
-  const offset = boundCount(built.offset, "offset");
+    take === "one"
+      ? 1
+      : take === "oneOrFail"
+        ? 2
+        : boundCount(qv.stripCursor ? undefined : (qv.limitN ?? built.limit), "limit");
+  const offset = boundCount(qv.stripCursor ? undefined : (qv.offsetN ?? built.offset), "offset");
 
   // Keyset paging: a cursor is a position in a *total* order, so the entity
   // id rides as the final tie-breaker (unless a sort key already is it), and
@@ -1355,6 +1652,22 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   return {
     query,
     finalize: (result) => {
+      if (scalar) {
+        const cell = flats[0]!;
+        const empty = cell.agg !== undefined ? EMPTY_AGG[cell.agg] : null;
+        if (result === null || result === undefined) {
+          return cell.agg !== undefined && emptyRowPasses() ? cell.read(empty) : null;
+        }
+        if (Array.isArray(result)) {
+          const first = result[0];
+          const raw = Array.isArray(first) ? first[0] : first;
+          if (raw === undefined) {
+            return cell.agg !== undefined && emptyRowPasses() ? cell.read(empty) : null;
+          }
+          return cell.read(raw);
+        }
+        return cell.read(result);
+      }
       const tuples = Array.isArray(result) ? (result as unknown[][]) : [];
       const rows = finalizeRows(tuples) as readonly unknown[];
       // the cursor is the last raw row's sort-key cells (everything past the

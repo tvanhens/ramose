@@ -340,7 +340,17 @@ export interface RowsSpec<Row = unknown> {
   readonly _row?: Row;
 }
 
-export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord;
+/**
+ * `Q.value(cell)` — a scalar terminal. `db.query` resolves to the cell
+ * itself (`number`, not `[{ n }]`). The engine's scalar find spec.
+ */
+export interface ValueSpec<T = unknown> {
+  readonly _tag: "valueSpec";
+  readonly cell: AggSpec<T> | AnyVar | PullSpec<any>;
+  readonly _out?: T;
+}
+
+export type Projection = PullSpec<any> | RowsSpec<any> | CellRecord | ValueSpec<any>;
 
 export const isPullSpec = (x: unknown): x is PullSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "pullSpec";
@@ -348,6 +358,20 @@ export const isRowsSpec = (x: unknown): x is RowsSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "rowsSpec";
 export const isAggSpec = (x: unknown): x is AggSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "aggSpec";
+export const isValueSpec = (x: unknown): x is ValueSpec =>
+  typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "valueSpec";
+
+/**
+ * The fluent/lib `.select(shape, extras)` focus. `Q.count(Q.focus)` in
+ * the extras record rewrites to the pipeline's current focus var.
+ */
+export const FOCUS: AnyVar = Object.freeze({
+  _tag: "QVar",
+  id: -1,
+  kind: "entity",
+}) as AnyVar;
+
+export const isFocusSentinel = (v: unknown): v is AnyVar => isVar(v) && v.id === -1;
 
 /** The row one cell reads back as. */
 export type CellValue<C> = C extends Var<infer T>
@@ -365,13 +389,15 @@ export type CellValue<C> = C extends Var<infer T>
 export type RecordRow<R> = { readonly [K in keyof R]: CellValue<R[K]> };
 
 /** The row a projection value denotes. */
-export type RowOfProjection<P> = P extends PullSpec<infer R>
-  ? R
-  : P extends RowsSpec<infer R>
+export type RowOfProjection<P> = P extends ValueSpec<infer T>
+  ? T
+  : P extends PullSpec<infer R>
     ? R
-    : P extends CellRecord
-      ? RecordRow<P>
-      : never;
+    : P extends RowsSpec<infer R>
+      ? R
+      : P extends CellRecord
+        ? RecordRow<P>
+        : never;
 
 // ── Q ───────────────────────────────────────────────────────────────────────
 
@@ -594,6 +620,27 @@ export const Q = {
     _tag: "rowsSpec",
     cells,
   }),
+
+  /**
+   * A scalar terminal: `db.query` resolves to the cell, not a one-row
+   * array. `Q.value(Q.count(e))` is a `number` — 0 over no matches.
+   */
+  value: <C extends AggSpec<any> | AnyVar | PullSpec<any>>(
+    cell: C,
+  ): ValueSpec<CellValue<C>> => {
+    if (!isAggSpec(cell) && !isVar(cell) && !isPullSpec(cell)) {
+      throw new Error(
+        "ramose/query: Q.value(...) takes a bound var, Q.pull, or an aggregate cell",
+      );
+    }
+    return { _tag: "valueSpec", cell: cell as ValueSpec<CellValue<C>>["cell"] };
+  },
+
+  /**
+   * The `.select(shape, extras)` focus. Write `Q.count(Q.focus)` in the
+   * extras record; lowering rewrites it to the pipeline's current focus.
+   */
+  focus: FOCUS,
 
   /** Merge extra cells onto a base projection (used by `Query.enrich`). */
   row: <Base extends Projection, const Extra extends CellRecord>(

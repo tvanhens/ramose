@@ -135,6 +135,14 @@ type _grouped = Expect<
   >
 >;
 
+const scalarCount = db.effect.live(
+  Query.q(function* () {
+    const user = yield* Query.entities(User);
+    return Q.value(Q.count(user));
+  }),
+);
+type _scalar = Expect<Equal<Stream.Success<typeof scalarCount>, number>>;
+
 // ── inline values: the query carries its own literals ──────────────────────
 
 const byName = Query.q(() =>

@@ -1717,3 +1717,122 @@ describe("Query.from — fluent app spelling", () => {
     );
   });
 });
+
+// ── #189: orderBy/limit on Query.q, Q.value, fluent aggregate select ───────
+
+describe("query: aggregates with order/limit and scalar value", () => {
+  test("Query.q(...).orderBy(r => r.n).limit(n) is top-N by aggregate", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const top = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      return { owner: name.v, n: Q.count(issue) };
+    })
+      .orderBy((r) => r.n, "desc")
+      .limit(1);
+
+    const { query } = lowerQueryObject(top);
+    expect(query.limit).toBe(1);
+    expect(query.order).toEqual([{ var: expect.stringMatching(/^\?q/), dir: "desc", empty: "last" }]);
+
+    const rows = await db.query(top);
+    expect(rows).toEqual([{ owner: "Ada", n: 2 }] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy a bound var sorts by a joined field", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byOwner = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const owner = yield* Query.follow(Issue.owner)(issue);
+      const name = yield* Q.fact(owner, User.name);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, owner: name.v };
+    }).orderBy((r) => r.owner, "asc");
+
+    const rows = await db.query(byOwner);
+    expect(rows.map((r) => r.owner)).toEqual(["Ada", "Ada", "Grace"]);
+    expect(rows.map((r) => r.title).sort()).toEqual([
+      "archive the docs",
+      "fix the flake",
+      "ship the release",
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("Q.value(Q.count(e)) is a number, 0 over no matches", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const open = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.done, false)(issue);
+      return Q.value(Q.count(issue));
+    });
+    expect(lowerQueryObject(open).query.find).toEqual([["count", expect.stringMatching(/^\?q/)], "."]);
+    expect(await db.query(open)).toBe(2);
+
+    const none = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* Query.is(Issue.title, "no such issue")(issue);
+      return Q.value(Q.count(issue));
+    });
+    expect(await db.query(none)).toBe(0);
+
+    await peer.dispose();
+  });
+
+  test("fluent select(shape, extras) groups by the shape and counts the focus", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const top = Query.from(Issue)
+      .select({ owner: Issue.owner.select({ name: User.name }) }, { n: Q.count(Q.focus) })
+      .orderBy((r) => r.n, "desc")
+      .limit(1);
+
+    const rows = await db.query(top);
+    expect(rows).toEqual([{ owner: { name: "Ada" }, n: 2 }] as never);
+
+    const piped = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ owner: Issue.owner.select({ name: User.name }) }, { n: Q.count(Q.focus) }),
+        Query.orderBy("n", "desc"),
+        Query.limit(1),
+      ),
+    );
+    expect(await db.query(piped)).toEqual(rows);
+
+    const viaCb = Query.from(Issue).select({ done: Issue.done }, (e) => ({ n: Q.count(e) }));
+    const grouped = [...(await db.query(viaCb))].sort((a, b) => Number(a.done) - Number(b.done));
+    expect(grouped).toEqual([
+      { done: false, n: 2 },
+      { done: true, n: 1 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy on a multi-root projection no longer promises a missing API", () => {
+    const q = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      const title = yield* Q.fact(issue, Issue.title);
+      return { title: title.v, n: Q.count(issue) };
+    }).orderBy((r) => r.title, "asc");
+    expect(() => lowerQueryObject(q)).not.toThrow(/bound vars/);
+    const { query } = lowerQueryObject(q);
+    expect(query.order).toEqual([{ var: expect.stringMatching(/^\?q/), dir: "asc", empty: "last" }]);
+  });
+});
