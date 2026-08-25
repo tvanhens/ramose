@@ -14,8 +14,7 @@
  * - `errorMessage` is `e.message ?? e._tag ?? String(e)`.
  */
 
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Unauthorized } from "../../src/db/index.ts";
 import type { Db, Operation, OpReport } from "../../src/db/index.ts";
 import { act, renderHook } from "@testing-library/react";
@@ -24,13 +23,9 @@ import {
   useOperation,
   type RunResult,
 } from "../../src/react/index.ts";
-import { Todo } from "./harness.tsx";
+import { registerDom, Todo } from "./harness.tsx";
 
-if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
-(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-afterAll(() => {
-  if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
-});
+registerDom();
 
 /** A promise the test settles by hand, so `pending` can be observed mid-run. */
 const gate = <A,>() => {

@@ -3,17 +3,15 @@
  * cancelled on unmount, re-read when the session generation advances.
  */
 
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { describe, expect, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import * as Ramose from "../../src/db/index.ts";
 import { RamoseProvider, useDb, usePrincipal } from "../../src/react/index.ts";
-import { Todos } from "./harness.tsx";
+import { registerDom, Todos } from "./harness.tsx";
 import { fakePeer } from "./peer.ts";
 
-if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
-(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+registerDom();
 
 const wrapperFor = (
   peer: ReturnType<typeof fakePeer>,
@@ -36,7 +34,7 @@ const peerWith = (principal: { eid: number | null; class: string }) =>
 describe("usePrincipal", () => {
   test("loading then { eid, class }", async () => {
     const peer = peerWith({ eid: 7, class: "member" });
-    const { result } = renderHook(
+    const { result, unmount } = renderHook(
       () => {
         const db = useDb("todos", Todos);
         return usePrincipal(db);
@@ -51,23 +49,25 @@ describe("usePrincipal", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.eid as number | null | undefined).toBe(7);
     expect(result.current.class).toBe("member");
+    unmount();
   });
 
   test("eid: null is a settled answer, not loading", async () => {
     const peer = peerWith({ eid: null, class: "viewer" });
-    const { result } = renderHook(
+    const { result, unmount } = renderHook(
       () => usePrincipal(useDb("todos", Todos)),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.eid).toBeNull();
     expect(result.current.class).toBe("viewer");
+    unmount();
   });
 
   test("onError fires and loading clears when /info has no principal", async () => {
     const seen: unknown[] = [];
     const peer = fakePeer();
-    const { result } = renderHook(
+    const { result, unmount } = renderHook(
       () =>
         usePrincipal(useDb("todos", Todos), {
           onError: (e) => seen.push(e),
@@ -77,6 +77,7 @@ describe("usePrincipal", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(seen).toHaveLength(1);
     expect((seen[0] as { _tag: string })._tag).toBe("InternalError");
+    unmount();
   });
 
   test("unmount cancels the in-flight load", async () => {
