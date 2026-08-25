@@ -1,7 +1,7 @@
 /**
  * `ramose/react` is a Client Component module.
  *
- * Without `"use client"` on the published entry, `import { useLive } from
+ * Without `"use client"` on the published entry, `import { useLiveQuery } from
  * "ramose/react"` in a Next App Router or React Router server component is
  * a hard build error: the hooks use client-only React APIs and the package
  * never said so. The remaining SSR work (`initialData`, Suspense) is not
@@ -27,9 +27,10 @@ const CLIENT_MODULES = [
   "index.ts",
   "hooks.ts",
   "RamoseProvider.tsx",
-  "useLive.ts",
+  "useLiveQuery.ts",
   "useQuery.ts",
   "usePull.ts",
+  "useOneShot.ts",
   "useBasis.ts",
   "useTransact.ts",
 ] as const;

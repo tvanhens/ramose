@@ -1,5 +1,5 @@
 /**
- * `useQuery` — the one-shot read as `Async`:
+ * `useQuery` — the one-shot read as `Read`:
  *
  * - one `q` per view; a fresh-but-equal inline `db.asOf(t)` is not a re-run
  *   (and, transitively, not a render loop);
@@ -60,13 +60,14 @@ describe("useQuery", () => {
       { wrapper: wrapperFor(peer) },
     );
 
-    expect(result.current).toEqual({
-      data: undefined,
-      error: undefined,
-      loading: true,
-    });
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.status).toBe("loading");
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.data).toEqual([{ title: "one" }]);
+    expect(result.current.t).toBe(1);
+    expect(result.current.status).toBe("success");
 
     rerender();
     rerender();
@@ -86,7 +87,7 @@ describe("useQuery", () => {
       { wrapper: wrapperFor(peer) },
     );
 
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.data).toEqual([{ title: "one" }]);
     expect(peer.frameOps("q")).toHaveLength(1);
 
@@ -94,7 +95,7 @@ describe("useQuery", () => {
     rerender();
     await sleep(250);
     expect(peer.frameOps("q")).toHaveLength(1);
-    expect(result.current.loading).toBe(false);
+    expect(result.current.isLoading).toBe(false);
   });
 
   test("a scrub keeps the previous data while loading, and drops the stale slower answer", async () => {
@@ -114,7 +115,7 @@ describe("useQuery", () => {
 
     // scrub to the slow coordinate: in flight over the old rows, no flash
     rerender({ t: 1 });
-    expect(result.current.loading).toBe(true);
+    expect(result.current.isLoading).toBe(true);
     expect(result.current.data).toEqual([{ title: "two" }]);
 
     // scrub again before it answers; the newer run wins
@@ -122,7 +123,7 @@ describe("useQuery", () => {
     await waitFor(() =>
       expect(result.current.data).toEqual([{ title: "three" }]),
     );
-    expect(result.current.loading).toBe(false);
+    expect(result.current.isLoading).toBe(false);
 
     // ...and stays won when the slower answer finally arrives
     await sleep(120);
@@ -147,7 +148,7 @@ describe("useQuery", () => {
 
     rerender({ t: 4 });
     await waitFor(() => expect(result.current.error).toBeDefined());
-    expect(result.current.loading).toBe(false);
+    expect(result.current.isLoading).toBe(false);
     expect(result.current.data).toEqual([{ title: "two" }]);
     expect((result.current.error as { _tag?: string })._tag).toBe(
       "InvalidRequest",
@@ -157,5 +158,27 @@ describe("useQuery", () => {
     rerender({ t: 2 });
     await waitFor(() => expect(result.current.error).toBeUndefined());
     expect(result.current.data).toEqual([{ title: "two" }]);
+  });
+
+  test("refetch re-issues the query", async () => {
+    let n = 0;
+    const peer = fakePeer({
+      answer: (frame: Frame) => {
+        if (frame.op !== "q") return { body: { t: 1, result: [] } };
+        n += 1;
+        return { body: { t: 1, result: [[{ title: `v${n}` }]] } };
+      },
+    });
+    const { result } = renderHook(
+      () => {
+        const db = useDb("todos", Todos);
+        return useQuery(db.asOf(1), titles);
+      },
+      { wrapper: wrapperFor(peer) },
+    );
+    await waitFor(() => expect(result.current.data).toEqual([{ title: "v1" }]));
+    result.current.refetch();
+    await waitFor(() => expect(result.current.data).toEqual([{ title: "v2" }]));
+    expect(peer.frameOps("q")).toHaveLength(2);
   });
 });

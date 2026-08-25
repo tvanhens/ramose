@@ -207,7 +207,7 @@ export interface ReadDb<C extends AnySchema = AnySchema> {
   /** Run a {@link QueryObject} once. Put values in the query
    * (`where({ title })`). The result is the query's terminal: the rows
    * array, one row (or `null`) after `one()` / `oneOrFail()`, a `Page`
-   * after `after(cursor)`. */
+   * after `after(cursor)`, a scalar after `Q.value(...)`. */
   query<Row, Out = readonly Row[]>(
     input: QueryObject<Row, Out>,
   ): Promise<Out>;

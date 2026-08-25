@@ -171,6 +171,69 @@ pipe(Query.entities(Comment), Query.follow(Comment.issue), Query.select({ text: 
 // @ts-expect-error User.friends is a self-ref on User, not a backlink to Issue
 pipe(Query.entities(Issue), Query.backlink(User.friends));
 
+// ── #189: Query.q cursor stages, Q.value, fluent aggregate select ───────────
+
+const topByDone = Query.q(function* () {
+  const issue = yield* Query.entities(Issue);
+  const done = yield* Q.fact(issue, Issue.done);
+  return { done: done.v, n: Q.count(issue) };
+})
+  .orderBy((r) => r.n, "desc")
+  .limit(10);
+type _topByDone = Expect<
+  Equal<Row<typeof topByDone>, { readonly done: boolean; readonly n: number }>
+>;
+const _topRun = db.query(topByDone);
+type _topOut = Expect<
+  Equal<typeof _topRun, Promise<readonly { readonly done: boolean; readonly n: number }[]>>
+>;
+
+const openCount = Query.q(function* () {
+  const issue = yield* Query.entities(Issue);
+  yield* Query.is(Issue.done, false)(issue);
+  return Q.value(Q.count(issue));
+});
+const _openRun = db.query(openCount);
+type _openVal = Expect<Equal<typeof _openRun, Promise<number>>>;
+type _openRow = Expect<Equal<Row<typeof openCount>, number>>;
+
+const fluentAgg = Query.from(Issue).select(
+  { title: Issue.title },
+  { n: Q.count(Q.focus) },
+);
+type _fluentAggRow = Row<typeof fluentAgg>;
+type _fluentAggTitle = Expect<Equal<_fluentAggRow["title"], string>>;
+type _fluentAggN = Expect<Equal<_fluentAggRow["n"], number>>;
+Query.from(Issue)
+  .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+  .orderBy((r) => r.n, "desc")
+  .limit(10);
+Query.from(Issue)
+  .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+  .orderBy(Issue.title, "desc");
+pipe(
+  Query.entities(Issue),
+  Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+  Query.orderBy("title", "desc"),
+);
+Query.from(Issue).select({ title: Issue.title }, (e) => ({ n: Q.count(e) }));
+
+const paged = Query.from(Issue)
+  .select({ title: Issue.title })
+  .orderBy("title")
+  .after(null);
+const _logicPage = db.query(paged.logic());
+type _logicPageOut = Expect<
+  Equal<typeof _logicPage, Promise<readonly { readonly title: string }[]>>
+>;
+const taken = Query.from(Issue).select({ title: Issue.title }).one();
+const _logicOne = db.query(taken.logic());
+type _logicOneOut = Expect<
+  Equal<typeof _logicOne, Promise<readonly { readonly title: string }[]>>
+>;
+const _logicVal = db.query(openCount.logic());
+type _logicValOut = Expect<Equal<typeof _logicVal, Promise<number>>>;
+
 declare const issueVar: Var<Eid<typeof Issue>>;
 Q.pull(issueVar, { title: Issue.title });
 Q.fact(issueVar, Issue.title);

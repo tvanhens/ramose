@@ -25,7 +25,7 @@ A schema, a live query, and a typed write — that is the whole app:
 
 ```tsx
 import * as Ramose from "ramose/db";
-import { useLive, useTransact } from "ramose/react";
+import { useLiveQuery, useTransact } from "ramose/react";
 
 const Todo = Ramose.Entity("todo", {
   title: Ramose.string(),
@@ -41,7 +41,7 @@ const setDoneOp = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
 const todos = Ramose.Query.from(Todo);
 
 const Todos = () => {
-  const { rows } = useLive(db, todos);   // re-runs itself whenever the data changes
+  const { data } = useLiveQuery(db, todos);   // re-runs itself whenever the data changes
   const { run } = useTransact();
 
   const toggle = (todo: Ramose.Row<typeof todos>) =>
@@ -49,7 +49,7 @@ const Todos = () => {
 
   return (
     <ul>
-      {rows?.map((todo) => (
+      {data?.map((todo) => (
         <li key={todo.id} onClick={() => void toggle(todo)}>
           {todo.title}
         </li>
@@ -59,14 +59,14 @@ const Todos = () => {
 };
 ```
 
-Nothing refetches after that write, and nothing invalidates a cache: `useLive`
+Nothing refetches after that write, and nothing invalidates a cache: `useLiveQuery`
 is a query the server keeps up to date, in every tab that is watching it.
 
 ---
 
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Live queries.** `useLive(db, query)` re-runs itself when the data changes.
+- **Live queries.** `useLiveQuery(db, query)` re-runs itself when the data changes.
   No refetch code, no invalidation, no WebSocket server to write.
 - **Permissions in the database.** Who may read or write each field is checked
   on the server, deny by default — not middleware you remember to add.

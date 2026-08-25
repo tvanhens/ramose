@@ -33,7 +33,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="install"></span>**install** | Write the schema into a database as an ordinary write. Safe to repeat. How Reef creates a workspace. Reads installed fields first and refuses incompatible flips (`IncompatibleSchema`). | `db.install()`, `install({ allowIncompatible })`, `Server({ databases })` — [Changing a schema later](/guides/catalog/#changing-a-schema-later) |
 | <span id="issuer-audience"></span>**issuer / audience** | Who signed a token and who it is for; the server checks both. | `RAMOSE_JWT_ISS`, `RAMOSE_JWT_AUD` — [The token the server verifies](/reference/policy/#the-token-the-server-verifies) |
 | <span id="jwks"></span>**JWKS** | Your sign-in provider's public keys, at a URL, used to verify tokens. | `RAMOSE_JWKS_URL`, `RAMOSE_JWKS_JSON` |
-| <span id="live-query"></span><span id="standing-query"></span>**live query** | A query that re-runs itself whenever the database changes and hands your screen new rows. | `db.live`, [`useLive`](/reference/react/#uselive), `livePull`, `usePull` |
+| <span id="live-query"></span><span id="standing-query"></span>**live query** | A query that re-runs itself whenever the database changes and hands your screen new rows. | `db.live`, [`useLiveQuery`](/reference/react/#uselivequery), `livePull`, `useLivePull` |
 | <span id="local-emulator"></span><span id="miniflare"></span>**local emulator** | The Cloudflare runtime `alchemy dev` runs on your laptop; nothing leaves your machine. | — |
 | <span id="lookup"></span><span id="lookup-ref"></span>**lookup by unique key** | Find a record by a unique field instead of its id: `[User.sub, "abc"]`. | `LookupRef` — [Read one record](/guides/queries/#read-one-record) |
 | <span id="mint"></span>**mint** | Create and sign a token for a user, a database and a role. Done by your auth server, never by Ramose. | `Ramose.claims`, `ramoseToken` — [Sign in and roles](/guides/sign-in/) |
@@ -71,7 +71,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 
 | Term | What it means | In the code |
 |---|---|---|
-| <span id="tick"></span>**tick / update** | A live-query re-run: your own write applied on the overlay, or a filtered transaction arriving on the connection. | `useLive().ticks` |
+| <span id="tick"></span>**tick / update** | A live-query re-run: your own write applied on the overlay, or a filtered transaction arriving on the connection. | `useLiveQuery().t` |
 | <span id="time-travel"></span>**time travel** | Reading the database at an earlier version number with `asOf`. | `db.asOf(t)` — [Time travel](/concepts/time-travel/) |
 | <span id="token-source"></span>**token source** | A self-refreshing credential: a function that fetches a token, re-minted near expiry. | `Ramose.token.jwt(mint)` — [Tokens refresh themselves](/guides/sign-in/#tokens-refresh-themselves) |
 | <span id="unique-key"></span>**unique key** | A field whose value identifies one record; lets you look records up by it. Unify-on-collision vs reject-on-collision. | `Field.unique(schema, "upsert" \| "strict")` — [Many, unique, owned](/guides/catalog/#many-unique-owned) |

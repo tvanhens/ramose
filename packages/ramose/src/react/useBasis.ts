@@ -1,23 +1,25 @@
 "use client";
 
 /**
- * `useBasis` — where the database's basis is: `db.basis()` on mount, then
- * again on every wake of the db's session (a `{ op: "tx" }` / resync, a
- * local write, a reconnect) — one `GET /db/:name/info` each. An
- * `asOf(t)` view answers `t` synchronously on the first render, with no
- * request; an HTTPS-only client has no session to wake, so the read is
- * one-shot. `undefined` until the first answer lands.
+ * `useBasis` — where the database's basis is. A live view reads
+ * `session.t` synchronously and again on every session wake (a `{ op:
+ * "tx" }` / resync, a local write, a reconnect) — no `GET /info` per
+ * tick. An `asOf(t)` view answers `t` on the first render, with no
+ * request. An HTTPS-only client has no session to wake: one `db.basis()`
+ * so a useBasis-only tree still learns the peer's t. `undefined` until
+ * the first answer lands.
  */
 
 import type { Schema, ReadDb } from "../db/index.ts";
 import { useEffect, useState } from "react";
+import { readT } from "./read.ts";
 import { seamOf, viewDep } from "./seam.ts";
 
 export const useBasis = <C extends Schema.Any>(
   db: ReadDb<C>,
 ): number | undefined => {
   const view = viewDep(db);
-  const [t, setT] = useState<number | undefined>(() => seamOf(db)?.asOf);
+  const [t, setT] = useState<number | undefined>(() => readT(db));
 
   useEffect(() => {
     const pinned = seamOf(db)?.asOf;
@@ -27,47 +29,29 @@ export const useBasis = <C extends Schema.Any>(
     }
 
     let disposed = false;
-    let landed: number | undefined;
-    let inflight = false;
-    let pendingWake = false;
-    const runs = { issued: 0, applied: 0 };
-    const read = (): void => {
-      if (inflight) {
-        pendingWake = true;
-        return;
-      }
-      const seq = ++runs.issued;
-      inflight = true;
-      const land = (value: number | undefined): void => {
-        if (disposed || seq < runs.applied) return;
-        runs.applied = seq;
-        landed = value;
-        setT(value);
-      };
+    const sync = (): void => {
+      if (!disposed) setT(readT(db));
+    };
+    sync();
+
+    const off = seamOf(db)?.onWake(() => {
+      queueMicrotask(sync);
+    });
+
+    // No session (HTTPS-only, or the socket is not open yet): one
+    // authoritative `/info`. Later wakes — once a sibling opens the
+    // session — still land through `onWake` + `session.t`.
+    if (readT(db) === undefined) {
       void db
         .basis()
-        .then((basis) => land(basis.t))
-        .catch(() => land(undefined))
-        .finally(() => {
-          inflight = false;
-          if (pendingWake && !disposed) {
-            pendingWake = false;
-            read();
-          }
+        .then((basis) => {
+          if (!disposed) setT(readT(db) ?? basis.t);
+        })
+        .catch(() => {
+          if (!disposed) setT((prev) => readT(db) ?? prev);
         });
-    };
+    }
 
-    read();
-    const off = seamOf(db)?.onWake(() => {
-      queueMicrotask(() => {
-        if (disposed) return;
-        const seen = seamOf(db)?.t();
-        if (seen !== undefined && landed !== undefined && seen <= landed) {
-          return;
-        }
-        read();
-      });
-    });
     return () => {
       disposed = true;
       off?.();

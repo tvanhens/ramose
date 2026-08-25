@@ -109,9 +109,9 @@ export const boardQuery = Query.from(Issue)
 ```
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
-  const board = useLive(db, boardQuery);
-  const people = useLive(db, peopleQuery);
-  const labels = useLive(db, labelsQuery);
+  const board = useLiveQuery(db, boardQuery);
+  const people = useLiveQuery(db, peopleQuery);
+  const labels = useLiveQuery(db, labelsQuery);
 ```
 
 :::tip[What you didn't write]
@@ -147,10 +147,10 @@ The card moves on the local overlay before the POST returns. Then the write reac
 
 <Shot src="/reef/issue-detail.png" alt="The issue side panel: title, status, priority, assignee, label chips, description, admin note and a comment thread" caption="Status, assignee and labels come from the live board row; title, description and note ride one live pull." code="examples/reef/src/app/components/IssueDetail.tsx#issue-panel-reads" />
 
-The panel **reads one record** with `usePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
+The panel **reads one record** with `useLivePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#issue-panel-reads"
-  const extra = usePull(db, issueId, issueExtraShape).rows ?? null;
+  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
   useEffect(() => {
     if (extra === null) return;
     setTitleDraft(extra.title);
@@ -158,7 +158,7 @@ The panel **reads one record** with `usePull` — by id, with the fields you cho
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
-  const comments = useLive(db, commentsQuery(issueId));
+  const comments = useLiveQuery(db, commentsQuery(issueId));
 ```
 
 The board's **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)). It follows references, so a card gets creator, assignee and labels inline:
