@@ -11,13 +11,17 @@ import {
   PolicyParseError,
   allowsOp,
   allowsOperation,
+  armNeedsTarget,
   checkTx,
   filterDb,
   isSchemaTx,
   isSuperuser,
   operationClassAllows,
+  operationHasTargetArm,
   parsePolicy,
   policyView,
+  wireArmNeedsTarget,
+  wireOperationNeedsTarget,
 } from "../../../src/internal/core/policy/index.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
@@ -437,6 +441,27 @@ describe("operation arms", () => {
     expect(operationClassAllows(policy, "doc/create", alice())).toBe(true);
     expect(operationClassAllows(policy, "doc/create", anon())).toBe(true);
     expect(operationClassAllows(policy, "doc/missing", alice())).toBe(false);
+  });
+
+  test("a named rule or db-dependent v1 expr needs a target; class-only does not", () => {
+    expect(armNeedsTarget({ _tag: "allow", class: ["member"], rule: true })).toBe(false);
+    expect(armNeedsTarget({ _tag: "allow", class: ["member"], rule: "policy/never/0" })).toBe(true);
+    expect(armNeedsTarget(A.allow(A.class("member")))).toBe(false);
+    expect(armNeedsTarget(A.allow(A.eq(":doc/owner", A.principal)))).toBe(true);
+    expect(armNeedsTarget(A.allow(A.and(A.class("member"), A.eq(":doc/owner", A.principal))))).toBe(
+      true,
+    );
+    expect(wireArmNeedsTarget({ _tag: "allow", class: ["member"], rule: true })).toBe(false);
+    expect(wireArmNeedsTarget({ _tag: "allow", class: ["member"], rule: "policy/never/0" })).toBe(
+      true,
+    );
+    expect(wireArmNeedsTarget(A.allow(A.eq(":doc/owner", A.principal)))).toBe(true);
+    expect(wireOperationNeedsTarget([{ _tag: "allow", class: ["member"], rule: true }])).toBe(false);
+    expect(
+      wireOperationNeedsTarget([{ _tag: "allow", class: ["member"], rule: "policy/never/0" }]),
+    ).toBe(true);
+    expect(operationHasTargetArm(policy, "doc/create")).toBe(true);
+    expect(operationHasTargetArm(policy, "doc/missing")).toBe(false);
   });
 
   test("named rule runs against the resolved target", async () => {

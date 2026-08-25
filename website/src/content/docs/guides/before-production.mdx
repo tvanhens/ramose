@@ -47,10 +47,12 @@ A freshly deployed **Ramose server** accepts every request, from anyone, with fu
 - [ ] **Check the demo console is gone.** The server serves a small demo app at
       `/` until a policy is configured. Load your server's root URL and confirm
       you get a 404.
-- [ ] **Pin the internal secret.** Set `RAMOSE_INTERNAL_SECRET` so the secret
-      the server uses to talk to the **writer** — the one thing per database that
-      commits writes ([glossary](/concepts/glossary/#writer)) — does not change
-      on every deploy.
+- [ ] **Pin the internal secret.** Set `RAMOSE_INTERNAL_SECRET` in production.
+      It is the Worker-to-writer gate — the **writer** is the one thing per
+      database that commits writes ([glossary](/concepts/glossary/#writer)) —
+      and `internalGate` enforces it only when the secret is set. The owned
+      form mints one when a policy is set; pin it so it does not change on
+      every deploy.
 - [ ] **Pass your pull patterns to the compiler.**
       `Ramose.Policy.compile(policy, { pulls: [...] })` turns "this masked field
       silently deletes rows" into a build error. Without `pulls`, the check does

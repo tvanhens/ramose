@@ -786,7 +786,12 @@ class Executor {
   }
 
   private fn(name: string, pred: boolean): QueryFn {
-    const f = this.fns[name] ?? (pred ? PREDICATES[name] ?? FUNCTIONS[name] : FUNCTIONS[name] ?? PREDICATES[name]);
+    // Own-property only — `obj[name]` walks Object.prototype, so a wire
+    // `constructor` / `toString` / `hasOwnProperty` / `__proto__` would
+    // execute (or TypeError) instead of the curated unknown-fn rejection.
+    // Same guard the kernel applies to `Q.call` (#304).
+    const own = (table: Record<string, QueryFn>) => (Object.hasOwn(table, name) ? table[name] : undefined);
+    const f = own(this.fns) ?? (pred ? own(PREDICATES) ?? own(FUNCTIONS) : own(FUNCTIONS) ?? own(PREDICATES));
     if (!f) throw new QueryError(`unknown ${pred ? "predicate" : "function"} ${name}`);
     return f;
   }
@@ -1584,7 +1589,7 @@ function evalHaving(c: Clause, row: unknown[], ix: Map<string, number>): boolean
         const [v, list] = args;
         return Array.isArray(list) && list.some((x) => vkey(x) === vkey(v));
       }
-      const f = PREDICATES[c.fn];
+      const f = Object.hasOwn(PREDICATES, c.fn) ? PREDICATES[c.fn] : undefined;
       if (!f) throw new QueryError(`unknown having predicate ${c.fn}`);
       return !!f(...args);
     }
@@ -1664,7 +1669,7 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
       const out: unknown[] = [];
       for (const e of elems) {
         if (e.kind === "agg") {
-          const f = AGGREGATES[e.fn];
+          const f = Object.hasOwn(AGGREGATES, e.fn) ? AGGREGATES[e.fn] : undefined;
           if (!f) throw new QueryError(`unknown aggregate ${e.fn}`);
           const col = bix.get(varOf(e))!;
           const consts = e.args.slice(0, -1).map((a) => (a.kind === "const" ? a.value : undefined));

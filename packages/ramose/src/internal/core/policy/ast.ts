@@ -55,6 +55,75 @@ export type PolicyArm = PolicyExprArm | PolicyRuleArm;
 
 export const isRuleArm = (arm: PolicyArm): arm is PolicyRuleArm => "rule" in arm;
 
+/**
+ * True when `expr` reads the entity (`eq` / `ref`, or a composite that
+ * contains one). Class / const folds are session-constant and do not
+ * need a resolved `on` target.
+ */
+export function exprNeedsTarget(expr: PolicyExpr): boolean {
+  switch (expr._tag) {
+    case "const":
+    case "class":
+      return false;
+    case "eq":
+    case "ref":
+      return true;
+    case "not":
+      return exprNeedsTarget(expr.expr);
+    case "and":
+    case "or":
+      return expr.exprs.some(exprNeedsTarget);
+  }
+}
+
+/**
+ * True when an arm needs a resolved `on` target: a named v2 rule, or a
+ * v1 expression that reads the entity. `rule: true` is the class-only
+ * (public) fragment and does not.
+ */
+export function armNeedsTarget(arm: PolicyArm): boolean {
+  if (isRuleArm(arm)) return arm.rule !== true;
+  return exprNeedsTarget(arm.expr);
+}
+
+/**
+ * Wire / unparsed form of {@link armNeedsTarget}. Used by the Server
+ * deploy check, which inspects `RAMOSE_POLICY` JSON without requiring a
+ * fully valid policy document.
+ */
+export function wireArmNeedsTarget(arm: unknown): boolean {
+  if (arm == null || typeof arm !== "object" || Array.isArray(arm)) return false;
+  const o = arm as Record<string, unknown>;
+  if ("rule" in o) return o.rule !== true;
+  if ("expr" in o) return wireExprNeedsTarget(o.expr);
+  return false;
+}
+
+const wireExprNeedsTarget = (expr: unknown): boolean => {
+  if (expr == null || typeof expr !== "object" || Array.isArray(expr)) return false;
+  const o = expr as Record<string, unknown>;
+  switch (o._tag) {
+    case "const":
+    case "class":
+      return false;
+    case "eq":
+    case "ref":
+      return true;
+    case "not":
+      return wireExprNeedsTarget(o.expr);
+    case "and":
+    case "or":
+      return Array.isArray(o.exprs) && o.exprs.some(wireExprNeedsTarget);
+    default:
+      return false;
+  }
+};
+
+/** True when any arm in a wire `operations` entry needs an `on` target. */
+export function wireOperationNeedsTarget(arms: unknown): boolean {
+  return Array.isArray(arms) && arms.some(wireArmNeedsTarget);
+}
+
 /** Arms per op. Allow arms OR; any true deny wins; no arms → deny. */
 export type PolicyRules = { readonly [K in PolicyOp]?: readonly PolicyArm[] };
 export type AttrRules = PolicyRules;

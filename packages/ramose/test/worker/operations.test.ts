@@ -641,6 +641,105 @@ describe('writes: "operations" is the peer default', () => {
     peer.close();
   });
 
+  test("a named-rule arm on a bare op is denied; effects do not run", async () => {
+    const neverRule = [["policy/never/0", "?me", "?e"], ["?e", ":user/name", "__never__"]];
+    const v2 = {
+      version: 2,
+      principal: ":user/name",
+      classes: ["member", "admin"],
+      superuser: "admin",
+      ns: {
+        user: { read: [{ _tag: "allow", class: ["member"], rule: true }] },
+        movie: { read: [{ _tag: "allow", class: ["member"], rule: true }] },
+      },
+      operations: Object.fromEntries(
+        Object.keys(POLICY.operations).map((name) => [
+          name,
+          name === "ping"
+            ? [{ _tag: "allow", class: ["member"], rule: "policy/never/0" }]
+            : [{ _tag: "allow", class: ["member"], rule: true }],
+        ]),
+      ),
+      rules: [neverRule],
+    };
+    effectRuns = 0;
+    const peer = makePeer("movies", {
+      operations,
+      env: {
+        RAMOSE_POLICY: JSON.stringify(v2),
+        RAMOSE_JWKS_JSON: JWKS,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      },
+    });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    await peer.seed([{ ":user/name": "user_ada" }]);
+    const member = await token("movies", "member");
+    const denied = await peer.json(
+      "/db/movies/op",
+      post({ name: "ping", input: {}, clientOpId: "op-bare-rule" }, member),
+    );
+    expect(denied.status).toBe(403);
+    expect(denied.body.code).toBe("policy");
+    expect(effectRuns).toBe(0);
+    peer.close();
+  });
+
+  test("a v1 db-dependent expr on a bare op is denied; effects do not run", async () => {
+    const v1 = {
+      ...POLICY,
+      operations: {
+        ...POLICY.operations,
+        ping: [
+          {
+            _tag: "allow",
+            expr: { _tag: "eq", attr: ":user/name", operand: { _tag: "principal" } },
+          },
+        ],
+      },
+    };
+    effectRuns = 0;
+    const peer = makePeer("movies", {
+      operations,
+      env: {
+        RAMOSE_POLICY: JSON.stringify(v1),
+        RAMOSE_JWKS_JSON: JWKS,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      },
+    });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    await peer.seed([{ ":user/name": "user_ada" }]);
+    const member = await token("movies", "member");
+    const denied = await peer.json(
+      "/db/movies/op",
+      post({ name: "ping", input: {}, clientOpId: "op-bare-v1" }, member),
+    );
+    expect(denied.status).toBe(403);
+    expect(denied.body.code).toBe("policy");
+    expect(effectRuns).toBe(0);
+    peer.close();
+  });
+
+  test("a class-only arm on a bare op still runs", async () => {
+    effectRuns = 0;
+    const peer = makePeer("movies", {
+      operations,
+      env: envOf(),
+    });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    await peer.seed([{ ":user/name": "user_ada" }]);
+    const member = await token("movies", "member");
+    const ok = await peer.json(
+      "/db/movies/op",
+      post({ name: "ping", input: {}, clientOpId: "op-bare-class" }, member),
+    );
+    expect(ok.status).toBe(200);
+    expect(ok.body.output).toEqual({ n: 1 });
+    expect(effectRuns).toBe(1);
+    peer.close();
+  });
+
   test("unrecognized RAMOSE_WRITES warns and fails closed to operations", async () => {
     const from = events.length;
     const peer = makePeer("movies", {
