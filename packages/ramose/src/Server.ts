@@ -619,18 +619,19 @@ const healthOperationsOf = (health: unknown): string[] => {
 
 /**
  * @internal `Server({ operations })` vs a `/health` body. Missing ids
- * fail the deploy; extra peer ops are fine. Unset `operations` skips.
+ * fail the deploy as {@link OperationsCoverageError} so `missing` and
+ * `instanceof` survive; extra peer ops are fine. Unset `operations` skips.
  */
 export const compareOperationsToHealth = (
   operations: AnyOperations | undefined,
   health: unknown,
-): string | undefined => {
+): OperationsCoverageError | undefined => {
   if (operations === undefined) return undefined;
   try {
     checkOperationsCoverage(operations, healthOperationsOf(health));
     return undefined;
   } catch (error) {
-    if (error instanceof OperationsCoverageError) return error.message;
+    if (error instanceof OperationsCoverageError) return error;
     throw error;
   }
 };
@@ -929,7 +930,7 @@ const attributes = Effect.fn(function* (
     const body = yield* fetchHealthJson(url, coverageTimeoutMs(props.probe, defaults));
     const badOps = compareOperationsToHealth(props.operations, body);
     if (badOps !== undefined) {
-      return yield* Effect.fail(new InvalidRequest({ message: badOps }));
+      return yield* Effect.fail(badOps);
     }
   }
   const token = redact(props.token);

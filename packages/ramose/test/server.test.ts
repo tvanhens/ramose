@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
+import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database, isDatabase } from "../src/Database.ts";
 import { Databases } from "../src/Databases.ts";
 import {
@@ -702,14 +703,16 @@ describe("operations coverage vs /health", () => {
   });
 
   test("a missing id is a named deploy error", () => {
-    const message = compareOperationsToHealth(client, { operations: ["user/create"] });
-    expect(message).toMatch(/missing operations: user\/set-name/);
+    const error = compareOperationsToHealth(client, { operations: ["user/create"] });
+    expect(error).toBeInstanceOf(OperationsCoverageError);
+    expect(error?.missing).toEqual(["user/set-name"]);
+    expect(error?.message).toMatch(/missing operations: user\/set-name/);
   });
 
   test("a health body with no operations list is an empty registry", () => {
-    expect(compareOperationsToHealth(client, { ok: true })).toMatch(
-      /missing operations: user\/create, user\/set-name/,
-    );
+    const error = compareOperationsToHealth(client, { ok: true });
+    expect(error).toBeInstanceOf(OperationsCoverageError);
+    expect(error?.missing).toEqual(["user/create", "user/set-name"]);
   });
 
   test("coverage fetch uses the caller's probe.timeoutMs", () => {
