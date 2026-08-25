@@ -45,10 +45,10 @@ export const useBasis = <C extends Schema.Any>(
       void db
         .basis()
         .then((basis) => {
-          if (!disposed) setT(basis.t);
+          if (!disposed) setT(readT(db) ?? basis.t);
         })
         .catch(() => {
-          if (!disposed) setT(undefined);
+          if (!disposed) setT((prev) => readT(db) ?? prev);
         });
     }
 

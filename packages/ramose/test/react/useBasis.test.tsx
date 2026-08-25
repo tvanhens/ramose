@@ -107,8 +107,9 @@ describe("useBasis", () => {
       answer: () => ({ body: { t: state.t, result: [] } }),
       http: async (call) => {
         if (call.url.includes("/info")) {
+          const seen = state.t;
           if (!released) await hold;
-          return { body: { db: "todos", t: state.t } };
+          return { body: { db: "todos", t: seen } };
         }
         return { body: { t: 1, txEid: 1, tempids: {}, datoms: 0 } };
       },
