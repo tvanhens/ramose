@@ -362,6 +362,31 @@ describe("focus binding — backlink and named rules", () => {
     ).not.toThrow();
   });
 
+  test("Query.some as a FilterStage arm compiles", () => {
+    const p = P.policy(
+      { schema: AppComments, principal: User.sub, classes: ["member"] },
+      { doc: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) } },
+    );
+    const c = compiled(p);
+    const name = (c.ns!.doc!.read![0] as { rule: string }).rule;
+    const body = JSON.stringify(ruleNamed(c, name)!.slice(1));
+    expect(body).toContain(":comment/doc");
+    expect(body).toContain(":comment/author");
+  });
+
+  test("byId and updatedSince arms compile", () => {
+    expect(() =>
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+        doc: { read: () => Query.byId(1) },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      P.policy({ schema: AppComments, principal: User.sub, classes: ["member"] }, {
+        doc: { read: () => Query.updatedSince(0) },
+      }),
+    ).not.toThrow();
+  });
+
   test("a backlink arm grants the docs the caller commented on", async () => {
     const conn = await Connection.create({ now: () => 1_700_000_000_000 });
     await conn.transact([

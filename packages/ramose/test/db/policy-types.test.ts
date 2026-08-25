@@ -30,7 +30,11 @@ const User = Entity("user", {
 });
 const Org = Entity("org", { members: Field(Ref(() => User), { cardinality: "many" }) });
 const Doc = Entity("doc", { title: Field(Schema.String), owner: Field(Ref(() => User)) });
-const App = DbSchema({ user: User, org: Org, doc: Doc });
+const Comment = Entity("comment", {
+  doc: Field(Ref(() => Doc)),
+  author: Field(Ref(() => User)),
+});
+const App = DbSchema({ user: User, org: Org, doc: Doc, comment: Comment });
 
 const Other = Entity("other", { sub: Field(Schema.String) });
 
@@ -89,6 +93,28 @@ const _fixtures = () => {
   P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
     // @ts-expect-error — Org.members is not a field of doc
     doc: { read: (me) => Query.is(Org.members, me) },
+  });
+
+  // reverse-ref quantifier: branded by the *target* (doc), not :comment/doc
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    // @ts-expect-error — some(Comment.doc) filters docs, not comments
+    comment: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: () => Query.byId(1) },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: () => Query.updatedSince(0) },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { read: (me) => Query.assertedBy(User.sub, me) },
   });
 
   // handwritten generator: focus is branded with the arm entity

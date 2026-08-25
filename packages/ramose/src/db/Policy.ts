@@ -86,12 +86,14 @@ export type EntityFieldIdent<N extends AnyEntity> = {
 /**
  * `(me) => fragment` — the arm closes over the typed principal token.
  * A `Query.is` / `Query.has` filter must mention a field of `N` (branded
- * by that field's stamped ident). A handwritten generator is branded
- * with `N` as its focus; `{ _ident?: never }` keeps a wrong-entity
- * `Query.is` from sneaking through the generator branch.
+ * by that field's stamped ident). `Query.some` / `none` / `every` brand
+ * by the ref's *target* entity. `byId`, `updatedSince`, and `assertedBy`
+ * carry `:db/id` (valid on every entity). A handwritten generator is
+ * branded with `N` as its focus; `{ _ident?: never }` keeps a
+ * wrong-entity `Query.is` from sneaking through the generator branch.
  */
 export type FragFn<M, N extends AnyEntity = AnyEntity> = (me: M) =>
-  | FilterStage<EntityFieldIdent<N>>
+  | FilterStage<EntityFieldIdent<N> | ":db/id">
   | ((focus: Var<Eid<N>>) => QueryGen<unknown> & { readonly _ident?: never });
 
 /**

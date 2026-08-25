@@ -14,7 +14,7 @@
 
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
-import type { UnbrandedId } from "../idents.ts";
+import type { FieldTargetEntity, UnbrandedId } from "../idents.ts";
 import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, Shape, ValidShape, SelectResult } from "../shapes.ts";
 import {
   Q,
@@ -91,11 +91,29 @@ type FilterOut<X> = [X] extends [never]
  * A filter: keeps the pipeline's focus; as a fragment, contributes clauses.
  * The return is branded with the attribute ident so a policy arm can
  * require that ident to belong to the arm entity's stamped field set.
+ * Reverse-ref quantifiers brand by the *target* entity's field set;
+ * `byId` / `updatedSince` / `assertedBy` brand `:db/id` (every entity).
  * The function stays generic so `pipe` still instantiates `X`.
  */
 export type FilterStage<Ident extends string = string> = <X>(
   x: X,
 ) => FilterOut<X> & { readonly _ident?: Ident };
+
+/** Stamped field idents of an entity — the set a policy `FragFn` checks. */
+type EntityIdents<N extends AnyEntity> = {
+  [K in keyof N["fields"]]: N["fields"][K] extends { readonly ident: infer I extends string }
+    ? I
+    : never;
+}[keyof N["fields"]];
+
+/**
+ * Field-set brand for `some` / `none` / `every`: the filter's focus is
+ * the *target* of `R` (`[other R e]`), not the referring entity.
+ * Untargeted refs fall back to `:db/id` (valid on every arm).
+ */
+type TargetFieldIdent<A> = [FieldTargetEntity<A>] extends [never]
+  ? ":db/id"
+  : EntityIdents<FieldTargetEntity<A>>;
 
 /**
  * The entity a `Ref(User)` field points at. Self-refs / untargeted refs
@@ -228,16 +246,23 @@ export const backlink = (attr: AttrLike): TraversalStage =>
 
 type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
-/** `some(R, ps…)`: ∃ other. `[other R e]` ∧ ps(other). */
-export const some = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
-  filter<A["ident"]>(function* (e) {
+/** `some(R, ps…)`: ∃ other. `[other R e]` ∧ ps(other). Branded by the
+ * target of `R` — the focus is what others point at, not the referrer. */
+export const some = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): FilterStage<TargetFieldIdent<A>> =>
+  filter<TargetFieldIdent<A>>(function* (e) {
     const other = yield* backlink(ref)(e);
     for (const p of ps) yield* p(other) as QueryGen<unknown>;
   });
 
 /** `none(R, ps…)`: ¬∃ other. `[other R e]` ∧ ps(other). */
-export const none = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
-  filter<A["ident"]>(function* (e) {
+export const none = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): FilterStage<TargetFieldIdent<A>> =>
+  filter<TargetFieldIdent<A>>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       for (const p of ps) yield* p(other) as QueryGen<unknown>;
@@ -246,8 +271,11 @@ export const none = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): Fi
 
 /** `every(R, ps…)`: ¬∃ other. `[other R e]` ∧ ¬ps(other) — vacuously true
  * of a focus nothing points at, like the nav surface's `every`. */
-export const every = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
-  filter<A["ident"]>(function* (e) {
+export const every = <A extends AttrLike>(
+  ref: A,
+  ...ps: readonly ElemPred[]
+): FilterStage<TargetFieldIdent<A>> =>
+  filter<TargetFieldIdent<A>>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       yield* Q.not(function* () {
@@ -258,17 +286,19 @@ export const every = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): F
 
 // ── time — generic over every namespace ─────────────────────────────────────
 
-/** Some fact about the focus was asserted at basis `t >= since`. */
-export const updatedSince = (since: number): FilterStage =>
-  filter(function* (e) {
+/** Some fact about the focus was asserted at basis `t >= since`.
+ * Branded `:db/id` — identity, valid on every entity. */
+export const updatedSince = (since: number): FilterStage<":db/id"> =>
+  filter<":db/id">(function* (e) {
     const f = yield* Q.fact(e);
     yield* Q.gte(f.t, since);
   });
 
 /** Some fact about the focus rides a transaction whose entity carries
- * `[tx A who]` — provenance as an ordinary clause. */
-export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage<A["ident"]> =>
-  filter<A["ident"]>(function* (e) {
+ * `[tx A who]` — provenance as an ordinary clause. Branded `:db/id`:
+ * the attr belongs to the tx, not the focus entity. */
+export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage<":db/id"> =>
+  filter<":db/id">(function* (e) {
     const f = yield* Q.fact(e);
     yield* Q.fact(f.tx, attr, who);
   });
