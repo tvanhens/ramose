@@ -169,7 +169,7 @@ describe("checkEvolution", () => {
   test("a cardinality flip is IncompatibleSchema", () => {
     const Flipped = DbSchema({
       note: Entity("note", {
-        title: Field(Schema.String, { cardinality: "many" }),
+        title: Field.many(Schema.String),
         body: Field(Schema.String, { optional: true }),
       }),
     });
@@ -182,7 +182,7 @@ describe("checkEvolution", () => {
   test("a uniqueness flip is IncompatibleSchema", () => {
     const Flipped = DbSchema({
       note: Entity("note", {
-        title: Field(Schema.String, { unique: "upsert" }),
+        title: Field.unique(Schema.String, "upsert"),
         body: Field(Schema.String, { optional: true }),
       }),
     });
@@ -206,7 +206,7 @@ describe("checkEvolution", () => {
     };
     const Flipped = DbSchema({
       note: Entity("note", {
-        title: Field(Schema.String, { unique: "strict" }),
+        title: Field.unique(Schema.String, "strict"),
         body: Field(Schema.String, { optional: true }),
       }),
     });
@@ -288,7 +288,7 @@ describe("checkEvolution", () => {
   test("several flips are listed on one error", () => {
     const Flipped = DbSchema({
       note: Entity("note", {
-        title: Field(Long, { unique: "strict" }),
+        title: Field.unique(Long, "strict"),
         body: Field(Schema.String, { optional: true }),
       }),
     });
@@ -549,7 +549,7 @@ describe("install() against a live engine", () => {
 
   test("dropping unique stays a no-op — uniqueness is still enforced", async () => {
     const UniqueNote = Entity("note", {
-      title: Field(Schema.String, { unique: "strict" }),
+      title: Field.unique(Schema.String, "strict"),
       body: Field(Schema.String, { optional: true }),
     });
     const UniqueNotes = DbSchema({ note: UniqueNote });
