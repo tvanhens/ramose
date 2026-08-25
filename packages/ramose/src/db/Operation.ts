@@ -142,8 +142,26 @@ export type OpCatalogMismatch = "operation schema does not match this db";
 export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
   OpCatalogFitsDb<C, OC> extends true ? A : OpCatalogMismatch;
 
-/** Schema for an entity id in operation input / output. */
+/**
+ * Schema for an entity id in operation input / output.
+ *
+ * The decoded type is `number`. A body may return a handle (or
+ * `{ id: handle }`) in an `EntityId` slot — {@link finalizeOutput}
+ * rematerializes it after the writer assigns eids.
+ */
 export const EntityId: typeof Schema.Number = Schema.Number;
+
+/**
+ * What a body may return for output type `O`: a handle is legal
+ * wherever the schema expects a number (an {@link EntityId} slot).
+ */
+export type OutputDraft<O> = O extends number
+  ? O | { readonly _tag: "TxHandle" }
+  : O extends ReadonlyArray<infer U>
+    ? { readonly [K in keyof O]: OutputDraft<U> }
+    : O extends object
+      ? { [K in keyof O]: OutputDraft<O[K]> }
+      : O;
 
 /**
  * Client-side `op.effect` ends the optimistic prefix. Not a {@link DbError};
@@ -320,7 +338,7 @@ export interface Operation<
   readonly on: N | undefined;
   /** Humans read this in the docs; later MCP uses it as the tool description. */
   readonly doc: string | undefined;
-  readonly body: (op: Op<C, N>, input: I) => Promise<O> | O;
+  readonly body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>;
 }
 
 export type AnyOperation = Operation<string, any, any, any, any>;
@@ -455,7 +473,7 @@ const defineOperation = <
 >(
   name: Name,
   schemas: OperationSchemas<I, O, N, C>,
-  body: (op: Op<C, N>, input: I) => Promise<O> | O,
+  body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
 ): Operation<Name, I, O, N, C> => ({
   _tag: "Operation",
   name,
@@ -535,7 +553,7 @@ type OperationDefine<C extends AnySchema> = <
 >(
   name: Name,
   schemas: Omit<OperationSchemas<I, O, N, C>, "schema">,
-  body: (op: Op<C, N>, input: I) => Promise<O> | O,
+  body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
 ) => Operation<Name, I, O, N, C>;
 
 type OperationPatch<C extends AnySchema> = <

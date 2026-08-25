@@ -905,7 +905,7 @@ export const submitRaw = <C extends AnySchema>(
   ops: readonly unknown[],
 ): Effect.Effect<TxReport<C>, DbError> => {
   const hatch = "effect" in db ? db.effect : db;
-  const submit = (hatch as Record<symbol, unknown>)[DB_SUBMIT] as
+  const submit = (hatch as unknown as Record<symbol, unknown>)[DB_SUBMIT] as
     | ((tx: readonly unknown[]) => Effect.Effect<TxReport<C>, DbError>)
     | undefined;
   if (submit === undefined) {
@@ -922,15 +922,15 @@ export const submitRaw = <C extends AnySchema>(
  */
 export const seedWrite = <C extends AnySchema>(
   db: Db<C> | EffectDb<C>,
-  body: (tx: Tx<C>) => Generator<Effect.Effect<any, any, any>, unknown, never>,
+  body: (tx: Tx<C>) => Generator<Effect.Effect<any, any, any>, unknown, any>,
 ): Effect.Effect<TxReport<C>, DbError> =>
   Effect.gen(function* () {
     const tx = txBuilder(("schema" in db ? db.schema : undefined) as C);
     const gen = body(tx);
     let step = gen.next();
     while (!step.done) {
-      yield* step.value;
-      step = gen.next();
+      const value = yield* step.value;
+      step = gen.next(value);
     }
     return yield* submitRaw(db, [...txOps(tx)]);
-  });
+  }) as Effect.Effect<TxReport<C>, DbError>;

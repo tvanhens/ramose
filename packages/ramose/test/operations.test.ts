@@ -36,7 +36,7 @@ import {
   seedWrite,
 } from "../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
-import { asLookupRef, lowerEntityArg } from "../src/db/Operation.ts";
+import { asLookupRef, lowerEntityArg, materializeOutput } from "../src/db/Operation.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
@@ -56,6 +56,15 @@ const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<u
 const names = Query.q(() =>
   pipe(Query.entities(User), Query.select({ name: User.name })),
 );
+
+describe("materializeOutput", () => {
+  test("resolves a returned handle through the writer's tempids", () => {
+    const handle = { _tag: "TxHandle", eid: "tmp-1" };
+    expect(materializeOutput({ id: handle }, { "tmp-1": 42 })).toEqual({
+      id: 42,
+    });
+  });
+});
 
 const createUser = Operation(
   "user/create",

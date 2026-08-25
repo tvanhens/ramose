@@ -22,7 +22,7 @@ import { asRead, Databases, layer, SERVICE_ORIGIN } from "../src/Databases.ts";
 import type { Server } from "../src/Server.ts";
 import { Movies, User } from "./db/fixture.ts";
 
-const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1 };
+const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1, output: {} };
 
 /** A server whose attributes are literal Outputs, as after a deploy. */
 const server = (token?: string): Server =>

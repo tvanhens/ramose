@@ -383,9 +383,9 @@ type _dbKeys = Expect<
 type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 
 /** `db.install()` — an idempotent catalog upsert, reported like any tx. */
-const installed = movies.install();
+const installedP = movies.install();
 type _install = Expect<
-  Equal<typeof installed, Promise<TxReport<typeof Movies>>>
+  Equal<typeof installedP, Promise<TxReport<typeof Movies>>>
 >;
 
 /** `db.principal()` — who am I; the eid is typed against this db's catalog. */
