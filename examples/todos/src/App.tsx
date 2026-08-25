@@ -1,7 +1,13 @@
-import { useLiveQuery, useTransact } from "ramose/react";
+import { useLiveQuery, useOperation } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
-import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
+import {
+  addTodoOp,
+  deleteTodoOp,
+  setDoneOp,
+  todoQuery,
+  type TodoRow,
+} from "./todos.ts";
 
 export const App = () => (
   <main>
@@ -27,22 +33,23 @@ const TodoList = () => {
 // enddocs:todo-list
 
 const TodoRowView = ({ row }: { row: TodoRow }) => {
-  // docs:todo-row-transact
-  const { run } = useTransact();
-  // enddocs:todo-row-transact
+  // docs:todo-row-operation
+  const { run } = useOperation(db, setDoneOp);
+  // enddocs:todo-row-operation
+  const remove = useOperation(db, deleteTodoOp);
   return (
     <li>
       <label>
         <input
           type="checkbox"
           checked={row.done}
-          onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
+          onChange={(e) => void run(row.id, { done: e.target.checked })}
         />
         <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
           {row.title}
         </span>
       </label>
-      <button type="button" onClick={() => void run(deleteTodo(db, row.id))}>
+      <button type="button" onClick={() => void remove.run(row.id, {})}>
         delete
       </button>
     </li>
@@ -51,7 +58,7 @@ const TodoRowView = ({ row }: { row: TodoRow }) => {
 
 const NewTodo = () => {
   const [title, setTitle] = useState("");
-  const { run } = useTransact();
+  const { run } = useOperation(db, addTodoOp);
   return (
     <form
       onSubmit={(e) => {
@@ -59,7 +66,7 @@ const NewTodo = () => {
         const value = title.trim();
         if (value === "") return;
         setTitle("");
-        void run(addTodo(db, value));
+        void run({ title: value });
       }}
     >
       <input

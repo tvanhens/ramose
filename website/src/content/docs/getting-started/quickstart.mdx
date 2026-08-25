@@ -279,10 +279,10 @@ Each write is a named **operation** run with `db.run` ([glossary](/concepts/glos
 ## The screen
 
 ```tsx title="src/App.tsx"
-import { useLiveQuery, useTransact } from "ramose/react";
+import { useLiveQuery, useOperation } from "ramose/react";
 import { useState } from "react";
 import { db } from "./db.ts";
-import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
+import { addTodoOp, deleteTodoOp, setDoneOp, todoQuery, type TodoRow } from "./todos.ts";
 
 export const App = () => (
   <main>
@@ -304,18 +304,19 @@ const TodoList = () => {
 };
 
 const TodoRowView = ({ row }: { row: TodoRow }) => {
-  const { run } = useTransact();
+  const { run } = useOperation(db, setDoneOp);
+  const remove = useOperation(db, deleteTodoOp);
   return (
     <li>
       <label>
         <input
           type="checkbox"
           checked={row.done}
-          onChange={(e) => void run(setDone(db, row.id, e.target.checked))}
+          onChange={(e) => void run(row.id, { done: e.target.checked })}
         />
         <span>{row.title}</span>
       </label>
-      <button type="button" onClick={() => void run(deleteTodo(db, row.id))}>
+      <button type="button" onClick={() => void remove.run(row.id, {})}>
         delete
       </button>
     </li>
@@ -324,13 +325,13 @@ const TodoRowView = ({ row }: { row: TodoRow }) => {
 
 const NewTodo = () => {
   const [title, setTitle] = useState("");
-  const { run } = useTransact();
+  const { run } = useOperation(db, addTodoOp);
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         if (title.trim() === "") return;
-        void run(addTodo(db, title.trim()));
+        void run({ title: title.trim() });
         setTitle("");
       }}
     >
@@ -341,7 +342,7 @@ const NewTodo = () => {
 };
 ```
 
-`useLiveQuery(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useTransact().run` is the pending helper around `db.run` — not the write API. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
+`useLiveQuery(db, todoQuery)` is a **live query** — one that re-runs itself whenever the database changes ([glossary](/concepts/glossary/#live-query)). `useOperation(db, op).run` is the pending helper around `db.run` — not the write API. Notice what is missing: nothing refetches after a write, and nothing invalidates a cache.
 
 ```tsx title="src/main.tsx"
 import { StrictMode } from "react";

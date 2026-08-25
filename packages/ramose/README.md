@@ -27,7 +27,7 @@ Ramose is pre-release: expect the API to change between minor versions.
 | `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
 | `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to `ramose/db` plus alchemy-free `policy` / `Policy` / `claims` — not `Server` / Alchemy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
-| `ramose/react` | `RamoseProvider`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useTransact`. Hooks only. |
+| `ramose/react` | `RamoseProvider`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `usePrincipal`, `useRamoseClaims`, `useOperation`. Hooks only. |
 | `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
 | `ramose/effect` | Opt-in Effect escape hatch — re-exports `Effect`, `Function`, `pipe`, `Redacted`, `Schema`, `Layer`, `Stream`, `Cause`, `Exit`. Not the app path. |
 

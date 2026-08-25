@@ -157,8 +157,7 @@ interface Client {
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const raw = (await token.claims()).ramose?.class;
-  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
+  await token.claims();
 ```
 
 **`Ramose.token.static(value)`** and **`Ramose.token.jwt(mint, options?)`** — the two **token sources** ([glossary](/concepts/glossary/#token-source)). `jwt` calls `mint` on first use, shares one in-flight mint, and re-mints within `refreshMargin` (default 2 minutes) of the token's `exp`. `mint` may resolve to the token string or to `{ token }`. A thrown `Unauthorized` passes through; any other throw becomes `NetworkError`.
@@ -169,6 +168,7 @@ const source = Ramose.token.jwt(() =>
   fetch("/api/auth/ramose/token", { method: "POST", body }).then((r) => r.json()),
 );
 source.claims();      // decoded, NOT verified — UI hints only
+source.peek();        // same payload, sync, or undefined if nothing is cached
 source.invalidate();  // forget the cached token (sign-out)
 ```
 

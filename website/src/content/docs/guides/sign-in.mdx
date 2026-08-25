@@ -79,8 +79,7 @@ In the browser, `ramoseTokenClient()` in the auth client's plugins (`examples/re
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const raw = (await token.claims()).ramose?.class;
-  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
+  await token.claims();
 ```
 
 The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, behind the session cookie. The server's `RAMOSE_JWKS_URL` points at Better Auth's `/api/auth/jwks` — the sign-in provider's public keys ([glossary](/concepts/glossary/#jwks)).

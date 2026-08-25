@@ -32,7 +32,8 @@ const CLIENT_MODULES = [
   "usePull.ts",
   "useOneShot.ts",
   "useBasis.ts",
-  "useTransact.ts",
+  "useOperation.ts",
+  "usePrincipal.ts",
   "useConnectionStatus.ts",
 ] as const;
 

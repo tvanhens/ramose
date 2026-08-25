@@ -88,7 +88,7 @@ examples/reef/
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
 | `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (`Ramose.Server` owns it: `auth` is the source of truth) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
-| `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus create-time `install()` / label seeds; handed to screens as `{ slug, cls, token }` — the peer stamps `sub` / `role` / name / email; screens read `db.principal()` |
+| `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus create-time `install()` / label seeds; handed to screens as `{ slug, token }` — the peer stamps `sub` / `role` / name / email; screens read `db.principal()` |
 | `src/app/route.tsx` | path-based SPA pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a shared URL land on the same screen |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
@@ -103,7 +103,7 @@ examples/reef/
   token nears `exp`, so 15-minute tokens refresh themselves. Refresh stays
   on the board — Vite and the auth Worker both fall back to `index.html`.
 - **Board** — local-first reactivity. Columns render one `useLive(db, boardQuery)`
-  read against the session overlay; a drag is one `useTransact` `run` writing
+  read against the session overlay; a drag is one `useOperation` `run` writing
   two datoms (status + rank) and the card moves as soon as the pending layer
   applies — the `live` pill pulses on every `ticks` bump `useLive` reports
   (local apply, ack, or an inbound filtered `tx`). There is no refetch code

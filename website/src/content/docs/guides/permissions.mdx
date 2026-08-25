@@ -107,9 +107,9 @@ Reef's buttons are polite; the proof is the server. Try it:
 3. In a private window, sign up with that email, accept, open the board.
 4. Drag a card. It snaps back; a red toast reads `remove denied on :issue/status`.
 
-<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says remove denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx#use-transact" />
+<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast says remove denied on :issue/status, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx#use-operation" />
 
-What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":issue/status"`; Reef's `useTransact({ onError })` turns it into the toast. Writes are checked twice: on arrival, where a refusal is `Unauthorized`, and again before a version number is assigned, where a refusal is `TxRejected`. The second check runs inside **the writer**, the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)), and it is the authority — handle both. Both are in [Errors](/reference/errors/).
+What came back was `Unauthorized` (HTTP 403) with `code: "policy"` and `attr: ":issue/status"`; Reef's `useOperation(db, op, { onError })` turns it into the toast. Writes are checked twice: on arrival, where a refusal is `Unauthorized`, and again before a version number is assigned, where a refusal is `TxRejected`. The second check runs inside **the writer**, the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)), and it is the authority — handle both. Both are in [Errors](/reference/errors/).
 
 ## See a field masked
 
