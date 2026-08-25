@@ -11,10 +11,12 @@
  * it is compiled by `bun run typecheck` so the public API can never drift from
  * the documentation, and it runs as-is under
  * `bun alchemy dev examples/kv-style/alchemy.run.ts`. To adopt it, copy the
- * four files into a project of your own.
+ * six files into a project of your own.
  *
  *   resources.ts    ← you are here: the Ramose deployment (Server owns the peer)
  *   schema.ts       shared catalog (User / Movies)
+ *   operations.ts   the writes (`db.run` is the only write path)
+ *   peer.ts         the peer Worker entry the server bundles as `main`
  *   app.ts          an app Worker that binds the server (its own module, so
  *                   `main: import.meta.url` bundles only the app)
  *   alchemy.run.ts  the stack: providers, outputs
