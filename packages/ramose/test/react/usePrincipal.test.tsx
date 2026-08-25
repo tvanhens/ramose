@@ -3,15 +3,17 @@
  * cancelled on unmount, re-read when the session generation advances.
  */
 
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { describe, expect, test } from "bun:test";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import * as Ramose from "../../src/db/index.ts";
 import { RamoseProvider, useDb, usePrincipal } from "../../src/react/index.ts";
-import { registerDom, Todos } from "./harness.tsx";
+import { Todos } from "./harness.tsx";
 import { fakePeer } from "./peer.ts";
 
-registerDom();
+if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const wrapperFor = (
   peer: ReturnType<typeof fakePeer>,
@@ -118,12 +120,13 @@ describe("usePrincipal", () => {
       webSocket: peer.webSocket,
     });
     const db = client.db("todos", Todos);
+    const { result, unmount } = renderHook(() => usePrincipal(db));
     try {
-      const { result } = renderHook(() => usePrincipal(db));
       await waitFor(() => expect(result.current.loading).toBe(false));
       expect(result.current.eid as number | null | undefined).toBe(3);
       expect(result.current.class).toBe("owner");
     } finally {
+      unmount();
       await client.close();
     }
   });

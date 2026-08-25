@@ -26,9 +26,11 @@ import {
 } from "../../src/react/index.ts";
 import { Todo } from "./harness.tsx";
 
-GlobalRegistrator.register();
+if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-afterAll(() => GlobalRegistrator.unregister());
+afterAll(() => {
+  if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
+});
 
 /** A promise the test settles by hand, so `pending` can be observed mid-run. */
 const gate = <A,>() => {
