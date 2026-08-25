@@ -23,6 +23,7 @@ import {
   type Db,
   type DbError,
   type DbPrincipal,
+  type IncompatibleSchema,
   type Eid,
   type EntityRef,
   type Equal,
@@ -291,7 +292,9 @@ const installed = movies.effect.install();
 type _writtenOk = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _writtenErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
+type _writtenErr = Expect<
+  Equal<Effect.Error<typeof installed>, DbError | IncompatibleSchema>
+>;
 /** Every signature's `R` is `never`. */
 type _writtenR = Expect<Equal<Effect.Services<typeof installed>, never>>;
 type _noPromiseTransact = Expect<
@@ -331,6 +334,7 @@ const caught = movies
       InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
       OperationRejected: (e) => Effect.succeed(e.message),
+      IncompatibleSchema: (e) => Effect.succeed(e.message),
     }),
   );
 type _caught = Expect<

@@ -5,7 +5,6 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 import {
   Connection,
@@ -18,7 +17,6 @@ import {
   toWireDatom,
 } from "../../src/internal/core/index.ts";
 import {
-  Databases,
   Entity,
   Field,
   IncompatibleSchema,
@@ -29,7 +27,7 @@ import {
   incompatibleMessage,
   isRequiredAttr,
   isSystemIdent,
-  layer,
+  makeDatabases,
   namespaceOf,
   namespacesNeedingOccupancy,
   occupancyIdents,
@@ -358,12 +356,14 @@ const peer = async () => {
     }
   }) as unknown as typeof fetch;
 
-  const runtime = ManagedRuntime.make(
-    layer({ url: "https://peer.local", fetch: fetchImpl }),
-  );
+  const { databases, close } = makeDatabases({
+    url: Effect.succeed("https://peer.local"),
+    fetch: (url, init) =>
+      fetchImpl(String(url), init as RequestInit) as unknown as Promise<Response>,
+  });
   return {
-    ramose: runtime.runSync(Databases),
-    dispose: () => runtime.dispose(),
+    ramose: databases,
+    dispose: () => close(),
   };
 };
 

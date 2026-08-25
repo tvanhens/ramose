@@ -323,8 +323,9 @@ describe("install → transact → q → pull", () => {
     );
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Bob"]);
     expect(rows.every((r) => typeof r.id === "number")).toBe(true);
-    // current-view q is local — only the first-connect sync rode the socket
-    expect(peer.frames.filter((f) => f.op === "q")).toEqual([]);
+    // current-view q is local — only the first-connect sync rode the socket.
+    // install() reads the catalog as a pinned asOf query.
+    expect(peer.frames.filter((f) => f.op === "q" && f.asOf === undefined)).toEqual([]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
@@ -363,7 +364,9 @@ describe("views", () => {
     const past = db.asOf(1);
     await db.query(names);
     await run(past.query(names));
-    expect(peer.frames.filter((f) => f.op === "q").map((f) => f.asOf)).toEqual([1]);
+    expect(
+      peer.frames.filter((f) => f.op === "q" && f.asOf !== Number.MAX_SAFE_INTEGER).map((f) => f.asOf),
+    ).toEqual([1]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
