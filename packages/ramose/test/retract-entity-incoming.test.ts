@@ -22,8 +22,8 @@ const Part = Entity("part", {
   label: Field(Schema.String),
 });
 const Item = Entity("item", {
-  name: Field(Schema.String, { unique: "upsert" }),
-  part: Field(Ref(Part), { owned: true, optional: true }),
+  name: Field.unique(Schema.String, "upsert"),
+  part: Field.owned(Ref(Part), { optional: true }),
 });
 const Note = Entity("note", {
   title: Field(Schema.String),

@@ -65,31 +65,30 @@ export const Todos = Ramose.Schema({ todo: Todo });
 
 **`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields` and `_tag` are reserved.
 
-**Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag and composes with `Field.many` / `Field.unique`.
+**Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each accepts the option bag (`doc`, `index`, `optional`) and composes with `Field.many` / `Field.unique` / `Field.owned`.
 
 ```ts
 Ramose.string()
-Ramose.string({ unique: "upsert" })
 Ramose.Field.unique(Ramose.string(), "upsert")
+Ramose.Field.unique(Ramose.string(), "strict")
 Ramose.Field.many(Ramose.Ref(Label))
+Ramose.Field.owned(Ramose.Ref(Part))
 Ramose.Enum(["low", "med", "high"])
 ```
 
-**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). When the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST, wrap it with `stored(schema, vt)`.
+**`Ramose.Field(schema, options?)`** — the advanced form: a raw Effect Schema as a **field** ([glossary](/concepts/glossary/#field)). When the Schema is not a branded helper or a `String` / `Number` / `Boolean` AST, wrap it with `stored(schema, vt)`. Cardinality, uniqueness and ownership are the function, not bag keys: `Field.many`, `Field.unique(schema, "upsert" \| "strict")`, `Field.owned`. `"upsert"` unifies with the existing row on a colliding write; `"strict"` rejects it.
 
 ```ts
 import { Schema } from "ramose/effect";
 Ramose.Field(Schema.String)
 Ramose.Field(Ramose.stored(Schema.Literals(["todo", "done"]), "string"))
-Ramose.Field(Ramose.Ref(Label), { cardinality: "many" })
+Ramose.Field.many(Ramose.Ref(Label))
 ```
 
 | option | values | default |
 | --- | --- | --- |
-| `cardinality` | `"one"` · `"many"` | `"one"` |
-| `unique` | `"upsert"` · `"strict"` | — |
-| `index` | `boolean` | `true` when `unique` is set, else `false` |
-| `owned` | `boolean` | `false` |
+| `optional` | `boolean` | `false` |
+| `index` | `boolean` | `true` when the field is unique, else `false` |
 | `doc` | `string` | — |
 
 **`Ramose.Schema({ key: Entity, … })`** — the whole schema. The key must be the entity name (`todo`), so `ns.todo` and `:todo/*` cannot drift. `Schema([User, Label])` keys each by name. Type-level helpers: `Ramose.Schema.Any` (the bound for generic code), `typeof Todos`.
@@ -390,7 +389,7 @@ export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
     .orderBy(Comment.at, "asc");
 ```
 
-**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `{ owned: true }` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
+**Shapes.** The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `{ limit: n }` in its select options; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. A **reference** reads backwards in a shape with `.reverse` — many-valued, unless the reference is `Field.owned` (then the reverse is one record). A many-valued reference filters, orders, and pages its own collection inside the pull with an options record on its `.select` — `ref.select(shape, { where, orderBy, limit, offset })`, where `where` entries are the same filter fragments queries use; a many-valued scalar takes the same record through `Ramose.values(attr, { where, limit, offset })`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts#board-shape"
 export const boardShape = {

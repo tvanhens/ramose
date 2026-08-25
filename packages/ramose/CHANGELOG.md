@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Type-bearing field options live on the function (part of #186, tracker #205)
+
+`cardinality`, `unique` and `owned` are gone from `FieldOptions`.
+Annotating a shared options bag can no longer widen them while the
+runtime keeps what you wrote. The constructors are the identity:
+
+```ts
+Field.many(Ref(Label))
+Field.unique(string(), "upsert")   // colliding write unifies
+Field.unique(string(), "strict")   // colliding write is rejected
+Field.owned(Ref(Part))
+```
+
+They compose (`Field.many(Field.owned(Ref(Part)))`). The options bag
+keeps `doc`, `index` and `optional`. `valueType` stays out (brand with
+`stored`). `"upsert"` / `"strict"` are named for the collision — wire
+remains `:db.unique/identity` / `:db.unique/value`.
+
+**Breaking:** `string({ unique: "upsert" })`,
+`Field(schema, { cardinality: "many" })` and `{ owned: true }` are
+type and runtime errors. No deprecation window (tracker #205).
+
 ### `Ramose.Enum` members and fail-closed `valueType` (part of #185, tracker #205)
 
 `Enum([...])` still brands a string-literal union as `:db.type/string`.

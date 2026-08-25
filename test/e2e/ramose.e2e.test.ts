@@ -224,7 +224,7 @@ d("ramose e2e", () => {
  * promise path (`connect`, `db.run`, `db.query`, a `Subscription`) is covered separately.
  */
 const Session = Ramose.Entity("s", {
-  name: Ramose.string({ unique: "upsert" }),
+  name: Ramose.Field.unique(Ramose.string(), "upsert"),
   n: Ramose.int(),
 });
 const SessionCatalog = Ramose.Schema({ s: Session });

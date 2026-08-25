@@ -14,8 +14,8 @@ import {
   Ref,
 } from "../../src/db/internal.ts";
 
-const User = Entity("user", { sub: Field(Schema.String, { unique: "upsert" }) });
-const Org = Entity("org", { members: Field(Ref(() => User), { cardinality: "many" }) });
+const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
+const Org = Entity("org", { members: Field.many(Ref(() => User)) });
 const Project = Entity("project", { org: Field(Ref(() => Org)) });
 const Doc = Entity("doc", {
   title: Field(Schema.String),

@@ -40,10 +40,10 @@ const Tag = Entity("tag", {
 const Other = DbSchema({ tag: Tag });
 
 const Issue = Entity("issue", {
-  key: Field(Schema.String, { unique: "upsert" }),
+  key: Field.unique(Schema.String, "upsert"),
 });
 const Comment = Entity("comment", {
-  slug: Field(Schema.String, { unique: "upsert" }),
+  slug: Field.unique(Schema.String, "upsert"),
 });
 const Board = DbSchema({ issue: Issue, comment: Comment });
 

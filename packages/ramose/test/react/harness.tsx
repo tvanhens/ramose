@@ -24,7 +24,7 @@ export const registerDom = (): void => {
 
 export const Todo = Ramose.Entity("todo", {
   title: Ramose.Field(Schema.String),
-  slug: Ramose.Field(Schema.String, { unique: "upsert" }),
+  slug: Ramose.Field.unique(Schema.String, "upsert"),
 });
 export const Todos = Ramose.Schema({ todo: Todo });
 export const titles = Ramose.Query.q(() =>

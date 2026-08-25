@@ -23,8 +23,7 @@ Reef's whole data model is one TypeScript file. The parts that matter:
 
 ```ts title="examples/reef/src/domain/schema.ts#user-entity · examples/reef/src/domain/schema.ts#label-entity"
 export const User = Ramose.Entity("user", {
-  sub: Ramose.string({
-    unique: "upsert",
+  sub: Ramose.Field.unique(Ramose.string(), "upsert", {
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
   role: Ramose.string({
@@ -41,7 +40,7 @@ export const User = Ramose.Entity("user", {
 });
 
 export const Label = Ramose.Entity("label", {
-  name: Ramose.string({ unique: "upsert" }),
+  name: Ramose.Field.unique(Ramose.string(), "upsert"),
   color: Ramose.string(),
 });
 ```
@@ -70,7 +69,7 @@ export const Issue = Ramose.Entity("issue", {
 
 | field | what it means |
 | --- | --- |
-| `user.sub` | The account id from the sign-in system. `unique: "upsert"` = one **record** ([glossary](/concepts/glossary/#record)) per person, and you can look a user up by it. Used by permissions later. |
+| `user.sub` | The account id from the sign-in system. `Field.unique(…, "upsert")` = one **record** ([glossary](/concepts/glossary/#record)) per person, and you can look a user up by it. Used by permissions later. |
 | `issue.status`, `issue.priority` | Closed string sets (`Ramose.Enum`) — the field carries `.members`. |
 | `issue.rank` | A double (`Ramose.float()`). |
 | `issue.creator` → `user` | A **reference** — a typed foreign key ([glossary](/concepts/glossary/#reference)). Permissions fill it in for you. |
@@ -93,17 +92,27 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
 
-Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compose with `Field.many` / `Field.unique`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type. Anything else types `valueType` as missing, so `Field` rejects the call at the schema file; wrap it with `Ramose.stored(schema, vt)` or use `Ramose.Enum([...])` for a string set. Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
+Shorthands take the option bag (`doc`, `index`, `optional`) and compose with `Field.many` / `Field.unique` / `Field.owned`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type. Anything else types `valueType` as missing, so `Field` rejects the call at the schema file; wrap it with `Ramose.stored(schema, vt)` or use `Ramose.Enum([...])` for a string set. Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
+
+## Many, unique, owned
+
+Cardinality, uniqueness and ownership live on the function — not in the option bag — so annotating a shared options object cannot silently widen them.
+
+| constructor | effect |
+| --- | --- |
+| `Field.many(schema)` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): the field is a set — a second value adds rather than replaces |
+| `Field.unique(schema, "upsert")` | a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up, and `op.put(User, { sub, name, … })` [unifies with that row](/guides/transactions/#change-fields) on a colliding write |
+| `Field.unique(schema, "strict")` | unique, but a colliding write is rejected |
+| `Field.owned(schema)` | the one declared cascade: the referenced record belongs to its parent and is deleted with it. Requiredness never implies this. Its `.reverse` is one record, not an array — a component has at most one owner |
+
+`"upsert"` vs `"strict"` is named for what the collision does (unify vs throw). The wire still says `:db.unique/identity` and `:db.unique/value`. They compose: `Field.many(Field.owned(Ref(Part)))` is a set of owned refs.
 
 ## Options
 
 | option | default | effect |
 | --- | --- | --- |
-| `unique` | none | `"upsert"` makes the field a **unique key** ([glossary](/concepts/glossary/#unique-key)): one record per value; `[User.sub, "…"]` looks it up, and `op.put(User, { sub, name, … })` [unifies with that row](/guides/transactions/#change-fields). `"strict"` rejects a colliding write. |
 | `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. |
-| `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
-| `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
-| `owned` | `false` | the one declared cascade: the referenced record belongs to its parent and is deleted with it. Requiredness never implies this. Its `.reverse` is one record, not an array — a component has at most one owner |
+| `index` | true when the field is unique | keeps a value-ordered index, so you can look a record up by value |
 | `doc` | none | a description stored with the field |
 
 ## References between records

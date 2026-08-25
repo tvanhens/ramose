@@ -11,9 +11,9 @@ import {
 } from "../../src/db/internal.ts";
 
 export const User = Entity("user", {
-  name: Field(Schema.String, { unique: "upsert" }),
+  name: Field.unique(Schema.String, "upsert"),
   age: Field(Long, { optional: true }),
-  friends: Field(Ref.self, { cardinality: "many" }),
+  friends: Field.many(Ref.self),
   bestFriend: Field(Ref.self, { optional: true }),
 });
 

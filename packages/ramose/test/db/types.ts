@@ -14,6 +14,7 @@ import {
   type AnyField,
   type AnyEntity,
   Field,
+  type FieldOptions,
   Bytes,
   Schema as DbSchema,
   type CatalogIdent,
@@ -207,7 +208,7 @@ const Short = Entity("short", {
   owner: Ref(User),
   tags: Field.many(Ref(User)),
   slug: Field.unique(string(), "upsert"),
-  named: string({ unique: "upsert", doc: "display" }),
+  named: Field.unique(string({ doc: "display" }), "upsert"),
 });
 type _shortTitle = Expect<Equal<(typeof Short)["title"]["valueType"], "string">>;
 type _shortDone = Expect<Equal<(typeof Short)["done"]["valueType"], "boolean">>;
@@ -228,18 +229,35 @@ type _shortTags = Expect<Equal<(typeof Short)["tags"]["cardinality"], "many">>;
 type _shortSlug = Expect<Equal<(typeof Short)["slug"]["unique"], "upsert">>;
 type _shortNamed = Expect<Equal<(typeof Short)["named"]["unique"], "upsert">>;
 
-// composition merge — types match mergeFieldOptions (valueType stays; owned both ways)
-const manyOwned = Field.many(string(), { owned: true });
+// composition merge — types match applyField (valueType stays; owned composes)
+const manyOwned = Field.many(Field.owned(string()));
 type _manyOwned = Expect<Equal<(typeof manyOwned)["owned"], true>>;
+type _manyOwnedCard = Expect<Equal<(typeof manyOwned)["cardinality"], "many">>;
 type _manyOwnedVt = Expect<Equal<(typeof manyOwned)["valueType"], "string">>;
-const uniqueOwned = Field.unique(string(), "upsert", { owned: true });
+const uniqueOwned = Field.unique(Field.owned(string()), "upsert");
 type _uniqueOwned = Expect<Equal<(typeof uniqueOwned)["owned"], true>>;
-const ownedCleared = Field(string({ owned: true }), { owned: false });
-type _ownedCleared = Expect<Equal<(typeof ownedCleared)["owned"], false>>;
-const ownedKept = Field(string({ owned: true }), { doc: "keep" });
+type _uniqueOwnedMode = Expect<Equal<(typeof uniqueOwned)["unique"], "upsert">>;
+const ownedKept = Field(Field.owned(string()), { doc: "keep" });
 type _ownedKept = Expect<Equal<(typeof ownedKept)["owned"], true>>;
-const composedVt = Field(string(), { unique: "upsert" });
+const composedVt = Field.unique(string(), "upsert");
 type _composedVt = Expect<Equal<(typeof composedVt)["valueType"], "string">>;
+// annotating the bag cannot erase cardinality / uniqueness / ownership
+const annotatedBag: FieldOptions = { doc: "shared" };
+const annotatedMany = Field.many(string(), annotatedBag);
+type _annotatedMany = Expect<Equal<(typeof annotatedMany)["cardinality"], "many">>;
+const annotatedUnique = Field.unique(string(), "strict", annotatedBag);
+type _annotatedUnique = Expect<Equal<(typeof annotatedUnique)["unique"], "strict">>;
+const annotatedOwned = Field.owned(string(), annotatedBag);
+type _annotatedOwned = Expect<Equal<(typeof annotatedOwned)["owned"], true>>;
+// @ts-expect-error cardinality is not a field option
+const _noCardOpt: FieldOptions = { cardinality: "many" };
+// @ts-expect-error unique is not a field option
+const _noUniqueOpt: FieldOptions = { unique: "upsert" };
+// @ts-expect-error owned is not a field option
+const _noOwnedOpt: FieldOptions = { owned: true };
+void _noCardOpt;
+void _noUniqueOpt;
+void _noOwnedOpt;
 const schemaOverride = Field(stored(Schema.String, "uuid"));
 type _schemaOverride = Expect<Equal<(typeof schemaOverride)["valueType"], "uuid">>;
 const bareRef = Field(Ref);
@@ -256,8 +274,8 @@ Field.unique(string(), "upsert", { valueType: "long" });
  * it to decide whether the backlink is one entity or a collection.
  */
 const Owned = Entity("owned", {
-  part: Field(Ref.self, { owned: true }),
-  peer: Field(Ref.self, { cardinality: "many" }),
+  part: Field.owned(Ref.self),
+  peer: Field.many(Ref.self),
   plain: Field(Ref.self),
   label: Field(Schema.String),
 });
