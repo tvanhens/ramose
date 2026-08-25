@@ -179,8 +179,8 @@ export const WorkspacesScreen = ({
 }: {
   user: SessionUser;
   opening: string | null;
-  onOpen: (slug: string, name: string) => void;
-  onCreate: (slug: string, name: string) => void | Promise<void>;
+  onOpen: (slug: string) => void;
+  onCreate: (slug: string) => void | Promise<void>;
 }) => {
   const toast = useToast();
   const [orgs, setOrgs] = useState<readonly OrgSummary[] | null>(null);
@@ -204,7 +204,6 @@ export const WorkspacesScreen = ({
     refresh().catch((err) =>
       toast("error", err instanceof Error ? err.message : String(err)),
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const create = async () => {
@@ -222,7 +221,7 @@ export const WorkspacesScreen = ({
     setBusy(true);
     try {
       await createWorkspace(name.trim(), slug);
-      await onCreate(slug, name.trim());
+      await onCreate(slug);
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -236,7 +235,7 @@ export const WorkspacesScreen = ({
       const all = await listWorkspaces();
       setOrgs(all);
       const org = all.find((o) => o.id === invite.organizationId);
-      if (org) onOpen(org.slug, org.name);
+      if (org) onOpen(org.slug);
       else await refresh();
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));

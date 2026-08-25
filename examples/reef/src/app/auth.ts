@@ -34,13 +34,6 @@ export interface OrgSummary {
   readonly slug: string;
 }
 
-export interface OrgMember {
-  readonly id: string;
-  readonly userId: string;
-  readonly role: string;
-  readonly user: { readonly name: string; readonly email: string };
-}
-
 export interface Invitation {
   readonly id: string;
   readonly email: string;
@@ -65,24 +58,6 @@ export const listWorkspaces = () =>
 
 export const createWorkspace = (name: string, slug: string) =>
   call<OrgSummary>("/organization/create", { method: "POST", body: { name, slug } });
-
-export const checkSlug = async (slug: string): Promise<boolean> => {
-  try {
-    const res = await call<{ status: boolean }>("/organization/check-slug", {
-      method: "POST",
-      body: { slug },
-    });
-    return res.status;
-  } catch {
-    return false;
-  }
-};
-
-export const listMembers = (organizationId: string) =>
-  call<{ members: OrgMember[] }>("/organization/list-members", {
-    method: "GET",
-    query: { organizationId },
-  });
 
 export const inviteMember = (organizationId: string, email: string, role: string) =>
   call<Invitation>("/organization/invite-member", {

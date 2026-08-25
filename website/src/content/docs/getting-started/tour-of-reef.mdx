@@ -122,7 +122,7 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 ## Move a card
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — the card moves here at once, and every other window follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:377-378" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — the card moves here at once, and every other window follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:376-377" />
 
 A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 

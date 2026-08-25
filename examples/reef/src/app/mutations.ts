@@ -366,10 +366,6 @@ export const moveIssue = (
 ) => db.run(moveIssueOp, issueId, { status, rank });
 // enddocs:move-issue
 
-/** Status change from the detail panel — keeps the rank (column position). */
-export const setStatus = (db: ReefDb, issueId: number, status: Status) =>
-  db.run(setStatusOp, issueId, { status });
-
 export const setTitle = (db: ReefDb, issueId: number, title: string) =>
   db.run(setTitleOp, issueId, { title });
 
@@ -377,15 +373,6 @@ export const setTitle = (db: ReefDb, issueId: number, title: string) =>
 export const setDescription = (db: ReefDb, issueId: number, text: string) =>
   db.run(setDescriptionOp, issueId, { text });
 // enddocs:set-description
-
-export const setPriority = (db: ReefDb, issueId: number, priority: Priority) =>
-  db.run(setPriorityOp, issueId, { priority });
-
-export const setAssignee = (
-  db: ReefDb,
-  issueId: number,
-  assigneeId: number | undefined,
-) => db.run(setAssigneeOp, issueId, { assigneeId });
 
 // docs:toggle-label
 export const toggleLabel = (
@@ -395,10 +382,6 @@ export const toggleLabel = (
   on: boolean,
 ) => db.run(toggleLabelOp, issueId, { labelId, on });
 // enddocs:toggle-label
-
-/** Owner-only by policy: everyone else gets `Unauthorized` from the peer. */
-export const setPrivateNote = (db: ReefDb, issueId: number, note: string) =>
-  db.run(setPrivateNoteOp, issueId, { note });
 
 // docs:delete-issue
 export const deleteIssue = (db: ReefDb, issueId: number) =>
@@ -411,9 +394,6 @@ export const addComment = (
   issueId: number,
   body: string,
 ) => db.run(addCommentOp, issueId, { body, authorId: myEid });
-
-export const deleteComment = (db: ReefDb, commentId: number) =>
-  db.run(deleteCommentOp, commentId, {});
 
 // ── sample data ──────────────────────────────────────────────────────────────
 
@@ -487,14 +467,3 @@ const SAMPLE_ISSUES: readonly {
     labels: ["infra", "feature"],
   },
 ];
-
-/**
- * Seed the sample board in one operation. Ranks are spaced by column so
- * later drags have room in between; issues are created by (and, when marked,
- * assigned to) the caller.
- */
-export const seedSampleIssues = (
-  db: ReefDb,
-  myEid: number,
-  labels: readonly { id: number; name: string }[],
-) => db.run(seedSampleIssuesOp, { creatorId: myEid, labels });
