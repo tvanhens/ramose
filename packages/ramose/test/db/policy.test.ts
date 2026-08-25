@@ -369,10 +369,14 @@ describe("deploy-time errors", () => {
       tags: Field.many(Schema.String),
     });
     const Catalog = DbSchema({ user: Account });
-    expect(() =>
-      P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}),
-    ).not.toThrow();
-    expect(() => P.compile(P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}))).not.toThrow();
+    const head = {
+      schema: Catalog,
+      principal: Account.sub,
+      classes: ["member"] as const,
+      schemaClasses: ["member"] as const,
+    };
+    expect(() => P.policy(head, {})).not.toThrow();
+    expect(() => P.compile(P.policy(head, {}))).not.toThrow();
   });
 
   test("an empty fragment is a PolicyError — public is `true`", () => {
