@@ -147,7 +147,7 @@ The card moves on the local overlay before the POST returns. Then the write reac
 
 <Shot src="/reef/issue-detail.png" alt="The issue side panel: title, status, priority, assignee, label chips, description, admin note and a comment thread" caption="Status, assignee and labels come from the live board row; title, description and note ride one live pull." code="examples/reef/src/app/components/IssueDetail.tsx#issue-panel-reads" />
 
-The panel **reads one record** with `usePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
+The panel **reads one record** with `useLivePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
 
 ```ts title="examples/reef/src/app/components/IssueDetail.tsx#issue-panel-reads"
   const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
