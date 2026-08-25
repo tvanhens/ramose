@@ -19,11 +19,13 @@ import {
   compareAuthToWorker,
   compareOperationsToHealth,
   compareWritesToWorker,
+  coverageTimeoutMs,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
   isServer,
   ownedAuthEnv,
   ownedPeerEnv,
+  PROBE_DEFAULTS,
   resolveWorker,
   resolveWrites,
   Server,
@@ -708,5 +710,14 @@ describe("operations coverage vs /health", () => {
     expect(compareOperationsToHealth(client, { ok: true })).toMatch(
       /missing operations: user\/create, user\/set-name/,
     );
+  });
+
+  test("coverage fetch uses the caller's probe.timeoutMs", () => {
+    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.live)).toBe(60_000);
+    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.local)).toBe(60_000);
+    expect(coverageTimeoutMs(undefined, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
+    expect(coverageTimeoutMs({}, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
+    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
+    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
   });
 });

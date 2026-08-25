@@ -635,6 +635,23 @@ export const compareOperationsToHealth = (
   }
 };
 
+/**
+ * @internal One attempt's budget for the coverage `GET /health`.
+ *
+ * Same resolution as {@link probeHealth}: a caller-supplied
+ * `probe.timeoutMs` wins; `probe: false` and an unset probe fall back
+ * to the provider default. The coverage fetch is a second request, so
+ * it has to share that budget — otherwise a slow peer that just passed
+ * a 60s probe still dies on the 10s live / 2s local default.
+ */
+export const coverageTimeoutMs = (
+  probe: ServerProbe | false | undefined,
+  defaults: Required<ServerProbe>,
+): number =>
+  probe === false
+    ? defaults.timeoutMs
+    : (probe?.timeoutMs ?? defaults.timeoutMs);
+
 const fetchHealthJson = (url: string, timeoutMs: number) =>
   Effect.tryPromise({
     try: (signal) =>
@@ -909,7 +926,7 @@ const attributes = Effect.fn(function* (
   const url = trimSlashes(chosen);
   yield* probeHealth(url, props.probe, defaults);
   if (props.operations !== undefined) {
-    const body = yield* fetchHealthJson(url, defaults.timeoutMs);
+    const body = yield* fetchHealthJson(url, coverageTimeoutMs(props.probe, defaults));
     const badOps = compareOperationsToHealth(props.operations, body);
     if (badOps !== undefined) {
       return yield* Effect.fail(new InvalidRequest({ message: badOps }));
