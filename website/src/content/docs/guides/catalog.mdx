@@ -103,7 +103,7 @@ Shorthands take the same option bag as `Field` (`unique`, `doc`, …) and compos
 | `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. |
 | `cardinality` | `"one"` | **one value or many** ([glossary](/concepts/glossary/#one-or-many)): `"many"` makes the field a set — a second value adds rather than replaces |
 | `index` | true when `unique` is set | keeps a value-ordered index, so you can look a record up by value |
-| `owned` | `false` | the referenced record belongs to its parent and is deleted with it. Its `.reverse` is one record, not an array — a component has at most one owner |
+| `owned` | `false` | the one declared cascade: the referenced record belongs to its parent and is deleted with it. Requiredness never implies this. Its `.reverse` is one record, not an array — a component has at most one owner |
 | `doc` | none | a description stored with the field |
 
 ## References between records

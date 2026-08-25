@@ -741,7 +741,9 @@ export async function expandTx(
     const nss = appNamespacesOf(await presentIdents(op.e));
     if (nss.size === 0) continue;
     throw new TxError(
-      `cannot clear required field ${op.attr.ident}`,
+      op.fromRetractEntity
+        ? `entity ${op.e} still references the deleted entity via required ${op.attr.ident} — delete or re-point it first`
+        : `cannot clear required field ${op.attr.ident}`,
       "tx/required",
     );
   }

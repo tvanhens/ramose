@@ -20,6 +20,7 @@ import {
 } from "../domain/schema.ts";
 
 const Op = Ramose.Operation.for(Reef);
+const { Query } = Ramose;
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -128,10 +129,21 @@ export const deleteIssueOp = Op(
     on: Issue,
     input: Schema.Struct({}),
     output: Schema.Struct({}),
-    doc: "Delete an issue",
+    doc: "Delete an issue and its comments",
   },
-  (op) => {
+  async (op) => {
+    // docs:delete-issue-op
+    const issueId = op.self.eid;
+    if (typeof issueId === "number") {
+      const comments = await op.query(
+        Query.from(Comment)
+          .where({ issue: issueId })
+          .select({ id: Comment.id }),
+      );
+      for (const row of comments) op.delete(row.id);
+    }
     op.delete(op.self);
+    // enddocs:delete-issue-op
     return {};
   },
 );
