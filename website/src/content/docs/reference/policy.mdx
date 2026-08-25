@@ -95,13 +95,13 @@ These are the access-check verbs a policy arm keys. They are not the write-path 
 | `set` | writing a value to a field of an existing record |
 | `remove` | clearing a value from a field |
 | `delete` | deleting a whole record |
-| `write` | authoring alias for `set` + `remove` + `delete` — one arm, three verbs |
+| `write` | alias for `set` + `remove` + `delete` |
 
 ```ts
 issue: { read: true, create: P.class("member"), write: { class: "member", rule: ownIssue } }
 ```
 
-Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate. Naming both `write` and `set` / `remove` / `delete` is a deploy-time error.
+Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, `true`, or a class gate. `write` plus `set` / `remove` / `delete` fails at deploy.
 
 ## Arms are fragments
 
@@ -163,7 +163,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## Field rules narrow
 
-`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A field you add later inherits the record-type rule instead of becoming world-readable. A `read` arm without write arms still inherits the namespace on writes — `P.only("owner")` is the one-arm spelling that masks every op. `compile()` warns when a field's `read` is narrower than its writes.
+`P.field(field, rules)` sits under its own record type and can only tighten the record-type rule. A later field inherits that rule. A `read` arm without write arms still inherits the namespace on writes — `P.only("owner")` masks every op. `compile()` warns when `read` is narrower than the writes.
 
 ```ts title="examples/reef/src/domain/policy.ts#policy-private-note"
         P.field(Issue.privateNote, P.only("owner")),
@@ -194,7 +194,7 @@ Class `admin` is ordinary unless named `superuser`. `anonymous` is the internet;
 
 `P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up). The wire version is 2; installed policies recompile at deploy.
 
-Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone. `compile()` also warns when a field's `read` is narrower than its writes.
+Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls` runs that check alone; `P.checkReadWriteMasks` is the read-vs-write warning.
 
 ```ts title="examples/reef/src/domain/policy.ts#compiled-policy"
 export const compiledPolicy = (): string =>
