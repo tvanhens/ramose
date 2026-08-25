@@ -9,7 +9,7 @@
  */
 import * as Ramose from "ramose/db";
 import { Reef } from "../domain/schema.ts";
-import { provisionWorkspace } from "./mutations.ts";
+import { provisionWorkspaceOp } from "./mutations.ts";
 
 export const RAMOSE_URL =
   import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:1337";
@@ -65,7 +65,9 @@ export const openWorkspace = async (
     });
     try {
       // docs:ramose-db-slug
-      await provisionWorkspace(ramose.db(slug, Reef));
+      // docs:provision-workspace
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
+      // enddocs:provision-workspace
       // enddocs:ramose-db-slug
     } finally {
       await ramose.close();

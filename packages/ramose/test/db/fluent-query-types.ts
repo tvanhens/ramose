@@ -254,3 +254,34 @@ Q.fact(issueVar, Issue.title);
 Q.pull(issueVar, { name: User.name });
 // @ts-expect-error User.name is not a field of the Issue-branded var
 Q.fact(issueVar, User.name);
+
+// ── #192: any / not / attr comparators are namespace-constrained ────────────
+
+Query.from(Issue).where(Query.any(Query.gt(Issue.rank, 3), Query.startsWith(Issue.title, "ship")));
+Query.from(Issue).where(Query.not(Query.any(Query.includes(Issue.title, "flake"))));
+Query.from(Issue).where(Query.gte(Issue.rank, 1), Query.lt(Issue.rank, 10));
+Query.from(Issue).where(Query.lte(Issue.rank, 3));
+Query.from(Comment).where(Query.startsWith(Comment.text, "on", { ignoreCase: true }));
+
+// @ts-expect-error User.name is not a field of Issue
+Query.from(Issue).where(Query.any(Query.is(User.name, "Ada")));
+
+// @ts-expect-error User.age is not a field of Issue
+Query.from(Issue).where(Query.gt(User.age, 3));
+
+// @ts-expect-error User.name is not a field of Issue
+Query.from(Issue).where(Query.not(Query.is(User.name, "Ada")));
+
+// @ts-expect-error rank is a long, not a string
+Query.startsWith(Issue.rank, "x");
+
+// @ts-expect-error rank is a long, not a string
+Query.includes(Issue.rank, "x");
+
+declare const pagedCursor: import("../../src/db/query/query.ts").Cursor;
+const pagedComments = Query.from(Comment).orderBy(Comment.at, "asc").limit(2);
+const _encoded: string = Query.encodeCursor(pagedComments, pagedCursor);
+const _decoded = Query.decodeCursor(pagedComments, _encoded);
+type _cursorRound = Expect<
+  Equal<typeof _decoded, import("../../src/db/query/query.ts").Cursor>
+>;

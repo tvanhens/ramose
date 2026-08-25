@@ -26,7 +26,7 @@ Reef's board is one **live query** — a query that re-runs itself whenever the 
 
 Open the same workspace in two windows and drag a card. The window you dragged in moves immediately; the other window follows within about a second, locally and deployed, and Reef's header pill pulses on every update (`key={basis}` from `board.t` re-triggers the animation):
 
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:260-263" />
+<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; cards moved in the top window appear in the same columns in the bottom one, tick counters climbing" caption="Two windows on the same workspace; the live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:259-262" />
 
 There is no refetch code anywhere in Reef. Nothing at the write site announces the change, and there is no cache to invalidate.
 

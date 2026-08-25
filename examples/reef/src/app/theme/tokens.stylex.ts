@@ -41,14 +41,12 @@ export const colors = stylex.defineVars({
 });
 
 export const space = stylex.defineVars({
-  xxs: "2px",
   xs: "4px",
   sm: "8px",
   md: "12px",
   lg: "16px",
   xl: "24px",
   xxl: "36px",
-  xxxl: "56px",
 });
 
 export const radii = stylex.defineVars({
@@ -70,5 +68,4 @@ export const type = stylex.defineVars({
   lg: "16px",
   xl: "20px",
   xxl: "28px",
-  xxxl: "36px",
 });

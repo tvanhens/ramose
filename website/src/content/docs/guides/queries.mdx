@@ -54,12 +54,14 @@ export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
 | `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id` is a number or an id cell). Equivalent to `is(N.id, id)` |
 | `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id or a row cell). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there — absence is not a value |
+| `any(…stages)` / `not(stage)` | disjunction of stages, and negation — `where(Query.any(Query.startsWith(Issue.title, term), Query.includes(Issue.title, term)))`. Built on `Q.or` / `Q.not` |
+| `gt` / `gte` / `lt` / `lte` / `startsWith` / `includes` | attr-level comparator sugar on `matching`: `Query.gt(Issue.rank, 3)`, `Query.startsWith(Issue.title, term, { ignoreCase: true })` |
 | `matching(attr, (v) => …)` | bind the field's value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "re:"))`; the comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches`. `startsWith` / `endsWith` / `includes` take `{ ignoreCase: true }`; `matches` takes a string or a `RegExp` with no flags |
 | `follow(ref)` / `backlink(ref)` | refocus the pipeline on the reference's target / on the records pointing here — filter across a hop: `Query.from(Issue)` then a `follow` fragment |
 | `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over the records pointing here through `ref` (`every` and `none` are vacuously true of a record nothing points at) |
 | `updatedSince(t)` / `assertedBy(attr, who)` | time and provenance as ordinary stages |
 
-`Q.or(…)` and `Q.not(…)` combine clauses in the generator spelling; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
+`Query.any` / `Query.not` are the app-surface spelling of `Q.or` / `Q.not`. The kernel forms remain for generator bodies; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
 
 **Conditional filters.** The builder is immutable, so a clause that depends on a local is ordinary JavaScript — reassign, or skip the call. Filter stages come before `select`:
 
@@ -224,12 +226,15 @@ const theAda = await db.query(byEmail("ada@example").oneOrFail());
 
 `one()` is at most one: two matches are not an error, and the rest are never fetched. `oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
 
-`after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
+`after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker). Hold it in memory, or put `Query.encodeCursor(q, cursor)` in a URL and `Query.decodeCursor(q, token)` it back — Instant keys rehydrate as `Date`.
 
 ```ts
 const page1 = await db.query(boardQuery.after(null));
 const page2 = await db.query(boardQuery.after(page1.cursor));
 // page.cursor is null when the page came back short — nothing past it
+
+const token = page1.cursor && Query.encodeCursor(boardQuery, page1.cursor);
+const next = token ? Query.decodeCursor(boardQuery, token) : null;
 ```
 
 ## Count

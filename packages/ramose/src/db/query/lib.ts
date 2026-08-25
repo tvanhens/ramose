@@ -33,6 +33,7 @@ import {
   type AttrLike,
   type EidCell,
   type QueryGen,
+  type StringPredOpts,
   type Var,
 } from "./kernel.ts";
 import { isPipeline, type Pipeline, type PipeStage, type SelectExtra } from "./query.ts";
@@ -258,6 +259,69 @@ export const matching = <A extends AttrLike>(
     const f = yield* Q.fact(e, attr);
     yield* pred(f.v as Var<AttrValue<A>>) as QueryGen<unknown>;
   });
+
+/** The attr brand a filter stage carries — unioned across `any` / `not`. */
+type StageAttr<S> = S extends FilterStage<any, infer A> ? A : void;
+
+const asFrag = (stage: FilterStage<AnyEntity, any>, e: AnyVar): QueryGen<unknown> =>
+  stage(e) as QueryGen<unknown>;
+
+/**
+ * Disjunction of filter stages — `any(startsWith(Issue.title, x), includes(Issue.body, x))`.
+ * Built on {@link Q.or}; usable in fluent `.where(...)`. Each arm is
+ * namespace-constrained the same way `is` / `matching` are.
+ */
+export const any = <const S extends readonly FilterStage<AnyEntity, any>[]>(
+  ...stages: S
+): FilterStage<AnyEntity, StageAttr<S[number]>> => {
+  if (stages.length === 0) {
+    throw new Error("ramose/query: any(...) needs at least one stage");
+  }
+  return filter<StageAttr<S[number]>>(function* (e) {
+    yield* Q.or(...stages.map((s) => () => asFrag(s, e)));
+  });
+};
+
+/**
+ * Negation of a filter stage — `not(any(...))` is the negated disjunction.
+ * Built on {@link Q.not}.
+ */
+export const not = <A = void>(stage: FilterStage<AnyEntity, A>): FilterStage<AnyEntity, A> =>
+  filter<A>(function* (e) {
+    yield* Q.not(() => asFrag(stage, e));
+  });
+
+/** `gt(A, v)`: the attr's value is greater than `v`. */
+export const gt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.gt(v, value));
+
+/** `gte(A, v)`: the attr's value is greater than or equal to `v`. */
+export const gte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.gte(v, value));
+
+/** `lt(A, v)`: the attr's value is less than `v`. */
+export const lt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.lt(v, value));
+
+/** `lte(A, v)`: the attr's value is less than or equal to `v`. */
+export const lte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.lte(v, value));
+
+/** `startsWith(A, s)`: the string attr starts with `s`. */
+export const startsWith = <A extends AttrLike>(
+  attr: A,
+  needle: Extract<AttrValue<A>, string>,
+  opts?: StringPredOpts,
+): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.startsWith(v as Var<string>, needle, opts));
+
+/** `includes(A, s)`: the string attr contains `s`. */
+export const includes = <A extends AttrLike>(
+  attr: A,
+  needle: Extract<AttrValue<A>, string>,
+  opts?: StringPredOpts,
+): FilterStage<AnyEntity, A> =>
+  matching(attr, (v) => Q.includes(v as Var<string>, needle, opts));
 
 // ── traversals ──────────────────────────────────────────────────────────────
 

@@ -81,9 +81,9 @@ import {
  * Where a page ended — feed it to `q.after` to get the next one. Opaque: the
  * `keys` are the last row's sort-key values (the entity-id tie-breaker
  * included), and they mean something only to the query that minted them —
- * `.after` rejects a cursor whose shape does not fit. Keep it in memory
- * between pages; it is not designed to survive serialization (a `Date` key
- * that round-trips as a string would sort as one).
+ * `.after` rejects a cursor whose shape does not fit. Hold it in memory, or
+ * round-trip through `Query.encodeCursor` / `Query.decodeCursor` so Instant
+ * keys stay `Date`s (a JSON-stringified `Date` sorts as a string).
  */
 export interface Cursor {
   readonly _tag: "Cursor";

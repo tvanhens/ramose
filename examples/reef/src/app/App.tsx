@@ -47,7 +47,7 @@ const app = stylex.create({
   },
 });
 
-export type Theme = "dark" | "light";
+type Theme = "dark" | "light";
 
 const THEME_KEY = "reef.theme";
 
@@ -69,7 +69,7 @@ const ThemeContext = createContext<{ theme: Theme; toggle: () => void }>({
   toggle: () => {},
 });
 
-export const useTheme = () => useContext(ThemeContext);
+const useTheme = () => useContext(ThemeContext);
 
 /** The sun/moon toggle, usable on any screen. */
 export const ThemeToggle = () => {

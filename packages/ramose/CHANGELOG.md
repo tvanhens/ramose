@@ -14,6 +14,15 @@ A hydrated one-shot does not refetch on mount. `"use client"` already
 shipped in #212; the walkthrough is the new [Read on the server](https://ramose.ai/guides/ssr/)
 page.
 
+### App-surface disjunction, comparators, and serializable cursors (part of #192)
+
+`Query.any(...stages)` is a fluent disjunction (`Q.or`); `Query.not(stage)`
+negates a stage. Attr-level comparator sugar on `matching`: `Query.gt` /
+`Query.gte` / `Query.lt` / `Query.lte` / `Query.startsWith` / `Query.includes`
+— namespace-constrained the same way `is` is. `Query.encodeCursor(q, cursor)` /
+`Query.decodeCursor(q, token)` pack a keyset cursor for a URL so Instant keys
+rehydrate as `Date`.
+
 ### `usePrincipal`, `useRamoseClaims`, and `useOperation` (part of #195)
 
 `usePrincipal(db)` loads `{ eid, class, loading }` from `db.principal()`.

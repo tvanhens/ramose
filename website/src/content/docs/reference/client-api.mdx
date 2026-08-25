@@ -266,9 +266,8 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
 
 **`db.install(options?): Promise<TxReport>`** — **install** the schema into this database as one write; safe to repeat ([glossary](/concepts/glossary/#install)). Reads the installed fields first and fails with `IncompatibleSchema` when a value type, cardinality, uniqueness, or a new required field on existing rows would change. Pass `{ allowIncompatible: [":ident"] }` to apply those idents anyway. Under a policy only a schema class may run it (default `[superuser]`). Reef's workspace provision runs install as an operation effect, then seeds labels.
 
-```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
-export const provisionWorkspace = (db: ReefDb) =>
-  db.run(provisionWorkspaceOp, {}).then(() => undefined);
+```ts title="examples/reef/src/app/ramose.ts#provision-workspace"
+      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
 ```
 
 ## Writes
@@ -310,18 +309,12 @@ export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
 
 **Verbs** — [Write data](/guides/transactions/) teaches these. `put` makes a row so (full required data; a unique key unifies). `update` changes what's there (partial; never creates). `set` / `remove` / `delete` are the field-level escape hatch (a many-valued toggle, clearing a field).
 
-```ts title="examples/reef/src/app/mutations.ts#set-description"
-export const setDescription = (db: ReefDb, issueId: number, text: string) =>
-  db.run(setDescriptionOp, issueId, { text });
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#set-description"
+                void setDescription.run(issueId, { text: description.trim() });
 ```
 
-```ts title="examples/reef/src/app/mutations.ts#toggle-label"
-export const toggleLabel = (
-  db: ReefDb,
-  issueId: number,
-  labelId: number,
-  on: boolean,
-) => db.run(toggleLabelOp, issueId, { labelId, on });
+```ts title="examples/reef/src/app/components/IssueDetail.tsx#toggle-label"
+                      void toggleLabel.run(issueId, { labelId: label.id, on: !on })
 ```
 
 Rules:
@@ -363,6 +356,8 @@ Query.from(Todo)                         // every todo…
 | `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id`: number or id cell). Equivalent to `is(N.id, id)` |
 | `is(attr, v)` | the field equals `v` — for a reference, points at that record (`v`: literal or id cell). `is(N.id, id)` is the same filter as `byId(id)` |
 | `has(attr)` / `missing(attr)` | the fact is there / is not there |
+| `any(…stages)` / `not(stage)` | disjunction of filter stages, and negation — `Query.any(Query.startsWith(Issue.title, term), Query.includes(Issue.title, term))`. Built on `Q.or` / `Q.not` |
+| `gt` / `gte` / `lt` / `lte` / `startsWith` / `includes` | attr-level comparator sugar on `matching`: `Query.gt(Issue.rank, 3)`, `Query.startsWith(Issue.title, "Fix", { ignoreCase: true })` |
 | `matching(attr, (v) => cmp)` | bind the value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "Fix"))`; comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches`. `startsWith` / `endsWith` / `includes` take `{ ignoreCase: true }`; a `RegExp` with flags throws |
 | `ids()` | project only `{ id }` rows — the cheap live-subscription workhorse |
 | `follow(ref)` / `backlink(ref)` | refocus on the reference's target / on the referrer |
@@ -371,7 +366,7 @@ Query.from(Todo)                         // every todo…
 | `select(shape)` / `orderBy(key, dir?, opts?)` / `limit(n)` / `offset(n)` | shape, sort, page — on the server |
 | `stage(fragment)` | lift your own fragment with the same adapter the shipped combinators use |
 
-`Q.or(…)` / `Q.not(…)` combine clauses (generator spelling); join variables are whatever outer handles the branches close over. `Q.call(fn, …args)` binds an engine function (`+`, `lower-case`, `str`, …) — the names it accepts are listed on [The query language](/reference/query-language/#engine-functions-qcall-can-bind). A generator record of value cells is one row per source; `Q.distinct({ … })` keeps unique projected tuples ([The query language](/reference/query-language/#projection-keeps-one-row-per-source)). `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
+`Query.any` / `Query.not` are the fluent spelling of `Q.or` / `Q.not`. The kernel forms remain for generator bodies; join variables are whatever outer handles the branches close over. `Q.call(fn, …args)` binds an engine function (`+`, `lower-case`, `str`, …) — the names it accepts are listed on [The query language](/reference/query-language/#engine-functions-qcall-can-bind). A generator record of value cells is one row per source; `Q.distinct({ … })` keeps unique projected tuples ([The query language](/reference/query-language/#projection-keeps-one-row-per-source)). `Query.rule(name, body)` names a fragment as an engine rule — that is what makes recursion work — and `q.open(args)` / `Query.enrich` / `Query.refine` compose whole queries; see [The query language](/reference/query-language/).
 
 **Terminals** — methods on the built query value:
 
@@ -381,6 +376,7 @@ q.limit(n) / q.offset(n)     // page on the server
 q.one()          // at most one row — Row | null; forces :limit 1
 q.oneOrFail()    // exactly one row — Row, or fails with NotOne; forces :limit 2
 q.after(cursor)  // keyset page — resolves to { rows, cursor }
+Query.encodeCursor(q, cursor) / Query.decodeCursor(q, token)
 q.logic()        // the query without its cursor (orderBy/limit/offset/one/after) — for composition
 ```
 
@@ -446,7 +442,7 @@ Query.from(Issue)
   .orderBy((r) => r.n, "desc")
 ```
 
-**Keyset paging.** `q.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
+**Keyset paging.** `q.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `offset`, rows inserted before the cursor never shift the walk. Hold it in memory, or `Query.encodeCursor(q, cursor)` / `Query.decodeCursor(q, token)` so Instant keys survive a URL as `Date`s.
 
 ```ts
 const paged = Query.from(Issue)
@@ -455,6 +451,7 @@ const paged = Query.from(Issue)
   .limit(20);
 const p1 = await db.query(paged.after(null));
 const p2 = await db.query(paged.after(p1.cursor));   // rows strictly after page one
+const token = p1.cursor && Query.encodeCursor(paged, p1.cursor);
 ```
 
 Rules the surface enforces:

@@ -117,7 +117,6 @@ const styles = stylex.create({
   wide: {
     display: { default: "inline-flex", "@media (max-width: 760px)": "none" },
   },
-  crumbSep: { color: colors.textFaint, display: "inline-flex", marginInline: "2px" },
   wsName: { fontWeight: 700, fontSize: type.md, color: colors.text },
   wsSlug: {
     fontFamily: type.mono,
@@ -428,7 +427,9 @@ export const BoardScreen = ({
               onSelect={(id) => setSelected(id)}
               onNew={(status) => setDraftStatus(status)}
               onMove={(id, status, rank) =>
+                // docs:move-issue
                 void move.run(id, { status, rank })
+                // enddocs:move-issue
               }
             />
             {liveRows.length === 0 && (
@@ -522,7 +523,7 @@ export const BoardScreen = ({
       )}
 
       {invite && (
-        <InviteDialog slug={slug} user={user} onClose={() => setInvite(false)} />
+        <InviteDialog slug={slug} onClose={() => setInvite(false)} />
       )}
     </div>
   );
@@ -703,11 +704,9 @@ const NewIssueDialog = ({
 
 const InviteDialog = ({
   slug,
-  user,
   onClose,
 }: {
   slug: string;
-  user: SessionUser;
   onClose: () => void;
 }) => {
   const toast = useToast();
