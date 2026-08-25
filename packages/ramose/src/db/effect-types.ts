@@ -15,7 +15,7 @@ export type EffectOf<A, E = never, R = never> = Effect.Effect<A, E, R>;
 export type RedactedOf<A> = Redacted.Redacted<A>;
 import type { AnySchema } from "./Schema.ts";
 import type { DbPrincipal, QueryError, TxReport } from "./Db.ts";
-import type { DbError } from "./Errors.ts";
+import type { DbError, IncompatibleSchema, InstallOptions } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type {
@@ -63,7 +63,9 @@ export interface EffectDb<C extends AnySchema = AnySchema>
   extends EffectReadDb<C> {
   principal(): Effect.Effect<DbPrincipal<C>, DbError>;
 
-  install(): Effect.Effect<TxReport<C>, DbError>;
+  install(
+    options?: InstallOptions,
+  ): Effect.Effect<TxReport<C>, DbError | IncompatibleSchema>;
 
   run<I, O, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, undefined, OC>,

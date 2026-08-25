@@ -18,7 +18,12 @@
 import * as stylex from "@stylexjs/stylex";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BoardRow } from "../../domain/queries.ts";
-import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
+import {
+  Issue,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  type Status,
+} from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import { Avatar, Icon, IconButton, LabelBadge, PriorityIcon } from "../ui.tsx";
 import {
@@ -517,7 +522,7 @@ export const Board = ({
         ref={boardRef}
         {...stylex.props(styles.board, dragging && styles.boardDragging)}
       >
-      {STATUSES.map((status) => {
+      {Issue.status.members.map((status) => {
         const column = displayRows.filter((r) => r.status === status);
         const visible = dragging ? column.filter((r) => r.id !== dragId) : column;
         const hovering = over?.status === status && dragging;
@@ -670,9 +675,9 @@ export const Board = ({
                   >
                     <div {...stylex.props(styles.cardTop)}>
                       <PriorityIcon
-                        level={row.priority}
+                        level={Issue.priority.members.indexOf(row.priority)}
                         size={14}
-                        title={PRIORITIES[row.priority] ?? PRIORITIES[0]}
+                        title={PRIORITY_LABELS[row.priority] ?? PRIORITY_LABELS.none}
                       />
                       <span {...stylex.props(styles.cardId)}>#{row.id}</span>
                       <span {...stylex.props(styles.spacer)} />

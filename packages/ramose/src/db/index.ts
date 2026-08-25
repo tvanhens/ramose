@@ -122,6 +122,7 @@ export type {
   ReadDb,
   TxReport,
 } from "./Db.ts";
+export type { InstallOptions, SchemaChange } from "./Errors.ts";
 export type { SchemaEid, Eid } from "./Eid.ts";
 export type { EntityRef, LookupRef } from "./idents.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
@@ -170,6 +171,7 @@ export {
   NotOne,
   OperationRejected,
   OperationsCoverageError,
+  IncompatibleSchema,
   PolicyError,
   QueryBudgetExceeded,
   TxRejected,

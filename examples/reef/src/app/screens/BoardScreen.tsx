@@ -27,9 +27,11 @@ import {
   type ReefDb,
 } from "../../domain/queries.ts";
 import {
-  PRIORITIES,
+  Issue,
+  PRIORITY_LABELS,
   Reef,
   STATUS_LABELS,
+  type Priority,
   type Status,
 } from "../../domain/schema.ts";
 import { ThemeToggle } from "../App.tsx";
@@ -555,7 +557,7 @@ const NewIssueDialog = ({
 }) => {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState(0);
+  const [priority, setPriority] = useState<Priority>("none");
   const [assignee, setAssignee] = useState("");
   return (
     <Dialog
@@ -604,18 +606,18 @@ const NewIssueDialog = ({
         </Field>
         <Field label="Priority">
           <div {...stylex.props(styles.segmented)} role="radiogroup" aria-label="Priority">
-            {PRIORITIES.map((p, i) => (
+            {Issue.priority.members.map((p, i) => (
               <button
                 key={p}
                 type="button"
                 role="radio"
-                aria-checked={priority === i}
-                title={p}
-                {...stylex.props(styles.segment, priority === i && styles.segmentOn)}
-                onClick={() => setPriority(i)}
+                aria-checked={priority === p}
+                title={PRIORITY_LABELS[p]}
+                {...stylex.props(styles.segment, priority === p && styles.segmentOn)}
+                onClick={() => setPriority(p)}
               >
                 <PriorityIcon level={i} size={14} />
-                {i === 0 ? "None" : p}
+                {p === "none" ? "None" : PRIORITY_LABELS[p]}
               </button>
             ))}
           </div>

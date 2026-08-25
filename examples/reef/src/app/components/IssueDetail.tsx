@@ -21,7 +21,7 @@ import {
   type Person,
   type ReefDb,
 } from "../../domain/queries.ts";
-import type { RamoseClass } from "../../domain/shared.ts";
+import type { Class } from "../../domain/policy.ts";
 import {
   addComment,
   deleteComment,
@@ -34,7 +34,13 @@ import {
   setTitle,
   toggleLabel,
 } from "../mutations.ts";
-import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
+import {
+  Issue,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  type Priority,
+  type Status,
+} from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
   Avatar,
@@ -237,7 +243,7 @@ export const IssueDetail = ({
   /** The live board row — already re-rendering on every overlay apply. */
   row: BoardRow;
   myEid: number | undefined;
-  cls: RamoseClass;
+  cls: Class;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;
@@ -339,7 +345,7 @@ export const IssueDetail = ({
                 void run(setStatus(db, issueId, e.target.value as Status))
               }
             >
-              {STATUSES.map((s) => (
+              {Issue.status.members.map((s) => (
                 <option key={s} value={s}>
                   {STATUS_LABELS[s]}
                 </option>
@@ -351,12 +357,12 @@ export const IssueDetail = ({
             <Select
               value={row.priority}
               onChange={(e) =>
-                void run(setPriority(db, issueId, Number(e.target.value)))
+                void run(setPriority(db, issueId, e.target.value as Priority))
               }
             >
-              {PRIORITIES.map((p, i) => (
-                <option key={p} value={i}>
-                  {p}
+              {Issue.priority.members.map((p) => (
+                <option key={p} value={p}>
+                  {PRIORITY_LABELS[p]}
                 </option>
               ))}
             </Select>

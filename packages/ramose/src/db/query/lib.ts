@@ -114,12 +114,18 @@ type FilterParam<X, A> = [X] extends [Pipeline<any, infer N>]
  * A filter parameterized by the focus namespace. `N` is the pipeline
  * focus the stage may be applied to; the attr-capturing form
  * (`FilterStage<AnyEntity, typeof User.name>`) rejects a foreign
- * field map at the call site.
+ * field map at the call site. The return carries an ident brand so a
+ * policy `FragFn` can tell a `Query.is` from a handwritten generator
+ * (`{ _ident?: never }`).
  */
 export type FilterStage<
   N extends AnyEntity = AnyEntity,
   A = void,
-> = <X>(x: FilterParam<X, A>) => FilterOut<X>;
+> = <X>(
+  x: FilterParam<X, A>,
+) => FilterOut<X> & {
+  readonly _ident?: A extends { readonly ident: infer I extends string } ? I : ":db/id";
+};
 
 type FollowOut<A extends AttrLike, X> = [X] extends [never]
   ? QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
@@ -219,7 +225,9 @@ export const is = <A extends AttrLike>(
  * attribute).
  */
 export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage =>
-  is({ ident: ":db/id" }, id) as FilterStage;
+  filter<void>(function* (e) {
+    yield* Q.fact(e, { ident: ":db/id" as const }, id);
+  });
 
 /** `has(A)`: the focus carries some `A` fact. */
 export const has = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> =>
@@ -320,7 +328,7 @@ export const every = <A extends AttrLike>(
 
 /** Some fact about the focus was asserted at basis `t >= since`. */
 export const updatedSince = (since: number): FilterStage =>
-  filter(function* (e) {
+  filter<void>(function* (e) {
     const f = yield* Q.fact(e);
     yield* Q.gte(f.t, since);
   });
@@ -328,7 +336,7 @@ export const updatedSince = (since: number): FilterStage =>
 /** Some fact about the focus rides a transaction whose entity carries
  * `[tx A who]` — provenance as an ordinary clause. */
 export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
+  filter<void>(function* (e) {
     const f = yield* Q.fact(e);
     yield* Q.fact(f.tx, attr, who);
   });

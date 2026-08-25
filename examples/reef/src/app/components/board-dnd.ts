@@ -5,7 +5,7 @@
  */
 
 import { rankAfter, rankBetween } from "../../domain/rank.ts";
-import { STATUSES, type Status } from "../../domain/schema.ts";
+import { Issue, type Status } from "../../domain/schema.ts";
 
 /** Hold still this long before a touch/pen pointer picks the card up. */
 export const TOUCH_HOLD_MS = 320;
@@ -31,7 +31,7 @@ export interface HitNode {
 }
 
 const isStatus = (value: string | undefined): value is Status =>
-  value !== undefined && (STATUSES as readonly string[]).includes(value);
+  value !== undefined && (Issue.status.members as readonly string[]).includes(value);
 
 /** Index of the placeholder among `ids` (the column with the dragged card removed). */
 export const insertIndex = (
@@ -121,7 +121,7 @@ export const applyPendingMove = <T extends { id: number; status: string; rank: n
   );
   const moved = { ...row, status: pending.status };
   const out: T[] = [];
-  for (const status of STATUSES) {
+  for (const status of Issue.status.members) {
     const col = rest.filter((r) => r.status === status);
     if (status === pending.status) {
       out.push(...col.slice(0, at), moved, ...col.slice(at));

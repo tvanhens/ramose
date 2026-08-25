@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 
 const Session = Ramose.Entity("s", {
-  name: Ramose.string({ unique: "upsert" }),
+  name: Ramose.Field.unique(Ramose.string(), "upsert"),
   n: Ramose.int(),
 });
 

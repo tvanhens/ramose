@@ -21,7 +21,6 @@ import * as Schema from "effect/Schema";
 import * as Ramose from "ramose";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
-import { CLASSES } from "./shared.ts";
 
 const P = Ramose.Policy;
 const { Query } = Ramose;
@@ -38,7 +37,7 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: CLASSES,
+    classes: ["admin", "member", "viewer"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -86,6 +85,9 @@ export const policy = Ramose.policy(
   },
 );
 // enddocs:policy
+
+/** Derived from the policy value — Reef does not maintain a parallel tuple. */
+export type Class = Ramose.Policy.Class<typeof policy>;
 
 /**
  * The wire JSON for `RAMOSE_POLICY`. Compiling against the app's pull shapes

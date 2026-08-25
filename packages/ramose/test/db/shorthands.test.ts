@@ -1,6 +1,6 @@
 /**
- * Value shorthands: runtime lowering, option bag, Field.many / Field.unique,
- * and the advanced Field(schema) form.
+ * Value shorthands: runtime lowering, option bag, Field.many / Field.unique /
+ * Field.owned, and the advanced Field(schema) form.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -14,6 +14,7 @@ import {
   Entity,
   boolean,
   bytes,
+  enumMembersOf,
   float,
   int,
   schemaTx,
@@ -26,7 +27,7 @@ import { query } from "../../src/internal/core/index.ts";
 import { attribute, Harness } from "../internal/transactor/harness.ts";
 
 const User = Entity("user", {
-  name: string({ unique: "upsert", doc: "display name" }),
+  name: Field.unique(string({ doc: "display name" }), "upsert"),
   age: int(),
   score: float(),
   active: boolean(),
@@ -173,6 +174,15 @@ describe("advanced Field(schema)", () => {
       ":db/valueType": ":db.type/string",
     });
   });
+
+  test("un-inferable schemas throw at schemaTx, not as string", () => {
+    const Bad = Entity("bad", {
+      state: Field(Schema.Literals(["on", "off"]) as never),
+    });
+    expect(() => schemaTx(DbSchema({ bad: Bad }))).toThrow(
+      /cannot infer value type from this Schema \(ast\._tag=Union\)/,
+    );
+  });
 });
 
 describe("uuid public type", () => {
@@ -184,8 +194,8 @@ describe("uuid public type", () => {
 
 describe("Field composition merge", () => {
   test("composition cannot change valueType; stored() brands the schema", () => {
-    expect(Field(string(), { unique: "upsert" }).valueType).toBe("string");
-    expect(Field.many(string(), { owned: true }).valueType).toBe("string");
+    expect(Field.unique(string(), "upsert").valueType).toBe("string");
+    expect(Field.many(Field.owned(string())).valueType).toBe("string");
     expect(Field.unique(string(), "upsert", { doc: "slug" }).valueType).toBe(
       "string",
     );
@@ -211,11 +221,41 @@ describe("Field composition merge", () => {
     );
   });
 
-  test("owned merges both ways through Field / Field.many / Field.unique", () => {
-    expect(Field.many(string(), { owned: true }).owned).toBe(true);
-    expect(Field.unique(string(), "upsert", { owned: true }).owned).toBe(true);
-    expect(Field(string({ owned: true }), { owned: false }).owned).toBe(false);
-    expect(Field(string({ owned: true }), { doc: "keep" }).owned).toBe(true);
+  test("retired type-bearing keys in the options bag throw", () => {
+    expect(() => Field(Schema.String, { cardinality: "many" } as FieldOptions)).toThrow(
+      "ramose/schema: cardinality is not a field option. Use Field.many(schema).",
+    );
+    expect(() => Field(Schema.String, { unique: "upsert" } as FieldOptions)).toThrow(
+      'ramose/schema: unique is not a field option. Use Field.unique(schema, "upsert" | "strict").',
+    );
+    expect(() => Field(Schema.String, { owned: true } as FieldOptions)).toThrow(
+      "ramose/schema: owned is not a field option. Use Field.owned(schema).",
+    );
+    expect(() =>
+      Field(Schema.String, { isComponent: true } as FieldOptions),
+    ).toThrow("ramose/schema: owned is not a field option. Use Field.owned(schema).");
+  });
+
+  test("owned composes through Field.owned / Field.many / Field.unique", () => {
+    expect(Field.owned(string()).owned).toBe(true);
+    expect(Field.many(Field.owned(string())).owned).toBe(true);
+    expect(Field.many(Field.owned(string())).cardinality).toBe("many");
+    expect(Field.unique(Field.owned(string()), "upsert").owned).toBe(true);
+    expect(Field(Field.owned(string()), { doc: "keep" }).owned).toBe(true);
+    expect(Field(Field.owned(string()), { doc: "keep" }).doc).toBe("keep");
+  });
+
+  test("annotating FieldOptions cannot erase many / unique / owned", () => {
+    const bag: FieldOptions = { doc: "shared" };
+    const many = Field.many(string(), bag);
+    const unique = Field.unique(string(), "strict", bag);
+    const owned = Field.owned(string(), bag);
+    expect(many.cardinality).toBe("many");
+    expect(many.doc).toBe("shared");
+    expect(unique.unique).toBe("strict");
+    expect(unique.doc).toBe("shared");
+    expect(owned.owned).toBe(true);
+    expect(owned.doc).toBe("shared");
   });
 
   test("Field.unique always indexes; index: false is discarded", () => {
@@ -230,6 +270,15 @@ describe("Field composition merge", () => {
     expect(() => Enum([] as never)).toThrow(
       "ramose/schema: Enum([...]) needs at least one value",
     );
+  });
+
+  test("Enum carries members through Entity stamp and Field composition", () => {
+    expect(User.role.members).toEqual(["admin", "member"]);
+    expect(User.role.valueType).toBe("string");
+    const composed = Field(Enum(["low", "med"]), { doc: "priority" });
+    expect(enumMembersOf(composed.schema)).toEqual(["low", "med"]);
+    expect(composed.doc).toBe("priority");
+    expect(composed.valueType).toBe("string");
   });
 });
 

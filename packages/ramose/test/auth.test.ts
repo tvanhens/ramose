@@ -89,6 +89,17 @@ describe("claims", () => {
     ).toBe("viewer");
   });
 
+  test("a policy value's classes are checked the same way as compiled JSON", () => {
+    const policyValue = { _tag: "Policy" as const, classes: ["admin", "member"] as const };
+    expect(
+      claims(AUTH, { sub: "u", db: "acme", class: "member" }, policyValue).ramose?.class,
+    ).toBe("member");
+    expect(() =>
+      // @ts-expect-error — "viewer" is not in this policy value's classes
+      claims(AUTH, { sub: "u", db: "acme", class: "viewer" }, policyValue),
+    ).toThrow(/"viewer" is not declared/);
+  });
+
   test("a non-positive or fractional ttl is a config error — NumericDate is whole seconds", () => {
     for (const bad of [0, -900, 900.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() =>

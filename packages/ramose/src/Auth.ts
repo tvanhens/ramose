@@ -53,10 +53,11 @@ export interface ClaimsInput {
   readonly now?: Date | undefined;
 }
 
-/** `classes` out of a compiled policy, parsed or still the wire JSON. */
-const declaredClasses = (
-  policy: CompiledPolicy | string,
-): readonly string[] => {
+/** A policy value or compiled AST — anything that carries `classes`. */
+export type ClaimsPolicy = { readonly classes: readonly string[] };
+
+/** `classes` out of a policy value, compiled AST, or still the wire JSON. */
+const declaredClasses = (policy: ClaimsPolicy | string): readonly string[] => {
   let parsed: unknown = policy;
   if (typeof policy === "string") {
     try {
@@ -86,16 +87,20 @@ const declaredClasses = (
  * const payload = Ramose.claims(
  *   AUTH,
  *   { sub: user.id, db: workspace, class: role },
- *   compiledPolicy,
+ *   policy, // or compiled JSON; a policy value narrows `class`
  * );
  * const { token } = await auth.api.signJWT({ body: { payload } });
  * ```
  */
-export const claims = (
+export function claims<P extends ClaimsPolicy | CompiledPolicy | string | undefined = undefined>(
   auth: AuthConfig,
-  input: ClaimsInput,
-  policy?: CompiledPolicy | string,
-): Claims => {
+  input: [P] extends [string | undefined]
+    ? ClaimsInput
+    : P extends { readonly classes: infer CL extends readonly string[] }
+      ? Omit<ClaimsInput, "class"> & { readonly class: CL[number] }
+      : ClaimsInput,
+  policy?: P,
+): Claims {
   // JWT NumericDate is whole seconds, so a fractional ttl would mint a
   // fractional `exp` — reject it rather than round it.
   if (!Number.isInteger(auth.ttl) || auth.ttl <= 0) {
@@ -125,4 +130,4 @@ export const claims = (
       ...(input.attrs === undefined ? {} : { attrs: input.attrs }),
     },
   };
-};
+}

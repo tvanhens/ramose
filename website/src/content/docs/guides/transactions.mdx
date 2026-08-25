@@ -127,11 +127,11 @@ Deleting a parent does not infer a cascade. Incoming refs on survivors **clear**
     op.delete(op.self);
 ```
 
-The one declared cascade is `{ owned: true }` on an outgoing ref — see [Define your data](/guides/catalog/#options).
+The one declared cascade is `Field.owned` on an outgoing ref — see [Define your data](/guides/catalog/#many-unique-owned).
 
 ## Many-valued fields
 
-A field declared `cardinality: "many"` is a set. One `set` per value; `remove` with the value takes one out:
+A field declared with `Field.many` is a set. One `set` per value; `remove` with the value takes one out:
 
 ```ts title="examples/reef/src/app/mutations.ts#toggle-label"
 export const toggleLabel = (

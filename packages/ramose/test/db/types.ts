@@ -14,6 +14,7 @@ import {
   type AnyField,
   type AnyEntity,
   Field,
+  type FieldOptions,
   Bytes,
   Schema as DbSchema,
   type CatalogIdent,
@@ -23,6 +24,7 @@ import {
   type Db,
   type DbError,
   type DbPrincipal,
+  type IncompatibleSchema,
   type Eid,
   type EntityRef,
   type Equal,
@@ -40,6 +42,7 @@ import {
   type TxReport,
   Uuid,
   stored,
+  type InferDbValueType,
   type ValueAtIdent,
   Enum,
   boolean,
@@ -133,10 +136,36 @@ type _uuidIsString = Expect<
 >;
 
 // fail-closed: a literal union does not silently become "string"
+const literalUnion = Schema.Literals(["todo", "done"]);
+type _literalUnionVt = Expect<Equal<InferDbValueType<typeof literalUnion>, undefined>>;
 // @ts-expect-error Schema.Literals is not a String AST — wrap with stored
-Field(Schema.Literals(["todo", "done"]));
-const literalsOk = Field(stored(Schema.Literals(["todo", "done"]), "string"));
+Field(literalUnion);
+const literalsOk = Field(stored(literalUnion, "string"));
 type _literalsVt = Expect<Equal<(typeof literalsOk)["valueType"], "string">>;
+
+const numberLiterals = Schema.Literals([1, 2, 3]);
+type _numberLiteralsVt = Expect<
+  Equal<InferDbValueType<typeof numberLiterals>, undefined>
+>;
+// @ts-expect-error number-literal union is not a Number AST — wrap with stored
+Field(numberLiterals);
+const numberLiteralsOk = Field(stored(numberLiterals, "long"));
+type _numberLiteralsOkVt = Expect<
+  Equal<(typeof numberLiteralsOk)["valueType"], "long">
+>;
+
+type _dateVt = Expect<Equal<InferDbValueType<typeof Schema.Date>, undefined>>;
+// @ts-expect-error Date is a Declaration AST — wrap with stored or use timestamp()
+Field(Schema.Date);
+const dateOk = Field(stored(Schema.Date, "instant"));
+type _dateOkVt = Expect<Equal<(typeof dateOk)["valueType"], "instant">>;
+
+const structSchema = Schema.Struct({ x: Schema.String });
+type _structVt = Expect<Equal<InferDbValueType<typeof structSchema>, undefined>>;
+// @ts-expect-error struct is not a primitive AST — wrap with stored
+Field(structSchema);
+void numberLiteralsOk;
+void dateOk;
 
 // bag override is gone; mismatched stored() pairs are rejected
 // @ts-expect-error valueType is not a Field option
@@ -180,7 +209,7 @@ const Short = Entity("short", {
   owner: Ref(User),
   tags: Field.many(Ref(User)),
   slug: Field.unique(string(), "upsert"),
-  named: string({ unique: "upsert", doc: "display" }),
+  named: Field.unique(string({ doc: "display" }), "upsert"),
 });
 type _shortTitle = Expect<Equal<(typeof Short)["title"]["valueType"], "string">>;
 type _shortDone = Expect<Equal<(typeof Short)["done"]["valueType"], "boolean">>;
@@ -193,23 +222,43 @@ type _shortPri = Expect<Equal<(typeof Short)["pri"]["valueType"], "string">>;
 type _shortPriType = Expect<
   Equal<Schema.Schema.Type<(typeof Short)["pri"]["schema"]>, "low" | "med" | "high">
 >;
+type _shortPriMembers = Expect<
+  Equal<(typeof Short)["pri"]["members"], readonly ["low", "med", "high"]>
+>;
 type _shortOwner = Expect<Equal<(typeof Short)["owner"]["valueType"], "ref">>;
 type _shortTags = Expect<Equal<(typeof Short)["tags"]["cardinality"], "many">>;
 type _shortSlug = Expect<Equal<(typeof Short)["slug"]["unique"], "upsert">>;
 type _shortNamed = Expect<Equal<(typeof Short)["named"]["unique"], "upsert">>;
 
-// composition merge — types match mergeFieldOptions (valueType stays; owned both ways)
-const manyOwned = Field.many(string(), { owned: true });
+// composition merge — types match applyField (valueType stays; owned composes)
+const manyOwned = Field.many(Field.owned(string()));
 type _manyOwned = Expect<Equal<(typeof manyOwned)["owned"], true>>;
+type _manyOwnedCard = Expect<Equal<(typeof manyOwned)["cardinality"], "many">>;
 type _manyOwnedVt = Expect<Equal<(typeof manyOwned)["valueType"], "string">>;
-const uniqueOwned = Field.unique(string(), "upsert", { owned: true });
+const uniqueOwned = Field.unique(Field.owned(string()), "upsert");
 type _uniqueOwned = Expect<Equal<(typeof uniqueOwned)["owned"], true>>;
-const ownedCleared = Field(string({ owned: true }), { owned: false });
-type _ownedCleared = Expect<Equal<(typeof ownedCleared)["owned"], false>>;
-const ownedKept = Field(string({ owned: true }), { doc: "keep" });
+type _uniqueOwnedMode = Expect<Equal<(typeof uniqueOwned)["unique"], "upsert">>;
+const ownedKept = Field(Field.owned(string()), { doc: "keep" });
 type _ownedKept = Expect<Equal<(typeof ownedKept)["owned"], true>>;
-const composedVt = Field(string(), { unique: "upsert" });
+const composedVt = Field.unique(string(), "upsert");
 type _composedVt = Expect<Equal<(typeof composedVt)["valueType"], "string">>;
+// annotating the bag cannot erase cardinality / uniqueness / ownership
+const annotatedBag: FieldOptions = { doc: "shared" };
+const annotatedMany = Field.many(string(), annotatedBag);
+type _annotatedMany = Expect<Equal<(typeof annotatedMany)["cardinality"], "many">>;
+const annotatedUnique = Field.unique(string(), "strict", annotatedBag);
+type _annotatedUnique = Expect<Equal<(typeof annotatedUnique)["unique"], "strict">>;
+const annotatedOwned = Field.owned(string(), annotatedBag);
+type _annotatedOwned = Expect<Equal<(typeof annotatedOwned)["owned"], true>>;
+// @ts-expect-error cardinality is not a field option
+const _noCardOpt: FieldOptions = { cardinality: "many" };
+// @ts-expect-error unique is not a field option
+const _noUniqueOpt: FieldOptions = { unique: "upsert" };
+// @ts-expect-error owned is not a field option
+const _noOwnedOpt: FieldOptions = { owned: true };
+void _noCardOpt;
+void _noUniqueOpt;
+void _noOwnedOpt;
 const schemaOverride = Field(stored(Schema.String, "uuid"));
 type _schemaOverride = Expect<Equal<(typeof schemaOverride)["valueType"], "uuid">>;
 const bareRef = Field(Ref);
@@ -226,8 +275,8 @@ Field.unique(string(), "upsert", { valueType: "long" });
  * it to decide whether the backlink is one entity or a collection.
  */
 const Owned = Entity("owned", {
-  part: Field(Ref.self, { owned: true }),
-  peer: Field(Ref.self, { cardinality: "many" }),
+  part: Field.owned(Ref.self),
+  peer: Field.many(Ref.self),
   plain: Field(Ref.self),
   label: Field(Schema.String),
 });
@@ -291,7 +340,9 @@ const installed = movies.effect.install();
 type _writtenOk = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _writtenErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
+type _writtenErr = Expect<
+  Equal<Effect.Error<typeof installed>, DbError | IncompatibleSchema>
+>;
 /** Every signature's `R` is `never`. */
 type _writtenR = Expect<Equal<Effect.Services<typeof installed>, never>>;
 type _noPromiseTransact = Expect<
@@ -331,6 +382,7 @@ const caught = movies
       InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
       OperationRejected: (e) => Effect.succeed(e.message),
+      IncompatibleSchema: (e) => Effect.succeed(e.message),
     }),
   );
 type _caught = Expect<
@@ -386,6 +438,10 @@ type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 const installedP = movies.install();
 type _install = Expect<
   Equal<typeof installedP, Promise<TxReport<typeof Movies>>>
+>;
+const installedHatch = movies.install({ allowIncompatible: [":user/name"] });
+type _installHatch = Expect<
+  Equal<typeof installedHatch, Promise<TxReport<typeof Movies>>>
 >;
 
 /** `db.principal()` — who am I; the eid is typed against this db's catalog. */

@@ -66,8 +66,9 @@ These ideas — facts instead of rows, a database you can read at any earlier ve
 | schema transacted as data | a **schema** of TypeScript values; `db.install()` or `Server({ databases })` writes it, safe to repeat |
 | `d/transact` with tx-data | `db.run(operation, …)` — a named operation of `put` / `update` / `set` / `remove` / `delete` |
 | tempids resolved in the transactor | return a handle with `EntityId` in the operation output; `report.output` is the id |
-| `:db.unique/identity`, lookup refs | `{ unique: "upsert" }`, `[User.sub, "…"]` |
-| `:db.cardinality/many` | `{ cardinality: "many" }` |
+| `:db.unique/identity`, lookup refs | `Field.unique(schema, "upsert")`, `[User.sub, "…"]` (`"strict"` is `:db.unique/value` — reject on collision) |
+| `:db.cardinality/many` | `Field.many(schema)` |
+| `:db/isComponent` | `Field.owned(schema)` |
 | `d/pull` | `db.pull({ id }, shape)`, same nesting; `.optional` for absence, `.orDefault(v)` for a pull `:default` |
 | Datalog query | a typed value — `Query.from(Issue).where(…).select(…).orderBy(…).limit(n)`, run by `db.query` / `db.live`; the combinators are listed under [Filter](/guides/queries/#filter). Single-row terminals and keyset paging ride the value (`q.one()`, `q.after(cursor)`); named rules give recursion ([the query language](/reference/query-language/)) |
 | `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only view |
