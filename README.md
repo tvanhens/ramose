@@ -33,8 +33,8 @@ const Todo = Ramose.Entity("todo", {
 });
 
 const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });
-const Todos = Ramose.Schema({ todo: Todo });
-const db = ramose.db("todos", Todos);
+const TodoSchema = Ramose.Schema({ todo: Todo });
+const db = ramose.db("todos", TodoSchema);
 const setDoneOp = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
 
 // A query is a value: declare it once, then run it live.
