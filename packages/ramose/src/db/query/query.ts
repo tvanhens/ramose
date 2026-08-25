@@ -397,8 +397,11 @@ const runInto = (
   );
 };
 
-const normalizeProj = (proj: unknown): Projection | IdsSpec => {
+const normalizeProj = (proj: unknown): Exclude<Projection, DistinctSpec<any>> | IdsSpec => {
   if (isVar(proj)) return { _tag: "idsSpec", v: proj };
+  if (isDistinctSpec(proj)) {
+    throw new Error("ramose/query: Q.distinct(...) wraps the whole projection, not one cell");
+  }
   if (isPullSpec(proj) || isRowsSpec(proj) || isValueSpec(proj)) return proj;
   if (typeof proj === "object" && proj !== null && !Array.isArray(proj)) {
     const cells = proj as CellRecord;

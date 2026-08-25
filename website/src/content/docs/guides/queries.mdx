@@ -205,9 +205,7 @@ Which records can reach which is a *set* of ids. `again` paints a *tree*. Graph 
 
 `orderBy` takes the attribute itself, or — after `select` — the name of a selected column (`Query.orderBy("createdAt")`). `empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
 
-`orderBy`, `limit`, and `offset` are methods on the query value itself — `Query.q(function* () { … }).orderBy(r => r.n, "desc").limit(10)` is the same cursor as the fluent chain. `orderBy` takes a selected column, an attribute, a bound var / projected cell, or a picker of one (`r => r.n`).
-
-A generator record of value cells (`return { title: t.v }`) keeps one row per source — two issues with the same title are two rows, not one. `Q.distinct({ title: t.v })` is unique titles. `select` already projects through the record, so it does not collapse a duplicate value. The kernel page spells the rule: [The query language](/reference/query-language/#projection-keeps-one-row-per-source).
+`orderBy`, `limit`, and `offset` are methods on the query value itself — `Query.q(function* () { … }).orderBy(r => r.n, "desc").limit(10)` is the same cursor as the fluent chain. `orderBy` takes a selected column, an attribute, a bound var / projected cell, or a picker of one (`r => r.n`). A generator `{ title: t.v }` keeps duplicate titles as two rows; `Q.distinct` is unique titles ([query language](/reference/query-language/#projection-keeps-one-row-per-source)).
 
 `one()` and `oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it. They are methods on the query value:
 

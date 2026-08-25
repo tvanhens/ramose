@@ -861,7 +861,7 @@ describe("db.query end to end", () => {
       .select({ title: Issue.title });
     expect(await db.query(selected)).toHaveLength(2);
 
-    expect(() => Q.distinct(Q.value(Q.var()))).toThrow(/scalar/);
+    expect(() => (Q.distinct as (p: unknown) => unknown)(Q.value(Q.var()))).toThrow(/scalar/);
 
     await peer.dispose();
   });
