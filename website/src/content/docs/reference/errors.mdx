@@ -36,6 +36,7 @@ try {
 | `OperationRejected` | a named operation was refused (409) | dangling / foreign entity, a body-thrown rejection |
 | `NotOne` | `.oneOrFail()` did not see exactly one row | zero matches, or two (the server is asked for two so a second row is seen); `found` is `0` or `2` |
 | `PolicyError` | a policy did not compile against its schema | undeclared ident, a pull that requires a read-masked field; deploy time, not a request |
+| `OperationsCoverageError` | the peer is missing an operation id the client ships | client/peer registry drift; deploy (`Server({ operations })`) or `checkOperations()`; not a request |
 
 ## What the user sees
 

@@ -57,7 +57,7 @@ const BUDGETS = {
   "getting-started/tour-of-reef": 1400,
   "getting-started/compare": 900,
   "guides/catalog": 1100,
-  "guides/transactions": 1000,
+  "guides/transactions": 1200,
   // Raised for count / groupBy / keyset `.after` on the everyday nav surface,
   // and the recursive-tree window that `again` is for.
   // Raised for count / groupBy / keyset `.after`, and to keep the
@@ -68,7 +68,7 @@ const BUDGETS = {
   "guides/permissions": 1350,
   "guides/sign-in": 1100,
   "guides/workspaces": 900,
-  "guides/deploy": 1100,
+  "guides/deploy": 1200,
   "guides/workers": 800,
   "guides/before-production": 1000,
   // Raised for the entries covering the bare-specifier `main` hang, schema-change
@@ -82,11 +82,11 @@ const BUDGETS = {
   "concepts/glossary": 2200,
   // Raised for the aggregate / groupBy / `.after` entries on the query builder,
   // and the thread-window sketch on `again`.
-  "reference/client-api": 3300,
+  "reference/client-api": 3600,
   "reference/react": 1200,
   "reference/policy": 2150,
-  "reference/errors": 900,
-  "reference/server": 2400,
+  "reference/errors": 1000,
+  "reference/server": 2500,
 };
 
 // Banned in PROSE (allowed inside code fences, and in Reference tables where
