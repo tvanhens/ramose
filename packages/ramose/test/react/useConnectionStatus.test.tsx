@@ -76,6 +76,21 @@ describe("useConnectionStatus (per-db)", () => {
     const { result } = renderHook(() => useConnectionStatus(db));
     expect(result.current).toBe("offline");
   });
+
+  test("client.close() is closed", async () => {
+    const peer = fakePeer();
+    const client = Ramose.connect({
+      url: "https://peer.example.com",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+    });
+    const db = client.db("todos", Todos);
+    const { result } = renderHook(() => useConnectionStatus(db));
+    await db.query(titles);
+    await waitFor(() => expect(result.current).toBe("live"));
+    await client.close();
+    await waitFor(() => expect(result.current).toBe("closed"));
+  });
 });
 
 describe("useConnectionStatus (provider-scoped)", () => {
@@ -103,20 +118,5 @@ describe("useConnectionStatus (provider-scoped)", () => {
     } finally {
       console.error = noisy;
     }
-  });
-
-  test("client.close() is closed", async () => {
-    const peer = fakePeer();
-    const client = Ramose.connect({
-      url: "https://peer.example.com",
-      fetch: peer.fetch,
-      webSocket: peer.webSocket,
-    });
-    const db = client.db("todos", Todos);
-    const { result } = renderHook(() => useConnectionStatus(db));
-    await db.query(titles);
-    await waitFor(() => expect(result.current).toBe("live"));
-    await client.close();
-    await waitFor(() => expect(result.current).toBe("closed"));
   });
 });
