@@ -407,20 +407,14 @@ describe("deploy-time errors", () => {
       tags: Field.many(Schema.String),
     });
     const Catalog = DbSchema({ user: Account });
-    expect(() =>
-      P.policy(
-        { schema: Catalog, principal: Account.sub, classes: ["member"], schemaClasses: ["member"] },
-        {},
-      ),
-    ).not.toThrow();
-    expect(() =>
-      P.compile(
-        P.policy(
-          { schema: Catalog, principal: Account.sub, classes: ["member"], schemaClasses: ["member"] },
-          {},
-        ),
-      ),
-    ).not.toThrow();
+    const head = {
+      schema: Catalog,
+      principal: Account.sub,
+      classes: ["member"] as const,
+      schemaClasses: ["member"] as const,
+    };
+    expect(() => P.policy(head, {})).not.toThrow();
+    expect(() => P.compile(P.policy(head, {}))).not.toThrow();
   });
 
   test("write verbs on a namespace are a PolicyError", () => {

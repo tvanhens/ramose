@@ -8,7 +8,13 @@
  * dependency a hook actually means.
  */
 
-import type { Schema, ReadDb, QueryObject, Subscription } from "../db/index.ts";
+import type {
+  ConnectionStatus,
+  Schema,
+  ReadDb,
+  QueryObject,
+  Subscription,
+} from "../db/index.ts";
 
 const DB_SEAM = Symbol.for("ramose.db.seam");
 
@@ -21,6 +27,10 @@ interface DbSeam {
   readonly onWake: (cb: () => void) => (() => void) | undefined;
   /** The highest basis the session has seen; `undefined` without a session. */
   readonly t: () => number | undefined;
+  /** Session generation; `0` before a socket exists. */
+  readonly generation: () => number;
+  /** Session / transport status. HTTPS-only is `"offline"`. */
+  readonly status: () => ConnectionStatus;
   /**
    * Standing query that emits the raw wire result. Optional on test
    * doubles; every real client attaches it.

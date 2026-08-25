@@ -35,12 +35,15 @@ import type { OperationInvocation } from "./Operation.ts";
 import type { DatabasesShape } from "./client-shape.ts";
 import type { AnySchema } from "./Schema.ts";
 import {
+  browserOffline,
+  type ConnectionStatus,
   globalWebSocket,
   openSession,
   type Session,
   parsePrincipal,
   type SessionPrincipal,
   type SocketFactory,
+  worseConnection,
 } from "./session.ts";
 import {
   isTokenSource,
@@ -102,11 +105,39 @@ const networkError = (cause: unknown): NetworkError =>
  */
 export const makeDatabases = (
   config: DatabasesConfig,
-): { readonly databases: DatabasesShape; readonly close: () => void } => {
+): {
+  readonly databases: DatabasesShape;
+  readonly close: () => void;
+  readonly connectionStatus: (name?: string) => ConnectionStatus;
+  readonly onConnectionStatus: (
+    cb: (status: ConnectionStatus) => void,
+    name?: string,
+  ) => () => void;
+} => {
   const sessions = new Map<string, Session>();
   const overlays = new Map<string, Overlay>();
   const catalogs = new Map<string, AnySchema>();
+  const statusListeners = new Set<() => void>();
   let closed = false;
+
+  const notifyStatus = (): void => {
+    for (const cb of [...statusListeners]) cb();
+  };
+
+  const connectionStatus = (name?: string): ConnectionStatus => {
+    if (closed) return "closed";
+    if (config.webSocket === undefined) return "offline";
+    if (browserOffline()) return "offline";
+    if (name !== undefined) {
+      return sessions.get(name)?.status ?? "connecting";
+    }
+    if (sessions.size === 0) return "connecting";
+    let worst: ConnectionStatus = "live";
+    for (const s of sessions.values()) {
+      worst = worseConnection(worst, s.status);
+    }
+    return worst;
+  };
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
   // session's caller can tell a thrown Unauthorized from a transport failure
@@ -150,6 +181,8 @@ export const makeDatabases = (
       // fail rather than silently changing transport
       if (closed) existing.close();
       sessions.set(name, existing);
+      existing.onWake(notifyStatus);
+      notifyStatus();
     }
     return existing;
   };
@@ -377,6 +410,25 @@ export const makeDatabases = (
     close: () => {
       closed = true;
       for (const s of sessions.values()) s.close();
+      notifyStatus();
+    },
+    connectionStatus,
+    onConnectionStatus: (cb, name) => {
+      const notify = (): void => {
+        cb(connectionStatus(name));
+      };
+      statusListeners.add(notify);
+      if (typeof window !== "undefined") {
+        window.addEventListener("online", notify);
+        window.addEventListener("offline", notify);
+      }
+      return () => {
+        statusListeners.delete(notify);
+        if (typeof window !== "undefined") {
+          window.removeEventListener("online", notify);
+          window.removeEventListener("offline", notify);
+        }
+      };
     },
   };
 };

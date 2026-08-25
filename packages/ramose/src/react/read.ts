@@ -2,8 +2,8 @@
  * `Read` — the one result every `ramose/react` read hook returns.
  *
  * Live and one-shot, query and pull: `data` (never `rows`), a plain tagged
- * `error`, `status` / `isLoading`, the basis `t` the rows were read at, and
- * `refetch()`. No Effect types.
+ * `error`, `status` / `isLoading`, the basis `t` the rows were read at,
+ * `refetch()`, and `retry()`. No Effect types.
  */
 
 import type { Schema, DbError, ReadDb } from "../db/index.ts";
@@ -35,10 +35,16 @@ export interface Read<A, E = DbError> {
   readonly t: number | undefined;
   /** Re-run the one-shot, or re-read once on a live hook. Stable identity. */
   readonly refetch: () => void;
+  /**
+   * Re-subscribe (live) or re-run (one-shot). Recovers a terminal live
+   * error without unmounting. Stable identity. One-shot `retry` is
+   * `refetch`.
+   */
+  readonly retry: () => void;
 }
 
-/** Slice of {@link Read} stored in hook state — `refetch` is attached on return. */
-export type ReadState<A, E> = Omit<Read<A, E>, "refetch">;
+/** Slice of {@link Read} stored in hook state — `refetch` / `retry` attach on return. */
+export type ReadState<A, E> = Omit<Read<A, E>, "refetch" | "retry">;
 
 export const READ_INITIAL: ReadState<never, never> = {
   data: undefined,

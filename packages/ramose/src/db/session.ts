@@ -116,6 +116,40 @@ export interface SessionOptions {
     | undefined;
 }
 
+/**
+ * What a session (or the client that owns one) reports for "am I connected?".
+ *
+ * Session itself never returns `"offline"` — that is the client's answer
+ * when there is no socket factory, or the browser's `navigator.onLine`
+ * is false. A session is `"connecting"` until the first handshake
+ * completes, `"live"` while a socket is held, `"reconnecting"` after a
+ * drop, and `"closed"` after {@link Session.close}.
+ */
+export type ConnectionStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "offline"
+  | "closed";
+
+const STATUS_RANK: Record<ConnectionStatus, number> = {
+  live: 0,
+  connecting: 1,
+  reconnecting: 2,
+  offline: 3,
+  closed: 4,
+};
+
+/** The more concerning of two statuses — used to roll up a multi-db client. */
+export const worseConnection = (
+  a: ConnectionStatus,
+  b: ConnectionStatus,
+): ConnectionStatus => (STATUS_RANK[a] >= STATUS_RANK[b] ? a : b);
+
+/** Browser network is gone. Absent `navigator` (Node, Workers) is online. */
+export const browserOffline = (): boolean =>
+  typeof navigator !== "undefined" && navigator.onLine === false;
+
 export interface Session {
   /** One correlated frame out, its reply back. Reconnects and re-auths as needed. */
   request(frame: Record<string, unknown>): Promise<Reply>;
@@ -123,6 +157,11 @@ export interface Session {
   readonly t: number;
   /** Bumped on every (re)connect, so a waiter can tell a reconnect from a tick. */
   readonly generation: number;
+  /**
+   * Derived from {@link generation}, {@link connects}, {@link closed} and
+   * whether the current socket completed its handshake. Never `"offline"`.
+   */
+  readonly status: ConnectionStatus;
   /**
    * The peer's latest word on who this socket is — captured from the `auth`
    * ack of an in-place swap, cleared when the socket drops. `undefined` until
@@ -140,7 +179,10 @@ export interface Session {
   nudge(): void;
   /** Bumped by {@link nudge} (paint), not by a basis bump alone. */
   readonly epoch: number;
-  /** Called on a basis bump, a paint nudge, and a dropped socket. Returns the unsubscribe. */
+  /**
+   * Called on a basis bump, a paint nudge, a dropped socket, and a
+   * handshake that just became live. Returns the unsubscribe.
+   */
   onWake(cb: () => void): () => void;
   /** Overlay registers for `{ op: "tx" }` / `{ op: "resync" }`. */
   onPush(cb: (frame: Record<string, unknown>) => void | Promise<void>): () => void;
@@ -195,7 +237,16 @@ export const openSession = (options: SessionOptions): Session => {
   let generation = 0;
   let connects = 0;
   let closed = false;
+  let opened = false;
+  let everOpened = false;
   let principal: SessionPrincipal | undefined;
+
+  const statusOf = (): ConnectionStatus => {
+    if (closed) return "closed";
+    if (opened) return "live";
+    if (!everOpened) return "connecting";
+    return "reconnecting";
+  };
 
   const wake = (): void => {
     // copy: a waker may unsubscribe itself while being notified
@@ -224,6 +275,7 @@ export const openSession = (options: SessionOptions): Session => {
   const drop = (message: string): void => {
     if (socket === undefined && pending.size === 0) return;
     socket = undefined;
+    opened = false;
     principal = undefined; // the next socket authenticates afresh on its upgrade
     const waiting = [...pending.values()];
     pending.clear();
@@ -287,14 +339,18 @@ export const openSession = (options: SessionOptions): Session => {
       const ws = options.connect(target);
       connects += 1;
       let settle!: (e?: unknown) => void;
-      const opened = new Promise<void>((resolve, reject) => {
+      const handshake = new Promise<void>((resolve, reject) => {
         settle = (e) => (e === undefined ? resolve() : reject(e));
       });
       let didOpen = false;
-      ws.addEventListener("open", () => {
+      const markOpen = (): void => {
         didOpen = true;
+        opened = true;
+        everOpened = true;
         settle();
-      });
+        wake();
+      };
+      ws.addEventListener("open", markOpen);
       ws.addEventListener("close", () => {
         settle(new SocketGone("ramose: session socket closed"));
         if (socket === ws) drop("ramose: session socket closed");
@@ -307,11 +363,10 @@ export const openSession = (options: SessionOptions): Session => {
       socket = ws;
       generation += 1;
       if (ws.readyState === undefined || ws.readyState === OPEN) {
-        didOpen = true;
-        settle();
+        markOpen();
       }
       try {
-        await opened;
+        await handshake;
       } catch (cause) {
         // the browser socket API does not expose the upgrade status; a
         // probe can recover 401/403. Do not invent a status when it cannot.
@@ -382,6 +437,9 @@ export const openSession = (options: SessionOptions): Session => {
     },
     get closed() {
       return closed;
+    },
+    get status() {
+      return statusOf();
     },
     bump: (t) => bump(t),
     nudge,
