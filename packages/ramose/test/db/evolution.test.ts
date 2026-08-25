@@ -38,6 +38,7 @@ import {
   optionalRetracts,
   schemaTx,
   seedWrite,
+  submitRaw,
 } from "../../src/db/internal.ts";
 import { TxRejected } from "../../src/db/Errors.ts";
 
@@ -620,18 +621,26 @@ describe("install() against a live engine", () => {
         yield* e.set(Note.title, "hello");
       }),
     );
+    const catalog = async () => {
+      const snap = db.asOf(Number.MAX_SAFE_INTEGER);
+      return assembleInstalled(
+        await snap.query(installedCoreQuery),
+        await snap.query(installedUniqueQuery),
+        await snap.query(installedOptionalQuery),
+      );
+    };
+    const before = (await catalog()).find((a) => a.ident === ":note/body");
+    expect(typeof before?.e).toBe("number");
+    expect(before?.optional).toBe(true);
     const refused = await runFail(p.ramose.db("notes", Tight).install());
     expect(refused).toBeInstanceOf(IncompatibleSchema);
     const report = await p.ramose.db("notes", Tight).install({
       allowIncompatible: [":note/body"],
     });
     expect(report.t).toBeGreaterThan(0);
-    const err = await runFail(
-      seedWrite(p.ramose.db("notes", Notes), function* (tx) {
-        const e = yield* tx.entity();
-        yield* e.set(Note.title, "other");
-      }),
-    );
+    const after = (await catalog()).find((a) => a.ident === ":note/body");
+    expect(after?.optional).toBeUndefined();
+    const err = await runFail(submitRaw(db, [{ ":note/title": "other" }]));
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
     await p.dispose();
