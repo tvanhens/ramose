@@ -112,6 +112,23 @@ export const deleteIssue = (db: ReefDb, issueId: number) =>
 
 Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
 
+Deleting a parent does not infer a cascade. Incoming refs on survivors **clear** when the field is optional or many-valued, and **reject** (`tx/required`) when it is a required card-one ref — unless that referrer is itself deleted in the same write. Requiredness never implies delete-propagation. Delete the children first (Reef's comments stay required on their issue):
+
+```ts title="examples/reef/src/app/mutations.ts#delete-issue-op"
+    const issueId = op.self.eid;
+    if (typeof issueId === "number") {
+      const comments = await op.query(
+        Query.from(Comment)
+          .where({ issue: issueId })
+          .select({ id: Comment.id }),
+      );
+      for (const row of comments) op.delete(row.id);
+    }
+    op.delete(op.self);
+```
+
+The one declared cascade is `{ owned: true }` on an outgoing ref — see [Define your data](/guides/catalog/#options).
+
 ## Many-valued fields
 
 A field declared `cardinality: "many"` is a set. One `set` per value; `remove` with the value takes one out:

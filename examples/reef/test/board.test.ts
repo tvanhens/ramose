@@ -31,14 +31,23 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import {
   boardQuery,
+  commentsQuery,
   labelsQuery,
   peopleQuery,
   type BoardRow,
   type ReefDb,
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
-import { createIssue, moveIssue, operations, setTitle } from "../src/app/mutations.ts";
+import {
+  addComment,
+  createIssue,
+  deleteIssue,
+  moveIssue,
+  operations,
+  setTitle,
+} from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
+import { tryLowerQueryObject } from "../../../packages/ramose/src/db/query/index.ts";
 import { seedWrite } from "../../../packages/ramose/src/db/internal.ts";
 import { openWorkspace } from "../src/app/ramose.ts";
 
@@ -111,7 +120,20 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
               }),
           },
         },
-        q: () => Effect.succeed([]),
+        q: (input) =>
+          Effect.tryPromise({
+            try: async () => {
+              const lowered = tryLowerQueryObject(input);
+              const result = await query(conn.db(), lowered.query, []);
+              const rows = lowered.finalize(result);
+              return rows;
+            },
+            catch: (cause) =>
+              new InternalError({
+                message:
+                  cause instanceof Error ? cause.message : String(cause),
+              }),
+          }),
         pull: () => Effect.succeed(null),
       });
       const prefix = await Effect.runPromise(
@@ -680,6 +702,29 @@ describe("the board's writes move the board's live stream", () => {
     expect(people.map((p) => p.name)).toEqual(["Ada"]);
     expect(labels).toEqual([]);
     expect(peer.queryOps()).toEqual([]);
+    await peer.dispose();
+  });
+});
+
+describe("deleting an issue", () => {
+  test("a commented issue deletes with its comments", async () => {
+    const peer = await inProcessPeer();
+    const created = await createIssue(peer.db, peer.myEid, undefined, {
+      title: "Commented",
+      status: "todo",
+      priority: 1,
+    });
+    const issueId = created.output.id as Ramose.Eid<typeof Issue>;
+    await addComment(peer.db, peer.myEid, issueId, "first note");
+    const before = await peer.db.query(commentsQuery(issueId));
+    expect(before).toHaveLength(1);
+
+    await deleteIssue(peer.db, issueId);
+
+    expect(await peer.db.query(boardQuery)).toEqual([]);
+    expect(await peer.db.query(commentsQuery(issueId))).toEqual([]);
+    expect(await peer.conn.db().entity(issueId)).toBeUndefined();
+    expect(await peer.conn.db().entity(before[0]!.id)).toBeUndefined();
     await peer.dispose();
   });
 });
