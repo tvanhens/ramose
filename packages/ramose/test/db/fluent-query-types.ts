@@ -208,6 +208,14 @@ Query.from(Issue)
   .select({ title: Issue.title }, { n: Q.count(Q.focus) })
   .orderBy((r) => r.n, "desc")
   .limit(10);
+Query.from(Issue)
+  .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+  .orderBy(Issue.title, "desc");
+pipe(
+  Query.entities(Issue),
+  Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+  Query.orderBy("title", "desc"),
+);
 Query.from(Issue).select({ title: Issue.title }, (e) => ({ n: Q.count(e) }));
 
 const paged = Query.from(Issue)

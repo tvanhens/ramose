@@ -337,7 +337,26 @@ interface Built {
   readonly order: readonly BuiltOrder[];
   readonly limit: number | undefined;
   readonly offset: number | undefined;
+  /** Ident-path → group-key var from `expandShapeToCells` (nested hops
+   * included). Empty when the projection is not `select(shape, extras)`. */
+  readonly groupKeys: ReadonlyMap<string, AnyVar>;
 }
+
+/** Fingerprint a sort path so an attribute-key `orderBy` can reuse the
+ * group-key var `expandShapeToCells` already bound into `:find`. */
+const groupKeyId = (path: readonly string[], revs: readonly boolean[]): string =>
+  path.map((ident, i) => `${revs[i] ? "~" : ""}${ident}`).join("\0");
+
+/** A pipe `orderBy("col")` that names a group key — resolved to a cell
+ * after `expandShapeToCells` binds the var. */
+type ShapeKeyOrder = {
+  readonly kind: "shapeKey";
+  readonly key: string;
+  readonly dir: OrderDir;
+  readonly empty: OrderEmpty;
+};
+
+type PendingOrder = BuiltOrder | ShapeKeyOrder;
 
 const isGen = (x: unknown): x is QueryGen<unknown> =>
   typeof x === "object" && x !== null && typeof (x as Iterator<unknown>).next === "function";
@@ -359,6 +378,7 @@ const runInto = (
       order: [],
       limit: undefined,
       offset: undefined,
+      groupKeys: new Map(),
     };
   }
   throw new Error(
@@ -395,9 +415,10 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   let extraCells: CellRecord | undefined;
   let selectFocus: AnyVar = root;
   let projectIds = false;
-  const order: BuiltOrder[] = [];
+  const order: PendingOrder[] = [];
   let limit: number | undefined;
   let offset: number | undefined;
+  const groupKeys = new Map<string, AnyVar>();
   for (const st of pipe.stages) {
     switch (st.kind) {
       case "frag": {
@@ -440,7 +461,19 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   }
   let proj: Projection | IdsSpec;
   if (select !== undefined && !projectIds && extraCells !== undefined) {
-    proj = { ...expandShapeToCells(selectFocus, select, ctx), ...extraCells };
+    const shapeCells = expandShapeToCells(selectFocus, select, ctx, groupKeys);
+    for (let i = 0; i < order.length; i++) {
+      const o = order[i]!;
+      if (o.kind !== "shapeKey") continue;
+      const cell = shapeCells[o.key];
+      if (!isVar(cell)) {
+        throw new Error(
+          `ramose/query: orderBy("${o.key}") — a sort key is a direct attribute column`,
+        );
+      }
+      order[i] = { kind: "cell", cell, dir: o.dir, empty: o.empty };
+    }
+    proj = { ...shapeCells, ...extraCells };
   } else if (select !== undefined && !projectIds) {
     proj = { _tag: "pullSpec", focus: selectFocus, shape: select };
   } else {
@@ -450,9 +483,10 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     clauses: ctx.clauses,
     proj,
     focus: select !== undefined && !projectIds ? selectFocus : focus,
-    order,
+    order: order as BuiltOrder[],
     limit,
     offset,
+    groupKeys,
   };
 };
 
@@ -461,7 +495,7 @@ const resolveOrderKey = (
   st: Extract<PipeStage, { kind: "orderBy" }>,
   select: Shape | undefined,
   extra?: CellRecord,
-): BuiltOrder => {
+): PendingOrder => {
   if (typeof st.key === "string" && extra !== undefined && extra[st.key] !== undefined) {
     return { kind: "cell", cell: extra[st.key]!, dir: st.dir, empty: st.empty };
   }
@@ -473,6 +507,12 @@ const resolveOrderKey = (
     let field = (select as Record<string, unknown>)[st.key];
     if (field === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") — the select shape has no column "${st.key}"`);
+    }
+    // `select(shape, extras)` already bound this group key — reuse that
+    // var at lowering time instead of re-deriving a path (which would
+    // mint a `?o0` that is not in `:find`).
+    if (extra !== undefined) {
+      return { kind: "shapeKey", key: st.key, dir: st.dir, empty: st.empty };
     }
     while (
       typeof field === "object" &&
@@ -503,7 +543,16 @@ const isPathCarrier = (x: unknown): x is PathCarrier =>
   typeof x === "object" && x !== null && typeof (x as { ident?: unknown }).ident === "string";
 
 /** Bind a select shape as group-key cells (aggregates cannot group by a pull). */
-const expandShapeToCells = (focus: AnyVar, shape: Shape, ctx: BuildCtx): CellRecord => {
+const expandShapeToCells = (
+  focus: AnyVar,
+  shape: Shape,
+  ctx: BuildCtx,
+  groupKeys: Map<string, AnyVar>,
+  prefix: { readonly path: readonly string[]; readonly revs: readonly boolean[] } = {
+    path: [],
+    revs: [],
+  },
+): CellRecord => {
   const cells: Record<string, Cell> = {};
   for (const [key, field] of Object.entries(shape)) {
     const info = inspectPullField(field);
@@ -521,6 +570,8 @@ const expandShapeToCells = (focus: AnyVar, shape: Shape, ctx: BuildCtx): CellRec
         `ramose/query: select(..., aggregates) cannot group by all(...) or again(...) ("${key}")`,
       );
     }
+    const path = [...prefix.path, ...pathOf(attr)];
+    const revs = [...prefix.revs, ...revsOf(attr)];
     if (info.nestedPattern !== undefined && typeof info.nestedPattern === "object") {
       if (info.optional || info.hasDefault) {
         throw new Error(
@@ -530,10 +581,15 @@ const expandShapeToCells = (focus: AnyVar, shape: Shape, ctx: BuildCtx): CellRec
       const target = mkVar<EidCell>("entity");
       const cmd = info.reverse ? Q.fact(target, attr, focus) : Q.fact(focus, attr, target);
       ctx.clauses.push(cmd);
-      cells[key] = expandShapeToCells(target, info.nestedPattern as Shape, ctx);
+      cells[key] = expandShapeToCells(target, info.nestedPattern as Shape, ctx, groupKeys, {
+        path,
+        revs,
+      });
       continue;
     }
-    cells[key] = bindGroupKey(focus, attr, info, ctx);
+    const v = bindGroupKey(focus, attr, info, ctx);
+    groupKeys.set(groupKeyId(path, revs), v);
+    cells[key] = v;
   }
   return cells;
 };
@@ -1604,6 +1660,34 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
 
+  const queryAggregates = flats.some((f) => f.agg !== undefined);
+
+  const bindOrderPath = (
+    path: readonly string[],
+    revs: readonly boolean[],
+    dir: OrderDir,
+    empty: OrderEmpty,
+  ): void => {
+    const group = built.groupKeys.get(groupKeyId(path, revs));
+    if (group !== undefined) {
+      order.push({ var: nameOf(group), dir, empty });
+      return;
+    }
+    if (queryAggregates) {
+      throw new Error(
+        `ramose/query: orderBy(${path.join(" → ")}) is not a group key of this select — an aggregate query orders only by a projected cell`,
+      );
+    }
+    if (built.focus === undefined) {
+      throw new Error(
+        "ramose/query: orderBy(attribute) needs a select focus — order a multi-root projection by a projected cell or bound var",
+      );
+    }
+    const bound = lowerOrderPath(nameOf(built.focus), path, revs);
+    where.push(...bound.clauses);
+    order.push({ var: bound.var, dir, empty });
+  };
+
   // Bound vars / aggregates do not need a select focus. Keyset paging still
   // does: `after()` appends the root eid as tie-breaker and raises if a
   // multi-root projection has none.
@@ -1635,14 +1719,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           `ramose/query: orderBy(${pathOf(picked).join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
         );
       }
-      if (built.focus === undefined) {
-        throw new Error(
-          "ramose/query: orderBy(attribute) needs a select focus — order a multi-root projection by a projected cell or bound var",
-        );
-      }
-      const bound = lowerOrderPath(nameOf(built.focus), pathOf(picked), revsOf(picked));
-      where.push(...bound.clauses);
-      order.push({ var: bound.var, dir, empty });
+      bindOrderPath(pathOf(picked), revsOf(picked), dir, empty);
       return;
     }
     throw new Error(
@@ -1662,14 +1739,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       if (o.kind === "cell") {
         orderFromPicked(o.cell, "orderBy", o.dir, o.empty);
       } else {
-        if (built.focus === undefined) {
-          throw new Error(
-            "ramose/query: orderBy(attribute) needs a select focus — order a multi-root projection by a projected cell or bound var",
-          );
-        }
-        const bound = lowerOrderPath(nameOf(built.focus), o.path, o.revs);
-        where.push(...bound.clauses);
-        order.push({ var: bound.var, dir: o.dir, empty: o.empty });
+        bindOrderPath(o.path, o.revs, o.dir, o.empty);
       }
     }
   }

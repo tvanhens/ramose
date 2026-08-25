@@ -1991,6 +1991,53 @@ describe("query: aggregates with order/limit and scalar value", () => {
     await peer.dispose();
   });
 
+  test("orderBy a group-key string or attribute reuses the :find var", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const piped = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+      ),
+    );
+    const fluent = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy(Issue.title, "desc");
+    const byString = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy("title", "desc");
+    const byPicker = Query.from(Issue)
+      .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+      .orderBy((r) => r.title, "desc");
+
+    const pipeLowered = lowerQueryObject(piped).query;
+    const fluentLowered = lowerQueryObject(fluent).query;
+    expect(fluentLowered).toEqual(pipeLowered);
+    expect(lowerQueryObject(byString).query).toEqual(pipeLowered);
+    expect(lowerQueryObject(byPicker).query).toEqual(pipeLowered);
+
+    const orderVar = (pipeLowered.order as readonly { var: string }[])[0]!.var;
+    expect(pipeLowered.find).toContain(orderVar);
+    expect(JSON.stringify(pipeLowered.where)).not.toContain("or-join");
+
+    const titles = ["ship the release", "fix the flake", "archive the docs"] as const;
+    expect((await db.query(piped)).map((r) => r.title)).toEqual([...titles]);
+    expect((await db.query(fluent)).map((r) => r.title)).toEqual([...titles]);
+
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue)
+          .select({ title: Issue.title }, { n: Q.count(Q.focus) })
+          .orderBy(Issue.rank, "asc"),
+      ),
+    ).toThrow(/not a group key/);
+
+    await peer.dispose();
+  });
+
   test("after() on a multi-root projection raises a ramose/query error", () => {
     const q = Query.q(function* () {
       const issue = yield* Query.entities(Issue);
