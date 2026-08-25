@@ -70,7 +70,7 @@ bun add ramose react react-dom
 
 ## What is Effect and how much do I need?
 
-The app path is promises: `await db.query(…)`, `await db.run(…)`. React hooks run reads and `useTransact().run` wraps a write promise. Effect is an [advanced hatch](/concepts/effect/).
+The app path is promises: `await db.query(…)`, `await db.run(…)`. React hooks run reads and `useOperation(db, op).run` wraps a write. Effect is an [advanced hatch](/concepts/effect/).
 
 ## TypeScript cannot resolve `ramose`
 
