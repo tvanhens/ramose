@@ -390,10 +390,12 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
       });
     }
 
+    // Do not forward `prepared.output`: it still holds live TxHandles. Tempids
+    // are assigned by the commit, so encode + persist happen after /transact.
     const forward = JSON.stringify({
       tx: toJson(tx),
       principal: who,
-      ...(clientOpId !== undefined ? { clientTxId: clientOpId, opOutput: prepared.output } : { opOutput: prepared.output }),
+      ...(clientOpId !== undefined ? { clientTxId: clientOpId } : {}),
     });
     const res = await transactor().fetch(txUrl("/transact"), {
       method: "POST",
@@ -412,7 +414,15 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
         ? (ack.tempids as Record<string, number>)
         : {};
     const output = await prepared.encodeOutput(tempids);
-    return json({ ...ack, output, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
+    const persisted = { ...ack, output };
+    if (clientOpId !== undefined) {
+      await transactor().fetch(txUrl("/op-ack"), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...internalHeaders(env) },
+        body: JSON.stringify({ clientOpId, principal: who, ack: persisted }),
+      });
+    }
+    return json({ ...persisted, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
   }
   if (rest === "/transact" && request.method === "POST") {
     let body = transactBody ?? "";

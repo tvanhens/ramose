@@ -158,6 +158,7 @@ export interface ExecuteArgs {
 
 export interface ExecuteReady {
   readonly tx: unknown[];
+  /** Raw body return — live handles, not wire-encoded. Use `encodeOutput`. */
   readonly output: unknown;
   readonly principal: Principal;
   readonly clientOpId?: string;
