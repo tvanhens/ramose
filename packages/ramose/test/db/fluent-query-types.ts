@@ -210,6 +210,22 @@ Query.from(Issue)
   .limit(10);
 Query.from(Issue).select({ title: Issue.title }, (e) => ({ n: Q.count(e) }));
 
+const paged = Query.from(Issue)
+  .select({ title: Issue.title })
+  .orderBy("title")
+  .after(null);
+const _logicPage = db.query(paged.logic());
+type _logicPageOut = Expect<
+  Equal<typeof _logicPage, Promise<readonly { readonly title: string }[]>>
+>;
+const taken = Query.from(Issue).select({ title: Issue.title }).one();
+const _logicOne = db.query(taken.logic());
+type _logicOneOut = Expect<
+  Equal<typeof _logicOne, Promise<readonly { readonly title: string }[]>>
+>;
+const _logicVal = db.query(openCount.logic());
+type _logicValOut = Expect<Equal<typeof _logicVal, Promise<number>>>;
+
 declare const issueVar: Var<Eid<typeof Issue>>;
 Q.pull(issueVar, { title: Issue.title });
 Q.fact(issueVar, Issue.title);

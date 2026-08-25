@@ -12,7 +12,10 @@ ordering that cell. `Q.value(Q.count(e))` is a scalar (`number`, not
 `[{ n }]`); empty-set count is `0`. Fluent / pipe `select` takes aggregate
 cells beside a shape (`.select(shape, { n: Q.count(Q.focus) })`). The dead
 error that promised "a multi-root projection orders by its own bound vars"
-is gone — that is now the API.
+is gone — that is now the API. `logic()` after `one` / `after` types as
+the rows array (a `Q.value` scalar stays a scalar). Group keys bind
+`:db/id` as a number, keep optional / defaulted fields, and nested
+`orderBy(r => r.owner.name)` walks from the select focus.
 
 ### Required-at-transact and `op.update` (tracker #205)
 

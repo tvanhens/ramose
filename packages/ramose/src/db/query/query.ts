@@ -49,6 +49,7 @@ import {
   isValueSpec,
   isVar,
   isBlank,
+  collectBody,
   mkVar,
   runBody,
   type AggSpec,
@@ -209,8 +210,19 @@ interface OpenCommand<Row> extends SpliceCommand {
  * default, one row (or `null`) after {@link QueryObject.one} /
  * {@link QueryObject.oneOrFail}, a {@link Page} after
  * {@link QueryObject.after}, a scalar after {@link Q.value}.
+ *
+ * `Term` distinguishes a body-derived scalar (`Q.value`) from cursor
+ * terminals that also set `Out` (`one` / `oneOrFail` / `after`), so
+ * {@link QueryObject.logic} can reset the latter to the rows array
+ * without lying about the former.
  */
-export interface QueryObject<Row = unknown, Out = readonly Row[]> {
+type QueryTerm = "rows" | "value" | "one" | "oneOrFail" | "after";
+
+export interface QueryObject<
+  Row = unknown,
+  Out = readonly Row[],
+  Term extends QueryTerm = "rows",
+> {
   readonly _tag: "Query";
   /** @internal provenance: re-run per inclusion, so vars stay hygienic */
   readonly body: () => unknown;
@@ -235,8 +247,14 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
   open(): OpenCommand<Row>;
 
   /** This query without its cursor (orderBy/limit/offset/one/after) — the
-   * logic composes; the cursor was post-processing for the outermost query. */
-  logic(): QueryObject<Row, Out>;
+   * logic composes; the cursor was post-processing for the outermost query.
+   * Body-derived `Q.value` scalars stay scalars; `one` / `oneOrFail` /
+   * `after` reset to the rows array. */
+  logic(): QueryObject<
+    Row,
+    Term extends "value" ? Out : readonly Row[],
+    Term extends "value" ? "value" : "rows"
+  >;
 
   /**
    * Sort by a selected column, an attribute path, a bound var / projected
@@ -244,7 +262,7 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
    * and `Query.q` generator values. The fluent override keeps row-typed
    * string keys (`keyof Row`) and focus-typed attributes.
    */
-  orderBy(key: (row: Row) => unknown, dir?: OrderDir, opts?: { readonly empty?: OrderEmpty }): QueryObject<Row, Out>;
+  orderBy(key: (row: Row) => unknown, dir?: OrderDir, opts?: { readonly empty?: OrderEmpty }): QueryObject<Row, Out, Term>;
   orderBy(
     // `any` so FluentQuery's row-typed override stays assignable to
     // `QueryObject<any>` (`AnyQueryObject`); the fluent chain keeps
@@ -252,25 +270,25 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
     key: any,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
-  ): QueryObject<Row, Out>;
+  ): QueryObject<Row, Out, Term>;
 
   /** Keep at most `n` rows. */
-  limit(n: number): QueryObject<Row, Out>;
+  limit(n: number): QueryObject<Row, Out, Term>;
 
   /** Drop `n` rows from the front of the (ordered) result. */
-  offset(n: number): QueryObject<Row, Out>;
+  offset(n: number): QueryObject<Row, Out, Term>;
 
   /**
    * At most one row. Lowering forces `limit 1`; the result is that row or
    * `null`, the same absence `db.pull` uses. Extra matches are not fetched.
    */
-  one(): QueryObject<Row, Row | null>;
+  one(): QueryObject<Row, Row | null, "one">;
   /**
    * Exactly one row. Lowering forces `limit 2` so a second match is
    * witnessed without pulling a whole page, and `db.query` fails with `NotOne`
    * when the peer answers zero or two.
    */
-  oneOrFail(): QueryObject<Row, Row>;
+  oneOrFail(): QueryObject<Row, Row, "oneOrFail">;
   /**
    * Keyset-page a sorted query: the result becomes a {@link Page}, whose
    * `cursor` is where it ended — pass `null` for the first page and the
@@ -280,7 +298,7 @@ export interface QueryObject<Row = unknown, Out = readonly Row[]> {
    * the peer's: `limit(n)` is n rows *past* the cursor, and unlike `offset`
    * the walk does not shift when rows are inserted before it.
    */
-  after(cursor: Cursor | null): QueryObject<Row, Page<Row>>;
+  after(cursor: Cursor | null): QueryObject<Row, Page<Row>, "after">;
 
   /** Phantom — the inferred row. Never present at runtime. */
   readonly _row?: Row;
@@ -503,23 +521,82 @@ const expandShapeToCells = (focus: AnyVar, shape: Shape, ctx: BuildCtx): CellRec
         `ramose/query: select(..., aggregates) cannot group by all(...) or again(...) ("${key}")`,
       );
     }
-    if (attr.ident === ":db/id") {
-      cells[key] = focus;
-      continue;
-    }
     if (info.nestedPattern !== undefined && typeof info.nestedPattern === "object") {
+      if (info.optional || info.hasDefault) {
+        throw new Error(
+          `ramose/query: select(..., aggregates) cannot group by an optional or defaulted nested shape ("${key}")`,
+        );
+      }
       const target = mkVar<EidCell>("entity");
       const cmd = info.reverse ? Q.fact(target, attr, focus) : Q.fact(focus, attr, target);
       ctx.clauses.push(cmd);
       cells[key] = expandShapeToCells(target, info.nestedPattern as Shape, ctx);
       continue;
     }
-    const cmd = info.reverse ? Q.fact(Q._, attr, focus) : Q.fact(focus, attr);
-    ctx.clauses.push(cmd);
-    cells[key] = cmd.handle.v;
+    cells[key] = bindGroupKey(focus, attr, info, ctx);
   }
   return cells;
 };
+
+/** A group-key var for one shape leaf. `:db/id` is a distinct value var
+ * (not the entity var — that would wrap `{ id }` and collide with
+ * `Q.count` of the same focus in the find spec). Optional / defaulted
+ * fields or-join so a missing datom is still a group. */
+const bindGroupKey = (
+  focus: AnyVar,
+  attr: PathCarrier,
+  info: ReturnType<typeof inspectPullField>,
+  ctx: BuildCtx,
+): AnyVar => {
+  if (attr.ident === ":db/id") {
+    const id = mkVar("value");
+    ctx.clauses.push(Q.fact(focus, attr, id));
+    return id;
+  }
+  const isRef = (attr as { valueType?: unknown }).valueType === "ref";
+  const v = isRef ? mkVar<EidCell>("entity") : mkVar("value");
+  if (info.optional || info.hasDefault) {
+    const fallback = info.hasDefault ? info.defaultValue : null;
+    const present = info.reverse
+      ? function* () {
+          yield* Q.fact(v, attr, focus);
+        }
+      : function* () {
+          yield* Q.fact(focus, attr, v);
+        };
+    const missing = info.reverse
+      ? function* () {
+          yield* Q.fact(Q._, attr, focus);
+        }
+      : function* () {
+          yield* Q.fact(focus, attr);
+        };
+    ctx.clauses.push({
+      _tag: "orGroup",
+      branches: [
+        collectBody(present),
+        collectBody(function* () {
+          yield* Q.not(missing);
+          yield* Q.in(v, [fallback]);
+        }),
+      ],
+    });
+    return v;
+  }
+  const cmd = info.reverse ? Q.fact(Q._, attr, focus) : Q.fact(focus, attr);
+  ctx.clauses.push(cmd);
+  return cmd.handle.v;
+};
+
+/** Prefix parent hops onto a nested leaf so `orderBy(r => r.owner.name)`
+ * walks from the select focus, not the leaf's own entity. */
+const extendPath = (parent: PathCarrier, leaf: PathCarrier): PathCarrier => ({
+  ident: leaf.ident,
+  cardinality: leaf.cardinality,
+  __path: [...pathOf(parent), ...pathOf(leaf)],
+  __cards: [...cardsOf(parent), ...cardsOf(leaf)],
+  __revs: [...revsOf(parent), ...revsOf(leaf)],
+});
 
 const rewriteExtra = (extra: CellRecord, focus: AnyVar): CellRecord => {
   const out: Record<string, Cell> = {};
@@ -539,19 +616,27 @@ const rewriteExtra = (extra: CellRecord, focus: AnyVar): CellRecord => {
   return out;
 };
 
-const pullShapeCells = (shape: Shape): Record<string, unknown> => {
+const pullShapeCells = (shape: Shape, parent?: PathCarrier): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(shape)) {
     const info = inspectPullField(field);
+    const attr = info.attr as PathCarrier | undefined;
+    const rooted =
+      parent !== undefined && attr !== undefined && typeof attr.ident === "string"
+        ? extendPath(parent, attr)
+        : attr;
     if (
       info.nestedPattern !== undefined &&
       typeof info.nestedPattern === "object" &&
       !isAgain(info.nestedPattern) &&
       !isAllShape(info.nestedPattern)
     ) {
-      out[key] = pullShapeCells(info.nestedPattern as Shape);
+      out[key] = pullShapeCells(
+        info.nestedPattern as Shape,
+        rooted !== undefined && typeof rooted.ident === "string" ? rooted : parent,
+      );
     } else {
-      out[key] = info.attr;
+      out[key] = rooted ?? info.attr;
     }
   }
   return out;
@@ -585,7 +670,11 @@ type IsValueBody<B> = B extends () => QueryGen<infer Prj> ? (Prj extends ValueSp
 
 type OutFromBody<B> = IsValueBody<B> extends true ? RowFromBody<B> : readonly RowFromBody<B>[];
 
-export const makeQueryObject = <Row, Out = readonly Row[]>(
+export const makeQueryObject = <
+  Row,
+  Out = readonly Row[],
+  Term extends QueryTerm = "rows",
+>(
   body: () => unknown,
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
@@ -593,8 +682,8 @@ export const makeQueryObject = <Row, Out = readonly Row[]>(
   orders: readonly QueryOrder[] = [],
   limitN?: number,
   offsetN?: number,
-): QueryObject<Row, Out> => {
-  const self: QueryObject<Row, Out> = {
+): QueryObject<Row, Out, Term> => {
+  const self: QueryObject<Row, Out, Term> = {
     _tag: "Query",
     body,
     stripCursor,
@@ -603,15 +692,19 @@ export const makeQueryObject = <Row, Out = readonly Row[]>(
     orders,
     limitN,
     offsetN,
-    open: (() => openCommand(self)) as QueryObject<Row, Out>["open"],
-    logic: () => makeQueryObject<Row, Out>(body, true) as QueryObject<Row, Out>,
+    open: (() => openCommand(self)) as QueryObject<Row, Out, Term>["open"],
+    logic: () =>
+      makeQueryObject<Row, Term extends "value" ? Out : readonly Row[], Term extends "value" ? "value" : "rows">(
+        body,
+        true,
+      ),
     orderBy: (key, dir = "asc", opts) =>
-      makeQueryObject<Row, Out>(body, stripCursor, take, seek, [
+      makeQueryObject<Row, Out, Term>(body, stripCursor, take, seek, [
         ...orders,
         { key, dir, empty: opts?.empty ?? "last" },
       ], limitN, offsetN),
-    limit: (n) => makeQueryObject<Row, Out>(body, stripCursor, take, seek, orders, n, offsetN),
-    offset: (n) => makeQueryObject<Row, Out>(body, stripCursor, take, seek, orders, limitN, n),
+    limit: (n) => makeQueryObject<Row, Out, Term>(body, stripCursor, take, seek, orders, n, offsetN),
+    offset: (n) => makeQueryObject<Row, Out, Term>(body, stripCursor, take, seek, orders, limitN, n),
     one: () => {
       if (seek !== undefined) {
         throw new Error(
@@ -652,11 +745,15 @@ export const makeQueryObject = <Row, Out = readonly Row[]>(
  */
 export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   body: B,
-): QueryObject<RowFromBody<B>, OutFromBody<B>> {
+): QueryObject<RowFromBody<B>, OutFromBody<B>, IsValueBody<B> extends true ? "value" : "rows"> {
   if (typeof body !== "function") {
     throw new Error("ramose/query: Query.q(body) takes a generator or a function returning a pipeline");
   }
-  return makeQueryObject(body, false);
+  return makeQueryObject<
+    RowFromBody<B>,
+    OutFromBody<B>,
+    IsValueBody<B> extends true ? "value" : "rows"
+  >(body, false);
 }
 
 // ── named rules ─────────────────────────────────────────────────────────────
@@ -1151,7 +1248,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       const eName = names.get(ePos.id);
       const vName = names.get(vPos.id);
       if (eName !== undefined && vName !== undefined) {
-        return eName === vName ? undefined : [["=", eName, vName]];
+        // identity binds the value var to the eid; `=` would require both
+        // already bound and leave a projected id cell unbound.
+        return eName === vName ? undefined : [["identity", eName], vName];
       }
       const n = eName ?? vName ?? nameOf(ePos);
       names.set(ePos.id, n);

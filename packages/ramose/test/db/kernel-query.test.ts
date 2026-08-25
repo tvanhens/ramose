@@ -1835,4 +1835,85 @@ describe("query: aggregates with order/limit and scalar value", () => {
     const { query } = lowerQueryObject(q);
     expect(query.order).toEqual([{ var: expect.stringMatching(/^\?q/), dir: "asc", empty: "last" }]);
   });
+
+  test("select id + count reads a number and orders by the id, not the count", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const grouped = Query.from(Issue).select({ id: Issue.id }, { n: Q.count(Q.focus) });
+    const rows = await db.query(grouped);
+    expect(rows.every((r) => typeof r.id === "number")).toBe(true);
+    expect(rows.every((r) => r.n === 1)).toBe(true);
+    expect(rows).toHaveLength(3);
+
+    const desc = await db.query(grouped.orderBy((r) => r.id, "desc"));
+    const asc = await db.query(grouped.orderBy((r) => r.id, "asc"));
+    expect(desc.map((r) => r.id)).toEqual([...asc.map((r) => r.id)].reverse());
+
+    await peer.dispose();
+  });
+
+  test("select extras keep optional and defaulted group keys", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const optional = Query.from(User).select({ age: User.age.optional }, { n: Q.count(Q.focus) });
+    const optionalRows = [...(await db.query(optional))].sort(
+      (a, b) => Number(a.age ?? -1) - Number(b.age ?? -1),
+    );
+    expect(optionalRows).toHaveLength(3);
+    expect(optionalRows.reduce((s, r) => s + r.n, 0)).toBe(3);
+    expect(optionalRows.some((r) => r.age == null)).toBe(true);
+
+    const defaulted = Query.from(User).select({ age: User.age.orDefault(0) }, { n: Q.count(Q.focus) });
+    const defaultRows = [...(await db.query(defaulted))].sort((a, b) => a.age - b.age);
+    expect(defaultRows).toEqual([
+      { age: 0, n: 1 },
+      { age: 36, n: 1 },
+      { age: 45, n: 1 },
+    ] as never);
+
+    await peer.dispose();
+  });
+
+  test("orderBy a nested select key walks from the focus", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const byOwner = Query.from(Issue)
+      .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
+      .orderBy((r) => r.owner.name, "asc");
+    const asc = await db.query(byOwner);
+    expect(asc.map((r) => r.owner.name)).toEqual(["Ada", "Ada", "Grace"]);
+
+    const desc = await db.query(
+      Query.from(Issue)
+        .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
+        .orderBy((r) => r.owner.name, "desc"),
+    );
+    expect(desc.map((r) => r.owner.name)).toEqual(["Grace", "Ada", "Ada"]);
+
+    await peer.dispose();
+  });
+
+  test("logic() after one() / after() returns the rows array", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("tracker", Tracker);
+    await seed(db);
+
+    const taken = Query.from(Issue).select({ title: Issue.title }).orderBy("title").one();
+    const rows = await db.query(taken.logic());
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows).toHaveLength(3);
+
+    const paged = Query.from(Issue).select({ title: Issue.title }).orderBy("title").after(null);
+    const unpaged = await db.query(paged.logic());
+    expect(Array.isArray(unpaged)).toBe(true);
+    expect((unpaged as { rows?: unknown }).rows).toBeUndefined();
+
+    await peer.dispose();
+  });
 });
