@@ -22,6 +22,7 @@ import { POLICY_OPS } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
 import { isOptionalField, type AnyField } from "./Field.ts";
 import { roleIdentOf } from "../internal/core/policy/provision.ts";
+import { inferDbValueType } from "./valueTypes.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
@@ -784,14 +785,19 @@ export interface CompileOptions {
   readonly pulls?: readonly unknown[];
 }
 
+const isStringField = (field: AnyField): boolean =>
+  inferDbValueType(field.schema, field.valueType) === "string";
+
 /**
- * Fail closed at deploy: only the principal ident, the `role` sibling,
- * and optional / card-many fields are provisionable. The peer *may*
- * stamp matching `ramose.attrs` at login, but those keys are per-token
- * and never guaranteed — they do not make a required field
- * provisionable. A required card-one field beyond principal + role
- * makes first login `tx/required`. Mark those fields `optional: true`
- * (or use a schema AST that admits `undefined`).
+ * Fail closed at deploy: only the principal ident, a string-typed
+ * `role` sibling, and optional / card-many fields are provisionable.
+ * The peer writes `role` only when that attr is string-typed — a
+ * required card-one non-string `role` is not provisionable. The peer
+ * *may* stamp matching `ramose.attrs` at login, but those keys are
+ * per-token and never guaranteed — they do not make a required field
+ * provisionable. A required card-one field beyond principal + string
+ * role makes first login `tx/required`. Mark those fields
+ * `optional: true` (or use a schema AST that admits `undefined`).
  */
 export const checkPrincipalProvisioning = (
   schema: AnySchema,
@@ -804,7 +810,8 @@ export const checkPrincipalProvisioning = (
   for (const field of Object.values(entity.fields)) {
     const ident = typeof field.ident === "string" ? field.ident : undefined;
     if (ident === undefined) continue;
-    if (ident === principalIdent || ident === roleIdent) continue;
+    if (ident === principalIdent) continue;
+    if (ident === roleIdent && isStringField(field as AnyField)) continue;
     if (isOptionalField(field as AnyField)) continue;
     missing.push(ident);
   }

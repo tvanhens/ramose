@@ -76,12 +76,13 @@ because schema attrs stay `:db/`-exempt from the required check. The
 same flip is why raw-datom schema literals in the test suite grew
 `:db/optional`.
 
-The peer always writes the principal ident and the `role` sibling
-(when that attr exists). Matching `ramose.attrs` are per-token and
-never guaranteed — they do not make a required field provisionable.
-A required field beyond principal + role makes first login
-`tx/required`. `policy()` / `compile()` fail closed when the principal
-entity has unprovisionable required fields.
+The peer always writes the principal ident. The `role` sibling is
+written only when that attr exists and is string-typed. Matching
+`ramose.attrs` are per-token and never guaranteed — they do not make
+a required field provisionable. A required field beyond principal +
+string role (including a required non-string `role`) makes first
+login `tx/required`. `policy()` / `compile()` fail closed when the
+principal entity has unprovisionable required fields.
 
 `Field.isOptional` is true when `{ optional: true }` **or** the Effect
 schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`).

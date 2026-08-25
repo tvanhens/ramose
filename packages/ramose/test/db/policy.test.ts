@@ -288,7 +288,29 @@ describe("deploy-time errors", () => {
     ).toThrow(/:user\/name/);
   });
 
-  test("principal sub, role, optional fields, and card-many are provisionable", () => {
+  test("a required non-string role is not provisionable", () => {
+    const Role = Entity("role", { name: Field(Schema.String) });
+    const RefUser = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Ref(() => Role)),
+    });
+    const RefCatalog = DbSchema({ user: RefUser, role: Role });
+    expect(() =>
+      P.policy({ schema: RefCatalog, principal: RefUser.sub, classes: ["member"] }, {}),
+    ).toThrow(PolicyError);
+    expect(() => P.checkPrincipalProvisioning(RefCatalog, ":user/sub")).toThrow(/:user\/role/);
+
+    const Numbered = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Schema.Number),
+    });
+    const NumberedCatalog = DbSchema({ user: Numbered });
+    expect(() =>
+      P.checkPrincipalProvisioning(NumberedCatalog, ":user/sub"),
+    ).toThrow(/:user\/role/);
+  });
+
+  test("principal sub, string role, optional fields, and card-many are provisionable", () => {
     const Account = Entity("user", {
       sub: Field.unique(Schema.String, "upsert"),
       role: Field(Schema.String),
