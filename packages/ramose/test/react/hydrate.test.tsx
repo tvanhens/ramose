@@ -273,6 +273,7 @@ describe("initialData", () => {
     );
     expect(peer.frameOps("q")).toHaveLength(0);
     expect(result.current.status).toBe("success");
+    const firstRefetch = result.current.refetch;
 
     rerender({ asOf: 2 });
     expect(result.current.isLoading).toBe(true);
@@ -284,6 +285,7 @@ describe("initialData", () => {
     expect(result.current.status).toBe("success");
     expect(result.current.isLoading).toBe(false);
     expect(result.current.t).toBe(2);
+    expect(result.current.refetch).toBe(firstRefetch);
   });
 
   test("usePull hydrates null — a missing record is data, not a blank", () => {

@@ -81,11 +81,14 @@ export const useOneShot = <A, E>(
     }
   }
 
+  const keyRef = useRef(suspendKey);
+  keyRef.current = suspendKey;
   const refetch = useCallback(() => {
-    if (suspendKey !== undefined) evictSuspend(suspendKey);
+    const key = keyRef.current;
+    if (key !== undefined) evictSuspend(key);
     hydratedKey.current = undefined;
     setNudge((n) => n + 1);
-  }, [suspendKey]);
+  }, []);
 
   useEffect(() => {
     if (
