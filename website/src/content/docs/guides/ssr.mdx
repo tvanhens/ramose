@@ -41,6 +41,7 @@ The client hook takes the same query the Worker ran. `initialData` is the first 
 
 ```tsx
 "use client";
+import * as Ramose from "ramose/db";
 import { useLiveQuery } from "ramose/react";
 
 export function TodoList({

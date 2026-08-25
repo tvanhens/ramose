@@ -165,6 +165,35 @@ describe("initialData", () => {
     });
   });
 
+  test("useLiveQuery(db, q) hydrates then the standing read replaces the seed", async () => {
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "q"
+          ? { body: { t: 1, result: [[{ title: "fresh" }]] } }
+          : { body: { t: 1, result: [] } },
+    });
+    const seed = [{ title: "seed" }];
+    const { result } = renderHook(
+      () =>
+        useLiveQuery(useDb("todos", Todos).asOf(1), titles, {
+          initialData: seed,
+          initialT: 1,
+        }),
+      { wrapper: wrapperFor(peer) },
+    );
+    expect(snap(result.current)).toEqual({
+      data: seed,
+      error: undefined,
+      status: "success",
+      isLoading: false,
+      t: 1,
+    });
+    await waitFor(() =>
+      expect(result.current.data).toEqual([{ title: "fresh" }]),
+    );
+    expect(result.current.t).toBe(1);
+  });
+
   test("useQuery skips the first fetch when initialData hydrates the key", async () => {
     const peer = fakePeer({
       answer: (frame: Frame) =>
