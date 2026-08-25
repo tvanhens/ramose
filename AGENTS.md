@@ -18,11 +18,14 @@ path, `db.transact` retires; (2) zero Effect types on the app surface
 (`ramose/db` client, `ramose/react`) — promises, plain tagged errors,
 subscriptions; (3) naming per #204's map (`Entity`/`Field`/`Schema`,
 `set`/`remove`/`delete`); (4) queries and operations stay serializable
-(future MCP projection, #209); (5) authorization is moving into the
-database itself — a system directory of dbs + grants with identity-only
-tokens (#215, design open): introduce no new token claim formats and do
-not deepen coupling to token-carried db/class claims or Better Auth's D1
-tables; (6) no deprecation windows before launch — a breaking change
+(future MCP projection, #209); (5) authorization moves into the
+database itself — an always-on system directory of dbs + grants with
+identity-only tokens (#215, design in `design/215-system-directory.md`):
+no compat mode — the `ramose.{db,class}` claim format is removed with the
+change, not kept; the policy vocabulary renames class → role (amending
+#204's map); identity data stays in Better Auth's D1 for now; pre-launch
+the API is fully fungible — prefer the quickest path to the end state
+over compatibility; (6) no deprecation windows before launch — a breaking change
 removes the old surface in the same PR, and a redundant verb does not
 ship; (7) required-at-transact — `put` = make this row so (full required
 data, insert-or-update via unification); `update` = change what's there

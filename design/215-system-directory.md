@@ -1,26 +1,56 @@
 # Design: the system directory — databases, grants, and identity as Ramose data
 
 - Issue: [#215](https://github.com/tvanhens/ramose/issues/215) (decision 5 of the pre-launch review, tracker #205)
-- Status: **proposal** — everything here is revisable; the "Constraints honored" table at the end is the only part that restates binding decisions
+- Status: **direction decided 2026-08-25** (see "Decisions" below); mechanics revisable
 - Baseline: `b5ae5c9` (cleanup complete except #183 proceed-list and #196/SSR)
+
+## Decisions (owner, 2026-08-25)
+
+These supersede any compat-preserving language elsewhere in this doc and the
+earlier hold notes they replace:
+
+1. **The API is fully fungible pre-launch.** Breaking changes are tolerable
+   now; optimize for the quickest path to the end state, not for
+   compatibility. (Consistent with decision 6: break once, no deprecation
+   windows.)
+2. **The vocabulary is `role`, not `class`.** Policy head `roles:`,
+   `P.role(...)`, `schemaRoles`; directory field `grant.role`. This amends
+   #204's naming map; internal constants (`TOKEN_ONLY_CLASS` etc.) rename
+   mechanically. The `classOfRole` mapping layer is deleted outright — there
+   is only one concept, with one name. Bonus alignment: the peer-materialized
+   `:user/role` datom already matches.
+3. **The directory is always on.** Every deployment has `_dir`; there is no
+   directory-less mode and no mode switch.
+4. **No compatibility mode.** Identity-only tokens are the *only* JWT
+   format. The legacy `ramose: { db, class }` claim is removed in the same
+   change, not frozen for migration — mint, verifier, and client drop it
+   together. (This resolves #183's direction hold; its proceed-list items
+   are unaffected.)
+5. **Identity data stays in Better Auth's D1 for now** (users, password
+   hashes, sessions, verification). The directory owns databases and
+   grants; identity storage migration (the old "stage 3") is deferred to
+   avoid the erasure complexity, which makes the erasure question
+   **non-gating** for this design (it remains a pre-1.0 question for app
+   data generally — see §12).
 
 ## Summary
 
 Every deployment gets a well-known system database, `_dir`, that reifies the
 control plane as ordinary Ramose data guarded by an ordinary (package-defined)
-`policy()`. Credentials become identity-only — a token carries `sub` and the
+`policy()`. Credentials are identity-only — a token carries `sub` and the
 deployment audience, nothing else. On session open for database X, the peer
-resolves `(sub, X) → class` with one index lookup against `_dir` in the same
-isolate (no network hop, no extra token), and fills `Principal.classes` — the
-seam #179 already cut. Grants are rows: granting is an operation, revocation is
-a retraction that is authoritative on the next resolution, access audit is
-`history` on the grant namespace, and the workspace list is a live query.
+resolves `(sub, X) → role` with one index lookup against `_dir` in the same
+isolate (no network hop, no extra token), and fills `Principal.roles` — the
+seam #179 already cut (as `classes`; renamed with the sweep). Grants are
+rows: granting is an operation, revocation is a retraction that is
+authoritative on the next resolution, access audit is `history` on the grant
+namespace, and the workspace list is a live query.
 
-The design divides into a **core** (directory schema + policy, identity-only
-tokens, the resolver, bootstrap/seeding, client surface) that replaces the
-org/membership half of Reef's D1, and **staged follow-ons** (JWKS relocation,
-identity/sessions via a Better Auth adapter gated on an erasure story) that
-finish the D1 removal.
+Scope after the 2026-08-25 decisions: this design replaces the
+org/membership/invitation half of Reef's D1 and all token-carried
+authorization, in one move, with no dual-path period. Identity (sign-in,
+sessions) stays in Better Auth's D1. JWKS relocation remains recommended,
+independent hygiene (§11).
 
 ## Goals
 
@@ -42,9 +72,8 @@ finish the D1 removal.
   (install, mirror writes) are separate transactions with idempotent retry.
 - A general per-database policy mechanism. `_dir` gets its own built-in
   policy via a special case; app databases keep sharing `RAMOSE_POLICY`.
-- Solving erasure for app data. Stage 3 forces the question for identity
-  data; the crypto-shredding sketch below is the leading candidate, but the
-  general story is its own pre-1.0 issue.
+- Identity storage migration and the erasure story (deferred by decision 5
+  above; §12 keeps the sketch for when it's picked back up).
 
 ---
 
@@ -57,7 +86,7 @@ rule exactly as is and add a closed set of system names beside it:
 
 ```ts
 // DatabaseName.ts
-export const SYSTEM_DATABASES = ["_dir"] as const; // later: "_auth"
+export const SYSTEM_DATABASES = ["_dir"] as const;
 export const isSystemDatabaseName = (s: string) =>
   (SYSTEM_DATABASES as readonly string[]).includes(s);
 ```
@@ -65,12 +94,14 @@ export const isSystemDatabaseName = (s: string) =>
 - The worker route (`worker/index.ts`) and client `makeDb` accept
   `isDatabaseName(name) || isSystemDatabaseName(name)` — clients must be able
   to open policy-scoped sessions on `_dir` (workspace list, invites).
-- Token mint (`Auth.ts`) keeps rejecting `_`-prefixed names in `ramose.db`:
-  a compat token can never target a system database. Identity-only tokens
-  don't name databases at all, so nothing to do there.
+- Identity tokens don't name databases, so mint validation has nothing to
+  carve out.
 - DO ids derive from the name as today (`idFromName("_dir")`); `_dir` is an
   ordinary database in every mechanical respect — R2 segments, transactor,
   replicas, live sessions, `asOf`/`history`.
+- Always-on (decision 3): the peer installs/evolves the `Directory` catalog
+  into `_dir` at deploy unconditionally; a deployment that never seeds a
+  grant simply has an empty directory.
 
 ## 2. The directory catalog
 
@@ -81,7 +112,7 @@ engine, installed/evolved by the peer — never user-authored.
 const Principal = Ramose.Entity("principal", {
   // Policy principal attr; provisioned by the peer on first _dir session.
   sub: Field.unique(Ramose.string(), "upsert"),
-  role: Ramose.string({ optional: true }),        // peer-materialized class
+  role: Ramose.string({ optional: true }),        // peer-materialized (mirror)
   kind: Ramose.Enum(["user", "agent"], { optional: true }), // absent = user
   name: Ramose.string({ optional: true }),
   email: Ramose.string({ optional: true, index: true }),
@@ -101,7 +132,7 @@ const Grant = Ramose.Entity("grant", {
   key: Field.unique(Ramose.string(), "upsert"),
   principal: Ramose.Ref(Principal),
   db: Ramose.Ref(Db),
-  class: Ramose.string(),   // interpreted by the TARGET db's policy
+  role: Ramose.string(),    // interpreted by the TARGET db's policy
   admin: Ramose.boolean(),  // interpreted by the DIRECTORY: may manage
                             // grants/invites on this db
 });
@@ -109,7 +140,7 @@ const Grant = Ramose.Entity("grant", {
 const Invite = Ramose.Entity("invite", {
   email: Ramose.string({ index: true }),
   db: Ramose.Ref(Db),
-  class: Ramose.string(),
+  role: Ramose.string(),
   admin: Ramose.boolean(),
   status: Ramose.Enum(["pending", "accepted", "revoked"]),
   invitedBy: Ramose.Ref(Principal),
@@ -129,7 +160,7 @@ export const Directory = Ramose.Schema({
 
 Design notes:
 
-- **`grant.class` vs `grant.admin`.** Class names are per-app policy
+- **`grant.role` vs `grant.admin`.** Role names are per-app policy
   vocabulary (`owner`/`member`/`viewer` in Reef, anything elsewhere), so the
   directory cannot know which string means "may invite". Directory-level
   administration is therefore its own boolean on the grant, checked by the
@@ -139,9 +170,9 @@ Design notes:
   requires the principal row to exist (refs keep integrity); inviting someone
   who has never signed in goes through `invite`, converted to a grant by
   `invite/accept` on their first session.
-- **One grant per (sub, db), one class.** `Principal.classes` (plural) is
-  the seam; if multi-class grants are ever wanted, `class` becomes card-many
-  without changing the resolver contract (`classesOf` already handles it).
+- **One grant per (sub, db), one role.** `Principal.roles` (plural) is
+  the seam; if multi-role grants are ever wanted, `role` becomes card-many
+  without changing the resolver contract (`rolesOf` already handles it).
 - **`principal` satisfies the provisioning constraint** (unique-upsert
   principal attr; every other field optional; string `role` sibling), so the
   existing peer provisioning path works on `_dir` unchanged.
@@ -170,7 +201,7 @@ const myInvite   = (me) => (inv) => /* Invite.email == me.email */;
 export const DIR_POLICY = policy({
   schema: Directory,
   principal: Principal.sub,
-  classes: ["admin", "principal"],
+  roles: ["admin", "principal"],
   superuser: "admin",
   operations: dirOperations,
 }, {
@@ -180,23 +211,23 @@ export const DIR_POLICY = policy({
   invite:    { read: [myInvite, adminOfInvitesDb] },
   apiKey:    { read: mineByPrincipal },
   operations: {
-    createDbOp:     P.class("principal"),                    // any signed-in user
-    grantOp:        { class: "principal", rule: adminOfDb }, // on: Db
-    revokeGrantOp:  { class: "principal", rule: [ownGrant, adminOfGrantsDb] }, // on: Grant
-    inviteOp:       { class: "principal", rule: adminOfDb }, // on: Db
-    acceptInviteOp: { class: "principal", rule: myInvite },  // on: Invite
-    revokeInviteOp: { class: "principal", rule: adminOfInvitesDb }, // on: Invite
-    createApiKeyOp: P.class("principal"),  // effect binds principal = me
-    revokeApiKeyOp: { class: "principal", rule: mineByPrincipal }, // on: ApiKey
-    setDbStatusOp:  { class: "principal", rule: adminOfDb }, // on: Db
+    createDbOp:     P.role("principal"),                    // any signed-in user
+    grantOp:        { role: "principal", rule: adminOfDb }, // on: Db
+    revokeGrantOp:  { role: "principal", rule: [ownGrant, adminOfGrantsDb] }, // on: Grant
+    inviteOp:       { role: "principal", rule: adminOfDb }, // on: Db
+    acceptInviteOp: { role: "principal", rule: myInvite },  // on: Invite
+    revokeInviteOp: { role: "principal", rule: adminOfInvitesDb }, // on: Invite
+    createApiKeyOp: P.role("principal"),  // effect binds principal = me
+    revokeApiKeyOp: { role: "principal", rule: mineByPrincipal }, // on: ApiKey
+    setDbStatusOp:  { role: "principal", rule: adminOfDb }, // on: Db
   },
 });
 ```
 
-- **Every verified principal holds class `principal` in `_dir`** — resolution
+- **Every verified principal holds role `principal` in `_dir`** — resolution
   for `_dir` itself is: grant row if present (which is how `admin` is held),
-  else the implicit `principal` class for any verified `sub`. Deny-by-default
-  read arms scope what that class sees to "my slice": my grants, my dbs, my
+  else the implicit `principal` role for any verified `sub`. Deny-by-default
+  read arms scope what that role sees to "my slice": my grants, my dbs, my
   invites, co-members of my databases. This *is* the #209 discovery scoping.
 - "Owners can invite" is the `grantOp`/`inviteOp` arm: `on: Db`, rule =
   caller holds an `admin: true` grant on that db row. Grant creation targets
@@ -205,77 +236,79 @@ export const DIR_POLICY = policy({
   target.
 - `createDbOp`'s effect installs the app catalog into the new database
   (`databases.install`, Reef's existing provisioning pattern), then writes the
-  `db` row and the creator's `{class: <app owner class>, admin: true}` grant
+  `db` row and the creator's `{role: <app owner role>, admin: true}` grant
   in one `_dir` transaction. Install-then-record with idempotent retry; no
   cross-db atomicity claimed (#167).
 - Access audit = `db("_dir").history` over the grant namespace, read under
   these same arms. Rules always evaluate on the current basis, so history
   cannot re-grant (already true engine-wide).
 
-## 4. Identity-only tokens, and the compat matrix
+## 4. Identity-only tokens — the only token format
 
-The identity token is today's token **minus** the `ramose` claim:
+Per decisions 1/3/4 there is no compat mode and no static-claims mode: the
+`ramose: { db, class }` claim is deleted from mint, verifier, and client in
+the same change that ships the resolver. The token is:
 
 ```
 { iss, aud, sub, iat, exp }
 ```
 
-No new claim, no new format — a strict reduction, which is what #183's hold
-note demands. The verifier (`worker/auth.ts`) branches on presence:
+The credential kinds after the change:
 
-| Token | Path | Notes |
+| Credential | Path | Notes |
 | --- | --- | --- |
-| `ramose: { db, class }` present | **static path** — exactly today's: class from the claim, `allows()` pins one db | remains the no-directory mode and the migration-compat mode |
-| `ramose` absent | **directory path** — resolve `(sub, X)` via `_dir` (§5) | rejected with 401 when the deployment has no directory |
-| `RAMOSE_TOKEN` / `$token` | unchanged, plus the seed route (§6) | |
-| API key (`rk_…` prefix) | hash → `_dir` `apiKey` row → `sub` → directory path | agents; no JWT involved (§8) |
+| Identity JWT (`ramose` claim gone) | resolve `(sub, X)` via `_dir` (§5) | the only JWT format; no grant → 401 |
+| `RAMOSE_TOKEN` / `$token` | unchanged, plus the seed route (§6) | deploy/seed credential |
+| API key (`rk_…` prefix) | hash → `_dir` `apiKey` row → `sub` → resolver | agents (§8); no JWT involved |
+| No policy configured (dev/open mode) | short-circuits to service admin, as today | the directory exists but resolution is moot |
 
-- `ramose.attrs` goes away with the claim: profile (name/email) lives on the
-  `_dir` principal row, written at first `_dir` provision (the auth service
-  can pass profile to the mint-side provision, or the peer copies standard
-  OIDC top-level claims if present — open question, minor). Workspace-db
-  provisioning that today copies `attrs` into sibling datoms instead reads
-  the directory principal row at provision time.
-- Directory mode is **opt-in per deployment**: `Server({ directory: true })`
-  (or implied by `databases:`-with-grants, §6). Recommendation for the "does
-  static-claims survive" open question: yes, as the permanent zero-ceremony
-  mode for single-db deployments without an auth service — not merely compat.
-  A deployment can run both simultaneously during migration (the branch is
-  per-token, not per-deployment).
-- The Better Auth mint route drops its two D1 reads: `POST /ramose/token`
-  with no `db` argument mints the identity token straight from the session —
-  no `classOf`, no org lookup, response `{ token, exp }`. The `{ db }` form
-  keeps minting compat tokens until stage 1 completes.
+- Everything the verifier did with the claim moves to the resolver: the
+  per-db pinning (`allows()`) now pins to the *resolved* principal's db, and
+  "undeclared role" is rejected at resolve time (§5).
+- The Better Auth mint route simplifies to identity-only: `POST
+  /ramose/token` takes no `db`, does zero D1 org reads, responds
+  `{ token, exp }`. `classOfRole` and `orgClassOf` are deleted.
+- **Reef migration is a one-shot seed, not a mode**: a deploy-time import
+  reads the D1 org tables once (org slug → db row, `member.role` → grant
+  `role` via the same owner/admin → owner collapse, owner/admin →
+  `admin: true`), seeds `_dir`, and the same PR deletes the org plugin,
+  the claim mint, and the UI's claims fallback. Decision-6 style: the old
+  surface goes in the PR that lands the new one.
+- `ramose.attrs` dies with the claim: profile (name/email) lives on the
+  `_dir` principal row (propagation mechanism = open question 5, §Open
+  questions). Workspace-db provisioning that today copies `attrs` into
+  sibling datoms instead reads the directory principal row at provision
+  time.
 - **The token-shape decision is itself an unblock for offline-first.** The
   offline program's persisted-credential work (W6) is sequenced on this
   design precisely because an identity-only token is a far smaller liability
-  to persist in browser storage than today's authorization-bearing token.
-  Treat the shape as settled early, even if the resolver ships later.
+  to persist in browser storage than an authorization-bearing one. The shape
+  is now settled (this section); W6 is unblocked regardless of resolver
+  timing.
 
 ## 5. The resolver
 
-On session open (and on every principal-verifying request) for database X
-under the directory path:
+On session open (and on every principal-verifying request) for database X:
 
 1. Verify the JWT as today (issuer, audience, alg pinning, TTL cap, `sub`).
 2. Resolve the grant with **one index lookup, same isolate, no network**:
    basis via the existing per-isolate basis cache
    (`fetchBasisWithStats(env, "_dir", request)` — one DO subrequest on miss,
    zero on hit), then
-   `db.entid([":grant/key", `${sub}|${X}`])` and pull `class` off the row.
+   `db.entid([":grant/key", `${sub}|${X}`])` and pull `role` off the row.
    This read is a system read (unfiltered) — the resolver is the engine, not
    a session.
 3. No grant, or `db.status !== "active"` → 401 "token is not valid for this
    database" (same message as today).
-4. Grant class not declared by X's policy → 401 (mirror of today's
-   undeclared-class rejection, now at resolve time).
+4. Grant role not declared by X's policy → 401 (the undeclared-role
+   rejection, moved from verify time to resolve time).
 5. Build the principal with the seam filled:
-   `{ kind, sub, db: X, class: grantClass, classes: [grantClass], claims }`.
-   Everything downstream (`classesOf`, `holdsClass`, `isSuperuser`,
+   `{ kind, sub, db: X, role: grantRole, roles: [grantRole], claims }`.
+   Everything downstream (`rolesOf`, `holdsRole`, `isSuperuser`,
    `canChangeSchema`, arms, provisioning of `:ns/role`) already consults the
-   seam — **no policy-engine changes**.
+   seam — **no policy-engine changes** beyond the rename.
 
-For X = `_dir` itself: step 2 falls back to the implicit `principal` class
+For X = `_dir` itself: step 2 falls back to the implicit `principal` role
 when no grant row exists (§3). The recursion bottoms out because the resolver
 reads `_dir` with system access, not through a policy-gated session.
 
@@ -321,22 +354,22 @@ not data — correct, and we keep it that way for app databases. Seeding
 ```
 POST /db/_dir/seed        (allowed: $token, directory admins)
 { dbs: [{ name, doc?, status? }...],
-  grants: [{ sub, db, class, admin }...],
+  grants: [{ sub, db, role, admin }...],
   admins: [sub...] }                       // grants on _dir itself
 ```
 
 Executed by the peer as a **system write** — the same trust shape as the
-existing `/provision` path (`{system: true}`, bypasses `checkTx`, peer-owned,
-never client-reachable). It is declarative and idempotent: upsert by
-`db.name` / `grant.key`, never delete (removing an entry from `databases:`
-does not revoke; revocation is an explicit act in the directory, matching
-"seed, don't own").
+existing `/provision` path (`{system: true}`, bypasses the tx check,
+peer-owned, never client-reachable). It is declarative and idempotent:
+upsert by `db.name` / `grant.key`, never delete (removing an entry from
+`databases:` does not revoke; revocation is an explicit act in the
+directory, matching "seed, don't own").
 
 Deploy-time flow (`Server`):
 
-1. `directory: true` (or any seed input): install the `Directory` catalog
-   into `_dir` (idempotent; schema evolution guarded as usual — the catalog
-   is package-versioned, so upgrades ride engine releases).
+1. Install the `Directory` catalog into `_dir` unconditionally (decision 3;
+   idempotent; schema evolution guarded as usual — the catalog is
+   package-versioned, so upgrades ride engine releases).
 2. `seedDatabases` runs as today for app catalogs, then posts the seed doc:
    every `databases:` entry becomes a `db` row (name + `doc` — finally
    landing where the #203 amendment said it was destined; `status` defaults
@@ -344,10 +377,10 @@ Deploy-time flow (`Server`):
 
 ```ts
 Server("Ramose", {
-  directory: { admins: [env.OPERATOR_SUB] },   // _dir admin grants
+  directory: { admins: [env.OPERATOR_SUB] },   // seed config, not a switch
   databases: {
     app: { schema: App, doc: "The app database",
-           grants: { [env.OPERATOR_SUB]: { class: "owner", admin: true } } },
+           grants: { [env.OPERATOR_SUB]: { role: "owner", admin: true } } },
   },
 })
 ```
@@ -359,7 +392,7 @@ Server("Ramose", {
   only remaining coupling is publishing JWKS. "The auth service reaches the
   system db via the internal credential" from the issue sketch turns out to
   be unnecessary in this shape — a simplification, not a loss.
-- The policy-head `superuser` class stays what #179 made it: standing within
+- The policy-head `superuser` role stays what #179 made it: standing within
   a database's policy. `_dir`'s policy names `admin` as its superuser; a
   deployment operator is "root" by holding an `admin` grant on `_dir`, and
   their standing in app databases is whatever grants say — cross-database
@@ -371,8 +404,8 @@ Resolves the #183 questions deliberately deferred to this design:
 
 - **The credential attaches to the client, not the database handle.**
   `connect({ url, token })` with an identity token; `client.db(name,
-  catalog)` takes no token. The per-db `{ token }` form survives as the
-  static-mode/compat spelling.
+  catalog)` takes no token. The per-db `{ token }` spelling is removed in
+  the same change (decision 4 — no compat spelling survives).
 - **Workspace switching is just another `db()` call.** One client, one
   socket credential story, no provider remount, no mint loop:
   the #183 cross-user-reuse shape (stale per-db token source surviving a
@@ -389,22 +422,22 @@ Resolves the #183 questions deliberately deferred to this design:
   operations under §3's arms. Reef's workspace screen becomes a Ramose
   consumer instead of an auth-API consumer — the dogfooding headline.
 - `usePrincipal(db)` already answers "who am I here" from the server; with
-  the JWT no longer carrying class, the unverified-claims fallback
+  the JWT no longer carrying a role, the unverified-claims fallback
   (`claims?.ramose?.class` in Reef's screens) is deleted rather than fixed —
   one source of truth remains. (Ordering note: that fallback currently masks
   offline identity degradation, so the offline program's durable cached
   principal must land before the fallback is removed — see §10.)
 - **The resolved principal is a client-visible contract, defined once.**
-  With class off the token, the session auth-ack and `GET /db/:name/info`
-  (`{ eid, class }`) become the *only* client-side source of "who am I in
+  With the role off the token, the session auth-ack and `GET /db/:name/info`
+  (`{ eid, role }`) become the *only* client-side source of "who am I in
   this database". Three consumers key durable state on it — #183's
   principal-swap cache keying, offline-first's cached principal per
   `(db, sub)` (W2), and its persisted-store partitioning (W3) — so this
   design fixes the contract rather than leaving it implicit: `sub` is the
-  canonical identity/partition key; the per-db resolved `{ eid, class }` is
+  canonical identity/partition key; the per-db resolved `{ eid, role }` is
   surfaced on the auth ack and `/info`; and any client-cached copy is
   **UX-only, never authorization** (the same rule the Better Auth plugin
-  already states for its `class` field), because the server re-resolves on
+  already stated for its `class` field), because the server re-resolves on
   every request and every replay.
 
 ## 8. Agent principals and API keys (#209)
@@ -417,33 +450,31 @@ same audit surface:
 - `createApiKeyOp` (a `_dir` operation) generates a high-entropy secret
   server-side, returns it **once** in the operation output, and stores only
   its SHA-256 in `keyHash` (`unique strict`). A hash of a 256-bit random
-  secret is not sensitive data, so keys don't gate on the erasure story.
+  secret is not sensitive data, so keys don't gate on any erasure story.
 - The peer accepts `Authorization: Bearer rk_<secret>`: hash, look up the
   `apiKey` row (one entid on `keyHash`), check `status: "active"`, then
-  enter the directory path (§5) with the key's principal `sub`. Revocation
+  enter the resolver (§5) with the key's principal `sub`. Revocation
   is `revokeApiKeyOp` — effective at resolver latency, no TTL involved.
 - Grants for agents are ordinary grant rows; "what did the agent do" is
   provenance + `history`, as #209 frames it.
-- **The "agent class" half of #209's recipe needs no directory support.**
-  An app that wants narrower agent arms declares an `agent` class in its
-  policy and grants it like any other — the directory grants whatever class
+- **The "agent role" half of #209's recipe needs no directory support.**
+  An app that wants narrower agent arms declares an `agent` role in its
+  policy and grants it like any other — the directory grants whatever role
   string the target policy declares (the same decoupling that motivates
-  `grant.admin`). Recipe: `classes: [..., "agent"]`; op arms
-  `{ class: ["member", "agent"], rule }`; grant row
-  `{ principal: <agent>, db, class: "agent" }`.
-- **API keys are a directory-mode feature.** `apiKey` rows live in `_dir`,
-  so static-claims deployments get JWT-bearing agents only — consistent with
-  #209's claims fallback, but worth stating so nobody expects `rk_` keys
-  from a static deployment.
+  `grant.admin`). Recipe: `roles: [..., "agent"]`; op arms
+  `{ role: ["member", "agent"], rule }`; grant row
+  `{ principal: <agent>, db, role: "agent" }`.
 
 ## 9. `learn()` alignment (#209)
 
 `learn()` with no argument = a query over `_dir` under the caller's own
 session: db rows visible to me (deny-by-default already scoped them), each
-joined with my grant's `class`, plus `doc` — precisely the "name,
-description, the caller's class there" card. Live by construction. The
-static-claims fallback (`learn()` enumerates from the token) stays as
-specified there; both paths sit behind the same tool surface.
+joined with my grant's `role`, plus `doc` — precisely the "name,
+description, the caller's class there" card (#209's wording predates the
+rename). Live by construction. With the directory always on (decision 3),
+#209's token-claims fallback path is **dropped**: there is one discovery
+source, which is the thinner of the two shapes #209 asked for — record this
+on #209 when it's picked up.
 
 Scope boundary: only the top-level card query is directory data. Drill-down
 (`learn("acme")` → namespaces and operations, `learn("acme/op:…")`) reads
@@ -451,7 +482,7 @@ the operations registry and the compiled policy — deployment-wide worker
 state that #209 assigns to the compiled policy, not to this design. A
 consequence worth naming: a deployment has one registry and one app policy,
 so in a multi-db deployment drill-down returns the same operations for every
-database; only the caller's class (and so which arms admit them) differs per
+database; only the caller's role (and so which arms admit them) differs per
 db, via the grant. Also a transport note in the directory's favor: MCP is
 streamable HTTP, so every `query`/`pull`/`run` re-resolves through the
 resolver memo — MCP agents see revocation at ≤60 s, tighter than any
@@ -465,19 +496,19 @@ synergy; these are the binding points:
 
 - **Token shape unblocks W6** (§4): persisted identity tokens are the
   smaller liability; that work waits on the shape decision, not the
-  resolver.
+  resolver. The shape is now settled.
 - **One resolved-principal contract** (§7): #183's cache keying, W2's
   durable cached principal, and W3's store partitioning all consume the same
   ack/`info` contract and key on `sub`. Build it once.
-- **Sequencing: directory stage 1 before offline phase 3.** Offline cold
+- **Sequencing: the directory core before offline phase 3.** Offline cold
   start fails today on three auth-Worker dependencies — session fetch,
   workspace list, JWT mint. The directory removes the workspace list from
   that list structurally: it becomes a `_dir` live query, and since `_dir`
   is an ordinary database with a tiny per-principal projection, the offline
   program's persisted store (W3) makes the workspace list work offline for
   free. Corollary: build no offline cache for the Better Auth REST
-  workspace list — it is throwaway the day stage 1 lands. Offline phases
-  1–2 are independent of this design and can interleave freely.
+  workspace list — it is throwaway the day the directory lands. Offline
+  phases 1–2 are independent of this design and can interleave freely.
 - **"Grant revoked" is a stable, classifiable failure.** Offline stretches
   the write path to days, so two contracts are fixed here: (1) queued-write
   replay re-resolves grants per operation (the resolver runs per request),
@@ -490,7 +521,7 @@ synergy; these are the binding points:
   outbox, surface it. This adds a third trigger to offline's "wipe on
   identity change / rule-view resync" rule.
 - **Reef cleanup ordering** (§7): W2's durable cached principal lands
-  first; the unverified JWT-class UI fallback is deleted second.
+  first; the unverified JWT-role UI fallback is deleted second.
 - **Directory operations compose with offline as-is**: `grantOp`/`inviteOp`
   queue like any operation; `createDbOp` is effect-first, so it correctly
   has an empty optimistic prefix — exactly the documented "everything
@@ -502,53 +533,39 @@ synergy; these are the binding points:
   grant-change frequency, but it commits the v2 push design to targeted
   per-`sub` session kicks rather than broader resync triggers.
 
-## 11. Staged D1 removal
+## 11. What moves, what stays (D1 after this design)
 
-| Stage | Moves | Mechanism | Gate |
-| --- | --- | --- | --- |
-| 1 | `organization`, `member`, `invitation` → `_dir` `db`/`grant`/`invite` | Migration op reads Better Auth's org API once and seeds `_dir` (org slug → db name, `member.role` through Reef's `classOfRole` → grant class, role owner/admin → `admin: true`); then Reef drops the org plugin, mint goes identity-only, UI queries `_dir` | none — this is the core |
-| 2 | `jwks` → Durable Object storage (or Workers secrets) | Wanted regardless: the pinning ritual exists because `BetterAuthSecret` (encrypting `jwks.privateKey`) lives only in Alchemy state, so a cache miss remints it and orphans the keys. Keys in DO storage keyed by deployment, rotated in place, published unchanged at `/api/auth/jwks` | independent of stage 1 |
-| 3 | `user`, `account`, `session`, `verification` → Better Auth adapter backed by Ramose (`_auth`, sibling of `_dir`) | Adapter implements Better Auth's CRUD contract over named system operations | **erasure story** (§12) + adapter-contract gaps: composite uniqueness (`user.email` is single-attr and fine; `member` is gone by then), sort/limit/IN (query surface exists post-#299), hard deletes (retraction suffices *only* under shredding) |
-| 4 | bootstrap circularity | Dissolved by §6: minting never reads the directory; the peer never calls the auth service; deploy seeds via `$token`. The resource graph stays a DAG | falls out |
+Revised per decision 5 (identity stays in D1 for now):
 
-Recommendation for the "identity in `_dir` or a sibling" open question:
-**sibling `_auth`**. `_dir` is broadly readable by design (every principal
-lists their workspaces); identity storage is secret-bearing, erasure-gated,
-and read by nothing but the auth service. Different sensitivity, different
-policy, different lifecycle — different database. `SYSTEM_DATABASES` grows
-by one string when stage 3 lands.
+| D1 contents | Disposition |
+| --- | --- |
+| `organization`, `member`, `invitation` | **Move now, as part of the core** — one-shot deploy-time import into `_dir` (`db`/`grant`/`invite` rows), org plugin + `classOfRole` + claim mint deleted in the same PR (§4) |
+| `jwks` | **Move when convenient, independent hygiene** — to Durable Object storage (or Workers secrets). Wanted regardless of this design: the pinning ritual exists because `BetterAuthSecret` (encrypting `jwks.privateKey`) lives only in Alchemy state, so a cache miss remints it and orphans the keys. Keys in DO storage, rotated in place, published unchanged at `/api/auth/jwks` |
+| `user`, `account`, `session`, `verification` | **Stay in D1** (decision 5) — Better Auth continues to own sign-in, sessions, and credentials. Revisit with the erasure story (§12); the old stage-3 adapter analysis is preserved in this doc's history |
 
-End state: one storage system (DO + R2), no D1, no migration files; identity,
-grants, and databases as policy-guarded, live-queryable, auditable data.
+Bootstrap circularity is dissolved rather than solved: minting never reads
+the directory, the peer never calls the auth service, deploy seeds via
+`$token` — the resource graph stays a DAG.
 
-## 12. Erasure: crypto-shredding sketch (stage 3 gate)
+End state for this design: D1 holds **identity only**; databases, grants,
+invites, and API keys are policy-guarded, live-queryable, auditable Ramose
+data.
 
-Secrets in an append-only, time-travelable store are readable forever via
-`asOf` — deletion is retraction, not excision (documented engine behavior).
-Leading candidate, as the issue anticipates: **crypto-shredding**.
+## 12. Erasure (deferred — kept as reference)
 
-- Fields marked secret at schema level (working spelling:
-  `Ramose.shredded(Ramose.string())`) store `Bytes` ciphertext under a
-  per-principal data-encryption key (AES-256-GCM).
-- DEKs live in **mutable transactor-DO storage** of the owning system
-  database — colocated, deletable, no new DO namespace; a small
-  internal-gated keyring API on the transactor (`get/create/deleteKey(sub)`).
-- Encrypt at transact, decrypt at read for authorized readers; both happen
-  server-side in paths that already run inside the DO.
-- Erasing a principal = delete their DEK + retract their rows. Every
-  historical ciphertext datom — password hash, session token, refresh token,
-  email if marked — becomes permanently unreadable, including via
-  `asOf`/`history`. GC of unreadable segments can lag; confidentiality does
-  not depend on it.
-- True excision (rewriting segments) stays the heavier alternative if
-  regulators require the bytes gone rather than unreadable; "secrets never
-  enter Ramose" (identity stays outside) remains the fallback that abandons
-  stage 3 without harming stages 1–2.
-- Honest scope note: identity PII already leaks into workspace databases
-  today (`ramose.attrs` → `:user/email` datoms), so an erasure story is owed
-  before 1.0 with or without stage 3 — §4 stops the leak at the source
-  (profile stops riding tokens), and shredded fields are the candidate
-  answer for app data too.
+Decision 5 removes the erasure gate from this design: with identity staying
+in D1, no password hashes, session tokens, or refresh tokens enter the
+append-only store. What remains, deliberately non-gating:
+
+- **Profile PII in `_dir`** (name/email on principal rows, invite emails)
+  and app-data PII generally still need a pre-1.0 erasure answer — that is
+  its own issue, not this design's.
+- The **crypto-shredding sketch** stays the leading candidate for when it's
+  picked up: fields marked secret store `Bytes` ciphertext under a
+  per-principal AES-256-GCM key held in mutable transactor-DO storage
+  (colocated, deletable, no new DO namespace); deleting the key makes all
+  historical ciphertext unreadable, including via `asOf`/`history`. True
+  excision (rewriting segments) is the heavier alternative.
 - Client-persisted projections (offline-first W3) are an
   eventual-consistency boundary: shredding makes server-side history
   unreadable immediately, but a device's disk cache only converges on its
@@ -558,24 +575,22 @@ Leading candidate, as the issue anticipates: **crypto-shredding**.
 
 ## Open questions (remaining)
 
-**Decisions needed from the owner** (recommendation listed first):
+**Decided 2026-08-25** (see "Decisions" at the top): fungible API /
+quickest path; `role` not `class`; directory always on; no compat mode;
+identity stays in D1; erasure non-gating.
 
-1. **Directory mode switch** — explicit `Server({ directory: true })`
-   (recommended) vs implied by seed input vs always-on (§4, §6).
-2. **Static-claims long-term** — permanent mode for directory-less
-   deployments (recommended, §4) vs migration-compat only, removed at 1.0.
-3. **Identity location for stage 3** — sibling `_auth` (recommended, §11)
-   vs inside `_dir`.
-4. **Erasure approach** — crypto-shredding (recommended, §12) vs true
-   excision vs "secrets never enter Ramose".
-5. **Profile propagation** — auth service writes profile at mint-side
-   provision (recommended) vs peer copies standard OIDC top-level claims vs
-   no profile plumbing at all (§4).
-6. **Directory admin vocabulary** — `grant.admin` boolean (recommended, §2)
+**Decisions still needed from the owner** (recommendation listed first):
+
+1. **Profile propagation** — peer copies standard OIDC top-level claims
+   (`name`, `email`) from the identity token into the `_dir` principal row
+   at provision (recommended: zero new plumbing, quickest path) vs the auth
+   service writes profile via a mint-side provision call (one writer, no
+   PII on tokens) vs no built-in plumbing (apps do it themselves).
+2. **Directory admin vocabulary** — `grant.admin` boolean (recommended, §2)
    vs per-db directory roles.
-7. **Multi-class grants** — single class per grant at 1.0 (recommended; the
-   seam supports widening later) vs card-many now (§2).
-8. **Revocation latency at launch** — v1 bounded staleness (recommended,
+3. **Multi-role grants** — single role per grant now (recommended; the
+   seam supports widening later) vs card-many now.
+4. **Revocation latency at launch** — v1 bounded staleness (recommended,
    §5) vs designing push invalidation before shipping.
 
 **Deferred design work** (not owner decisions):
@@ -589,17 +604,22 @@ Leading candidate, as the issue anticipates: **crypto-shredding**.
 - `_dir` catalog/policy versioning across engine upgrades: evolution guard
   semantics for a package-owned schema (likely: additive-only, enforced in
   CI like the wire contract).
-- Stage-3 adapter details once Better Auth's full contract is pinned down
-  (this repo doesn't vendor it) — sort/limit/IN coverage, session sweep
-  cadence.
+- The class → role rename sweep inventory (policy head, `P.role`,
+  `schemaRoles`, internal constants, docs, error messages) — mechanical,
+  rides the implementation PR.
 
 ## Constraints honored
 
+Updated for the 2026-08-25 decisions — the compat-preserving constraints
+(#183's "no new claim formats" hold, static-claims fallback) are superseded
+by the owner's no-compat decision; the alignment constraints stand:
+
 | Binding decision | How this design satisfies it |
 | --- | --- |
-| #183 hold: no new token claim formats; identity-only is the target | Identity token is a strict subset of today's payload; the single-db claim survives unchanged as static/compat mode; deferred #183 items (credential attachment point, remount elimination) resolved in §7 |
-| #179: superuser as directory bootstrap | `Principal.classes` seam is the resolver's write target (§5); policy-head `superuser` semantics untouched; `_dir` admin = a grant row, the recursion's base case is the `$token` seed (§6) |
+| #183 (superseded hold; proceed-list stands) | The hold existed to protect this design's option space; the design now removes token-carried authorization entirely rather than versioning it. #183's proceed-list (socket auth frame, sign-out invalidation, principal-swap keying, `reauthenticate`) is unaffected and §7/§10 build on it |
+| #179: superuser as directory bootstrap | `Principal.roles` seam (né `classes`) is the resolver's write target (§5); policy-head `superuser` semantics untouched; `_dir` admin = a grant row; the recursion's base case is the `$token` seed (§6) |
 | #203: `databases:` is a seed, not the authority | Seeding posts declarative rows to `_dir` and stores nothing resource-side; `doc` lands in the directory; removal from the prop revokes nothing (§6) |
-| #209: discovery as a directory query, static-claims fallback | §9; agent principals as ordinary rows + API keys (§8), both paths behind one tool surface |
-| AGENTS.md (5): don't deepen Better Auth/D1 coupling | Stage 1 removes the mint route's D1 reads entirely; core design has zero new D1 touchpoints |
-| Decision 1/6/7 (operations-only writes, no deprecation windows, put/update semantics) | All directory writes are named operations under deny-by-default arms; compat is a mode, not a deprecation window; seed uses upsert-by-unique-key semantics |
+| #209: discovery as a directory query | §9; with always-on directories the claims-fallback path is dropped — one discovery source. Agent principals as ordinary rows + API keys (§8) |
+| AGENTS.md (5): don't deepen Better Auth/D1 coupling | The mint route's D1 org reads are deleted; D1 keeps identity only (§11) |
+| Decision 1/6/7 (operations-only writes, no deprecation windows, put/update semantics) | All directory writes are named operations under deny-by-default arms; the legacy claim format is removed in the same PR that ships the resolver; seed uses upsert-by-unique-key semantics |
+| #204 naming map | Amended by the owner's rename decision: `role` replaces `class` across the policy surface |
