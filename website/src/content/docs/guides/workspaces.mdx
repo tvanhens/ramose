@@ -25,7 +25,8 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const raw = (await token.claims()).ramose?.class;
+  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
 
     const connect = options?.connect ?? Ramose.connect;
     const ramose = connect({

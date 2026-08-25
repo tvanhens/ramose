@@ -77,7 +77,8 @@ In the browser, `ramoseTokenClient()` in the auth client's plugins (`examples/re
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const raw = (await token.claims()).ramose?.class;
+  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
 ```
 
 The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, behind the session cookie. The server's `RAMOSE_JWKS_URL` points at Better Auth's `/api/auth/jwks` — the sign-in provider's public keys ([glossary](/concepts/glossary/#jwks)).
@@ -117,7 +118,7 @@ Any provider that signs a token of the shape above and publishes its keys works.
 const payload = Ramose.claims(
   AUTH, // { issuer, audience, ttl } — the same values the server pins.
   { sub: user.id, db: workspace, class: role, attrs: { name: user.name, email: user.email } },
-  compiledPolicy, // optional: refuses a class the policy does not declare.
+  policy, // optional: the policy value narrows `class`; compiled JSON still accepted.
 );
 // Sign `payload` with your key (RS256, ES256, or EdDSA); publish the public key as a JWKS.
 ```

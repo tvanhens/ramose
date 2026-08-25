@@ -38,6 +38,7 @@ const ownDoc = (me: P.Me<typeof User>) => Query.is(Doc.owner, me);
 const myself = (me: P.Me<typeof User>) =>
   function* (e: Query.Var) {
     yield* Q.eq(e, me);
+    yield* Query.has(User.sub)(e);
   };
 
 const inProjectOrg = (me: P.Me<typeof User>) =>
@@ -184,6 +185,7 @@ describe("deploy-time errors", () => {
     expect(() =>
       P.policy(
         { schema: App, principal: User.sub, classes: ["member"] },
+        // @ts-expect-error — "admin" is not a declared class
         { doc: { read: P.class("admin") } },
       ),
     ).toThrow(/not a declared class/);
@@ -194,6 +196,7 @@ describe("deploy-time errors", () => {
     expect(() =>
       P.policy(
         { schema: App, principal: User.sub, classes: ["member"] },
+        // @ts-expect-error — :other/thing is not a field of doc
         { doc: { read: () => Query.is(Other.thing, "x") } },
       ),
     ).toThrow(/not in the schema/);
@@ -220,7 +223,23 @@ describe("deploy-time errors", () => {
           },
         },
       ),
-    ).toThrow(/not under the doc entity/);
+    ).toThrow(/not a field of the doc entity/);
+  });
+
+  test("a rule that never mentions a field of its entity is a PolicyError", () => {
+    expect(() =>
+      P.policy(
+        { schema: App, principal: User.sub, classes: ["member"] },
+        {
+          doc: {
+            read: (me) =>
+              function* (e: Query.Var) {
+                yield* Query.is(Org.members, me)(e);
+              },
+          },
+        },
+      ),
+    ).toThrow(/never mentions a field of this entity/);
   });
 
   test("a principal outside the catalog is a PolicyError", () => {

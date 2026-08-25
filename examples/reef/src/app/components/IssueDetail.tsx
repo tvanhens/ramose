@@ -21,7 +21,7 @@ import {
   type Person,
   type ReefDb,
 } from "../../domain/queries.ts";
-import type { RamoseClass } from "../../domain/shared.ts";
+import type { Class } from "../../domain/policy.ts";
 import {
   addComment,
   deleteComment,
@@ -237,7 +237,7 @@ export const IssueDetail = ({
   /** The live board row — already re-rendering on every overlay apply. */
   row: BoardRow;
   myEid: number | undefined;
-  cls: RamoseClass;
+  cls: Class;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;

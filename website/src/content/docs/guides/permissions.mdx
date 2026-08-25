@@ -42,7 +42,7 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: CLASSES,
+    classes: ["admin", "member", "viewer"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -88,7 +88,7 @@ Read it as:
 
 | rule | plain English |
 | --- | --- |
-| `principal: User.sub` · `classes: CLASSES` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
+| `principal: User.sub` · `classes: ["admin", "member", "viewer"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. |
 | `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; admins never reach the rules. |
 | `issue.read: true` · `attrs: privateNote read: admin` | Everyone sees issues — except `privateNote`, which only admins receive. A screen that wants it must ask for it as `.optional`. |
 | `issue.set / remove / delete: ownIssue` | Members change or delete only their own issues; viewers never. Moving a card adds a status; the implied removal of the old one is what a viewer trips first: `remove denied on :issue/status`. |

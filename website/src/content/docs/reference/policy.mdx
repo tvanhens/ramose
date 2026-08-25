@@ -36,7 +36,7 @@ export const policy = Ramose.policy(
   {
     schema: Reef,
     principal: User.sub,
-    classes: CLASSES,
+    classes: ["admin", "member", "viewer"],
     claims: Schema.Struct({
       name: Schema.optional(Schema.String),
       email: Schema.optional(Schema.String),
@@ -80,7 +80,7 @@ export const policy = Ramose.policy(
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
 - The second argument is one block per record type, keyed as in the schema. A record type or operation with no rule **denies**.
 
-`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, or a rule body the query validator rejects.
+`Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule body the query validator rejects, or a rule whose clauses never mention a field of that arm's entity. `P.class` and `{ class }` are typed as the head's `classes` literals; `Ramose.Policy.Class<typeof policy>` is that union. A fragment that names another entity's field is a type error.
 
 Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
 
@@ -190,7 +190,7 @@ Membership, ownership and sharing are facts in the database, not claims in the t
 
 ## compile and the pulls check
 
-`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up). The wire version is 2; installed policies recompile at deploy.
+`P.compile(policy, { pulls? }): string` turns the policy into the JSON `RAMOSE_POLICY` holds. Each fragment arm is promoted to a named query rule (`Query.rule` — return-var-into-head) and written into a `rules` section next to the surviving arms. Rule bodies are validated against the catalog through the query validator (attrs exist, namespaces line up). A rule whose clauses never mention a field of its arm entity is a `PolicyError` — the check uses the entity's stamped field set, not an ident-prefix. The wire version is 2; installed policies recompile at deploy.
 
 Pass the shapes your screens read and a masked field pulled as *required* fails the deploy; without `pulls` the check is skipped. `P.checkPulls(policy, pulls)` runs the check alone.
 
@@ -225,7 +225,7 @@ export const compiledPolicy = (): string =>
 Signatures: `RS256`, `ES256` or `EdDSA`, keys from `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`). Sent as `Authorization: Bearer …`, or `?token=` on the WebSocket upgrade. Ramose verifies tokens; it never issues them — see [Sign in and roles](/guides/sign-in/#what-the-token-carries) for minting with `Ramose.claims` and `ramose/better-auth`.
 
 ```ts
-Ramose.claims(auth, { sub, db, class, attrs? }, compiledPolicy?)  // → the payload above; sign it yourself
+Ramose.claims(auth, { sub, db, class, attrs? }, policy?)  // policy value narrows `class`; compiled JSON still accepted
 ```
 
 ## Server env keys

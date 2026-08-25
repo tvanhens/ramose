@@ -87,8 +87,15 @@ type FilterOut<X> = [X] extends [never]
       : QueryGen<void>
     : QueryGen<void>;
 
-/** A filter: keeps the pipeline's focus; as a fragment, contributes clauses. */
-export type FilterStage = <X>(x: X) => FilterOut<X>;
+/**
+ * A filter: keeps the pipeline's focus; as a fragment, contributes clauses.
+ * The return is branded with the attribute ident so a policy arm can
+ * require that ident to belong to the arm entity's stamped field set.
+ * The function stays generic so `pipe` still instantiates `X`.
+ */
+export type FilterStage<Ident extends string = string> = <X>(
+  x: X,
+) => FilterOut<X> & { readonly _ident?: Ident };
 
 /**
  * The entity a `Ref(User)` field points at. Self-refs / untargeted refs
@@ -131,9 +138,11 @@ type TraversalOut<X> = [X] extends [never]
 /** A traversal: refocuses the pipeline; as a fragment, returns the new focus. */
 export type TraversalStage = <X>(x: X) => TraversalOut<X>;
 
-const filter = (frag: (focus: AnyVar) => QueryGen<void>): FilterStage =>
+const filter = <Ident extends string = string>(
+  frag: (focus: AnyVar) => QueryGen<void>,
+): FilterStage<Ident> =>
   ((x: unknown) =>
-    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage;
+    isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage<Ident>;
 
 const traversal = (frag: (focus: AnyVar) => QueryGen<Var<EidCell>>): TraversalStage =>
   ((x: unknown) =>
@@ -157,8 +166,8 @@ export const stage: {
 type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
-export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
+export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     yield* Q.fact(e, attr, value);
   });
 
@@ -169,18 +178,18 @@ export const is = <A extends AttrLike>(attr: A, value: ValueIn<A>): FilterStage 
  * id (`ground`), and never emits a `:db/id` pattern (that is not an
  * attribute).
  */
-export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage =>
-  is({ ident: ":db/id" }, id);
+export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage<":db/id"> =>
+  is({ ident: ":db/id" as const }, id);
 
 /** `has(A)`: the focus carries some `A` fact. */
-export const has = (attr: AttrLike): FilterStage =>
-  filter(function* (e) {
+export const has = <A extends AttrLike>(attr: A): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     yield* Q.fact(e, attr);
   });
 
 /** `missing(A)`: no `A` fact at all. */
-export const missing = (attr: AttrLike): FilterStage =>
-  filter(function* (e) {
+export const missing = <A extends AttrLike>(attr: A): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     yield* Q.not(has(attr)(e));
   });
 
@@ -195,8 +204,8 @@ export const missing = (attr: AttrLike): FilterStage =>
 export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
-): FilterStage =>
-  filter(function* (e) {
+): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     const f = yield* Q.fact(e, attr);
     yield* pred(f.v) as QueryGen<unknown>;
   });
@@ -220,15 +229,15 @@ export const backlink = (attr: AttrLike): TraversalStage =>
 type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
 /** `some(R, ps…)`: ∃ other. `[other R e]` ∧ ps(other). */
-export const some = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const some = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     const other = yield* backlink(ref)(e);
     for (const p of ps) yield* p(other) as QueryGen<unknown>;
   });
 
 /** `none(R, ps…)`: ¬∃ other. `[other R e]` ∧ ps(other). */
-export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const none = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       for (const p of ps) yield* p(other) as QueryGen<unknown>;
@@ -237,8 +246,8 @@ export const none = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
 
 /** `every(R, ps…)`: ¬∃ other. `[other R e]` ∧ ¬ps(other) — vacuously true
  * of a focus nothing points at, like the nav surface's `every`. */
-export const every = (ref: AttrLike, ...ps: readonly ElemPred[]): FilterStage =>
-  filter(function* (e) {
+export const every = <A extends AttrLike>(ref: A, ...ps: readonly ElemPred[]): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     yield* Q.not(function* () {
       const other = yield* backlink(ref)(e);
       yield* Q.not(function* () {
@@ -258,8 +267,8 @@ export const updatedSince = (since: number): FilterStage =>
 
 /** Some fact about the focus rides a transaction whose entity carries
  * `[tx A who]` — provenance as an ordinary clause. */
-export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage =>
-  filter(function* (e) {
+export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): FilterStage<A["ident"]> =>
+  filter<A["ident"]>(function* (e) {
     const f = yield* Q.fact(e);
     yield* Q.fact(f.tx, attr, who);
   });

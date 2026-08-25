@@ -8,6 +8,7 @@
 
 import { test } from "bun:test";
 import * as Schema from "effect/Schema";
+import { claims } from "../../src/Auth.ts";
 import {
   Field,
   Schema as DbSchema,
@@ -80,6 +81,26 @@ const _fixtures = () => {
     nope: { read: P.class("member") },
   });
 
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    // @ts-expect-error — "totally-not-declared" is not a declared class
+    doc: { read: P.class("totally-not-declared") },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    // @ts-expect-error — Org.members is not a field of doc
+    doc: { read: (me) => Query.is(Org.members, me) },
+  });
+
+  // handwritten generator: focus is branded with the arm entity
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    org: {
+      read: (me) =>
+        function* (org: Query.Var<Eid<typeof Org>>) {
+          yield* Query.is(Org.members, me)(org);
+        },
+    },
+  });
+
   P.policy(
     {
       schema: App,
@@ -94,6 +115,13 @@ const _fixtures = () => {
     doc: { read: P.class("member") },
   });
   type _schema = Expect<Equal<(typeof pol)["schema"], typeof App>>;
+  type _class = Expect<Equal<P.Class<typeof pol>, "member">>;
+  type _classes = Expect<Equal<(typeof pol)["classes"], readonly ["member"]>>;
+
+  claims({ issuer: "i", audience: "a", ttl: 900 }, { sub: "u", db: "acme", class: "member" }, pol);
+  // @ts-expect-error — "admin" is not a declared class of pol
+  claims({ issuer: "i", audience: "a", ttl: 900 }, { sub: "u", db: "acme", class: "admin" }, pol);
+
   const json: string = P.compile(pol, { pulls: [{ title: Doc.title }] });
   return json;
 };

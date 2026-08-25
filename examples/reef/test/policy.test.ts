@@ -15,14 +15,13 @@ import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
-import { CLASSES } from "../src/domain/shared.ts";
 
 describe("reef policy", () => {
   test("compiles to wire JSON that core accepts", () => {
     const json = compiledPolicy();
     const parsed = parsePolicy(JSON.parse(json));
     expect(parsed.principal).toBe(":user/sub");
-    expect(parsed.classes).toEqual([...CLASSES]);
+    expect(parsed.classes).toEqual([...policy.classes]);
   });
 
   test("presets pin creator and author to the caller", () => {

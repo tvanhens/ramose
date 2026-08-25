@@ -9,8 +9,8 @@
  * establishment; screens read it with `db.principal()`.
  */
 import * as Ramose from "ramose/db";
+import { policy, type Class } from "../domain/policy.ts";
 import { Reef } from "../domain/schema.ts";
-import type { RamoseClass } from "../domain/shared.ts";
 import { provisionWorkspace } from "./mutations.ts";
 
 export const RAMOSE_URL =
@@ -18,7 +18,7 @@ export const RAMOSE_URL =
 
 export interface Workspace {
   readonly slug: string;
-  readonly cls: RamoseClass;
+  readonly cls: Class;
   /** Stable for the workspace's lifetime — `RamoseProvider` keys its client on it. */
   readonly token: Ramose.TokenSource;
 }
@@ -54,7 +54,8 @@ export const openWorkspace = async (
       const { authClient } = await import("./auth.ts");
       return authClient.ramose.token({ db: slug });
     });
-  const cls = ((await token.claims()).ramose?.class ?? "viewer") as RamoseClass;
+  const raw = (await token.claims()).ramose?.class;
+  const cls = policy.classes.find((c) => c === raw) ?? "viewer";
   // enddocs:open-workspace-token
   if (provision) {
     // docs:open-workspace-provision
