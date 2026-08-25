@@ -25,7 +25,7 @@ import type {
   ValidatePull,
 } from "../db/index.ts";
 import { type Read, readT } from "./read.ts";
-import { viewDep } from "./seam.ts";
+import { seamOf, viewDep } from "./seam.ts";
 import { useLiveSubscription } from "./useLiveQuery.ts";
 import { useOneShot } from "./useOneShot.ts";
 
@@ -68,6 +68,11 @@ export const useLivePull = <C extends Schema.Any, const P>(
     {
       basis: () => readT(db),
       refetch: () => db.pull<P>(subject, pattern),
+      seam: {
+        generation: () => seamOf(db)?.generation() ?? 0,
+        status: () => seamOf(db)?.status() ?? "offline",
+        onWake: (cb) => seamOf(db)?.onWake(cb),
+      },
     },
   );
 };

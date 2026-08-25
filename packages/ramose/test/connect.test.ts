@@ -22,7 +22,7 @@ import {
   seedWrite,
 } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
-import { fakePeer, type FakePeer } from "./peer.ts";
+import { fakePeer, httpsClient, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -337,5 +337,44 @@ describe("connect().checkOperations()", () => {
     expect(error).toBeInstanceOf(OperationsCoverageError);
     expect((error as OperationsCoverageError).missing).toEqual(["user/set-name"]);
     await c.close();
+  });
+});
+
+describe("connectionStatus", () => {
+  test("is connecting before a socket, live after a read, reconnecting after a drop", async () => {
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+    });
+    const c = ramose(peer);
+    expect(c.connectionStatus()).toBe("connecting");
+    expect(c.connectionStatus("movies")).toBe("connecting");
+
+    await c.db("movies", Movies).query(names);
+    expect(c.connectionStatus()).toBe("live");
+    expect(c.connectionStatus("movies")).toBe("live");
+    expect(c.connectionStatus("other")).toBe("connecting");
+
+    const seen: string[] = [];
+    const off = c.onConnectionStatus((status) => {
+      seen.push(status);
+    }, "movies");
+    peer.drop();
+    await Bun.sleep(10);
+    expect(c.connectionStatus("movies")).toBe("reconnecting");
+    expect(seen).toContain("reconnecting");
+
+    await c.db("movies", Movies).query(names);
+    expect(c.connectionStatus("movies")).toBe("live");
+
+    await c.close();
+    expect(c.connectionStatus()).toBe("closed");
+    off();
+  });
+
+  test("an HTTPS-only client is offline", () => {
+    const { connectionStatus, close } = httpsClient(fakePeer());
+    expect(connectionStatus()).toBe("offline");
+    expect(connectionStatus("movies")).toBe("offline");
+    close();
   });
 });

@@ -93,6 +93,7 @@ export type { EidLike, Shape } from "./shapes.ts";
 export {
   type Client,
   type ClientOptions,
+  type ConnectionStatus,
   connect,
 } from "./connect.ts";
 export type { DatabasesShape } from "./client-shape.ts";

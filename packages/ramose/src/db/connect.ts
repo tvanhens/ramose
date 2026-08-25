@@ -14,6 +14,9 @@ import type { Db } from "./Db.ts";
 import { NetworkError } from "./Errors.ts";
 import { trimSlashes } from "./http.ts";
 import { configFromClientOptions, makeDatabases } from "./factory.ts";
+import type { ConnectionStatus } from "./session.ts";
+
+export type { ConnectionStatus } from "./session.ts";
 import {
   type AnyOperations,
   checkOperationsCoverage,
@@ -61,6 +64,22 @@ export interface Client {
    * No-op when `operations` was not passed to {@link connect}.
    */
   checkOperations(): Promise<void>;
+  /**
+   * `"connecting"` until the first handshake, `"live"` while a session
+   * socket is held, `"reconnecting"` after a drop, `"offline"` with no
+   * WebSocket (or `navigator.onLine === false`), `"closed"` after
+   * {@link close}. Pass a database name for that session; omit it for the
+   * worst status across sessions this client has opened.
+   */
+  connectionStatus(name?: string): ConnectionStatus;
+  /**
+   * Subscribe to {@link connectionStatus} changes (connect, drop, close,
+   * browser online/offline). Returns the unsubscribe.
+   */
+  onConnectionStatus(
+    cb: (status: ConnectionStatus) => void,
+    name?: string,
+  ): () => void;
 }
 
 const healthOperationsOf = (body: unknown): string[] => {
@@ -109,7 +128,8 @@ const checkClientOperations = async (options: ClientOptions): Promise<void> => {
  * the same defects `layer` dies with.
  */
 export const connect = (options: ClientOptions): Client => {
-  const { databases, close } = makeDatabases(configFromClientOptions(options));
+  const { databases, close, connectionStatus, onConnectionStatus } =
+    makeDatabases(configFromClientOptions(options));
   return {
     db: (name, catalog) => databases.db(name, catalog),
     close: () => {
@@ -117,5 +137,7 @@ export const connect = (options: ClientOptions): Client => {
       return Promise.resolve();
     },
     checkOperations: () => checkClientOperations(options),
+    connectionStatus,
+    onConnectionStatus,
   };
 };

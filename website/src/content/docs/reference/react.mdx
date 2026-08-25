@@ -1,6 +1,6 @@
 ---
 title: React hooks
-description: ramose/react — `RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useTransact`, `errorMessage`.
+description: `RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useConnectionStatus`, `useTransact`, `errorMessage`.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -9,12 +9,12 @@ The exact surface of `ramose/react`, one section per export. This page is for Re
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
 ```tsx
-import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useTransact, errorMessage } from "ramose/react";
+import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useConnectionStatus, useTransact, errorMessage } from "ramose/react";
 ```
 
 Hooks only, no UI. They reach the Ramose server through one client. Read hooks take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
 
-Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, and `refetch()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `Transact`, `RunResult`, `RamoseProviderProps`.
+Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadStatus`, `ConnectionStatus`, `Transact`, `RunResult`, `RamoseProviderProps`.
 
 ## RamoseProvider
 
@@ -60,7 +60,7 @@ const TodoList = () => {
 
 - `data` is `undefined` until the first answer, and again right after `db` or `query` change.
 - `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the data stays.
-- `t` is the basis those rows were read at. `status` / `isLoading` cover the first answer; later emissions are not a load. `refetch()` re-reads once without tearing the subscription down.
+- `t` is the basis those rows were read at. `status` / `isLoading` cover the first answer; later emissions are not a load. `refetch()` re-reads once without tearing the subscription down. `retry()` re-subscribes — recover a terminal error without unmounting. A reconnect after `Unauthorized` (new session generation, status `live`) re-runs on its own.
 - `key={row.id}`: a selected `id: X.id` is a plain `number`.
 
 A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
@@ -92,6 +92,10 @@ A second form, `useLiveQuery(sub)`, drains a `Subscription` you built yourself (
 ```
 
 `useBasis(db): number | undefined` — the **version number** this view reads at ([glossary](/concepts/glossary/#version-number)), from `session.t` on a live view (no `GET /info` per update). Reef uses it as the slider's upper bound. `useBasis(db.asOf(t))` answers `t` at once with no request.
+
+## useConnectionStatus
+
+`useConnectionStatus(): ConnectionStatus` and `useConnectionStatus(db): ConnectionStatus` — `"connecting" | "live" | "reconnecting" | "offline" | "closed"`, from the session the client already tracks (`generation`, `connects`, `closed`, `onWake`). The no-argument form needs a provider and rolls up every session that client has opened. The `db` form is per database and needs no provider. `"offline"` is an HTTPS-only client (no WebSocket) or `navigator.onLine === false`. Reef's header pill reads this instead of inferring "live" from `error === undefined`.
 
 ## useTransact
 

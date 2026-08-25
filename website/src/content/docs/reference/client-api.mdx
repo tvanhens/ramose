@@ -145,6 +145,8 @@ interface Client {
   db<C>(name: string, schema: C): Db<C>;   // pure: no request
   close(): Promise<void>;                   // safe to call twice; reads fail after it
   checkOperations(): Promise<void>;        // GET /health; missing ids → OperationsCoverageError
+  connectionStatus(name?: string): ConnectionStatus;  // connecting | live | reconnecting | offline | closed
+  onConnectionStatus(cb, name?): () => void;          // connect / drop / close / browser online
 }
 ```
 

@@ -2,8 +2,8 @@
 
 /**
  * `useLiveQuery` — a live query as React `Read` state: `{ data, error,
- * status, isLoading, t, refetch }`, reset when the subscription identity
- * changes.
+ * status, isLoading, t, refetch, retry }`, reset when the subscription
+ * identity changes.
  *
  * Two rules for consumers:
  *
@@ -29,6 +29,7 @@
  */
 
 import type {
+  ConnectionStatus,
   Schema,
   QueryError,
   QueryObject,
@@ -59,9 +60,16 @@ type Acquire<A, E> = () => {
   readonly owned: boolean;
 };
 
+interface LiveSeam {
+  readonly generation: () => number;
+  readonly status: () => ConnectionStatus;
+  readonly onWake: (cb: () => void) => (() => void) | undefined;
+}
+
 interface LiveOptions<A> {
   readonly basis?: () => number | undefined;
   readonly refetch?: () => Promise<A>;
+  readonly seam?: LiveSeam;
 }
 
 /**
@@ -93,6 +101,8 @@ export const useLiveSubscription = <A, E>(
   const refetchRuns = useRef({ issued: 0, applied: 0 });
   const [nudge, setNudge] = useState(0);
 
+  const [epoch, setEpoch] = useState(0);
+
   const refetch = useCallback(() => {
     const opts = optionsRef.current;
     if (opts?.refetch !== undefined) {
@@ -114,6 +124,13 @@ export const useLiveSubscription = <A, E>(
     }
     setNudge((n) => n + 1);
   }, []);
+
+  const retry = useCallback(() => {
+    setState((prev) => asLoading(prev));
+    setEpoch((n) => n + 1);
+  }, []);
+  const retryRef = useRef(retry);
+  retryRef.current = retry;
 
   useEffect(() => {
     const { sub, owned } = acquire();
@@ -146,11 +163,27 @@ export const useLiveSubscription = <A, E>(
       if (owned) sub.close();
     };
     // acquire closes over the same values as deps; nudge remounts a
-    // caller-owned handle on refetch()
+    // caller-owned handle on refetch(); epoch remounts on retry()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, nudge]);
+  }, [...deps, nudge, epoch]);
 
-  return { ...state, refetch };
+  const error = state.error;
+  useEffect(() => {
+    if (error === undefined) return;
+    const seam = optionsRef.current?.seam;
+    if (seam === undefined) return;
+    const genAtError = seam.generation();
+    const off = seam.onWake(() => {
+      if (seam.generation() > genAtError && seam.status() === "live") {
+        retryRef.current();
+      }
+    });
+    return () => {
+      off?.();
+    };
+  }, [error]);
+
+  return { ...state, refetch, retry };
 };
 
 // Bundlers replace the dotted `process.env.NODE_ENV` via define even
@@ -273,6 +306,14 @@ export function useLiveQuery(
       refetch:
         owned
           ? () => (dbRef.current as ReadDb).query(queryRef.current!)
+          : undefined,
+      seam:
+        owned
+          ? {
+              generation: () => seamOf(dbRef.current!)?.generation() ?? 0,
+              status: () => seamOf(dbRef.current!)?.status() ?? "offline",
+              onWake: (cb) => seamOf(dbRef.current!)?.onWake(cb),
+            }
           : undefined,
     },
   );

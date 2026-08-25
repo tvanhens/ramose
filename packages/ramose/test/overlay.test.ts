@@ -624,6 +624,7 @@ describe("confirmed follower", () => {
       principal: undefined,
       connects: 1,
       closed: false,
+      status: "live",
       get epoch() {
         return epoch;
       },
@@ -718,6 +719,7 @@ describe("two-writer races", () => {
       principal: undefined,
       connects: 1,
       closed: false,
+      status: "live",
       get epoch() {
         return epoch;
       },
@@ -809,6 +811,7 @@ describe("two-writer races", () => {
       principal: undefined,
       connects: 1,
       closed: false,
+      status: "live",
       get epoch() {
         return epoch;
       },
@@ -879,6 +882,7 @@ describe("two-writer races", () => {
       principal: undefined,
       connects: 1,
       closed: false,
+      status: "live",
       get epoch() {
         return epoch;
       },
@@ -1263,6 +1267,7 @@ describe("apply is the notify", () => {
       principal: undefined,
       connects: 1,
       closed: false,
+      status: "live",
       get epoch() {
         return sessionEpoch;
       },

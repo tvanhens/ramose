@@ -33,6 +33,7 @@ const CLIENT_MODULES = [
   "useOneShot.ts",
   "useBasis.ts",
   "useTransact.ts",
+  "useConnectionStatus.ts",
 ] as const;
 
 /** First statement after a BOM, comments, and whitespace — the RSC rule. */

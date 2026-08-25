@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Connection status and live `retry()` (part of #194)
+
+`Client.connectionStatus(name?)` and `onConnectionStatus` report
+`"connecting" | "live" | "reconnecting" | "offline" | "closed"` from the
+session the client already tracks. `useConnectionStatus()` is the
+provider-scoped roll-up; `useConnectionStatus(db)` is per database.
+Reef's header pill reads that signal.
+
+Live `Read` gains `retry()` — re-subscribe on an internal epoch. A
+terminal live error (`Unauthorized`, …) is no longer permanent: `retry()`
+opens a fresh standing read, and a later reconnect (session generation
+advances and status is `live`) re-runs on its own. One-shot `retry` is
+`refetch`.
+
 ### Aggregates with order/limit and a scalar terminal (tracker #189)
 
 `orderBy` / `limit` / `offset` are methods on `QueryObject`, so both
