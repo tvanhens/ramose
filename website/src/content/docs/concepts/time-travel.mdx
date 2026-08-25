@@ -31,7 +31,7 @@ The slider's ceiling is the current **version number `t`** — the number every 
 
 ## asOf(t): the database as it was
 
-`db.asOf(t)` is a read-only view of the database exactly as it was right after version `t` ([glossary](/concepts/glossary/#as-of)). Queries and pulls run over it unchanged. It takes a version number, not a date; and you cannot write into it — the view has no `transact`.
+`db.asOf(t)` is a read-only view of the database exactly as it was right after version `t` ([glossary](/concepts/glossary/#as-of)). Queries and pulls run over it unchanged. It takes a version number, not a date; and you cannot write into it — the view has no `run`.
 
 ```ts title="examples/kv-style/app.ts#as-of"
         const beforeRows = yield* db.asOf(report.t - 1).effect.query(namesQuery);

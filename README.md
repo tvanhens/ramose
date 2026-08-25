@@ -33,7 +33,9 @@ const Todo = Ramose.Entity("todo", {
 });
 
 const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });
-const db = ramose.db("todos", Ramose.Schema({ todo: Todo }));
+const Todos = Ramose.Schema({ todo: Todo });
+const db = ramose.db("todos", Todos);
+const setDoneOp = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
 
 // A query is a value: declare it once, then run it live.
 const todos = Ramose.Query.from(Todo);
@@ -43,11 +45,7 @@ const Todos = () => {
   const { run } = useTransact();
 
   const toggle = (todo: Ramose.Row<typeof todos>) =>
-    run(
-      db.transact(function* (tx) {
-        yield* tx.set(todo.id, Todo.done, !todo.done);
-      }),
-    );
+    run(db.run(setDoneOp, todo.id, { done: !todo.done }));
 
   return (
     <ul>

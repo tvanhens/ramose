@@ -17,7 +17,7 @@ import {
   useTransact,
 } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   boardQuery,
   everyIssueEverQuery,
@@ -263,7 +263,6 @@ export const BoardScreen = ({
   // enddocs:use-live-board
 
   const [selected, setSelected] = useBoardSelection(slug);
-  const lastSelected = useRef<BoardRow | undefined>(undefined);
   const [draftStatus, setDraftStatus] = useState<Status | null>(null);
   const [invite, setInvite] = useState(false);
   const [timeTraveling, setTimeTraveling] = useState(false);
@@ -289,27 +288,12 @@ export const BoardScreen = ({
   // or an inbound filtered `tx` — and the pulse makes that visible.
   const ticks = board.ticks;
   // Derived from the live rows, so a deleted issue closes its own panel.
-  // An optimistic create remaps its eid on ack; rebind by the facts that
-  // survived (title / column / rank / creator) so the panel stays open.
-  const prior = lastSelected.current;
   const selectedRow =
     liveRows === undefined || selected === null
       ? undefined
-      : (liveRows.find((r) => r.id === selected) ??
-        liveRows.find(
-          (r) =>
-            prior !== undefined &&
-            r.title === prior.title &&
-            r.status === prior.status &&
-            r.rank === prior.rank &&
-            r.creator.id === prior.creator.id,
-        ));
-  if (selectedRow !== undefined) lastSelected.current = selectedRow;
-  else if (selected === null) lastSelected.current = undefined;
+      : liveRows.find((r) => r.id === selected);
   useEffect(() => {
-    if (selectedRow !== undefined && selectedRow.id !== selected) {
-      setSelected(selectedRow.id);
-    } else if (
+    if (
       selected !== null &&
       liveRows !== undefined &&
       selectedRow === undefined
@@ -417,7 +401,7 @@ export const BoardScreen = ({
                       canWrite ? (
                         <>
                           Add your first issue, or start from a sample board —
-                          nine issues in one <Code>db.transact</Code>.
+                          nine issues in one <Code>db.run</Code>.
                         </>
                       ) : (
                         "You are a viewer here — issues will appear as members add them."
@@ -475,7 +459,9 @@ export const BoardScreen = ({
             const column = liveRows.filter((r) => r.status === draft.status);
             void run(
               createIssue(db, myEid, column[column.length - 1]?.rank, draft),
-            );
+            ).then((report) => {
+              if (report !== undefined) setSelected(report.output.id);
+            });
             setDraftStatus(null);
           }}
         />

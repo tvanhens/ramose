@@ -16,7 +16,7 @@ A **workspace** is one customer's isolated data, one database ([glossary](/conce
 
 <Shot src="/reef/workspace-create.png" alt="Reef's workspace picker: a New workspace form with Tidepool typed in and, beneath the field, a preview of the ramose.db install call it will run" caption="Typing a name previews the call; Create runs it. The database exists after that first write." code="examples/reef/src/app/screens/WorkspacesScreen.tsx:385-393" />
 
-*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+*Writes are named operations (`await db.run(…)`). Effect is an [advanced hatch](/concepts/effect/).*
 
 ```ts title="examples/reef/src/app/ramose.ts#open-workspace-token · examples/reef/src/app/ramose.ts#open-workspace-provision"
   const token =

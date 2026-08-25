@@ -1,52 +1,44 @@
 ---
-title: Effect in five minutes
-description: The 5% of Effect a Ramose user sees — a call is a description, hooks run it, Effect.runPromise elsewhere, yield* inside a write, errors by name.
+title: Effect (advanced)
+description: The Effect hatch — ramose/effect, ramose/db/effect, db.effect.run, and bring-your-own Effect. The app path is promises.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose is built on [Effect](https://effect.website), a TypeScript library for describing work as values. You can use Ramose without learning it. Here is the 5% you will see, for someone who has built the first app.
+The app path is TypeScript and `async`/`await`: `await db.query(…)`, `await db.run(…)`. React hooks run reads and wrap write promises. This page is the escape hatch for people who already use [Effect](https://effect.website), or who are wiring a Worker that does.
 
-<Learn learn={["Why a Ramose call does nothing until something runs it", "The three places you run one: hooks, Effect.runPromise, yield*", "How to handle an error by name"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }]} minutes={5} />
+<Learn learn={["The app path is promises; this page is the hatch", "ramose/effect and ramose/db/effect", "db.effect.run and bring-your-own Effect"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={6} />
 
-## A Ramose call is a description, not a result
+## Why a hatch exists
 
-`db.query(query)` does not fetch rows. It returns an *Effect value*: a description of a read, with the result type and the possible errors in its type. Nothing happens until something runs it. The same is true of `db.transact(…)`, `db.pull(…)` and `db.install()`.
+Ramose is built on Effect. The public `Db` unwraps that into promises and [subscriptions](/guides/live-queries/#outside-react). `db.effect` is the same handle returning Effect / Stream values, so a program that is already an Effect can `yield*` without a second wrapper.
 
-A **write** is one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). That is why a write can be built in one place and run in another, and why a failed step stops the whole thing before anything is sent.
+Do not start here. [Getting started](/getting-started/quickstart/) and [Write data](/guides/transactions/) teach `db.run`.
 
-## In React, the hooks run it for you
+## ramose/effect
 
-`useLive`, `useQuery` and `usePull` run reads and re-run them; `useTransact().run` runs a write from an event handler. You never see Effect:
+`effect` is a dependency of `ramose`. Two copies in one tree produce mutually unassignable types. Declare it in your own `package.json` only at a version that agrees with Ramose's.
 
-```tsx title="examples/todos/src/App.tsx#todo-list"
-const TodoList = () => {
-  const { rows, error } = useLive(db, todoQuery);
-  if (error !== undefined) return <p>offline…</p>;
-  if (rows === undefined) return <p>loading…</p>;
-  return (
-    <ul>
-      {rows.map((row) => (
-        <TodoRowView key={row.id} row={row} />
-      ))}
-    </ul>
-  );
-};
+One subpath lets a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) avoid naming `effect` at all:
+
+```ts
+import { Schema, Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
 ```
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-transact"
-  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
-  // a toast — enforcement is server-side, the UI is only a hint.
-  const { run } = useTransact({
-    onError: (error) => toast("error", errorMessage(error)),
-  });
+It re-exports the module instances `effect` itself exports, so the two spellings are interchangeable.
+
+App schemas do not import `effect/Schema` — they use `Ramose.string()`, `Ramose.Enum([...])`, and the other shorthands. A raw Effect Schema is the advanced field form: `Ramose.Field(schema)`. Operation input and output codecs stay Effect Schema.
+
+## ramose/db/effect
+
+`import { layer, Databases } from "ramose/db/effect"` is the Effect-native twin of `Ramose.connect`. It provides a `Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. A Worker talking to a deployed `Ramose.Server` uses `yield* Ramose.Databases(Server)` and `Ramose.layer` instead:
+
+```ts
+const ramose = yield* Ramose.Databases(Server);   // provide Ramose.layer
+const db = ramose.db("todos", Todos);
 ```
 
-`run(effect)` returns a Promise; a policy denial arrives in `onError` as a readable message.
-
-## Outside React: Effect.runPromise
-
-Anywhere else — a script, a Worker, a test — `Effect.runPromise(effect)` runs one Effect and gives you a Promise. Reef opens a workspace this way:
+Reef's workspace provision is still `await db.run(…)` on the app path:
 
 ```ts title="examples/reef/src/app/ramose.ts#open-workspace-provision"
     const connect = options?.connect ?? Ramose.connect;
@@ -63,30 +55,24 @@ Anywhere else — a script, a Worker, a test — `Effect.runPromise(effect)` run
     }
 ```
 
-Every `db` method can be run this way directly; nothing else needs to be set up.
+## db.effect
 
-## Inside a write: yield*
+Every promise method has an Effect twin: `db.effect.query`, `db.effect.run`, `db.effect.install`, `db.effect.principal`, `db.effect.pull`, `db.effect.basis`. Live reads are Streams: `db.effect.live`, `db.effect.livePull`.
 
-A write's body is a generator. Read `yield*` as `await`: it runs the step and gives you its result. Reef's drag-and-drop is two steps:
-
-```ts title="examples/reef/src/app/mutations.ts#move-issue"
-export const moveIssue = (
-  db: ReefDb,
-  issueId: number,
-  status: Status,
-  rank: number,
-) => db.run(moveIssueOp, issueId, { status, rank });
+```ts
+const report = yield* db.effect.run(addTodoOp, { title: "buy milk" });
+const id = report.output.id;
 ```
 
-`function*` and `yield*` are plain JavaScript; Effect uses them so a write reads top to bottom. If any step fails, the write is not sent.
+There is no `db.effect.transact`. Writes are named operations on both surfaces.
 
-## Handling errors by name
+## Errors
 
 On the app path, `await db.query(…)` / `db.run(…)` reject with the tagged class itself. Match with `try/catch` and `instanceof` / `_tag` — see [Errors](/reference/errors/).
 
-The hatch (`db.effect.*`) still produces Effects. `runPromise` from `ramose/effect` (or `ramose/db/effect`) unwraps them so the Promise rejects with that same class, not a FiberFailure. Do not use `Effect.runPromise` on a Ramose Effect if you need `_tag` / `instanceof` to work.
+The hatch still produces Effects. `runPromise` from `ramose/effect` (or `ramose/db/effect`) unwraps them so the Promise rejects with that same class, not a FiberFailure. Do not use `Effect.runPromise` on a Ramose Effect if you need `_tag` / `instanceof` to work.
 
-Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthorized`, `QueryBudgetExceeded`, `Unavailable`, `InvalidRequest`, `DatabaseNotFound`, `InternalError`, `NetworkError`, `OperationRejected`. A Worker that proxies those to HTTP uses `errorToHttp`:
+A Worker that proxies those to HTTP uses `errorToHttp`:
 
 ```ts title="examples/kv-style/app.ts#error-to-http"
         // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
@@ -96,25 +82,10 @@ Every failure a `db` call can produce is a named error: `TxRejected`, `Unauthori
         }),
 ```
 
-Hatch code (`db.effect.*`) can still `Effect.catchTags` by `_tag`. In React, `errorMessage(e)` from `ramose/react` turns any of them into a string. The full list, with status codes and what the user sees, is on [Errors](/reference/errors/).
-
-## Words you can ignore for now
-
-You may meet these in the reference pages; none is needed to build an app.
-
-- **Layer** — wiring: how a program is given the things it needs.
-- **Stream** — a stream of results over time; `db.live` returns one, `useLive` consumes it for you.
-- **Fiber** — a running subscription; a live query is one.
-- **Scope** — what closes a subscription when its owner goes away.
-
-## When you want more
-
-`import { layer, Databases } from "ramose/db/effect"` is the Effect-native twin of `Ramose.connect`; it provides a `Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. A Worker talking to a deployed `Ramose.Server` uses `yield* Ramose.Databases(Server)` and `Ramose.layer` instead. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
-
-App schemas do not import `effect/Schema` — they use `Ramose.string()`, `Ramose.Enum([...])`, and the other shorthands. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` (or `import { Schema } from "ramose/effect"`), and operation input/output codecs stay Effect Schema.
+Hatch code can still `Effect.catchTags` by `_tag`. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
 
 <Next links={[
-  { href: "/guides/transactions/", label: "Write data", why: "the four verbs, inside one write" },
   { href: "/guides/workers/", label: "Use it from a Worker", why: "Ramose from your own backend, no React" },
   { href: "/reference/client-api/", label: "Client API", why: "every call, with its errors" },
+  { href: "/guides/transactions/", label: "Write data", why: "named operations, put and update" },
 ]} />

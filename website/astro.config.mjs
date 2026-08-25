@@ -137,6 +137,7 @@ export default defineConfig({
             { label: "Use it from a Worker", slug: "guides/workers" },
             { label: "Before production", slug: "guides/before-production" },
             { label: "Troubleshooting and FAQ", slug: "guides/troubleshooting" },
+            { label: "Effect (advanced)", slug: "concepts/effect" },
           ],
         },
         {
@@ -145,7 +146,6 @@ export default defineConfig({
             { label: "How Ramose thinks about data", slug: "concepts/data-model" },
             { label: "How Ramose works", slug: "concepts/architecture" },
             { label: "Time travel", slug: "concepts/time-travel" },
-            { label: "Effect in five minutes", slug: "concepts/effect" },
             { label: "Glossary", slug: "concepts/glossary" },
           ],
         },

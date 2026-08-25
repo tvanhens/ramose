@@ -39,6 +39,7 @@ import {
 import { Issue, Reef, User } from "../src/domain/schema.ts";
 import { createIssue, moveIssue, operations, setTitle } from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
+import { seedWrite } from "../../../packages/ramose/src/db/internal.ts";
 import { openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
@@ -296,7 +297,7 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
     db = first.db;
     await db.install();
     const seeded = await Effect.runPromise(
-      db.effect.transact(function* (tx) {
+      seedWrite(db, function* (tx) {
         yield* tx.put(User, {
           sub: "ada",
           role: "admin",

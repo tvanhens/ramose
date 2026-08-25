@@ -6,7 +6,7 @@ import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 import WriteReadFlow from "../../../components/diagrams/WriteReadFlow.astro";
 
-This page shows how a write becomes a read, with one picture. It is for anyone who has read a guide and wants to know what happens after they call `db.transact`.
+This page shows how a write becomes a read, with one picture. It is for anyone who has read a guide and wants to know what happens after they call `db.run`.
 
 <Learn learn={["What the pieces are and which ones you never write", "What happens between a write and every open tab updating", "The four promises Ramose keeps, and what happens when something fails"]} before={[{ href: "/concepts/data-model/", label: "How Ramose thinks about data" }]} minutes={7} />
 
@@ -44,7 +44,7 @@ Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of 
 
 - **One writer per database.** All writes to a database go through one place, in order. There are no write conflicts to resolve and no "eventually".
 - **Version numbers are dense and in order.** Every write gets the next `t`; nothing mints, skips or supplies one.
-- **A write is stored before you get an answer.** If `db.transact` returns, the write is durable.
+- **A write is stored before you get an answer.** If `db.run` returns, the write is durable.
 - **Reads never block the writer.** Queries run on read copies; the writer's queue does not compete with them.
 
 ## What runs where

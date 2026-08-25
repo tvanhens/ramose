@@ -109,7 +109,7 @@ examples/reef/
   (local apply, ack, or an inbound filtered `tx`). There is no refetch code
   anywhere in the app. On a phone, hold a card still, then drag — a flick
   still scrolls the board. An empty board offers **Add sample issues**: nine
-  issues, labels and assignees in one `db.transact`.
+  issues, labels and assignees in one `db.run`.
 - **Issue detail** — policy in the small. Opening a card is
   `/:slug/issues/:id`, so refresh keeps the panel open. Description and the
   admin-only note ride one standing `usePull`, so edits from another tab

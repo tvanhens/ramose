@@ -27,6 +27,7 @@
  */
 
 import * as Ramose from "ramose";
+import { operations } from "./operations.ts";
 import { Movies } from "./schema.ts";
 
 /**
@@ -35,5 +36,7 @@ import { Movies } from "./schema.ts";
  * names created by `PUT /t/:tenant` call `db.install()` instead.
  */
 export const Server = Ramose.Server("Ramose", {
+  main: import.meta.resolve("./peer.ts"),
   databases: { movies: Movies },
+  operations,
 });

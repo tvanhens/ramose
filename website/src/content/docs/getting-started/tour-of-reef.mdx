@@ -73,7 +73,7 @@ Password hashing, sessions, the token-mint route (`ramoseToken` is a plugin), au
 
 A **workspace** is one customer's isolated data — one database ([glossary](/concepts/glossary/#workspace)). Create installs the schema into a fresh database and seeds it:
 
-*Ramose is built on [Effect](https://effect.website). In React you rarely see it — the hooks run it for you; inside `db.transact` you write `yield*`. ([Effect in five minutes](/concepts/effect/))*
+*Writes are named operations: `await db.run(moveIssueOp, id, { status, rank })`. Effect is an [advanced hatch](/concepts/effect/).*
 
 ```ts title="examples/reef/src/app/mutations.ts#provision-workspace"
 export const provisionWorkspace = (db: ReefDb) =>

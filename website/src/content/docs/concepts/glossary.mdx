@@ -18,9 +18,9 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="database"></span>**database** | A named, isolated set of facts with its own writer. Naming one costs nothing; the first write creates it. | `ramose.db(name, schema)` — [One database per customer](/guides/workspaces/) |
 | <span id="database-name"></span>**database name** | Letters, digits, `. _ -`, up to 64 characters, starting with a letter or digit. | `Ramose.DATABASE_NAME_RE`, `Ramose.isDatabaseName` |
 | <span id="dbafter"></span>**dbAfter** | The same database pinned at the version your write produced — read your own write with no second round trip. | `report.dbAfter` — [What a write returns](/guides/transactions/#what-a-write-returns) |
-| <span id="deny-by-default"></span>**deny by default** | An operation is refused unless a rule allows it. Forgetting a rule closes a door; it never opens one. | policy semantics — [How rules combine](/reference/policy/#how-rules-combine) |
+| <span id="deny-by-default"></span>**deny by default** | A policy verb is refused unless a rule allows it. Forgetting a rule closes a door; it never opens one. | policy semantics — [How rules combine](/reference/policy/#how-rules-combine) |
 | <span id="durable-object"></span>**Durable Object** | Cloudflare's single-instance stateful Worker. Ramose runs the writer and the read copies as Durable Objects. | `TransactorDO`, `QueryReplicaDO` — [What runs where](/concepts/architecture/#what-runs-where) |
-| <span id="effect"></span>**Effect** | The TypeScript library Ramose is built on. Ramose calls return Effect values; the hooks run them; `Effect.runPromise` runs one elsewhere. | `Effect.runPromise`, `yield*` — [Effect in five minutes](/concepts/effect/) |
+| <span id="effect"></span>**Effect** | The TypeScript library Ramose is built on. The app path is promises; `db.effect` is the hatch. | `ramose/effect`, `db.effect` — [Effect (advanced)](/concepts/effect/) |
 | <span id="fact"></span><span id="datom"></span>**fact** | One statement: this record's field has this value, as of version `t`. Facts are added or removed, never overwritten. | `datomCount` ("how many facts landed") |
 | <span id="field"></span>**field** | One named, typed slot on a record type, e.g. `issue.title`. Its full name is `:issue/title`. | [`Ramose.Field`](/guides/catalog/#three-pieces-and-that-is-the-whole-vocabulary), `Issue.title` |
 
@@ -46,15 +46,16 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="one-or-many"></span><span id="cardinality"></span>**one value or many** | Whether a field holds one value or a set of values. Labels on an issue are "many". | `cardinality: "one"` \| `"many"` — [Options](/guides/catalog/#options) |
 | <span id="open-mode"></span>**open mode** | A server with no policy and no token: every caller is admin. Right for a laptop, wrong for the internet. | env unset — [The three server modes](/guides/permissions/#the-three-server-modes) |
 | <span id="policy"></span><span id="permissions"></span>**policy** | The value that says which roles may read, create, change or remove which fields; compiled to JSON for the server. | [`Ramose.Policy`](/reference/policy/), `RAMOSE_POLICY` |
-| <span id="preset"></span>**preset** | A field the server fills from the caller on create (creator = you). A different client value is refused; the same value is a no-op. | `P.preset(attr, P.principal)` — [Operations](/reference/policy/#operations) |
+| <span id="operation"></span>**operation** | A named write (`issue/move`) run with `db.run`. Not a policy verb (`read` / `create` / `set` / `remove` / `delete`). | [`db.run`](/reference/client-api/#writes), [Write data](/guides/transactions/) |
+| <span id="preset"></span>**preset** | A field the server fills from the caller on create (creator = you). A different client value is refused; the same value is a no-op. | `P.preset(attr, P.principal)` — [Policy verbs](/reference/policy/#policy-verbs) |
 | <span id="pull"></span>**pull** | Read one record by id or unique key with a chosen set of fields; `null` if missing or a required field is absent. | [`db.pull`](/reference/client-api/#pull), `usePull`, `Ramose.Pull` |
 | <span id="query"></span>**query** | A typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past. | [`Query.from`](/reference/client-api/#queries), `db.query`, `useQuery` |
 | <span id="query-budget"></span>**query budget** | A memory limit per query on the server; exceeding it fails the query with a 413 — narrow the query. | `QueryBudgetExceeded`, [`RAMOSE_QUERY_MAX_CELLS`](/reference/server/#query-budget) |
 | <span id="read-copy"></span><span id="replica"></span>**read copy** | Where queries run: a copy of the data near your users, kept current by the writer. | `QueryReplicaDO` |
-| <span id="record"></span>**record** | One thing in the database — an issue, a user — identified by an id: the set of facts about that id. | `tx.entity()`, `tx.delete` — [The four verbs](/guides/transactions/#the-four-verbs) |
+| <span id="record"></span>**record** | One thing in the database — an issue, a user — identified by an id: the set of facts about that id. | `op.put`, `op.delete` — [The verbs](/guides/transactions/#the-verbs) |
 | <span id="record-type"></span>**record type** | A named group of fields, like a table: `issue`, `user`, `label`. | `Ramose.Entity("issue", {…})`, policy `ns:` |
 | <span id="reference"></span><span id="ref"></span>**reference** | A field that points at another record — a typed foreign key. Queries can hop through it. | `Ramose.Ref(User)`, `.select`, `.reverse` — [Value types](/guides/catalog/#value-types) |
-| <span id="remove"></span>**remove / delete** | Take a fact back: clear a field, or delete a whole record. History keeps it. | `tx.remove`, `tx.delete` — [The four verbs](/guides/transactions/#the-four-verbs) |
+| <span id="remove"></span>**remove / delete** | Take a fact back: clear a field, or delete a whole record. History keeps it. | `op.remove`, `op.delete` — [The verbs](/guides/transactions/#the-verbs) |
 | <span id="role"></span><span id="class"></span>**role** (class) | A role name carried in the sign-in token and, when the catalog has `:ns/role`, materialized as a fact on the principal row. Reef: admin, member, viewer. `admin` bypasses every rule. | `classes:`, `P.class(c)`, `ramose.class`, `User.role` — [Arms are fragments](/reference/policy/#arms-are-fragments) |
 | <span id="row"></span>**row** | One result of a query; its TypeScript type is inferred from the query. | `Ramose.Row<typeof q>` |
 | <span id="schema"></span>**schema** | Your data model as one TypeScript value: record types and their fields. Shared by app, rules and deploy. | [`Ramose.Schema`](/guides/catalog/) |
@@ -78,12 +79,12 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="connection"></span><span id="session"></span>**WebSocket connection** (session) | The connection a browser holds to a database; hosts the current-view overlay and carries filtered transactions. Pinned `asOf` / `history` still read the server. Writes always use HTTPS. | `GET /db/:name/session` — [HTTP API](/reference/server/#http-api) |
 | <span id="worker"></span>**Worker** | Cloudflare's serverless function. Your app's backend and the Ramose server are Workers. | `Cloudflare.Worker` |
 | <span id="workspace"></span><span id="tenant"></span>**workspace / customer** (tenant) | One customer's isolated data — one database. Reef's word is workspace. | `ramose.db(slug, Reef)` — [One database per customer](/guides/workspaces/) |
-| <span id="write"></span><span id="transaction"></span>**write** | A group of changes that lands completely or not at all; gets one version number; the only way data enters. | [`db.run`](/reference/client-api/#transactions), `TxReport` |
+| <span id="write"></span><span id="transaction"></span>**write** | A group of changes that lands completely or not at all; gets one version number; the only way data enters. | [`db.run`](/reference/client-api/#writes), `OpReport` |
 | <span id="writer"></span><span id="transactor"></span>**writer** (transactor) | The one thing per database that commits writes, in order. | `TransactorDO` — [The four promises](/concepts/architecture/#the-four-promises) |
 
 ## Reference-only words
 
-Words you will only meet in the Reference pages are defined where they appear: ident (a field's full name, `:issue/title`), tempid, novelty, segment, indexer, group commit, `TxReport` / `txEid` / `datomCount`, `ReadDb`, `PEER_COMPAT`, the `RAMOSE_*` settings, and the Effect words Layer, Stream, fiber and Scope ([Effect in five minutes](/concepts/effect/)).
+Words you will only meet in the Reference pages are defined where they appear: ident (a field's full name, `:issue/title`), tempid, novelty, segment, indexer, group commit, `TxReport` / `txEid` / `datomCount`, `ReadDb`, `PEER_COMPAT`, the `RAMOSE_*` settings, and the Effect words Layer, Stream, fiber and Scope ([Effect (advanced)](/concepts/effect/)).
 
 <details>
 <summary>How we word these in the guides</summary>

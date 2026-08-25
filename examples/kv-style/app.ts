@@ -17,6 +17,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { addUser } from "./operations.ts";
 import { Server } from "./resources.ts";
 import { Movies, User } from "./schema.ts";
 
@@ -68,14 +69,11 @@ export const App = Cloudflare.Worker(
       Effect.gen(function* () {
         const tenant = ramose.db(tenantId, Movies);
 
-        // docs:tenant-transact
-        const { t, dbAfter } = yield* tenant.effect.transact(function* (tx) {
-          const ada = yield* tx.entity();
-          yield* ada.set(User.name, "Ada");
-        });
+        // docs:tenant-run
+        const { t, dbAfter } = yield* tenant.effect.run(addUser, { name: "Ada" });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
         const names = yield* dbAfter.effect.query(namesQuery);
-        // enddocs:tenant-transact
+        // enddocs:tenant-run
         return yield* HttpServerResponse.json({
           tenant: tenantId,
           t,
@@ -102,10 +100,7 @@ export const App = Cloudflare.Worker(
         // installed Movies on this name at deploy time.
         const db = ramose.db("movies", Movies);
 
-        const report = yield* db.effect.transact(function* (tx) {
-          const ada = yield* tx.entity();
-          yield* ada.set(User.name, "Ada");
-        });
+        const report = yield* db.effect.run(addUser, { name: "Ada" });
 
         // Read your own write: `dbAfter` is the same db floored at `report.t`,
         // so a replica that has not caught up refetches its basis. No `sync`,
