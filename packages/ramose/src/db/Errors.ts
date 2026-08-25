@@ -146,19 +146,6 @@ export class OperationRejected extends Data.TaggedError("OperationRejected")<{
   readonly reason?: string;
 }> {}
 
-/**
- * The peer's registered operations do not cover the ids the client ships.
- * Deploy / connect time — not a {@link DbError}. A missing id used to
- * surface later as `unknown operation` on `db.run`.
- */
-export class OperationsCoverageError extends Data.TaggedError(
-  "OperationsCoverageError",
-)<{
-  readonly message: string;
-  /** Wire ids the client ships that the peer did not register. */
-  readonly missing: readonly string[];
-}> {}
-
 export type DbError =
   | TxRejected
   | Unavailable

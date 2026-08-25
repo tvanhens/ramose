@@ -418,18 +418,3 @@ trackerOp.put(Ticket, ticketRow.id, { title: "ship" });
   // @ts-expect-error a bare string is not a tempid
   trackerOp.set(ticketRow.id, Ticket.creator, "ada");
 }
-
-const patched = Operation.patch("user/set-name", User, ["name"], {
-  doc: "Rename a user",
-});
-type _patchedName = Expect<Equal<(typeof patched)["name"], "user/set-name">>;
-declare const patchedInput: (typeof patched)["input"] extends {
-  readonly Type: infer T;
-}
-  ? T
-  : never;
-const _titleOk: (typeof patchedInput)["name"] = "Ada";
-{
-  // @ts-expect-error patch keys must be fields of the entity
-  Operation.patch("user/set-name", User, ["nope"]);
-}

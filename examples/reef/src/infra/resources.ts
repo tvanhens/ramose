@@ -32,7 +32,6 @@ import * as Effect from "effect/Effect";
 import { Api } from "./api.ts";
 import { REEF_DOMAIN, pinned, zoneOf } from "./domain.ts";
 import { compiledPolicy } from "../domain/policy.ts";
-import { operations } from "../app/mutations.ts";
 import {
   AUTH_BASE_PATH,
   DEV_PEER_PORT,
@@ -57,7 +56,6 @@ const Store = Cloudflare.R2.Bucket("Store", pinned("store"));
  * which is what `Ramose.Server` health-checks.
  */
 export const Server = Ramose.Server("Ramose", {
-  operations,
   main: import.meta.resolve("./peer.ts"),
   storage: Store,
   dev: { port: DEV_PEER_PORT },

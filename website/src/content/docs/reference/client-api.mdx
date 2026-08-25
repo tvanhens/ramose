@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `isDatabaseError` · `PolicyError` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -142,12 +142,10 @@ interface ClientOptions {
   token?: TokenSource | Effect<Redacted<string>, DbError>;
   fetch?: typeof fetch;              // defaults to the ambient fetch
   webSocket?: typeof WebSocket;      // defaults to the ambient WebSocket; needed for live
-  operations?: Operations;           // client-shipped registry; see checkOperations
 }
 interface Client {
   db<C>(name: string, schema: C): Db<C>;   // pure: no request
   close(): Promise<void>;                   // safe to call twice; reads fail after it
-  checkOperations(): Promise<void>;        // GET /health; missing ids → OperationsCoverageError
 }
 ```
 
@@ -277,16 +275,6 @@ export const deleteTodo = (db: TodosDb, eid: TodoEid) =>
 ## Transactions
 
 App writes go through `db.run`. The hatch `db.effect.transact` still takes a `tx`; `tx.entity()` gives a `TxHandle`. `set` / `remove` / `delete` write one field at a time; `put` is the entity-level write.
-
-**Named operations.** Define each write once, import that registry from the app and the peer entry, and pass it to `Server({ operations })`. `defineOperations(catalog, { … })` is the shared registry; `Operation.patch` is the low-ceremony path for a one-field update. Wire ids (`issue/move`) are the contract — renaming one is a breaking change. `doc:` on `Operation` is what humans read and later MCP will use as the tool description.
-
-```ts title="examples/reef/src/app/mutations.ts#set-title-op"
-export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
-  doc: "Set an issue's title",
-});
-```
-
-`checkOperationsCoverage(client, peer)` (or `connect({ operations }).checkOperations()`, or `Server({ operations })` at deploy) fails with `OperationsCoverageError` when the peer is missing an id the client ships.
 
 ```ts
 interface Tx<C> {

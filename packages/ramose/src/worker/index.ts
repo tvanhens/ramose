@@ -9,7 +9,7 @@
  * `x-ramose-min-t: <t>` makes a read refetch if the cached basis is older than t.
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
- *   GET  /health              { ok, service, stage, time, operations: string[] }
+ *   GET  /health
  *   POST /db/:name/transact   { tx, clientTxId? }        → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
  *   POST /db/:name/op         { name, entity?, input, clientOpId } → { t, txEid, tempids, datoms, clientOpId, output }
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
@@ -42,7 +42,6 @@ import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } fro
 import { allowedOrigin, allowsRawTransact, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
-import { operationNames } from "../db/Operation.ts";
 import { type ServerOptions, prepareOperation } from "./operations.ts";
 export type { ServerOptions } from "./operations.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
@@ -566,13 +565,7 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo,
     }
     if (url.pathname === "/health") {
       info.route = "health";
-      return json({
-        ok: true,
-        service: "ramose",
-        stage: env.RAMOSE_STAGE ?? "dev",
-        time: Date.now(),
-        operations: operationNames(peer.operations),
-      });
+      return json({ ok: true, service: "ramose", stage: env.RAMOSE_STAGE ?? "dev", time: Date.now() });
     }
 
     const m = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);

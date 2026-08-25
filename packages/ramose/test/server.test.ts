@@ -17,7 +17,6 @@ import {
   authEnv,
   checkAuth,
   compareAuthToWorker,
-  compareOperationsToHealth,
   compareWritesToWorker,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
@@ -49,9 +48,6 @@ import {
   validatePeerWiring,
 } from "../src/peer.ts";
 import { workerEntry } from "../src/workerEntry.ts";
-import * as Schema from "effect/Schema";
-import { Operation, defineOperations } from "../src/db/internal.ts";
-import { Movies, User } from "./db/fixture.ts";
 
 describe("identity", () => {
   test("the resource classes carry their types", () => {
@@ -336,10 +332,10 @@ describe("the server's auth env", () => {
     const databaseHasAuth: DatabaseHasAuth = false;
     expect(databaseHasAuth).toBe(false);
     type HasOperations = "operations" extends keyof ServerProps ? true : false;
-    const hasOperations: HasOperations = true;
+    const hasOperations: HasOperations = false;
     type HasWrites = "writes" extends keyof ServerProps ? true : false;
     const hasWrites: HasWrites = true;
-    expect([hasOperations, hasWrites]).toEqual([true, true]);
+    expect([hasOperations, hasWrites]).toEqual([false, true]);
   });
 
   test("Output / Effect-valued JWKS and origins pass through un-normalised", () => {
@@ -666,47 +662,6 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
     expect(writesAllPolicyWarning("all", undefined, hatch({}))).toBeUndefined();
     expect(writesAllPolicyWarning("all", undefined, hatch({ RAMOSE_POLICY: '{"v":1}', RAMOSE_WRITES: "all" }))).toBe(
       WRITES_ALL_POLICY_WARNING,
-    );
-  });
-});
-
-describe("operations coverage vs /health", () => {
-  const createUser = Operation(
-    "user/create",
-    { input: Schema.Struct({}), output: Schema.Struct({}) },
-    () => ({}),
-  );
-  const setName = Operation(
-    "user/set-name",
-    {
-      on: User,
-      input: Schema.Struct({ name: Schema.String }),
-      output: Schema.Struct({}),
-    },
-    () => ({}),
-  );
-  const client = defineOperations(Movies, { createUser, setName });
-
-  test("unset operations skips", () => {
-    expect(compareOperationsToHealth(undefined, { operations: [] })).toBeUndefined();
-  });
-
-  test("matching ids pass; extra peer ops pass", () => {
-    expect(
-      compareOperationsToHealth(client, {
-        operations: ["user/create", "user/set-name", "user/extra"],
-      }),
-    ).toBeUndefined();
-  });
-
-  test("a missing id is a named deploy error", () => {
-    const message = compareOperationsToHealth(client, { operations: ["user/create"] });
-    expect(message).toMatch(/missing operations: user\/set-name/);
-  });
-
-  test("a health body with no operations list is an empty registry", () => {
-    expect(compareOperationsToHealth(client, { ok: true })).toMatch(
-      /missing operations: user\/create, user\/set-name/,
     );
   });
 });

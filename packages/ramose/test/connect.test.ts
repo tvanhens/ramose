@@ -11,16 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
-import {
-  connect,
-  NetworkError,
-  Operation,
-  OperationsCoverageError,
-  Query,
-  Unauthorized,
-  defineOperations,
-} from "../src/db/internal.ts";
-import * as Schema from "effect/Schema";
+import { connect, NetworkError, Query, Unauthorized } from "../src/db/internal.ts";
 import { fakePeer, type FakePeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -279,62 +270,5 @@ describe("provisioning mistakes throw synchronously", () => {
     } finally {
       globalThis.fetch = ambient;
     }
-  });
-});
-
-describe("connect().checkOperations()", () => {
-  const createUser = Operation(
-    "user/create",
-    { input: Schema.Struct({}), output: Schema.Struct({}) },
-    () => ({}),
-  );
-  const setName = Operation(
-    "user/set-name",
-    { input: Schema.Struct({ name: Schema.String }), output: Schema.Struct({}) },
-    () => ({}),
-  );
-  const operations = defineOperations(Movies, { createUser, setName });
-
-  test("is a no-op when connect was not given a registry", async () => {
-    const peer = fakePeer();
-    const c = ramose(peer);
-    await c.checkOperations();
-    expect(peer.calls).toEqual([]);
-    await c.close();
-  });
-
-  test("passes when /health lists every client-shipped id", async () => {
-    const peer = fakePeer({
-      http: () => ({
-        body: { ok: true, operations: ["user/create", "user/set-name"] },
-      }),
-    });
-    const c = connect({
-      url: "https://peer.example.com",
-      fetch: peer.fetch,
-      webSocket: peer.webSocket,
-      operations,
-    });
-    await c.checkOperations();
-    expect(peer.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
-      "GET https://peer.example.com/health",
-    ]);
-    await c.close();
-  });
-
-  test("fails with OperationsCoverageError when an id is missing", async () => {
-    const peer = fakePeer({
-      http: () => ({ body: { ok: true, operations: ["user/create"] } }),
-    });
-    const c = connect({
-      url: "https://peer.example.com",
-      fetch: peer.fetch,
-      webSocket: peer.webSocket,
-      operations,
-    });
-    const error = await runFail(c.checkOperations());
-    expect(error).toBeInstanceOf(OperationsCoverageError);
-    expect((error as OperationsCoverageError).missing).toEqual(["user/set-name"]);
-    await c.close();
   });
 });

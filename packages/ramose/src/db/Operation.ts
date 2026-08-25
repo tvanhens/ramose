@@ -16,7 +16,7 @@ import * as Schema from "effect/Schema";
 import type { Eid } from "./Eid.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
-import { type DbError, InvalidRequest, OperationsCoverageError } from "./Errors.ts";
+import { type DbError, InvalidRequest } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import { asLookupRef, lowerEntityArg, tempid, type Tempid } from "./entityArg.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
@@ -318,8 +318,6 @@ export interface Operation<
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on: N | undefined;
-  /** Humans read this in the docs; later MCP uses it as the tool description. */
-  readonly doc: string | undefined;
   readonly body: (op: Op<C, N>, input: I) => Promise<O> | O;
 }
 
@@ -381,36 +379,11 @@ export interface Operations<
 > {
   readonly _tag: "Operations";
   readonly operations: M;
-  /** Catalog this registry was bound to, when built with {@link defineOperations}. */
-  readonly schema?: AnySchema;
   /** Resolve by the operation's declared `name` (not the registry key). */
   get(name: string): AnyOperation | undefined;
-  /** Sorted unique wire ids (`issue/move`). The client/server contract. */
-  names(): readonly string[];
-  /** Id + doc + entity ns — the projection later MCP `learn` reads. */
-  cards(): readonly OperationCard[];
 }
 
 export type AnyOperations = Operations<Record<string, AnyOperation>>;
-
-/** A catalog-bound registry — {@link defineOperations}'s return. */
-export interface DefinedOperations<
-  C extends AnySchema,
-  M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
-> extends Operations<M> {
-  readonly schema: C;
-}
-
-/**
- * One registered operation, as discovery later reads it. Name is the
- * wire id; `doc` is the human / tool description; `on` is the entity ns
- * when the op is contextual.
- */
-export interface OperationCard {
-  readonly name: string;
-  readonly doc?: string;
-  readonly on?: string;
-}
 
 export interface OperationSchemas<
   I,
@@ -419,15 +392,13 @@ export interface OperationSchemas<
   C extends AnySchema = AnySchema,
 > {
   readonly input: Schema.Codec<I, unknown>;
-  readonly output?: Schema.Codec<O, unknown>;
+  readonly output: Schema.Codec<O, unknown>;
   readonly on?: N;
   /**
    * Type-only: binds the body's write slots to this catalog, not carried
    * at runtime.
    */
   readonly schema?: C;
-  /** Humans read this in the docs; later MCP uses it as the tool description. */
-  readonly doc?: string;
 }
 
 /** `on` must be an entity of `C` once `schema:` is a concrete catalog. */
@@ -435,21 +406,11 @@ type OnEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? C["entities"][keyof C["entities"]] | undefined
   : AnyEntity | undefined;
 
-/** Concrete entity of `C` — {@link Operation.patch}'s `on` target. */
-type CatalogEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
-  ? C["entities"][keyof C["entities"]]
-  : AnyEntity;
-
-const emptyOutput = Schema.Struct({});
-
-const docOf = (doc: string | undefined): string | undefined =>
-  doc === undefined || doc === "" ? undefined : doc;
-
 /** Define one named operation. */
 const defineOperation = <
   Name extends string,
   I,
-  O = {},
+  O,
   C extends AnySchema = AnySchema,
   N extends OnEntity<C> = undefined,
 >(
@@ -460,77 +421,15 @@ const defineOperation = <
   _tag: "Operation",
   name,
   input: schemas.input,
-  output: (schemas.output ?? emptyOutput) as Schema.Codec<O, unknown>,
+  output: schemas.output,
   on: schemas.on,
-  doc: docOf(schemas.doc),
   body,
 });
 
-type FieldSchemaType<E extends AnyEntity, K extends string> = E["fields"][K] extends {
-  readonly schema: { readonly Type: infer T };
-}
-  ? T
-  : unknown;
-
-type PatchInput<E extends AnyEntity, Keys extends readonly string[]> = {
-  readonly [K in Keys[number]]: FieldSchemaType<E, K>;
-};
-
-const structOf = (entity: AnyEntity, keys: readonly string[]): Schema.Codec<any, unknown> => {
-  const fields: Record<string, Schema.Codec<unknown, unknown>> = {};
-  for (const key of keys) {
-    const field = entity.fields[key];
-    if (field === undefined) {
-      throw new Error(`ramose: ${entity.ns} has no field "${key}"`);
-    }
-    fields[key] = field.schema as Schema.Codec<unknown, unknown>;
-  }
-  return Schema.Struct(fields);
-};
-
-/**
- * A single-field (or few-field) contextual update. The low-ceremony
- * path for what used to be a three-line `transact` (`setTitle`).
- *
- * `Operation.patch("issue/set-title", Issue, ["title"])` then
- * `db.run(op, issueId, { title })`.
- */
-const definePatch = <
-  Name extends string,
-  E extends AnyEntity,
-  const Keys extends readonly (keyof E["fields"] & string)[],
-  C extends AnySchema = AnySchema,
->(
-  name: Name,
-  entity: E,
-  keys: Keys,
-  options?: { readonly doc?: string; readonly schema?: C },
-): Operation<Name, PatchInput<E, Keys>, {}, E, C> => {
-  const operation = defineOperation(
-    name,
-    {
-      on: entity as never,
-      input: structOf(entity, keys) as Schema.Codec<PatchInput<E, Keys>, unknown>,
-      output: emptyOutput,
-      doc: options?.doc,
-      schema: options?.schema,
-    },
-    (op, input) => {
-      const self = (op as { readonly self?: unknown }).self;
-      if (self === undefined) {
-        throw new Error(`ramose: ${name} is contextual and needs an entity`);
-      }
-      (op as { update: (...args: unknown[]) => unknown }).update(entity, self, input);
-      return {};
-    },
-  );
-  return operation as unknown as Operation<Name, PatchInput<E, Keys>, {}, E, C>;
-};
-
-type OperationDefine<C extends AnySchema> = <
+type OperationFor<C extends AnySchema> = <
   Name extends string,
   I,
-  O = {},
+  O,
   N extends OnEntity<C> = undefined,
 >(
   name: Name,
@@ -538,165 +437,31 @@ type OperationDefine<C extends AnySchema> = <
   body: (op: Op<C, N>, input: I) => Promise<O> | O,
 ) => Operation<Name, I, O, N, C>;
 
-type OperationPatch<C extends AnySchema> = <
-  Name extends string,
-  E extends CatalogEntity<C>,
-  const Keys extends readonly (keyof E["fields"] & string)[],
->(
-  name: Name,
-  entity: E,
-  keys: Keys,
-  options?: { readonly doc?: string },
-) => Operation<Name, PatchInput<E, Keys>, {}, E, C>;
-
-type OperationFor<C extends AnySchema> = OperationDefine<C> & {
-  readonly patch: OperationPatch<C>;
-};
-
 /**
  * Bind `schema:` once for a catalog so every op from the helper carries
  * the membership / ident checks. `Operation.for(Reef)("issue/move", …)`.
  */
 const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
-  Object.assign(
-    ((name, schemas, body) =>
-      defineOperation(name, { ...schemas, schema }, body)) as OperationDefine<C>,
-    {
-      patch: ((name, entity, keys, options) =>
-        definePatch(name, entity, keys, { ...options, schema })) as OperationPatch<C>,
-    },
-  );
+  (name, schemas, body) => defineOperation(name, { ...schemas, schema }, body);
 
 /** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
 export const Operation: typeof defineOperation & {
   readonly for: typeof operationFor;
-  readonly patch: typeof definePatch;
-} = Object.assign(defineOperation, { for: operationFor, patch: definePatch });
-
-const namesOfRegistry = (operations: Record<string, AnyOperation>): string[] => {
-  const names = new Set<string>();
-  for (const op of Object.values(operations)) {
-    if (typeof op.name === "string" && op.name.length > 0) names.add(op.name);
-  }
-  return [...names].sort();
-};
-
-const cardsOfRegistry = (
-  operations: Record<string, AnyOperation>,
-  get: (name: string) => AnyOperation | undefined,
-): OperationCard[] =>
-  namesOfRegistry(operations).flatMap((name) => {
-    const op = get(name);
-    if (op === undefined) return [];
-    const ns = op.on?.ns;
-    return [
-      {
-        name,
-        ...(op.doc !== undefined ? { doc: op.doc } : {}),
-        ...(typeof ns === "string" && ns.length > 0 ? { on: ns } : {}),
-      },
-    ];
-  });
-
-const makeRegistry = <const M extends Record<string, AnyOperation>>(
-  operations: M,
-  schema?: AnySchema,
-): Operations<M> => {
-  const get = (name: string): AnyOperation | undefined => {
-    for (const op of Object.values(operations)) {
-      if (op.name === name) return op;
-    }
-    return undefined;
-  };
-  return {
-    _tag: "Operations",
-    operations,
-    schema,
-    get,
-    names: () => namesOfRegistry(operations),
-    cards: () => cardsOfRegistry(operations, get),
-  };
-};
+} = Object.assign(defineOperation, { for: operationFor });
 
 /** A deploy-time / client registry of operations. */
 export const Operations = <const M extends Record<string, AnyOperation>>(
   operations: M,
-): Operations<M> => makeRegistry(operations);
-
-type OpsFitCatalog<C extends AnySchema, M extends Record<string, AnyOperation>> = {
-  [K in keyof M]: M[K] extends Operation<any, any, any, any, infer OC>
-    ? OpCatalogFitsDb<C, OC> extends true
-      ? M[K]
-      : OpCatalogMismatch
-    : M[K];
-};
-
-/**
- * Catalog-bound registry both the app and the peer entry import — one
- * source of truth for op ids, inputs, and outputs.
- *
- * ```ts
- * const Op = Operation.for(Reef);
- * export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"]);
- * export const operations = defineOperations(Reef, { setTitleOp });
- * // peer: createServer({ operations })
- * // Server: Server("Ramose", { operations, main: import.meta.resolve("./peer.ts") })
- * ```
- *
- * Wire ids are each operation's declared `name`. Renaming an id is a
- * wire-contract change — add a new id rather than reuse one with a
- * different input or output.
- */
-export const defineOperations = <
-  C extends AnySchema,
-  const M extends Record<string, AnyOperation>,
->(
-  schema: C,
-  operations: OpsFitCatalog<C, M> & M,
-): DefinedOperations<C, M> =>
-  makeRegistry(operations, schema) as unknown as DefinedOperations<C, M>;
-
-/** Sorted unique wire ids in a registry. */
-export const operationNames = (ops: AnyOperations | undefined): string[] =>
-  ops === undefined ? [] : [...ops.names()];
-
-/** Discovery cards (name / doc / on) for a registry. */
-export const operationCards = (
-  ops: AnyOperations | undefined,
-): readonly OperationCard[] => (ops === undefined ? [] : ops.cards());
-
-const namesOf = (source: AnyOperations | readonly string[]): string[] => {
-  if (
-    typeof source === "object" &&
-    source !== null &&
-    "_tag" in source &&
-    source._tag === "Operations"
-  ) {
-    return operationNames(source);
-  }
-  return [...new Set((source as readonly string[]).filter((n) => typeof n === "string" && n.length > 0))].sort();
-};
-
-/**
- * The peer must register every id the client ships. Extra peer ops are
- * fine (a newer Worker, an older bundle). Missing ids throw
- * {@link OperationsCoverageError}.
- */
-export const checkOperationsCoverage = (
-  required: AnyOperations | readonly string[],
-  registered: AnyOperations | readonly string[],
-): void => {
-  const need = namesOf(required);
-  const have = new Set(namesOf(registered));
-  const missing = need.filter((n) => !have.has(n));
-  if (missing.length === 0) return;
-  throw new OperationsCoverageError({
-    message: `ramose: peer is missing operations: ${missing.join(", ")} — the client ships these ids; renaming an op is a wire-contract change`,
-    missing,
-  });
-};
-
-export { OperationsCoverageError };
+): Operations<M> => ({
+  _tag: "Operations",
+  operations,
+  get: (name) => {
+    for (const op of Object.values(operations)) {
+      if (op.name === name) return op;
+    }
+    return undefined;
+  },
+});
 
 /** What `db.run` reports back — a {@link TxReport} plus the encoded output. */
 export interface OpReport<O = unknown, C extends AnySchema = AnySchema>

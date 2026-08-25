@@ -51,7 +51,6 @@ export const provisionWorkspaceOp = Op(
   {
     input: Schema.Struct({}),
     output: Schema.Struct({ ready: Schema.Boolean }),
-    doc: "Install a workspace catalog and seed its starting labels",
   },
   async (op) => {
     await op.effect("db/install", ({ databases }) =>
@@ -90,13 +89,31 @@ export const provisionWorkspace = (db: ReefDb) =>
   db.run(provisionWorkspaceOp, {}).then(() => undefined);
 // enddocs:provision-workspace
 
-export const moveIssueOp = Op.patch("issue/move", Issue, ["status", "rank"], {
-  doc: "Move an issue to a new column and rank",
-});
+export const moveIssueOp = Op(
+  "issue/move",
+  {
+    on: Issue,
+    input: Schema.Struct({ status: StatusSchema, rank: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.update(Issue, op.self, { status: input.status, rank: input.rank });
+    return {};
+  },
+);
 
-export const setStatusOp = Op.patch("issue/set-status", Issue, ["status"], {
-  doc: "Set an issue's status without changing its rank",
-});
+export const setStatusOp = Op(
+  "issue/set-status",
+  {
+    on: Issue,
+    input: Schema.Struct({ status: StatusSchema }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.update(Issue, op.self, { status: input.status });
+    return {};
+  },
+);
 
 export const addCommentOp = Op(
   "issue/add-comment",
@@ -104,7 +121,6 @@ export const addCommentOp = Op(
     on: Issue,
     input: Schema.Struct({ body: Schema.String, authorId: Schema.Number }),
     output: Schema.Struct({}),
-    doc: "Add a comment on an issue",
   },
   (op, input) => {
     op.put(Comment, {
@@ -123,7 +139,6 @@ export const deleteIssueOp = Op(
     on: Issue,
     input: Schema.Struct({}),
     output: Schema.Struct({}),
-    doc: "Delete an issue",
   },
   (op) => {
     op.delete(op.self);
@@ -145,7 +160,6 @@ export const createIssueOp = Op(
       labelIds: Schema.optional(Schema.Array(Schema.Number)),
     }),
     output: Schema.Struct({}),
-    doc: "Create an issue",
   },
   (op, input) => {
     // docs:create-issue-put
@@ -168,11 +182,18 @@ export const createIssueOp = Op(
   },
 );
 
-// docs:set-title-op
-export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
-  doc: "Set an issue's title",
-});
-// enddocs:set-title-op
+export const setTitleOp = Op(
+  "issue/set-title",
+  {
+    on: Issue,
+    input: Schema.Struct({ title: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.update(Issue, op.self, { title: input.title });
+    return {};
+  },
+);
 
 export const setDescriptionOp = Op(
   "issue/set-description",
@@ -180,7 +201,6 @@ export const setDescriptionOp = Op(
     on: Issue,
     input: Schema.Struct({ text: Schema.String }),
     output: Schema.Struct({}),
-    doc: "Set or clear an issue's description",
   },
   (op, input) => {
     if (input.text === "") op.remove(op.self, Issue.description);
@@ -189,9 +209,18 @@ export const setDescriptionOp = Op(
   },
 );
 
-export const setPriorityOp = Op.patch("issue/set-priority", Issue, ["priority"], {
-  doc: "Set an issue's priority",
-});
+export const setPriorityOp = Op(
+  "issue/set-priority",
+  {
+    on: Issue,
+    input: Schema.Struct({ priority: Schema.Number }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.update(Issue, op.self, { priority: input.priority });
+    return {};
+  },
+);
 
 export const setAssigneeOp = Op(
   "issue/set-assignee",
@@ -199,7 +228,6 @@ export const setAssigneeOp = Op(
     on: Issue,
     input: Schema.Struct({ assigneeId: Schema.optional(Schema.Number) }),
     output: Schema.Struct({}),
-    doc: "Set or clear an issue's assignee",
   },
   (op, input) => {
     if (input.assigneeId == null) op.remove(op.self, Issue.assignee);
@@ -214,7 +242,6 @@ export const toggleLabelOp = Op(
     on: Issue,
     input: Schema.Struct({ labelId: Schema.Number, on: Schema.Boolean }),
     output: Schema.Struct({}),
-    doc: "Add or remove a label on an issue",
   },
   (op, input) => {
     if (input.on) op.set(op.self, Issue.labels, input.labelId);
@@ -229,7 +256,6 @@ export const setPrivateNoteOp = Op(
     on: Issue,
     input: Schema.Struct({ note: Schema.String }),
     output: Schema.Struct({}),
-    doc: "Set or clear the admin-only private note",
   },
   (op, input) => {
     if (input.note === "") op.remove(op.self, Issue.privateNote);
@@ -244,7 +270,6 @@ export const deleteCommentOp = Op(
     on: Comment,
     input: Schema.Struct({}),
     output: Schema.Struct({}),
-    doc: "Delete a comment",
   },
   (op) => {
     op.delete(op.self);
@@ -262,7 +287,6 @@ export const seedSampleIssuesOp = Op(
       ),
     }),
     output: Schema.Struct({}),
-    doc: "Seed a sample board into an empty workspace",
   },
   (op, input) => {
     const labelIds = new Map(input.labels.map((l) => [l.name, l.id] as const));
@@ -289,8 +313,7 @@ export const seedSampleIssuesOp = Op(
   },
 );
 
-// docs:reef-operations
-export const operations = Ramose.defineOperations(Reef, {
+export const operations = Ramose.Operations({
   provisionWorkspaceOp,
   moveIssueOp,
   setStatusOp,
@@ -306,7 +329,6 @@ export const operations = Ramose.defineOperations(Reef, {
   deleteCommentOp,
   seedSampleIssuesOp,
 });
-// enddocs:reef-operations
 
 export interface NewIssue {
   readonly title: string;

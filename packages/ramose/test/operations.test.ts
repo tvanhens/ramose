@@ -21,14 +21,11 @@ import {
   Operation,
   Schema as DbSchema,
   Operations,
-  OperationsCoverageError,
   OperationRejected,
   PrefixHalt,
   Query,
   TxRejected,
   Unauthorized,
-  checkOperationsCoverage,
-  defineOperations,
   txBuilder,
   tempid,
   type Op,
@@ -37,7 +34,7 @@ import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { asLookupRef, lowerEntityArg } from "../src/db/Operation.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, fakePeer, httpsClient, settle, until, type Call } from "./peer.ts";
-import { Movie, Movies, User } from "./db/fixture.ts";
+import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
   Effect.isEffect(value) ? Effect.runPromise(value) : value;
@@ -164,66 +161,6 @@ describe("Operations registry", () => {
     expect(ops.get("user/create")).toBe(createUser);
     expect(ops.get("user/set-name")).toBe(setName);
     expect(ops.get("createUser")).toBeUndefined();
-  });
-
-  test("defineOperations binds the catalog and lists ids and cards", () => {
-    const documented = Operation(
-      "user/set-name",
-      {
-        on: User,
-        input: Schema.Struct({ name: Schema.String }),
-        output: Schema.Struct({}),
-        doc: "Rename a user",
-      },
-      (op, input) => {
-        op.set(op.self, User.name, input.name);
-        return {};
-      },
-    );
-    const ops = defineOperations(Movies, { createUser, documented });
-    expect(ops.schema).toBe(Movies);
-    expect(ops.names()).toEqual(["user/create", "user/set-name"]);
-    expect(ops.cards()).toEqual([
-      { name: "user/create" },
-      { name: "user/set-name", doc: "Rename a user", on: "user" },
-    ]);
-    expect(ops.get("user/set-name")?.doc).toBe("Rename a user");
-  });
-
-  test("Operation.patch is a one-line contextual update", () => {
-    const setTitle = Operation.patch("movie/set-title", Movie, ["title"], {
-      doc: "Set a movie title",
-    });
-    expect(setTitle.name).toBe("movie/set-title");
-    expect(setTitle.on).toBe(Movie);
-    expect(setTitle.doc).toBe("Set a movie title");
-  });
-
-  test("coverage check fails when an id is missing", () => {
-    const client = defineOperations(Movies, { createUser, setName });
-    const peer = defineOperations(Movies, { createUser });
-    expect(() => checkOperationsCoverage(client, peer)).toThrow(
-      OperationsCoverageError,
-    );
-    try {
-      checkOperationsCoverage(client, peer);
-      throw new Error("expected coverage failure");
-    } catch (error) {
-      expect(error).toBeInstanceOf(OperationsCoverageError);
-      expect((error as OperationsCoverageError).missing).toEqual(["user/set-name"]);
-      expect((error as OperationsCoverageError).message).toMatch(
-        /missing operations: user\/set-name/,
-      );
-    }
-  });
-
-  test("coverage check accepts extra peer ops and matching ids", () => {
-    const client = defineOperations(Movies, { createUser });
-    const peer = defineOperations(Movies, { createUser, setName });
-    expect(() => checkOperationsCoverage(client, peer)).not.toThrow();
-    expect(() =>
-      checkOperationsCoverage(["user/create"], ["user/create", "user/set-name"]),
-    ).not.toThrow();
   });
 });
 

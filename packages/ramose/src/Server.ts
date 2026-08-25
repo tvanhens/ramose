@@ -18,7 +18,6 @@
  * ```typescript
  * export const Server = Ramose.Server("Ramose", {
  *   databases: { todos: Todos },
- *   operations,
  *   auth: { policy, jwt: AUTH },
  * });
  * ```
@@ -45,11 +44,7 @@ import * as Schedule from "effect/Schedule";
 import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 import { installCatalog } from "./Database.ts";
-import { InvalidRequest, NetworkError, OperationsCoverageError } from "./db/Errors.ts";
-import {
-  type AnyOperations,
-  checkOperationsCoverage,
-} from "./db/Operation.ts";
+import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import { trimSlashes } from "./db/http.ts";
 import type { Schema } from "./db/index.ts";
 import {
@@ -224,15 +219,6 @@ export type ServerProps = {
    * data destined for the directory, not a resource-side authority.
    */
   databases?: Record<string, DatabaseSeed>;
-  /**
-   * The operations registry this deploy ships — the same value the app
-   * imports and the peer entry `createServer({ operations })`s. After
-   * the health probe, Server compares its ids to `GET /health` and
-   * fails the deploy on a missing id. The registry shape (`names` /
-   * `cards`) is what later MCP `learn` reads; this issue does not
-   * implement that endpoint.
-   */
-  operations?: AnyOperations;
   /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
   /**
@@ -251,9 +237,9 @@ export type ServerProps = {
    * it for app-class tokens; admin, the seed token, and schema-only txs
    * keep it. `"all"` is the explicit opt-out. Owned form binds
    * `RAMOSE_WRITES`; hatch form compares the effective mode (unset Worker
-   * key means `"operations"`) and fails the deploy on a real mismatch.
-   * Pass {@link ServerProps.operations} and point `main` at a
-   * `createServer({ operations })` module that imports the same registry.
+   * key means `"operations"`) and fails the deploy on a real mismatch. A
+   * typed-but-ignored `operations` registry prop is gone — injecting a
+   * registry into the default `ramose/worker` entry is #172.
    */
   writes?: WritesMode;
   /**
@@ -610,67 +596,6 @@ export const unrecognizedWritesWarning = (worker: unknown): string | undefined =
   return unrecognizedWritesWarningMessage(got);
 };
 
-const healthOperationsOf = (health: unknown): string[] => {
-  if (typeof health !== "object" || health === null) return [];
-  const listed = (health as { operations?: unknown }).operations;
-  if (!Array.isArray(listed)) return [];
-  return listed.filter((n): n is string => typeof n === "string");
-};
-
-/**
- * @internal `Server({ operations })` vs a `/health` body. Missing ids
- * fail the deploy; extra peer ops are fine. Unset `operations` skips.
- */
-export const compareOperationsToHealth = (
-  operations: AnyOperations | undefined,
-  health: unknown,
-): string | undefined => {
-  if (operations === undefined) return undefined;
-  try {
-    checkOperationsCoverage(operations, healthOperationsOf(health));
-    return undefined;
-  } catch (error) {
-    if (error instanceof OperationsCoverageError) return error.message;
-    throw error;
-  }
-};
-
-const fetchHealthJson = (url: string, timeoutMs: number) =>
-  Effect.tryPromise({
-    try: (signal) =>
-      fetch(`${trimSlashes(url)}/health`, { method: "GET", signal }).then(
-        async (response) => {
-          let body: unknown = {};
-          try {
-            body = await response.json();
-          } catch {
-            body = {};
-          }
-          if (!response.ok) {
-            throw new Error(`health ${response.status}`);
-          }
-          return body;
-        },
-      ),
-    catch: (cause) =>
-      new NetworkError({
-        message: `ramose: server at ${url} is unreachable: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-        cause,
-      }),
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: `${Math.max(1, timeoutMs)} millis`,
-      orElse: () =>
-        Effect.fail(
-          new NetworkError({
-            message: `ramose: server at ${url} accepted the connection but did not answer GET /health within ${timeoutMs}ms`,
-          }),
-        ),
-    }),
-  );
-
 /** @internal Emit {@link unrecognizedWritesWarning} at deploy. */
 export const warnUnrecognizedWrites = (worker: unknown): string | undefined => {
   const message = unrecognizedWritesWarning(worker);
@@ -908,13 +833,6 @@ const attributes = Effect.fn(function* (
   }
   const url = trimSlashes(chosen);
   yield* probeHealth(url, props.probe, defaults);
-  if (props.operations !== undefined) {
-    const body = yield* fetchHealthJson(url, defaults.timeoutMs);
-    const badOps = compareOperationsToHealth(props.operations, body);
-    if (badOps !== undefined) {
-      return yield* Effect.fail(new InvalidRequest({ message: badOps }));
-    }
-  }
   const token = redact(props.token);
   const seeded = yield* seedDatabases(url, token, props.databases);
   return {

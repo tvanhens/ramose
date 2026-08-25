@@ -8,16 +8,6 @@ import Next from "../../../components/Next.astro";
 
 App writes go through `db.run` (a named operation, `POST /op`). Raw `db.transact` / `POST /transact` is closed for app-class tokens by default — admin and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples. The four verbs below are the same builder operations use.
 
-Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line instead of a three-line `transact`:
-
-```ts title="examples/reef/src/app/mutations.ts#set-title-op"
-export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
-  doc: "Set an issue's title",
-});
-```
-
-The string id (`issue/set-title`) is the wire contract. Convention: `entity/verb` or `entity/verb-noun`. Renaming an id, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read and later MCP will use as the tool description. `Server({ operations })` and `checkOperationsCoverage` fail with `OperationsCoverageError` when the peer is missing an id the client ships.
-
 <Learn learn={["The four verbs, and that there is no fifth", "Create, change, clear and delete a record", "What a write returns; what a refused write looks like"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
 
 :::note[Effect, in three rules]

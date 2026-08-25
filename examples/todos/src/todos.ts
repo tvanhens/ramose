@@ -3,7 +3,7 @@
 import { Schema } from "ramose/effect";
 import * as Ramose from "ramose/db";
 import type { Db, Eid } from "ramose/db";
-import { Todo, Todos } from "../schema.ts";
+import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
 export type TodoEid = Eid<typeof Todos>;
@@ -36,7 +36,6 @@ export const addTodoOp = Ramose.Operation(
   {
     input: Schema.Struct({ title: Schema.String }),
     output: Schema.Struct({}),
-    doc: "Add a todo",
   },
   (op, input) => {
     const t = op.entity();
@@ -53,7 +52,6 @@ export const setDoneOp = Ramose.Operation(
     on: Todo,
     input: Schema.Struct({ done: Schema.Boolean }),
     output: Schema.Struct({}),
-    doc: "Mark a todo done or not done",
   },
   (op, input) => {
     op.set(op.self, Todo.done, input.done);
@@ -67,7 +65,6 @@ export const deleteTodoOp = Ramose.Operation(
     on: Todo,
     input: Schema.Struct({}),
     output: Schema.Struct({}),
-    doc: "Delete a todo",
   },
   (op) => {
     op.delete(op.self);
@@ -75,7 +72,7 @@ export const deleteTodoOp = Ramose.Operation(
   },
 );
 
-export const operations = Ramose.defineOperations(Todos, {
+export const operations = Ramose.Operations({
   addTodoOp,
   setDoneOp,
   deleteTodoOp,

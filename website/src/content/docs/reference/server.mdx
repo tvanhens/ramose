@@ -26,7 +26,7 @@ POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only 
 
 | route | notes |
 | --- | --- |
-| `/health` | liveness; needs no token even under a policy. Body includes `operations: string[]` — the registered wire ids — so `Server({ operations })` and `client.checkOperations()` can fail on id drift |
+| `/health` | liveness; needs no token even under a policy |
 | `/op` | the app write path (`db.run`). Body is `{ name, entity?, input, clientOpId? }`. Optional `clientOpId` replays the original ack for that principal |
 | `/transact` | raw write, **opt-in**. Closed for app-class tokens by default (`writes: "operations"` / unset `RAMOSE_WRITES`); admin and the seed token keep it. Set `writes: "all"` (or `RAMOSE_WRITES=all`) to restore it for app tokens. Every key in the body is a full field name (`:todo/title`). Optional `clientTxId` is a client-chosen id **for that writer**: the same id from the same principal returns the original reply and does not write a second time; a different principal using the same id is a new write (or a denial), not a replay of someone else's filtered ack. The response `datoms` is the facts that writer may read (not a count, and not the raw log) — **breaking** vs an earlier count. The TypeScript client still exposes `datomCount` as that list's length |
 | `/query`, `/pull` | reads at the current version, or at `asOf` / with `history`. `t` is the version read at; `/query` also returns `root`, the newest snapshot behind it, and `explain: true` adds the plan (admin only) |
