@@ -2038,6 +2038,37 @@ describe("query: aggregates with order/limit and scalar value", () => {
     await peer.dispose();
   });
 
+  test("pipe orderBy after extras then ids() / select raises a ramose/query error, not TypeError", () => {
+    const afterIds = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+        Query.ids(),
+      ),
+    );
+    expect(() => lowerQueryObject(afterIds)).toThrow(/no column "title"/);
+    expect(() => lowerQueryObject(afterIds)).not.toThrow(/path\.map/);
+
+    const afterSelect = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ title: Issue.title }, { n: Q.count(Q.focus) }),
+        Query.orderBy("title", "desc"),
+        Query.select({ title: Issue.title }),
+      ),
+    );
+    expect(() => lowerQueryObject(afterSelect)).not.toThrow(/path\.map/);
+    const { query } = lowerQueryObject(afterSelect);
+    expect(query.order).toEqual([
+      { var: expect.stringMatching(/^\?o/), dir: "desc", empty: "last" },
+    ]);
+
+    expect(() =>
+      lowerQueryObject(Query.from(Issue).select({ title: Issue.title }, { n: Q.count(Q.focus) }).orderBy("title", "desc").ids()),
+    ).toThrow(/no column "title"/);
+  });
+
   test("after() on a multi-root projection raises a ramose/query error", () => {
     const q = Query.q(function* () {
       const issue = yield* Query.entities(Issue);

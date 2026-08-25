@@ -460,19 +460,9 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     offset = undefined;
   }
   let proj: Projection | IdsSpec;
+  let shapeCells: CellRecord | undefined;
   if (select !== undefined && !projectIds && extraCells !== undefined) {
-    const shapeCells = expandShapeToCells(selectFocus, select, ctx, groupKeys);
-    for (let i = 0; i < order.length; i++) {
-      const o = order[i]!;
-      if (o.kind !== "shapeKey") continue;
-      const cell = shapeCells[o.key];
-      if (!isVar(cell)) {
-        throw new Error(
-          `ramose/query: orderBy("${o.key}") — a sort key is a direct attribute column`,
-        );
-      }
-      order[i] = { kind: "cell", cell, dir: o.dir, empty: o.empty };
-    }
+    shapeCells = expandShapeToCells(selectFocus, select, ctx, groupKeys);
     proj = { ...shapeCells, ...extraCells };
   } else if (select !== undefined && !projectIds) {
     proj = { _tag: "pullSpec", focus: selectFocus, shape: select };
@@ -483,11 +473,79 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
     clauses: ctx.clauses,
     proj,
     focus: select !== undefined && !projectIds ? selectFocus : focus,
-    order: order as BuiltOrder[],
+    order: finalizePendingOrders(order, select, projectIds, shapeCells),
     limit,
     offset,
     groupKeys,
   };
+};
+
+/** Turn leftover `shapeKey` placeholders into real `BuiltOrder`s — or a
+ * curated error. `ids()` / a later `select` can flip the projection after
+ * `resolveOrderKey` already queued a placeholder. */
+const finalizePendingOrders = (
+  order: readonly PendingOrder[],
+  select: Shape | undefined,
+  projectIds: boolean,
+  shapeCells: CellRecord | undefined,
+): BuiltOrder[] => {
+  const out: BuiltOrder[] = [];
+  for (const o of order) {
+    if (o.kind !== "shapeKey") {
+      out.push(o);
+      continue;
+    }
+    if (shapeCells !== undefined) {
+      const cell = shapeCells[o.key];
+      if (!isVar(cell)) {
+        throw new Error(
+          `ramose/query: orderBy("${o.key}") — a sort key is a direct attribute column`,
+        );
+      }
+      out.push({ kind: "cell", cell, dir: o.dir, empty: o.empty });
+      continue;
+    }
+    if (select !== undefined && !projectIds) {
+      out.push(orderKeyFromSelectColumn(o.key, select, o.dir, o.empty));
+      continue;
+    }
+    throw new Error(
+      `ramose/query: orderBy("${o.key}") — the projection has no column "${o.key}"`,
+    );
+  }
+  return out;
+};
+
+const orderKeyFromSelectColumn = (
+  key: string,
+  select: Shape,
+  dir: OrderDir,
+  empty: OrderEmpty,
+): BuiltOrder => {
+  let field = (select as Record<string, unknown>)[key];
+  if (field === undefined) {
+    throw new Error(`ramose/query: orderBy("${key}") — the select shape has no column "${key}"`);
+  }
+  while (
+    typeof field === "object" &&
+    field !== null &&
+    ((field as { _tag?: unknown })._tag === "optional" ||
+      (field as { _tag?: unknown })._tag === "default") &&
+    "field" in field
+  ) {
+    field = (field as { field: unknown }).field;
+  }
+  if (typeof field !== "object" || field === null || typeof (field as { ident?: unknown }).ident !== "string") {
+    throw new Error(`ramose/query: orderBy("${key}") — a sort key is a direct attribute column`);
+  }
+  const carrier = field as PathCarrier;
+  const path = pathOf(carrier);
+  if (cardsOf(carrier).includes("many")) {
+    throw new Error(
+      `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+    );
+  }
+  return { kind: "path", path, revs: revsOf(carrier), dir, empty };
 };
 
 /** A sort key: a selected column's name, or an attr path directly. */
@@ -499,37 +557,22 @@ const resolveOrderKey = (
   if (typeof st.key === "string" && extra !== undefined && extra[st.key] !== undefined) {
     return { kind: "cell", cell: extra[st.key]!, dir: st.dir, empty: st.empty };
   }
-  let carrier: PathCarrier;
   if (typeof st.key === "string") {
     if (select === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") names a selected column — select(...) first, or pass the attribute itself`);
     }
-    let field = (select as Record<string, unknown>)[st.key];
-    if (field === undefined) {
+    if ((select as Record<string, unknown>)[st.key] === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") — the select shape has no column "${st.key}"`);
     }
     // `select(shape, extras)` already bound this group key — reuse that
-    // var at lowering time instead of re-deriving a path (which would
-    // mint a `?o0` that is not in `:find`).
+    // var after expand. A later `ids()` / `select` can drop extras; leftover
+    // placeholders are resolved or rejected in `finalizePendingOrders`.
     if (extra !== undefined) {
       return { kind: "shapeKey", key: st.key, dir: st.dir, empty: st.empty };
     }
-    while (
-      typeof field === "object" &&
-      field !== null &&
-      ((field as { _tag?: unknown })._tag === "optional" ||
-        (field as { _tag?: unknown })._tag === "default") &&
-      "field" in field
-    ) {
-      field = (field as { field: unknown }).field;
-    }
-    if (typeof field !== "object" || field === null || typeof (field as { ident?: unknown }).ident !== "string") {
-      throw new Error(`ramose/query: orderBy("${st.key}") — a sort key is a direct attribute column`);
-    }
-    carrier = field as PathCarrier;
-  } else {
-    carrier = st.key;
+    return orderKeyFromSelectColumn(st.key, select, st.dir, st.empty);
   }
+  const carrier = st.key;
   const path = pathOf(carrier);
   if (cardsOf(carrier).includes("many")) {
     throw new Error(
@@ -1738,8 +1781,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     for (const o of built.order) {
       if (o.kind === "cell") {
         orderFromPicked(o.cell, "orderBy", o.dir, o.empty);
-      } else {
+      } else if (o.kind === "path") {
         bindOrderPath(o.path, o.revs, o.dir, o.empty);
+      } else {
+        throw new Error("ramose/query: orderBy leftover is not a projected cell or attribute path");
       }
     }
   }
