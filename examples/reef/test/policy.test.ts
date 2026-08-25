@@ -61,6 +61,8 @@ describe("reef policy", () => {
     const ops = parsed.operations!;
     expect(ops["workspace/provision"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
     expect(ops["issue/create"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
+    // `on` is the issue, so a rule here would be ownIssue — class-only keeps
+    // any owner/member able to comment, matching the old comment.create arm.
     expect(ops["issue/add-comment"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["workspace/seed-sample"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["issue/set-private-note"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
