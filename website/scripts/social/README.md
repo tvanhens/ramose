@@ -1,6 +1,7 @@
 # Live-query social card
 
-A 1600×900 still of the schema + `useLiveQuery` component. No wordmark, no
+A 1600×900 still of the schema and an inline
+`useLiveQuery(db, Query.from(Todo).where({ done: false }))`. No wordmark, no
 site URL — just the code. Captured at 2× so it stays sharp in the timeline.
 
 ```sh
