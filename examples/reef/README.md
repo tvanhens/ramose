@@ -88,7 +88,7 @@ examples/reef/
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
 | `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (`Ramose.Server` owns it: `auth` is the source of truth) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
-| `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus create-time `install()` / label seeds; handed to screens as `{ slug, cls, token }` — the peer stamps `sub` / `role` / name / email; screens read `db.principal()` |
+| `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus create-time `install()` / label seeds; handed to screens as `{ slug, token }` — the peer stamps `sub` / `role` / name / email; screens read `db.principal()` |
 | `src/app/route.tsx` | path-based SPA pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a shared URL land on the same screen |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
