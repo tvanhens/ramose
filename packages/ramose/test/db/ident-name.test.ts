@@ -130,6 +130,24 @@ describe("Schema()", () => {
       /Schema\(\[\.\.\.\]\) expects Entity values/,
     );
   });
+
+  test("array form does not treat Object.prototype names as duplicates", () => {
+    const proto = [
+      "constructor",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "isPrototypeOf",
+      "propertyIsEnumerable",
+      "toLocaleString",
+    ] as const;
+    for (const ns of proto) {
+      const E = Entity(ns, { title: string() });
+      expect(Schema([E]).entities[ns]).toBe(E);
+    }
+    const Ctor = Entity("constructor", { title: string() });
+    expect(Schema({ constructor: Ctor }).entities.constructor).toBe(Ctor);
+  });
 });
 
 describe("merge()", () => {

@@ -46,7 +46,7 @@ const fromList = (list: readonly unknown[]): EntityMap => {
         "ramose/schema: Schema([...]) expects Entity values",
       );
     }
-    if (entities[value.ns] !== undefined) throw duplicateEntityName(value.ns);
+    if (Object.hasOwn(entities, value.ns)) throw duplicateEntityName(value.ns);
     entities[value.ns] = value;
   }
   assertIdents(entities);

@@ -204,13 +204,21 @@ export type EntitiesFromArray<
 
 type Overlap<A, B> = keyof A & keyof B;
 
-/** `merge` right-hand schema: no entity name already present on the left. */
+/**
+ * `merge` right-hand schema: no entity name already present on the left.
+ * Wide `EntityMap` (`string` keys — `Schema.Any`) defers to the runtime
+ * check, matching `IsIdentName` / `KeyMatchesNs` / `HasDuplicate`.
+ */
 export type ValidMerge<
   A extends Record<string, unknown>,
   B extends Record<string, unknown>,
-> = [Overlap<A, B>] extends [never]
+> = string extends keyof A
   ? B
-  : NameError<B, typeof DUPLICATE_ENTITY_MSG>;
+  : string extends keyof B
+    ? B
+    : [Overlap<A, B>] extends [never]
+      ? B
+      : NameError<B, typeof DUPLICATE_ENTITY_MSG>;
 
 // ── runtime failures (definition time — throws, not DbError) ───────────────
 

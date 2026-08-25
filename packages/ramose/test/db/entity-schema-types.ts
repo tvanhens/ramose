@@ -10,6 +10,7 @@ import {
   Entity,
   Schema,
   string,
+  type AnySchema,
   type Equal,
   type Expect,
 } from "../../src/db/internal.ts";
@@ -57,3 +58,14 @@ Schema([Todo, OtherTodo]);
 
 // @ts-expect-error duplicate entity name
 merge(ByObject, Schema({ todo: OtherTodo }));
+
+declare const anyLeft: AnySchema;
+declare const anyRight: AnySchema;
+const _wideMerge = merge(anyLeft, anyRight);
+type _wideMergeOk = Expect<Equal<typeof _wideMerge, AnySchema>>;
+
+const Ctor = Entity("constructor", { title: string() });
+const CtorSchema = Schema([Ctor]);
+type _ctorKey = Expect<
+  Equal<keyof (typeof CtorSchema)["entities"], "constructor">
+>;
