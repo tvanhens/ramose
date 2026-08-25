@@ -81,6 +81,19 @@ const _fixtures = () => {
   });
 
   P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { write: (me) => Query.is(Doc.owner, me) },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    doc: { attrs: [P.field(Doc.title, P.only("member"))] },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
+    // @ts-expect-error — write already expands to set
+    doc: { write: true, set: true },
+  });
+
+  P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
     // @ts-expect-error — "nope" is not a catalog namespace key
     nope: { read: P.class("member") },
   });

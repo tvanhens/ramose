@@ -74,11 +74,9 @@ const specPolicy = P.policy(
     doc: {
       read: [ownDoc, inOrg],
       create: inOrg,
-      set: ownDoc,
-      remove: ownDoc,
-      delete: ownDoc,
+      write: ownDoc,
       preset: [P.preset(Doc.owner, P.principal)],
-      attrs: [P.field(Doc.audit, { read: P.class("admin") })],
+      attrs: [P.field(Doc.audit, P.only("admin"))],
     },
     project: { read: inProjectOrg },
     org: { read: (me) => Query.is(Org.members, me) },
@@ -116,8 +114,12 @@ describe("compile", () => {
 
   test("an attribute rule is emitted alone; core ANDs it with the namespace rule", () => {
     const c = compiled();
-    expect(c.attrs[":doc/audit"]!.read).toEqual([{ _tag: "allow", class: ["admin"], rule: true }]);
-    expect(Object.keys(c.attrs[":doc/audit"]!)).toEqual(["read"]);
+    const owner = [{ _tag: "allow" as const, class: ["admin"], rule: true as const }];
+    expect(c.attrs[":doc/audit"]!.read).toEqual(owner);
+    expect(c.attrs[":doc/audit"]!.add).toEqual(owner);
+    expect(c.attrs[":doc/audit"]!.retract).toEqual(owner);
+    expect(c.attrs[":doc/audit"]!.retractEntity).toEqual(owner);
+    expect(c.attrs[":doc/audit"]!.create).toEqual(owner);
     expect(c.ns!.doc!.read).not.toEqual(c.attrs[":doc/audit"]!.read);
     expect(Object.keys(c.attrs)).toEqual([":doc/audit"]);
   });
@@ -146,6 +148,53 @@ describe("compile", () => {
     expect(c.ns!.doc!.read![0]).toEqual({ _tag: "allow", rule: add });
     const hits = (c.rules as unknown[][]).filter((r) => (r[0] as unknown[])[0] === add);
     expect(hits).toHaveLength(1);
+  });
+
+  test("write: expands to add, retract, and retractEntity", () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+      { doc: { write: ownDoc } },
+    );
+    const c = compiled(p);
+    const arm = { _tag: "allow" as const, rule: expect.any(String) };
+    expect(c.ns!.doc!.add).toEqual([arm]);
+    expect(c.ns!.doc!.retract).toEqual(c.ns!.doc!.add);
+    expect(c.ns!.doc!.retractEntity).toEqual(c.ns!.doc!.add);
+    expect(c.ns!.doc!.create).toBeUndefined();
+    expect(c.ns!.doc!.read).toBeUndefined();
+    const name = (c.ns!.doc!.add![0] as { rule: string }).rule;
+    const hits = (c.rules as unknown[][]).filter((r) => (r[0] as unknown[])[0] === name);
+    expect(hits).toHaveLength(1);
+  });
+
+  test("P.only puts the same class gate on every op", () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      { doc: { read: true, write: P.class("member"), attrs: [P.field(Doc.audit, P.only("admin"))] } },
+    );
+    const c = compiled(p);
+    const owner = [{ _tag: "allow" as const, class: ["admin"], rule: true as const }];
+    expect(c.attrs[":doc/audit"]).toEqual({
+      read: owner,
+      add: owner,
+      retract: owner,
+      retractEntity: owner,
+      create: owner,
+    });
+  });
+
+  test("P.only(arm) applies that arm on every op", () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+      { doc: { attrs: [P.field(Doc.audit, P.only(ownDoc))] } },
+    );
+    const c = compiled(p);
+    const name = (c.attrs[":doc/audit"]!.read![0] as { rule: string }).rule;
+    const arm = { _tag: "allow" as const, rule: name };
+    expect(c.attrs[":doc/audit"]!.add).toEqual([arm]);
+    expect(c.attrs[":doc/audit"]!.retract).toEqual([arm]);
+    expect(c.attrs[":doc/audit"]!.retractEntity).toEqual([arm]);
+    expect(c.attrs[":doc/audit"]!.create).toEqual([arm]);
   });
 
   test("a follow-chain fragment lowers to joined facts, not a depth-capped ref", () => {
@@ -243,6 +292,16 @@ describe("deploy-time errors", () => {
     const c = compiled(p);
     expect(c.superuser).toBe("owner");
     expect(c.schemaClasses).toEqual(["owner"]);
+  });
+
+  test("write: plus an explicit write verb is a PolicyError", () => {
+    expect(() =>
+      P.policy(
+        { schema: App, principal: User.sub, classes: ["member"], schemaClasses: ["member"] },
+        // @ts-expect-error — write already names set / remove / delete
+        { doc: { write: ownDoc, set: ownDoc } },
+      ),
+    ).toThrow(/write: expands to set, remove, and delete/);
   });
 
   test("an undeclared class is a PolicyError", () => {
@@ -562,6 +621,75 @@ describe("focus binding — backlink and named rules", () => {
       (await filterDb(db, db, policy, p).datomsArray(Index.EAVT, { e })).map((d) => db.attr(d.a)!.ident).sort();
     expect(await titles(who("u_alice", tempids.alice), tempids.d1)).toEqual([":doc/owner", ":doc/title"]);
     expect(await titles(who("u_alice", tempids.alice), tempids.d2)).toEqual([]);
+  });
+});
+
+describe("read narrower than writes", () => {
+  const captureWarn = (fn: () => void): string[] => {
+    const messages: string[] = [];
+    const orig = console.warn;
+    console.warn = (message: unknown) => {
+      messages.push(String(message));
+    };
+    try {
+      fn();
+    } finally {
+      console.warn = orig;
+    }
+    return messages;
+  };
+
+  test("compile warns when a field read is narrower than inherited writes", () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      {
+        doc: {
+          read: true,
+          write: P.class("member"),
+          attrs: [P.field(Doc.audit, { read: P.class("admin") })],
+        },
+      },
+    );
+    expect(P.checkReadWriteMasks(p).join("\n")).toMatch(/:doc\/audit/);
+    expect(P.checkReadWriteMasks(p).join("\n")).toMatch(/inherits the namespace/);
+    const warned = captureWarn(() => {
+      P.compile(p);
+    });
+    expect(warned.some((m) => m.includes(":doc/audit") && m.includes("narrower"))).toBe(true);
+  });
+
+  test("compile does not warn when writes are denied or equally gated", () => {
+    const denied = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      { doc: { read: true, attrs: [P.field(Doc.audit, { read: P.class("admin") })] } },
+    );
+    expect(P.checkReadWriteMasks(denied)).toEqual([]);
+
+    const only = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      {
+        doc: {
+          read: true,
+          write: P.class("member"),
+          attrs: [P.field(Doc.audit, P.only("admin"))],
+        },
+      },
+    );
+    expect(P.checkReadWriteMasks(only)).toEqual([]);
+    expect(captureWarn(() => P.compile(only))).toEqual([]);
+  });
+
+  test("compile warns when an explicit write arm is more open than read", () => {
+    const p = P.policy(
+      { schema: App, principal: User.sub, classes: ["admin", "member"], schemaClasses: ["admin"] },
+      {
+        doc: {
+          read: true,
+          attrs: [P.field(Doc.audit, { read: P.class("admin"), write: P.class("admin", "member") })],
+        },
+      },
+    );
+    expect(P.checkReadWriteMasks(p).join("\n")).toMatch(/more open than read/);
   });
 });
 

@@ -18,7 +18,7 @@ import type {
   PolicyRuleArm,
   PolicyRules,
 } from "../internal/core/policy/ast.ts";
-import { POLICY_OPS } from "../internal/core/policy/ast.ts";
+import { POLICY_OPS, publicPolicyOp } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
 import { isOptionalField, type AnyField } from "./Field.ts";
 import { roleIdentOf } from "../internal/core/policy/provision.ts";
@@ -47,7 +47,11 @@ export { PolicyError };
 export type Operand = PolicyOperand;
 /** Public policy keys. Compile to wire `add` / `retract` / `retractEntity`. */
 export type Op = "read" | "set" | "remove" | "delete" | "create";
+/** `write:` expands to these three; they share one arm so a forgotten verb cannot drift. */
+export type WriteOp = "set" | "remove" | "delete";
 export const PUBLIC_POLICY_OPS: readonly Op[] = ["read", "set", "remove", "delete", "create"];
+export const WRITE_OPS: readonly WriteOp[] = ["set", "remove", "delete"];
+const WRITE_WIRE_OPS = ["add", "retract", "retractEntity", "create"] as const;
 
 const toWireOp = (op: Op): PolicyOp =>
   op === "set" ? "add" : op === "remove" ? "retract" : op === "delete" ? "retractEntity" : op;
@@ -138,10 +142,34 @@ export type ArmValue<M, N extends AnyEntity = AnyEntity, CL extends string = str
   | ClassGate<true | FragFn<M, N>, CL>
   | ClassConfig<M, N, CL>;
 
-/** Arms per op; an array is OR. */
+/** One arm or an OR list. */
+export type Arms<M, N extends AnyEntity = AnyEntity, CL extends string = string> =
+  | ArmValue<M, N, CL>
+  | readonly ArmValue<M, N, CL>[];
+
+/**
+ * Arms per op; an array is OR. `write:` is an authoring alias for
+ * `set` + `remove` + `delete` (wire add / retract / retractEntity).
+ * Naming both `write` and any of those three is a type error and a
+ * deploy-time throw — pick the alias or the explicit verbs.
+ */
 export type RuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
-  readonly [K in Op]?: ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[];
-};
+  readonly read?: Arms<M, N, CL>;
+  readonly create?: Arms<M, N, CL>;
+} & (
+  | {
+      readonly write?: Arms<M, N, CL>;
+      readonly set?: never;
+      readonly remove?: never;
+      readonly delete?: never;
+    }
+  | {
+      readonly write?: never;
+      readonly set?: Arms<M, N, CL>;
+      readonly remove?: Arms<M, N, CL>;
+      readonly delete?: Arms<M, N, CL>;
+    }
+);
 
 export interface AttrRule<M = unknown, N extends AnyEntity = AnyEntity, CL extends string = string> {
   readonly _tag: "AttrRule";
@@ -324,20 +352,51 @@ export const preset = <A extends AttrRef>(attr: A, operand: Operand): Preset => 
   return { _tag: "Preset", attr: identOf(attr), operand };
 };
 
-/** Field rule; narrows (ANDs with) its entity rule. */
-export const field = <
-  A extends AttrRef,
-  M,
-  N extends AnyEntity = AnyEntity,
-  CL extends string = string,
->(
+/**
+ * Field rule; narrows (ANDs with) its entity rule. `P.only(class)` is
+ * every op. The arm entity is the enclosing namespace — `rules` is
+ * checked there, not against a default `AnyEntity`.
+ */
+export const field = <A extends AttrRef, const R>(
   a: A,
-  rules: RuleSpec<M, N, CL>,
-): AttrRule<M, N, CL> => ({
+  rules: R,
+): { readonly _tag: "AttrRule"; readonly attr: string; readonly rules: R } => ({
   _tag: "AttrRule",
   attr: identOf(a),
   rules,
 });
+
+/**
+ * One arm on every op — read, create, and `write:` (set / remove / delete).
+ * `P.only("owner")` is `P.class("owner")` on each; `P.only(arm)` applies
+ * that arm. A field with only `read:` still inherits the namespace on
+ * writes — this is the spelling that actually masks them.
+ */
+export function only<const Cls extends string>(
+  ...classes: Cls[]
+): { readonly read: ClassFn<Cls>; readonly create: ClassFn<Cls>; readonly write: ClassFn<Cls> };
+export function only<A>(
+  arm: A,
+): { readonly read: A; readonly create: A; readonly write: A };
+export function only(
+  ...args: unknown[]
+): {
+  readonly read: unknown;
+  readonly create: unknown;
+  readonly write: unknown;
+} {
+  if (args.length === 0) fail("P.only needs a class name or an arm");
+  if (args.every((a) => typeof a === "string")) {
+    for (const c of args) {
+      if (c.length === 0) fail("P.only names must be non-empty strings");
+    }
+    const arm = classFn(...(args as string[]));
+    return { read: arm, create: arm, write: arm };
+  }
+  if (args.length !== 1) fail("P.only takes class names or a single arm");
+  const arm = args[0];
+  return { read: arm, create: arm, write: arm };
+}
 
 // ── compile fragments → named rules ────────────────────────────────────────
 
@@ -686,15 +745,28 @@ export function policy<
     entityKey: string,
     fieldIdents: ReadonlySet<string>,
   ): Record<string, readonly CompiledArm[]> => {
+    const write = spec.write;
+    if (write !== undefined) {
+      for (const op of WRITE_OPS) {
+        if (spec[op] !== undefined) {
+          fail(
+            `${where}: write: expands to set, remove, and delete — drop write or the explicit ${op}`,
+          );
+        }
+      }
+    }
     const out: Record<string, CompiledArm[]> = {};
     for (const op of PUBLIC_POLICY_OPS) {
-      const v = spec[op];
+      const v =
+        spec[op] ??
+        (write !== undefined && (op === "set" || op === "remove" || op === "delete") ? write : undefined);
       if (v === undefined) continue;
       const list = Array.isArray(v) ? (v as readonly ArmValue<unknown>[]) : [v as ArmValue<unknown>];
       if (list.length === 0) continue;
       const wire = toWireOp(op);
+      const label = spec[op] === undefined && write !== undefined ? "write" : op;
       out[wire] = list.map((arm, i) =>
-        compileArm(arm, `${where}.${op}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, entityKey, fieldIdents),
+        compileArm(arm, `${where}.${label}${list.length > 1 ? `[${i}]` : ""}`, prefix, wire, entityKey, fieldIdents),
       );
     }
     return out;
@@ -923,11 +995,82 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
   pulls.forEach((pattern, i) => walk(pattern, `pulls[${i}]`));
 };
 
-/** Compile to the wire JSON. Round-tripped through core's `parsePolicy`. */
+const armClasses = (arms: readonly CompiledArm[]): "all" | ReadonlySet<string> => {
+  const out = new Set<string>();
+  for (const a of arms) {
+    if (a.classes === undefined) return "all";
+    for (const c of a.classes) out.add(c);
+  }
+  return out;
+};
+
+const armsPublic = (arms: readonly CompiledArm[]): boolean => arms.every((a) => a.rule === true);
+
+/**
+ * True when `write` admits a class (or an un-gated public arm) that
+ * `read` does not. Fragment bodies are not compared — two named rules
+ * with no class gate are treated as equally open.
+ */
+const isBroaderThanRead = (
+  write: readonly CompiledArm[] | undefined,
+  read: readonly CompiledArm[],
+): boolean => {
+  if (write === undefined) return false;
+  const wc = armClasses(write);
+  const rc = armClasses(read);
+  if (wc === "all" && rc !== "all") return true;
+  if (wc !== "all" && rc !== "all") {
+    for (const c of wc) {
+      if (!rc.has(c)) return true;
+    }
+  }
+  return armsPublic(write) && !armsPublic(read);
+};
+
+/**
+ * Warnings for an attribute whose `read` is narrower than its writes.
+ * A `read` arm with no write arms inherits the namespace — the field
+ * stays writable by anyone the record-type rule admits. `P.only` (or
+ * an explicit `write:`) is the fix.
+ */
+export const checkReadWriteMasks = (p: Policy): readonly string[] => {
+  const warnings: string[] = [];
+  for (const [nsKey, entry] of Object.entries(p.ns)) {
+    for (const [ident, own] of Object.entries(entry.attrs)) {
+      const read = own.read;
+      if (read === undefined) continue;
+      const problems: string[] = [];
+      for (const op of WRITE_WIRE_OPS) {
+        const attrWrite = own[op];
+        if (attrWrite === undefined) {
+          const inherited = entry.rules[op];
+          if (inherited !== undefined && isBroaderThanRead(inherited, read)) {
+            problems.push(`${publicPolicyOp(op)} inherits the namespace`);
+          }
+          continue;
+        }
+        if (isBroaderThanRead(attrWrite, read)) {
+          problems.push(`${publicPolicyOp(op)} is more open than read`);
+        }
+      }
+      if (problems.length === 0) continue;
+      warnings.push(
+        `ramose/policy: ns.${nsKey}.attrs["${ident}"]: read is narrower than its writes (${problems.join("; ")}) — add write: or P.only(...) so a class that cannot read the field cannot write it`,
+      );
+    }
+  }
+  return warnings;
+};
+
+/**
+ * Compile to the wire JSON. Round-tripped through core's `parsePolicy`.
+ * Warns when an attribute's `read` is narrower than its writes.
+ */
 export const compile = (p: Policy, options?: CompileOptions): string => {
   if (p?._tag !== "Policy") fail("compile() expects a policy(...) value");
   checkPrincipalProvisioning(p.schema, p.principal);
   if (options?.pulls) checkPulls(p, options.pulls);
+  for (const warning of checkReadWriteMasks(p)) console.warn(warning);
   const compiled = lower(p);
   const json = JSON.stringify(compiled);
   try {

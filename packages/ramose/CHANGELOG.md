@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### `write:` and `P.only` (part of #181, tracker #205)
+
+One arm can cover every write verb. `write:` expands to `set` /
+`remove` / `delete` (wire `add` / `retract` / `retractEntity`). Naming
+both `write` and any of those three is a type error and a deploy-time
+throw. `P.only("owner")` (or `P.only(arm)`) is the same arm on every
+op — the spelling that actually write-protects a field. A `read` arm
+alone still inherits the namespace on writes; `compile()` warns when
+that leaves `read` narrower than the writes.
+
+Reef's policy uses the aliases. `privateNote` is `P.only("owner")`.
+
 ### Explicit `superuser` and `schemaClasses` (part of #179, tracker #205)
 
 Policy bypass is no longer the literal class `"admin"`. The policy head
