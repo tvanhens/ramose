@@ -7,12 +7,12 @@
  *
  * `usePull` — the one-shot twin: one `db.pull` per view / subject / pattern.
  *
- * Two rules for callers: the view and the `subject` are structural —
- * `db.asOf(t)` and a branded cell or number written inline are fine —
- * while `pattern` is identity, so hoist it exactly as you hoist a query.
- * Changing the subject blanks `data` on the live hook until the new pull
- * lands; the one-shot keeps the previous `data` while the next run is in
- * flight.
+ * Three coordinates are structural: the view (`db.asOf(t)`), the `subject`
+ * (a branded cell, number, or lookup ref), and the `pattern` (canonical
+ * JSON of `lowerPullPattern`). A render-fresh `{ title: Todo.title }` is
+ * the same pull as a hoisted one. Changing the subject blanks `data` on
+ * the live hook until the new pull lands; the one-shot keeps the previous
+ * `data` while the next run is in flight.
  *
  * `initialData` hydrates this key so a server pull can paint on the first
  * client render. `{ suspense: true }` throws until the first answer.
@@ -27,6 +27,7 @@ import type {
   ReadDb,
   ValidatePull,
 } from "../db/index.ts";
+import { pullPatternKey } from "../db/astKey.ts";
 import {
   type Read,
   type ReadOptions,
@@ -61,19 +62,6 @@ const subjectKey = (subject: unknown): string => {
   return JSON.stringify(id ?? subject);
 };
 
-const patternKeys = new WeakMap<object, string>();
-let nextPatternKey = 1;
-const patternKey = (pattern: unknown): string => {
-  if (typeof pattern === "object" && pattern !== null) {
-    const held = patternKeys.get(pattern);
-    if (held !== undefined) return held;
-    const key = `#${nextPatternKey++}`;
-    patternKeys.set(pattern, key);
-    return key;
-  }
-  return JSON.stringify(pattern);
-};
-
 export function useLivePull<C extends Schema.Any, const P>(
   db: ReadDb<C>,
   subject: EntityRef<C>,
@@ -94,18 +82,19 @@ export function useLivePull<C extends Schema.Any, const P>(
 ): Read<PullOut<C, P>, DbError> {
   const view = viewDep(db);
   const key = subjectKey(subject);
+  const astKey = pullPatternKey(pattern);
   return useLiveSubscription(
     () => ({
       sub: db.livePull<P>(subject, pattern),
       owned: true,
     }),
-    [view, key, pattern],
-    [view, key, pattern],
+    [view, key, astKey],
+    [view, key, astKey],
     {
       initialData: options?.initialData,
       initialT: options?.initialT,
       suspense: options?.suspense,
-      suspendKey: `live\0${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
+      suspendKey: `live\0${viewKeyOf(db)}\0${key}\0${astKey}`,
       basis: () => readT(db),
       refetch: () => db.pull<P>(subject, pattern),
       seam: {
@@ -137,15 +126,16 @@ export function usePull<C extends Schema.Any, const P>(
 ): Read<PullOut<C, P>, DbError> {
   const view = viewDep(db);
   const key = subjectKey(subject);
+  const astKey = pullPatternKey(pattern);
   return useOneShot(
     () => db.pull<P>(subject, pattern),
     () => readT(db),
-    [view, key, pattern],
+    [view, key, astKey],
     {
       initialData: options?.initialData,
       initialT: options?.initialT,
       suspense: options?.suspense,
-      suspendKey: `one\0${viewKeyOf(db)}\0${key}\0${patternKey(pattern)}`,
+      suspendKey: `one\0${viewKeyOf(db)}\0${key}\0${astKey}`,
     },
   );
 }

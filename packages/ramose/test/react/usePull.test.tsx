@@ -76,6 +76,22 @@ describe("useLivePull", () => {
     expect(result.current.error).toBeUndefined();
   });
 
+  test("a render-fresh inline pattern holds one subscription", async () => {
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
+    const { result, rerender } = renderHook(
+      () =>
+        useLivePull(useDb("todos", Todos), world.a, { title: Todo.title }),
+      { wrapper: wrapperFor(peer) },
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ title: "A" }));
+    rerender();
+    rerender();
+    await sleep(20);
+    expect(peer.frameOps("pull")).toHaveLength(0);
+    expect(result.current.data).toEqual({ title: "A" });
+  });
+
   test("the subject is structural: equal literals hold one subscription, a new subject re-subscribes", async () => {
     const world = await todoWorld();
     const peer = overlayPeer(world);
@@ -258,6 +274,25 @@ describe("usePull (one-shot)", () => {
     await waitFor(() => expect(result.current.data).toEqual({ title: "A" }));
     expect(result.current.t).toBe(3);
     expect(result.current.status).toBe("success");
+    rerender();
+    rerender();
+    await sleep(20);
+    expect(peer.frameOps("pull")).toHaveLength(1);
+  });
+
+  test("a render-fresh inline pattern does not re-run after the first result", async () => {
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { body: { t: 3, result: { title: "A" } } }
+          : { body: { t: 3, result: [] } },
+    });
+    const { result, rerender } = renderHook(
+      () =>
+        usePull(useDb("todos", Todos).asOf(3), 17, { title: Todo.title }),
+      { wrapper: wrapperFor(peer) },
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ title: "A" }));
     rerender();
     rerender();
     await sleep(20);

@@ -47,7 +47,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
   const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
 ```
 
-The subject is compared by value, not by identity — a branded `row.id` (or a number) written inline is fine.
+The subject and the shape are structural — a branded `row.id` inline is fine, and so is a render-fresh shape.
 
 ## Where live queries work
 

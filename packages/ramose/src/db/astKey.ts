@@ -4,19 +4,23 @@
  * The key is a deterministic serialization of the lowered query AST — the
  * same JSON that goes on the wire (`POST /db/:name/query`) — not a second
  * IR. Object keys are sorted so insertion order cannot fork the key.
+ * Pull patterns use the same canonical JSON of `lowerPullPattern`.
  *
  * `queryAstKey` is memoized on the query object (hoisted queries lower
  * once; a render-fresh object lowers again). An impure generator body
  * (`Date.now()`, captured mutable state) is hidden by that memo: the key
  * freezes on first lower while `db.live` re-lowers every pass. Dev-mode
  * double-lowers at subscription setup ({@link assertLoweringPurity}) and
- * warns on mismatch; keep bodies pure.
+ * warns on mismatch; keep bodies pure. `pullPatternKey` memos the same
+ * way so a hoisted shape lowers once.
  */
 
 import { toJson } from "../internal/core/json.ts";
+import { lowerPullPattern } from "./Pull.ts";
 import { lowerQueryObject, type AnyQueryObject } from "./query/index.ts";
 
 const astKeyMemo = new WeakMap<object, string>();
+const pullKeyMemo = new WeakMap<object, string>();
 
 /** Sort own keys at every object so `JSON.stringify` is canonical. */
 const sortKeys = (v: unknown): unknown => {
@@ -68,6 +72,35 @@ export const queryAstKey = (query: AnyQueryObject): string => {
  */
 export const queryStructureKey = (query: AnyQueryObject): string =>
   queryAstKey(query);
+
+/** Always compute a pull-pattern key — used when the object is new. */
+export const computePullPatternKey = (pattern: unknown): string => {
+  try {
+    return canonicalAstKey(lowerPullPattern(pattern));
+  } catch (e) {
+    // Same rule as {@link computeAstKey}: a per-call token would change
+    // the suspend key every retry render and hot-loop. Key on the
+    // message so two independently built failures share a slot.
+    const message = e instanceof Error ? e.message : String(e);
+    return `${ERROR_PREFIX}${message}`;
+  }
+};
+
+/**
+ * Structural identity of a pull pattern: the lowered peer shape.
+ * Memoized on the pattern object — hoisted shapes lower once; a
+ * render-fresh `{ title: Todo.title }` lowers again (small).
+ */
+export const pullPatternKey = (pattern: unknown): string => {
+  if (typeof pattern === "object" && pattern !== null) {
+    const cached = pullKeyMemo.get(pattern);
+    if (cached !== undefined) return cached;
+    const key = computePullPatternKey(pattern);
+    pullKeyMemo.set(pattern, key);
+    return key;
+  }
+  return computePullPatternKey(pattern);
+};
 
 /**
  * Full live-subscription identity: `(viewKey, astKey)`.
