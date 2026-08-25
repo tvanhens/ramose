@@ -1894,9 +1894,15 @@ describe("query: aggregates with order/limit and scalar value", () => {
     const byOwner = Query.from(Issue)
       .select({ title: Issue.title, owner: Issue.owner.select({ name: User.name }) })
       .orderBy((r) => r.owner.name, "asc");
-    const lowered = JSON.stringify(lowerQueryObject(byOwner).query.where);
-    expect(lowered).toContain(":issue/owner");
-    expect(lowered).toContain(":user/name");
+    const where = lowerQueryObject(byOwner).query.where as readonly unknown[];
+    // The pull's required clauses also mention these idents. The sort path
+    // is the or-join that walks both hops from the Issue — the pre-fix
+    // no-op hung only `:user/name` off the issue var.
+    const orderJoin = where.find((clause) => {
+      const s = JSON.stringify(clause);
+      return s.includes('"or-join"') && s.includes('":issue/owner"') && s.includes('":user/name"');
+    });
+    expect(orderJoin).toBeDefined();
     const asc = await db.query(byOwner);
     expect(asc.map((r) => r.owner.name)).toEqual(["Ada", "Ada", "Grace"]);
 

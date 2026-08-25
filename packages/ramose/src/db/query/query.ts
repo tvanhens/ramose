@@ -621,7 +621,10 @@ const pullShapeCells = (shape: Shape, parent?: PathCarrier): Record<string, unkn
   for (const [key, field] of Object.entries(shape)) {
     const info = inspectPullField(field);
     const attr = info.attr as PathCarrier | undefined;
-    const rooted =
+    // Nested `.select({...})` leaves start at the child entity. Prefix the
+    // parent hops so `orderBy(r => r.owner.name)` walks from the focus
+    // (`:issue/owner` then `:user/name`), not `:user/name` off the Issue.
+    const fromFocus =
       parent !== undefined && attr !== undefined && typeof attr.ident === "string"
         ? extendPath(parent, attr)
         : attr;
@@ -631,12 +634,11 @@ const pullShapeCells = (shape: Shape, parent?: PathCarrier): Record<string, unkn
       !isAgain(info.nestedPattern) &&
       !isAllShape(info.nestedPattern)
     ) {
-      out[key] = pullShapeCells(
-        info.nestedPattern as Shape,
-        rooted !== undefined && typeof rooted.ident === "string" ? rooted : parent,
-      );
+      const nextParent =
+        fromFocus !== undefined && typeof fromFocus.ident === "string" ? fromFocus : parent;
+      out[key] = pullShapeCells(info.nestedPattern as Shape, nextParent);
     } else {
-      out[key] = rooted ?? info.attr;
+      out[key] = fromFocus ?? info.attr;
     }
   }
   return out;
@@ -1596,6 +1598,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   const order: { var: string; dir: OrderDir; empty: OrderEmpty }[] = [];
 
+  // Bound vars / aggregates do not need a select focus. Keyset paging still
+  // does: `after()` appends the root eid as tie-breaker and raises if a
+  // multi-root projection has none.
   const orderFromPicked = (picked: unknown, label: string, dir: OrderDir, empty: OrderEmpty): void => {
     if (isVar(picked)) {
       const v = isFocusSentinel(picked)
