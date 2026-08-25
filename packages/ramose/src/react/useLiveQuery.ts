@@ -50,6 +50,7 @@ import {
   asLoading,
   asSuccess,
   hydrateRead,
+  READ_INITIAL,
   readT,
   type Read,
   type ReadOptions,
@@ -57,7 +58,12 @@ import {
   type SuspendedRead,
 } from "./read.ts";
 import { seamOf, viewKeyOf } from "./seam.ts";
-import { ensureLive, evictSuspend, peekSuspend } from "./suspend.ts";
+import {
+  ensureLive,
+  evictSuspend,
+  peekSuspend,
+  retireSuspend,
+} from "./suspend.ts";
 
 type Acquire<A, E> = () => {
   readonly sub: Subscription<A, E>;
@@ -87,14 +93,18 @@ interface LiveOptions<A, E = unknown> extends ReadOptions<A> {
 const firstPaint = <A, E>(
   options: LiveOptions<A, E> | undefined,
   suspendKey: string | undefined,
+  allowHydrate = true,
 ): ReadState<A, E> => {
-  const hydrated = hydrateRead<A, E>(options);
-  if (hydrated.data !== undefined) return hydrated;
-  if (options?.suspense !== true || suspendKey === undefined) return hydrated;
+  if (allowHydrate) {
+    const hydrated = hydrateRead<A, E>(options);
+    if (hydrated.data !== undefined) return hydrated;
+  }
+  const empty = READ_INITIAL as ReadState<A, E>;
+  if (options?.suspense !== true || suspendKey === undefined) return empty;
   const slot = peekSuspend<A, E>(suspendKey);
-  if (slot?.data === undefined) return hydrated;
-  evictSuspend(suspendKey);
-  return asSuccess(slot.data, options.initialT ?? options.basis?.());
+  return slot?.data !== undefined
+    ? asSuccess(slot.data, options.initialT ?? options.basis?.())
+    : empty;
 };
 
 export const useLiveSubscription = <A, E>(
@@ -108,12 +118,15 @@ export const useLiveSubscription = <A, E>(
     firstPaint(options, suspendKey),
   );
   const seen = useRef(resetKeys);
+  const seedRef = useRef(options?.initialData);
   const identityChanged =
     seen.current.length !== resetKeys.length ||
     seen.current.some((key, i) => key !== resetKeys[i]);
+  const seedChanged = !Object.is(seedRef.current, options?.initialData);
   if (identityChanged) {
     seen.current = resetKeys;
-    setState(firstPaint(options, suspendKey));
+    seedRef.current = options?.initialData;
+    setState(firstPaint(options, suspendKey, seedChanged));
   }
 
   const optionsRef = useRef(options);
@@ -205,7 +218,9 @@ export const useLiveSubscription = <A, E>(
     };
   }, [error]);
 
-  let shown = identityChanged ? firstPaint(options, suspendKey) : state;
+  let shown = identityChanged
+    ? firstPaint(options, suspendKey, seedChanged)
+    : state;
   if (
     options?.suspense === true &&
     suspendKey !== undefined &&
@@ -213,10 +228,12 @@ export const useLiveSubscription = <A, E>(
     shown.error === undefined
   ) {
     const slot = ensureLive(suspendKey, acquire);
-    if (slot.error !== undefined) throw slot.error;
+    if (slot.error !== undefined) {
+      retireSuspend(suspendKey);
+      throw slot.error;
+    }
     if (slot.data === undefined) throw slot.promise;
     shown = asSuccess(slot.data, options.initialT ?? options.basis?.());
-    evictSuspend(suspendKey);
     if (state.data !== slot.data) setState(shown);
   }
 

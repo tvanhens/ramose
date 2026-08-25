@@ -21,7 +21,12 @@ import {
   type ReadOptions,
   type ReadState,
 } from "./read.ts";
-import { ensureOneShot, evictSuspend, peekSuspend } from "./suspend.ts";
+import {
+  ensureOneShot,
+  evictSuspend,
+  peekSuspend,
+  retireSuspend,
+} from "./suspend.ts";
 
 export const useOneShot = <A, E>(
   run: () => Promise<A>,
@@ -37,7 +42,6 @@ export const useOneShot = <A, E>(
     if (options?.suspense === true && suspendKey !== undefined) {
       const slot = peekSuspend<A, E>(suspendKey);
       if (slot?.data !== undefined) {
-        evictSuspend(suspendKey);
         return asSuccess(slot.data, slot.t ?? options.initialT);
       }
     }
@@ -131,11 +135,13 @@ export const useOneShot = <A, E>(
     shown.error === undefined
   ) {
     const slot = ensureOneShot<A, E>(suspendKey, run, basis);
-    if (slot.error !== undefined) throw slot.error;
+    if (slot.error !== undefined) {
+      retireSuspend(suspendKey);
+      throw slot.error;
+    }
     if (slot.data === undefined) throw slot.promise;
     shown = asSuccess(slot.data, slot.t ?? options.initialT);
     hydratedKey.current = suspendKey;
-    evictSuspend(suspendKey);
     if (state.data !== slot.data) set(shown);
   }
 

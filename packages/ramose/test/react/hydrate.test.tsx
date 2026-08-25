@@ -143,6 +143,27 @@ describe("initialData", () => {
     await waitFor(() => expect(result.current.data).toBe("B"));
   });
 
+  test("a new live identity with the same initialData reference is the empty shell", () => {
+    const first = immediate(["A"]);
+    const pending = later<string>();
+    const seed = "A-row";
+    const { result, rerender } = renderHook(
+      ({ sub }: { sub: Ramose.Subscription<string> }) =>
+        useLiveQuery(sub, { initialData: seed, initialT: 1 }),
+      { initialProps: { sub: first } },
+    );
+    expect(result.current.data).toBe("A");
+
+    rerender({ sub: pending.sub });
+    expect(snap(result.current)).toEqual({
+      data: undefined,
+      error: undefined,
+      status: "loading",
+      isLoading: true,
+      t: undefined,
+    });
+  });
+
   test("a new identity with matching initialData hydrates the new key", () => {
     const first = immediate(["A"]);
     const pending = later<string>();
@@ -426,6 +447,72 @@ describe("{ suspense: true }", () => {
       expect(container.textContent).toBe("P:success:false:two"),
     );
     expect(peer.frameOps("q").length).toBeGreaterThan(afterSuspense);
+  });
+
+  test("two sibling suspense useQuery hooks on one key settle once", async () => {
+    ensureDom();
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "q"
+          ? { body: { t: 1, result: [[{ title: "one" }]] } }
+          : { body: { t: 1, result: [] } },
+    });
+    function Probe() {
+      const { data } = useQuery(useDb("todos", Todos).asOf(1), titles, {
+        suspense: true,
+      });
+      return <span>{data[0]!.title}</span>;
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    await waitFor(() => expect(container.textContent).toBe("oneone"));
+    expect(peer.frameOps("q").length).toBeLessThan(4);
+  });
+
+  test("a fresh mount after a suspense error re-acquires", async () => {
+    ensureDom();
+    const pending = later<string>();
+    function Probe() {
+      const { data } = useLiveQuery(pending.sub, { suspense: true });
+      return <div data-testid="row">{data}</div>;
+    }
+    const { container, rerender } = render(
+      <Catch>
+        <Suspense fallback={<div>loading</div>}>
+          <Probe />
+        </Suspense>
+      </Catch>,
+    );
+    expect(container.textContent).toBe("loading");
+    await act(() => {
+      pending.fail({ _tag: "Unauthorized" });
+    });
+    await waitFor(() => expect(container.textContent).toBe("Unauthorized"));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    rerender(
+      <Catch key="next">
+        <Suspense fallback={<div>loading</div>}>
+          <Probe />
+        </Suspense>
+      </Catch>,
+    );
+    await waitFor(() => expect(container.textContent).toBe("loading"));
+    await act(() => {
+      pending.emit("recovered");
+    });
+    await waitFor(() => expect(container.textContent).toBe("recovered"));
   });
 });
 

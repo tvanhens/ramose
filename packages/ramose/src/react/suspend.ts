@@ -50,6 +50,18 @@ export const evictSuspend = (key: string): void => {
 };
 
 /**
+ * Drop a slot after the current React flush. Used when throwing a
+ * terminal error: the same tick's replay still sees the cached failure
+ * (so we do not replace it with a pending promise and hang Suspense),
+ * and the next mount re-acquires.
+ */
+export const retireSuspend = (key: string): void => {
+  queueMicrotask(() => {
+    evictSuspend(key);
+  });
+};
+
+/**
  * First emission of a standing read. `acquire` runs on the first call
  * per key; the handle is closed after that emission so the hook's
  * effect can own the live subscription.
