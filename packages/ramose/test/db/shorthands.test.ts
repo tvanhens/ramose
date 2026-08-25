@@ -14,6 +14,7 @@ import {
   Entity,
   boolean,
   bytes,
+  enumMembersOf,
   float,
   int,
   schemaTx,
@@ -173,6 +174,15 @@ describe("advanced Field(schema)", () => {
       ":db/valueType": ":db.type/string",
     });
   });
+
+  test("un-inferable schemas throw at schemaTx, not as string", () => {
+    const Bad = Entity("bad", {
+      state: Field(Schema.Literals(["on", "off"]) as never),
+    });
+    expect(() => schemaTx(DbSchema({ bad: Bad }))).toThrow(
+      /cannot infer value type from this Schema \(ast\._tag=Union\)/,
+    );
+  });
 });
 
 describe("uuid public type", () => {
@@ -230,6 +240,15 @@ describe("Field composition merge", () => {
     expect(() => Enum([] as never)).toThrow(
       "ramose/schema: Enum([...]) needs at least one value",
     );
+  });
+
+  test("Enum carries members through Entity stamp and Field composition", () => {
+    expect(User.role.members).toEqual(["admin", "member"]);
+    expect(User.role.valueType).toBe("string");
+    const composed = Field(Enum(["low", "med"]), { doc: "priority" });
+    expect(enumMembersOf(composed.schema)).toEqual(["low", "med"]);
+    expect(composed.doc).toBe("priority");
+    expect(composed.valueType).toBe("string");
   });
 });
 

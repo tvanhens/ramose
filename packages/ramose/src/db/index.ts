@@ -106,6 +106,13 @@ export type { Subscription } from "./subscription.ts";
 // the peer's database-name rule, so an app can validate a user-minted name
 // (multi-tenant "create workspace") before the peer does — not a slugify
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
+// entity / field name rule — definition-time, like DATABASE_NAME_RE
+export {
+  IDENT_NAME_RE,
+  RESERVED_FIELD_KEYS,
+  isIdentName,
+  isReservedFieldKey,
+} from "./IdentName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
 export type {

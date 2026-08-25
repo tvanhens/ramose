@@ -21,8 +21,10 @@
  * fresh vars make self-joins hygienic with no alpha-renaming machinery.
  */
 
+import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
-import type { Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
+import type { InFocus } from "./focus.ts";
+import type { FocusShape, Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
 // ── vars ────────────────────────────────────────────────────────────────────
 
@@ -34,13 +36,24 @@ import type { Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 export type VarKind = "entity" | "value" | "t" | "tx" | "op";
 
 /**
+ * The namespace brand a var carries — the same `_ns` phantom {@link Eid}
+ * uses. `Var<Eid<Issue>>` brands as `Issue`; a value var stays
+ * {@link AnyEntity} (unconstrained).
+ */
+export type VarNs<T> = T extends { readonly _ns: infer E }
+  ? E extends AnyEntity
+    ? E
+    : AnyEntity
+  : AnyEntity;
+
+/**
  * A query variable — an *identity*, not a name. Two mentions of one `Var`
  * are the same variable wherever they appear; a typo is a compile error
  * because there is no string to mistype. `T` is the value the var binds
- * (phantom); `ns` is the entity-namespace hint an attr's e-position brand
- * flows into.
+ * (phantom); `N` is the focus namespace an entity var is branded with
+ * (the same brand {@link Eid} carries — not a fourth vocabulary).
  */
-export interface Var<T = unknown> {
+export interface Var<T = unknown, N extends AnyEntity = VarNs<T>> {
   readonly _tag: "QVar";
   readonly id: number;
   /** @internal refined as positions are minted; drives cell reshaping */
@@ -49,15 +62,22 @@ export interface Var<T = unknown> {
   ns?: string | undefined;
   /** Phantom — the bound value's type. Never present at runtime. */
   readonly _type?: T;
+  /** Phantom — the focus namespace, same brand as {@link Eid}. */
+  readonly _ns?: N;
 }
 
-export type AnyVar = Var<any>;
+export type AnyVar = Var<any, any>;
+
+/** The focus namespace a var is branded with (`AnyEntity` when unbranded). */
+export type FocusOf<V> = V extends Var<any, infer N> ? N : AnyEntity;
 
 let nextVarId = 1;
 
 /** @internal Mint a fresh var. Public spelling is {@link Q.var}. */
-export const mkVar = <T = unknown>(kind: VarKind = "value", ns?: string): Var<T> =>
-  ({ _tag: "QVar", id: nextVarId++, kind, ns }) as Var<T>;
+export const mkVar = <T = unknown, N extends AnyEntity = VarNs<T>>(
+  kind: VarKind = "value",
+  ns?: string,
+): Var<T, N> => ({ _tag: "QVar", id: nextVarId++, kind, ns }) as Var<T, N>;
 
 export const isVar = (x: unknown): x is AnyVar =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "QVar";
@@ -173,9 +193,9 @@ export type SubBody =
   | NotCommand;
 
 /** `entities(ns)` in a generator body: mint a branded var, membership rule. */
-export interface MemberCommand extends Yieldable<Var<EidCell>> {
+export interface MemberCommand<N extends AnyEntity = AnyEntity> extends Yieldable<Var<Eid<N>>> {
   readonly _tag: "member";
-  readonly ns: AnyEntity;
+  readonly ns: N;
 }
 
 /** A command that splices itself (rule calls, `q.open`) — it records its
@@ -279,7 +299,7 @@ const dispatch = (cmd: AnyCommand, ctx: BuildCtx): unknown => {
       ctx.clauses.push({ _tag: "notGroup", clauses: collectBody(cmd.body) });
       return undefined;
     case "member": {
-      const v = mkVar<EidCell>("entity", cmd.ns.ns);
+      const v = mkVar<Eid<AnyEntity>>("entity", cmd.ns.ns);
       ctx.clauses.push({ _tag: "memberOf", ns: cmd.ns, v });
       return v;
     }
@@ -434,7 +454,21 @@ const cmp = (op: string, ...args: Position[]): CmpCommand => ({
   },
 });
 
-const fact = <A extends AttrLike>(
+/**
+ * When `e` is a namespace-branded var, the attr must be a member of that
+ * focus's field map. Unbranded vars, blanks, and omitted e stay open.
+ */
+type FactAttr<E, A> = [E] extends [Var<any, infer N>]
+  ? [AnyEntity] extends [N]
+    ? A
+    : [InFocus<A, N>] extends [true]
+      ? A
+      : {
+          readonly "ramose/query: this attribute is not a field of the focus entity": never;
+        }
+  : A;
+
+const factImpl = <A extends AttrLike>(
   e?: Position,
   attr?: A | Blank,
   v?: Position,
@@ -457,6 +491,12 @@ const fact = <A extends AttrLike>(
   if (isVar(e) && a !== undefined && e.ns === undefined) e.ns = nsOfIdent(a.ident);
   return cmd as FactCommand<AttrValue<A>>;
 };
+
+const fact = <E extends Position | undefined, A extends AttrLike = AttrLike>(
+  e?: E,
+  attr?: FactAttr<E, A> | Blank,
+  v?: Position,
+): FactCommand<AttrValue<A>> => factImpl(e, attr as A | Blank | undefined, v);
 
 /**
  * A comparison operand: a bound var, a literal, or an aggregate cell. A
@@ -538,10 +578,10 @@ export const Q = {
   // ── projections ──────────────────────────────────────────────────────────
 
   /** Project one root through a select shape — the closing contract of a
-   * single-root body. */
-  pull: <const S extends Shape>(
-    focus: AnyVar,
-    shape: S & ValidShape<S>,
+   * single-root body. A branded focus var rejects another entity's fields. */
+  pull: <V extends AnyVar, const S extends Shape>(
+    focus: V,
+    shape: S & ValidShape<S> & FocusShape<FocusOf<V>, S>,
   ): PullSpec<SelectResult<S>> => {
     if (!isVar(focus)) {
       throw new Error("ramose/query: Q.pull's first argument is the bound focus var");

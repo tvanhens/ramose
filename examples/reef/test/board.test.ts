@@ -31,14 +31,23 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import {
   boardQuery,
+  commentsQuery,
   labelsQuery,
   peopleQuery,
   type BoardRow,
   type ReefDb,
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
-import { createIssue, moveIssue, operations, setTitle } from "../src/app/mutations.ts";
+import {
+  addComment,
+  createIssue,
+  deleteIssue,
+  moveIssue,
+  operations,
+  setTitle,
+} from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
+import { tryLowerQueryObject } from "../../../packages/ramose/src/db/query/index.ts";
 import { seedWrite } from "../../../packages/ramose/src/db/internal.ts";
 import { openWorkspace } from "../src/app/ramose.ts";
 
@@ -111,7 +120,20 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
               }),
           },
         },
-        q: () => Effect.succeed([]),
+        q: (input) =>
+          Effect.tryPromise({
+            try: async () => {
+              const lowered = tryLowerQueryObject(input);
+              const result = await query(conn.db(), lowered.query, []);
+              const rows = lowered.finalize(result);
+              return rows;
+            },
+            catch: (cause) =>
+              new InternalError({
+                message:
+                  cause instanceof Error ? cause.message : String(cause),
+              }),
+          }),
         pull: () => Effect.succeed(null),
       });
       const prefix = await Effect.runPromise(
@@ -402,7 +424,7 @@ describe("the board's writes move the board's live stream", () => {
     const created = createIssue(peer.db, peer.myEid, undefined, {
       title: "Ship the overlay",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await awaitLive(board, () => titles(board.rows).includes("Ship the overlay"));
     expect(titles(board.rows)).toEqual(["Ship the overlay"]);
@@ -452,7 +474,7 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "Draft",
       status: "todo",
-      priority: 1,
+      priority: "low",
     });
     await awaitLive(board, () => titles(board.rows).includes("Draft"));
     const issueId = board.rows![0]!.id;
@@ -477,7 +499,7 @@ describe("the board's writes move the board's live stream", () => {
     const denied = createIssue(peer.db, peer.myEid, board.rows![0]!.rank, {
       title: "Ghost",
       status: "todo",
-      priority: 0,
+      priority: "none",
     }).then(
       () => {
         throw new Error("expected failure");
@@ -508,7 +530,7 @@ describe("the board's writes move the board's live stream", () => {
       {
         ":issue/title": "From another tab",
         ":issue/status": "doing",
-        ":issue/priority": 3,
+        ":issue/priority": "high",
         ":issue/rank": 1024,
         ":issue/createdAt": new Date(),
         ":issue/creator": peer.myEid,
@@ -531,7 +553,7 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "Only in the present",
       status: "todo",
-      priority: 0,
+      priority: "none",
     });
 
     const qBefore = peer.queryOps().length;
@@ -552,12 +574,12 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "One",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await createIssue(peer.db, peer.myEid, 1024, {
       title: "Two",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
 
     const other = peer.openClient();
@@ -613,12 +635,12 @@ describe("the board's writes move the board's live stream", () => {
     await createIssue(peer.db, peer.myEid, undefined, {
       title: "One",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
     await createIssue(peer.db, peer.myEid, 1024, {
       title: "Two",
       status: "todo",
-      priority: 2,
+      priority: "medium",
     });
 
     const other = peer.openClient();
@@ -680,6 +702,29 @@ describe("the board's writes move the board's live stream", () => {
     expect(people.map((p) => p.name)).toEqual(["Ada"]);
     expect(labels).toEqual([]);
     expect(peer.queryOps().filter((f) => f.asOf === undefined)).toEqual([]);
+    await peer.dispose();
+  });
+});
+
+describe("deleting an issue", () => {
+  test("a commented issue deletes with its comments", async () => {
+    const peer = await inProcessPeer();
+    const created = await createIssue(peer.db, peer.myEid, undefined, {
+      title: "Commented",
+      status: "todo",
+      priority: "low",
+    });
+    const issueId = created.output.id as Ramose.Eid<typeof Issue>;
+    await addComment(peer.db, peer.myEid, issueId, "first note");
+    const before = await peer.db.query(commentsQuery(issueId));
+    expect(before).toHaveLength(1);
+
+    await deleteIssue(peer.db, issueId);
+
+    expect(await peer.db.query(boardQuery)).toEqual([]);
+    expect(await peer.db.query(commentsQuery(issueId))).toEqual([]);
+    expect(await peer.conn.db().entity(issueId)).toBeUndefined();
+    expect(await peer.conn.db().entity(before[0]!.id)).toBeUndefined();
     await peer.dispose();
   });
 });

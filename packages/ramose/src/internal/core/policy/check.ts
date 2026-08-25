@@ -69,8 +69,11 @@ export async function checkTx(
   const sch = schema ?? db.schema;
 
   // Attributes outside the deployed schema (and schema ops) never reach a rule.
+  // An attribute-less `:db/update` is an existence ping (no write) — not a
+  // policy verb. `expandTx` still rejects a missing subject as tx/missing-entity.
   for (const op of flattenTxData(txData)) {
     if (op.kind === "retractEntity") continue;
+    if (op.kind === "update" && op.a === undefined) continue;
     const at = op.a === undefined ? undefined : sch.attr(op.a);
     if (!at) return deny(String(op.a), op.kind);
     if (isSystemAttrId(at.id)) return deny(at.ident, op.kind);

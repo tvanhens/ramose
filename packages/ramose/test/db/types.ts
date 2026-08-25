@@ -41,6 +41,7 @@ import {
   type TxReport,
   Uuid,
   stored,
+  type InferDbValueType,
   type ValueAtIdent,
   Enum,
   boolean,
@@ -134,10 +135,36 @@ type _uuidIsString = Expect<
 >;
 
 // fail-closed: a literal union does not silently become "string"
+const literalUnion = Schema.Literals(["todo", "done"]);
+type _literalUnionVt = Expect<Equal<InferDbValueType<typeof literalUnion>, undefined>>;
 // @ts-expect-error Schema.Literals is not a String AST — wrap with stored
-Field(Schema.Literals(["todo", "done"]));
-const literalsOk = Field(stored(Schema.Literals(["todo", "done"]), "string"));
+Field(literalUnion);
+const literalsOk = Field(stored(literalUnion, "string"));
 type _literalsVt = Expect<Equal<(typeof literalsOk)["valueType"], "string">>;
+
+const numberLiterals = Schema.Literals([1, 2, 3]);
+type _numberLiteralsVt = Expect<
+  Equal<InferDbValueType<typeof numberLiterals>, undefined>
+>;
+// @ts-expect-error number-literal union is not a Number AST — wrap with stored
+Field(numberLiterals);
+const numberLiteralsOk = Field(stored(numberLiterals, "long"));
+type _numberLiteralsOkVt = Expect<
+  Equal<(typeof numberLiteralsOk)["valueType"], "long">
+>;
+
+type _dateVt = Expect<Equal<InferDbValueType<typeof Schema.Date>, undefined>>;
+// @ts-expect-error Date is a Declaration AST — wrap with stored or use timestamp()
+Field(Schema.Date);
+const dateOk = Field(stored(Schema.Date, "instant"));
+type _dateOkVt = Expect<Equal<(typeof dateOk)["valueType"], "instant">>;
+
+const structSchema = Schema.Struct({ x: Schema.String });
+type _structVt = Expect<Equal<InferDbValueType<typeof structSchema>, undefined>>;
+// @ts-expect-error struct is not a primitive AST — wrap with stored
+Field(structSchema);
+void numberLiteralsOk;
+void dateOk;
 
 // bag override is gone; mismatched stored() pairs are rejected
 // @ts-expect-error valueType is not a Field option
@@ -193,6 +220,9 @@ type _shortBlob = Expect<Equal<(typeof Short)["blob"]["valueType"], "bytes">>;
 type _shortPri = Expect<Equal<(typeof Short)["pri"]["valueType"], "string">>;
 type _shortPriType = Expect<
   Equal<Schema.Schema.Type<(typeof Short)["pri"]["schema"]>, "low" | "med" | "high">
+>;
+type _shortPriMembers = Expect<
+  Equal<(typeof Short)["pri"]["members"], readonly ["low", "med", "high"]>
 >;
 type _shortOwner = Expect<Equal<(typeof Short)["owner"]["valueType"], "ref">>;
 type _shortTags = Expect<Equal<(typeof Short)["tags"]["cardinality"], "many">>;

@@ -340,6 +340,23 @@ describe("filtered Db", () => {
 describe("checkTx", () => {
   const check = (ops: unknown[], p: Principal, d: Db = db) => checkTx(ops, d, policy, p);
 
+  test("an existence ping is not a policy verb (existing no-op, missing tx/missing-entity)", async () => {
+    const ping = (e: unknown) => [[":db/update", e]] as unknown[];
+    // Non-admin, including a principal who cannot `add` this row.
+    expect((await check(ping(ids.d1), alice())).ok).toBe(true);
+    expect((await check(ping(ids.d1), bob())).ok).toBe(true);
+    await expect(check(ping(999_999), alice())).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+    await expect(check(ping(999_999), bob())).rejects.toMatchObject({
+      code: "tx/missing-entity",
+    });
+    // A 4-element `:db/update` is still a write and is judged (card-one
+    // replacement may deny on the implicit retract).
+    expect((await check([[":db/update", ids.d1, ":doc/title", "D1b"]], alice())).ok).toBe(true);
+    expect((await check([[":db/update", ids.d1, ":doc/title", "nope"]], bob())).ok).toBe(false);
+  });
+
   test("a unique-identity upsert onto an existing entity is `add`, not `create`", async () => {
     // :doc rules give alice `add` on docs she owns; there is no `create` rule
     // reachable without a project, so a create would be denied.

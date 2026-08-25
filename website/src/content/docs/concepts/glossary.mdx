@@ -22,7 +22,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="durable-object"></span>**Durable Object** | Cloudflare's single-instance stateful Worker. Ramose runs the writer and the read copies as Durable Objects. | `TransactorDO`, `QueryReplicaDO` — [What runs where](/concepts/architecture/#what-runs-where) |
 | <span id="effect"></span>**Effect** | The TypeScript library Ramose is built on. The app path is promises; `db.effect` is the hatch. | `ramose/effect`, `db.effect` — [Effect (advanced)](/concepts/effect/) |
 | <span id="fact"></span><span id="datom"></span>**fact** | One statement: this record's field has this value, as of version `t`. Facts are added or removed, never overwritten. | `datomCount` ("how many facts landed") |
-| <span id="field"></span>**field** | One named, typed slot on a record type, e.g. `issue.title`. Its full name is `:issue/title`. | [`Ramose.Field`](/guides/catalog/#three-pieces-and-that-is-the-whole-vocabulary), `Issue.title` |
+| <span id="field"></span>**field** | One named, typed slot on a record type, e.g. `issue.title`. Its full name is `:issue/title`. Keys match `IDENT_NAME_RE`; `id` is reserved. | [`Ramose.Field`](/guides/catalog/#three-pieces-and-that-is-the-whole-vocabulary), `Issue.title` |
 
 ## G–M
 
@@ -53,7 +53,7 @@ Plain-word definitions of every Ramose word, grouped A–Z. Guides link here on 
 | <span id="query-budget"></span>**query budget** | A memory limit per query on the server; exceeding it fails the query with a 413 — narrow the query. | `QueryBudgetExceeded`, [`RAMOSE_QUERY_MAX_CELLS`](/reference/server/#query-budget) |
 | <span id="read-copy"></span><span id="replica"></span>**read copy** | Where queries run: a copy of the data near your users, kept current by the writer. | `QueryReplicaDO` |
 | <span id="record"></span>**record** | One thing in the database — an issue, a user — identified by an id: the set of facts about that id. | `op.put`, `op.delete` — [The verbs](/guides/transactions/#the-verbs) |
-| <span id="record-type"></span>**record type** | A named group of fields, like a table: `issue`, `user`, `label`. | `Ramose.Entity("issue", {…})`, policy `ns:` |
+| <span id="record-type"></span>**record type** | A named group of fields, like a table: `issue`, `user`, `label`. The name matches `IDENT_NAME_RE`. | `Ramose.Entity("issue", {…})`, policy `ns:` |
 | <span id="reference"></span><span id="ref"></span>**reference** | A field that points at another record — a typed foreign key. Queries can hop through it. | `Ramose.Ref(User)`, `.select`, `.reverse` — [Value types](/guides/catalog/#value-types) |
 | <span id="remove"></span>**remove / delete** | Take a fact back: clear a field, or delete a whole record. History keeps it. | `op.remove`, `op.delete` — [The verbs](/guides/transactions/#the-verbs) |
 | <span id="role"></span><span id="class"></span>**role** (class) | A role name carried in the sign-in token and, when the catalog has `:ns/role`, materialized as a fact on the principal row. Reef: admin, member, viewer. `admin` bypasses every rule. | `classes:`, `P.class(c)`, `ramose.class`, `User.role` — [Arms are fragments](/reference/policy/#arms-are-fragments) |
