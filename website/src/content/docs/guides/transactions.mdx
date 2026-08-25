@@ -86,7 +86,7 @@ op.update(Issue, id, { status: "done" });
 op.update(User, { sub: "auth0|…", name: "Ada" });
 ```
 
-A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`.
+A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`. An all-`undefined` map still checks that the subject exists. `update` by unique key sees a `put` of that key in the same operation.
 
 `put` with a unique key unifies with the existing row — insert-or-update, still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
 

@@ -9,7 +9,17 @@
 
 import type { Eid } from "../Eid.ts";
 import type { AnyEntity } from "../Entity.ts";
-import type { AttrValue, OrderDir, OrderEmpty, PathCarrier, SelectResult, Shape, ValidShape } from "../shapes.ts";
+import type { FocusAttr } from "./focus.ts";
+import type {
+  AttrValue,
+  FocusShape,
+  OrderDir,
+  OrderEmpty,
+  PathCarrier,
+  SelectResult,
+  Shape,
+  ValidShape,
+} from "../shapes.ts";
 import {
   entities,
   ids as idsStage,
@@ -18,7 +28,6 @@ import {
   offset as offsetStage,
   orderBy as orderByStage,
   select as selectStage,
-  type FilterStage,
   type IdRow,
 } from "./lib.ts";
 import { makeQueryObject, type Cursor, type Pipeline, type QueryObject } from "./query.ts";
@@ -184,13 +193,16 @@ const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pi
     if (attr === undefined) {
       throw new Error(`ramose/query: where({ ${key} }) — "${ns.ns}" has no field "${key}"`);
     }
-    next = is(attr, value as never)(next);
+    next = (is(attr, value as never) as unknown as (q: Pipeline) => Pipeline)(next);
     EQ_CLAUSE.set(next.stages[next.stages.length - 1]!, { key, value });
   }
   return next;
 };
 
-const applyStages = (pipe: Pipeline, stages: readonly FilterStage[]): Pipeline => {
+const applyStages = (
+  pipe: Pipeline,
+  stages: ReadonlyArray<(q: Pipeline) => Pipeline>,
+): Pipeline => {
   let next = pipe;
   for (const stage of stages) next = stage(next);
   return next;
@@ -212,15 +224,17 @@ export interface FluentQuery<
    * fields; or one-or-more stage fragments (`Query.some`, `Query.matching`, …).
    */
   where<const W extends WhereEq<N>>(eq: W): FluentQuery<N, Row, Out>;
-  where(...stages: readonly FilterStage[]): FluentQuery<N, Row, Out>;
+  where(
+    ...stages: ReadonlyArray<(q: Pipeline<Row, N>) => Pipeline<Row, N>>
+  ): FluentQuery<N, Row, Out>;
 
   /** Narrow / reshape the row. Without this, the default is the full entity. */
   select<const S extends Shape>(
-    shape: S & ValidShape<S>,
+    shape: S & ValidShape<S> & FocusShape<N, S>,
   ): FluentQuery<N, SelectResult<S>>;
 
   orderBy(
-    key: (string & keyof Row) | PathCarrier,
+    key: (string & keyof Row) | FocusAttr<N>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): FluentQuery<N, Row, Out>;
@@ -253,7 +267,10 @@ const makeFluent = <N extends AnyEntity, Row>(
     makeFluent(ns, nextPipe, stripCursor, take, seek);
 
   const fluent = qv as FluentQuery<N, Row>;
-  fluent.where = ((arg: WhereEq<N> | FilterStage, ...rest: FilterStage[]) => {
+  fluent.where = ((
+    arg: WhereEq<N> | ((q: Pipeline) => Pipeline),
+    ...rest: Array<(q: Pipeline) => Pipeline>
+  ) => {
     if (arg === undefined && rest.length === 0) {
       throw new Error(
         "ramose/query: where() takes an equality object or one or more filter stages",
@@ -265,8 +282,9 @@ const makeFluent = <N extends AnyEntity, Row>(
     return next(applyEq(pipe, ns, arg as Record<string, unknown>));
   }) as FluentQuery<N, Row>["where"];
   fluent.select = ((shape: Shape & ValidShape<Shape>) =>
-    next(selectStage(shape)(pipe))) as FluentQuery<N, Row>["select"];
-  fluent.orderBy = (key, dir, opts) => next(orderByStage(key, dir, opts)(pipe));
+    next(selectStage(shape)(pipe as never))) as FluentQuery<N, Row>["select"];
+  fluent.orderBy = (key, dir, opts) =>
+    next(orderByStage(key as string | PathCarrier, dir, opts)(pipe as never));
   fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
   fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
   fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek);

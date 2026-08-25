@@ -17,6 +17,7 @@
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AttrIdent, FocusIdents } from "./query/focus.ts";
 import { lowerElemFilter, type ElemFilterFragment } from "./query/elemFilter.ts";
 import type { EidCell, Var } from "./query/kernel.ts";
 import {
@@ -166,6 +167,35 @@ export type ValidShape<S> = {
       ? AgainSelectField<S[K], S, K & string>
       : S[K];
 };
+
+/** The attribute a shape field hangs on, peeling `.optional` / `.orDefault` / `.select`. */
+type ShapeAttrOf<F> = F extends { readonly _tag: "optional" | "default"; readonly field: infer I }
+  ? ShapeAttrOf<I>
+  : F extends { readonly _tag: "select" | "nested" | "collection"; readonly attr: infer A }
+    ? A
+    : F;
+
+/**
+ * `S`, with every field that is not a member of `N`'s stamped field map
+ * replaced by an error naming it. Used as `S & FocusShape<N, S>` the same
+ * way {@link ValidShape} is — a foreign entity's attribute has nowhere to go.
+ */
+type IsReverseField<A> = A extends { readonly __reverse: true } ? true : false;
+
+export type FocusShape<N extends AnyEntity, S> = {
+  readonly [K in keyof S]: [IsReverseField<ShapeAttrOf<S[K]>>] extends [true]
+    ? S[K]
+    : [AttrIdent<ShapeAttrOf<S[K]>>] extends [FocusIdents<N>]
+      ? S[K]
+      : `select field "${K & string}" is not an attribute of the focus entity`;
+};
+
+/** A select argument constrained to the focus entity's attributes. */
+export type FocusSelect<N extends AnyEntity, S> = S extends AllShape<infer M>
+  ? [M] extends [N]
+    ? S
+    : `all(...) is not the focus entity`
+  : S & ValidShape<S> & FocusShape<N, S>;
 
 type AgainSelectField<F, S, K extends string> = HasIdField<S> extends true
   ? AgainNsField<F, S, K>

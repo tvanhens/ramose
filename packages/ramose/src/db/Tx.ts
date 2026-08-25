@@ -6,6 +6,7 @@ import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } fro
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
+import { TxRejected } from "./Errors.ts";
 import type {
   AttrAtIdent,
   CatalogIdent,
@@ -199,6 +200,7 @@ export type TxMap = Readonly<Record<string, unknown>>;
 export type TxOp =
   | readonly [":db/add", unknown, string, unknown]
   | readonly [":db/update", unknown, string, unknown]
+  | readonly [":db/update", unknown]
   | readonly [":db/retract", unknown, string]
   | readonly [":db/retract", unknown, string, unknown]
   | readonly [":db/retractEntity", unknown]
@@ -579,9 +581,11 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         } else {
           const lookups = upsertIdents(entity, attrs);
           if (lookups.length === 0) {
-            throw new Error(
-              "ramose: update map form needs a unique: \"upsert\" field",
-            );
+            throw new TxRejected({
+              message:
+                'update map form needs a unique: "upsert" field',
+              code: "tx/invalid",
+            });
           }
           eid = lookups[0] as unknown as LookupRef<C>;
         }
@@ -604,10 +608,13 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
             ops.push(...rest);
           }
         } else if (written.length === 0) {
-          const lookups = upsertIdents(entity, attrs);
-          const ping = lookups[0];
+          const ping =
+            upsertIdents(entity, attrs)[0] ?? asLookupRef(eid);
           if (ping !== undefined) {
             ops.push([":db/update", eid, ping[0], ping[1]]);
+          } else {
+            // Subject-form existence ping when no unique value is in hand.
+            ops.push([":db/update", eid]);
           }
         } else {
           ops.push(...written);

@@ -2,6 +2,14 @@
 
 import type { AnyField, Cardinality } from "./Field.ts";
 import {
+  invalidIdentName,
+  isIdentName,
+  isReservedFieldKey,
+  reservedFieldName,
+  type ValidFieldMap,
+  type ValidIdentName,
+} from "./IdentName.ts";
+import {
   attachAttrNav,
   cardsOf,
   pathOf,
@@ -47,6 +55,8 @@ type BacklinkNav<
     readonly ident: `:${Ns}/${Name}`;
     readonly cardinality: Card;
     readonly valueType: "ref";
+    /** Distinguishes a backlink from a forward field of the same ident. */
+    readonly __reverse: true;
   } & PathCarrier
 >;
 
@@ -97,13 +107,22 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
   readonly [K in keyof Fields]: NavStamp<Ns, Fields[K], K & string>;
 };
 
-/** Stamped fields plus `ns` / `fields`. `User.name` is the field ref. */
+/**
+ * Stamped fields plus metadata. Address a field as `User.name`.
+ * `fields` is the iteration map (`schemaTx`, `pick`, policy) — not a
+ * second public handle. `id`, `ns`, `fields`, and `_tag` cannot be field
+ * names, so spreading cannot overwrite metadata.
+ */
 export type Entity<
   Name extends string = string,
   Fields extends FieldMap = FieldMap,
 > = {
   readonly _tag: "Entity";
   readonly ns: Name;
+  /**
+   * Iteration map. Use `User.name` at call sites; this property exists
+   * so schema / policy / pull can walk keys without listing them.
+   */
   readonly fields: StampedMap<Name, Fields>;
   /**
    * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
@@ -199,14 +218,27 @@ const stamp = <Name extends string, Fields extends FieldMap>(
   return out as unknown as StampedMap<Name, Fields>;
 };
 
+const assertEntityName = (name: string): void => {
+  if (!isIdentName(name)) throw invalidIdentName("entity", name);
+};
+
+const assertFieldKeys = (fields: FieldMap): void => {
+  for (const key of Object.keys(fields)) {
+    if (isReservedFieldKey(key)) throw reservedFieldName(key);
+    if (!isIdentName(key)) throw invalidIdentName("field", key);
+  }
+};
+
 /** Group fields under one ident prefix. */
 export const Entity = <
   const Name extends string,
   Fields extends FieldMap,
 >(
-  name: Name,
-  fields: Fields,
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
 ): Entity<Name, Fields> => {
+  assertEntityName(name);
+  assertFieldKeys(fields);
   const stamped = stamp(name, fields);
   const idField = attachAttrNav({
     _tag: "Field" as const,

@@ -14,7 +14,8 @@ import type {
   Expect,
   Row,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Instant, Long, Query, Ref, stored, string } from "../../src/db/internal.ts";
+import { Entity, Field, Instant, Long, Q, Query, Ref, stored, string } from "../../src/db/internal.ts";
+import type { Var } from "../../src/db/query/kernel.ts";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 
@@ -123,3 +124,57 @@ Query.from(Comment).orderBy("nope", "asc");
 Query.from(Comment).select(commentShape).orderBy("text", "asc");
 // @ts-expect-error a column that was not selected is not an orderBy string key
 Query.from(Comment).select(commentShape).orderBy("at", "asc");
+
+// ── cross-entity stages / shapes / sort keys are type errors (#176) ────────
+
+Query.from(Issue).where(Query.is(Issue.title, "Ship"));
+Query.from(Issue).select({ title: Issue.title });
+Query.from(Issue).orderBy(Issue.title);
+Query.from(Issue).orderBy("title", "asc");
+
+// @ts-expect-error User.name is not a field of Issue
+Query.from(Issue).where(Query.is(User.name, "Ada"));
+
+// @ts-expect-error Issue.title is not a field of User
+Query.from(User).select({ title: Issue.title });
+
+// @ts-expect-error User.name is not a field of Issue
+Query.from(Issue).orderBy(User.name);
+
+pipe(Query.entities(Issue), Query.is(Issue.title, "Ship"), Query.select({ title: Issue.title }));
+pipe(Query.entities(User), Query.select({ name: User.name }));
+pipe(Query.entities(Issue), Query.orderBy(Issue.title));
+pipe(Query.entities(Issue), Query.select({ title: Issue.title }), Query.orderBy("title"));
+
+// @ts-expect-error User.name is not a field of Issue
+pipe(Query.entities(Issue), Query.is(User.name, "Ada"), Query.select({ title: Issue.title }));
+
+// @ts-expect-error Issue.title is not a field of User
+pipe(Query.entities(User), Query.select({ title: Issue.title }));
+
+// @ts-expect-error User.name is not a field of Issue
+pipe(Query.entities(Issue), Query.orderBy(User.name));
+
+// @ts-expect-error "title" is not a key of the select-less id row
+pipe(Query.entities(Issue), Query.orderBy("title"));
+
+const afterFollow = Query.q(() =>
+  pipe(Query.entities(Comment), Query.follow(Comment.issue)),
+);
+type _followNs = Expect<
+  Equal<Row<typeof afterFollow>, { readonly id: Eid<typeof Issue> }>
+>;
+pipe(Query.entities(Comment), Query.follow(Comment.issue), Query.select({ title: Issue.title }));
+// @ts-expect-error Comment.text is not a field of Issue after follow
+pipe(Query.entities(Comment), Query.follow(Comment.issue), Query.select({ text: Comment.text }));
+
+// @ts-expect-error User.friends is a self-ref on User, not a backlink to Issue
+pipe(Query.entities(Issue), Query.backlink(User.friends));
+
+declare const issueVar: Var<Eid<typeof Issue>>;
+Q.pull(issueVar, { title: Issue.title });
+Q.fact(issueVar, Issue.title);
+// @ts-expect-error User.name is not a field of the Issue-branded var
+Q.pull(issueVar, { name: User.name });
+// @ts-expect-error User.name is not a field of the Issue-branded var
+Q.fact(issueVar, User.name);

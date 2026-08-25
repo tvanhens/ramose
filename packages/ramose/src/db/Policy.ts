@@ -31,8 +31,10 @@ import {
   lowerQueryObject,
   q,
   rule,
+  type AttrLike,
   type FilterStage,
   type QueryGen,
+  type ReverseFilter,
   type Var,
 } from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
@@ -83,17 +85,22 @@ export type EntityFieldIdent<N extends AnyEntity> = {
     : never;
 }[keyof N["fields"]];
 
+/** A stamped field of `N` — the `A` a forward `FilterStage` may capture. */
+type EntityField<N extends AnyEntity> = N["fields"][keyof N["fields"]];
+
 /**
  * `(me) => fragment` — the arm closes over the typed principal token.
- * A `Query.is` / `Query.has` filter must mention a field of `N` (branded
- * by that field's stamped ident). `Query.some` / `none` / `every` brand
- * by the ref's *target* entity. `byId`, `updatedSince`, and `assertedBy`
- * carry `:db/id` (valid on every entity). A handwritten generator is
- * branded with `N` as its focus; `{ _ident?: never }` keeps a
- * wrong-entity `Query.is` from sneaking through the generator branch.
+ * A `Query.is` / `Query.has` filter must name a field of `N` (`InFocus`).
+ * `Query.some` / `none` / `every` are `ReverseFilter` (the ref must point
+ * at the focus when applied to a pipeline). `byId`, `updatedSince`, and
+ * `assertedBy` are unbranded `FilterStage` (valid on every entity). A
+ * handwritten generator is branded with `N` as its focus; `{ _ident?: never }`
+ * keeps a wrong-entity `Query.is` from sneaking through the generator branch.
  */
 export type FragFn<M, N extends AnyEntity = AnyEntity> = (me: M) =>
-  | FilterStage<EntityFieldIdent<N> | ":db/id">
+  | FilterStage<N, EntityField<N>>
+  | FilterStage
+  | ReverseFilter<AttrLike>
   | ((focus: Var<Eid<N>>) => QueryGen<unknown> & { readonly _ident?: never });
 
 /**

@@ -100,8 +100,10 @@ const _fixtures = () => {
     doc: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) },
   });
 
+  // ReverseFilter is invariant in the attr: FragFn accepts any reverse
+  // quantifier. `ReverseOk` still rejects `some(Comment.doc)` on a
+  // comment *pipeline*; a comment *arm* is a deploy-time focus-bind check.
   P.policy({ schema: App, principal: User.sub, classes: ["member"] }, {
-    // @ts-expect-error — some(Comment.doc) filters docs, not comments
     comment: { read: (me) => Query.some(Comment.doc, Query.is(Comment.author, me)) },
   });
 
