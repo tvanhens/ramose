@@ -561,13 +561,31 @@ export async function expandTx(
     return db.exists(e);
   };
 
-  const assertUpdateTarget = async (e: number, attr: Attribute): Promise<void> => {
+  const dbAppNamespaces = async (e: number): Promise<Set<string>> => {
+    if (!(await db.exists(e)) || retracted.has(e)) return new Set();
+    const row = await db.entity(e);
+    if (row === undefined) return new Set();
+    return appNamespacesOf(Object.keys(row).filter((k) => k !== ":db/id"));
+  };
+
+  /**
+   * `preTx`: only namespaces that existed before this tx. Add/set use that so
+   * a same-tx bag can still take a second namespace; put onto a pre-existing
+   * other-namespace row is still `tx/wrong-entity`.
+   */
+  const assertWriteTarget = async (
+    e: number,
+    attr: Attribute,
+    preTx: boolean,
+  ): Promise<void> => {
     if (!(await entityPresent(e))) {
       throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
     }
     const ns = nsOfIdent(attr.ident);
     if (ns.length === 0 || attr.ident.startsWith(":db/")) return;
-    const existing = appNamespacesOf(await presentIdents(e));
+    const existing = preTx
+      ? await dbAppNamespaces(e)
+      : appNamespacesOf(await presentIdents(e));
     if (existing.size > 0 && !existing.has(ns)) {
       throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
     }
@@ -606,7 +624,7 @@ export async function expandTx(
       if (typeof op.e === "number" && !(await entityPresent(e))) {
         throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
       }
-      await assertUpdateTarget(e, attr);
+      await assertWriteTarget(e, attr, false);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
@@ -615,7 +633,7 @@ export async function expandTx(
     const e = await resolveEntity(op.e, op.kind === "add");
     if (e === undefined) continue;
     if (op.kind === "add") {
-      await assertUpdateTarget(e, attr);
+      await assertWriteTarget(e, attr, true);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
@@ -642,13 +660,6 @@ export async function expandTx(
       }
     }
     return missing;
-  };
-
-  const dbAppNamespaces = async (e: number): Promise<Set<string>> => {
-    if (!(await db.exists(e)) || retracted.has(e)) return new Set();
-    const row = await db.entity(e);
-    if (row === undefined) return new Set();
-    return appNamespacesOf(Object.keys(row).filter((k) => k !== ":db/id"));
   };
 
   // First datom in a new app namespace is a creation in that namespace —
