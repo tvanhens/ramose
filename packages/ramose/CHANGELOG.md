@@ -11,6 +11,39 @@ ride walks facts inside `Q.or` branches when the entity handle is
 already in scope. `Q.distinct` is unchanged. `Q.not` still does not
 bind, and a value that exists only inside `not` has no row provenance.
 
+### Pull-hook suspense keys the pattern structurally (issue #306)
+
+`usePull` / `useLivePull` key the pattern the same way `useQuery` keys
+the query: canonical JSON of `lowerPullPattern`, not object identity.
+A render-fresh `{ title: Todo.title }` with `{ suspense: true }` settles
+instead of minting a new suspend slot (and a new `db.pull`) on every
+retry render. `.optional` is folded into the key (it never reaches the
+wire) so a required shape and an optional one do not share a slot.
+Evicting a still-pending live slot closes the standing read instead of
+leaving it open until the first emission.
+
+### Policy: rule arms on bare operations fail closed
+
+A wire `operations` arm that names a rule (or a v1 expression that
+reads the entity) on a registered op with no `on` is now denied at
+runtime — the body and its effects do not run — and
+`Ramose.Server({ operations, auth: { policy } })` rejects the same
+mismatch at deploy. Previously the class gate alone admitted the
+call and the rule was never evaluated (hand-edited `RAMOSE_POLICY`,
+or an op that dropped `on:` without regenerating the env var).
+
+**Upgrade.** An old-format policy that still carries write arms on
+attributes or namespaces is rejected as malformed and every `/db/*`
+returns 401. Regenerate `RAMOSE_POLICY` in the same deploy as the
+engine that dropped fact-write verbs. The same applies when an
+operation's `on:` shape changes: recompile the policy in that deploy.
+
+`RAMOSE_INTERNAL_SECRET` is strongly recommended in production.
+`fromOperation` is a total policy bypass inside the Durable Object
+trust boundary; client-facing routes rebuild forwarded bodies so the
+flag cannot be injected from outside, but `internalGate` enforces the
+secret only when it is set.
+
 ### `initialData` and Suspense on the read hooks (part of #196)
 
 `useLiveQuery` / `useQuery` / `useLivePull` / `usePull` take

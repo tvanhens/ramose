@@ -20,6 +20,8 @@ export interface SuspendSlot<A, E> {
   data?: A;
   t?: number;
   error?: E;
+  /** Tear down a pending live acquire. Idempotent; settled slots are already released. */
+  release?: () => void;
 }
 
 const slots = new Map<string, SuspendSlot<unknown, unknown>>();
@@ -46,7 +48,9 @@ export const peekSuspend = <A, E>(
   slots.get(key) as SuspendSlot<A, E> | undefined;
 
 export const evictSuspend = (key: string): void => {
+  const slot = slots.get(key);
   slots.delete(key);
+  slot?.release?.();
 };
 
 /**
@@ -80,34 +84,39 @@ export const ensureLive = <A, E>(
   const slot: SuspendSlot<A, E> = {
     promise: undefined as unknown as Thenable<A>,
   };
+  // `fromStream` / `retainLive` replay a cached latest value inside
+  // `subscribe`, before the unsubscribe handle is assigned. Hoist
+  // `off` and tear down again after `subscribe` returns so a
+  // synchronous replay still unsubscribes and (when we own it)
+  // closes the handle. Evict of a still-pending slot uses the same
+  // `release` so an abandoned acquire does not stay open until the
+  // first emission.
+  let off: (() => void) | undefined;
+  let released = false;
+  const release = (): void => {
+    if (released || off === undefined) return;
+    released = true;
+    off();
+    if (owned) sub.close();
+  };
+  slot.release = release;
   slot.promise = asThenable(
     new Promise<A>((resolve, reject) => {
-      // `fromStream` / `retainLive` replay a cached latest value inside
-      // `subscribe`, before the unsubscribe handle is assigned. Hoist
-      // `off` and tear down again after `subscribe` returns so a
-      // synchronous replay still unsubscribes and (when we own it)
-      // closes the handle.
-      let off: (() => void) | undefined;
       let settled = false;
       const onValue = (data: A): void => {
         slot.data = data;
         settled = true;
-        off?.();
-        if (owned && off !== undefined) sub.close();
+        release();
         resolve(data);
       };
       const onError = (error: E): void => {
         slot.error = error;
         settled = true;
-        off?.();
-        if (owned && off !== undefined) sub.close();
+        release();
         reject(error);
       };
       off = sub.subscribe(onValue, onError);
-      if (settled) {
-        off();
-        if (owned) sub.close();
-      }
+      if (settled) release();
     }),
   );
   slot.promise.catch(() => {});

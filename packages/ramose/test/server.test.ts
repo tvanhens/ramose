@@ -736,6 +736,59 @@ describe("operations coverage vs /health", () => {
     expect(error?.message).toMatch(/user\/ghost/);
   });
 
+  test("policy operations: a rule arm on a registry-bare op fails", () => {
+    const error = compareOperationsToPolicy(
+      client,
+      JSON.stringify({
+        operations: {
+          "user/create": [{ _tag: "allow", class: ["member"], rule: "policy/never/0" }],
+        },
+      }),
+    );
+    expect(error).toBeDefined();
+    expect(error?.message).toMatch(/class gate only/);
+    expect(error?.message).toMatch(/user\/create/);
+  });
+
+  test("policy operations: a v1 db-dependent expr on a registry-bare op fails", () => {
+    const error = compareOperationsToPolicy(
+      client,
+      JSON.stringify({
+        operations: {
+          "user/create": [
+            { _tag: "allow", expr: { _tag: "eq", attr: ":user/name", operand: { _tag: "principal" } } },
+          ],
+        },
+      }),
+    );
+    expect(error).toBeDefined();
+    expect(error?.message).toMatch(/class gate only/);
+  });
+
+  test("policy operations: class-only arms on a bare op are fine; a rule on an on: op is fine", () => {
+    expect(
+      compareOperationsToPolicy(
+        client,
+        JSON.stringify({
+          operations: {
+            "user/create": [{ _tag: "allow", class: ["member"], rule: true }],
+            "user/set-name": [{ _tag: "allow", class: ["member"], rule: "policy/own" }],
+          },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      compareOperationsToPolicy(
+        client,
+        JSON.stringify({
+          operations: {
+            "user/create": [{ _tag: "allow", expr: { _tag: "class", class: "member" } }],
+          },
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
   test("coverage fetch uses the caller's probe.timeoutMs", () => {
     expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.live)).toBe(60_000);
     expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.local)).toBe(60_000);

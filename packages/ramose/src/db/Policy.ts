@@ -9,7 +9,7 @@
 import * as Schema from "effect/Schema";
 import { parseQuery } from "../internal/core/query/parse.ts";
 import type { Clause, RuleDef, Term } from "../internal/core/query/ast.ts";
-import { POLICY_VERSION, parsePolicy } from "../internal/core/policy/ast.ts";
+import { POLICY_VERSION, parsePolicy, wireOperationNeedsTarget } from "../internal/core/policy/ast.ts";
 import type {
   AttrRules,
   CompiledPolicy,
@@ -922,27 +922,50 @@ export interface CompileOptions {
   readonly pulls?: readonly unknown[];
   /**
    * The operations registry this deploy ships. Every `operations:` key
-   * must be a registered op; registered ops with no arm are listed as
-   * superuser-only (deny everyone else).
+   * must be a registered op; a rule arm on a registry-bare op fails.
+   * Registered ops with no arm are listed as superuser-only.
    */
   readonly operations?: AnyOperations;
 }
 
 /**
  * Deploy-time coverage: every armed name must be in the registry.
- * Unarmed registered ops are returned — they deny everyone but superuser.
+ * A named-rule or db-dependent v1 arm on a registry-bare (no-`on`) op
+ * is rejected — those arms need a resolved target. Unarmed registered
+ * ops are returned — they deny everyone but superuser.
  */
 export const checkOperationsPolicyCoverage = (
   registry: AnyOperations,
-  armed: ReadonlySet<string> | readonly string[],
+  armed: ReadonlySet<string> | readonly string[] | Readonly<Record<string, unknown>>,
 ): { readonly unarmed: readonly string[] } => {
   const names = new Set(registry.names());
-  const have = armed instanceof Set ? armed : new Set(armed);
+  const isMap =
+    typeof armed === "object" &&
+    armed !== null &&
+    !Array.isArray(armed) &&
+    !(armed instanceof Set);
+  const have = isMap
+    ? new Set(Object.keys(armed as Record<string, unknown>))
+    : armed instanceof Set
+      ? armed
+      : new Set(armed);
   for (const name of have) {
     if (!names.has(name)) {
       fail(
         `operations: ${JSON.stringify(name)} is not in the registry — typed keys lower to the operation's name`,
       );
+    }
+  }
+  if (isMap) {
+    const ops = armed as Record<string, unknown>;
+    for (const name of have) {
+      const operation = registry.get(name);
+      if (operation === undefined || operation.on !== undefined) continue;
+      if (wireOperationNeedsTarget(ops[name])) {
+        fail(
+          `operations.${name}: a bare (no-on) operation takes a class gate only`,
+        );
+      }
     }
   }
   return { unarmed: [...names].filter((n) => !have.has(n)).sort() };
@@ -1038,7 +1061,7 @@ export const compile = (p: Policy, options?: CompileOptions): string => {
   checkPrincipalProvisioning(p.schema, p.principal);
   if (options?.pulls) checkPulls(p, options.pulls);
   if (options?.operations !== undefined) {
-    checkOperationsPolicyCoverage(options.operations, Object.keys(p.operations));
+    checkOperationsPolicyCoverage(options.operations, p.operations);
   }
   const compiled = lower(p);
   const json = JSON.stringify(compiled);

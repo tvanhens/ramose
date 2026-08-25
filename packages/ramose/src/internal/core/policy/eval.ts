@@ -27,6 +27,7 @@ import {
   type PolicyExpr,
   type PolicyOp,
   type PolicyOperand,
+  armNeedsTarget,
   isRuleArm,
   nsPrefix,
 } from "./ast.ts";
@@ -499,9 +500,22 @@ function classGateOfExpr(expr: PolicyExpr, principal: Principal): boolean {
     case "not":
       return !classGateOfExpr(expr.expr, principal);
     default:
-      // db-dependent: the class gate passes; allowsOperation judges the rule
+      // db-dependent: the class gate passes; allowsOperation judges the
+      // rule — but only when the op has `on`. A v1 eq/ref arm on a
+      // registry-bare op never reaches that step; prepareOperation
+      // fail-closes via {@link operationHasTargetArm}.
       return true;
   }
+}
+
+/**
+ * True when any arm on `name` needs a resolved `on` target (named v2
+ * rule or db-dependent v1 expr). A bare (no-`on`) op cannot evaluate
+ * those arms — callers must deny.
+ */
+export function operationHasTargetArm(policy: CompiledPolicy, name: string): boolean {
+  const arms = policy.operations?.[name];
+  return arms !== undefined && arms.some(armNeedsTarget);
 }
 
 export function operationClassAllows(

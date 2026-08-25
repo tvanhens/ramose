@@ -51,7 +51,7 @@ Only errors that come from the writer or a read copy carry a `code`; the Worker'
 **Response headers** on every read: `x-ramose-ms` (server time), `x-ramose-r2-gets` (object-storage reads), `x-ramose-cache-hits`, `x-ramose-basis-*`, `x-ramose-colo`. All are exposed to browsers. Request headers `x-ramose-replica-hint`, `x-ramose-cache-basis`, `x-ramose-cache-mode` and `x-ramose-min-t` override the read-path defaults below per request; the first three come back on the response too, carrying the value that was actually used.
 
 :::note
-The Durable Objects (Cloudflare's single-instance stateful Workers) that hold the writer and the read copies are not on this surface. Only the Worker reaches them, and every internal call carries `RAMOSE_INTERNAL_SECRET`. Browser sockets end in the Worker.
+The Durable Objects (Cloudflare's single-instance stateful Workers) that hold the writer and the read copies are not on this surface. Only the Worker reaches them. Set `RAMOSE_INTERNAL_SECRET` in production so every internal call carries it — the gate is only armed when the secret is set. Browser sockets end in the Worker.
 :::
 
 ## Configuration
@@ -81,7 +81,7 @@ Reef stays on this path: `auth` on Server (policy, `jwt`, Output-valued JWKS URL
 | `RAMOSE_JWT_AUD` | unset | the audience every token must carry |
 | `RAMOSE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, seconds |
 | `RAMOSE_ALLOWED_ORIGINS` | unset | CORS list, honoured **only once a policy is set**; without a policy CORS is `*` |
-| `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call; the owned form mints one when a policy is set. Pin it once you split the Worker out |
+| `RAMOSE_INTERNAL_SECRET` | unset | Worker-to-writer gate on every internal call. **Strongly recommended in production** — unset means no gate. The owned form mints one when a policy is set; pin it once you split the Worker out |
 
 `auth` and `token` on `Ramose.Server` produce these keys — see [Policy → Server env keys](/reference/policy/). That is the configuration path. Do not also hand-copy `RAMOSE_*` onto a Worker.
 

@@ -35,7 +35,9 @@ export {
   assertLoweringPurity,
   canonicalAstKey,
   computeAstKey,
+  computePullPatternKey,
   liveSubscriptionKey,
+  pullPatternKey,
   queryAstKey,
   queryStructureKey,
 } from "./astKey.ts";

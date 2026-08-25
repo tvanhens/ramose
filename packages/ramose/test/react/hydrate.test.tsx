@@ -22,6 +22,7 @@ import * as Ramose from "../../src/db/index.ts";
 import { fromStream } from "../../src/db/promise.ts";
 import {
   useDb,
+  useLivePull,
   useLiveQuery,
   usePull,
   useQuery,
@@ -569,6 +570,136 @@ describe("{ suspense: true }", () => {
     await waitFor(() => expect(container.textContent).toBe("Q:oneshot"));
   });
 
+  test("usePull suspense with a render-fresh inline pattern settles", async () => {
+    ensureDom();
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { delay: 20, body: { t: 3, result: { title: "A" } } }
+          : { body: { t: 3, result: [] } },
+    });
+    function Probe() {
+      const { data } = usePull(
+        useDb("todos", Todos).asOf(3),
+        17,
+        { title: Todo.title },
+        { suspense: true },
+      );
+      return <div>{data!.title}</div>;
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    expect(container.textContent).toBe("loading");
+    await waitFor(() => expect(container.textContent).toBe("A"));
+    expect(peer.frameOps("pull").length).toBeLessThan(8);
+  });
+
+  test("usePull suspense with a hoisted pattern still settles", async () => {
+    ensureDom();
+    const shape = { title: Todo.title };
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { delay: 20, body: { t: 3, result: { title: "A" } } }
+          : { body: { t: 3, result: [] } },
+    });
+    function Probe() {
+      const { data } = usePull(
+        useDb("todos", Todos).asOf(3),
+        17,
+        shape,
+        { suspense: true },
+      );
+      return <div>{data!.title}</div>;
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    expect(container.textContent).toBe("loading");
+    await waitFor(() => expect(container.textContent).toBe("A"));
+    expect(peer.frameOps("pull").length).toBeLessThan(8);
+  });
+
+  test("required and .optional usePull suspense do not share a slot", async () => {
+    ensureDom();
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { delay: 20, body: { t: 3, result: { done: true } } }
+          : { body: { t: 3, result: [] } },
+    });
+    function Probe() {
+      const db = useDb("todos", Todos).asOf(3);
+      const req = usePull(db, 17, { title: Todo.title }, { suspense: true });
+      const opt = usePull(
+        db,
+        17,
+        { title: Todo.title.optional },
+        { suspense: true },
+      );
+      return (
+        <div>{`req:${req.data === null ? "NULL" : "OPT"};opt:${opt.data === null ? "NULL" : "OPT"}`}</div>
+      );
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    expect(container.textContent).toBe("loading");
+    await waitFor(() =>
+      expect(container.textContent).toBe("req:NULL;opt:OPT"),
+    );
+  });
+
+  test("useLivePull suspense with a render-fresh inline pattern settles", async () => {
+    ensureDom();
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { delay: 20, body: { t: 3, result: { title: "A" } } }
+          : { body: { t: 3, result: [] } },
+    });
+    function Probe() {
+      const { data } = useLivePull(
+        useDb("todos", Todos).asOf(3),
+        17,
+        { title: Todo.title },
+        { suspense: true },
+      );
+      return <div>{data!.title}</div>;
+    }
+    const { container } = render(
+      wrapperFor(peer)({
+        children: (
+          <Suspense fallback={<div>loading</div>}>
+            <Probe />
+          </Suspense>
+        ),
+      }),
+    );
+    expect(container.textContent).toBe("loading");
+    await waitFor(() => expect(container.textContent).toBe("A"));
+    expect(peer.frameOps("pull").length).toBeLessThan(8);
+  });
+
   test("a fresh mount after a suspense error re-acquires", async () => {
     ensureDom();
     const pending = later<string>();
@@ -638,5 +769,28 @@ describe("ensureLive", () => {
     expect(unsubscribed).toBe(true);
     expect(closed).toBe(true);
     evictSuspend(key);
+  });
+
+  test("evicting a pending live slot closes the standing read", () => {
+    let unsubscribed = false;
+    let closed = false;
+    const sub: Ramose.Subscription<number> = {
+      subscribe() {
+        return () => {
+          unsubscribed = true;
+        };
+      },
+      async *[Symbol.asyncIterator]() {},
+      close() {
+        closed = true;
+      },
+    };
+    const key = "ensureLive:pending-evict";
+    evictSuspend(key);
+    const slot = ensureLive(key, () => ({ sub, owned: true }));
+    expect(slot.data).toBeUndefined();
+    evictSuspend(key);
+    expect(unsubscribed).toBe(true);
+    expect(closed).toBe(true);
   });
 });

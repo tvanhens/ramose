@@ -81,7 +81,7 @@ A second form, `useLiveQuery(sub, options?)`, drains a `Subscription` you built 
   const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
 ```
 
-`useLivePull(db, subject, shape, options?): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine; hoist the shape. Same `initialData` / `suspense` options as `useLiveQuery`.
+`useLivePull(db, subject, shape, options?): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine, and so is a render-fresh shape — both are keyed structurally, the same way `useLiveQuery` keys the query. Same `initialData` / `suspense` options as `useLiveQuery`.
 
 ## usePull
 
@@ -149,7 +149,7 @@ errorMessage(e); // e.message ?? e._tag ?? String(e)
 ## Rules
 
 - **Stable token source.** Build it once per sign-in, not per render.
-- **Inline query values.** `useLiveQuery` and `useQuery` key on the lowered AST — `useLiveQuery(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. Hoist shapes for `useLivePull` / `usePull`. `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
+- **Inline query values.** `useLiveQuery` and `useQuery` key on the lowered AST — `useLiveQuery(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. `useLivePull` / `usePull` key the shape the same way (lowered pull pattern). `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
 - **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
 - **`key={row.id}`** in lists; the id is a `number`.
 - **`error` is the tagged failure.** Every hook reports the class itself, so `errorMessage(error)` works on every hook.

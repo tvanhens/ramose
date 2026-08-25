@@ -10,11 +10,15 @@ import {
   Entity,
   Field,
   Query,
+  Ref,
   assertLoweringPurity,
+  again,
   canonicalAstKey,
   liveSubscriptionKey,
+  lowerPullPattern,
   lowerQueryAst,
   lowerQueryObject,
+  pullPatternKey,
   queryAstKey,
   queryStructureKey,
 } from "../../src/db/internal.ts";
@@ -165,6 +169,61 @@ describe("queryAstKey", () => {
     } finally {
       console.warn = orig;
     }
+  });
+});
+
+describe("pullPatternKey", () => {
+  test("two independently built equivalent maps share a key", () => {
+    expect(pullPatternKey({ title: Todo.title })).toBe(
+      pullPatternKey({ title: Todo.title }),
+    );
+    expect(pullPatternKey({ title: Todo.title })).toBe(
+      canonicalAstKey(lowerPullPattern({ title: Todo.title })),
+    );
+  });
+
+  test("a hoisted object memos; a different field is a different key", () => {
+    const hoisted = { title: Todo.title };
+    expect(pullPatternKey(hoisted)).toBe(pullPatternKey(hoisted));
+    expect(pullPatternKey({ title: Todo.title })).not.toBe(
+      pullPatternKey({ done: Todo.done }),
+    );
+  });
+
+  test("ident-keyed array and literate map are different keys", () => {
+    expect(pullPatternKey([Todo.title])).not.toBe(
+      pullPatternKey({ title: Todo.title }),
+    );
+  });
+
+  test("two unlowerable again() shapes with the same message share a key", () => {
+    const ka = pullPatternKey(again(1));
+    const kb = pullPatternKey(again(1));
+    expect(ka).toMatch(/^\0error:/);
+    expect(kb).toBe(ka);
+  });
+
+  test(".optional is part of the key — required and optional maps do not collide", () => {
+    expect(pullPatternKey({ title: Todo.title })).not.toBe(
+      pullPatternKey({ title: Todo.title.optional }),
+    );
+    expect(pullPatternKey({ title: Todo.title.optional })).toBe(
+      pullPatternKey({ title: Todo.title.optional }),
+    );
+  });
+
+  test("nested ref.select(shape).optional is a different key from required select", () => {
+    const Person = Entity("person", {
+      name: Field(Schema.String),
+      buddy: Field(Ref.self, { optional: true }),
+    });
+    const required = {
+      buddy: Person.buddy.select({ name: Person.name }),
+    };
+    const optional = {
+      buddy: Person.buddy.select({ name: Person.name }).optional,
+    };
+    expect(pullPatternKey(required)).not.toBe(pullPatternKey(optional));
   });
 });
 

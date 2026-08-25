@@ -99,7 +99,7 @@ Read it as:
 | `issue/set-private-note`: `P.class("owner")` | Only owners set the private note — on any issue. |
 | `comment/delete`: `ownComment` | Owners and members delete only their own comments. |
 | `creator` / `author` from `op.principal` | The operation body stamps who-did-this; the client never sends it. |
-| (nothing) | A registered operation with no arm denies everyone but superuser. |
+| (nothing) | A registered operation with no arm denies everyone but superuser. Reef has no `superuser`, so an unarmed op there denies everyone; compile-time coverage is what keeps that safe. |
 
 **Deny by default.** A record type or operation with no rule is invisible and unwritable ([glossary](/concepts/glossary/#deny-by-default)). You never have to remember to lock something down; you have to remember to open it. Field rules narrow the record type's rule, never widen it.
 

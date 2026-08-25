@@ -65,8 +65,10 @@ cast:
 - Value comparisons — `Q.eq`, `Q.gt`, `Q.startsWith`, `Q.in`, … over bound
   vars. `Q.startsWith` / `Q.endsWith` / `Q.includes` take
   `{ ignoreCase: true }`, which folds both sides through the engine's
-  `lower-case` function before the predicate. `Q.matches` still rejects
-  `RegExp` flags — there is no inline `(?i)`.
+  `lower-case` function before the predicate. That fold is JavaScript
+  `toLowerCase`, not Unicode case folding: `"İSTANBUL"` matches
+  `İstanbul` under `ignoreCase`, but not the ASCII `"istanbul"`.
+  `Q.matches` still rejects `RegExp` flags — there is no inline `(?i)`.
 - `Q.call(fn, …args)` — a function-binding clause: `yield* Q.call("+", a, 1)`
   binds the result so the next clause can name it. The names it accepts are
   the engine functions listed below.
@@ -212,6 +214,20 @@ and `str` / `subs` have no prefixed spelling. Aggregates
 (`count`, `sum`, `median`, …) stay cells — `Q.count(e)`, not `Q.call`.
 `get-else` and `missing?` need the database source and are not `Q.call`
 names.
+
+`Q.call` checks the function set only, so predicate builtins (`even?`,
+`odd?`, `starts-with?`, …) fail at build time. The engine still accepts
+those names as wire binding clauses; use the comparison helpers
+(`Q.eq`, `Q.startsWith`, …) from app code.
+
+`rand`, `rand-int`, and `now` re-evaluate on every invocation. Inside a
+subscription that means a new value on each push — the cell is not
+stable across notifications.
+
+`re-find`, `re-seq`, and `split` compile the caller-supplied pattern
+into a `RegExp` on the Durable Object thread. A pathological pattern
+can be expensive (ReDoS-shaped); there is no length cap or linear-time
+engine yet.
 
 ```ts
 const next = yield* Q.call("+", age, 1);

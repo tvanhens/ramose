@@ -14,6 +14,7 @@ import {
   isSuperuser,
   normalizePullPattern,
   operationClassAllows,
+  operationHasTargetArm,
   processTx,
   pull as enginePull,
   query as engineQuery,
@@ -198,12 +199,22 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
   const policy = st.policy;
   const bypass = policy !== undefined && isSuperuser(args.principal, policy);
   // Class gate before touching the db. Unarmed ops deny everyone but superuser.
-  if (policy !== undefined && !bypass && !operationClassAllows(policy, operation.name, args.principal)) {
-    policyDenied();
+  // A named-rule / db-dependent arm on a registry-bare op cannot run
+  // `allowsOperation` (no resolved target) — deny rather than ignore the rule.
+  if (policy !== undefined && !bypass) {
+    if (!operationClassAllows(policy, operation.name, args.principal)) {
+      policyDenied();
+    }
+    if (operation.on === undefined && operationHasTargetArm(policy, operation.name)) {
+      policyDenied();
+    }
   }
 
   const bf = await fetchBasisWithStats(args.env, args.db, args.request);
   const store = segmentSource(args.env, args.db);
+  // Filtered view. Existence / namespace checks below MUST stay on this
+  // view — moving `entityNamespaceOk` onto the unfiltered rule db would
+  // leak whether a read-hidden entity exists (409 vs 403).
   const dbv = await viewDb(args.env, args.principal, store, bf.basis, {});
 
   let self: unknown;
@@ -237,6 +248,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
         reason: "dangling",
       });
     }
+    // Filtered `dbv` only — see the viewDb comment above.
     const check = await entityNamespaceOk(dbv, eid, operation.on.ns);
     if (check !== "ok") {
       throw new OperationRejected({
