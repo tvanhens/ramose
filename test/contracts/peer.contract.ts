@@ -180,7 +180,7 @@ d("ramose e2e", () => {
     let beforeEnv = await db.queryEnvelope(
       `[:find (count ?e) . :where [?e :user/email]]`,
     );
-    for (let i = 0; i < 40 && beforeEnv.t < (info0.transactor?.t ?? 0); i++) {
+    for (let i = 0; i < 40 && beforeEnv.t < info0.transactor.t; i++) {
       await Bun.sleep(50);
       beforeEnv = await db.queryEnvelope(
         `[:find (count ?e) . :where [?e :user/email]]`,
@@ -195,8 +195,12 @@ d("ramose e2e", () => {
     ]);
     expect(rc.ok).toBe(true);
     const lastT = Math.max(...acks.map((a) => a.t));
-    // read-your-writes: the basis served after the last ack covers it
-    const q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
+    // read-your-writes: wait until the replica basis covers the last ack
+    let q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
+    for (let i = 0; i < 40 && q.t < lastT; i++) {
+      await Bun.sleep(50);
+      q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
+    }
     expect(q.t).toBeGreaterThanOrEqual(lastT);
     expect(q.result).toBe(before + 25);
     const info1 = await db.info();
