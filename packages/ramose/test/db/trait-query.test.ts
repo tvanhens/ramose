@@ -38,7 +38,7 @@ import {
   query as coreQuery,
   type Principal,
 } from "../../src/internal/core/index.ts";
-import { client, fakePeer, settle, until, type Call } from "../peer.ts";
+import { client, scriptedPeer, settle, until, type Call } from "../peer.ts";
 
 const Taggable = Trait("taggable", {
   tag: string(),
@@ -511,7 +511,7 @@ describe("trait live queries", () => {
       }
       return { body: { t: server.t } };
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("board", Catalog);
     const listing = Query.from(Taggable).select({ id: Taggable.id, tag: Taggable.tag });
