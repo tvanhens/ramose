@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
@@ -33,7 +34,12 @@
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
       "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
       "ramose/effect": ["./packages/ramose/src/effect.ts"]
-    }
+    },
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ]
   },
   "include": [
     "alchemy.run.ts",

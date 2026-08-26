@@ -44,10 +44,12 @@
     "deploy:prod": "bun run scripts/build-packages.ts && bun alchemy deploy --stage prod",
     "deploy:docs": "bun alchemy deploy website/alchemy.run.ts",
     "deploy:docs:prod": "bun alchemy deploy website/alchemy.run.ts --stage prod --adopt",
-    "destroy": "bun alchemy destroy"
+    "destroy": "bun alchemy destroy",
+    "prepare": "effect-tsgo patch --typescript --no-oxlint"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
+    "@effect/tsgo": "0.37.0",
     "@stylexjs/stylex": "^0.19.0",
     "@stylexjs/unplugin": "^0.19.0",
     "@types/bun": "latest",
