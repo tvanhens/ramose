@@ -136,17 +136,18 @@ d("ramose e2e", () => {
 
   test("index run publishes a root; queries stay consistent; repeat query hits cache", async () => {
     const before = await db.info();
-    // Guarantee novelty. On a slow workers.dev first test the 5s index
-    // alarm can already have absorbed the earlier txs (`runNow` → ran:false).
-    const note = await db.transact([attrMap(":user/note", "string")]);
+    // Guarantee novelty without installing a new `:user/*` attr (that would
+    // become required on later creates). On a slow workers.dev first test
+    // the 5s index alarm can already have absorbed earlier txs (`ran:false`).
+    const bump = await db.transact([[":db/add", alice, ":user/age", 32]]);
     let idx = await db.index();
     let after = await db.info();
-    for (let i = 0; i < 40 && !idx.ran && (after.transactor.root.t ?? 0) < note.t; i++) {
+    for (let i = 0; i < 40 && !idx.ran && (after.transactor.root.t ?? 0) < bump.t; i++) {
       await Bun.sleep(100);
       idx = await db.index();
       after = await db.info();
     }
-    expect((idx.ran ? idx.root.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(note.t);
+    expect((idx.ran ? idx.root.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(bump.t);
     expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
     const q1 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
     const q2 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
