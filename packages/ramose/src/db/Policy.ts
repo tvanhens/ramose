@@ -1058,7 +1058,7 @@ const lower = (p: Policy): CompiledPolicy => {
     }
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
-    const declaredIdents = entityFieldIdents(declared);
+    const declaredIdents = entityFieldIdents(declared!);
     for (const [ident, own] of Object.entries(entry.attrs)) {
       if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the schema`, ident);
       const narrowed = toWireRules(own);
