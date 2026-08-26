@@ -176,7 +176,7 @@ describe("schemaTx composition metadata", () => {
 });
 
 describe("typed create", () => {
-  test("put writes composer attrs and leaves membership to the engine", () => {
+  test("put writes composer attrs and asserts the entity type", () => {
     const tx = txBuilder(Board);
     Effect.runSync(
       tx.put(Issue, { title: "Fix login", tag: "urgent" }),
@@ -191,11 +191,13 @@ describe("typed create", () => {
     expect(txOps(tx)).toEqual([
       {
         ":db/id": "tmp-1",
+        ":ramose/type": ":issue",
         ":issue/title": "Fix login",
         ":taggable/tag": "urgent",
       },
       {
         ":db/id": "tmp-2",
+        ":ramose/type": ":diamond",
         ":diamond/title": "D",
         ":taggable/tag": "t",
         ":timestamped/createdAt": "now",
@@ -209,6 +211,7 @@ describe("typed create", () => {
     expect(txOps(tx)).toEqual([
       {
         ":db/id": "tmp-1",
+        ":ramose/type": ":note",
         ":note/title": "n",
       },
     ]);
@@ -590,6 +593,48 @@ describe("processTx membership and required trait fields", () => {
       code: "tx/wrong-entity",
       message: expect.stringContaining(
         "cannot create an entity from trait attributes alone: :two",
+      ),
+    });
+  });
+
+  test("typed put creates a composer that has no required own-namespace field", async () => {
+    const SoftIssue = Entity(
+      "issue",
+      { title: string({ optional: true }) },
+      { traits: [Taggable] },
+    );
+    const Bare = Entity("bare", {}, { traits: [Taggable] });
+    const Catalog = Schema({ issue: SoftIssue, bare: Bare });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+
+    const viaPut = txBuilder(Catalog);
+    Effect.runSync(viaPut.put(SoftIssue, { tag: "t" }));
+    Effect.runSync(viaPut.put(Bare, { tag: "u" }));
+    expect(txOps(viaPut)).toEqual([
+      { ":db/id": "tmp-1", ":ramose/type": ":issue", ":taggable/tag": "t" },
+      { ":db/id": "tmp-2", ":ramose/type": ":bare", ":taggable/tag": "u" },
+    ]);
+    const { tempids } = await conn.transact([...txOps(viaPut)]);
+    const issue = await conn.db().entity(tempids["tmp-1"]!);
+    const bare = await conn.db().entity(tempids["tmp-2"]!);
+    expect(issue).toMatchObject({
+      ":ramose/type": ":issue",
+      ":ramose/trait": [":taggable"],
+      ":taggable/tag": "t",
+    });
+    expect(bare).toMatchObject({
+      ":ramose/type": ":bare",
+      ":ramose/trait": [":taggable"],
+      ":taggable/tag": "u",
+    });
+
+    await expect(
+      conn.transact([{ ":db/id": "tmp-raw", ":taggable/tag": "z" }]),
+    ).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining(
+        "cannot create an entity from trait attributes alone: :taggable",
       ),
     });
   });

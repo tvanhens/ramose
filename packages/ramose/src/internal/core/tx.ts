@@ -819,6 +819,19 @@ export async function expandTx(
   for (const op of expanded) {
     if (!isMembershipIdent(op.attr.ident)) continue;
     if (op.fromRetractEntity) continue;
+    // Typed put stamps `:ramose/type` so inferType can see the composer
+    // when the attr map has no own-namespace keys. Permit that one form
+    // on a newly allocated entity; `:ramose/trait` and all other
+    // membership writes stay engine-owned.
+    if (
+      op.kind === "add" &&
+      op.attr.ident === RAMOSE_TYPE_IDENT &&
+      typeof op.datom.v === "string" &&
+      db.schema.isEntityIdent(op.datom.v) &&
+      newEntities.has(op.e)
+    ) {
+      continue;
+    }
     throw new TxError(
       op.kind === "retract"
         ? `cannot retract system fact ${op.attr.ident}`
