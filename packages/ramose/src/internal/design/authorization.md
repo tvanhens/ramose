@@ -19,19 +19,29 @@ Terms used below:
 - **Basis** — the root + novelty + `t` from which a snapshot is built.
 - **Authorization epoch** — the lease generation that increments on reauthorization or revocation.
 - **Application consumer** — any path that shapes an external result, error, live delta, or API-visible metadata.
+- **Policy-input facts** — facts the compiled policy IR reads from the rule snapshot while deciding visibility (grants, resource fields the policy names, canonical membership used as an authorization input). They need not be readable to the principal.
+- **Denied application datoms** — facts the resulting authorization decision excludes from the application snapshot. A fact MAY be policy-input and a denied application datom at the same time (a hidden `TagGrant`).
 
 ## 1. Noninterference
 
-**NI-1.** Unauthorized datoms MUST NOT affect any application-visible
+**NI-1.** Policy-input facts available through the rule snapshot MAY
+affect authorization decisions. They MUST NOT be directly emitted to any
+application consumer, and they MUST NOT influence application-visible
+behavior except through the resulting authorization decision. Holding the
+principal, catalog / policy IR, and policy-relevant rule inputs fixed,
+denied application datoms MUST NOT affect any application-visible
 behavior. That includes query results, pull results, live-query updates,
 session replication, operation read-after-write, errors, empty vs missing
 distinctions, counts, estimates, cardinality oracles, API-exposed timing
 or explain metadata, transaction identifiers, planner details, storage
 statistics, and silence vs delivery decisions.
 
-**NI-2.** Two databases that differ only in unauthorized facts MUST be
-observationally identical to a given principal. This is the paired-world
-statement of **NI-1**.
+**NI-2.** Two databases that differ only in denied application datoms —
+holding the principal, catalog / policy IR, and policy-relevant rule
+inputs fixed — MUST be observationally identical to that principal. This
+is the paired-world statement of **NI-1**. Worlds that differ in
+policy-input facts MAY differ in authorized results (a hidden
+`TagGrant` that makes a document visible).
 
 **NI-3.** Observation includes indirect channels: refs, reverse refs,
 graph paths, nested pull, trait roots, as-of and history views, live
@@ -59,8 +69,8 @@ one to a client.
 
 **TCB-2.** The policy evaluator receives a rule snapshot over a trusted
 current rule basis. It MAY follow grant edges and fixed-depth refs that
-the principal cannot read. Those lookups MUST NOT appear in the
-application snapshot.
+the principal cannot read. Those lookups are policy-input facts (**NI-1**):
+they MUST NOT appear in the application snapshot.
 
 **TCB-3.** Every external read consumes only an application snapshot
 produced by the authorized datom cursor (**CUR-1**).
@@ -226,14 +236,24 @@ through another column or var.
 ## 9. History, as-of, and the rule basis
 
 **HIST-1.** Application reads retain their requested current, as-of, or
-history collapse. Authorization does not.
+history collapse. Authorization does not. Historical and as-of *values*
+come from that requested application basis.
 
-**HIST-2.** Policy always evaluates against the trusted current rule
-snapshot. A retracted grant MUST NOT re-grant through history or as-of.
-A current grant MAY reveal historical values of now-authorized facts.
+**HIST-2.** Every authorization input is read from the trusted current
+rule snapshot: grants, resource fields the policy names, canonical type,
+and trait membership. A retracted grant MUST NOT re-grant through history
+or as-of. A current grant MAY reveal historical values of now-authorized
+facts.
 
 **HIST-3.** History and as-of streams still pass the authorized datom
-cursor. Unauthorized historical datoms MUST NOT appear or affect counts.
+cursor. Denied historical application datoms MUST NOT appear or affect
+counts.
+
+**HIST-4.** The engine MUST preserve enough engine-owned identity and
+membership on the current rule basis to authorize history after entity
+deletion. Deletion MUST NOT make all history categorically inaccessible.
+If current identity needed to decide authorization cannot be recovered,
+the read fails closed (**FC-1**).
 
 ## 10. Operations and writes
 
@@ -273,16 +293,17 @@ application snapshots at the same basis as the equivalent one-shot read
 **LIVE-2.** External sessions receive only authorized application datoms.
 Raw transaction-log entries and raw segment changes MUST NOT be streamed.
 
-**LIVE-3.** A committed transaction that yields no authorized datoms for
-the principal is silence. It MUST NOT leak the transaction id or
-timestamp.
+**LIVE-3.** A transaction that does not change the authorized application
+view is silence. Changes to hidden rule facts MAY produce authorized
+additions, retractions, or subscription closure, but the triggering rule
+datoms, transaction id, and timestamp MUST NOT be emitted.
 
 **LIVE-4.** Visibility loss is delivered as retraction of previously
 visible facts, or as subscription close / restart. It MUST NOT reveal a
 newly hidden value or distinguish "now hidden" from "now gone".
 
 **LIVE-5.** Reconnect, resume, retry, and backpressure MUST NOT replay
-unauthorized historical data.
+denied application datoms or emit policy-input facts.
 
 **LIVE-6.** Caches and queued deltas MUST NOT cross principals, databases,
 catalog versions, policy versions, rule bases, or authorization epochs.
@@ -320,14 +341,17 @@ forbidden.
 ## 13. Disclosure and side channels
 
 **DISC-1.** Ordinary principals MUST NOT observe transaction ids or
-timestamps, result counts that depend on unauthorized facts, planner
-details, cache / storage / segment statistics, or other side-channel
-metadata unless an explicit policy grant allows that observation.
+timestamps, planner details, cache / storage / segment statistics, or
+other side-channel metadata unless an explicit policy grant allows that
+observation. Result counts obey **NI-1**: they MAY change when
+policy-input facts change visibility, and MUST NOT otherwise depend on
+denied application datoms.
 
 **DISC-2.** API-exposed timing, explain, and estimate fields are
-application-visible metadata. They MUST NOT depend on unauthorized
-datoms (**NI-1**). Wall-clock variance is out of scope; returned numbers
-and structured explain output are in scope.
+application-visible metadata. Holding policy-relevant rule inputs fixed,
+they MUST NOT depend on denied application datoms (**NI-1**). Wall-clock
+variance is out of scope; returned numbers and structured explain output
+are in scope.
 
 **DISC-3.** Cardinality oracles (`estimate` and equivalents) are
 application consumers (**CUR-1**). They MUST NOT report unfiltered size.
@@ -351,6 +375,12 @@ change. They MUST NOT continue with stale visibility.
 
 **REV-4.** JWT expiry and policy, grant, or membership revocation take
 effect within the lease bound.
+
+**REV-5.** No result or delta may be emitted under an expired
+authorization lease. Before producing further output, a long-running
+read — including a one-shot query that outlives the lease, a queued
+delta, or a live continuation — MUST reauthorize, restart against a
+valid snapshot, or close.
 
 ## 15. Policy language safety
 
@@ -411,15 +441,15 @@ invariants. The mapping is a citation index, not a backlog.
 |---|---|
 | 337 Policy authoring API and IR | **LANG-1**–**LANG-6**, **POL-1**–**POL-6**, **WR-4**, **FC-1**, **CAT-1** |
 | 338 Remove the legacy pipeline | **TCB-1**, **CUR-2**, **OPT-1**, **OPT-4**, **AUTH-1**, **FC-3**, **ID-3** |
-| 339 Raw / rule / application snapshots | **TCB-1**–**TCB-4**, **CUR-4**, **HIST-1**, **HIST-2**, **FC-1** |
-| 340 Canonical membership | **ID-1**–**ID-5**, **POL-8**, **FC-1**, **WR-5** |
+| 339 Raw / rule / application snapshots | **TCB-1**–**TCB-4**, **CUR-4**, **HIST-1**, **HIST-2**, **HIST-4**, **FC-1** |
+| 340 Canonical membership | **ID-1**–**ID-5**, **POL-8**, **HIST-4**, **FC-1**, **WR-5** |
 | 341 Catalog-local operations and policies | **CAT-1**–**CAT-3**, **CAT-5**, **WR-4**, **WR-7**, **LANG-4** |
 | 342 Atomic catalog install | **CAT-4**–**CAT-6**, **ID-4**, **FC-1** |
-| 343 Authorized datom cursor | **CUR-1**–**CUR-3**, **POL-1**–**POL-8**, **REF-1**–**REF-5**, **HIST-1**–**HIST-3**, **LANG-2**, **LANG-6**, **NI-1**–**NI-4**, **CACHE-1** |
+| 343 Authorized datom cursor | **CUR-1**–**CUR-3**, **POL-1**–**POL-8**, **REF-1**–**REF-5**, **HIST-1**–**HIST-4**, **LANG-2**, **LANG-6**, **NI-1**–**NI-4**, **CACHE-1** |
 | 344 Verified principals | **AUTH-1**–**AUTH-7**, **TCB-5**, **FC-1** |
 | 345 Operation authorization | **WR-1**–**WR-7**, **REF-3**, **REF-4**, **REV-2**, **ID-2** |
 | 346 Pushdown as optimization | **OPT-1**–**OPT-4**, **NI-4**, **CUR-1** |
-| 347 Live queries and replication | **LIVE-1**–**LIVE-6**, **REV-1**, **REV-3**, **REV-4**, **DISC-1**, **NI-1** |
+| 347 Live queries and replication | **LIVE-1**–**LIVE-6**, **REV-1**, **REV-3**–**REV-5**, **DISC-1**, **NI-1** |
 | 348 Privileged paths and metadata | **TCB-5**, **TCB-6**, **POL-7**, **DISC-1**–**DISC-4**, **AUTH-5**, **AUTH-6** |
 | 349 Conformance suite | **NI-1**, **NI-2**, and every invariant this table assigns to 337–348 |
 | 350 Reef rebuild | The completed model; no additional invariants |
