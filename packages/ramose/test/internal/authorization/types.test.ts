@@ -31,6 +31,7 @@ import {
   Incomplete,
   IncompleteRuleSnapshot,
   INSTALLED_AUTHORIZATION_IR_VERSION,
+  BOUND_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   InvalidTraversal,
   LeaseExpired,
@@ -59,7 +60,9 @@ import {
   True,
   type AuthorizationFailure,
   AuthorizationPrincipal,
+  BoundAuthorizationIR,
   CatalogBindingInput,
+  CatalogBindingTarget,
   type CatalogDescriptor,
   ClaimDescriptor,
   type ClaimVocabulary,
@@ -98,9 +101,12 @@ export type _noPublicAuthorization = Expect<
       PublicKeys,
       | "Authorization"
       | "PolicyTemplateIR"
+      | "BoundAuthorizationIR"
       | "InstalledAuthorizationIR"
       | "decodePolicyTemplate"
       | "decodeInstalledAuthorization"
+      | "bindPolicyTemplate"
+      | "bindAgainstAuthoritativeCatalog"
     >,
     never
   >
@@ -124,8 +130,12 @@ export type _operationIdFromSchema = Expect<Equal<OperationIdType, typeof Operat
 export type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof RelativeFieldId.Type>>;
 export type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
 export type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
+export type _boundFromSchema = Expect<Equal<BoundAuthorizationIR, typeof BoundAuthorizationIR.Type>>;
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
 export type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
+export type _bindingTargetFromSchema = Expect<
+  Equal<CatalogBindingTarget, typeof CatalogBindingTarget.Type>
+>;
 export type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
 export type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
 export type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
@@ -202,6 +212,26 @@ export type _templateNotInstalled = Expect<
 >;
 export type _installedNotTemplate = Expect<
   Equal<Extends<InstalledAuthorizationIR, PolicyTemplateIR>, false>
+>;
+export type _templateNotBound = Expect<
+  Equal<Extends<PolicyTemplateIR, BoundAuthorizationIR>, false>
+>;
+export type _boundNotTemplate = Expect<
+  Equal<Extends<BoundAuthorizationIR, PolicyTemplateIR>, false>
+>;
+export type _boundNotInstalled = Expect<
+  Equal<Extends<BoundAuthorizationIR, InstalledAuthorizationIR>, false>
+>;
+export type _installedNotBound = Expect<
+  Equal<Extends<InstalledAuthorizationIR, BoundAuthorizationIR>, false>
+>;
+
+type PartialBound = Pick<BoundAuthorizationIR, "rules" | "decisions" | "principal">;
+export type _partialBoundNotInstalled = Expect<
+  Equal<Extends<PartialBound, InstalledAuthorizationIR>, false>
+>;
+export type _partialBoundNotTemplate = Expect<
+  Equal<Extends<PartialBound, PolicyTemplateIR>, false>
 >;
 
 type PrincipalWithoutSubject = {
@@ -312,11 +342,18 @@ type InputKeyOnly = { readonly _tag: "input"; readonly key: "title" };
 export type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
 
 type BindingWithoutDatabase = {
-  readonly catalog: CatalogDescriptor;
+  readonly descriptor: CatalogDescriptor;
   readonly template: PolicyTemplateIR;
 };
 export type _databaseRequiredOnBind = Expect<
   Equal<Extends<BindingWithoutDatabase, CatalogBindingInput>, false>
+>;
+type BindingWithoutTarget = {
+  readonly descriptor: CatalogDescriptor;
+  readonly template: PolicyTemplateIR;
+};
+export type _targetRequiredOnBind = Expect<
+  Equal<Extends<BindingWithoutTarget, CatalogBindingInput>, false>
 >;
 
 type FlatScalarInput = {
@@ -593,6 +630,7 @@ const installedFixture: InstalledAuthorizationIR = {
 
 const catalogDescriptor: CatalogDescriptor = {
   id: catalog,
+  database: DatabaseId.make("todos"),
   version: CatalogVersion.make("1"),
   fingerprint: SchemaFingerprint.make("schema"),
   entities: [{ id: EntityId.make({ catalog, name: "issue" }), traits: [TraitId.make({ catalog, name: "taggable" })] }],
@@ -613,8 +651,13 @@ const catalogDescriptor: CatalogDescriptor = {
 };
 
 const bindingInput: CatalogBindingInput = {
-  database: DatabaseId.make("todos"),
-  catalog: catalogDescriptor,
+  target: {
+    database: DatabaseId.make("todos"),
+    catalog,
+    catalogVersion: CatalogVersion.make("1"),
+    schemaFingerprint: SchemaFingerprint.make("schema"),
+  },
+  descriptor: catalogDescriptor,
   template: templateFixture,
 };
 
@@ -653,6 +696,33 @@ const _operationFixtures = () => {
 
   // @ts-expect-error — installed IR is not a template
   const asTemplate: PolicyTemplateIR = installedFixture;
+
+  const boundFixture = {
+    _tag: "BoundAuthorizationIR" as const,
+    version: BOUND_AUTHORIZATION_IR_VERSION,
+    database: DatabaseId.make("todos"),
+    catalog,
+    catalogVersion: CatalogVersion.make("1"),
+    schemaFingerprint: SchemaFingerprint.make("schema"),
+    classes: [] as const,
+    claims: [] as const,
+    principal: { subjectClaim: "sub" },
+    rules: [] as const,
+    decisions: { entities: [], traits: [], fields: [], operations: [] },
+  } satisfies BoundAuthorizationIR;
+
+  // @ts-expect-error — a bound intermediate is not installed IR
+  const boundAsInstalled: InstalledAuthorizationIR = boundFixture;
+
+  // @ts-expect-error — a template is not a bound intermediate
+  const templateAsBound: BoundAuthorizationIR = templateFixture;
+
+  const partialBound: Pick<BoundAuthorizationIR, "rules" | "decisions"> = {
+    rules: [],
+    decisions: { entities: [], traits: [], fields: [], operations: [] },
+  };
+  // @ts-expect-error — a partial bound result is not installed IR
+  const partialAsInstalled: InstalledAuthorizationIR = partialBound;
 
   const ownerHop: FieldDescriptor = {
     id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
@@ -738,7 +808,7 @@ const _operationFixtures = () => {
   const asClaims: ClaimVocabulary = claimKeys;
 
   const bindWithoutDb = {
-    catalog: catalogDescriptor,
+    descriptor: catalogDescriptor,
     template: templateFixture,
   };
   // @ts-expect-error — binding names the target database
@@ -751,6 +821,9 @@ const _operationFixtures = () => {
     noTarget,
     asInstalled,
     asTemplate,
+    boundAsInstalled,
+    templateAsBound,
+    partialAsInstalled,
     ownerHop,
     ownerWithoutTarget,
     missingIndex,

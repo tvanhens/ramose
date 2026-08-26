@@ -8,7 +8,7 @@
  * Decode, encode, and canonicalization are pure. Cryptographic hashing
  * lives in the Effect orchestration shell via the Web Crypto API
  * (`crypto.subtle.digest`), matching #337. Structural success is not
- * runtime acceptance — binding is #358.
+ * runtime acceptance — binding is #384.
  */
 
 import * as Effect from "effect/Effect";

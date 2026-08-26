@@ -1,7 +1,7 @@
 /**
  * Authoritative catalog descriptors and operation input shapes.
  *
- * #358 binds a template against {@link CatalogDescriptor}. #341 supplies
+ * #384 binds a template against {@link CatalogDescriptor}. #341 supplies
  * the real catalog-local identities; tests may use an in-memory descriptor.
  *
  * Effect Schema is the source of truth. Types are `typeof Model.Type`.
@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import {
   CatalogId,
   CatalogVersion,
+  DatabaseId,
   EntityId,
   FieldId,
   OperationId,
@@ -190,10 +191,13 @@ export type TraitComposition = typeof TraitComposition.Type;
 
 /**
  * Authoritative catalog the binder validates against.
- * Cross-catalog and stale identities fail binding (CAT-3, CAT-5).
+ * Cross-catalog, cross-database, and stale identities fail binding (CAT-3, CAT-5).
+ * `database` is the install the descriptor was resolved for — not derivable
+ * from {@link CatalogId}.
  */
 export const CatalogDescriptor = Schema.Struct({
   id: CatalogId,
+  database: DatabaseId,
   version: CatalogVersion,
   fingerprint: SchemaFingerprint,
   entities: Schema.Array(EntityDescriptor),

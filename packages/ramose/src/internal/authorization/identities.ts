@@ -1,7 +1,7 @@
 /**
  * Canonical and catalog-relative authorization identities.
  *
- * Binding (#358) turns relative names into catalog-scoped identities.
+ * Binding (#384) turns relative names into catalog-scoped identities.
  * Runtime decisions are never keyed by a wire name alone (CAT-1).
  *
  * Rule / policy hashes are identity *types* here. #357 requires the

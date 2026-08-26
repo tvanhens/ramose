@@ -7,7 +7,7 @@
  */
 
 import * as Data from "effect/Data";
-import type { CatalogId, CatalogVersion } from "./identities.ts";
+import type { CatalogId, CatalogVersion, DatabaseId, SchemaFingerprint } from "./identities.ts";
 
 /**
  * Why a three-valued result is Incomplete — never JavaScript `undefined`.
@@ -34,13 +34,17 @@ export class InvalidIR extends Data.TaggedError("InvalidIR")<{
   readonly message: string;
 }> {}
 
-/** Catalog, schema fingerprint, or version does not match the IR. */
+/** Catalog, schema fingerprint, version, or database does not match the IR. */
 export class CatalogMismatch extends Data.TaggedError("CatalogMismatch")<{
   readonly message: string;
   readonly expected?: CatalogId;
   readonly actual?: CatalogId;
   readonly expectedVersion?: CatalogVersion;
   readonly actualVersion?: CatalogVersion;
+  readonly expectedFingerprint?: SchemaFingerprint;
+  readonly actualFingerprint?: SchemaFingerprint;
+  readonly expectedDatabase?: DatabaseId;
+  readonly actualDatabase?: DatabaseId;
 }> {}
 
 /** A required rule projection could not be completed. */

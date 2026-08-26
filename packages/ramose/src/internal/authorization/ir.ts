@@ -1,13 +1,13 @@
 /**
- * Two-stage authorization IR.
+ * Two-stage authorization IR plus the internal bound intermediate.
  *
  * {@link PolicyTemplateIR} is catalog-relative compiler output. It is not
- * executable runtime policy. {@link InstalledAuthorizationIR} is the bound,
- * sealed form runtime accepts. The types are distinct: a template is not
- * assignable where installed IR is required.
+ * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
+ * intermediate for semantic validation (#385). {@link InstalledAuthorizationIR}
+ * is the sealed form runtime accepts. The three types are distinct: a
+ * template or bound document is not assignable where installed IR is required.
  *
- * Effect Schema is the source of truth. This module defines the models —
- * no parser, binder, installer, hash, or decodeUnknownEffect workflow.
+ * Effect Schema is the source of truth. Binding lives in `bind.ts`.
  */
 
 import * as Schema from "effect/Schema";
@@ -40,10 +40,14 @@ import {
 } from "./principal.ts";
 
 export const POLICY_TEMPLATE_IR_VERSION = 1 as const;
+export const BOUND_AUTHORIZATION_IR_VERSION = 1 as const;
 export const INSTALLED_AUTHORIZATION_IR_VERSION = 1 as const;
 
 export const PolicyTemplateIRVersion = Schema.Literal(POLICY_TEMPLATE_IR_VERSION);
 export type PolicyTemplateIRVersion = typeof PolicyTemplateIRVersion.Type;
+
+export const BoundAuthorizationIRVersion = Schema.Literal(BOUND_AUTHORIZATION_IR_VERSION);
+export type BoundAuthorizationIRVersion = typeof BoundAuthorizationIRVersion.Type;
 
 export const InstalledAuthorizationIRVersion = Schema.Literal(INSTALLED_AUTHORIZATION_IR_VERSION);
 export type InstalledAuthorizationIRVersion = typeof InstalledAuthorizationIRVersion.Type;
@@ -145,9 +149,29 @@ export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
 export type PolicyTemplateIR = typeof PolicyTemplateIR.Type;
 
 /**
+ * Catalog-bound intermediate for #385. Identities are canonical and scoped
+ * to the requested database/catalog/version. This form is not executable
+ * and must not be accepted by runtime authorization: it has no policy hash,
+ * identity table, operation table, trait-composition table, or access plans.
+ */
+export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", {
+  version: BoundAuthorizationIRVersion,
+  database: DatabaseId,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: InstalledPrincipalResolution,
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
+  decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
+});
+export type BoundAuthorizationIR = typeof BoundAuthorizationIR.Type;
+
+/**
  * Bound, sealed installed artifact. Runtime accepts only this form.
  * Catalog identity, version, schema fingerprint, and policy hash are
- * mandatory so a template cannot be passed in their place.
+ * mandatory so a template or bound intermediate cannot be passed in their place.
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
@@ -168,11 +192,22 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
 });
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
 
-/** Input later slices pass to the Effectful catalog binder. */
-export const CatalogBindingInput = Schema.Struct({
-  /** Database this catalog is being installed into. Not derivable from catalog id. */
+/**
+ * Requested install identity the binder must match against the descriptor.
+ * Database is not derivable from catalog id.
+ */
+export const CatalogBindingTarget = Schema.Struct({
   database: DatabaseId,
-  catalog: CatalogDescriptor,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+});
+export type CatalogBindingTarget = typeof CatalogBindingTarget.Type;
+
+/** Input the catalog binder consumes. */
+export const CatalogBindingInput = Schema.Struct({
+  target: CatalogBindingTarget,
+  descriptor: CatalogDescriptor,
   template: PolicyTemplateIR,
 });
 export type CatalogBindingInput = typeof CatalogBindingInput.Type;
