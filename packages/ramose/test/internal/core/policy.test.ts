@@ -390,6 +390,19 @@ describe("isSchemaTx", () => {
   test("empty, vector, extra app keys, nested maps, and :db/id are not schema", () => {
     expect(isSchemaTx([])).toBe(false);
     expect(isSchemaTx([[":db/add", 1, ":doc/title", "x"]])).toBe(false);
+    expect(
+      isSchemaTx([
+        ensure,
+        [":db/retract", 2003, ":ramose/refTarget", ":taggable"],
+      ]),
+    ).toBe(true);
+    expect(
+      isSchemaTx([
+        ensure,
+        [":db/retract", [":db/ident", ":favorite/target"], ":ramose/refTarget", ":taggable"],
+      ]),
+    ).toBe(true);
+    expect(isSchemaTx([[":db/retract", 2003, ":doc/title", "x"]])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":doc/title": "PWNED" }])).toBe(false);
     expect(isSchemaTx([{ ":db/ident": ":x", ":ramose/type": ":issue" }])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":doc/owner": { ":db/id": 1, ":doc/title": "PWNED" } }])).toBe(false);

@@ -27,9 +27,27 @@ const deny = (attr: string, op: string): PolicyDenied => ({ ok: false, code: "po
  * (which would aim the install at an existing entity) are not schema.
  * Empty `tx` is not schema (nothing to ensure).
  */
+const isSchemaRetract = (op: unknown): boolean => {
+  if (!Array.isArray(op) || op.length !== 4) return false;
+  if (op[0] !== ":db/retract") return false;
+  const attr = op[2];
+  if (attr !== ":ramose/refTarget" && attr !== ":db/optional") return false;
+  if (attr === ":ramose/refTarget" && typeof op[3] !== "string") return false;
+  if (attr === ":db/optional" && op[3] !== true) return false;
+  const subject = op[1];
+  if (typeof subject === "number" && Number.isFinite(subject)) return true;
+  return (
+    Array.isArray(subject) &&
+    subject.length === 2 &&
+    subject[0] === ":db/ident" &&
+    typeof subject[1] === "string"
+  );
+};
+
 export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[] {
   if (!Array.isArray(tx) || tx.length === 0) return false;
   for (const op of tx) {
+    if (isSchemaRetract(op)) continue;
     if (typeof op !== "object" || op === null || Array.isArray(op)) return false;
     const m = op as Record<string, unknown>;
     if (typeof m[":db/ident"] !== "string") return false;

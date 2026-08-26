@@ -231,20 +231,37 @@ type TraitFocus<C extends AnySchema, Name extends string> = {
   readonly fields: FieldsOfTrait<C, Name>;
 };
 
+type TraitPolicyArms<
+  C extends AnySchema,
+  M,
+  CL extends string,
+> = {
+  readonly [K in SchemaTraitName<C> & string]?: NsRuleSpec<M, TraitFocus<C, K>, CL>;
+};
+
+type TraitsKeyArm<
+  C extends AnySchema,
+  M,
+  CL extends string,
+> = "traits" extends keyof C["entities"]
+  ? NsRuleSpec<M, C["entities"]["traits"], CL> | TraitPolicyArms<C, M, CL>
+  : TraitPolicyArms<C, M, CL>;
+
 export type PolicyArms<
   C extends AnySchema,
   M,
   CL extends readonly string[] = readonly string[],
   Ops extends AnyOperations | undefined = undefined,
 > = {
-  readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
-} & {
-  readonly traits?: {
-    readonly [K in SchemaTraitName<C> & string]?: NsRuleSpec<M, TraitFocus<C, K>, CL[number]>;
-  };
-} & (Ops extends AnyOperations
-  ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
-  : { readonly operations?: undefined });
+  readonly [K in Exclude<keyof C["entities"], "operations">]?: K extends "traits"
+    ? TraitsKeyArm<C, M, CL[number]>
+    : NsRuleSpec<M, C["entities"][K], CL[number]>;
+} & ("traits" extends keyof C["entities"]
+  ? { readonly traits?: TraitsKeyArm<C, M, CL[number]> }
+  : { readonly traits?: TraitPolicyArms<C, M, CL[number]> }) &
+  (Ops extends AnyOperations
+    ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
+    : { readonly operations?: undefined });
 
 interface CompiledArm {
   readonly classes?: readonly string[];
@@ -413,11 +430,11 @@ const entityFieldIdents = (entity: {
   return out;
 };
 
-/** `read: true` with no class gate — every principal sees every field. */
+/** Any OR arm is `read: true` with no class gate — every principal sees every field. */
 const isUnconditionallyPublicRead = (compiled: NsRules | undefined): boolean => {
   const read = compiled?.rules.read;
   if (read === undefined || read.length === 0) return false;
-  return read.every((arm) => arm.rule === true && arm.classes === undefined);
+  return read.some((arm) => arm.rule === true && arm.classes === undefined);
 };
 
 const IDENT_RE = /^:[^/]+\/[^/]+$/;
@@ -769,11 +786,23 @@ export function policy<
   const maskedReads = new Set<string>();
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
-  const traitSpec = body.traits as Record<string, NsRuleSpec<unknown> & Record<string, unknown>> | undefined;
   const traitsByNs = schemaTraits(schema);
+  const traitsEntity = (
+    schema.entities as Record<string, { ns: string } | undefined>
+  ).traits;
+  const rawTraits = body.traits;
+  const isTraitContainer =
+    rawTraits !== null &&
+    typeof rawTraits === "object" &&
+    !Array.isArray(rawTraits) &&
+    Object.keys(rawTraits).some((k) => traitsByNs.has(k));
+  const traitSpec = isTraitContainer
+    ? (rawTraits as Record<string, NsRuleSpec<unknown> & Record<string, unknown>>)
+    : undefined;
 
   for (const [nsKey, rawSpec] of Object.entries(body)) {
-    if (nsKey === "operations" || nsKey === "traits" || rawSpec === undefined) continue;
+    if (nsKey === "operations" || rawSpec === undefined) continue;
+    if (nsKey === "traits" && traitSpec !== undefined) continue;
     const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
     for (const key of Object.keys(nsSpec)) {
       if (REJECTED_WRITE_KEYS.has(key)) {
@@ -825,6 +854,16 @@ export function policy<
   if (traitSpec !== undefined) {
     if (traitSpec === null || typeof traitSpec !== "object" || Array.isArray(traitSpec)) {
       fail("traits: expected an object of trait arms");
+    }
+    if (traitsEntity !== undefined) {
+      const mixed = Object.keys(traitSpec).filter(
+        (k) => k === "read" || k === "attrs" || REJECTED_WRITE_KEYS.has(k),
+      );
+      if (mixed.length > 0) {
+        fail(
+          "traits: cannot mix the traits entity arm with trait arms — rename the traits entity",
+        );
+      }
     }
     for (const [traitKey, rawSpec] of Object.entries(traitSpec)) {
       if (rawSpec === undefined) continue;

@@ -8,6 +8,7 @@
 
 import { pipe } from "effect/Function";
 import type {
+  AllRow,
   CatalogIdent,
   Db,
   Eid,
@@ -209,3 +210,12 @@ Query.from(Taggable).where(Query.some(Favorite.target));
 Query.from(Todo).where(Query.some(Favorite.target));
 // @ts-expect-error Note composes Soft, not Taggable
 Query.from(Note).where(Query.some(Favorite.target));
+
+const Inner = Trait("inner", { value: string() });
+const Outer = Trait("outer", {}, { traits: [Inner] });
+type _allOuter = Expect<
+  Equal<keyof AllRow<typeof Outer>, ":db/id" | ":inner/value">
+>;
+type _noOuterValue = Expect<
+  Equal<":outer/value" extends keyof AllRow<typeof Outer> ? true : false, false>
+>;

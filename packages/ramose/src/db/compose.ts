@@ -141,6 +141,44 @@ export const reachableTraits = (
   return byNs;
 };
 
+/** A `Ref(Trait)` field's target, when the declared target is a trait. */
+export const traitFromRefField = (field: unknown): ComposerLike | undefined => {
+  if (typeof field !== "object" || field === null) return undefined;
+  const resolve = (field as { schema?: { _resolve?: () => unknown } }).schema?._resolve;
+  const target = resolve?.();
+  if (typeof target !== "object" || target === null) return undefined;
+  const tag = (target as { _tag?: unknown })._tag;
+  const ns = (target as { ns?: unknown }).ns;
+  if (tag !== "Trait" || typeof ns !== "string" || ns.length === 0) return undefined;
+  return target as ComposerLike;
+};
+
+/**
+ * Traits reachable by composition **or** declared as a `Ref(Trait)` target.
+ * A catalog can name a trait only as a ref target; install still needs its
+ * `:ramose/kind` metadata so writes can check membership.
+ */
+export const catalogTraits = (
+  entities: Iterable<ComposerLike>,
+): ReadonlyMap<string, ComposerLike> => {
+  const listed = [...entities];
+  const byNs = new Map(reachableTraits(listed));
+  const referenced: ComposerLike[] = [];
+  for (const entity of listed) {
+    for (const field of Object.values(entity.fields)) {
+      const trait = traitFromRefField(field);
+      if (trait !== undefined) referenced.push(trait);
+    }
+  }
+  if (referenced.length === 0) return byNs;
+  for (const trait of walkTraits(referenced).all) {
+    const seen = byNs.get(trait.ns);
+    if (seen !== undefined && seen !== trait) throw duplicateTraitName(trait.ns);
+    byNs.set(trait.ns, trait);
+  }
+  return byNs;
+};
+
 /** Same ident on two different field objects is a catalog conflict. */
 export const assertUniqueIdents = (
   entities: Iterable<ComposerLike>,

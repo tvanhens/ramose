@@ -6,7 +6,7 @@ import type { AnyField } from "./Field.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
-import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
+import type { AttrAtIdent, CatalogIdent, IdentOfFieldIn } from "./idents.ts";
 import type { AnyEntity, AnyQueryRoot, FieldMap } from "./Entity.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
@@ -573,7 +573,8 @@ export type IdentPullResult<
 export type AllRow<N extends AnyQueryRoot> = {
   readonly ":db/id": number;
 } & {
-  readonly [A in keyof N["fields"] & string as Ident<
+  readonly [A in keyof N["fields"] & string as IdentOfFieldIn<
+    N["fields"][A],
     N["ns"],
     A
   >]?: PullValue<N["fields"][A]>;

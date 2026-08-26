@@ -186,6 +186,35 @@ describe("trait refs", () => {
     });
   });
 
+  test("schemaTx installs a Ref(Trait) target that no entity composes", () => {
+    const Orphan = Trait("orphan", { mark: string() });
+    const Bookmark = Entity("bookmark", { target: Ref(Orphan) });
+    const Only = Schema({ bookmark: Bookmark });
+    const tx = schemaTx(Only);
+    expect(tx.find((op) => ":db/ident" in op && op[":db/ident"] === ":orphan")).toEqual({
+      ":db/ident": ":orphan",
+      ":ramose/kind": ":ramose.kind/trait",
+    });
+  });
+
+  test("rejects an unbranded id when the trait target is not composed", async () => {
+    const Orphan = Trait("orphan", { mark: string() });
+    const Bookmark = Entity("bookmark", { target: Ref(Orphan) });
+    const Plain = Entity("plain", { title: string() });
+    const Only = Schema({ bookmark: Bookmark, plain: Plain });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Only) as unknown[]);
+    const seed = txBuilder(Only);
+    Effect.runSync(seed.put(Plain, { title: "nope" }));
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const bad = txBuilder(Only);
+    Effect.runSync(bad.put(Bookmark, { target: tempids["tmp-1"]! }));
+    await expect(conn.transact([...txOps(bad)])).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining("is not a orphan"),
+    });
+  });
+
   test("accepts a composer and rejects a non-member", async () => {
     const conn = await open();
     const seed = txBuilder(Catalog);

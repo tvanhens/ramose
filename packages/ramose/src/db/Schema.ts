@@ -3,7 +3,7 @@
 import {
   assertEntityTraitNames,
   assertUniqueIdents,
-  reachableTraits,
+  catalogTraits,
   type ComposerLike,
 } from "./compose.ts";
 import type { AnyEntity } from "./Entity.ts";
@@ -35,7 +35,7 @@ const isEntity = (value: unknown): value is AnyEntity =>
 
 const assertCatalog = (entities: EntityMap): void => {
   assertUniqueIdents(Object.values(entities) as ComposerLike[]);
-  const traits = reachableTraits(Object.values(entities) as ComposerLike[]);
+  const traits = catalogTraits(Object.values(entities) as ComposerLike[]);
   assertEntityTraitNames(Object.keys(entities), traits);
 };
 
@@ -116,11 +116,11 @@ export type EntityOf<
   K extends keyof C["entities"],
 > = C["entities"][K];
 
-/** Reachable traits of `schema`, keyed by trait name. */
+/** Reachable traits of `schema`, keyed by trait name — composed or ref-targeted. */
 export const schemaTraits = (
   schema: AnySchema,
 ): ReadonlyMap<string, AnyTrait> =>
-  reachableTraits(Object.values(schema.entities) as ComposerLike[]) as unknown as ReadonlyMap<
+  catalogTraits(Object.values(schema.entities) as ComposerLike[]) as unknown as ReadonlyMap<
     string,
     AnyTrait
   >;

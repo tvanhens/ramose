@@ -726,6 +726,23 @@ describe("masked attributes in pull patterns", () => {
     expect(() => P.compile(authored, { pulls: [taggedOptional] })).not.toThrow();
   });
 
+  test("an OR arm of unguarded true leaves trait fields unmasked", () => {
+    const authored = P.policy(
+      {
+        schema: TraitApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: { taggable: { read: [true, P.class("member")] } },
+      },
+    );
+    expect(() => P.compile(authored, { pulls: [tagged] })).not.toThrow();
+  });
+
   test("an unconditional trait read leaves trait fields unmasked except P.field", () => {
     const open = P.policy(
       {
@@ -761,6 +778,26 @@ describe("masked attributes in pull patterns", () => {
     );
     expect(() => P.compile(narrowed, { pulls: [tagged] })).toThrow(PolicyError);
     expect(() => P.compile(narrowed, { pulls: [taggedOptional] })).not.toThrow();
+  });
+});
+
+describe("an entity named traits", () => {
+  const Traits = Entity("traits", { label: Field(Schema.String) });
+  const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+  const Catalog = DbSchema({ actor: Actor, traits: Traits });
+
+  test("compiles a traits entity arm", () => {
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, traits: { read: true } },
+    );
+    const compiled = JSON.parse(P.compile(authored)) as { ns?: Record<string, unknown> };
+    expect(compiled.ns?.traits).toBeDefined();
   });
 });
 
