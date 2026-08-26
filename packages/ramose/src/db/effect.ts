@@ -55,7 +55,12 @@ export type EffectToken =
 
 /** Options for {@link layer} — `ClientOptions` plus an Effect-valued token. */
 export interface EffectClientOptions extends Omit<ClientOptions, "token"> {
-  readonly token?: EffectToken;
+  // `| undefined` matches every optional field on `ClientOptions`. Without it,
+  // under `exactOptionalPropertyTypes` this override stops being a widening:
+  // a plain `ClientOptions` (whose `token` is `TokenInput | undefined`) would
+  // not be assignable to `EffectClientOptions`, so `layer(clientOptions)` —
+  // the documented use — would not compile.
+  readonly token?: EffectToken | undefined;
 }
 
 /** Resolve a hatch token, including an Effect-valued one. */
