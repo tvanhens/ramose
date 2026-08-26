@@ -38,7 +38,7 @@ import {
 import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { asLookupRef, lowerEntityArg, materializeOutput } from "../src/db/Operation.ts";
 import { schemaTx } from "../src/db/ensure.ts";
-import { client, fakePeer, httpsClient, settle, until, type Call } from "./peer.ts";
+import { client, scriptedPeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
@@ -270,7 +270,7 @@ describe("optimistic prefix", () => {
       return { body: { ...ack, clientOpId: call.body.clientOpId, output: {} } };
     };
 
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
@@ -310,7 +310,7 @@ describe("optimistic prefix", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
         if (!call.url.endsWith("/op")) return { body: { t: server.t } };
@@ -363,7 +363,7 @@ describe("optimistic prefix", () => {
       release = r;
     });
     const opBodies: { entity?: unknown; name?: unknown }[] = [];
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
         if (call.url.endsWith("/transact")) {
@@ -522,7 +522,7 @@ const brokenRead = Operation(
 describe("db.run wire", () => {
   test("an unlowerable query in op.query is InvalidRequest, not InternalError", async () => {
     const server = await moviesWorld();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
         return { body: { t: server.t } };
@@ -538,7 +538,7 @@ describe("db.run wire", () => {
   });
 
   test("a contextual op without an entity is InvalidRequest", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const err = await runFail(
@@ -552,7 +552,7 @@ describe("db.run wire", () => {
 
 describe("db.run / db.query promise rejection identity", () => {
   test("await db.run rejects with OperationRejected itself, not a FiberFailure", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (call.url.endsWith("/op")) {
           return {
@@ -585,7 +585,7 @@ describe("db.run / db.query promise rejection identity", () => {
   });
 
   test("await db.run rejects with TxRejected itself, not a FiberFailure", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (call.url.endsWith("/op")) {
           return {
@@ -638,7 +638,7 @@ describe("lookup-shaped entity args", () => {
     const server = await moviesWorld();
     await server.transact([{ ":user/name": "Ada" }]);
     const opBodies: { entity?: unknown }[] = [];
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
         if (call.url.endsWith("/op")) {
@@ -864,7 +864,7 @@ describe("put", () => {
         },
       };
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
@@ -904,7 +904,7 @@ describe("put", () => {
         },
       };
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);

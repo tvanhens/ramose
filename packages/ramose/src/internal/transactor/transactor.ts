@@ -571,7 +571,7 @@ export class Transactor {
     // the Worker usually resolved it already; when its pre-check was skipped, do it here
     let who = p.principal;
     if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await db.entid([policy.principal, who.sub] as never);
+      const eid = await resolveProvisionedEid(policy, who, db);
       if (eid !== undefined) who = { ...who, eid };
     }
     const res = await checkTx(p.tx, db, policy, who);
@@ -586,7 +586,7 @@ export class Transactor {
     const db = this.conn.db();
     let who = principal;
     if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await db.entid([policy.principal, who.sub] as never);
+      const eid = await resolveProvisionedEid(policy, who, db);
       if (eid !== undefined) who = { ...who, eid };
     }
     const view = filterDb(db, db, policy, who);

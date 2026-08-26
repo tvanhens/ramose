@@ -15,7 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
 import { Query } from "../src/db/internal.ts";
-import { type Call, client, fakePeer, redacted, settle, until } from "./peer.ts";
+import { type Call, client, scriptedPeer, redacted, settle, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -62,7 +62,7 @@ const row = (name: string) => [{ name }];
 
 /** `/info` at `state.t` over HTTPS, reads at `state` over the socket. */
 const peerAt = (state: { t: number; rows: unknown[][] }) =>
-  fakePeer({
+  scriptedPeer({
     answer: () => ({ body: { t: state.t, root: state.t, result: state.rows } }),
     http: (call: Call) =>
       call.method === "GET" && call.url.endsWith("/db/movies/info")
@@ -115,7 +115,7 @@ describe("db.basis()", () => {
   });
 
   test("a 404 maps to DatabaseNotFound", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ status: 404, body: { error: "no such database" } }),
     });
     const c = client(peer);
@@ -132,7 +132,7 @@ describe("db.basis()", () => {
     await conn.transact([{ ":user/name": "Ada" }]);
     const snap = await snapshotOf(conn);
     const state = { t: snap.t, rows: [row("Ada")] };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) =>
         frame.op === "sync"
           ? { body: { t: snap.t, datoms: snap.datoms } }

@@ -76,7 +76,7 @@ examples/reef/
     domain/             shared by every runtime: catalog, policy, queries, ranking, roles, constants
     infra/              deploy-time + Worker code: the peer resources and the auth Worker entry
     app/                the browser SPA (React 19 + StyleX)
-  test/                 unit tests over src/domain — part of `bun run test`
+  test/                 unit tests over src/domain — part of `bun run test:unit`
 ```
 
 | file | what it is |
@@ -91,7 +91,7 @@ examples/reef/
 | `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus create-time `install()` / label seeds; handed to screens as `{ slug, token }` — the peer stamps `sub` / `role` / name / email; screens read `db.principal()` |
 | `src/app/route.tsx` | path-based SPA pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a shared URL land on the same screen |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
-| `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
+| `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test:unit` |
 
 ## What each screen demonstrates
 

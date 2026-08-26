@@ -44,6 +44,7 @@ describe("provisionTx", () => {
   test("no principal attr deployed → nothing to write", async () => {
     const conn = await Connection.create();
     expect(await provisionTx(POLICY, user("ada"), conn.db())).toBeUndefined();
+    expect(await resolveProvisionedEid(POLICY, user("ada"), conn.db())).toBeUndefined();
   });
 
   test("first session upserts sub + role; re-entry is a no-op; a class change writes role", async () => {
@@ -63,6 +64,25 @@ describe("provisionTx", () => {
     await conn.transact(promoted!);
     expect((await conn.db().entity(eid!))![":user/role"]).toBe("admin");
     expect((await conn.db().entity(eid!))![":user/sub"]).toBe("ada");
+  });
+
+  test("a strict unique principal attr still resolves; provision does not write", async () => {
+    const conn = await Connection.create();
+    await conn.transact([
+      {
+        ":db/ident": ":user/sub",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/unique": ":db.unique/value",
+        ":db/optional": true,
+      },
+    ]);
+    expect(await provisionTx(POLICY, user("ada"), conn.db())).toBeUndefined();
+    expect(await resolveProvisionedEid(POLICY, user("ada"), conn.db())).toBeUndefined();
+    await conn.transact([{ ":user/sub": "ada" }]);
+    const eid = await resolveProvisionedEid(POLICY, user("ada"), conn.db());
+    expect(eid).toBeGreaterThan(0);
+    expect(await provisionTx(POLICY, user("ada"), conn.db())).toBeUndefined();
   });
 
   test("without a role attr, a found row is a no-op and a missing row upserts only sub", async () => {

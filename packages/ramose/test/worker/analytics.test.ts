@@ -1,10 +1,8 @@
 /**
  * Analytics Engine service (src/analytics.ts): the per-request http point's
  * column layout, the route labels, and the Effect client over a fake
- * `env.ANALYTICS` binding — including the unbound case, which must stay a
- * silent no-op so tests / miniflare / `bun alchemy dev` run without the
- * binding, and the throwing case, which must surface as a `DatasetError`
- * failure rather than a rejected request.
+ * `env.ANALYTICS` binding — a narrow double for the unbound / throwing
+ * dataset cases. Public HTTP telemetry is covered by the local stack.
  */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";

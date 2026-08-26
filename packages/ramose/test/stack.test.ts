@@ -1,12 +1,11 @@
 /**
- * The resources through the real engine: plan → apply → attributes, with an
- * in-memory state store and a local HTTP server standing in for the peer.
+ * Provider-algorithm tests: plan → apply → attributes, with an in-memory
+ * state store and a local HTTP server standing in for the peer.
  *
- * No cloud, no credentials — `Ramose.providers()` talks to nothing but the
- * peer's `/health` and, for a `Database`, `install()`'s catalog read
- * (`POST /db/:name/query`) then one `POST /db/:name/transact`. That is the
- * point: `Server` only proves the peer is up, and `Database` is not a
- * cloud object at all — it is "install this catalog on this name".
+ * This file tests the Alchemy provider, not the Ramose topology. Owned
+ * Server catalog seeding against real workerd is `test/local` (`registerCatalogSeed`).
+ * `Test.make({ dev: true, sidecar: false })` below is the in-process
+ * local-provider path — not the default integration environment.
  */
 
 import { afterAll, beforeEach, describe, expect } from "bun:test";

@@ -43,7 +43,9 @@ suffixes) is deferred — do not bikeshed it on this pass.
 ```sh
 bun install
 bun run typecheck
-bun test                        # unit/integration (~670 tests, no services)
+bun run test:unit               # fast package tests (`--parallel=3`, no workerd)
+bun run test:local              # Alchemy local stack (serial, workerd)
+bun run test                    # unit then local
 bun website/scripts/docs-check.mjs   # cited snippets + docs facts; blocks CI
 bun run dev:todos               # local peer on :1337, todos app on :5173
 bun run dev:reef                # the Reef example instead
@@ -55,6 +57,20 @@ insists on — nothing is uploaded. A raw `bun alchemy dev <stack>` without
 those keys fails with `AuthError: No credentials configured`. Cursor Cloud
 Agents should also read [`.cursor/CLOUD.md`](.cursor/CLOUD.md) for
 harness-specific port and credential caveats.
+
+## Choosing a test layer
+
+Three layers. Pick the shallowest one that can prove the claim.
+
+| Layer | Command | When |
+|---|---|---|
+| Unit / component | `bun run test:unit` | Query lowering, retry schedules, malformed frames, transactor rollback, replica `applyDatoms` control, React lifecycle, cache TTL, provider plan/apply. Doubles stay narrow: `scriptedPeer` (exact frames), the transactor harness (storage faults), a FakeSocket (session protocol). |
+| Local integration | `bun run test:local` | Anything that crosses a public Ramose boundary: install → transact → query → pull, HTTP/WebSocket routing, Worker ↔ Transactor ↔ QueryReplica, multi-client live, auth/policy, operations, service bindings, catalog seeding, Todos/Reef acceptance. One Alchemy stack (`test/local/alchemy.run.ts`) with `Test.make({ dev: true })` and the normal sidecar. Unique database names; do not reset DO/R2. |
+| Cloudflare e2e | `bun run test:e2e` / `test:e2e:cf` | Edge propagation, deployment convergence, production persistence. The same peer contract (`test/contracts/peer.contract.ts`) runs here against `RAMOSE_URL`. |
+
+A mock is appropriate only for precise failure injection, exact frame ordering, inspecting a request before it leaves the component, internal rollback state, or a virtual clock. Ordinary successful reads, writes, authorization, operations, subscriptions, Worker routing, bindings, and multi-client behavior use the local stack.
+
+`mock.module("cloudflare:workers")` stays only in replica DO unit tests that need direct `applyDatoms` control. It is not how public Worker behavior is exercised.
 
 ## End-to-end tests
 
@@ -99,7 +115,7 @@ stage name is unguessable and torn down at the end of the run.
 
 | Workflow | When | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + unit tests + `docs-check` |
+| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + `test:unit` + `test:local` (parallel jobs) + `docs-check` |
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |

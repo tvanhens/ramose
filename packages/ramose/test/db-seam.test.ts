@@ -14,7 +14,7 @@ import {
   type ReadDb,
   seedWrite,
 } from "../src/db/internal.ts";
-import { client, fakePeer, httpsClient, settle, until } from "./peer.ts";
+import { client, scriptedPeer, httpsClient, settle, until } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
 const seamOf = (db: ReadDb): DbSeam =>
@@ -22,7 +22,7 @@ const seamOf = (db: ReadDb): DbSeam =>
 
 describe("the view key is structural", () => {
   test("same coordinates, same key — across calls and across view spellings", async () => {
-    const c = client(fakePeer());
+    const c = client(scriptedPeer());
     const db = c.ramose.db("movies", Movies);
 
     expect(seamOf(db.asOf(3)).key).toBe(seamOf(db.asOf(3)).key);
@@ -32,8 +32,8 @@ describe("the view key is structural", () => {
   });
 
   test("a different coordinate, name, or client is a different key", async () => {
-    const a = client(fakePeer());
-    const b = client(fakePeer());
+    const a = client(scriptedPeer());
+    const b = client(scriptedPeer());
     const db = a.ramose.db("movies", Movies);
     const report = await Effect.runPromise(
       seedWrite(db, function* () {}),
@@ -51,7 +51,7 @@ describe("the view key is structural", () => {
     expect(new Set(keys).size).toBe(keys.length);
     expect(seamOf(report.dbAfter).key).toBe(seamOf(db).key);
 
-    const https = httpsClient(fakePeer());
+    const https = httpsClient(scriptedPeer());
     const httpsDb = https.databases.db("movies", Movies);
     const httpsReport = await Effect.runPromise(
       seedWrite(httpsDb, function* () {}),
@@ -65,7 +65,7 @@ describe("the view key is structural", () => {
 
 describe("the pinned coordinate", () => {
   test("asOf carries its t; live and history carry undefined", async () => {
-    const c = client(fakePeer());
+    const c = client(scriptedPeer());
     const db = c.ramose.db("movies", Movies);
     expect(seamOf(db.asOf(3)).asOf).toBe(3);
     expect(seamOf(db).asOf).toBeUndefined();
@@ -76,7 +76,7 @@ describe("the pinned coordinate", () => {
 
 describe("the wake", () => {
   test("a { op: tx } frame calls the subscriber; unsubscribe stops it", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
@@ -105,7 +105,7 @@ describe("the wake", () => {
   });
 
   test("an HTTPS-only client has nothing to wake on", () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
     expect(seamOf(db).onWake(() => {})).toBeUndefined();
@@ -116,7 +116,7 @@ describe("the wake", () => {
   });
 
   test("a socket client reports connecting then live, and generation moves on drop", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     expect(seamOf(db).status()).toBe("connecting");

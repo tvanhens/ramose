@@ -10,7 +10,7 @@ import { StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import type * as Ramose from "../../src/db/index.ts";
 import { registerDom, sleep, Todo, Todos, wrapperFor } from "./harness.tsx";
-import { fakePeer, type Frame } from "./peer.ts";
+import { scriptedPeer, type Frame } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
 import { useDb, useLivePull, usePull } from "../../src/react/index.ts";
 
@@ -39,7 +39,7 @@ const todoWorld = async () => {
 };
 
 const overlayPeer = (world: { t: number; datoms: unknown[] }) =>
-  fakePeer({
+  scriptedPeer({
     answer: (frame: Frame) =>
       frame.op === "sync"
         ? { body: { t: world.t, datoms: world.datoms } }
@@ -113,7 +113,7 @@ describe("useLivePull", () => {
   });
 
   test("subject A → B blanks before B lands on a delayed pull", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (frame.op === "pull") {
           const eid = frame.eid as number;
@@ -160,7 +160,7 @@ describe("useLivePull", () => {
 
   test("a pinned view emits once, completes, and keeps its rows", async () => {
     const state = { t: 5, entity: { title: "then" } as unknown };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { body: { t: state.t, result: state.entity } }
@@ -184,7 +184,7 @@ describe("useLivePull", () => {
   test("a terminal refusal lands in error, over the last rows", async () => {
     const world = await todoWorld();
     let refuse = false;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (refuse && frame.op === "sync") {
           return { status: 401, body: { error: "no" } };
@@ -260,7 +260,7 @@ describe("useLivePull", () => {
 
 describe("usePull (one-shot)", () => {
   test("one pull per view: data lands, equal inline views never re-run", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { body: { t: frame.asOf ?? 3, result: { title: "A" } } }
@@ -281,7 +281,7 @@ describe("usePull (one-shot)", () => {
   });
 
   test("switching a shape from required to .optional re-runs", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { body: { t: 3, result: { done: true } } }
@@ -307,7 +307,7 @@ describe("usePull (one-shot)", () => {
   });
 
   test("a render-fresh inline pattern does not re-run after the first result", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { body: { t: 3, result: { title: "A" } } }
@@ -327,7 +327,7 @@ describe("usePull (one-shot)", () => {
 
   test("refetch re-issues the pull", async () => {
     let n = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { body: { t: 3, result: { title: `v${++n}` } } }

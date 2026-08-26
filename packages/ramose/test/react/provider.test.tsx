@@ -15,7 +15,7 @@ import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 import { type ReactNode, StrictMode, useEffect } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
-import { fakePeer, type FakePeer } from "./peer.ts";
+import { scriptedPeer, type ScriptedPeer } from "./peer.ts";
 import { RamoseProvider, useDb } from "../../src/react/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
@@ -36,7 +36,7 @@ const titles = Ramose.Query.q(() =>
   pipe(Ramose.Query.entities(Todo), Ramose.Query.select({ title: Todo.title })),
 );
 
-const providerProps = (peer: FakePeer, url = "https://peer.example.com") => ({
+const providerProps = (peer: ScriptedPeer, url = "https://peer.example.com") => ({
   url,
   fetch: peer.fetch,
   webSocket: peer.webSocket,
@@ -66,7 +66,7 @@ describe("useDb", () => {
   });
 
   test("identity is stable across renders, and changes with name", () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const wrapper = ({ children }: { children?: ReactNode }) => (
       <RamoseProvider {...providerProps(peer)}>{children}</RamoseProvider>
     );
@@ -87,7 +87,7 @@ describe("useDb", () => {
 
 describe("RamoseProvider", () => {
   test("a prop change closes the old client and connects the new one", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const ui = (url: string) => (
       <RamoseProvider {...providerProps(peer, url)}>
         <ReadOnce />
@@ -107,7 +107,7 @@ describe("RamoseProvider", () => {
   });
 
   test("a token identity change closes the old client too", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const ui = (source: Ramose.TokenSource) => (
       <RamoseProvider {...providerProps(peer)} token={source}>
         <ReadOnce />
@@ -126,7 +126,7 @@ describe("RamoseProvider", () => {
   });
 
   test("unmount closes the client", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { unmount } = render(
       <RamoseProvider {...providerProps(peer)}>
         <ReadOnce />
@@ -139,7 +139,7 @@ describe("RamoseProvider", () => {
   });
 
   test("StrictMode double-mount ends with an open client", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const seen: ReturnType<typeof useDb<typeof Todos>>[] = [];
     const Probe = () => {
       const db = useDb("todos", Todos);

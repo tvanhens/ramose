@@ -10,7 +10,7 @@ import * as Ramose from "../../src/db/index.ts";
 import * as Schema from "effect/Schema";
 import { memo, type ReactNode, StrictMode } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
-import { type Answer, fakePeer } from "./peer.ts";
+import { type Answer, scriptedPeer } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
 import { useLiveQuery } from "../../src/react/index.ts";
 import { seamOf } from "../../src/react/seam.ts";
@@ -68,7 +68,7 @@ const todoWorld = async (n: number) => {
 /** Pinned-view / peer-answer client (asOf still POSTs `q`). */
 const setup = () => {
   let respond: Answer = () => ({ body: { t: 1, result: [[1]] } });
-  const peer = fakePeer({ answer: (frame) => respond(frame) });
+  const peer = scriptedPeer({ answer: (frame) => respond(frame) });
   const client = Ramose.connect({
     url: "https://peer.example.com",
     fetch: peer.fetch,
@@ -120,7 +120,7 @@ const overlaySetup = (world: { t: number; datoms: unknown[] }) => {
     frame.op === "sync"
       ? { body: { t: world.t, datoms: world.datoms } }
       : { body: { t: world.t, result: [] } };
-  const peer = fakePeer({
+  const peer = scriptedPeer({
     answer: (frame) => respond(frame),
     http: () => ({ body: { t: world.t, txEid: 1, tempids: {}, datoms: 1 } }),
   });
