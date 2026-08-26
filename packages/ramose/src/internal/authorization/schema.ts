@@ -294,14 +294,6 @@ const decisionCount = (decisions: {
   Object.keys(decisions.fields).length +
   Object.keys(decisions.operations).length;
 
-const decodeJson = <A>(
-  schema: Schema.Top,
-  value: unknown,
-  Invalid: new (props: { message: string; path?: string }) => A,
-): A extends Error ? never : never => {
-  throw new Error("unreachable");
-};
-
 const runDecode = <E>(
   schema: unknown,
   value: unknown,
@@ -318,10 +310,11 @@ const runDecode = <E>(
   const result = (
     Schema.decodeUnknownResult as (
       schema: unknown,
+      options?: { readonly onExcessProperty?: "ignore" | "error" | "preserve" },
     ) => (input: unknown) =>
       | { readonly _tag: "Success"; readonly success: unknown }
       | { readonly _tag: "Failure"; readonly failure: { readonly message?: string } }
-  )(schema)(value);
+  )(schema, { onExcessProperty: "error" })(value);
   if (result._tag === "Failure") {
     const issue = result.failure;
     return {
@@ -399,5 +392,3 @@ export const tryDecodeInstalledDocument = (
     ? { _tag: "Right", right: result.value as InstalledAuthorizationIR }
     : { _tag: "Left", left: result.error };
 };
-
-void decodeJson;

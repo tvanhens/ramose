@@ -25,7 +25,9 @@ const encode = (value: unknown): string => {
   if (!isPlainObject(value)) {
     throw new Error("canonicalJson: non-JSON value");
   }
-  const keys = Object.keys(value).sort();
+  const keys = Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${encode(value[key])}`).join(",")}}`;
 };
 

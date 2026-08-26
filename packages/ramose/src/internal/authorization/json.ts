@@ -50,26 +50,30 @@ export const assertJsonOnly = (
   if (seen.has(obj)) throw new JsonOnlyError(path, `cycle at ${path}`);
   seen.add(obj);
 
-  if (Array.isArray(value)) {
-    const proto = protoOf(value);
-    if (proto !== Array.prototype && proto !== null) {
-      throw new JsonOnlyError(path, `array with unexpected prototype at ${path}`);
+  try {
+    if (Array.isArray(value)) {
+      const proto = protoOf(value);
+      if (proto !== Array.prototype && proto !== null) {
+        throw new JsonOnlyError(path, `array with unexpected prototype at ${path}`);
+      }
+      for (let i = 0; i < value.length; i++) {
+        assertJsonOnly(value[i], `${path}[${i}]`, seen);
+      }
+      return;
     }
-    for (let i = 0; i < value.length; i++) {
-      assertJsonOnly(value[i], `${path}[${i}]`, seen);
-    }
-    return;
-  }
 
-  const proto = protoOf(obj);
-  if (proto !== Object.prototype && proto !== null) {
-    throw new JsonOnlyError(path, `object with unexpected prototype at ${path}`);
-  }
-  if (Object.getOwnPropertySymbols(obj).length > 0) {
-    throw new JsonOnlyError(path, `symbol key at ${path}`);
-  }
-  for (const key of Object.keys(obj)) {
-    assertJsonOnly((obj as Record<string, unknown>)[key], `${path}.${key}`, seen);
+    const proto = protoOf(obj);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new JsonOnlyError(path, `object with unexpected prototype at ${path}`);
+    }
+    if (Object.getOwnPropertySymbols(obj).length > 0) {
+      throw new JsonOnlyError(path, `symbol key at ${path}`);
+    }
+    for (const key of Object.keys(obj)) {
+      assertJsonOnly((obj as Record<string, unknown>)[key], `${path}.${key}`, seen);
+    }
+  } finally {
+    seen.delete(obj);
   }
 };
 

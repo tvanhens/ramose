@@ -176,6 +176,9 @@ const resolvePathFields = (
 
   const resolved: CatalogFieldDescriptor[] = [];
   for (const step of path.steps) {
+    if (step.field.localName === "id") {
+      continue;
+    }
     const field = fieldOf(catalog, step.field);
     if (field === undefined) {
       return failTemplate(
@@ -741,14 +744,15 @@ export const bindTemplate = (
     policyHash,
     principal: {
       subjectClaim: validated.principal.subjectClaim,
-      entity:
-        validated.principal.entity === undefined
-          ? undefined
-          : {
+      ...(validated.principal.entity === undefined
+        ? {}
+        : {
+            entity: {
               catalog: catalog.catalogId,
               owner: validated.principal.entity.owner,
               localName: validated.principal.entity.localName,
             },
+          }),
     },
     classes: validated.classes,
     claims: validated.claims,
@@ -797,7 +801,7 @@ export const bindTemplate = (
       inputKeys: op.inputKeys,
     })),
     rules,
-    decisions,
+    decisions: structuredClone(decisions),
     accessPlans,
   };
 };
@@ -852,13 +856,14 @@ export const semanticallyValidateInstalled = (
     version: "ramose.policy.template.1",
     principal: {
       subjectClaim: installed.principal.subjectClaim,
-      entity:
-        installed.principal.entity === undefined
-          ? undefined
-          : {
+      ...(installed.principal.entity === undefined
+        ? {}
+        : {
+            entity: {
               owner: installed.principal.entity.owner,
               localName: installed.principal.entity.localName,
             },
+          }),
     },
     classes: installed.classes,
     claims: installed.claims,

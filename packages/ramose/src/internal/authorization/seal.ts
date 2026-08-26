@@ -27,10 +27,11 @@ const deepFreeze = <T>(value: T): T => {
 export const sealInstalled = (
   installed: InstalledAuthorizationIR,
 ): SealedInstalledAuthorizationIR => {
-  const sealed = Object.assign(deepFreeze({ ...installed }), {
+  const clone = structuredClone(installed) as InstalledAuthorizationIR;
+  const branded = Object.assign(clone, {
     [InstalledBrand]: InstalledBrand,
   }) as SealedInstalledAuthorizationIR;
-  return Object.freeze(sealed);
+  return deepFreeze(branded);
 };
 
 export const freezeJson = <T>(value: T): T => deepFreeze(structuredClone(value));

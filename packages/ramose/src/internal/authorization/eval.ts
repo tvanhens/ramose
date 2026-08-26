@@ -199,8 +199,19 @@ const resolveOperand = (ctx: EvalContext, operand: Operand): Projection => {
       return Present(operand.value);
     case "subject":
       return Present(ctx.principal.subject);
-    case "me":
-      return ctx.principal.me;
+    case "me": {
+      const me = ctx.principal.me;
+      if (me._tag === "Absent") {
+        return {
+          _tag: "Unavailable",
+          reason: {
+            _tag: "MissingMe",
+            detail: "principal row did not resolve",
+          },
+        };
+      }
+      return me;
+    }
     case "claim": {
       const claim = ctx.principal.claims.get(operand.key);
       return (
@@ -455,7 +466,7 @@ export const authorizeField = (
     traitName === undefined
       ? authorizeRow(installed, entityName, ctx)
       : authorizeTrait(installed, entityName, traitName, ctx);
-  if (parent._tag !== "True") return parent._tag === "Incomplete" ? parent : False;
+  if (parent._tag !== "True") return False;
   const field = installed.decisions.fields[fieldKey];
   if (field === undefined) return True;
   return evaluateDecision(field, ruleMap(installed), ctx);

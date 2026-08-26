@@ -180,7 +180,9 @@ export const compileAuthoring = (
       version: POLICY_TEMPLATE_VERSION,
       principal: {
         subjectClaim: authored.options.principal.subjectClaim,
-        entity: authored.principalField,
+        ...(authored.principalField === undefined
+          ? {}
+          : { entity: authored.principalField }),
       },
       classes: authored.classes,
       claims: authored.claimKeys,
