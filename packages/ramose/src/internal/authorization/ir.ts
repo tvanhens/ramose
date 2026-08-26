@@ -17,7 +17,7 @@ import {
   RuleAccessPlan,
   TraitComposition,
 } from "./catalog.ts";
-import { AuthorizationExpr } from "./expr.ts";
+import { CanonicalAuthorizationExpr, RelativeAuthorizationExpr } from "./expr.ts";
 import {
   CanonicalIdentitySchemas,
   CatalogId,
@@ -72,13 +72,15 @@ export const AuthorizationRule = <
   Trait extends Schema.Top,
   Field extends Schema.Top,
   Operation extends Schema.Top,
+  Expr extends Schema.Top,
 >(
   ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+  expr: Expr,
 ) =>
   Schema.Struct({
     id: RuleId,
     focus: RuleFocus(ids),
-    expr: AuthorizationExpr(ids),
+    expr,
     usesResource: Schema.Boolean,
     usesInput: Schema.Boolean,
     usesMe: Schema.Boolean,
@@ -137,7 +139,7 @@ export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
   classes: ClassVocabulary,
   claims: ClaimVocabulary,
   principal: PrincipalResolutionConfig,
-  rules: Schema.Array(AuthorizationRule(RelativeIdentitySchemas)),
+  rules: Schema.Array(AuthorizationRule(RelativeIdentitySchemas, RelativeAuthorizationExpr)),
   decisions: AuthorizationDecisions(RelativeIdentitySchemas),
 });
 export type PolicyTemplateIR = typeof PolicyTemplateIR.Type;
@@ -160,7 +162,7 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
   identities: InstalledIdentityTable,
   traitComposition: Schema.Array(TraitComposition),
   operations: Schema.Array(OperationDescriptor),
-  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas)),
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
   decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
   accessPlans: Schema.Array(RuleAccessPlan),
 });
@@ -180,9 +182,15 @@ export type RelativeRuleFocus = typeof RelativeRuleFocus.Type;
 export const CanonicalRuleFocus = RuleFocus(CanonicalIdentitySchemas);
 export type CanonicalRuleFocus = typeof CanonicalRuleFocus.Type;
 
-export const RelativeAuthorizationRule = AuthorizationRule(RelativeIdentitySchemas);
+export const RelativeAuthorizationRule = AuthorizationRule(
+  RelativeIdentitySchemas,
+  RelativeAuthorizationExpr,
+);
 export type RelativeAuthorizationRule = typeof RelativeAuthorizationRule.Type;
-export const CanonicalAuthorizationRule = AuthorizationRule(CanonicalIdentitySchemas);
+export const CanonicalAuthorizationRule = AuthorizationRule(
+  CanonicalIdentitySchemas,
+  CanonicalAuthorizationExpr,
+);
 export type CanonicalAuthorizationRule = typeof CanonicalAuthorizationRule.Type;
 
 export const RelativeAuthorizationDecisions = AuthorizationDecisions(RelativeIdentitySchemas);

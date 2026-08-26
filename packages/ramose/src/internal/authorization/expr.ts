@@ -8,17 +8,17 @@
  * Effect Schema is the source of truth. Parameterized nodes are factories
  * over relative or canonical identity schemas. Types are `typeof Model.Type`
  * except the recursive expression unions, which exist only to break the
- * inference cycle and are checked by `Schema.Decoder<…>`.
+ * inference cycle and are checked by `Schema.Codec<Decoded, Encoded>`.
  */
 
 import * as Schema from "effect/Schema";
 import {
   CanonicalIdentitySchemas,
+  EntityId,
   RelativeEntityId,
   RelativeIdentitySchemas,
   type AnyIdentitySchemaSpace,
   type CanonicalIdentities,
-  type EntityId,
   type IdentitySpace,
   type RelativeIdentities,
 } from "./identities.ts";
@@ -146,6 +146,11 @@ export type RelativeValueTerm = typeof RelativeValueTerm.Type;
 export const CanonicalValueTerm = ValueTerm(CanonicalIdentitySchemas.field);
 export type CanonicalValueTerm = typeof CanonicalValueTerm.Type;
 
+export type RelativeValueTermEncoded = typeof RelativeValueTerm.Encoded;
+export type CanonicalValueTermEncoded = typeof CanonicalValueTerm.Encoded;
+export type RelativeRefTermEncoded = typeof RelativeRefTerm.Encoded;
+export type CanonicalRefTermEncoded = typeof CanonicalRefTerm.Encoded;
+
 export type RelativeAuthorizationExpr =
   | ConstExpr
   | HasClassExpr
@@ -192,6 +197,52 @@ export type CanonicalAuthorizationExpr =
       readonly pred: CanonicalAuthorizationExpr;
     };
 
+export type RelativeAuthorizationExprEncoded =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<RelativeAuthorizationExprEncoded> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<RelativeAuthorizationExprEncoded> }
+  | { readonly _tag: "not"; readonly expr: RelativeAuthorizationExprEncoded }
+  | { readonly _tag: "eq"; readonly left: RelativeValueTermEncoded; readonly right: RelativeValueTermEncoded }
+  | { readonly _tag: "has"; readonly term: RelativeValueTermEncoded }
+  | { readonly _tag: "in"; readonly value: RelativeValueTermEncoded; readonly collection: RelativeValueTermEncoded }
+  | {
+      readonly _tag: "some";
+      readonly collection: RelativeRefTermEncoded;
+      readonly bind: string;
+      readonly pred: RelativeAuthorizationExprEncoded;
+    }
+  | { readonly _tag: "overlaps"; readonly left: RelativeRefTermEncoded; readonly right: RelativeRefTermEncoded }
+  | {
+      readonly _tag: "exists";
+      readonly entity: typeof RelativeEntityId.Encoded;
+      readonly bind: string;
+      readonly pred: RelativeAuthorizationExprEncoded;
+    };
+
+export type CanonicalAuthorizationExprEncoded =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExprEncoded> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExprEncoded> }
+  | { readonly _tag: "not"; readonly expr: CanonicalAuthorizationExprEncoded }
+  | { readonly _tag: "eq"; readonly left: CanonicalValueTermEncoded; readonly right: CanonicalValueTermEncoded }
+  | { readonly _tag: "has"; readonly term: CanonicalValueTermEncoded }
+  | { readonly _tag: "in"; readonly value: CanonicalValueTermEncoded; readonly collection: CanonicalValueTermEncoded }
+  | {
+      readonly _tag: "some";
+      readonly collection: CanonicalRefTermEncoded;
+      readonly bind: string;
+      readonly pred: CanonicalAuthorizationExprEncoded;
+    }
+  | { readonly _tag: "overlaps"; readonly left: CanonicalRefTermEncoded; readonly right: CanonicalRefTermEncoded }
+  | {
+      readonly _tag: "exists";
+      readonly entity: typeof EntityId.Encoded;
+      readonly bind: string;
+      readonly pred: CanonicalAuthorizationExprEncoded;
+    };
+
 const authorizationExprUnion = <
   Entity extends Schema.Top,
   Trait extends Schema.Top,
@@ -219,22 +270,15 @@ const authorizationExprUnion = <
   ]);
 };
 
-export const AuthorizationExpr = <I extends AnyIdentitySchemaSpace>(
-  ids: I,
-): I extends typeof CanonicalIdentitySchemas
-  ? Schema.Decoder<CanonicalAuthorizationExpr, unknown>
-  : Schema.Decoder<RelativeAuthorizationExpr, unknown> =>
-  (ids.entity === CanonicalIdentitySchemas.entity
-    ? CanonicalAuthorizationExpr
-    : RelativeAuthorizationExpr) as I extends typeof CanonicalIdentitySchemas
-    ? Schema.Decoder<CanonicalAuthorizationExpr, unknown>
-    : Schema.Decoder<RelativeAuthorizationExpr, unknown>;
+export const RelativeAuthorizationExpr: Schema.Codec<
+  RelativeAuthorizationExpr,
+  RelativeAuthorizationExprEncoded
+> = Schema.suspend(() => authorizationExprUnion(RelativeIdentitySchemas, RelativeAuthorizationExpr));
 
-export const RelativeAuthorizationExpr: Schema.Decoder<RelativeAuthorizationExpr, unknown> =
-  Schema.suspend(() => authorizationExprUnion(RelativeIdentitySchemas, RelativeAuthorizationExpr));
-
-export const CanonicalAuthorizationExpr: Schema.Decoder<CanonicalAuthorizationExpr, unknown> =
-  Schema.suspend(() => authorizationExprUnion(CanonicalIdentitySchemas, CanonicalAuthorizationExpr));
+export const CanonicalAuthorizationExpr: Schema.Codec<
+  CanonicalAuthorizationExpr,
+  CanonicalAuthorizationExprEncoded
+> = Schema.suspend(() => authorizationExprUnion(CanonicalIdentitySchemas, CanonicalAuthorizationExpr));
 
 export type PathStep<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
   ? CanonicalPathStep

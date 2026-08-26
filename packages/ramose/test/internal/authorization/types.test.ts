@@ -6,6 +6,7 @@
  */
 
 import { expect, test } from "bun:test";
+import * as Schema from "effect/Schema";
 import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
 import {
   AuthorizationDenied,
@@ -53,6 +54,7 @@ import {
   FieldDescriptor,
   type IncompleteProjected,
   InputTerm,
+  JsonScalar,
   InstalledAuthorizationIR,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
@@ -99,6 +101,18 @@ type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputS
 type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
 type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
 type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
+
+type TemplateEncoded = typeof PolicyTemplateIR.Encoded;
+type InstalledEncoded = typeof InstalledAuthorizationIR.Encoded;
+type _templateEncodedKnown = Expect<Extends<TemplateEncoded, { readonly _tag: "PolicyTemplateIR" }>>;
+type _installedEncodedKnown = Expect<
+  Extends<InstalledEncoded, { readonly _tag: "InstalledAuthorizationIR" }>
+>;
+type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
+type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
+type _installedCatalogDecoded = Expect<Equal<InstalledAuthorizationIR["catalog"], CatalogId>>;
+type _installedCatalogEncoded = Expect<Equal<InstalledEncoded["catalog"], string>>;
+type _jsonValueEncoded = Expect<Equal<typeof JsonScalar.Encoded, JsonScalar>>;
 
 type OwnerlessOperation = {
   readonly _tag: "OperationId";
@@ -761,4 +775,8 @@ test("authorization type fixtures compile", () => {
   new AuthorizationDenied({ message: "exists" });
   expect(Object.getPrototypeOf(templateFixture)).toBe(Object.prototype);
   expect(Object.getPrototypeOf(installedFixture)).toBe(Object.prototype);
+  expect(Schema.is(JsonScalar)(1)).toBe(true);
+  expect(Schema.is(JsonScalar)(Number.NaN)).toBe(false);
+  expect(Schema.is(JsonScalar)(Number.POSITIVE_INFINITY)).toBe(false);
+  expect(Schema.is(JsonScalar)(Number.NEGATIVE_INFINITY)).toBe(false);
 });

@@ -119,8 +119,9 @@ export type OperationInputOpaqueShape = typeof OperationInputOpaqueShape.Type;
  * Nested arrays/structs stay intact; `opaque` is valid input that policy
  * expressions cannot traverse by key.
  *
- * Recursive types exist only to break the inference cycle. The Schema
- * annotations check those types against the runtime models.
+ * Recursive types exist only to break the inference cycle.
+ * Encoded forms keep unbranded catalog strings so #357 can encode without
+ * a second contract.
  */
 export type OperationInputFieldDescriptor = {
   readonly key: string;
@@ -135,20 +136,36 @@ export type OperationInputShape =
   | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationInputFieldDescriptor> }
   | { readonly _tag: "array"; readonly items: OperationInputShape };
 
-export const OperationInputFieldDescriptor: Schema.Schema<OperationInputFieldDescriptor> =
-  Schema.Struct({
-    key: Schema.String,
-    optional: Schema.Boolean,
-    shape: Schema.suspend(() => OperationInputShape),
-  });
+export type OperationInputFieldDescriptorEncoded = {
+  readonly key: string;
+  readonly optional: boolean;
+  readonly shape: OperationInputShapeEncoded;
+};
 
-export const OperationInputShape: Schema.Schema<OperationInputShape> = Schema.Union([
-  OperationInputScalarShape,
-  OperationInputRefShape,
-  Schema.TaggedStruct("struct", { fields: Schema.Array(OperationInputFieldDescriptor) }),
-  Schema.TaggedStruct("array", { items: Schema.suspend(() => OperationInputShape) }),
-  OperationInputOpaqueShape,
-]);
+export type OperationInputShapeEncoded =
+  | typeof OperationInputScalarShape.Encoded
+  | typeof OperationInputRefShape.Encoded
+  | typeof OperationInputOpaqueShape.Encoded
+  | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationInputFieldDescriptorEncoded> }
+  | { readonly _tag: "array"; readonly items: OperationInputShapeEncoded };
+
+export const OperationInputFieldDescriptor: Schema.Codec<
+  OperationInputFieldDescriptor,
+  OperationInputFieldDescriptorEncoded
+> = Schema.Struct({
+  key: Schema.String,
+  optional: Schema.Boolean,
+  shape: Schema.suspend(() => OperationInputShape),
+});
+
+export const OperationInputShape: Schema.Codec<OperationInputShape, OperationInputShapeEncoded> =
+  Schema.Union([
+    OperationInputScalarShape,
+    OperationInputRefShape,
+    Schema.TaggedStruct("struct", { fields: Schema.Array(OperationInputFieldDescriptor) }),
+    Schema.TaggedStruct("array", { items: Schema.suspend(() => OperationInputShape) }),
+    OperationInputOpaqueShape,
+  ]);
 
 /**
  * Authoritative typed input for one owned operation.

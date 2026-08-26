@@ -27,8 +27,8 @@ export type ClaimOpaqueShape = typeof ClaimOpaqueShape.Type;
  * Authoritative shape of one declared claim. Nested arrays/structs stay
  * intact so the binder can check `teams: Schema.Array(Schema.String)`.
  *
- * Recursive types exist only to break the inference cycle. The Schema
- * annotations check those types against the runtime models.
+ * Recursive types exist only to break the inference cycle.
+ * `Schema.Codec` preserves the encoded representation for #357.
  */
 export type ClaimDescriptor = {
   readonly key: string;
@@ -42,13 +42,13 @@ export type ClaimShape =
   | { readonly _tag: "struct"; readonly fields: ReadonlyArray<ClaimDescriptor> }
   | { readonly _tag: "array"; readonly items: ClaimShape };
 
-export const ClaimDescriptor: Schema.Schema<ClaimDescriptor> = Schema.Struct({
+export const ClaimDescriptor: Schema.Codec<ClaimDescriptor> = Schema.Struct({
   key: Schema.String,
   optional: Schema.Boolean,
   shape: Schema.suspend(() => ClaimShape),
 });
 
-export const ClaimShape: Schema.Schema<ClaimShape> = Schema.Union([
+export const ClaimShape: Schema.Codec<ClaimShape> = Schema.Union([
   ClaimScalarShape,
   Schema.TaggedStruct("struct", { fields: Schema.Array(ClaimDescriptor) }),
   Schema.TaggedStruct("array", { items: Schema.suspend(() => ClaimShape) }),
