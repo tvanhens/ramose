@@ -21,4 +21,21 @@ export * from "./db/index.ts";
 
 export { policy } from "./db/Policy.ts";
 export * as Policy from "./db/Policy.ts";
+export * as Authorization from "./authorization/index.ts";
+export {
+  compileAuthorization,
+  read,
+  run,
+  rule,
+  withOperations,
+  and,
+  or,
+  not,
+  eq,
+  has,
+  some,
+  overlaps,
+  exists,
+  hasClass,
+} from "./authorization/index.ts";
 export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";

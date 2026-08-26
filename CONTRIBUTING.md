@@ -21,6 +21,9 @@ conformance tests can cite them:
 
 - Authorization and noninterference:
   [`packages/ramose/src/internal/design/authorization.md`](packages/ramose/src/internal/design/authorization.md)
+- Policy authoring API and authorization IR (issue #337):
+  [`packages/ramose/src/authorization/`](packages/ramose/src/authorization/) compiles to
+  [`packages/ramose/src/internal/authorization/`](packages/ramose/src/internal/authorization/)
 
 ## Public vocabulary
 
