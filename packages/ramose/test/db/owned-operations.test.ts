@@ -217,6 +217,26 @@ describe("runtime target check", () => {
     ).toBe("foreign");
   });
 
+  test("trait membership falls back to schema composition when the stamp is stale", () => {
+    const row = {
+      ":db/id": 1,
+      ":ramose/type": ":issue",
+      ":ramose/trait": [":timestamped"],
+      ":issue/title": "Fix",
+    };
+    expect(checkOperationTarget(row, Taggable)).toBe("foreign");
+    expect(
+      checkOperationTarget(row, Taggable, {
+        traitsOfType: (type) => (type === ":issue" ? [":taggable"] : []),
+      }),
+    ).toBe("ok");
+    expect(
+      checkOperationTarget(row, Taggable, {
+        traitsOfType: (type) => (type === ":issue" ? [":timestamped"] : []),
+      }),
+    ).toBe("foreign");
+  });
+
   test("entity-only rows without :ramose/type fall back to the namespace prefix", () => {
     expect(
       checkOperationTarget({ ":db/id": 1, ":issue/title": "Fix" }, Issue),

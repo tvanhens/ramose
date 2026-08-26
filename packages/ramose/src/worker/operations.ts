@@ -113,7 +113,9 @@ const entityTargetOk = async (
   owner: { readonly _tag?: string; readonly ns: string },
 ): Promise<"ok" | "dangling" | "foreign"> => {
   if (!(await db.exists(eid))) return "dangling";
-  return checkOperationTarget(await db.entity(eid), owner);
+  return checkOperationTarget(await db.entity(eid), owner, {
+    traitsOfType: (typeIdent) => db.schema.transitiveTraits(typeIdent),
+  });
 };
 
 const installOn = (

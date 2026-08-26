@@ -15,6 +15,7 @@ import { Database, isDatabase } from "../src/Database.ts";
 import { Databases } from "../src/Databases.ts";
 import {
   AUTH_ENV_KEYS,
+  assembleServerOperations,
   authEnv,
   checkAuth,
   compareAuthToWorker,
@@ -714,6 +715,16 @@ describe("operations coverage vs /health", () => {
     const error = compareOperationsToHealth(client, { ok: true });
     expect(error).toBeInstanceOf(OperationsCoverageError);
     expect(error?.missing).toEqual(["user/create", "user/set-name"]);
+  });
+
+  test("unset operations still skip coverage when catalogs own no operations", () => {
+    expect(assembleServerOperations({ movies: Movies })).toBeUndefined();
+    expect(assembleServerOperations({ movies: Movies }, undefined)).toBeUndefined();
+    const extra = defineOperations(Movies, { createUser, setName });
+    expect(assembleServerOperations({ movies: Movies }, extra)?.names()).toEqual([
+      "user/create",
+      "user/set-name",
+    ]);
   });
 
   test("policy operations coverage: unknown armed name fails; unarmed is fine", () => {

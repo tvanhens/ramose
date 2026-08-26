@@ -621,14 +621,10 @@ const healthOperationsOf = (health: unknown): string[] => {
 };
 
 /**
- * @internal `Server({ operations })` vs a `/health` body. Missing ids
- * fail the deploy as {@link OperationsCoverageError} so `missing` and
- * `instanceof` survive; extra peer ops are fine. Unset `operations` skips.
- */
-/**
  * Harvest owned operations from seeded catalogs and merge with an
  * explicit registry. Duplicate wire identities bound to different
- * definitions are assembly errors.
+ * definitions are assembly errors. An empty harvest with no extra
+ * registry is `undefined` — unset `operations` still skips coverage.
  */
 export const assembleServerOperations = (
   databases: Record<string, DatabaseSeed> | undefined,
@@ -637,9 +633,16 @@ export const assembleServerOperations = (
   const schemas =
     databases === undefined ? [] : Object.values(databases).map(schemaOf);
   if (schemas.length === 0) return extra;
-  return Operations(assembleOperations(schemas, extra));
+  const assembled = assembleOperations(schemas, extra);
+  if (Object.keys(assembled).length === 0) return extra;
+  return Operations(assembled);
 };
 
+/**
+ * @internal `Server({ operations })` vs a `/health` body. Missing ids
+ * fail the deploy as {@link OperationsCoverageError} so `missing` and
+ * `instanceof` survive; extra peer ops are fine. Unset `operations` skips.
+ */
 export const compareOperationsToHealth = (
   operations: AnyOperations | undefined,
   health: unknown,

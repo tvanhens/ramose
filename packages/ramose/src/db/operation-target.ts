@@ -18,6 +18,13 @@ export type OperationTargetOwner = {
   readonly ns: string;
 };
 
+/** Schema-derived traits of a `:ramose/type` ident (`:issue` → `:taggable`). */
+export type TraitsOfType = (typeIdent: string) => readonly string[];
+
+export type OperationTargetContext = {
+  readonly traitsOfType?: TraitsOfType;
+};
+
 const asList = (value: unknown): readonly unknown[] => {
   if (value == null) return [];
   return Array.isArray(value) ? value : [value];
@@ -38,12 +45,26 @@ export const targetKindOf = (
 export const checkOperationTarget = (
   row: Readonly<Record<string, unknown>> | undefined,
   owner: OperationTargetOwner,
+  context?: OperationTargetContext,
 ): OperationTargetCheck => {
   if (row === undefined) return "dangling";
   const ident = composerIdent(owner.ns);
   if (targetKindOf(owner) === "trait") {
     const traits = asList(row[RAMOSE_TRAIT_IDENT]);
-    return traits.includes(ident) ? "ok" : "foreign";
+    if (traits.includes(ident)) return "ok";
+    const type = row[RAMOSE_TYPE_IDENT];
+    if (typeof type === "string" && context?.traitsOfType !== undefined) {
+      return context.traitsOfType(type).includes(ident) ? "ok" : "foreign";
+    }
+    if (traits.length === 0 && typeof type !== "string") {
+      const keys = userKeys(row).filter(
+        (key) => key !== RAMOSE_TYPE_IDENT && key !== RAMOSE_TRAIT_IDENT,
+      );
+      if (keys.length === 0) return "dangling";
+      const prefix = `${ident}/`;
+      return keys.some((key) => key.startsWith(prefix)) ? "ok" : "foreign";
+    }
+    return "foreign";
   }
   const type = row[RAMOSE_TYPE_IDENT];
   if (typeof type === "string") {

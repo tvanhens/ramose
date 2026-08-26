@@ -750,7 +750,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             const check = yield* Effect.promise(async () => {
               const db = view();
               if (!(await db.exists(self))) return "dangling" as const;
-              return checkOperationTarget(await db.entity(self), args.operation.on!);
+              return checkOperationTarget(await db.entity(self), args.operation.on!, {
+                traitsOfType: (typeIdent) => db.schema.transitiveTraits(typeIdent),
+              });
             });
             if (check !== "ok") {
               return yield* Effect.fail(
