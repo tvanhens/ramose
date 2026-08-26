@@ -36,6 +36,7 @@ export {
   conflictingFieldName,
   entityTraitNameClash,
   traitCycle,
+  traitsEntityPolicyClash,
 } from "./compose.ts";
 export * from "./shapes.ts";
 export {

@@ -103,6 +103,15 @@ describe("Trait() / Entity() composition", () => {
       /"taggable" is both an entity and a trait/,
     );
   });
+
+  test("Entity(traits) cannot coexist with a trait named read", () => {
+    const Read = Trait("read", { flag: string() });
+    const Item = Entity("item", { title: string() }, { traits: [Read] });
+    const Traits = Entity("traits", { label: string() });
+    expect(() => Schema({ traits: Traits, item: Item })).toThrow(
+      /Entity\("traits"\) cannot coexist with Trait\("read"\)/,
+    );
+  });
 });
 
 describe("schemaTx composition metadata", () => {

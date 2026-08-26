@@ -47,6 +47,22 @@ export const entityTraitNameClash = (ns: string): Error =>
     `ramose/schema: ${JSON.stringify(ns)} is both an entity and a trait`,
   );
 
+/** Policy keys on an `Entity("traits")` arm — collide with trait names. */
+export const TRAITS_ENTITY_ARM_KEYS = new Set([
+  "read",
+  "attrs",
+  "set",
+  "remove",
+  "delete",
+  "create",
+  "preset",
+]);
+
+export const traitsEntityPolicyClash = (traitNs: string): Error =>
+  new Error(
+    `ramose/schema: Entity("traits") cannot coexist with Trait(${JSON.stringify(traitNs)}) — rename one; ${JSON.stringify(traitNs)} is a traits-entity policy key`,
+  );
+
 /** Direct traits, then every reachable trait once (post-order). Cycles throw. */
 export const walkTraits = (
   traits: readonly ComposerLike[] | undefined,
@@ -198,7 +214,13 @@ export const assertEntityTraitNames = (
   entityNss: Iterable<string>,
   traits: ReadonlyMap<string, ComposerLike>,
 ): void => {
+  let hasTraitsEntity = false;
   for (const ns of entityNss) {
     if (traits.has(ns)) throw entityTraitNameClash(ns);
+    if (ns === "traits") hasTraitsEntity = true;
+  }
+  if (!hasTraitsEntity) return;
+  for (const ns of traits.keys()) {
+    if (TRAITS_ENTITY_ARM_KEYS.has(ns)) throw traitsEntityPolicyClash(ns);
   }
 };

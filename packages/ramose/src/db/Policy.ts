@@ -791,11 +791,21 @@ export function policy<
     schema.entities as Record<string, { ns: string } | undefined>
   ).traits;
   const rawTraits = body.traits;
+  const isPlainObject = (
+    value: unknown,
+  ): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  // `read` / `attrs` are entity-arm keys. Only treat them as trait names
+  // when the value is a nested arm (`{ read: true }`), not a rule body
+  // (`true`). That keeps `traits: { read: true }` as the traits entity.
+  const isTraitContainerKey = (key: string, value: unknown): boolean => {
+    if (!traitsByNs.has(key)) return false;
+    if (key === "read" || key === "attrs") return isPlainObject(value);
+    return true;
+  };
   const isTraitContainer =
-    rawTraits !== null &&
-    typeof rawTraits === "object" &&
-    !Array.isArray(rawTraits) &&
-    (Object.keys(rawTraits).some((k) => traitsByNs.has(k)) ||
+    isPlainObject(rawTraits) &&
+    (Object.keys(rawTraits).some((k) => isTraitContainerKey(k, rawTraits[k])) ||
       // `traits: {}` is a typed empty container (every trait denied),
       // not an entity arm — unless the catalog has Entity("traits").
       (Object.keys(rawTraits).length === 0 && traitsEntity === undefined));

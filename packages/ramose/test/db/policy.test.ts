@@ -856,6 +856,28 @@ describe("an entity named traits", () => {
   });
 });
 
+describe("a trait named read", () => {
+  const Read = Trait("read", { flag: Field(Schema.String) });
+  const Item = Entity("item", { title: Field(Schema.String) }, { traits: [Read] });
+  const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+  const Catalog = DbSchema({ actor: Actor, item: Item });
+
+  test("traits: { read: { read: true } } is the read-trait arm", () => {
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, item: { read: true }, traits: { read: { read: true } } },
+    );
+    expect(() =>
+      P.compile(authored, { pulls: [{ flag: Item.flag }] }),
+    ).not.toThrow();
+  });
+});
+
 describe("compiled fragments evaluate through the engine", () => {
   test("P.compile output grants the owner and hides audit", async () => {
     const conn = await Connection.create({ now: () => 1_700_000_000_000 });
