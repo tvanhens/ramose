@@ -528,8 +528,8 @@ function factState(entry, t) {
 }
 
 function sorterProgress(order, t) {
-  const start = 19.15 + order * 1.55;
-  const travel = 3.8;
+  const start = 19.2 + order * 2.2;
+  const travel = 2.05;
   const u = clamp((t - start) / travel, 0, 1);
   return { start, u, active: t >= start, travel };
 }
