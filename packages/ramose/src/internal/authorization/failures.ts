@@ -65,11 +65,10 @@ export class LeaseExpired extends Data.TaggedError("LeaseExpired")<{
 
 /**
  * Fail-closed denial. MUST NOT reveal whether protected data exists (FC-1).
- * Only `True` authorizes; this is the typed failure at the outer boundary.
+ * No payload — a later HTTP mapper must emit a fixed denial, not resource
+ * or policy details. Diagnostics stay on the internal failure that caused this.
  */
-export class AuthorizationDenied extends Data.TaggedError("AuthorizationDenied")<{
-  readonly message?: string;
-}> {}
+export class AuthorizationDenied extends Data.TaggedError("AuthorizationDenied") {}
 
 export type AuthorizationFailure =
   | InvalidIR

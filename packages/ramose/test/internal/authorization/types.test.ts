@@ -725,5 +725,7 @@ test("authorization type fixtures compile", () => {
     new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,
   ).toBe("AuthorizationBudgetExceeded");
   expect(new LeaseExpired({ message: "lease" })._tag).toBe("LeaseExpired");
-  expect(new AuthorizationDenied({})._tag).toBe("AuthorizationDenied");
+  expect(new AuthorizationDenied()._tag).toBe("AuthorizationDenied");
+  // @ts-expect-error — denial carries no diagnostic payload
+  new AuthorizationDenied({ message: "exists" });
 });
