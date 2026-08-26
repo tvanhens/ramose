@@ -310,6 +310,7 @@ function substClause(c: Clause, map: ReadonlyMap<string, Term>): Clause {
  * nothing. The trait value is not a row namespace — FilteredDb judges
  * that datom by the composing entity's type. Recording `owned` here
  * would AND `ns.owned.read` onto `Query.from(Owned).select({ id })`.
+ * Trait-field prefixes (`:owned/tag`) also do not record `owned`.
  */
 function recordMembershipNs(
   ident: string,
@@ -346,7 +347,10 @@ function recordPatternNs(
     return;
   }
   const ns = ident === undefined ? undefined : nsPrefix(ident);
-  if (ns) add(nsByVar, c.e.name, ns);
+  // Trait rules gate fields, not rows. Recording the trait ns here would
+  // AND `ns.<trait>.read` onto any row that mentions a trait attr — including
+  // `orderBy` or-joins and `not` / `or` branches — and disagree with FilteredDb.
+  if (ns && !db.schema.isTraitIdent(`:${ns}`)) add(nsByVar, c.e.name, ns);
 }
 
 function collectPatterns(

@@ -413,7 +413,7 @@ export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): Filter
 
 // ── terminals: they close the query, not compose it ─────────────────────────
 
-const assertPipeline = <N extends AnyEntity = AnyEntity>(
+const assertPipeline = <N extends AnyQueryRoot = AnyQueryRoot>(
   x: unknown,
   what: string,
 ): Pipeline<any, N> => {
@@ -423,7 +423,7 @@ const assertPipeline = <N extends AnyEntity = AnyEntity>(
   return x as Pipeline<any, N>;
 };
 
-type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
+type SelectArg<S, N extends AnyQueryRoot> = [S] extends [FocusSelect<N, S>]
   ? unknown
   : FocusMismatch;
 
@@ -433,30 +433,30 @@ type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
 export const select: {
   <const S extends Shape>(
     shape: S & ValidShape<S>,
-  ): <N extends AnyEntity>(
+  ): <N extends AnyQueryRoot>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S>, N>;
   <const S extends Shape, const Extra>(
     shape: S & ValidShape<S>,
     extra: (e: Var<EidCell>) => Extra & { readonly [K in keyof Extra]: AggSpec<any> },
-  ): <N extends AnyEntity>(
+  ): <N extends AnyQueryRoot>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
   <const S extends Shape, const Extra>(
     shape: S & ValidShape<S>,
     extra: Extra & { readonly [K in keyof Extra]: AggSpec<any> },
-  ): <N extends AnyEntity>(
+  ): <N extends AnyQueryRoot>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
 } = ((shape: Shape, extra?: SelectExtra) =>
-  <N extends AnyEntity>(q: Pipeline<any, N>): Pipeline<any, N> =>
+  <N extends AnyQueryRoot>(q: Pipeline<any, N>): Pipeline<any, N> =>
     addStage(assertPipeline(q, "select"), {
       kind: "select",
       shape,
       extra,
     })) as never;
 
-type OrderKeyArg<K, Row, N extends AnyEntity> = [K] extends [string]
+type OrderKeyArg<K, Row, N extends AnyQueryRoot> = [K] extends [string]
   ? [K] extends [keyof Row]
     ? unknown
     : FocusMismatch
@@ -471,7 +471,7 @@ export const orderBy =
     dir: OrderDir = "asc",
     opts?: { readonly empty?: OrderEmpty },
   ) =>
-  <Row, N extends AnyEntity>(
+  <Row, N extends AnyQueryRoot>(
     q: Pipeline<Row, N> & OrderKeyArg<K, Row, N>,
   ): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "orderBy"), {
@@ -484,13 +484,13 @@ export const orderBy =
 /** Keep at most `n` rows. */
 export const limit =
   (n: number) =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
+  <Row, N extends AnyQueryRoot>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "limit"), { kind: "limit", n });
 
 /** Drop `n` rows from the front of the (ordered) result. */
 export const offset =
   (n: number) =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
+  <Row, N extends AnyQueryRoot>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "offset"), { kind: "offset", n });
 
 /**
@@ -501,5 +501,5 @@ export const offset =
  */
 export const ids =
   () =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<IdRow<N>, N> =>
+  <Row, N extends AnyQueryRoot>(q: Pipeline<Row, N>): Pipeline<IdRow<N>, N> =>
     addStage(assertPipeline(q, "ids"), { kind: "ids" });

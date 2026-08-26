@@ -13,6 +13,7 @@ import {
   Q,
   Query,
   Ref,
+  Trait,
   defineOperations,
   stored,
 } from "../../src/db/internal.ts";
@@ -683,6 +684,83 @@ describe("masked attributes in pull patterns", () => {
   test("an unmasked attribute is fine required", () => {
     expect(() => P.compile(specPolicy, { pulls: [{ title: Doc.title }] })).not.toThrow();
     expect(() => P.checkPulls(specPolicy, [{ title: Doc.title }])).not.toThrow();
+  });
+
+  const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+  const Issue = Entity("issue", { title: Field(Schema.String) }, { traits: [Taggable] });
+  const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+  const TraitApp = DbSchema({ actor: Actor, issue: Issue });
+  const tagged = { title: Issue.title, tag: Issue.tag };
+  const taggedOptional = { title: Issue.title, tag: Issue.tag.optional };
+
+  test("a missing trait arm masks trait fields in pull patterns", () => {
+    const authored = P.policy(
+      {
+        schema: TraitApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, issue: { read: true } },
+    );
+    expect(() => P.compile(authored, { pulls: [tagged] })).toThrow(PolicyError);
+    expect(() => P.compile(authored, { pulls: [tagged] })).toThrow(/:taggable\/tag/);
+    expect(() => P.compile(authored, { pulls: [taggedOptional] })).not.toThrow();
+  });
+
+  test("a conditional trait read masks trait fields in pull patterns", () => {
+    const authored = P.policy(
+      {
+        schema: TraitApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: { taggable: { read: P.class("member") } },
+      },
+    );
+    expect(() => P.compile(authored, { pulls: [tagged] })).toThrow(PolicyError);
+    expect(() => P.compile(authored, { pulls: [taggedOptional] })).not.toThrow();
+  });
+
+  test("an unconditional trait read leaves trait fields unmasked except P.field", () => {
+    const open = P.policy(
+      {
+        schema: TraitApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: { taggable: { read: true } },
+      },
+    );
+    expect(() => P.compile(open, { pulls: [tagged] })).not.toThrow();
+    const narrowed = P.policy(
+      {
+        schema: TraitApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: {
+          taggable: {
+            read: true,
+            attrs: [P.field(Taggable.tag, { read: P.class("member") }) as never],
+          },
+        },
+      },
+    );
+    expect(() => P.compile(narrowed, { pulls: [tagged] })).toThrow(PolicyError);
+    expect(() => P.compile(narrowed, { pulls: [taggedOptional] })).not.toThrow();
   });
 });
 

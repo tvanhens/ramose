@@ -8,6 +8,7 @@
  */
 
 import type { AnyEntity, AnyQueryRoot, Entity, FieldMap } from "../Entity.ts";
+import type { EntityTraitNs } from "../idents.ts";
 
 /** `:db/id` plus every ident in `N.fields`. */
 export type FocusIdents<N extends AnyQueryRoot> =
@@ -77,8 +78,9 @@ type OwnerNs<A> = A extends { readonly ident: `:${infer Ns}/${string}` } ? Ns : 
 
 /**
  * A reverse-ref is legal on `N` when it points at `N`. A targeted
- * `Ref(Issue)` must land on `N`; a self-ref / untargeted ref is owned
- * by `N` (its ident namespace matches `N.ns`).
+ * `Ref(Issue)` must land on `N`; a `Ref(Trait)` also accepts a composer
+ * whose transitive trait set contains that target. A self-ref /
+ * untargeted ref is owned by `N` (its ident namespace matches `N.ns`).
  */
 export type ReverseOk<A, N extends AnyQueryRoot> = [RefTarget<A, AnyQueryRoot>] extends [
   AnyQueryRoot,
@@ -89,7 +91,11 @@ export type ReverseOk<A, N extends AnyQueryRoot> = [RefTarget<A, AnyQueryRoot>] 
       : false
     : [RefTarget<A, N>] extends [N]
       ? true
-      : false
+      : [RefTarget<A, N>["ns"]] extends [N["ns"]]
+        ? true
+        : [RefTarget<A, N>["ns"]] extends [EntityTraitNs<N>]
+          ? true
+          : false
   : [RefTarget<A, N>] extends [N]
     ? true
     : false;

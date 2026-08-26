@@ -24,6 +24,7 @@ export interface InstalledAttr {
   readonly cardinality: string;
   readonly unique?: string;
   readonly optional?: boolean;
+  readonly refTarget?: string;
 }
 
 /** Retract `:db/optional` so an optional→required flip actually applies. */
@@ -58,6 +59,7 @@ const valueTypeAttr = { ident: ":db/valueType" } as const;
 const cardinalityAttr = { ident: ":db/cardinality" } as const;
 const uniqueAttr = { ident: ":db/unique" } as const;
 const optionalAttr = { ident: ":db/optional" } as const;
+const refTargetAttr = { ident: ":ramose/refTarget" } as const;
 
 /** Every attribute entity: ident + valueType + cardinality. */
 export const installedCoreQuery = q(function* () {
@@ -80,6 +82,11 @@ export const installedUniqueQuery = q(function* () {
 export const installedOptionalQuery = q(function* () {
   const optional = yield* Q.fact(Q._, optionalAttr);
   return { e: optional.e, optional: optional.v };
+});
+
+export const installedRefTargetQuery = q(function* () {
+  const refTarget = yield* Q.fact(Q._, refTargetAttr);
+  return { e: refTarget.e, refTarget: refTarget.v };
 });
 
 /**
@@ -132,11 +139,17 @@ export interface InstalledOptionalRow {
   readonly optional: unknown;
 }
 
-/** Join the three catalog queries into one installed-attribute list. */
+export interface InstalledRefTargetRow {
+  readonly e: unknown;
+  readonly refTarget: unknown;
+}
+
+/** Join the catalog queries into one installed-attribute list. */
 export const assembleInstalled = (
   core: readonly InstalledCoreRow[],
   uniques: readonly InstalledUniqueRow[],
   optionals: readonly InstalledOptionalRow[],
+  refTargets: readonly InstalledRefTargetRow[] = [],
 ): InstalledAttr[] => {
   const uniqueByE = new Map<number, string>();
   for (const row of uniques) {
@@ -150,6 +163,12 @@ export const assembleInstalled = (
     if (Number.isNaN(e)) continue;
     if (row.optional === true) optionalByE.add(e);
   }
+  const refTargetByE = new Map<number, string>();
+  for (const row of refTargets) {
+    const e = eidKey(row.e);
+    if (Number.isNaN(e) || typeof row.refTarget !== "string") continue;
+    refTargetByE.set(e, row.refTarget);
+  }
   const out: InstalledAttr[] = [];
   for (const row of core) {
     if (typeof row.ident !== "string" || isSystemIdent(row.ident)) continue;
@@ -159,6 +178,7 @@ export const assembleInstalled = (
     const e = eidKey(row.e);
     const unique = Number.isNaN(e) ? undefined : uniqueByE.get(e);
     const optional = !Number.isNaN(e) && optionalByE.has(e);
+    const refTarget = Number.isNaN(e) ? undefined : refTargetByE.get(e);
     out.push({
       ...(Number.isNaN(e) ? {} : { e }),
       ident: row.ident,
@@ -166,6 +186,7 @@ export const assembleInstalled = (
       cardinality: row.cardinality,
       ...(unique === undefined ? {} : { unique }),
       ...(optional ? { optional: true } : {}),
+      ...(refTarget === undefined ? {} : { refTarget }),
     });
   }
   return out;
@@ -336,8 +357,42 @@ export const optionalRetracts = (
   return out;
 };
 
-/** Catalog upsert plus the retracts that make optional→required real. */
+/** Retract `:ramose/refTarget` so a targeted→untargeted flip actually applies. */
+export type RefTargetRetract = readonly [
+  ":db/retract",
+  number | readonly [":db/ident", string],
+  ":ramose/refTarget",
+  string,
+];
+
+/**
+ * Retracts for installed targeted refs whose desired field is untargeted
+ * (`Ref` / `Ref.self`). `attributeTx` omits `:ramose/refTarget`; without
+ * these ops the old target stays projected and writes still require it.
+ * A change of target is a card-one upsert and needs no retract.
+ */
+export const refTargetRetracts = (
+  desiredTx: readonly SchemaTxOp[],
+  installed: readonly InstalledAttr[],
+): readonly RefTargetRetract[] => {
+  const byIdent = new Map(installed.map((a) => [a.ident, a]));
+  const out: RefTargetRetract[] = [];
+  for (const tx of desiredTx) {
+    if (!isAttributeTx(tx)) continue;
+    if (tx[":ramose/refTarget"] !== undefined) continue;
+    const have = byIdent.get(tx[":db/ident"]);
+    if (have === undefined || have.refTarget === undefined) continue;
+    out.push([":db/retract", retractSubject(have), ":ramose/refTarget", have.refTarget]);
+  }
+  return out;
+};
+
+/** Catalog upsert plus the retracts that make optional→required and untargeted refs real. */
 export const installTx = (
   desiredTx: readonly SchemaTxOp[],
   installed: readonly InstalledAttr[],
-): readonly unknown[] => [...desiredTx, ...optionalRetracts(desiredTx, installed)];
+): readonly unknown[] => [
+  ...desiredTx,
+  ...optionalRetracts(desiredTx, installed),
+  ...refTargetRetracts(desiredTx, installed),
+];

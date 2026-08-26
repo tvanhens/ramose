@@ -413,6 +413,13 @@ const entityFieldIdents = (entity: {
   return out;
 };
 
+/** `read: true` with no class gate — every principal sees every field. */
+const isUnconditionallyPublicRead = (compiled: NsRules | undefined): boolean => {
+  const read = compiled?.rules.read;
+  if (read === undefined || read.length === 0) return false;
+  return read.every((arm) => arm.rule === true && arm.classes === undefined);
+};
+
 const IDENT_RE = /^:[^/]+\/[^/]+$/;
 
 const walkIdents = (x: unknown, visit: (ident: string) => void): void => {
@@ -865,6 +872,15 @@ export function policy<
       }
       ns[traitKey] = { prefix, rules, attrs };
     }
+  }
+
+  // A missing or conditional trait read hides trait fields on an otherwise
+  // readable composer. Pulling those card-one fields as required would drop
+  // the whole entity — mark them masked so `checkPulls` can fail at compile.
+  // `traits: { taggable: { read: true } }` stays unmasked except for `P.field`.
+  for (const [traitNs, trait] of traitsByNs) {
+    if (isUnconditionallyPublicRead(ns[traitNs])) continue;
+    for (const ident of entityFieldIdents(trait)) maskedReads.add(ident);
   }
 
   const compiledOps: Record<string, readonly CompiledArm[]> = {};

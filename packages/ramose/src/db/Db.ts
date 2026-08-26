@@ -29,6 +29,7 @@ import {
   occupancyQuery,
   installedCoreQuery,
   installedOptionalQuery,
+  installedRefTargetQuery,
   installedUniqueQuery,
   namespacesNeedingOccupancy,
   type InstalledAttr,
@@ -917,15 +918,17 @@ export const makeDb = <C extends AnySchema>(
         // catalog applied locally, so a live query would not see the
         // installed set. A far-future t is the current basis.
         const snap = read.asOf(Number.MAX_SAFE_INTEGER);
-        const [core, uniques, optionals] = yield* Effect.all([
+        const [core, uniques, optionals, refTargets] = yield* Effect.all([
           snap.query(installedCoreQuery),
           snap.query(installedUniqueQuery),
           snap.query(installedOptionalQuery),
+          snap.query(installedRefTargetQuery),
         ]);
         const installed: InstalledAttr[] = assembleInstalled(
           core,
           uniques,
           optionals,
+          refTargets,
         );
         const desired = schemaTx(schema);
         const occupied = new Set<string>();

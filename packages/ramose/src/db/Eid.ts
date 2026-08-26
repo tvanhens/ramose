@@ -25,14 +25,32 @@ export type NamespaceEid<N extends AnyQueryRoot> = number & {
   readonly _ns: N;
 };
 
+/** Traits reachable from `C`'s entities, walking `traits` transitively. */
+type NestedTraits<T> = T extends { readonly _tag: "Trait" }
+  ? T | (T extends { readonly traits: readonly (infer Inner)[] } ? NestedTraits<Inner> : never)
+  : never;
+
+export type CatalogTrait<C extends AnySchema> = {
+  [K in keyof C["entities"]]: C["entities"][K] extends {
+    readonly traits: readonly (infer T)[];
+  }
+    ? NestedTraits<T>
+    : never;
+}[keyof C["entities"]];
+
+/** Entity and trait roots a catalog's rows can name. */
+export type CatalogQueryRoot<C extends AnySchema> =
+  | (C["entities"][keyof C["entities"]] & AnyEntity)
+  | CatalogTrait<C>;
+
+type SchemaEidOf<N> = N extends AnyQueryRoot ? NamespaceEid<N> : never;
+
 /**
  * The namespace-branded cells a catalog's rows can carry: `Eid<N>` for every
- * namespace in `C`. A `select({ id: N.id })` cell is a `db.pull` subject
- * with no cast; another catalog's cells stay out.
+ * entity and reachable trait in `C`. A `select({ id: N.id })` cell is a
+ * `db.pull` subject with no cast; another catalog's cells stay out.
  */
-export type SchemaEid<C extends AnySchema> = {
-  [K in keyof C["entities"]]: NamespaceEid<C["entities"][K] & AnyEntity>;
-}[keyof C["entities"]];
+export type SchemaEid<C extends AnySchema> = SchemaEidOf<CatalogQueryRoot<C>>;
 
 export type Eid<S extends AnySchema | AnyQueryRoot = AnyEntity> = [S] extends [
   AnyQueryRoot,

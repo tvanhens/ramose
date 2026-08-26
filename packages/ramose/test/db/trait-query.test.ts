@@ -458,6 +458,76 @@ describe("trait read policy", () => {
     expect((await view.entity(mine))?.[":owned/tag"]).toBe("a");
   });
 
+  test("orderBy on a trait field does not drop rows FilteredDb keeps", async () => {
+    const Owned = Trait("owned", {
+      owner: Ref(() => Actor),
+      tag: string(),
+    });
+    const Ticket = Entity("issue", { title: string() }, { traits: [Owned] });
+    const Catalog = Schema({ actor: Actor, issue: Ticket });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":actor/sub": "alice" },
+      { ":db/id": "bob", ":actor/sub": "bob" },
+      {
+        ":db/id": "mine",
+        ":issue/title": "keep",
+        ":owned/owner": "alice",
+        ":owned/tag": "a",
+      },
+      {
+        ":db/id": "theirs",
+        ":issue/title": "keep",
+        ":owned/owner": "bob",
+        ":owned/tag": "b",
+      },
+    ]);
+    const mine = tempids.mine!;
+    const theirs = tempids.theirs!;
+    const own = (me: P.Me<typeof Actor>) => Query.is(Owned.owner, me);
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: { owned: { read: own } },
+      },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "alice",
+      eid: tempids.alice!,
+      claims: { sub: "alice" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+    const listing = Query.from(Ticket)
+      .select({ id: Ticket.id, title: Ticket.title })
+      .orderBy(Ticket.tag);
+    const { query } = lowerQueryObject(listing);
+    const ast = parseQuery(query);
+    const pd = conjoinPolicy(ast, policyView(view)!);
+    expect(pd.query.where).toEqual(ast.where);
+    const on = (await coreQuery(view, query)) as readonly [
+      { readonly id: number; readonly title: string },
+    ][];
+    const off = (await coreQuery(view, query, [], { pushdown: false })) as readonly [
+      { readonly id: number; readonly title: string },
+    ][];
+    const ids = (rows: readonly [{ readonly id: number }][]) =>
+      rows.map((r) => r[0]!.id).sort();
+    expect(ids(on)).toEqual([mine, theirs].sort());
+    expect(ids(off)).toEqual(ids(on));
+  });
+
   test("P.field on the trait arm compiles once under ns.taggable", () => {
     const authored = P.policy(
       {

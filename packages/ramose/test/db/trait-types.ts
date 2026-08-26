@@ -6,13 +6,18 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
+import { pipe } from "effect/Function";
 import type {
   CatalogIdent,
+  Db,
   Eid,
+  EntityRef,
   EntityRow,
   Equal,
   Expect,
+  Extends,
   Row,
+  SchemaEid,
   Tx,
 } from "../../src/db/internal.ts";
 import {
@@ -176,3 +181,31 @@ type _favTarget = Expect<
     { readonly id: Eid<typeof Taggable>; readonly tag: string }
   >
 >;
+
+const pipedTaggable = Query.q(() =>
+  pipe(Query.entities(Taggable), Query.select({ tag: Taggable.tag })),
+);
+type _pipedTag = Expect<Equal<Row<typeof pipedTaggable>, { readonly tag: string }>>;
+const pipedIds = Query.q(() => pipe(Query.entities(Taggable), Query.ids()));
+type _pipedIds = Expect<Equal<Row<typeof pipedIds>, { readonly id: Eid<typeof Taggable> }>>;
+pipe(Query.entities(Taggable), Query.orderBy(Taggable.tag));
+pipe(Query.entities(Taggable), Query.limit(1));
+pipe(Query.entities(Taggable), Query.offset(0));
+
+declare const catalogDb: Db<typeof Catalog>;
+const pulledTrait = catalogDb.pull(taggableEid, { tag: Taggable.tag });
+type _pullTrait = Expect<
+  Equal<Awaited<typeof pulledTrait>, { readonly tag: string } | null>
+>;
+catalogDb.livePull(taggableEid, { tag: Taggable.tag });
+type _traitEidIsSubject = Expect<Extends<Eid<typeof Taggable>, EntityRef<typeof Catalog>>>;
+type _traitEidInSchema = Expect<Extends<Eid<typeof Taggable>, SchemaEid<typeof Catalog>>>;
+
+const issueFavorites = Query.from(Issue).where(Query.some(Favorite.target));
+type _issueFavs = Expect<Equal<Row<typeof issueFavorites>, EntityRow<typeof Issue>>>;
+Query.backlink(Favorite.target)(Query.entities(Issue));
+Query.from(Taggable).where(Query.some(Favorite.target));
+// @ts-expect-error Todo does not compose Taggable
+Query.from(Todo).where(Query.some(Favorite.target));
+// @ts-expect-error Note composes Soft, not Taggable
+Query.from(Note).where(Query.some(Favorite.target));

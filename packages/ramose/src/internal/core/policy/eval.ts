@@ -87,7 +87,8 @@ async function allowsNsRead(
  * Membership datoms are judged by the namespace named in their value
  * (`:ramose/type :secret` → `ns.secret.read`) or, for `:ramose/trait`,
  * by the entity's type — never `ns.<trait>.read`. Trait rules gate
- * fields; pushdown records the same split (`recordMembershipNs`).
+ * fields; pushdown records the same split (`recordMembershipNs`, and
+ * trait-field prefixes do not record the trait ns).
  * They are not schema metadata.
  */
 export async function allowsMembershipRead(

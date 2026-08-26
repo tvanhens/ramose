@@ -1,6 +1,6 @@
 /** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
-import type { Eid } from "./Eid.ts";
+import type { CatalogTrait, Eid } from "./Eid.ts";
 import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
 import type { Tempid } from "./entityArg.ts";
 import type { ValueOf } from "./Field.ts";
@@ -118,7 +118,7 @@ export type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
   | readonly [{ readonly ident: OnIdent<N> }, unknown]
 >;
 
-/** Namespaces of `C` — the default `N` for a catalog-wide {@link EntityRef}. */
+/** Namespaces of `C` — entities only. */
 export type CatalogEntity<C extends AnySchema> = C["entities"][keyof C["entities"]] &
   AnyEntity;
 
@@ -139,6 +139,9 @@ export type EntityRef<
 > =
   | Eid<N>
   | { readonly id: Eid<N> }
+  | ([CatalogEntity<C>] extends [N]
+      ? Eid<CatalogTrait<C>> | { readonly id: Eid<CatalogTrait<C>> }
+      : never)
   | Tempid
   | LookupRefFor<C, Extract<N, AnyEntity>>
   | UnbrandedId

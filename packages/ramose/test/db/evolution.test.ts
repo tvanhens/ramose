@@ -27,6 +27,7 @@ import {
   incompatibleMessage,
   installedCoreQuery,
   installedOptionalQuery,
+  installedRefTargetQuery,
   installedUniqueQuery,
   installTx,
   isRequiredAttr,
@@ -36,9 +37,12 @@ import {
   namespacesNeedingOccupancy,
   occupancyIdents,
   optionalRetracts,
+  Ref,
+  refTargetRetracts,
   schemaTx,
   seedWrite,
   submitRaw,
+  Trait,
 } from "../../src/db/internal.ts";
 import { TxRejected } from "../../src/db/Errors.ts";
 
@@ -115,6 +119,31 @@ describe("evolution helpers", () => {
         valueType: ":db.type/string",
         cardinality: ":db.cardinality/one",
         optional: true,
+      },
+    ]);
+  });
+
+  test("assembleInstalled joins :ramose/refTarget", () => {
+    const assembled = assembleInstalled(
+      [
+        {
+          e: { id: 2003 },
+          ident: ":favorite/target",
+          valueType: ":db.type/ref",
+          cardinality: ":db.cardinality/one",
+        },
+      ],
+      [],
+      [],
+      [{ e: { id: 2003 }, refTarget: ":taggable" }],
+    );
+    expect(assembled).toEqual([
+      {
+        e: 2003,
+        ident: ":favorite/target",
+        valueType: ":db.type/ref",
+        cardinality: ":db.cardinality/one",
+        refTarget: ":taggable",
       },
     ]);
   });
@@ -346,6 +375,59 @@ describe("checkEvolution", () => {
     });
     expect(optionalRetracts(schemaTx(Tight), [title, body])).toEqual([
       [":db/retract", [":db/ident", ":note/body"], ":db/optional", true],
+    ]);
+  });
+
+  test("refTargetRetracts uses the attribute eid", () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Targeted = DbSchema({
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const Untargeted = DbSchema({
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    const installedTarget = {
+      ident: ":favorite/target",
+      valueType: ":db.type/ref",
+      cardinality: ":db.cardinality/one",
+      refTarget: ":taggable",
+      e: 2003,
+    };
+    expect(schemaTx(Targeted).find((op) => ":ramose/refTarget" in op)).toMatchObject({
+      ":ramose/refTarget": ":taggable",
+    });
+    expect(schemaTx(Untargeted).find((op) => ":db/ident" in op && op[":db/ident"] === ":favorite/target")).toEqual({
+      ":db/ident": ":favorite/target",
+      ":db/valueType": ":db.type/ref",
+      ":db/cardinality": ":db.cardinality/one",
+    });
+    expect(refTargetRetracts(schemaTx(Untargeted), [installedTarget])).toEqual([
+      [":db/retract", 2003, ":ramose/refTarget", ":taggable"],
+    ]);
+    expect(installTx(schemaTx(Untargeted), [installedTarget]).at(-1)).toEqual([
+      ":db/retract",
+      2003,
+      ":ramose/refTarget",
+      ":taggable",
+    ]);
+    expect(refTargetRetracts(schemaTx(Targeted), [installedTarget])).toEqual([]);
+  });
+
+  test("refTargetRetracts falls back to an ident lookup", () => {
+    const Untargeted = DbSchema({
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    expect(
+      refTargetRetracts(schemaTx(Untargeted), [
+        {
+          ident: ":favorite/target",
+          valueType: ":db.type/ref",
+          cardinality: ":db.cardinality/one",
+          refTarget: ":taggable",
+        },
+      ]),
+    ).toEqual([
+      [":db/retract", [":db/ident", ":favorite/target"], ":ramose/refTarget", ":taggable"],
     ]);
   });
 
@@ -643,6 +725,52 @@ describe("install() against a live engine", () => {
     const err = await runFail(submitRaw(db, [{ ":note/title": "other" }]));
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
+    await p.dispose();
+  });
+
+  test("install retracts a stale :ramose/refTarget when the ref becomes untargeted", async () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Todo = Entity("todo", { title: Field(Schema.String) });
+    const Targeted = DbSchema({
+      todo: Todo,
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const Untargeted = DbSchema({
+      todo: Todo,
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    const p = await peer();
+    const targeted = p.ramose.db("notes", Targeted);
+    await targeted.install();
+    const beforeSnap = targeted.asOf(Number.MAX_SAFE_INTEGER);
+    const before = assembleInstalled(
+      await beforeSnap.query(installedCoreQuery),
+      await beforeSnap.query(installedUniqueQuery),
+      await beforeSnap.query(installedOptionalQuery),
+      await beforeSnap.query(installedRefTargetQuery),
+    );
+    expect(before.find((a) => a.ident === ":favorite/target")?.refTarget).toBe(":taggable");
+
+    const untargeted = p.ramose.db("notes", Untargeted);
+    const report = await untargeted.install();
+    expect(report.t).toBeGreaterThan(0);
+    const afterSnap = untargeted.asOf(Number.MAX_SAFE_INTEGER);
+    const after = assembleInstalled(
+      await afterSnap.query(installedCoreQuery),
+      await afterSnap.query(installedUniqueQuery),
+      await afterSnap.query(installedOptionalQuery),
+      await afterSnap.query(installedRefTargetQuery),
+    );
+    expect(after.find((a) => a.ident === ":favorite/target")?.refTarget).toBeUndefined();
+
+    await run(
+      seedWrite(untargeted, function* (tx) {
+        const todo = yield* tx.entity();
+        yield* todo.set(Todo.title, "plain");
+        const fav = yield* tx.entity();
+        yield* fav.set(Untargeted.entities.favorite.target, todo.eid);
+      }),
+    );
     await p.dispose();
   });
 });
