@@ -44,22 +44,6 @@ export * as Policy from "./db/Policy.ts";
 
 // ── authorization authoring + IR compile (legacy Policy remains until #338)
 export * as Authorization from "./authorization/index.ts";
-export {
-  compileAuthorization,
-  read,
-  run,
-  rule,
-  withOperations,
-  and,
-  or,
-  not,
-  eq,
-  has,
-  some,
-  overlaps,
-  exists,
-  hasClass,
-} from "./authorization/index.ts";
 
 // ── the verifier/minter contract ─────────────────────────────────────────
 export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";

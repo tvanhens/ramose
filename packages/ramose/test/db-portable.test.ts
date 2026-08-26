@@ -327,7 +327,6 @@ describe("the root `browser` condition is portable", () => {
     expect("policy" in browser).toBe(true);
     expect("Policy" in browser).toBe(true);
     expect("Authorization" in browser).toBe(true);
-    expect("compileAuthorization" in browser).toBe(true);
     expect("claims" in browser).toBe(true);
     expect("Server" in browser).toBe(false);
     expect("Database" in browser).toBe(false);
