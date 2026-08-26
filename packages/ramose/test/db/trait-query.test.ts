@@ -567,18 +567,13 @@ describe("trait read policy", () => {
     const ast = parseQuery(query);
     const pd = conjoinPolicy(ast, policyView(view)!);
     expect(pd.covered).toEqual([]);
-    const on = (await coreQuery(view, query)) as readonly {
-      readonly t: number;
-      readonly i: number;
-    }[][];
-    const off = (await coreQuery(view, query, [], { pushdown: false })) as readonly {
-      readonly t: number;
-      readonly i: number;
-    }[][];
-    const pairs = (rows: readonly { readonly t: number; readonly i: number }[][]) =>
-      rows.map((r) => [r[0]!.t, r[0]!.i]).sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!);
-    expect(pairs(on)).toEqual([[mine, mine]]);
-    expect(pairs(off)).toEqual(pairs(on));
+    const on = (await coreQuery(view, query)) as readonly [number, number][];
+    const off = (await coreQuery(view, query, [], { pushdown: false })) as readonly [
+      number,
+      number,
+    ][];
+    expect(on).toEqual([[mine, mine]]);
+    expect(off).toEqual(on);
     const traitIds = (await rowsOf<{ readonly id: number }>(
       view,
       Query.from(Owned).select({ id: Owned.id }),
