@@ -558,6 +558,15 @@ type OnEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
  * Authoring spec for an owner-map operation. `self` defaults to `true`.
  * The enclosing entity / trait supplies identity and target context.
  */
+type OwnedSelf<T> = T extends { readonly self: false } ? false : true;
+
+/** Authoring `op` for an owner-map spec. `self` / `create` follow `Self`. */
+export type OwnedOpHandle<Self extends boolean = true> = Op<
+  AnySchema,
+  Self extends false ? undefined : OperationOwner,
+  Self extends false ? AnyEntity : undefined
+>;
+
 export type OwnedOperationInit<
   I = unknown,
   O = unknown,
@@ -568,7 +577,7 @@ export type OwnedOperationInit<
   readonly self?: Self;
   readonly doc?: string;
   readonly run: (
-    op: Op<AnySchema, any, any>,
+    op: OwnedOpHandle<Self extends false ? false : true>,
     input: I,
   ) => Promise<OutputDraft<O>> | OutputDraft<O>;
 };
@@ -653,31 +662,60 @@ const defineNamedOperation = <
   body,
 });
 
-type OwnedOpSpec = {
-  readonly input: Schema.Codec<any, unknown>;
-  readonly output?: Schema.Codec<any, unknown>;
-  readonly self?: boolean;
+type OwnedSpec<
+  ICodec extends Schema.Codec<any, unknown>,
+  OCodec extends Schema.Codec<any, unknown>,
+  Self extends boolean,
+> = {
+  readonly input: ICodec;
+  readonly output?: OCodec;
+  readonly self?: Self;
   readonly doc?: string;
-  readonly run: (op: Op<AnySchema, any, any>, input: any) => any;
+  readonly run: (
+    op: OwnedOpHandle<Self extends false ? false : true>,
+    input: CodecType<ICodec>,
+  ) =>
+    | Promise<OutputDraft<CodecType<OCodec>>>
+    | OutputDraft<CodecType<OCodec>>;
 };
 
-/** Owner-map form: `const` keeps `self: false` a literal; `run` is contextual. */
-const defineOwnedOperation = <const T extends OwnedOpSpec>(
-  spec: T,
-): T & { readonly _tag: "UnboundOperation" } => {
-  const init = spec as OwnedOperationInit;
+/** Owner-map form: `self` stays a literal; `run` is contextually typed from it. */
+const defineOwnedOperation = <
+  const ICodec extends Schema.Codec<any, unknown>,
+  const OCodec extends Schema.Codec<any, unknown> = typeof emptyOutput,
+  const Self extends boolean = true,
+>(
+  spec: OwnedSpec<ICodec, OCodec, Self>,
+): OwnedSpec<ICodec, OCodec, Self> & {
+  readonly _tag: "UnboundOperation";
+  readonly self: Self extends false ? false : true;
+  readonly output: OCodec;
+} => {
+  const init = spec as unknown as OwnedOperationInit;
   return Object.assign(spec as object, {
     _tag: "UnboundOperation" as const,
     self: init.self !== false,
     output: init.output ?? emptyOutput,
     doc: docOf(init.doc),
-  }) as unknown as T & { readonly _tag: "UnboundOperation" };
+  }) as OwnedSpec<ICodec, OCodec, Self> & {
+    readonly _tag: "UnboundOperation";
+    readonly self: Self extends false ? false : true;
+    readonly output: OCodec;
+  };
 };
 
 /** Define one named operation, or an unbound owner-map operation. */
-function defineOperation<const T extends OwnedOpSpec>(
-  spec: T,
-): T & { readonly _tag: "UnboundOperation" };
+function defineOperation<
+  const ICodec extends Schema.Codec<any, unknown>,
+  const OCodec extends Schema.Codec<any, unknown> = typeof emptyOutput,
+  const Self extends boolean = true,
+>(
+  spec: OwnedSpec<ICodec, OCodec, Self>,
+): OwnedSpec<ICodec, OCodec, Self> & {
+  readonly _tag: "UnboundOperation";
+  readonly self: Self extends false ? false : true;
+  readonly output: OCodec;
+};
 function defineOperation<
   Name extends string,
   I,
@@ -695,7 +733,9 @@ function defineOperation(
   body?: (op: Op<any, any>, input: any) => any,
 ): unknown {
   if (typeof nameOrSpec !== "string") {
-    return defineOwnedOperation(nameOrSpec as OwnedOpSpec);
+    return defineOwnedOperation(
+      nameOrSpec as OwnedSpec<Schema.Codec<any, unknown>, Schema.Codec<any, unknown>, boolean>,
+    );
   }
   if (schemas === undefined || body === undefined) {
     throw new Error("ramose: Operation(name, schemas, body) needs schemas and a body");

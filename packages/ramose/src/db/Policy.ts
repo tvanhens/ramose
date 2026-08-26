@@ -33,6 +33,7 @@ import {
   type Operation,
 } from "./Operation.ts";
 import { schemaTraits } from "./Schema.ts";
+import { traitsOf, type ComposerLike } from "./compose.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
   Q,
@@ -262,12 +263,23 @@ export type PolicyArms<
   CL extends readonly string[] = readonly string[],
   Ops extends AnyOperations | undefined = undefined,
 > = {
-  readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
-} & {
-  readonly traits?: TraitPolicySpec<M, C, CL[number]>;
-} & (Ops extends AnyOperations
-  ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
-  : { readonly operations?: undefined });
+  readonly [K in Exclude<keyof C["entities"], "traits" | "operations">]?: NsRuleSpec<
+    M,
+    C["entities"][K],
+    CL[number]
+  >;
+} & ("traits" extends keyof C["entities"]
+  ? {
+      readonly traits?: NsRuleSpec<
+        M,
+        C["entities"]["traits" & keyof C["entities"]],
+        CL[number]
+      >;
+    }
+  : { readonly traits?: TraitPolicySpec<M, C, CL[number]> }) &
+  (Ops extends AnyOperations
+    ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
+    : { readonly operations?: undefined });
 
 interface CompiledArm {
   readonly classes?: readonly string[];
@@ -813,7 +825,22 @@ export function policy<
     const on = operation.on as
       | { readonly ns?: string; readonly fields: Record<string, { readonly ident?: unknown }> }
       | undefined;
-    const fieldIdents = on !== undefined ? entityFieldIdents(on) : new Set<string>();
+    const fieldIdents =
+      on !== undefined ? entityFieldIdents(on) : new Set<string>();
+    if (
+      on !== undefined &&
+      (on as { readonly _tag?: string })._tag === "Trait"
+    ) {
+      const traitNs = on.ns;
+      if (typeof traitNs === "string") {
+        for (const entity of Object.values(schema.entities)) {
+          const walk = (composer: ComposerLike): boolean =>
+            composer.ns === traitNs || traitsOf(composer).some(walk);
+          if (!walk(entity as ComposerLike)) continue;
+          for (const ident of entityFieldIdents(entity)) fieldIdents.add(ident);
+        }
+      }
+    }
     const entityKey = on?.ns ?? `op/${operation.name}`;
     return list.map((arm, i) => {
       const armWhere = `${where}${list.length > 1 ? `[${i}]` : ""}`;
@@ -832,8 +859,11 @@ export function policy<
     });
   };
 
+  const traitsEntity = (schema.entities as Record<string, unknown>)["traits"];
+
   for (const [nsKey, rawSpec] of Object.entries(body)) {
-    if (nsKey === "operations" || nsKey === "traits" || rawSpec === undefined) continue;
+    if (nsKey === "operations" || rawSpec === undefined) continue;
+    if (nsKey === "traits" && traitsEntity === undefined) continue;
     const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
     for (const key of Object.keys(nsSpec)) {
       if (REJECTED_WRITE_KEYS.has(key)) {
@@ -912,7 +942,7 @@ export function policy<
   const registry = head.operations;
 
   const traitsSpec = body.traits as Record<string, { readonly operations?: Record<string, unknown> }> | undefined;
-  if (traitsSpec !== undefined) {
+  if (traitsSpec !== undefined && traitsEntity === undefined) {
     const traits = schemaTraits(schema);
     for (const [nsKey, spec] of Object.entries(traitsSpec)) {
       if (spec === undefined) continue;

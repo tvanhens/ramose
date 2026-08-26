@@ -154,3 +154,40 @@ type TraitOps = NonNullable<
   NonNullable<NonNullable<Arms["traits"]>["taggable"]>["operations"]
 >;
 type _addTagKey = Expect<Extends<"addTag", keyof TraitOps>>;
+
+Operation({
+  self: false,
+  input: Schema.Struct({ title: Schema.String }),
+  output: Schema.Struct({}),
+  run(op, _input) {
+    // @ts-expect-error a targetless operation has no self
+    op.self.set(Issue.title, "x");
+    return {};
+  },
+});
+
+Operation({
+  input: Schema.Struct({ title: Schema.String }),
+  output: Schema.Struct({}),
+  run(op, _input) {
+    // @ts-expect-error an instance operation has no create
+    op.create({});
+    op.self.set(Issue.title, "x");
+    return {};
+  },
+});
+
+{
+  const TraitsNs = Entity("traits", { label: string() });
+  const TraitsApp = DbSchema({ traits: TraitsNs, user: User });
+  type TraitsArms = PolicyArms<typeof TraitsApp, unknown, ["member"]>;
+  type _traitsEntity = Expect<
+    Extends<"read", keyof NonNullable<TraitsArms["traits"]>>
+  >;
+  type _noTaggable = Expect<
+    Equal<
+      keyof NonNullable<TraitsArms["traits"]> extends "taggable" ? true : false,
+      false
+    >
+  >;
+}

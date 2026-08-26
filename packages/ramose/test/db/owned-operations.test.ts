@@ -462,6 +462,58 @@ describe("owned operation policy keys", () => {
       /operations\.issue\/rename: "issue\/rename" is already armed at ns\.issue\.operations\.rename/,
     );
   });
+
+  test("an entity named traits keeps its namespace policy", () => {
+    const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
+    const TraitsNs = Entity("traits", { label: string() });
+    const Catalog = DbSchema({ user: User, traits: TraitsNs });
+    const policy = P.policy(
+      {
+        schema: Catalog,
+        principal: User.sub,
+        classes: ["member"],
+        schemaClasses: ["member"],
+      },
+      {
+        traits: { read: true },
+      },
+    );
+    const json = JSON.parse(P.compile(policy)) as {
+      ns?: Record<string, unknown>;
+    };
+    expect(json.ns?.traits).toEqual({ read: [{ _tag: "allow", rule: true }] });
+  });
+
+  test("a trait operation policy may bind the focus through a composer field", () => {
+    const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
+    const Board = DbSchema({ user: User, issue: Issue, doc: Doc });
+    const ops = defineOperations(Board);
+    const policy = P.policy(
+      {
+        schema: Board,
+        principal: User.sub,
+        classes: ["member"],
+        schemaClasses: ["member"],
+        operations: ops,
+      },
+      {
+        traits: {
+          taggable: {
+            operations: {
+              addTag: () =>
+                function* (e: Query.Var) {
+                  yield* Query.has(Issue.title)(e);
+                },
+            },
+          },
+        },
+      },
+    );
+    const json = JSON.parse(P.compile(policy, { operations: ops })) as {
+      operations?: Record<string, unknown>;
+    };
+    expect(json.operations?.["taggable/addTag"]).toBeDefined();
+  });
 });
 
 describe("Operations() still registers standalone ops", () => {
