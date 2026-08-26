@@ -1,11 +1,13 @@
 /**
- * One fake peer for the whole client suite: an HTTPS `fetch` and a
- * `WebSocket` that speak the shapes `packages/ramose/src/worker` actually speaks.
+ * `scriptedPeer` — a fault-injection double, not the default test environment.
  *
- * The split matters, because it is the design: **writes are HTTPS**
- * (`POST /db/:name/transact`) and **reads and `t` ticks are the socket**
- * (`GET /db/:name/session`). A test that records both can therefore prove
- * which wire a call took, which is most of what these tests are for.
+ * Public reads, writes, auth, operations, and multi-client live run against
+ * the Alchemy local stack (`test/local`). Keep this double when a test
+ * needs exact frame/request ordering, a refused upgrade, or inspection of
+ * HTTPS vs session-socket traffic before serialization leaves the client.
+ *
+ * Writes are HTTPS (`POST /db/:name/transact`); reads and `t` ticks are
+ * the socket (`GET /db/:name/session`).
  */
 
 import * as Effect from "effect/Effect";
@@ -62,7 +64,7 @@ export interface FakeSocket {
   drop(): void;
 }
 
-export interface FakePeer {
+export interface ScriptedPeer {
   readonly fetch: typeof fetch;
   readonly webSocket: typeof WebSocket;
   /** Every socket this peer has handed out, oldest first. */
@@ -118,7 +120,7 @@ const defaultHttp: Http = (call) => {
   return { body: DEFAULT_ACK };
 };
 
-export const fakePeer = (options: PeerOptions = {}): FakePeer => {
+export const scriptedPeer = (options: PeerOptions = {}): ScriptedPeer => {
   const answer: Answer = options.answer ?? (() => ({ body: {} }));
   const http: Http = options.http ?? defaultHttp;
   const sockets: FakeSocket[] = [];
@@ -255,7 +257,7 @@ export interface Client {
 
 /** A client over a fake peer, disposed by the caller. */
 export const client = (
-  peer: Pick<FakePeer, "fetch" | "webSocket">,
+  peer: Pick<ScriptedPeer, "fetch" | "webSocket">,
   options: Partial<EffectClientOptions> = {},
 ): Client => {
   const runtime = ManagedRuntime.make(
@@ -279,7 +281,7 @@ export const client = (
  * `db.live` is unavailable. This is the internal factory the next slice calls.
  */
 export const httpsClient = (
-  peer: Pick<FakePeer, "fetch">,
+  peer: Pick<ScriptedPeer, "fetch">,
   options: { token?: Effect.Effect<Redacted.Redacted<string>> } = {},
 ) =>
   makeDatabases({

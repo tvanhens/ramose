@@ -1,16 +1,13 @@
 /**
- * A minimal fake peer for this package's tests — a `WebSocket` factory that
- * records every socket, every frame, and whether the client closed it, plus
- * a recording `fetch`. Just enough of the session protocol for the hooks:
- * an `answer` decides each frame's reply (`{ id, body: { t, root, result } }`
- * by default, `undefined` to hold it, `delay` to answer late), `push`
- * delivers an unsolicited server frame — `{ op: "tx", t, datoms }` is how
- * a test moves the basis — and `http` answers HTTPS (`GET /db/:name/info`
- * included).
+ * `scriptedPeer` for React hook tests — exact frame control, not a
+ * stand-in for the deployed peer. Public Worker/live behavior runs
+ * against `test/local`.
  *
- * The full-protocol fake lives in `packages/ramose/test/peer.ts`; this one
- * stays local so the react package's tests do not reach into another
- * package's test tree.
+ * A `WebSocket` factory that records every socket and frame, plus a
+ * recording `fetch`. `answer` decides each frame's reply; `push`
+ * delivers `{ op: "tx", t, datoms }`; `http` answers HTTPS.
+ *
+ * The client-suite double lives in `packages/ramose/test/peer.ts`.
  */
 
 /** A frame the client sent — `q`, `pull`, `auth`. */
@@ -50,7 +47,7 @@ export interface FakeSocket {
   drop(): void;
 }
 
-export interface FakePeer {
+export interface ScriptedPeer {
   readonly fetch: typeof fetch;
   readonly webSocket: typeof WebSocket;
   /** Every socket handed out, oldest first. */
@@ -83,7 +80,7 @@ const defaultHttp = (call: Call): Reply => {
   return { body: { t: 1, txEid: 1, tempids: {}, datoms: 0 } };
 };
 
-export const fakePeer = (options: PeerOptions = {}): FakePeer => {
+export const scriptedPeer = (options: PeerOptions = {}): ScriptedPeer => {
   const answer: Answer =
     options.answer ?? (() => ({ body: { t: 1, root: 1, result: [] } }));
   const sockets: FakeSocket[] = [];

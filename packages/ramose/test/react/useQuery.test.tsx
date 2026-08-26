@@ -20,7 +20,7 @@ import {
   titles,
   wrapperFor,
 } from "./harness.tsx";
-import { fakePeer, type Frame } from "./peer.ts";
+import { scriptedPeer, type Frame } from "./peer.ts";
 import * as Ramose from "../../src/db/index.ts";
 import { useDb, useQuery } from "../../src/react/index.ts";
 
@@ -33,7 +33,7 @@ const rowsFor = (title: string) => [[{ title }]];
 const scrubPeer = (
   byAsOf: Record<number, { title: string; delay?: number; status?: number }>,
 ) =>
-  fakePeer({
+  scriptedPeer({
     answer: (frame: Frame) => {
       if (frame.op !== "q") return { body: { t: 1, result: [] } };
       const spec = byAsOf[frame.asOf as number];
@@ -162,7 +162,7 @@ describe("useQuery", () => {
 
   test("refetch re-issues the query", async () => {
     let n = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (frame.op !== "q") return { body: { t: 1, result: [] } };
         n += 1;

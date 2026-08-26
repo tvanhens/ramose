@@ -101,8 +101,8 @@ bumped per release. React is an optional peer — a server-only app installs
 
 ## Contributing
 
-Ramose itself is a Bun monorepo — `bun install && bun test`. See
-[CONTRIBUTING.md](./CONTRIBUTING.md).
+Ramose itself is a Bun monorepo — `bun install && bun run test`. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for unit vs local vs Cloudflare e2e.
 
 ## License
 

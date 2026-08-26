@@ -3,9 +3,13 @@
  * attached session. A pair of `openSession` + `pushApplied` is not this path —
  * that would still pass if `notifySessions` were a no-op.
  *
- * There is no existing QueryReplicaDO driver (the Worker harness stands the
- * replica in). This stands up the real DO over bun:sqlite, the same way the
- * Transactor DO is driven, and feeds `applyDatoms` / `handleFrame`.
+ * Direct `applyDatoms` / `handleFrame` control — local Alchemy mode cannot
+ * schedule this deterministically. `mock.module("cloudflare:workers")` is
+ * only here to import the DO class. Public multi-client live is
+ * `test/local/multi-client.ts`.
+ *
+ * Stands up the real DO over bun:sqlite, the same way the Transactor DO
+ * is driven.
  */
 import { describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";

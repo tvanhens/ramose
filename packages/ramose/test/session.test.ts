@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
 import { isDatabaseError, Query, Unauthorized } from "../src/db/internal.ts";
-import { client, fakePeer, runWithTestClock, settle } from "./peer.ts";
+import { client, scriptedPeer, runWithTestClock, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -52,7 +52,7 @@ const userRules = [
 
 describe("the handshake", () => {
   test("is the ws form of /db/:name/session, with the token as a query param", async () => {
-    const peer = fakePeer({ answer: () => rows([]) });
+    const peer = scriptedPeer({ answer: () => rows([]) });
     const c = client(peer, {
       url: "https://peer.example.com/",
       token: Effect.succeed(Redacted.make("s3cret")),
@@ -67,7 +67,7 @@ describe("the handshake", () => {
   });
 
   test("no token, no query param — and http becomes ws", async () => {
-    const peer = fakePeer({ answer: () => rows([]) });
+    const peer = scriptedPeer({ answer: () => rows([]) });
     const c = client(peer, { url: "http://localhost:8787" });
     await run(
       c.ramose.db("movies", Movies).query(eids),
@@ -77,7 +77,7 @@ describe("the handshake", () => {
   });
 
   test("one socket per database name, opened once", async () => {
-    const peer = fakePeer({ answer: () => rows([]) });
+    const peer = scriptedPeer({ answer: () => rows([]) });
     const c = client(peer);
 
     await run(c.ramose.db("movies", Movies).query(names));
@@ -95,7 +95,7 @@ describe("the handshake", () => {
 
 describe("reads become frames", () => {
   test("q and pull each become their op, with asOf / history on the body", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) =>
         frame.op === "pull"
           ? { body: { t: 2, result: { name: "Ada" } } }
@@ -149,7 +149,7 @@ describe("reads become frames", () => {
   });
 
   test("a lookup ref subject lowers to [ident, value]", async () => {
-    const peer = fakePeer({ answer: () => ({ body: { t: 2, result: null } }) });
+    const peer = scriptedPeer({ answer: () => ({ body: { t: 2, result: null } }) });
     const c = client(peer);
     await run(
       c.ramose
@@ -162,7 +162,7 @@ describe("reads become frames", () => {
   });
 
   test("out-of-order replies land on the request that asked", async () => {
-    const peer = fakePeer({ answer: () => undefined });
+    const peer = scriptedPeer({ answer: () => undefined });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const build = (n: string) =>
@@ -183,7 +183,7 @@ describe("reads become frames", () => {
   });
 
   test("a refusal frame classifies exactly as the HTTP path does", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({
         status: 413,
         body: {
@@ -211,7 +211,7 @@ describe("reads become frames", () => {
 describe("a socket that goes away", () => {
   test("re-issues what was in flight on a fresh socket", async () => {
     let n = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => {
         n++;
         if (n === 1) {
@@ -235,7 +235,7 @@ describe("a socket that goes away", () => {
   });
 
   test("and is NetworkError once the retries are spent", async () => {
-    const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
+    const peer = scriptedPeer({ answer: () => rows([]), refuseUpgrades: 99 });
     const c = client(peer);
     expect(
       (
@@ -252,7 +252,7 @@ describe("a socket that goes away", () => {
 
   test("but the next read reconnects, re-reading the token", async () => {
     let issued = 0;
-    const peer = fakePeer({ answer: () => rows([[{ name: "Ada" }]]) });
+    const peer = scriptedPeer({ answer: () => rows([[{ name: "Ada" }]]) });
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
@@ -270,7 +270,7 @@ describe("a socket that goes away", () => {
   });
 
   test("a refused upgrade is retried, and the read lands on the socket after it", async () => {
-    const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 1 });
+    const peer = scriptedPeer({ answer: () => rows([]), refuseUpgrades: 1 });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
@@ -281,7 +281,7 @@ describe("a socket that goes away", () => {
   });
 
   test("a drop after the socket opened does not probe the handshake", async () => {
-    const peer = fakePeer({ answer: () => rows([[{ name: "Ada" }]]) });
+    const peer = scriptedPeer({ answer: () => rows([[{ name: "Ada" }]]) });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
@@ -297,7 +297,7 @@ describe("a socket that goes away", () => {
 describe("a refused handshake keeps auth identity", () => {
   test("401 on the probe is Unauthorized, not NetworkError", async () => {
     let issued = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => rows([]),
       refuseUpgrades: 99,
       http: () => ({ status: 401, body: { error: "token expired" } }),
@@ -333,7 +333,7 @@ describe("a refused handshake keeps auth identity", () => {
   });
 
   test("403 on the probe keeps policy code and attr", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => rows([]),
       refuseUpgrades: 99,
       http: () => ({
@@ -360,7 +360,7 @@ describe("Unauthorized is handled in place", () => {
   test("a 401 re-reads the token, swaps the principal and re-issues the frame", async () => {
     let issued = 0;
     let refusals = 1;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) => {
         if (frame.op === "auth") return { ok: true };
         if (refusals > 0) {
@@ -391,7 +391,7 @@ describe("Unauthorized is handled in place", () => {
   });
 
   test("a swap the peer also refuses surfaces as Unauthorized", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) =>
         frame.op === "auth"
           ? { status: 403, body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" } }
@@ -410,7 +410,7 @@ describe("Unauthorized is handled in place", () => {
   });
 
   test("with no token configured there is nothing to swap", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ status: 401, body: { error: "unauthorized" } }),
     });
     const c = client(peer);
@@ -425,7 +425,7 @@ describe("Unauthorized is handled in place", () => {
 
 describe("the layer's scope owns the socket", () => {
   test("disposing the runtime closes it, and nothing reopens", async () => {
-    const peer = fakePeer({ answer: () => rows([]) });
+    const peer = scriptedPeer({ answer: () => rows([]) });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 

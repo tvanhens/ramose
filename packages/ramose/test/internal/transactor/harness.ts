@@ -1,9 +1,10 @@
 /**
- * Bun test/bench harness for the Transactor: `bun:sqlite` stands in for DO
- * SQLite, an in-memory map for R2, plain objects for WebSockets. Supports
- * fault injection (fail the N-th storage write) and "restart" (a new
- * Transactor over the same SQLite file), so the durability contract —
- * contiguous `t`, no duplicates, batches all-or-nothing — can be checked.
+ * Transactor unit harness: `bun:sqlite` stands in for DO SQLite, an
+ * in-memory map for R2, plain objects for WebSockets.
+ *
+ * Kept for storage-failure injection, rollback, and restart simulation —
+ * workerd cannot schedule those deterministically. Public commit behavior
+ * runs against the Alchemy local stack.
  */
 import { Database } from "bun:sqlite";
 import { type R2Like, dbPrefix, prefixedBucket } from "../../../src/internal/storage/index.ts";

@@ -17,7 +17,7 @@ import {
   titles,
   wrapperFor,
 } from "./harness.tsx";
-import { fakePeer, type Frame } from "./peer.ts";
+import { scriptedPeer, type Frame } from "./peer.ts";
 import * as Ramose from "../../src/db/index.ts";
 import { fromStream } from "../../src/db/promise.ts";
 import {
@@ -191,7 +191,7 @@ describe("initialData", () => {
   });
 
   test("useLiveQuery(db, q) hydrates then the standing read replaces the seed", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "q"
           ? { body: { t: 1, result: [[{ title: "fresh" }]] } }
@@ -220,7 +220,7 @@ describe("initialData", () => {
   });
 
   test("useQuery skips the first fetch when initialData hydrates the key", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "q"
           ? { body: { t: 1, result: [[{ title: "fresh" }]] } }
@@ -255,7 +255,7 @@ describe("initialData", () => {
   });
 
   test("useQuery fetches when the key changes under a carried-over initialData", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "q"
           ? { body: { t: 2, result: [[{ title: "fresh" }]] } }
@@ -290,7 +290,7 @@ describe("initialData", () => {
   });
 
   test("usePull hydrates null — a missing record is data, not a blank", () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 3, result: { title: "A" } } }),
     });
     const { result } = renderHook(
@@ -374,7 +374,7 @@ describe("{ suspense: true }", () => {
 
   test("useQuery suspense resolves the first answer without a loading shell", async () => {
     ensureDom();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "q"
           ? { body: { t: 1, result: [[{ title: "one" }]] } }
@@ -402,7 +402,7 @@ describe("{ suspense: true }", () => {
   test("plain useQuery after a suspense read on the same key re-fetches", async () => {
     ensureDom();
     let answers = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (frame.op === "q") {
           answers += 1;
@@ -454,7 +454,7 @@ describe("{ suspense: true }", () => {
 
   test("two sibling suspense useQuery hooks on one key settle once", async () => {
     ensureDom();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "q"
           ? { body: { t: 1, result: [[{ title: "one" }]] } }
@@ -483,7 +483,7 @@ describe("{ suspense: true }", () => {
   test("a later suspense remount revalidates instead of latching the slot", async () => {
     ensureDom();
     let answers = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (frame.op === "q") {
           answers += 1;
@@ -525,7 +525,7 @@ describe("{ suspense: true }", () => {
   test("useQuery does not latch a live suspense slot for the same query", async () => {
     ensureDom();
     let answers = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) => {
         if (frame.op === "q") {
           answers += 1;
@@ -572,7 +572,7 @@ describe("{ suspense: true }", () => {
 
   test("usePull suspense with a render-fresh inline pattern settles", async () => {
     ensureDom();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { delay: 20, body: { t: 3, result: { title: "A" } } }
@@ -604,7 +604,7 @@ describe("{ suspense: true }", () => {
   test("usePull suspense with a hoisted pattern still settles", async () => {
     ensureDom();
     const shape = { title: Todo.title };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { delay: 20, body: { t: 3, result: { title: "A" } } }
@@ -635,7 +635,7 @@ describe("{ suspense: true }", () => {
 
   test("required and .optional usePull suspense do not share a slot", async () => {
     ensureDom();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { delay: 20, body: { t: 3, result: { done: true } } }
@@ -671,7 +671,7 @@ describe("{ suspense: true }", () => {
 
   test("useLivePull suspense with a render-fresh inline pattern settles", async () => {
     ensureDom();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame: Frame) =>
         frame.op === "pull"
           ? { delay: 20, body: { t: 3, result: { title: "A" } } }

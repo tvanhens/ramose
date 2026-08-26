@@ -11,7 +11,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { client, fakePeer, httpsClient, redacted, settle } from "./peer.ts";
+import { client, scriptedPeer, httpsClient, redacted, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 import { pipe } from "effect/Function";
@@ -41,7 +41,7 @@ const asWire = (p: { readonly eid: number | null; readonly class: string }) => (
 const peerWith = (state: {
   principal: { eid: number | null; class: string } | undefined;
 }) =>
-  fakePeer({
+  scriptedPeer({
     answer: () => ({ body: { t: 2, root: 2, result: [] } }),
     http: (call) =>
       call.method === "GET" && call.url.endsWith("/db/movies/info")
@@ -145,7 +145,7 @@ describe("db.principal()", () => {
 
   test("an in-place auth swap answers from its ack — no /info round trip", async () => {
     let refuse = true;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) => {
         if (frame.op === "auth") {
           return { ok: true, principal: { eid: 21, class: "member" } };
@@ -180,7 +180,7 @@ describe("db.principal()", () => {
       },
     };
     let refuse = false;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) => {
         if (frame.op === "auth") {
           return {
@@ -236,7 +236,7 @@ describe("db.principal()", () => {
 
   test("an HTTPS-only client works the same way (no socket to generation-key on)", async () => {
     const state = { principal: { eid: 5, class: "admin" } };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) =>
         call.method === "GET" && call.url.endsWith("/db/movies/info")
           ? { body: { db: "movies", t: 2, principal: state.principal } }

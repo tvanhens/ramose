@@ -1,6 +1,8 @@
 /**
  * Read-path knobs in packages/ramose/src/worker/peer.ts, exercised with a fake REPLICA
- * namespace (index.ts imports `cloudflare:workers` via the DO classes, so the
+ * namespace so cache TTL / min-T fencing stay on a virtual clock. Public
+ * query/cache behavior against a real replica is `test/local`.
+ * (index.ts imports `cloudflare:workers` via the DO classes, so the
  * helpers are tested directly):
  *   - cache hit skips GET /basis; miss / cache-off call it
  *   - a transact through this isolate (invalidateBasis) forces the next read to refetch

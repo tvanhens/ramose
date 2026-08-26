@@ -9,12 +9,12 @@ import type { ReactNode } from "react";
 import * as Ramose from "../../src/db/index.ts";
 import { RamoseProvider, useDb, usePrincipal } from "../../src/react/index.ts";
 import { registerDom, Todos } from "./harness.tsx";
-import { fakePeer } from "./peer.ts";
+import { scriptedPeer } from "./peer.ts";
 
 registerDom();
 
 const wrapperFor = (
-  peer: ReturnType<typeof fakePeer>,
+  peer: ReturnType<typeof scriptedPeer>,
   url = "https://peer.example.com",
 ) =>
   ({ children }: { children?: ReactNode }) => (
@@ -24,7 +24,7 @@ const wrapperFor = (
   );
 
 const peerWith = (principal: { eid: number | null; class: string }) =>
-  fakePeer({
+  scriptedPeer({
     http: (call) =>
       call.method === "GET" && new URL(call.url).pathname.endsWith("/info")
         ? { body: { db: "todos", t: 2, principal } }
@@ -66,7 +66,7 @@ describe("usePrincipal", () => {
 
   test("onError fires and loading clears when /info has no principal", async () => {
     const seen: unknown[] = [];
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { result, unmount } = renderHook(
       () =>
         usePrincipal(useDb("todos", Todos), {
@@ -85,7 +85,7 @@ describe("usePrincipal", () => {
     const held = new Promise<{ body: unknown }>((res) => {
       release = res;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) =>
         call.method === "GET" && new URL(call.url).pathname.endsWith("/info")
           ? held
