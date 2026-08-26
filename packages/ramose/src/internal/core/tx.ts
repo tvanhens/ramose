@@ -913,7 +913,11 @@ export async function expandTx(
       if (!before.has(ns)) born.add(ns);
     }
     const typeIsNew = type !== undefined && typeBefore === undefined;
-    if (typeIsNew && db.schema.isEntityIdent(type)) {
+    // Entity-only catalogs do not install `:ramose.kind/entity`, so a
+    // typed-put stamp (`op.create({})`) would otherwise skip this
+    // check and commit a row that never entered a user namespace.
+    // `requiredOfType` still walks installed attrs of that namespace.
+    if (typeIsNew) {
       const missing = await missingRequiredAttrs(e, requiredOfType(type));
       if (missing.length > 0) {
         throw new TxError(

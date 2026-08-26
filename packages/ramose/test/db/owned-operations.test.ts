@@ -327,6 +327,55 @@ describe("op.create and self", () => {
     );
   });
 
+  test("op.create({}) on an entity-only owner with required fields is tx/required", async () => {
+    const Task = Entity(
+      "task",
+      { title: string() },
+      {
+        operations: {
+          create: Operation({
+            self: false,
+            input: Schema.Struct({}),
+            output: Schema.Struct({ id: EntityId }),
+            run(op) {
+              return { id: op.create({}) };
+            },
+          }),
+        },
+      },
+    );
+    const Tasks = DbSchema({ task: Task });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Tasks) as unknown[]);
+    const built = buildOp({
+      schema: Tasks,
+      db: "app",
+      principal,
+      createEntity: Task,
+      effects: "halt",
+      q: () => Effect.succeed([]),
+      pull: () => Effect.succeed(null),
+    });
+    const result = await Effect.runPromise(
+      runBody(Task.operations.create, built.op, {}),
+    );
+    expect(result.halted).toBe(false);
+    expect(built.ops()).toEqual([
+      { ":db/id": "tmp-1", ":ramose/type": ":task" },
+    ]);
+    await expect(conn.transact(built.ops() as unknown[])).rejects.toMatchObject({
+      code: "tx/required",
+      message: expect.stringContaining(":task/title"),
+    });
+    await expect(
+      conn.transact([{ ":db/id": "x", ":ramose/type": ":task" }]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+    const ok = await conn.transact([
+      { ":db/id": "y", ":ramose/type": ":task", ":task/title": "Ship" },
+    ]);
+    expect(typeof ok.tempids["y"]).toBe("number");
+  });
+
   test("op.create({}) stamps the owner when the entity has no attributes", async () => {
     const Note = Entity(
       "note",
