@@ -5,6 +5,12 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
+// @effect-diagnostics unnecessaryTypeofType:off
+// `Expect<Equal<X, typeof X.Type>>` is the assertion: it pins the
+// hand-written branded type to the one the schema derives. Rewriting
+// `typeof X.Type` to `X` as the rule suggests would collapse each of
+// these to `Equal<X, X>` — vacuously true, and testing nothing.
+
 import { expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
@@ -86,7 +92,7 @@ import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
 import type { InstalledAuthorizationIR as _PublicInstalled } from "ramose/db";
 
 type PublicKeys = keyof typeof import("ramose");
-type _noPublicAuthorization = Expect<
+export type _noPublicAuthorization = Expect<
   Equal<
     Extract<
       PublicKeys,
@@ -104,39 +110,39 @@ const catalog = CatalogId.make("app");
 const issueOwner = { kind: "entity" as const, name: "issue" };
 const taggableOwner = { kind: "trait" as const, name: "taggable" };
 
-type _catalogIdFromSchema = Expect<Equal<CatalogId, typeof CatalogId.Type>>;
-type _databaseIdFromSchema = Expect<Equal<DatabaseId, typeof DatabaseId.Type>>;
-type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof CatalogVersion.Type>>;
-type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
-type _digestHexFromSchema = Expect<Equal<DigestHex, typeof DigestHex.Type>>;
-type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
-type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
-type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
-type _traitIdFromSchema = Expect<Equal<TraitId, typeof TraitId.Type>>;
-type _fieldIdFromSchema = Expect<Equal<FieldId, typeof FieldId.Type>>;
-type _operationIdFromSchema = Expect<Equal<OperationIdType, typeof OperationId.Type>>;
-type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof RelativeFieldId.Type>>;
-type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
-type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
-type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
-type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
-type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
-type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
-type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
-type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
-type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
+export type _catalogIdFromSchema = Expect<Equal<CatalogId, typeof CatalogId.Type>>;
+export type _databaseIdFromSchema = Expect<Equal<DatabaseId, typeof DatabaseId.Type>>;
+export type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof CatalogVersion.Type>>;
+export type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
+export type _digestHexFromSchema = Expect<Equal<DigestHex, typeof DigestHex.Type>>;
+export type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
+export type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
+export type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
+export type _traitIdFromSchema = Expect<Equal<TraitId, typeof TraitId.Type>>;
+export type _fieldIdFromSchema = Expect<Equal<FieldId, typeof FieldId.Type>>;
+export type _operationIdFromSchema = Expect<Equal<OperationIdType, typeof OperationId.Type>>;
+export type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof RelativeFieldId.Type>>;
+export type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
+export type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
+export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+export type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
+export type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
+export type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
+export type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
+export type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
+export type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
 
 type TemplateEncoded = typeof PolicyTemplateIR.Encoded;
 type InstalledEncoded = typeof InstalledAuthorizationIR.Encoded;
-type _templateEncodedKnown = Expect<Extends<TemplateEncoded, { readonly _tag: "PolicyTemplateIR" }>>;
-type _installedEncodedKnown = Expect<
+export type _templateEncodedKnown = Expect<Extends<TemplateEncoded, { readonly _tag: "PolicyTemplateIR" }>>;
+export type _installedEncodedKnown = Expect<
   Extends<InstalledEncoded, { readonly _tag: "InstalledAuthorizationIR" }>
 >;
-type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
-type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
-type _installedCatalogDecoded = Expect<Equal<InstalledAuthorizationIR["catalog"], CatalogId>>;
-type _installedCatalogEncoded = Expect<Equal<InstalledEncoded["catalog"], string>>;
-type _jsonValueEncoded = Expect<Equal<typeof JsonScalar.Encoded, JsonScalar>>;
+export type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
+export type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
+export type _installedCatalogDecoded = Expect<Equal<InstalledAuthorizationIR["catalog"], CatalogId>>;
+export type _installedCatalogEncoded = Expect<Equal<InstalledEncoded["catalog"], string>>;
+export type _jsonValueEncoded = Expect<Equal<typeof JsonScalar.Encoded, JsonScalar>>;
 
 type OwnerlessOperation = {
   readonly _tag: "OperationId";
@@ -160,9 +166,9 @@ type OwnerAsTarget = {
   readonly target: typeof issueOwner;
 };
 
-type _ownerRequired = Expect<Equal<Extends<OwnerlessOperation, OperationIdType>, false>>;
-type _targetRequired = Expect<Equal<Extends<TargetOmittedOperation, OperationIdType>, false>>;
-type _ownerAndTargetIndependent = Expect<Equal<Extends<OwnerAsTarget, OperationIdType>, false>>;
+export type _ownerRequired = Expect<Equal<Extends<OwnerlessOperation, OperationIdType>, false>>;
+export type _targetRequired = Expect<Equal<Extends<TargetOmittedOperation, OperationIdType>, false>>;
+export type _ownerAndTargetIndependent = Expect<Equal<Extends<OwnerAsTarget, OperationIdType>, false>>;
 
 type TargetlessOwned = {
   readonly _tag: "OperationId";
@@ -171,7 +177,7 @@ type TargetlessOwned = {
   readonly localName: "create";
   readonly target: "none";
 };
-type _targetNoneWithOwner = Expect<Extends<TargetlessOwned, OperationIdType>>;
+export type _targetNoneWithOwner = Expect<Extends<TargetlessOwned, OperationIdType>>;
 
 type TraitTargeted = {
   readonly _tag: "OperationId";
@@ -180,21 +186,21 @@ type TraitTargeted = {
   readonly localName: "addTag";
   readonly target: "required";
 };
-type _traitOwnerSupported = Expect<Extends<TraitTargeted, OperationIdType>>;
+export type _traitOwnerSupported = Expect<Extends<TraitTargeted, OperationIdType>>;
 
 type RelativeOwnerless = {
   readonly _tag: "RelativeOperationId";
   readonly localName: "create";
   readonly target: "none";
 };
-type _relativeOwnerRequired = Expect<
+export type _relativeOwnerRequired = Expect<
   Equal<Extends<RelativeOwnerless, RelativeOperationIdType>, false>
 >;
 
-type _templateNotInstalled = Expect<
+export type _templateNotInstalled = Expect<
   Equal<Extends<PolicyTemplateIR, InstalledAuthorizationIR>, false>
 >;
-type _installedNotTemplate = Expect<
+export type _installedNotTemplate = Expect<
   Equal<Extends<InstalledAuthorizationIR, PolicyTemplateIR>, false>
 >;
 
@@ -202,7 +208,7 @@ type PrincipalWithoutSubject = {
   readonly claims: {};
   readonly classes: readonly [];
 };
-type _subjectRequired = Expect<
+export type _subjectRequired = Expect<
   Equal<Extends<PrincipalWithoutSubject, AuthorizationPrincipal>, false>
 >;
 
@@ -211,16 +217,16 @@ type ServicePrincipal = {
   readonly claims: {};
   readonly classes: readonly [];
 };
-type _meOptional = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
-type _emptyClassesAllowed = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
+export type _meOptional = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
+export type _emptyClassesAllowed = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
 
-type _absentIsNotUndefined = Expect<
+export type _absentIsNotUndefined = Expect<
   Equal<Extends<undefined, Projected>, false>
 >;
-type _incompleteIsNotPresent = Expect<
+export type _incompleteIsNotPresent = Expect<
   Equal<Extends<IncompleteProjected, typeof FieldAbsent | typeof EntityAbsent>, false>
 >;
-type _truthIncompleteHasReason = Expect<
+export type _truthIncompleteHasReason = Expect<
   Extends<{ readonly _tag: "Incomplete"; readonly reason: typeof MissingMe }, Truth>
 >;
 
@@ -231,7 +237,7 @@ type MissingRefTarget = {
   readonly optional: false;
   readonly owned: false;
 };
-type _refTargetRequired = Expect<Equal<Extends<MissingRefTarget, FieldDescriptor>, false>>;
+export type _refTargetRequired = Expect<Equal<Extends<MissingRefTarget, FieldDescriptor>, false>>;
 
 type RefFieldWithTarget = {
   readonly id: FieldId;
@@ -242,7 +248,7 @@ type RefFieldWithTarget = {
   readonly optional: false;
   readonly owned: false;
 };
-type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
+export type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
 
 type IndexedFieldMissingFlag = {
   readonly id: FieldId;
@@ -251,31 +257,31 @@ type IndexedFieldMissingFlag = {
   readonly optional: false;
   readonly owned: false;
 };
-type _indexRequired = Expect<Equal<Extends<IndexedFieldMissingFlag, FieldDescriptor>, false>>;
+export type _indexRequired = Expect<Equal<Extends<IndexedFieldMissingFlag, FieldDescriptor>, false>>;
 
-type _missingMeIsProjected = Expect<Extends<typeof MissingMeProjection, Projected>>;
-type _missingMeIsIncomplete = Expect<
+export type _missingMeIsProjected = Expect<Extends<typeof MissingMeProjection, Projected>>;
+export type _missingMeIsIncomplete = Expect<
   Extends<typeof MissingMeProjection, IncompleteProjected>
 >;
-type _missingMeIsNotComplete = Expect<
+export type _missingMeIsNotComplete = Expect<
   Equal<Extends<typeof MissingMeProjection, CompleteProjected>, false>
 >;
-type _missingMeIsNotEntityAbsent = Expect<
+export type _missingMeIsNotEntityAbsent = Expect<
   Equal<Extends<typeof MissingMeProjection, typeof EntityAbsent>, false>
 >;
 
-type _presentUndefinedNever = Expect<Equal<PresentType<undefined>, never>>;
-type _presentOptionalNever = Expect<Equal<PresentType<string | undefined>, never>>;
-type _presentScalarOk = Expect<Extends<PresentType<string>, Projected>>;
-type _presentInstantOk = Expect<Extends<PresentType<Date>, Projected>>;
-type _presentBytesOk = Expect<Extends<PresentType<Uint8Array>, Projected>>;
-type _presentManyOk = Expect<Extends<PresentType<readonly number[]>, Projected>>;
-type _projectedValueCoversStorage = Expect<
+export type _presentUndefinedNever = Expect<Equal<PresentType<undefined>, never>>;
+export type _presentOptionalNever = Expect<Equal<PresentType<string | undefined>, never>>;
+export type _presentScalarOk = Expect<Extends<PresentType<string>, Projected>>;
+export type _presentInstantOk = Expect<Extends<PresentType<Date>, Projected>>;
+export type _presentBytesOk = Expect<Extends<PresentType<Uint8Array>, Projected>>;
+export type _presentManyOk = Expect<Extends<PresentType<readonly number[]>, Projected>>;
+export type _projectedValueCoversStorage = Expect<
   Extends<Date | Uint8Array | readonly string[], ProjectedValue>
 >;
 
 type KeyOnlyClaims = readonly ["teams"];
-type _claimKeysRejected = Expect<Equal<Extends<KeyOnlyClaims, ClaimVocabulary>, false>>;
+export type _claimKeysRejected = Expect<Equal<Extends<KeyOnlyClaims, ClaimVocabulary>, false>>;
 
 type TeamsClaim = {
   readonly key: "teams";
@@ -285,31 +291,31 @@ type TeamsClaim = {
     readonly items: { readonly _tag: "scalar"; readonly valueType: "string" };
   };
 };
-type _claimShapePreserved = Expect<Extends<TeamsClaim, ClaimDescriptor>>;
+export type _claimShapePreserved = Expect<Extends<TeamsClaim, ClaimDescriptor>>;
 
 type StructOnlyInput = {
   readonly fields: readonly OperationInputFieldDescriptor[];
 };
-type _topLevelFieldsRejected = Expect<
+export type _topLevelFieldsRejected = Expect<
   Equal<Extends<StructOnlyInput, OperationInputShape>, false>
 >;
-type _topLevelArrayOk = Expect<
+export type _topLevelArrayOk = Expect<
   Extends<{ readonly _tag: "array"; readonly items: { readonly _tag: "opaque" } }, OperationInputShape>
 >;
-type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
+export type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
 
 type InputRootTerm = { readonly _tag: "input"; readonly path: readonly [] };
-type _inputRootOk = Expect<Extends<InputRootTerm, InputTerm>>;
+export type _inputRootOk = Expect<Extends<InputRootTerm, InputTerm>>;
 type InputFieldTerm = { readonly _tag: "input"; readonly path: readonly ["title"] };
-type _inputFieldOk = Expect<Extends<InputFieldTerm, InputTerm>>;
+export type _inputFieldOk = Expect<Extends<InputFieldTerm, InputTerm>>;
 type InputKeyOnly = { readonly _tag: "input"; readonly key: "title" };
-type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
+export type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
 
 type BindingWithoutDatabase = {
   readonly catalog: CatalogDescriptor;
   readonly template: PolicyTemplateIR;
 };
-type _databaseRequiredOnBind = Expect<
+export type _databaseRequiredOnBind = Expect<
   Equal<Extends<BindingWithoutDatabase, CatalogBindingInput>, false>
 >;
 
@@ -319,7 +325,7 @@ type FlatScalarInput = {
   readonly cardinality: "many";
   readonly optional: false;
 };
-type _flatInputRejected = Expect<
+export type _flatInputRejected = Expect<
   Equal<Extends<FlatScalarInput, OperationInputFieldDescriptor>, false>
 >;
 
@@ -340,12 +346,12 @@ type NestedArrayStructInput = {
     };
   };
 };
-type _nestedInputPreserved = Expect<
+export type _nestedInputPreserved = Expect<
   Extends<NestedArrayStructInput, OperationInputFieldDescriptor>
 >;
 
 type FailureTags = AuthorizationFailure["_tag"];
-type _allFailures = Expect<
+export type _allFailures = Expect<
   Equal<
     FailureTags,
     | "InvalidIR"

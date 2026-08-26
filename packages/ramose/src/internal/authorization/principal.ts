@@ -79,7 +79,7 @@ export type InstalledPrincipalResolution = typeof InstalledPrincipalResolution.T
 
 export const ApplicationEntityRef = Schema.Struct({
   entity: EntityId,
-  eid: Schema.Number,
+  eid: Schema.Finite,
 });
 export type ApplicationEntityRef = typeof ApplicationEntityRef.Type;
 
