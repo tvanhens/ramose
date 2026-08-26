@@ -277,7 +277,7 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("rejects a lone surrogate before Schema walks the input", () => {
+  test("rejects a lone low surrogate before Schema walks the input", () => {
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
@@ -285,6 +285,44 @@ describe("JSON-only rejections", () => {
       }),
       /unicode/,
     );
+  });
+
+  test("rejects a trailing unpaired high surrogate", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "abc\uD800" },
+      }),
+      /unicode/,
+    );
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "abc\uDBFF" },
+      }),
+      /unicode/,
+    );
+  });
+
+  test("rejects a lone surrogate in an object key", () => {
+    const extra: Record<string, unknown> = {};
+    Object.defineProperty(extra, "abc\uD800", {
+      value: 1,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    expectInvalid(decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra }), /unicode/);
+  });
+
+  test("accepts a well-formed supplementary character", () => {
+    const decoded = Effect.runSync(
+      decodePolicyTemplate({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "abc\uD83D\uDE00" },
+      }),
+    );
+    expect(decoded.principal.subjectClaim).toBe("abc\uD83D\uDE00");
   });
 });
 
@@ -611,6 +649,7 @@ describe("canonical serialization", () => {
     const rfcKeys = ["\r", "1", "\u0080", "\u00f6", "\u20ac", "\ud83d\ude00", "\ufb33"];
     const sorted = [...rfcKeys].sort(compareCanonicalKeys);
     expect(sorted).toEqual(["\r", "1", "\u0080", "\u00f6", "\u20ac", "\ud83d\ude00", "\ufb33"]);
+    expect(() => canonicalizeJson("abc\uD800")).toThrow(/lone surrogate/);
   });
 
   test("key order does not change the canonical document", async () => {

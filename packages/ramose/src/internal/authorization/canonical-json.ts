@@ -28,12 +28,34 @@ export const compareCanonicalKeys = (left: string, right: string): number =>
 const hex4 = (code: number): string => code.toString(16).padStart(4, "0");
 
 /**
+ * RFC 8785 §3.2.2.2: lone surrogates MUST terminate. A trailing unpaired
+ * high surrogate is `NaN` from `charCodeAt(i + 1)` — compare with a
+ * positive range check, not `next < low || next > high`.
+ */
+export const hasLoneSurrogate = (value: string): boolean => {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i += 1;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) return true;
+  }
+  return false;
+};
+
+/**
  * RFC 8785 §3.2.2.2 / ECMA-262 JSON.stringify string serialization.
  * Predefined controls use `\b \t \n \f \r`; remaining U+0000–U+001F use
  * lowercase `\uhhhh`. `"` and `\` are escaped; every other code unit is
  * copied as-is.
  */
 const escapeRfc8785String = (value: string): string => {
+  if (hasLoneSurrogate(value)) {
+    throw new TypeError("ramose/authorization: canonicalizeJson rejects lone surrogates");
+  }
   let out = '"';
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);

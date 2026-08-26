@@ -21,7 +21,7 @@ import {
   MAX_JSON_NODES,
   MAX_STRING_LENGTH,
 } from "./bounds.ts";
-import { canonicalizeJson } from "./canonical-json.ts";
+import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
 import { OperationDescriptor, TraitComposition } from "./catalog.ts";
 import { InvalidIR } from "./failures.ts";
 import { OperationId, PolicyHash, RuleId } from "./identities.ts";
@@ -467,6 +467,7 @@ const objectShapeViolation = (value: object, work: Work): string | undefined => 
   if (objectCharge !== undefined) return objectCharge;
   for (const name of names) {
     if (name.length > MAX_STRING_LENGTH) return "rejected oversized string";
+    if (hasLoneSurrogate(name)) return "rejected unicode";
     const keyCharge = charge(work, 1, UTF8.encode(name).byteLength);
     if (keyCharge !== undefined) return keyCharge;
   }
@@ -493,20 +494,6 @@ const jsonLeafViolation = (value: unknown, work: Work): string | undefined => {
 
 const stringLengthOfNumber = (value: number): number =>
   Object.is(value, -0) || value === 0 ? 1 : String(value).length;
-
-const hasLoneSurrogate = (value: string): boolean => {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(i + 1);
-      if (next < 0xdc00 || next > 0xdfff) return true;
-      i += 1;
-      continue;
-    }
-    if (code >= 0xdc00 && code <= 0xdfff) return true;
-  }
-  return false;
-};
 
 const freezePlain = <T>(value: T): T => {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
