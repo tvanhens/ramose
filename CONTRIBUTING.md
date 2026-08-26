@@ -10,6 +10,17 @@ sole documentation location. The shipped query language (`Query.from`, the kerne
 Recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
 brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
 [`website/public/brand/`](website/public/brand/).
+Normative engine contracts live next to the engine, not on the website —
+see [Architectural notes](#architectural-notes).
+
+## Architectural notes
+
+The website is the public documentation location. Engine security and
+authorization semantics are specified in-repo so implementation and
+conformance tests can cite them:
+
+- Authorization and noninterference:
+  [`packages/ramose/src/internal/design/authorization.md`](packages/ramose/src/internal/design/authorization.md)
 
 ## Public vocabulary
 
