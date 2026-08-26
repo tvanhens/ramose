@@ -17,7 +17,7 @@ import { pipe } from "effect/Function";
 import { Query, seedWrite } from "../src/db/internal.ts";
 import type { Connection } from "../src/internal/core/conn.ts";
 import { toWireDatom } from "../src/internal/core/log.ts";
-import { client, fakePeer, settle, until, type Frame, type Reply } from "./peer.ts";
+import { client, scriptedPeer, settle, until, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -79,7 +79,7 @@ const peerAt = (state: {
   conn?: Connection;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
-  fakePeer({
+  scriptedPeer({
     http: async (call) => {
       if (call.url.endsWith("/transact") && state.conn !== undefined) {
         const rep = await state.conn.transact(call.body.tx);
@@ -335,7 +335,7 @@ describe("live survives the network", () => {
 
 describe("a pinned view has no news", () => {
   test("live over asOf emits once and completes", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);
@@ -353,7 +353,7 @@ describe("a pinned view has no news", () => {
   });
 
   test("live over history emits once and completes", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);

@@ -22,7 +22,7 @@ import {
   seedWrite,
 } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
-import { fakePeer, httpsClient, type FakePeer } from "./peer.ts";
+import { scriptedPeer, httpsClient, type ScriptedPeer } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -40,7 +40,7 @@ const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<a
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
-const ramose = (peer: FakePeer) =>
+const ramose = (peer: ScriptedPeer) =>
   connect({
     url: "https://peer.example.com",
     fetch: peer.fetch,
@@ -49,7 +49,7 @@ const ramose = (peer: FakePeer) =>
 
 describe("connect().db() is layer's client, without the runtime", () => {
   test("reads take the socket and writes take HTTPS, exactly as layer does", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }),
       http: () => ({
         body: { t: 7, txEid: 42, tempids: { "tmp-1": 1001 }, datoms: 2 },
@@ -80,7 +80,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
   });
 
   test("db is pure: naming a database costs no request and opens no socket", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = ramose(peer);
 
     const db = c.db("movies", Movies);
@@ -96,7 +96,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
 
 describe("close()", () => {
   test("closes every recorded socket, and closing twice is a no-op", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -117,7 +117,7 @@ describe("close()", () => {
     // React StrictMode's mount → close → mount closes the client while the
     // first read's socket connect is still resolving its token/url; the
     // in-flight open must lose, or the socket leaks with no handle to close
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -130,7 +130,7 @@ describe("close()", () => {
   });
 
   test("a read after close fails — it does not fall back to POST", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -150,7 +150,7 @@ describe("close()", () => {
 
 describe("the promise / subscription surface", () => {
   test("a refused handshake rejects with Unauthorized, not NetworkError", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
       refuseUpgrades: 99,
       http: () => ({ status: 401, body: { error: "token expired" } }),
@@ -177,7 +177,7 @@ describe("the promise / subscription surface", () => {
   });
 
   test("a failed q rejects with the tagged error, not a FiberFailure", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -199,7 +199,7 @@ describe("the promise / subscription surface", () => {
   });
 
   test("db.live is a subscription handle — subscribe / async iterate / close", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -218,7 +218,7 @@ describe("the promise / subscription surface", () => {
   });
 
   test("db.live close() stops emissions; for-await ends; onError is tagged", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -249,7 +249,7 @@ describe("the promise / subscription surface", () => {
 
 describe("provisioning mistakes throw synchronously", () => {
   test("a malformed token object is a defect, not a silent anonymous connect", () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     expect(() =>
       connect({
         url: "https://peer.example.com",
@@ -261,7 +261,7 @@ describe("provisioning mistakes throw synchronously", () => {
   });
 
   test("a malformed url throws from connect itself, before any request", () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     expect(() =>
       connect({ url: "peer.example.com", fetch: peer.fetch }),
     ).toThrow(/malformed url/);
@@ -297,7 +297,7 @@ describe("connect().checkOperations()", () => {
   const operations = defineOperations(Movies, { createUser, setName });
 
   test("is a no-op when connect was not given a registry", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = ramose(peer);
     await c.checkOperations();
     expect(peer.calls).toEqual([]);
@@ -305,7 +305,7 @@ describe("connect().checkOperations()", () => {
   });
 
   test("passes when /health lists every client-shipped id", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({
         body: { ok: true, operations: ["user/create", "user/set-name"] },
       }),
@@ -324,7 +324,7 @@ describe("connect().checkOperations()", () => {
   });
 
   test("fails with OperationsCoverageError when an id is missing", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: { ok: true, operations: ["user/create"] } }),
     });
     const c = connect({
@@ -342,7 +342,7 @@ describe("connect().checkOperations()", () => {
 
 describe("connectionStatus", () => {
   test("is connecting before a socket, live after a read, reconnecting after a drop", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
     const c = ramose(peer);
@@ -372,7 +372,7 @@ describe("connectionStatus", () => {
   });
 
   test("an HTTPS-only client is offline", () => {
-    const { connectionStatus, close } = httpsClient(fakePeer());
+    const { connectionStatus, close } = httpsClient(scriptedPeer());
     expect(connectionStatus()).toBe("offline");
     expect(connectionStatus("movies")).toBe("offline");
     close();

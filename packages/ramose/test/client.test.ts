@@ -21,7 +21,7 @@ import { pipe } from "effect/Function";
 import { Databases, layer, Query, schemaTx, seedWrite } from "../src/db/internal.ts";
 import {
   client,
-  fakePeer,
+  scriptedPeer,
   httpsClient,
   runWithTestClock,
   type Call,
@@ -54,7 +54,7 @@ const ack = (t = 7, txEid = 13194139533319, datoms = 3) => ({
 
 describe("ramose.db(name, catalog) is pure", () => {
   test("naming a database costs no request and opens no socket", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer);
 
     const db = c.ramose.db("movies", Movies);
@@ -71,7 +71,7 @@ describe("ramose.db(name, catalog) is pure", () => {
   });
 
   test("a consumer that only transacts never opens a socket", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack() }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack() }) });
     const { databases, close } = httpsClient(peer);
 
     await run(seedWrite(
@@ -95,7 +95,7 @@ describe("ramose.db(name, catalog) is pure", () => {
       ["traversal", "../etc"],
     ] as const) {
       test(label, async () => {
-        const peer = fakePeer();
+        const peer = scriptedPeer();
         const c = client(peer);
         const db = c.ramose.db(name, Movies);
 
@@ -123,7 +123,7 @@ describe("ramose.db(name, catalog) is pure", () => {
 
 describe("writes are HTTPS, reads are not", () => {
   test("transact posts { tx } to /db/:name/transact and reports back", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack(7, 42, 3) }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack(7, 42, 3) }) });
     const c = client(peer);
 
     const report = await run(seedWrite(
@@ -148,7 +148,7 @@ describe("writes are HTTPS, reads are not", () => {
   });
 
   test("reads take the session socket when there is one", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);
@@ -167,7 +167,7 @@ describe("writes are HTTPS, reads are not", () => {
   });
 
   test("with no socket at all, reads fall back to POST /query and /pull", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call: Call) =>
         call.url.endsWith("/query")
           ? { body: { t: 2, root: 2, result: [[1001]] } }
@@ -192,7 +192,7 @@ describe("writes are HTTPS, reads are not", () => {
 
 describe("dbAfter is the read fence", () => {
   test("reads through it carry x-ramose-min-t / the frame's minT; the original does not", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: ack(30) }),
       answer: () => ({ body: { t: 30, root: 30, result: [] } }),
     });
@@ -215,7 +215,7 @@ describe("dbAfter is the read fence", () => {
   });
 
   test("over HTTPS the same floor is the header", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) =>
         call.url.endsWith("/transact")
           ? { body: ack(30) }
@@ -238,7 +238,7 @@ describe("dbAfter is the read fence", () => {
   });
 
   test("dbAfter is a Db, so it transacts too — and cannot read the past", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack(11) }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack(11) }) });
     const c = client(peer);
     const { dbAfter } = await run(seedWrite(
       c.ramose.db("movies", Movies), function* (tx) {
@@ -258,7 +258,7 @@ describe("dbAfter is the read fence", () => {
 
 describe("install", () => {
   test("is the catalog as one ordinary transaction, and is idempotent", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack(2) }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack(2) }) });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
@@ -283,7 +283,7 @@ describe("install", () => {
 describe("the token", () => {
   test("is re-read on every transact, and rides the socket handshake", async () => {
     let issued = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: ack() }),
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
@@ -308,7 +308,7 @@ describe("the token", () => {
   });
 
   test("an empty token is no token", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack() }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { token: Effect.succeed(Redacted.make("")) });
     await run(seedWrite(
       c.ramose.db("movies", Movies), function* (tx) {
@@ -322,7 +322,7 @@ describe("the token", () => {
 
 describe("provisioning mistakes are defects", () => {
   test("a malformed url dies rather than failing with a DbError", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const runtime = ManagedRuntime.make(
       layer({ url: "peer.example.com", fetch: peer.fetch }),
     );
@@ -337,7 +337,7 @@ describe("provisioning mistakes are defects", () => {
   });
 
   test("a good url survives a trailing slash", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack() }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { url: "https://peer.example.com/" });
     await run(seedWrite(
       c.ramose.db("movies", Movies), function* (tx) {
@@ -353,7 +353,7 @@ describe("provisioning mistakes are defects", () => {
 
 describe("failures arrive tagged, not thrown", () => {
   const failing = (status: number, body: unknown) =>
-    fakePeer({ http: () => ({ status, body }) });
+    scriptedPeer({ http: () => ({ status, body }) });
 
   test("a rejected transaction is TxRejected", async () => {
     const peer = failing(409, {
@@ -377,7 +377,7 @@ describe("failures arrive tagged, not thrown", () => {
     // "Worker not found." — often pinned to one pooled socket, so the retry
     // must carry `Connection: close` to dial a different edge server.
     let n = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => {
         n++;
         return n === 1
@@ -403,7 +403,7 @@ describe("failures arrive tagged, not thrown", () => {
     // path has: the peer relays "Worker not found" from a Durable Object
     // namespace that has not converged yet, and the next frame is fine.
     let n = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => {
         n++;
         return n === 1
@@ -464,7 +464,7 @@ describe("failures arrive tagged, not thrown", () => {
   });
 
   test("a non-JSON error body still classifies by status", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer, {
       fetch: (async () =>
         new Response("<html>502 Bad Gateway</html>", {
@@ -478,7 +478,7 @@ describe("failures arrive tagged, not thrown", () => {
   });
 
   test("a body failure aborts before anything is sent", async () => {
-    const peer = fakePeer({ http: () => ({ body: ack() }) });
+    const peer = scriptedPeer({ http: () => ({ body: ack() }) });
     const c = client(peer);
     const e = await runFail(seedWrite(
       c.ramose.db("movies", Movies), function* (tx) {
@@ -496,7 +496,7 @@ describe("failures arrive tagged, not thrown", () => {
 describe("the JSON transport", () => {
   test("Dates, byte arrays and uuids survive the round trip", async () => {
     const when = new Date("2026-08-16T00:00:00.000Z");
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: ack() }),
       answer: (frame) => ({
         body: {
@@ -533,7 +533,7 @@ describe("the JSON transport", () => {
 
 describe("live needs the socket", () => {
   test("without one it is a defect, not a hung stream", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { databases, close } = httpsClient(peer);
     const exit = await Effect.runPromiseExit(
       Stream.runCollect(
@@ -551,7 +551,7 @@ describe("live needs the socket", () => {
   });
 
   test("a pinned view does not, so asOf still emits once over HTTPS", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }),
     });
     const { databases, close } = httpsClient(peer);

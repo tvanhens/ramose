@@ -352,6 +352,8 @@ async function resolveEid(policy: CompiledPolicy, sub: string, dbName: string, r
   const now = Date.now();
   const hit = eids.get(key);
   if (hit !== undefined && now - hit.at < PRINCIPAL_MEMO_MS) return hit.eid;
+  const attr = ruleDb.attr(policy.principal);
+  if (attr === undefined || !attr.unique) return undefined;
   const eid = await ruleDb.entid([policy.principal, sub] as never);
   if (eid === undefined) return undefined;
   if (eids.size > 256) eids.clear();

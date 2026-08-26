@@ -17,7 +17,7 @@ import * as Stream from "effect/Stream";
 import { fromResponse } from "../src/db/Errors.ts";
 import { pipe } from "effect/Function";
 import { Query, seedWrite } from "../src/db/internal.ts";
-import { client, fakePeer, until } from "./peer.ts";
+import { client, scriptedPeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -37,7 +37,7 @@ const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User
 
 describe("the credential on the wire", () => {
   test("the socket takes ?token=, the HTTPS write takes Authorization", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({ body: { t: 2, txEid: 1, tempids: {}, datoms: 1 } }),
       answer: () => ({ body: { t: 2, root: 2, result: [] } }),
     });
@@ -57,7 +57,7 @@ describe("the credential on the wire", () => {
   });
 
   test("a 403 policy denial is Unauthorized with the attribute it tripped on", async () => {
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: () => ({
         status: 403,
         body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" },
@@ -106,7 +106,7 @@ describe("a token swap is not a reconnect", () => {
     const snap = await snapshotOf(conn);
     let issued = 0;
     let refuse = false;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) => {
         if (frame.op === "auth") return { ok: true };
         if (frame.op === "sync") {

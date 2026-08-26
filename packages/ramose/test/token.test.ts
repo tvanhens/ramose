@@ -17,7 +17,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { pipe } from "effect/Function";
 import { layer, Query, seedWrite, token, Unauthorized } from "../src/db/internal.ts";
-import { client, fakePeer, until } from "./peer.ts";
+import { client, scriptedPeer, until } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -90,7 +90,7 @@ describe("token.jwt mints lazily and caches", () => {
       mints += 1;
       return jwt;
     });
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer, { token: source });
     const db = c.ramose.db("movies", Movies);
 
@@ -338,7 +338,7 @@ describe("failure typing on the wire", () => {
     const source = token.jwt(async () => {
       throw new Error("the auth endpoint is down");
     });
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer, { token: source });
     const db = c.ramose.db("movies", Movies);
 
@@ -362,7 +362,7 @@ describe("failure typing on the wire", () => {
     const source = token.jwt(async () => {
       throw new Unauthorized({ message: "session revoked" });
     });
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer, { token: source });
     const db = c.ramose.db("movies", Movies);
 
@@ -392,7 +392,7 @@ describe("failure typing on the wire", () => {
     const world = await catalogWorld(Movies);
     await world.transact([{ ":user/name": "Ada" }]);
     const snap = await snapshotOf(world);
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: (frame) =>
         frame.op === "sync"
           ? { body: { t: snap.t, datoms: snap.datoms } }
@@ -416,7 +416,7 @@ describe("failure typing on the wire", () => {
     const source = token.jwt(async () => {
       throw new Unauthorized({ message: "session revoked" });
     });
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer, { token: source });
     const live = collect(c.ramose.db("movies", Movies).effect.live(names));
     await until(() => live.done);

@@ -3,9 +3,13 @@
  * attached session. A pair of `openSession` + `pushApplied` is not this path —
  * that would still pass if `notifySessions` were a no-op.
  *
- * There is no existing QueryReplicaDO driver (the Worker harness stands the
- * replica in). This stands up the real DO over bun:sqlite, the same way the
- * Transactor DO is driven, and feeds `applyDatoms` / `handleFrame`.
+ * Direct `applyDatoms` / `handleFrame` control — local Alchemy mode cannot
+ * schedule this deterministically. `mock.module("cloudflare:workers")` is
+ * only here to import the DO class. Public multi-client live is
+ * `test/local/multi-client.ts`.
+ *
+ * Stands up the real DO over bun:sqlite, the same way the Transactor DO
+ * is driven.
  */
 import { describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -71,6 +75,7 @@ type ReplicaWalk = {
   fetch(request: Request): Promise<Response>;
   applyDatoms(e: LogEntry): Promise<void>;
   handleFrame(frame: unknown): Promise<void>;
+  onUpstreamData(data: string): Promise<void>;
   adoptRoot(rec: RootRecord): void;
   live: Map<FakeSocket, Session>;
 };
@@ -169,6 +174,112 @@ describe("QueryReplicaDO apply-then-notify", () => {
     expect(b.socket.resyncs()).toEqual([]);
     expect(a.session.watermark).toBe(12);
     expect(b.session.watermark).toBe(12);
+  });
+
+  test("GET /basis with minT fills from the transactor log when the subscription is stale", async () => {
+    const pending = [entry(11), entry(12)];
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              const u = new URL(href);
+              const from = Number(u.searchParams.get("from") ?? "0");
+              const to = Number(u.searchParams.get("to") ?? String(Number.MAX_SAFE_INTEGER));
+              const entries = pending.filter((e) => e.t > from && e.t <= to).map((e) => txFrame(e));
+              return Response.json({ earliestLogT: 11, entries, t: 12 });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    expect(replica.basisT).toBe(10);
+    const stale = await replica.fetch(new Request("https://replica/basis?db=acme"));
+    expect(stale.status).toBe(200);
+    expect(((await stale.json()) as { t: number }).t).toBe(10);
+    const fresh = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "12" } }),
+    );
+    expect(fresh.status).toBe(200);
+    expect(((await fresh.json()) as { t: number }).t).toBe(12);
+    expect(replica.basisT).toBe(12);
+  });
+
+  test("a thrown /log fetch falls back to R2 and does not block a later fenced read", async () => {
+    let failLog = true;
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              if (failLog) throw new Error("log down");
+              return Response.json({
+                earliestLogT: 11,
+                entries: [txFrame(entry(11))],
+                t: 11,
+              });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    const fallback = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "11" } }),
+    );
+    expect(fallback.status).toBe(200);
+    expect(((await fallback.json()) as { t: number }).t).toBe(10);
+    expect(replica.basisT).toBe(10);
+    failLog = false;
+    const recovered = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "11" } }),
+    );
+    expect(recovered.status).toBe(200);
+    expect(((await recovered.json()) as { t: number }).t).toBe(11);
+    expect(replica.basisT).toBe(11);
+  });
+
+  test("an upstream pong fences catch-up so a silent novelty socket still advances", async () => {
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              return Response.json({
+                earliestLogT: 11,
+                entries: [txFrame(entry(11))],
+                t: 11,
+              });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    await replica.onUpstreamData(JSON.stringify({ v: 1, kind: "pong", t: 11 }));
+    expect(replica.basisT).toBe(11);
   });
 
   test("handleFrame of t+2 while t+1 is unapplied does not stamp the tip or dump", async () => {

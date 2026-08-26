@@ -14,7 +14,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun run test
+      - run: bun run test:unit
       # Cited docs fences must extract from source. A drifted title, a
       # missing marker, or a transcribed block that no longer matches fails
       # the job (issue #200).
@@ -25,3 +25,15 @@ jobs:
       - run: bun run build
       - run: bun run scripts/check-release.ts --built
       - run: bun run scripts/check-client-dts.ts
+
+  local:
+    name: local
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # Alchemy local mode (workerd + owned peer). Serial: one sidecar
+      # per file. Runs as its own job so it does not erase unit-test
+      # wall-clock (issue #331 / #329).
+      - run: bun run test:local

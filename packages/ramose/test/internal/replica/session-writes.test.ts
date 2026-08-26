@@ -2,6 +2,10 @@
  * Socket `{ op: "transact" }` is gated the same way as HTTPS `/transact`.
  * The Worker stamps `x-ramose-writes` on upgrade; QueryReplicaDO.sessionDispatch
  * enforces it — a live frame never goes through Worker `route()`.
+ *
+ * `mock.module("cloudflare:workers")` imports the DO class so this file
+ * can drive `applyDatoms` / session dispatch directly. Public `/transact`
+ * vs `/op` policy is `test/contracts/operations.contract.ts`.
  */
 import { describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";

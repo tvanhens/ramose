@@ -10,13 +10,13 @@ import {
   useDb,
 } from "../../src/react/index.ts";
 import { registerDom, titles, Todos, wrapperFor } from "./harness.tsx";
-import { fakePeer } from "./peer.ts";
+import { scriptedPeer } from "./peer.ts";
 
 registerDom();
 
 describe("useConnectionStatus (per-db)", () => {
   test("is connecting until the first handshake, then live", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { result } = renderHook(
       () => {
         const db = useDb("todos", Todos);
@@ -32,7 +32,7 @@ describe("useConnectionStatus (per-db)", () => {
   });
 
   test("a drop is reconnecting; the next read is live again", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { result } = renderHook(
       () => {
         const db = useDb("todos", Todos);
@@ -51,7 +51,7 @@ describe("useConnectionStatus (per-db)", () => {
   });
 
   test("needs no provider when given a db", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const client = Ramose.connect({
       url: "https://peer.example.com",
       fetch: peer.fetch,
@@ -78,7 +78,7 @@ describe("useConnectionStatus (per-db)", () => {
   });
 
   test("client.close() is closed", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const client = Ramose.connect({
       url: "https://peer.example.com",
       fetch: peer.fetch,
@@ -95,7 +95,7 @@ describe("useConnectionStatus (per-db)", () => {
 
 describe("useConnectionStatus (provider-scoped)", () => {
   test("rolls up the nearest client's sessions", async () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { result } = renderHook(
       () => {
         const db = useDb("todos", Todos);

@@ -23,7 +23,7 @@ import {
 import { runSync } from "../src/db/promise.ts";
 import { rewritePendingTx } from "../src/db/overlay.ts";
 import { schemaTx } from "../src/db/ensure.ts";
-import { client, fakePeer, settle, type Call } from "./peer.ts";
+import { client, scriptedPeer, settle, type Call } from "./peer.ts";
 import { snapshotOf } from "./overlay-seed.ts";
 import { Movies, User } from "./db/fixture.ts";
 
@@ -665,7 +665,7 @@ describe("both write paths reject identically", () => {
       }
       throw new Error(`unexpected ${call.url}`);
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db(dbName, catalog);
     return { server, peer, c, db };
@@ -680,7 +680,7 @@ describe("both write paths reject identically", () => {
       }
       throw new Error(`unexpected ${call.url}`);
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("people", People);
     await db.query(Query.from(Person).select({ handle: Person.handle }));
@@ -709,7 +709,7 @@ describe("both write paths reject identically", () => {
       }
       throw new Error(`unexpected ${call.url}`);
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("people", People);
     await db.query(Query.from(Person).select({ handle: Person.handle }));
@@ -821,7 +821,7 @@ describe("both write paths reject identically", () => {
         },
       };
     };
-    const peer = fakePeer({ http });
+    const peer = scriptedPeer({ http });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await db.query(names);

@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { useEffect } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { registerDom, Todos, titles, wrapperFor } from "./harness.tsx";
-import { fakePeer, type Call } from "./peer.ts";
+import { scriptedPeer, type Call } from "./peer.ts";
 import { useBasis, useDb } from "../../src/react/index.ts";
 
 registerDom();
@@ -23,7 +23,7 @@ const infoCalls = (calls: readonly Call[]) =>
 describe("useBasis", () => {
   test("a live view reads session.t, then follows { op: tx } without /info per tick", async () => {
     const state = { t: 7 };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: state.t, result: [] } }),
       http: (call) =>
         call.url.includes("/info")
@@ -53,7 +53,7 @@ describe("useBasis", () => {
   });
 
   test("an asOf view answers its t on the first render, with no request", () => {
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const { result, rerender } = renderHook(
       // inline on purpose: a new view object every render
       () => useBasis(useDb("todos", Todos).asOf(3)),
@@ -69,7 +69,7 @@ describe("useBasis", () => {
 
   test("switching views re-answers — pinned coordinates still without a request", async () => {
     const state = { t: 7 };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: state.t, result: [] } }),
       http: (call) =>
         call.url.includes("/info")
@@ -103,7 +103,7 @@ describe("useBasis", () => {
       release = resolve;
     });
     const state = { t: 4 };
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       answer: () => ({ body: { t: state.t, result: [] } }),
       http: async (call) => {
         if (call.url.includes("/info")) {

@@ -10,7 +10,7 @@ import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 import type { ReactNode } from "react";
 import { RamoseProvider } from "../../src/react/index.ts";
-import type { FakePeer } from "./peer.ts";
+import type { ScriptedPeer } from "./peer.ts";
 
 /** Call at file top level, before any test renders. */
 export const registerDom = (): void => {
@@ -33,7 +33,7 @@ export const titles = Ramose.Query.q(() =>
 
 /** A provider over the fake peer, as a `renderHook` / `render` wrapper. */
 export const wrapperFor =
-  (peer: FakePeer, url = "https://peer.example.com") =>
+  (peer: ScriptedPeer, url = "https://peer.example.com") =>
   ({ children }: { children?: ReactNode }) => (
     <RamoseProvider url={url} fetch={peer.fetch} webSocket={peer.webSocket}>
       {children}

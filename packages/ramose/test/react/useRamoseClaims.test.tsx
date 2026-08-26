@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import * as Ramose from "../../src/db/index.ts";
 import { RamoseProvider, useRamoseClaims } from "../../src/react/index.ts";
 import { registerDom } from "./harness.tsx";
-import { fakePeer } from "./peer.ts";
+import { scriptedPeer } from "./peer.ts";
 
 registerDom();
 
@@ -20,7 +20,7 @@ const jwtOf = (claims: Record<string, unknown>): string =>
 
 const wrap = (
   token: Ramose.TokenInput,
-  peer = fakePeer(),
+  peer = scriptedPeer(),
 ) =>
   ({ children }: { children?: ReactNode }) => (
     <RamoseProvider

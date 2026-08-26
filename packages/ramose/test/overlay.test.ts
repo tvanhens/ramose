@@ -21,7 +21,7 @@ import { schemaTx } from "../src/db/ensure.ts";
 import { Entity, Field, Query, Schema as DbSchema, seedWrite } from "../src/db/internal.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import type { Session } from "../src/db/session.ts";
-import { client, fakePeer, settle, until, type Call } from "./peer.ts";
+import { client, scriptedPeer, settle, until, type Call } from "./peer.ts";
 
 import { Meta, Movie, Movies, User } from "./db/fixture.ts";
 
@@ -134,8 +134,8 @@ describe("optimistic transact", () => {
       return { body: { ...ack, clientTxId: call.body.clientTxId } };
     };
 
-    const adaPeer = fakePeer({ http });
-    const beaPeer = fakePeer({ http: () => ({ body: { t: server.t } }) });
+    const adaPeer = scriptedPeer({ http });
+    const beaPeer = scriptedPeer({ http: () => ({ body: { t: server.t } }) });
     const adaC = client(adaPeer);
     const beaC = client(beaPeer);
     const ada = adaC.ramose.db("movies", Movies);
@@ -182,7 +182,7 @@ describe("optimistic transact", () => {
 
   test("ack remaps the tempid onto the server eid", async () => {
     const server = await moviesWorld();
-    const adaPeer = fakePeer({
+    const adaPeer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         const rep = await server.transact(call.body.tx);
@@ -226,7 +226,7 @@ describe("optimistic transact", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         await gate;
@@ -275,7 +275,7 @@ describe("optimistic transact", () => {
       releaseKeep = r;
     });
     let posts = 0;
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         posts += 1;
@@ -350,7 +350,7 @@ describe("optimistic transact", () => {
     ]);
     await server.transact([{ ":doc/slug": "ada" }]);
     const posts: Call[] = [];
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (call.url.endsWith("/transact")) posts.push(call);
         return { body: { t: server.t, txEid: 1, tempids: {}, datoms: [] } };
@@ -374,7 +374,7 @@ describe("optimistic transact", () => {
 
   test("empty ack.datoms drop the pending layer and do not commit it to confirmed", async () => {
     const server = await moviesWorld();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         return {
@@ -414,7 +414,7 @@ describe("optimistic transact", () => {
 
   test("count-only ack.datoms is datomCount, not confirmed facts", async () => {
     const server = await moviesWorld();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         return {
@@ -457,7 +457,7 @@ describe("optimistic transact", () => {
       release = r;
     });
     const posts: unknown[][] = [];
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         if (posts.length === 0) await gate;
@@ -514,7 +514,7 @@ describe("confirmed follower", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         await gate;
@@ -563,7 +563,7 @@ describe("confirmed follower", () => {
 
   test("same-t ack then { op: tx } is a no-op on confirmed", async () => {
     const server = await moviesWorld();
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         const rep = await server.transact(call.body.tx);
@@ -670,7 +670,7 @@ describe("confirmed follower", () => {
   test("{ op: sync } / resync rebuilds confirmed from the snapshot", async () => {
     const server = await moviesWorld();
     await server.transact([{ ":user/name": "Ada" }]);
-    const peer = fakePeer();
+    const peer = scriptedPeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
@@ -942,7 +942,7 @@ describe("two-writer races", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         await gate;
@@ -1002,7 +1002,7 @@ describe("two-writer races", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         await gate;
@@ -1062,7 +1062,7 @@ describe("two-writer races", () => {
     await server.transact([
       { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         return {
@@ -1114,7 +1114,7 @@ describe("two-writer races", () => {
     await server.transact([
       { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     ]);
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         return {
@@ -1176,7 +1176,7 @@ describe("filtered tx frames (#112 sieve)", () => {
       release = r;
     });
     const posts: Call[] = [];
-    const adaPeer = fakePeer({
+    const adaPeer = scriptedPeer({
       http: async (call) => {
         if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
         posts.push(call);
@@ -1195,7 +1195,7 @@ describe("filtered tx frames (#112 sieve)", () => {
         };
       },
     });
-    const calPeer = fakePeer({
+    const calPeer = scriptedPeer({
       http: () => ({ body: { t: server.t } }),
     });
     const adaC = client(adaPeer);
@@ -1318,7 +1318,7 @@ describe("apply is the notify", () => {
 describe("HTTPS-only is unchanged", () => {
   test("reads still POST /query and there is no overlay sync", async () => {
     const { httpsClient } = await import("./peer.ts");
-    const peer = fakePeer({
+    const peer = scriptedPeer({
       http: (call: Call) =>
         call.url.endsWith("/query")
           ? { body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }

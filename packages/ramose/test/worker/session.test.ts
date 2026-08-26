@@ -5,6 +5,10 @@ import { PolicyAst as A, parsePolicy } from "../../src/internal/core/policy/inde
 import { META_HEADERS, PRINCIPAL_HEADER, type SessionDispatch, type SocketLike, openSession, parsePrincipalHeader, planOf, pushApplied } from "../../src/worker/session.ts";
 import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../src/worker/session-sync.ts";
 
+/**
+ * Protocol-frame control for the session state machine. Public multi-client
+ * sockets run against the local stack (`test/contracts/peer.contract.ts`).
+ */
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */
 class FakeSocket implements SocketLike {
   readonly frames: any[] = [];

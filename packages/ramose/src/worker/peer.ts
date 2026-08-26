@@ -141,7 +141,7 @@ export function minTOf(request: Request): number | undefined {
 const basisCache = new Map<string, { basis: Basis; at: number }>();
 export const BASIS_TTL_MS = 5_000; // ttl mode: cross-isolate freshness bound
 export const BASIS_SAFETY_TTL_MS = 10 * 60_000; // peer mode: memory bound only, not a consistency promise
-const MIN_T_RETRIES = 5; // replica may lag the transactor by a WS hop; poll briefly for min-t
+const MIN_T_RETRIES = 5; // replica /log catch-up can still race; poll briefly for min-t
 const MIN_T_RETRY_MS = 20;
 
 export function invalidateBasis(db: string): void {
@@ -185,7 +185,15 @@ export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: R
   let basis: Basis;
   for (;;) {
     calls++;
-    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, { headers: { ...coloHeader(request), ...internalHeaders(env) } });
+    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, {
+      headers: {
+        ...coloHeader(request),
+        ...internalHeaders(env),
+        // Replica pulls `(basisT, minT]` from the transactor /log when the
+        // novelty WS is open-but-stale. Polling /basis alone cannot recover.
+        ...(minT === undefined ? {} : { "x-ramose-min-t": String(minT) }),
+      },
+    });
     // Replica 503 "no root yet" must stay 503: wrapping it as Error → Internal
     // 500 made e2e warmup treat a fresh database as a hard failure (the client
     // retries 503 / 429, not application 500s).

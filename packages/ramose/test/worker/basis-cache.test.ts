@@ -1,6 +1,8 @@
 /**
  * Read-path knobs in packages/ramose/src/worker/peer.ts, exercised with a fake REPLICA
- * namespace (index.ts imports `cloudflare:workers` via the DO classes, so the
+ * namespace so cache TTL / min-T fencing stay on a virtual clock. Public
+ * query/cache behavior against a real replica is `test/local`.
+ * (index.ts imports `cloudflare:workers` via the DO classes, so the
  * helpers are tested directly):
  *   - cache hit skips GET /basis; miss / cache-off call it
  *   - a transact through this isolate (invalidateBasis) forces the next read to refetch
@@ -12,14 +14,19 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { BASIS_SAFETY_TTL_MS, BASIS_TTL_MS, cacheModeOf, clearBasisCache, coloHint, fetchBasisWithStats, hintOf, invalidateBasis, minTOf, replicaId, wantsBasisCache } from "../../src/worker/peer.ts";
 
 function fakeEnv(basisT: () => number, extra: Record<string, string> = {}) {
-  const calls: { id: string; url: string; hint?: string }[] = [];
+  const calls: { id: string; url: string; hint?: string; minT?: string }[] = [];
   const env = {
     ...extra,
     REPLICA: {
       idFromName: (name: string) => ({ name, toString: () => name }),
       get: (id: { name: string }, opts?: { locationHint?: string }) => ({
-        fetch: async (url: string) => {
-          calls.push({ id: id.name, url, hint: opts?.locationHint });
+        fetch: async (url: string, init?: RequestInit) => {
+          calls.push({
+            id: id.name,
+            url,
+            hint: opts?.locationHint,
+            minT: new Headers(init?.headers).get("x-ramose-min-t") ?? undefined,
+          });
           const t = basisT();
           return new Response(JSON.stringify({ t, root: { t: 1 }, novelty: [], replica: "r" }), { headers: { "content-type": "application/json" } });
         },
@@ -173,6 +180,7 @@ describe("basis cache knobs", () => {
     expect(b.basis.t).toBe(8);
     expect(b.calls).toBe(1);
     expect(calls.length).toBe(2);
+    expect(calls[1]?.minT).toBe("8");
     // subsequent read with the same fence hits the refreshed entry
     expect((await fetchBasisWithStats(env, "demo", req({ ...peer, "x-ramose-min-t": "8" }))).hit).toBe(true);
     // replica lags the transactor by a couple of polls → we wait for it
