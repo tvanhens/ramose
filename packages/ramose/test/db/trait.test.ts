@@ -397,6 +397,28 @@ describe("processTx membership and required trait fields", () => {
     );
   });
 
+  test("a mixed composed+plain create still requires every born namespace", async () => {
+    const Todo = Entity("todo", { title: string(), body: string() });
+    const Mixed = Schema({ issue: Issue, todo: Todo });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Mixed) as unknown[]);
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "tmp-1",
+          ":issue/title": "a",
+          ":taggable/tag": "t",
+          ":todo/title": "b",
+        },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/required",
+      message: expect.stringContaining(
+        "entity issue is missing required fields: :todo/body",
+      ),
+    });
+  });
+
   test("existing entity-only schemas still create without membership facts", async () => {
     const Todo = Entity("todo", { title: string() });
     const Todos = Schema({ todo: Todo });

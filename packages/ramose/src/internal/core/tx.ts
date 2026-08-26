@@ -867,7 +867,6 @@ export async function expandTx(
           "tx/required",
         );
       }
-      continue;
     }
     if (born.size === 0) continue;
     const missing = await missingRequired(e, born);
