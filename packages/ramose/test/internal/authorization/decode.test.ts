@@ -411,6 +411,52 @@ describe("JSON-only rejections", () => {
 });
 
 describe("schema shape rejections", () => {
+  test("rejects a blank principal subject claim", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "" },
+      }),
+      /blank principal subject claim/,
+    );
+  });
+
+  test("rejects a blank class name", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, classes: [""] }),
+      /blank class name/,
+    );
+  });
+
+  test("rejects a duplicate class name", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, classes: ["member", "member"] }),
+      /duplicate class 'member'/,
+    );
+  });
+
+  test("rejects a nested duplicate claim key", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        claims: [
+          {
+            key: "profile",
+            optional: false,
+            shape: {
+              _tag: "struct",
+              fields: [
+                { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              ],
+            },
+          },
+        ],
+      }),
+      /duplicate claim key 'org'/,
+    );
+  });
+
   test("rejects unknown keys", () => {
     expectInvalid(
       decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: true }),

@@ -42,21 +42,39 @@ export type ClaimShape =
   | { readonly _tag: "struct"; readonly fields: ReadonlyArray<ClaimDescriptor> }
   | { readonly _tag: "array"; readonly items: ClaimShape };
 
+const uniqueKeys = (kind: string) =>
+  Schema.makeFilter((fields: ReadonlyArray<{ readonly key: string }>) => {
+    const seen = new Set<string>();
+    for (const field of fields) {
+      if (seen.has(field.key)) return `duplicate ${kind} key '${field.key}'`;
+      seen.add(field.key);
+    }
+    return undefined;
+  });
+
+const ClaimKey = Schema.String.check(
+  Schema.makeFilter((key) => (key.length === 0 ? "blank claim key" : undefined)),
+);
+
 export const ClaimDescriptor: Schema.Codec<ClaimDescriptor> = Schema.Struct({
-  key: Schema.String,
+  key: ClaimKey,
   optional: Schema.Boolean,
   shape: Schema.suspend(() => ClaimShape),
 });
 
 export const ClaimShape: Schema.Codec<ClaimShape> = Schema.Union([
   ClaimScalarShape,
-  Schema.TaggedStruct("struct", { fields: Schema.Array(ClaimDescriptor) }),
+  Schema.TaggedStruct("struct", {
+    fields: Schema.Array(ClaimDescriptor).check(uniqueKeys("claim")),
+  }),
   Schema.TaggedStruct("array", { items: Schema.suspend(() => ClaimShape) }),
   ClaimOpaqueShape,
 ]);
 
 /** JWT subject claim name. The verified subject always exists. */
-export const SubjectClaim = Schema.String;
+export const SubjectClaim = Schema.String.check(
+  Schema.makeFilter((key) => (key.length === 0 ? "blank principal subject claim" : undefined)),
+);
 export type SubjectClaim = typeof SubjectClaim.Type;
 
 /**
@@ -96,10 +114,23 @@ export const AuthorizationPrincipal = Schema.Struct({
 });
 export type AuthorizationPrincipal = typeof AuthorizationPrincipal.Type;
 
-/** Declared class names. Empty is allowed. */
-export const ClassVocabulary = Schema.Array(Schema.String);
+const ClassName = Schema.String.check(
+  Schema.makeFilter((name) => (name.length === 0 ? "blank class name" : undefined)),
+);
+
+/** Declared class names. Empty is allowed. Names must be unique. */
+export const ClassVocabulary = Schema.Array(ClassName).check(
+  Schema.makeFilter((classes: ReadonlyArray<string>) => {
+    const seen = new Set<string>();
+    for (const name of classes) {
+      if (seen.has(name)) return `duplicate class '${name}'`;
+      seen.add(name);
+    }
+    return undefined;
+  }),
+);
 export type ClassVocabulary = typeof ClassVocabulary.Type;
 
 /** Declared claims with shapes. Empty is allowed. Keys alone are not enough. */
-export const ClaimVocabulary = Schema.Array(ClaimDescriptor);
+export const ClaimVocabulary = Schema.Array(ClaimDescriptor).check(uniqueKeys("claim"));
 export type ClaimVocabulary = typeof ClaimVocabulary.Type;

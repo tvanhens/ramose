@@ -150,11 +150,26 @@ export type OperationInputShapeEncoded =
   | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationInputFieldDescriptorEncoded> }
   | { readonly _tag: "array"; readonly items: OperationInputShapeEncoded };
 
+const uniqueInputKeys = Schema.makeFilter(
+  (fields: ReadonlyArray<{ readonly key: string }>) => {
+    const seen = new Set<string>();
+    for (const field of fields) {
+      if (seen.has(field.key)) return `duplicate operation input key '${field.key}'`;
+      seen.add(field.key);
+    }
+    return undefined;
+  },
+);
+
+const OperationInputKey = Schema.String.check(
+  Schema.makeFilter((key) => (key.length === 0 ? "blank operation input key" : undefined)),
+);
+
 export const OperationInputFieldDescriptor: Schema.Codec<
   OperationInputFieldDescriptor,
   OperationInputFieldDescriptorEncoded
 > = Schema.Struct({
-  key: Schema.String,
+  key: OperationInputKey,
   optional: Schema.Boolean,
   shape: Schema.suspend(() => OperationInputShape),
 });
@@ -163,7 +178,9 @@ export const OperationInputShape: Schema.Codec<OperationInputShape, OperationInp
   Schema.Union([
     OperationInputScalarShape,
     OperationInputRefShape,
-    Schema.TaggedStruct("struct", { fields: Schema.Array(OperationInputFieldDescriptor) }),
+    Schema.TaggedStruct("struct", {
+      fields: Schema.Array(OperationInputFieldDescriptor).check(uniqueInputKeys),
+    }),
     Schema.TaggedStruct("array", { items: Schema.suspend(() => OperationInputShape) }),
     OperationInputOpaqueShape,
   ]);
