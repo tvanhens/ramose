@@ -18,7 +18,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest, OperationsCoverageError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
-import { asLookupRef, lowerEntityArg, tempid, type Tempid } from "./entityArg.ts";
+import type { Tempid } from "./entityArg.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {

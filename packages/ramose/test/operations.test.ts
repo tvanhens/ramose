@@ -41,8 +41,6 @@ import { schemaTx } from "../src/db/ensure.ts";
 import { client, scriptedPeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
-  Effect.isEffect(value) ? Effect.runPromise(value) : value;
 const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
   if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
   try {

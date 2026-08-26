@@ -42,8 +42,8 @@ const Other = Entity("other", { sub: Field(Schema.String) });
 
 // ── claims ─────────────────────────────────────────────────────────────────
 
-type _claimSub = Expect<Equal<typeof P.claim.sub, P.ClaimOperand>>;
-type _claimsShape = Expect<
+export type _claimSub = Expect<Equal<typeof P.claim.sub, P.ClaimOperand>>;
+export type _claimsShape = Expect<
   Extends<
     {
       readonly iss?: string;
@@ -57,14 +57,14 @@ type _claimsShape = Expect<
 >;
 
 const typedClaims = P.claimOf(Schema.Struct({ org: Schema.String }));
-type _typedAttrKeys = Expect<Equal<keyof (typeof typedClaims)["attrs"], "org">>;
+export type _typedAttrKeys = Expect<Equal<keyof (typeof typedClaims)["attrs"], "org">>;
 
 // ── compile surface ────────────────────────────────────────────────────────
 
-type _compileReturnsJson = Expect<Equal<ReturnType<typeof P.compile>, string>>;
+export type _compileReturnsJson = Expect<Equal<ReturnType<typeof P.compile>, string>>;
 
-type _me = Expect<Equal<P.PrincipalMe<typeof App, ":user/sub">, P.Me<typeof User>>>;
-type _meIsVar = Expect<Extends<P.Me<typeof User>, Var<Eid<typeof User>>>>;
+export type _me = Expect<Equal<P.PrincipalMe<typeof App, ":user/sub">, P.Me<typeof User>>>;
+export type _meIsVar = Expect<Extends<P.Me<typeof User>, Var<Eid<typeof User>>>>;
 
 const _fixtures = () => {
   // typed claim keys
@@ -172,6 +172,11 @@ const _fixtures = () => {
   type _class = Expect<Equal<P.Class<typeof pol>, "member">>;
   type _classes = Expect<Equal<(typeof pol)["classes"], readonly ["member"]>>;
   type _schemaClass = Expect<Equal<(typeof pol)["schemaClasses"][number], "member">>;
+  // `pol` is block-scoped (calling `P.policy` at module scope would run the
+  // deploy-time throws), so these four cannot be hoisted and exported the way
+  // the module-level assertions are. Reference them instead — same idiom as
+  // `void _fixtures` below, and never executed since `_fixtures` is uncalled.
+  void (undefined as unknown as [_schema, _class, _classes, _schemaClass]);
 
   claims({ issuer: "i", audience: "a", ttl: 900 }, { sub: "u", db: "acme", class: "member" }, pol);
   // @ts-expect-error — "admin" is not a declared class of pol

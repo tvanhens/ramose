@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type { ClientOptions } from "./connect.ts";
-import { type Db, makeDb, type Wire } from "./Db.ts";
+import { makeDb, type Wire } from "./Db.ts";
 import type { EffectOf, RedactedOf } from "./effect-types.ts";
 import {
   type DbError,

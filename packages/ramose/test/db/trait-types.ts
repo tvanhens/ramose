@@ -6,6 +6,11 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
+// @effect-diagnostics floatingEffect:off
+// Bare calls below are the fixtures: their *types* are under test (often
+// paired with `@ts-expect-error`), so they are deliberately neither yielded
+// nor assigned. This file is compiled by `bun run typecheck`, never run.
+
 import type {
   CatalogIdent,
   Eid,
@@ -44,17 +49,17 @@ const Note = Entity(
 
 const Board = Schema({ issue: Issue, note: Note });
 
-type _tagIdent = Expect<
+export type _tagIdent = Expect<
   Equal<(typeof Issue)["tag"]["ident"], ":taggable/tag">
 >;
-type _sameField = Expect<
+export type _sameField = Expect<
   Equal<(typeof Issue)["tag"], (typeof Taggable)["tag"]>
 >;
-type _titleIdent = Expect<
+export type _titleIdent = Expect<
   Equal<(typeof Issue)["title"]["ident"], ":issue/title">
 >;
 
-type _boardIdents = Expect<
+export type _boardIdents = Expect<
   Equal<
     CatalogIdent<typeof Board>,
     | ":issue/title"
@@ -93,10 +98,10 @@ const Diamond = Entity(
   { title: string() },
   { traits: [Taggable, Annotated] },
 );
-type _diamondTag = Expect<
+export type _diamondTag = Expect<
   Equal<(typeof Diamond)["tag"], (typeof Taggable)["tag"]>
 >;
-type _diamondCreated = Expect<
+export type _diamondCreated = Expect<
   Equal<(typeof Diamond)["createdAt"]["ident"], ":timestamped/createdAt">
 >;
 

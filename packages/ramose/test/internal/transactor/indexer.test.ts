@@ -11,7 +11,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   Db,
-  Index,
   Novelty,
   Schema,
   type Datom,

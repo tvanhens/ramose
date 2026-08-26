@@ -7,6 +7,11 @@
  * (no `Scope` in the type).
  */
 
+// @effect-diagnostics floatingEffect:off
+// Bare calls below are the fixtures: their *types* are under test (often
+// paired with `@ts-expect-error`), so they are deliberately neither yielded
+// nor assigned. This file is compiled by `bun run typecheck`, never run.
+
 import type * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import type * as Stream from "effect/Stream";
@@ -40,7 +45,7 @@ type NamedRows = readonly {
   readonly name: string;
   readonly age: number | undefined;
 }[];
-type _named = Expect<Equal<typeof named, Stream.Stream<NamedRows, DbError>>>;
+export type _named = Expect<Equal<typeof named, Stream.Stream<NamedRows, DbError>>>;
 
 const publicLive = db.live(
   Query.q(() =>
@@ -50,18 +55,18 @@ const publicLive = db.live(
     ),
   ),
 );
-type _publicLive = Expect<
+export type _publicLive = Expect<
   Equal<typeof publicLive, Subscription<NamedRows, DbError>>
 >;
-type _publicLiveErr = Expect<
+export type _publicLiveErr = Expect<
   Equal<
     Parameters<NonNullable<Parameters<(typeof publicLive)["subscribe"]>[1]>>[0],
     DbError
   >
 >;
 /** `live` requires nothing: teardown is fiber interruption, not a `Scope`. */
-type _namedR = Expect<Equal<Stream.Services<typeof named>, never>>;
-type _namedErr = Expect<Equal<Stream.Error<typeof named>, DbError>>;
+export type _namedR = Expect<Equal<Stream.Services<typeof named>, never>>;
+export type _namedErr = Expect<Equal<Stream.Error<typeof named>, DbError>>;
 
 // nested selects come through the same as `db.pull`
 const friends = db.effect.live(
@@ -73,7 +78,7 @@ const friends = db.effect.live(
   ),
 );
 type Friends = Stream.Success<typeof friends>;
-type _friends = Expect<
+export type _friends = Expect<
   Equal<Friends[number]["friends"], readonly { readonly name: string }[]>
 >;
 
@@ -87,7 +92,7 @@ const eids = db.effect.live(
     return user;
   }),
 );
-type _eids = Expect<
+export type _eids = Expect<
   Equal<Stream.Success<typeof eids>, readonly { readonly id: number }[]>
 >;
 
@@ -102,7 +107,7 @@ const ada = Query.q(() =>
 );
 
 const oneLive = db.effect.live(ada.one());
-type _oneLive = Expect<
+export type _oneLive = Expect<
   Equal<
     typeof oneLive,
     Stream.Stream<{ readonly name: string } | null, DbError>
@@ -111,7 +116,7 @@ type _oneLive = Expect<
 
 /** `oneOrFail()` adds `NotOne` to the error channel; the element is the row. */
 const failLive = db.effect.live(ada.oneOrFail());
-type _failLive = Expect<
+export type _failLive = Expect<
   Equal<
     typeof failLive,
     Stream.Stream<{ readonly name: string }, DbError | NotOne>
@@ -128,7 +133,7 @@ const grouped = db.effect.live(
     return { name: name.v, n: Q.count(user) };
   }),
 );
-type _grouped = Expect<
+export type _grouped = Expect<
   Equal<
     Stream.Success<typeof grouped>,
     readonly { readonly name: string; readonly n: number }[]
@@ -141,7 +146,7 @@ const scalarCount = db.effect.live(
     return Q.value(Q.count(user));
   }),
 );
-type _scalar = Expect<Equal<Stream.Success<typeof scalarCount>, number>>;
+export type _scalar = Expect<Equal<Stream.Success<typeof scalarCount>, number>>;
 
 // ── inline values: the query carries its own literals ──────────────────────
 
@@ -153,7 +158,7 @@ const byName = Query.q(() =>
   ),
 );
 const bound = db.effect.live(byName);
-type _bound = Expect<
+export type _bound = Expect<
   Equal<typeof bound, Stream.Stream<readonly { readonly age: number }[], DbError>>
 >;
 
@@ -164,25 +169,25 @@ const namesQ = Query.q(() =>
 );
 const past = db.asOf(3).effect.live(namesQ);
 type Names = readonly { readonly name: string }[];
-type _past = Expect<Equal<typeof past, Stream.Stream<Names, DbError>>>;
+export type _past = Expect<Equal<typeof past, Stream.Stream<Names, DbError>>>;
 const hist = db.history.effect.live(namesQ);
-type _hist = Expect<Equal<typeof hist, Stream.Stream<Names, DbError>>>;
+export type _hist = Expect<Equal<typeof hist, Stream.Stream<Names, DbError>>>;
 
 // ── basis() requires nothing: `R = never`, on every view ──────────────────
 
 const basis = db.effect.basis();
-type _basis = Expect<
+export type _basis = Expect<
   Equal<typeof basis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
-type _basisR = Expect<Equal<Effect.Services<typeof basis>, never>>;
-type _basisErr = Expect<Equal<Effect.Error<typeof basis>, DbError>>;
+export type _basisR = Expect<Equal<Effect.Services<typeof basis>, never>>;
+export type _basisErr = Expect<Equal<Effect.Error<typeof basis>, DbError>>;
 
 const pinnedBasis = db.asOf(3).effect.basis();
-type _pinnedBasis = Expect<
+export type _pinnedBasis = Expect<
   Equal<typeof pinnedBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
 const historyBasis = db.history.effect.basis();
-type _historyBasis = Expect<
+export type _historyBasis = Expect<
   Equal<typeof historyBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
 
@@ -196,7 +201,7 @@ type Projection = {
   readonly name: string;
   readonly age: number | undefined;
 };
-type _projected = Expect<
+export type _projected = Expect<
   Equal<typeof projected, Stream.Stream<Projection | null, DbError>>
 >;
 
@@ -204,25 +209,25 @@ const publicPull = db.livePull(eid, {
   name: User.name,
   age: User.age.optional,
 });
-type _publicPull = Expect<
+export type _publicPull = Expect<
   Equal<typeof publicPull, Subscription<Projection | null, DbError>>
 >;
 /** `livePull` requires nothing either: teardown is fiber interruption. */
-type _projectedR = Expect<Equal<Stream.Services<typeof projected>, never>>;
-type _projectedErr = Expect<Equal<Stream.Error<typeof projected>, DbError>>;
+export type _projectedR = Expect<Equal<Stream.Services<typeof projected>, never>>;
+export type _projectedErr = Expect<Equal<Stream.Error<typeof projected>, DbError>>;
 
 // nested `.select` and a lookup-ref subject come through as in `db.pull`
 const bestOf = db.effect.livePull([User.name, "Ada"], {
   bestFriend: User.bestFriend.optional.select({ name: User.name }),
 });
 type BestOf = NonNullable<Stream.Success<typeof bestOf>>;
-type _bestOf = Expect<
+export type _bestOf = Expect<
   Equal<BestOf["bestFriend"], { readonly name: string } | undefined>
 >;
 
 // a pinned view still gives a Stream
 const pastPull = db.asOf(3).effect.livePull(eid, { name: User.name });
-type _pastPull = Expect<
+export type _pastPull = Expect<
   Equal<
     typeof pastPull,
     Stream.Stream<{ readonly name: string } | null, DbError>

@@ -12,8 +12,6 @@ import { memoryAdapter } from "better-auth/adapters/memory";
 import { createAuthClient } from "better-auth/client";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
-import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import { ramoseTokenClient } from "../../src/better-auth/client.ts";
 import { orgClassOf, ramoseToken } from "../../src/better-auth/index.ts";
 import { memoryDb } from "./support.ts";

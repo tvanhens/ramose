@@ -5,6 +5,11 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
+// @effect-diagnostics floatingEffect:off
+// Bare calls below are the fixtures: their *types* are under test (often
+// paired with `@ts-expect-error`), so they are deliberately neither yielded
+// nor assigned. This file is compiled by `bun run typecheck`, never run.
+
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
@@ -31,42 +36,42 @@ declare const db: Db<typeof Movies>;
 
 // ── transact is gone; writes are db.run / the internal builder ─────────────
 
-type _dbHasRun = Expect<Equal<"run" extends keyof typeof db ? true : false, true>>;
-type _hatchHasRun = Expect<
+export type _dbHasRun = Expect<Equal<"run" extends keyof typeof db ? true : false, true>>;
+export type _hatchHasRun = Expect<
   Equal<"run" extends keyof (typeof db)["effect"] ? true : false, true>
 >;
 
 // ── the report is `{ t, txEid, datomCount, dbAfter }` ──────────────────────
 
 type Report = TxReport<typeof Movies>;
-type _reportKeys = Expect<
+export type _reportKeys = Expect<
   Equal<keyof Report, "t" | "txEid" | "datomCount" | "dbAfter">
 >;
-type _reportT = Expect<Equal<Report["t"], number>>;
-type _reportCount = Expect<Equal<Report["datomCount"], number>>;
-type _dbAfterIsDb = Expect<Equal<Report["dbAfter"], Db<typeof Movies>>>;
+export type _reportT = Expect<Equal<Report["t"], number>>;
+export type _reportCount = Expect<Equal<Report["datomCount"], number>>;
+export type _dbAfterIsDb = Expect<Equal<Report["dbAfter"], Db<typeof Movies>>>;
 /** No public `minT`: the floor is a property of the db, not an option. */
-type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
+export type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
 
 // ── a read view has no write half ──────────────────────────────────────────
 
 type ReadK = keyof ReadDb<typeof Movies>;
 type DbK = keyof Db<typeof Movies>;
 
-type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
-type _readNoInstall = Expect<
+export type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
+export type _readNoInstall = Expect<
   Equal<"install" extends ReadK ? true : false, false>
 >;
-type _dbHasInstall = Expect<
+export type _dbHasInstall = Expect<
   Equal<"install" extends DbK ? true : false, true>
 >;
-type _dbNoTransact = Expect<
+export type _dbNoTransact = Expect<
   Equal<"transact" extends DbK ? true : false, false>
 >;
-type _hatchNoTransact = Expect<
+export type _hatchNoTransact = Expect<
   Equal<"transact" extends keyof (typeof db)["effect"] ? true : false, false>
 >;
-type _dbStillReads = Expect<Equal<"query" extends DbK ? true : false, true>>;
+export type _dbStillReads = Expect<Equal<"query" extends DbK ? true : false, true>>;
 
 declare const view: ReadDb<typeof Movies>;
 void view.query;
@@ -78,16 +83,16 @@ view.install;
 // ── install is an ordinary transaction that reports the same way ───────────
 
 const installed = db.effect.install();
-type _installReport = Expect<
+export type _installReport = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _installErr = Expect<
+export type _installErr = Expect<
   Equal<Effect.Error<typeof installed>, DbError | IncompatibleSchema>
 >;
 
 // ── builder types are catalog-generic ──────────────────────────────────────
 
-type _handle = Expect<
+export type _handle = Expect<
   Extends<
     Effect.Success<ReturnType<Tx<typeof Movies>["entity"]>>,
     TxHandle<typeof Movies>
@@ -135,7 +140,7 @@ tx.entity([User.name, "Ada"]);
 tx.set([":user/name", "Ada"], User.age, 36);
 
 const putH = tx.put(User, { name: "Ada", friends: [1002] });
-type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
+export type _putH = Expect<Extends<Effect.Success<typeof putH>, TxHandle<typeof Movies>>>;
 tx.put(User, 1001, { age: 36 });
 tx.put(User, { name: "Ada", bestFriend: 1002 });
 tx.put(User, { name: "Ada", bestFriend: userId });
@@ -146,7 +151,7 @@ tx.put(User, userRow.id, { age: 36 });
 tx.set(userRow.id, User.age, 36);
 tx.put(User, { name: "Ada", bestFriend: tx.tempid("ada") });
 const updH = tx.update(User, userId, { age: 37 });
-type _updH = Expect<Extends<Effect.Success<typeof updH>, TxHandle<typeof Movies>>>;
+export type _updH = Expect<Extends<Effect.Success<typeof updH>, TxHandle<typeof Movies>>>;
 tx.update(User, { name: "Ada", age: 38 });
 {
   // @ts-expect-error name is string, not number

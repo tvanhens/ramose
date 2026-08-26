@@ -5,7 +5,6 @@
  * into a type error, or leaves a `@ts-expect-error` unused.
  */
 
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   Field,
@@ -32,7 +31,7 @@ declare const eid: Eid<typeof Movies>;
 declare const cell: Eid<typeof User>;
 const byCell = db.pull(cell, { name: User.name, age: User.age.optional });
 type ByCell = NonNullable<Awaited<typeof byCell>>;
-type _byCellName = Expect<Equal<ByCell["name"], string>>;
+export type _byCellName = Expect<Equal<ByCell["name"], string>>;
 
 const Elsewhere = Entity("elsewhere", { label: Field(Schema.String) });
 declare const foreignCell: Eid<typeof Elsewhere>;
@@ -47,10 +46,10 @@ const required = db.pull(eid, {
   age: User.age,
 });
 type RequiredPull = NonNullable<Awaited<typeof required>>;
-type _reqName = Expect<Equal<RequiredPull["name"], string>>;
-type _reqAge = Expect<Equal<RequiredPull["age"], number>>;
+export type _reqName = Expect<Equal<RequiredPull["name"], string>>;
+export type _reqAge = Expect<Equal<RequiredPull["age"], number>>;
 // ident keys are not on the result
-type _noIdent = Expect<
+export type _noIdent = Expect<
   Equal<":user/name" extends keyof RequiredPull ? true : false, false>
 >;
 
@@ -59,8 +58,8 @@ const maybe = db.pull(eid, {
   age: User.age.optional,
 });
 type MaybePull = NonNullable<Awaited<typeof maybe>>;
-type _optName = Expect<Equal<MaybePull["name"], string | undefined>>;
-type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
+export type _optName = Expect<Equal<MaybePull["name"], string | undefined>>;
+export type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
 
 /** `.orDefault` is required-shaped: the peer substitutes, so it always reads. */
 const defaulted = db.pull(eid, {
@@ -68,7 +67,7 @@ const defaulted = db.pull(eid, {
   age: User.age.orDefault(0),
 });
 type DefaultedPull = NonNullable<Awaited<typeof defaulted>>;
-type _defAge = Expect<Equal<DefaultedPull["age"], number>>;
+export type _defAge = Expect<Equal<DefaultedPull["age"], number>>;
 
 // @ts-expect-error `:user/age` is a number attribute, and so is its stand-in
 db.pull(eid, { age: User.age.orDefault("none") });
@@ -83,23 +82,23 @@ const withFriends = db.pull(eid, {
   }),
 });
 type FriendsPull = NonNullable<Awaited<typeof withFriends>>;
-type _friends = Expect<
+export type _friends = Expect<
   Equal<
     FriendsPull["friends"],
     readonly { readonly name: string; readonly age: number | undefined }[]
   >
 >;
-type _selfName = Expect<Equal<FriendsPull["name"], string>>;
+export type _selfName = Expect<Equal<FriendsPull["name"], string>>;
 
 const withBest = db.pull(eid, {
   bestFriend: User.bestFriend.select({ name: User.name }),
   maybeBest: User.bestFriend.optional.select({ name: User.name }),
 });
 type BestPull = NonNullable<Awaited<typeof withBest>>;
-type _best = Expect<
+export type _best = Expect<
   Equal<BestPull["bestFriend"], { readonly name: string }>
 >;
-type _maybeBest = Expect<
+export type _maybeBest = Expect<
   Equal<BestPull["maybeBest"], { readonly name: string } | undefined>
 >;
 
@@ -111,7 +110,7 @@ const deep = db.pull(eid, {
   }),
 });
 type DeepPull = NonNullable<Awaited<typeof deep>>;
-type _deep = Expect<
+export type _deep = Expect<
   Equal<
     DeepPull["friends"],
     readonly {
@@ -137,17 +136,17 @@ const happy = db.pull(eid, {
   }),
 });
 type Happy = NonNullable<Awaited<typeof happy>>;
-type _happyName = Expect<Equal<Happy["name"], string>>;
-type _happyAge = Expect<Equal<Happy["age"], number | undefined>>;
-type _happySource = Expect<Equal<Happy["source"], string>>;
-type _happyBest = Expect<
+export type _happyName = Expect<Equal<Happy["name"], string>>;
+export type _happyAge = Expect<Equal<Happy["age"], number | undefined>>;
+export type _happySource = Expect<Equal<Happy["source"], string>>;
+export type _happyBest = Expect<
   Equal<
     Happy["bestFriend"],
     | { readonly name: string; readonly age: number | undefined }
     | undefined
   >
 >;
-type _happyFriends = Expect<
+export type _happyFriends = Expect<
   Equal<
     Happy["friends"],
     readonly { readonly name: string; readonly age: number | undefined }[]
@@ -162,15 +161,15 @@ const bag = db.pull(eid, {
   title: Movie.title,
 });
 type BagPull = NonNullable<Awaited<typeof bag>>;
-type _bagName = Expect<Equal<BagPull["name"], string>>;
-type _bagSource = Expect<Equal<BagPull["source"], string>>;
-type _bagTitle = Expect<Equal<BagPull["title"], string>>;
+export type _bagName = Expect<Equal<BagPull["name"], string>>;
+export type _bagSource = Expect<Equal<BagPull["source"], string>>;
+export type _bagTitle = Expect<Equal<BagPull["title"], string>>;
 
 // ── pick ──────────────────────────────────────────────────────────────────
 
 const picked = db.pull(eid, pick(User, "name", "age"));
 type Picked = NonNullable<Awaited<typeof picked>>;
-type _picked = Expect<
+export type _picked = Expect<
   Equal<Picked, { readonly name: string; readonly age: number }>
 >;
 
@@ -178,16 +177,16 @@ type _picked = Expect<
 
 const soup = db.pull(eid, [User.name, User.age] as const);
 type Soup = NonNullable<Awaited<typeof soup>>;
-type _soupName = Expect<Equal<Soup[":user/name"], string | undefined>>;
-type _soupAge = Expect<Equal<Soup[":user/age"], number | undefined>>;
+export type _soupName = Expect<Equal<Soup[":user/name"], string | undefined>>;
+export type _soupAge = Expect<Equal<Soup[":user/age"], number | undefined>>;
 
 /** A ref with no nested pattern reads as the entity: `{":db/id": n}`. */
 const refSoup = db.pull(eid, [User.bestFriend, ":user/friends"] as const);
 type RefSoup = NonNullable<Awaited<typeof refSoup>>;
-type _refSoupOne = Expect<
+export type _refSoupOne = Expect<
   Equal<RefSoup[":user/bestFriend"], { readonly ":db/id": number } | undefined>
 >;
-type _refSoupMany = Expect<
+export type _refSoupMany = Expect<
   Equal<
     RefSoup[":user/friends"],
     readonly { readonly ":db/id": number }[] | undefined
@@ -199,22 +198,22 @@ type _refSoupMany = Expect<
 const wild = db.pull(eid, ["*"] as const);
 type Wild = NonNullable<Awaited<typeof wild>>;
 /** the wildcard always carries `:db/id`; every catalog ident is optional */
-type _wildId = Expect<Equal<Wild[":db/id"], number>>;
-type _wildName = Expect<Equal<Wild[":user/name"], string | undefined>>;
-type _wildTitle = Expect<Equal<Wild[":movie/title"], string | undefined>>;
+export type _wildId = Expect<Equal<Wild[":db/id"], number>>;
+export type _wildName = Expect<Equal<Wild[":user/name"], string | undefined>>;
+export type _wildTitle = Expect<Equal<Wild[":movie/title"], string | undefined>>;
 
 const everything = db.pull(eid, all(User));
 type EverythingPull = NonNullable<Awaited<typeof everything>>;
-type _everythingId = Expect<Equal<EverythingPull[":db/id"], number>>;
-type _everythingName = Expect<
+export type _everythingId = Expect<Equal<EverythingPull[":db/id"], number>>;
+export type _everythingName = Expect<
   Equal<EverythingPull[":user/name"], string | undefined>
 >;
 /** `all(User)` names one namespace, so the catalog's other idents are not keys */
-type _everythingNoMovie = Expect<
+export type _everythingNoMovie = Expect<
   Equal<":movie/title" extends keyof EverythingPull ? true : false, false>
 >;
 /** the two agree where they overlap — it is the one wildcard the peer answers */
-type _everythingAgrees = Expect<
+export type _everythingAgrees = Expect<
   Equal<EverythingPull[":user/friends"], Wild[":user/friends"]>
 >;
 
@@ -254,17 +253,17 @@ const nestedAll = db.pull(eid, {
   friends: User.friends.select(all(User)),
 });
 type NestedAllPull = NonNullable<Awaited<typeof nestedAll>>;
-type _nestedAllName = Expect<Equal<NestedAllPull["name"], string>>;
-type _nestedAllBest = Expect<
+export type _nestedAllName = Expect<Equal<NestedAllPull["name"], string>>;
+export type _nestedAllBest = Expect<
   Equal<NestedAllPull["bestFriend"], AllRow<typeof User>>
 >;
-type _nestedAllMaybe = Expect<
+export type _nestedAllMaybe = Expect<
   Equal<NestedAllPull["maybeBest"], AllRow<typeof User> | undefined>
 >;
-type _nestedAllFriends = Expect<
+export type _nestedAllFriends = Expect<
   Equal<NestedAllPull["friends"], readonly AllRow<typeof User>[]>
 >;
-type _nestedAllBestName = Expect<
+export type _nestedAllBestName = Expect<
   Equal<NestedAllPull["bestFriend"][":user/name"], string | undefined>
 >;
 
@@ -285,8 +284,8 @@ const pulledTree = graph.pull(nodeEid, {
   kids: Node.kids.select(again(1), { limit: 8 }),
 });
 type PulledTree = NonNullable<Awaited<typeof pulledTree>>;
-type _pulledKidLabel = Expect<Equal<PulledTree["kids"][number]["label"], string>>;
-type _pulledStub = Expect<
+export type _pulledKidLabel = Expect<Equal<PulledTree["kids"][number]["label"], string>>;
+export type _pulledStub = Expect<
   Equal<PulledTree["kids"][number]["kids"][number], { readonly id: Eid<typeof Node> }>
 >;
 // @ts-expect-error again(1): the next kids hop is a stub

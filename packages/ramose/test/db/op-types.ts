@@ -70,7 +70,7 @@ const writes = (async () => {
   op.set([":user/name", "Ada"], User.age, 36);
   return e;
 })();
-type _writesHandle = Expect<
+export type _writesHandle = Expect<
   Extends<Awaited<typeof writes>, OpHandle<typeof Movies>>
 >;
 
@@ -126,8 +126,8 @@ type _writesHandle = Expect<
 // ── self.eid is Eid | Tempid (queued contextual path may pass a tempid) ────
 
 type SelfEid = (typeof op.self)["eid"];
-type _selfEidHasTempid = Expect<Extends<Tempid, SelfEid>>;
-type _selfEidHasUser = Expect<Extends<Eid<typeof User>, SelfEid>>;
+export type _selfEidHasTempid = Expect<Extends<Tempid, SelfEid>>;
+export type _selfEidHasUser = Expect<Extends<Eid<typeof User>, SelfEid>>;
 // @ts-expect-error a bare string is not a tempid
 const _selfEidFromString: SelfEid = "tmp-1";
 // @ts-expect-error self.eid may be a queued tempid
@@ -165,7 +165,7 @@ declare const createdReport: OpReport<
   { readonly id: number },
   typeof Movies
 >;
-type _createdId = Expect<Equal<typeof createdReport.output.id, number>>;
+export type _createdId = Expect<Equal<typeof createdReport.output.id, number>>;
 void createUserWithId;
 
 const createUser = Operation(
@@ -197,7 +197,7 @@ const setMovieTitle = Operation(
 );
 
 const renamed = db.run(setUserName, userId, { name: "Ada" });
-type _renamed = Expect<
+export type _renamed = Expect<
   Equal<typeof renamed, Promise<OpReport<{}, typeof Movies>>>
 >;
 db.run(setUserName, 1001, { name: "Ada" });
@@ -211,7 +211,7 @@ db.run(setUserName, userRow, { name: "Ada" });
 
 const pipeIdsQ = Query.q(() => pipe(Query.entities(User), Query.ids()));
 type PipeIdRow = Row<typeof pipeIdsQ>;
-type _pipeIdRow = Expect<Equal<PipeIdRow, { readonly id: Eid<typeof User> }>>;
+export type _pipeIdRow = Expect<Equal<PipeIdRow, { readonly id: Eid<typeof User> }>>;
 declare const pipeIdRow: PipeIdRow;
 db.pull(pipeIdRow, { name: User.name });
 db.pull(pipeIdRow.id, { name: User.name });
@@ -220,13 +220,13 @@ db.run(setUserName, pipeIdRow.id, { name: "Ada" });
 const pipeFilterIdsQ = Query.q(() =>
   pipe(Query.entities(User), Query.has(User.name), Query.ids()),
 );
-type _pipeFilterIds = Expect<
+export type _pipeFilterIds = Expect<
   Equal<Row<typeof pipeFilterIdsQ>, { readonly id: Eid<typeof User> }>
 >;
 const pipeFollowQ = Query.q(() =>
   pipe(Query.entities(User), Query.follow(User.bestFriend)),
 );
-type _pipeFollowRow = Expect<
+export type _pipeFollowRow = Expect<
   Equal<Row<typeof pipeFollowQ>, { readonly id: Eid<typeof User> }>
 >;
 declare const followRow: Row<typeof pipeFollowQ>;
@@ -321,7 +321,7 @@ db.run(setUserNameFor, userId, { name: "Ada" });
 // @ts-expect-error Operation.for(Movies) does not run on a different catalog
 otherDb.run(setUserNameFor, userId, { name: "Ada" });
 
-const _onNotInCatalog = Operation(
+export const _onNotInCatalog = Operation(
   "tag/on-movies",
   {
     schema: Movies,
@@ -337,22 +337,22 @@ const _onNotInCatalog = Operation(
 
 const names = Query.from(User).select({ name: User.name });
 const queried = op.query(names);
-type _queried = Expect<
+export type _queried = Expect<
   Equal<typeof queried, Promise<readonly { readonly name: string }[]>>
 >;
 
 const pulled = op.pull(userId, { name: User.name });
-type _pulled = Expect<Equal<typeof pulled, Promise<unknown>>>;
+export type _pulled = Expect<Equal<typeof pulled, Promise<unknown>>>;
 
 const effected = op.effect("audit", async () => 1);
-type _effected = Expect<Equal<typeof effected, Promise<number>>>;
+export type _effected = Expect<Equal<typeof effected, Promise<number>>>;
 
 // ── handle is the promise twin of TxHandle (same bag, void methods) ────────
 
-type _handleEid = Expect<
+export type _handleEid = Expect<
   Equal<OpHandle<typeof Movies>["eid"], TxHandle<typeof Movies>["eid"]>
 >;
-type _selfIsHandle = Expect<
+export type _selfIsHandle = Expect<
   Extends<typeof op.self, OpHandle<typeof Movies, Eid<typeof User> | Tempid>>
 >;
 
@@ -367,11 +367,11 @@ const putCreate = catalogOp.put(User, {
   bestFriend: friend,
   friends: [friend, 1002],
 });
-type _putCreate = Expect<Extends<typeof putCreate, OpHandle<typeof Movies>>>;
+export type _putCreate = Expect<Extends<typeof putCreate, OpHandle<typeof Movies>>>;
 catalogOp.put(User, { name: "Bea", bestFriend: putCreate, friends: [putCreate] });
 
 const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
-type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
+export type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
 
 catalogOp.put(User, { name: "Ada", bestFriend: 1002 });
 catalogOp.put(User, { name: "Ada", bestFriend: { id: userId } });
@@ -381,7 +381,7 @@ catalogOp.put(User, userId, { age: 36 });
 catalogOp.put(User, userRow, { age: 36 });
 
 const updated = catalogOp.update(User, userId, { age: 37 });
-type _updated = Expect<Extends<typeof updated, OpHandle<typeof Movies>>>;
+export type _updated = Expect<Extends<typeof updated, OpHandle<typeof Movies>>>;
 catalogOp.update(User, { name: "Ada", age: 38 });
 catalogOp.update(User, userRow, { age: 39 });
 
@@ -442,13 +442,13 @@ trackerOp.put(Ticket, ticketRow.id, { title: "ship" });
 const patched = Operation.patch("user/set-name", User, ["name"], {
   doc: "Rename a user",
 });
-type _patchedName = Expect<Equal<(typeof patched)["name"], "user/set-name">>;
+export type _patchedName = Expect<Equal<(typeof patched)["name"], "user/set-name">>;
 declare const patchedInput: (typeof patched)["input"] extends {
   readonly Type: infer T;
 }
   ? T
   : never;
-const _titleOk: (typeof patchedInput)["name"] = "Ada";
+export const _titleOk: (typeof patchedInput)["name"] = "Ada";
 {
   // @ts-expect-error patch keys must be fields of the entity
   Operation.patch("user/set-name", User, ["nope"]);

@@ -21,13 +21,13 @@ const Label = Entity("label", { name: string() });
 
 const ByObject = Schema({ todo: Todo, label: Label });
 const ByArray = Schema([Todo, Label]);
-type _arrayKeys = Expect<
+export type _arrayKeys = Expect<
   Equal<keyof (typeof ByArray)["entities"], "todo" | "label">
 >;
-type _objectKeys = Expect<
+export type _objectKeys = Expect<
   Equal<keyof (typeof ByObject)["entities"], "todo" | "label">
 >;
-type _sameTodo = Expect<
+export type _sameTodo = Expect<
   Equal<(typeof ByArray)["entities"]["todo"], typeof Todo>
 >;
 
@@ -64,10 +64,10 @@ merge(ByObject, Schema({ todo: OtherTodo }));
 declare const anyLeft: AnySchema;
 declare const anyRight: AnySchema;
 const _wideMerge = merge(anyLeft, anyRight);
-type _wideMergeOk = Expect<Equal<typeof _wideMerge, AnySchema>>;
+export type _wideMergeOk = Expect<Equal<typeof _wideMerge, AnySchema>>;
 
 const Ctor = Entity("constructor", { title: string() });
 const CtorSchema = Schema([Ctor]);
-type _ctorKey = Expect<
+export type _ctorKey = Expect<
   Equal<keyof (typeof CtorSchema)["entities"], "constructor">
 >;

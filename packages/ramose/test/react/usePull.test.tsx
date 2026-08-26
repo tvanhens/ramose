@@ -8,7 +8,6 @@
 import { describe, expect, test } from "bun:test";
 import { StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
-import type * as Ramose from "../../src/db/index.ts";
 import { registerDom, sleep, Todo, Todos, wrapperFor } from "./harness.tsx";
 import { scriptedPeer, type Frame } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
