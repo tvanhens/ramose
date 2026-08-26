@@ -14,7 +14,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
-import { App } from "./app.ts";
+import { makeApp } from "./app.ts";
 import {
   Empty,
   Jwks,
@@ -38,6 +38,8 @@ export const Stack = Alchemy.Stack(
   },
   Effect.gen(function* () {
     const open = yield* Open;
+    const workerName = yield* (yield* open.workerName);
+    const app = yield* makeApp(workerName);
     const empty = yield* Empty;
     const token = yield* Token;
     const policy = yield* Policy;
@@ -47,7 +49,6 @@ export const Stack = Alchemy.Stack(
     const jwks = yield* Jwks;
     const jwksBound = yield* JwksBound;
     const jwksUrlOnly = yield* JwksUrlOnly;
-    const app = yield* App;
     return {
       openUrl: open.url,
       emptyUrl: empty.url,
