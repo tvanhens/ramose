@@ -83,6 +83,18 @@ export const encodeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): InstalledAuthorizationIREncoded => Schema.encodeUnknownSync(InstalledAuthorizationIR)(document);
 
+// Hoisted for the same reason as the two above: a `Schema.*Sync` call sitting
+// inside an `Effect.fn` generator turns an encode failure into a defect rather
+// than a typed failure. Encoding a value that is already the schema's `Type`
+// cannot fail, so the sync form is right — it just belongs out here.
+const encodeRelativeRule = (
+  rule: RelativeAuthorizationRuleType,
+): RelativeAuthorizationRuleEncoded => Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule);
+
+const encodeCanonicalRule = (
+  rule: CanonicalAuthorizationRuleType,
+): CanonicalAuthorizationRuleEncoded => Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule);
+
 export const canonicalizePolicyTemplate = (document: PolicyTemplateIRType): string =>
   canonicalizeJson(encodedJson(encodePolicyTemplate(document)));
 
@@ -126,7 +138,7 @@ export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(func
   rule: RelativeAuthorizationRuleType,
 ) {
   const digest = yield* hashCanonicalJson(
-    omitKey(encodedJson(Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule)), "id"),
+    omitKey(encodedJson(encodeRelativeRule(rule)), "id"),
   );
   return RuleId.make(digest);
 });
@@ -135,7 +147,7 @@ export const hashCanonicalRule = Effect.fn("Authorization.hashCanonicalRule")(fu
   rule: CanonicalAuthorizationRuleType,
 ) {
   const digest = yield* hashCanonicalJson(
-    omitKey(encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)), "id"),
+    omitKey(encodedJson(encodeCanonicalRule(rule)), "id"),
   );
   return RuleId.make(digest);
 });
