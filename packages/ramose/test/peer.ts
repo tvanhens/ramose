@@ -107,13 +107,25 @@ export type Http = NonNullable<PeerOptions["http"]>;
 
 /** The worker's `GET /db/:name/info` shape, at the transact ack's basis. */
 const defaultHttp: Http = (call) => {
-  const info = /^\/db\/([^/]+)\/info$/.exec(new URL(call.url).pathname);
+  const path = new URL(call.url).pathname;
+  const info = /^\/db\/([^/]+)\/info$/.exec(path);
   if (info !== null && call.method === "GET") {
     return {
       body: {
         db: decodeURIComponent(info[1]!),
         t: DEFAULT_ACK.t,
         principal: { eid: null, class: "admin" },
+      },
+    };
+  }
+  if (path.endsWith("/install-read") && call.method === "POST") {
+    if (call.body?.kind === "occupancy") {
+      return { body: { t: DEFAULT_ACK.t, result: null } };
+    }
+    return {
+      body: {
+        t: DEFAULT_ACK.t,
+        result: { core: [], uniques: [], optionals: [], refTargets: [] },
       },
     };
   }

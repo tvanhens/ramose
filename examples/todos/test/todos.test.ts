@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import * as Ramose from "ramose/db";
 import { InternalError } from "../../../packages/ramose/src/db/Errors.ts";
 import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
+import { runInstallRead } from "../../../packages/ramose/src/db/evolution.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
 import { Connection, fromJson, pull, query, toJson, toWireDatom } from "../../../packages/ramose/src/internal/core/index.ts";
 import * as Cause from "effect/Cause";
@@ -124,11 +125,21 @@ const inProcessPeer = async () => {
         },
       };
     }
-    const db = conn.db();
+    let db = conn.db();
+    if (typeof body.asOf === "number") db = db.asOf(body.asOf);
     if (op === "q") {
       return {
         status: 200,
         body: { t: db.effectiveT, root: db.effectiveT, result: await query(db, body.query, body.inputs ?? []) },
+      };
+    }
+    if (op === "install-read") {
+      return {
+        status: 200,
+        body: {
+          t: db.effectiveT,
+          result: await runInstallRead((q, inputs) => query(db, q, [...(inputs ?? [])]), body),
+        },
       };
     }
     return {
@@ -156,7 +167,9 @@ const inProcessPeer = async () => {
         : (fromJson(JSON.parse(String(raw))) as any);
     const reply = path.endsWith("/op")
       ? await answer("op", body)
-      : await answer("transact", body);
+      : path.endsWith("/install-read")
+        ? await answer("install-read", body)
+        : await answer("transact", body);
     const datoms = (reply.body as { datoms?: unknown }).datoms;
     if (Array.isArray(datoms) && datoms.length > 0) {
       for (const push of pushes) {

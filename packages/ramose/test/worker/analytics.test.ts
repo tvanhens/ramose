@@ -42,6 +42,7 @@ describe("http data point", () => {
     expect(routeOf("/transact", "POST")).toBe("transact");
     expect(routeOf("/op", "POST")).toBe("op");
     expect(routeOf("/query", "POST")).toBe("query");
+    expect(routeOf("/install-read", "POST")).toBe("install-read");
     expect(routeOf("/pull", "POST")).toBe("pull");
     expect(routeOf("/info", "GET")).toBe("info");
     expect(routeOf("/admin/index", "POST")).toBe("admin");

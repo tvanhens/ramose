@@ -26,11 +26,6 @@ import {
   checkEvolution,
   installTx,
   occupancyIdents,
-  occupancyQuery,
-  installedCoreQuery,
-  installedOptionalQuery,
-  installedRefTargetQuery,
-  installedUniqueQuery,
   identsNeedingRefTargetOccupancy,
   namespacesNeedingOccupancy,
   type InstalledAttr,
@@ -116,6 +111,14 @@ export interface Wire {
   operation(
     name: string,
     invocation: OperationInvocation,
+  ): EffectOf<unknown, DbError>;
+  /**
+   * `POST /db/:name/install-read`. Catalog and occupancy for `install()` —
+   * always HTTPS, never a session frame or a public `/query` flag.
+   */
+  installRead(
+    name: string,
+    body: Record<string, unknown>,
   ): EffectOf<unknown, DbError>;
   /**
    * Session overlay — confirmed follower + pending layers. Absent on an
@@ -449,12 +452,18 @@ const terminal = (e: { readonly _tag: string }): boolean =>
 /** `[User.name, "Ada"]` and `[":user/name", "Ada"]` both lower to the wire form. */
 const lowerSubject = (subject: unknown): unknown => lowerEntityArg(subject);
 
+const catalogRows = <T>(value: unknown): readonly T[] =>
+  Array.isArray(value) ? (value as T[]) : [];
+
 /** Occupancy reads for `install()` — not part of the public read surface. */
 type OccupancyRead<C extends AnySchema> = Omit<
   EffectReadDb<C>,
   "asOf" | "history"
 > & {
-  readonly queryOccupancy: EffectReadDb<C>["query"];
+  readonly queryInstalled: () => Effect.Effect<InstalledAttr[], DbError>;
+  readonly queryOccupancy: (
+    idents: readonly string[],
+  ) => Effect.Effect<unknown, DbError>;
   readonly asOf: (t: number) => OccupancyRead<C>;
   readonly history: OccupancyRead<C>;
 };
@@ -502,7 +511,6 @@ const makeRead = <C extends AnySchema>(
     input: AnyQueryObject,
     minT: number | undefined,
     raw = false,
-    occupancy = false,
   ): Effect.Effect<
     {
       readonly rows: unknown;
@@ -533,7 +541,6 @@ const makeRead = <C extends AnySchema>(
             inputs: [],
             asOf: view.asOf,
             history: view.history === true ? true : undefined,
-            occupancy: occupancy === true ? true : undefined,
           }),
           minT ?? view.minT,
         ),
@@ -671,15 +678,45 @@ const makeRead = <C extends AnySchema>(
         ),
       )) as EffectReadDb<C>["query"],
 
-    /** Unfiltered occupancy for `install()` — schema-class gated on the peer. */
-    queryOccupancy: ((input: AnyQueryObject) =>
+    /** Unfiltered catalog for `install()` — schema-class gated on the peer. */
+    queryInstalled: () =>
       fenced(
         Effect.suspend(() =>
-          runQuery(input, undefined, false, true).pipe(
-            Effect.map((r) => r.rows),
-          ),
+          wire
+            .installRead(
+              name,
+              compact({ kind: "catalog", asOf: view.asOf }),
+            )
+            .pipe(
+              Effect.map((body) => {
+                const result = record(record(body).result);
+                return assembleInstalled(
+                  catalogRows(result.core),
+                  catalogRows(result.uniques),
+                  catalogRows(result.optionals),
+                  catalogRows(result.refTargets),
+                );
+              }),
+            ),
         ),
-      )) as EffectReadDb<C>["query"],
+      ),
+
+    /** Unfiltered occupancy for `install()` — schema-class gated on the peer. */
+    queryOccupancy: (idents: readonly string[]) =>
+      fenced(
+        Effect.suspend(() =>
+          wire
+            .installRead(
+              name,
+              compact({
+                kind: "occupancy",
+                idents: [...idents],
+                asOf: view.asOf,
+              }),
+            )
+            .pipe(Effect.map((body) => record(body).result)),
+        ),
+      ),
 
     live: ((input: AnyQueryObject) =>
       liveStanding(input, false)) as EffectReadDb<C>["live"],
@@ -943,34 +980,24 @@ export const makeDb = <C extends AnySchema>(
         const snap = read.asOf(Number.MAX_SAFE_INTEGER);
         // Catalog + occupancy must be unfiltered: a schema class that
         // cannot read an attr would otherwise see a missing install and
-        // treat a tighten as a new namespace.
-        const [core, uniques, optionals, refTargets] = yield* Effect.all([
-          snap.queryOccupancy(installedCoreQuery),
-          snap.queryOccupancy(installedUniqueQuery),
-          snap.queryOccupancy(installedOptionalQuery),
-          snap.queryOccupancy(installedRefTargetQuery),
-        ]);
-        const installed: InstalledAttr[] = assembleInstalled(
-          core,
-          uniques,
-          optionals,
-          refTargets,
-        );
+        // treat a tighten as a new namespace. Those reads go through
+        // `/install-read`, not a public `/query` occupancy flag.
+        const installed: InstalledAttr[] = yield* snap.queryInstalled();
         const desired = schemaTx(schema);
         const occupied = new Set<string>();
         for (const ns of namespacesNeedingOccupancy(desired, installed, options)) {
           const idents = occupancyIdents(installed, ns);
           if (idents.length === 0) continue;
-          const hit = yield* snap.queryOccupancy(occupancyQuery(idents));
-          if (hit !== null) occupied.add(ns);
+          const hit = yield* snap.queryOccupancy(idents);
+          if (hit != null) occupied.add(ns);
         }
         for (const ident of identsNeedingRefTargetOccupancy(
           desired,
           installed,
           options,
         )) {
-          const hit = yield* snap.queryOccupancy(occupancyQuery([ident]));
-          if (hit !== null) occupied.add(ident);
+          const hit = yield* snap.queryOccupancy([ident]);
+          if (hit != null) occupied.add(ident);
         }
         const refused = checkEvolution(desired, installed, occupied, options);
         if (refused !== undefined) return yield* Effect.fail(refused);

@@ -33,8 +33,10 @@ import {
   Q,
   Query,
   Ref,
+  InvalidRequest,
   layer,
   lowerQueryObject,
+  runInstallRead,
   values,
   type Db,
   seedWrite,
@@ -87,6 +89,14 @@ const inProcessPeer = async () => {
         const result = await coreQuery(db, body.query, body.inputs ?? []);
         return { status: 200, body: { t: db.effectiveT, result } };
       }
+      if (op === "install-read") {
+        const db = body.asOf !== undefined ? conn.db().asOf(body.asOf) : conn.db();
+        const result = await runInstallRead(
+          (q, inputs) => coreQuery(db, q, [...(inputs ?? [])]),
+          body,
+        );
+        return { status: 200, body: { t: db.effectiveT, result } };
+      }
       if (op === "pull") {
         const db = conn.db();
         const pattern = normalizePullPattern(body.pattern);
@@ -101,7 +111,11 @@ const inProcessPeer = async () => {
       if (err instanceof TxError) {
         return { status: 409, body: { error: err.message, tag: "TxRejected", code: err.code } };
       }
-      if (err instanceof QueryParseError || err instanceof CoreQueryError) {
+      if (
+        err instanceof QueryParseError ||
+        err instanceof CoreQueryError ||
+        err instanceof InvalidRequest
+      ) {
         return { status: 400, body: { error: err.message } };
       }
       return { status: 500, body: { error: err instanceof Error ? err.message : String(err) } };
@@ -111,7 +125,13 @@ const inProcessPeer = async () => {
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const path = new URL(String(url)).pathname;
     const body = init.body === undefined ? {} : fromJson(JSON.parse(String(init.body)));
-    const op = path.endsWith("/transact") ? "transact" : path.endsWith("/query") ? "q" : "pull";
+    const op = path.endsWith("/transact")
+      ? "transact"
+      : path.endsWith("/query")
+        ? "q"
+        : path.endsWith("/install-read")
+          ? "install-read"
+          : "pull";
     const reply = await answer(op, body);
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,

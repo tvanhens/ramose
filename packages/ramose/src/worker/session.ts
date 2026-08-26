@@ -17,7 +17,7 @@ export type ClientFrame =
   | { id: number; op: "operation"; name: string; entity?: unknown; input: unknown; clientOpId?: string }
   /** catch-up: walk `(from, now]` and skip empties; resync if the gap is gone or a rule view flipped */
   | { id: number; op: "sync"; from: number }
-  | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; occupancy?: boolean; minT?: number }
+  | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
   | { id: number; op: "pull"; eid: number | string | [string, unknown]; pattern: string | unknown[]; asOf?: number; history?: boolean; minT?: number }
   | { id: number; op: "entity"; eid: number; asOf?: number }
   | { id: number; op: "info" };
@@ -217,7 +217,6 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
       if (typeof f.asOf === "number") body.asOf = f.asOf;
       if (f.history !== undefined) body.history = !!f.history;
       if (f.explain !== undefined) body.explain = !!f.explain;
-      if (f.occupancy === true) body.occupancy = true;
       return { id, op: "q", rest: "/query", method: "POST", headers: { ...JSON_CT, ...minTHeader(f.minT) }, body: JSON.stringify(body) };
     }
     case "pull": {

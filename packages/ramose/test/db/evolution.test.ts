@@ -44,6 +44,8 @@ import {
   occupancyIdents,
   occupancyQuery,
   optionalRetracts,
+  parseInstallReadBody,
+  runInstallRead,
   Query,
   Ref,
   refTargetRetracts,
@@ -52,7 +54,7 @@ import {
   submitRaw,
   Trait,
 } from "../../src/db/internal.ts";
-import { TxRejected } from "../../src/db/Errors.ts";
+import { InvalidRequest, TxRejected } from "../../src/db/Errors.ts";
 
 const Note = Entity("note", {
   title: Field(Schema.String),
@@ -552,6 +554,39 @@ describe("checkEvolution", () => {
   });
 });
 
+describe("parseInstallReadBody", () => {
+  test("accepts catalog and occupancy", () => {
+    expect(parseInstallReadBody({ kind: "catalog" })).toEqual({ kind: "catalog" });
+    expect(parseInstallReadBody({ kind: "catalog", asOf: 3 })).toEqual({
+      kind: "catalog",
+      asOf: 3,
+    });
+    expect(
+      parseInstallReadBody({ kind: "occupancy", idents: [":favorite/target"] }),
+    ).toEqual({ kind: "occupancy", idents: [":favorite/target"] });
+  });
+
+  test("rejects free-form Datalog and unknown keys", () => {
+    const query = () =>
+      parseInstallReadBody({ kind: "catalog", query: { find: ["?e"] } });
+    expect(query).toThrow(InvalidRequest);
+    expect(query).toThrow("does not accept a query");
+    expect(() =>
+      parseInstallReadBody({ kind: "occupancy", occupancy: true, idents: [":a/b"] }),
+    ).toThrow("does not accept occupancy on /query");
+    expect(() => parseInstallReadBody({ kind: "catalog", history: true })).toThrow(
+      "does not accept \"history\"",
+    );
+    expect(() => parseInstallReadBody({ kind: "catalog", idents: [":a/b"] })).toThrow(
+      "does not take idents",
+    );
+    expect(() => parseInstallReadBody({ kind: "occupancy" })).toThrow("requires idents");
+    expect(() =>
+      parseInstallReadBody({ kind: "occupancy", idents: [":not-an-ident"] }),
+    ).toThrow("invalid occupancy ident");
+  });
+});
+
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
   Effect.isEffect(value) ? Effect.runPromise(value) : value;
 const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
@@ -587,16 +622,28 @@ const peer = async (opts?: {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
+      if (path.endsWith("/install-read")) {
+        let db = conn.db();
+        const asOf = (body as { asOf?: number }).asOf;
+        if (typeof asOf === "number") db = db.asOf(asOf);
+        const result = await runInstallRead(
+          (q, inputs) => query(db, q, [...(inputs ?? [])]),
+          body,
+        );
+        return new Response(
+          JSON.stringify(toJson({ t: db.effectiveT, result })),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
       if (path.endsWith("/query")) {
         const b = body as {
           query: object;
           inputs?: unknown[];
           asOf?: number;
-          occupancy?: boolean;
         };
         let db = conn.db();
         if (typeof b.asOf === "number") db = db.asOf(b.asOf);
-        const filter = b.occupancy === true ? undefined : opts?.filter?.();
+        const filter = opts?.filter?.();
         if (filter !== undefined) db = filter(db);
         const result = await query(db, b.query, b.inputs ?? []);
         return new Response(
@@ -612,7 +659,11 @@ const peer = async (opts?: {
           { status: 409 },
         );
       }
-      if (err instanceof QueryParseError || err instanceof QueryError) {
+      if (
+        err instanceof QueryParseError ||
+        err instanceof QueryError ||
+        err instanceof InvalidRequest
+      ) {
         return new Response(JSON.stringify({ error: err.message }), { status: 400 });
       }
       return new Response(

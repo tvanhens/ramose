@@ -66,13 +66,14 @@ export const bindingOf = (env: unknown): AnalyticsEngineDatasetLike | undefined 
   return typeof b?.writeDataPoint === "function" ? b : undefined;
 };
 
-export type Route = "transact" | "op" | "query" | "pull" | "entity" | "info" | "session" | "admin" | "health" | "other";
+export type Route = "transact" | "op" | "query" | "install-read" | "pull" | "entity" | "info" | "session" | "admin" | "health" | "other";
 
 /** Route label for a `/db/:name/<rest>` suffix (or a non-db path). */
 export function routeOf(rest: string, method: string): Route {
   if (rest === "/transact") return "transact";
   if (rest === "/op") return "op";
   if (rest === "/query") return "query";
+  if (rest === "/install-read") return "install-read";
   if (rest === "/pull") return "pull";
   if (rest === "/info") return "info";
   if (rest === "/session") return "session";

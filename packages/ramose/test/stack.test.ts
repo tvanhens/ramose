@@ -67,6 +67,12 @@ const peer = Bun.serve({
     }
     // install() reads the installed catalog before the upsert. An empty
     // result is a fresh name — no user attributes, check passes.
+    if (/^\/db\/[^/]+\/install-read$/.test(pathname)) {
+      return Response.json({
+        t,
+        result: { core: [], uniques: [], optionals: [], refTargets: [] },
+      });
+    }
     if (/^\/db\/[^/]+\/query$/.test(pathname)) {
       return Response.json({ t, result: [] });
     }

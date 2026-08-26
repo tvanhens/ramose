@@ -49,7 +49,7 @@ import {
 } from "../src/app/mutations.ts";
 import { buildOp, runBody } from "../../../packages/ramose/src/db/op-handle.ts";
 import { tryLowerQueryObject } from "../../../packages/ramose/src/db/query/index.ts";
-import { seedWrite } from "../../../packages/ramose/src/db/internal.ts";
+import { runInstallRead, seedWrite } from "../../../packages/ramose/src/db/internal.ts";
 import { openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
@@ -242,6 +242,15 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         },
       };
     }
+    if (op === "install-read") {
+      return {
+        status: 200,
+        body: {
+          t: db.effectiveT,
+          result: await runInstallRead((q, inputs) => query(db, q, [...(inputs ?? [])]), body),
+        },
+      };
+    }
     return { status: 200, body: { t: conn.t } };
   };
 
@@ -283,7 +292,9 @@ const inProcessPeer = async (opts?: { seed?: boolean }) => {
         : (fromJson(JSON.parse(String(raw))) as any);
     const reply = path.endsWith("/op")
       ? await answer("op", body)
-      : await answer("transact", body);
+      : path.endsWith("/install-read")
+        ? await answer("install-read", body)
+        : await answer("transact", body);
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,
       headers: { "content-type": "application/json" },

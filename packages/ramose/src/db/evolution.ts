@@ -7,13 +7,15 @@
  */
 
 import { isAttributeTx, type SchemaAttrTx, type SchemaTxOp } from "./ensure.ts";
+import { InvalidRequest, NotOne } from "./Errors.ts";
+import { isIdentName } from "./IdentName.ts";
 import type {
   IncompatibleKind,
   InstallOptions,
   SchemaChange,
 } from "./SchemaErrors.ts";
 import { IncompatibleSchema } from "./SchemaErrors.ts";
-import { Q, mkVar, q } from "./query/index.ts";
+import { Q, mkVar, q, tryLowerQueryObject, type AnyQueryObject } from "./query/index.ts";
 
 /** One installed attribute, as `install()` reads it back from the peer. */
 export interface InstalledAttr {
@@ -114,6 +116,106 @@ export const occupancyQuery = (idents: readonly string[]) => {
     return e;
   }).one();
 };
+
+export type InstallReadBody =
+  | { kind: "catalog"; asOf?: number }
+  | { kind: "occupancy"; idents: string[]; asOf?: number };
+
+const occupancyIdent = (ident: string): boolean => {
+  if (!ident.startsWith(":")) return false;
+  const slash = ident.indexOf("/", 1);
+  if (slash < 0) return false;
+  return isIdentName(ident.slice(1, slash)) && isIdentName(ident.slice(slash + 1));
+};
+
+/** Parse the dedicated install-read body. Rejects free-form Datalog. */
+export function parseInstallReadBody(body: unknown): InstallReadBody {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new InvalidRequest({ message: "install-read body must be an object" });
+  }
+  const rec = body as Record<string, unknown>;
+  if ("query" in rec || "inputs" in rec) {
+    throw new InvalidRequest({ message: "install-read does not accept a query" });
+  }
+  if (rec.occupancy === true) {
+    throw new InvalidRequest({
+      message: "install-read does not accept occupancy on /query",
+    });
+  }
+  for (const key of Object.keys(rec)) {
+    if (key !== "kind" && key !== "asOf" && key !== "idents") {
+      throw new InvalidRequest({
+        message: `install-read does not accept ${JSON.stringify(key)}`,
+      });
+    }
+  }
+  const kind = rec.kind;
+  if (kind !== "catalog" && kind !== "occupancy") {
+    throw new InvalidRequest({
+      message: 'install-read kind must be "catalog" or "occupancy"',
+    });
+  }
+  const asOf = rec.asOf;
+  if (asOf !== undefined && (typeof asOf !== "number" || !Number.isInteger(asOf) || asOf < 0)) {
+    throw new InvalidRequest({ message: "asOf must be a non-negative integer" });
+  }
+  if (kind === "catalog") {
+    if ("idents" in rec) {
+      throw new InvalidRequest({ message: "catalog install-read does not take idents" });
+    }
+    return asOf === undefined ? { kind: "catalog" } : { kind: "catalog", asOf };
+  }
+  if (!Array.isArray(rec.idents)) {
+    throw new InvalidRequest({ message: "occupancy install-read requires idents" });
+  }
+  const idents: string[] = [];
+  for (const ident of rec.idents) {
+    if (typeof ident !== "string" || !occupancyIdent(ident)) {
+      throw new InvalidRequest({
+        message: `invalid occupancy ident: ${String(ident)}`,
+      });
+    }
+    idents.push(ident);
+  }
+  return asOf === undefined
+    ? { kind: "occupancy", idents }
+    : { kind: "occupancy", idents, asOf };
+}
+
+export async function executeInstallRead(
+  run: (input: AnyQueryObject) => Promise<unknown>,
+  body: InstallReadBody,
+): Promise<unknown> {
+  if (body.kind === "catalog") {
+    const [core, uniques, optionals, refTargets] = await Promise.all([
+      run(installedCoreQuery),
+      run(installedUniqueQuery),
+      run(installedOptionalQuery),
+      run(installedRefTargetQuery),
+    ]);
+    return { core, uniques, optionals, refTargets };
+  }
+  if (body.idents.length === 0) return null;
+  return run(occupancyQuery(body.idents));
+}
+
+/** Lower and finalize the fixed catalog / occupancy queries against an engine `query`. */
+export async function runInstallRead(
+  queryFn: (
+    query: Record<string, unknown>,
+    inputs?: readonly unknown[],
+  ) => Promise<unknown>,
+  body: unknown,
+): Promise<unknown> {
+  const parsed = parseInstallReadBody(body);
+  return executeInstallRead(async (input) => {
+    const lowered = tryLowerQueryObject(input);
+    const raw = await queryFn(lowered.query, []);
+    const finalized = lowered.finalize(raw);
+    if (finalized instanceof NotOne) throw finalized;
+    return finalized;
+  }, parsed);
+}
 
 const eidKey = (e: unknown): number => {
   if (typeof e === "number" && Number.isFinite(e)) return e;

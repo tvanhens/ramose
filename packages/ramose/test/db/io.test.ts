@@ -1,7 +1,7 @@
 /**
  * The typed surface against a real engine `Connection`.
  *
- * The fake peer here is the whole peer: `POST /db/:name/transact|query|pull`
+ * The fake peer here is the whole peer: `POST /db/:name/transact|query|pull|install-read`
  * over `fetch`, and the same reads as session frames over a fake socket. That
  * is enough to run install → transact → q → pull → asOf → history end to end
  * without a Worker, and to pin the two contracts a unit test cannot fake — the
@@ -26,7 +26,7 @@ import {
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import { Databases, Query, layer, seedWrite } from "../../src/db/internal.ts";
+import { Databases, InvalidRequest, Query, layer, runInstallRead, seedWrite } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
@@ -108,6 +108,14 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
         const result = await query(db, body.query, body.inputs ?? []);
         return { status: 200, body: { t: db.effectiveT, root: db.effectiveT, result } };
       }
+      if (op === "install-read") {
+        const db = viewOf(body, fence);
+        const result = await runInstallRead(
+          (q, inputs) => query(db, q, [...(inputs ?? [])]),
+          body,
+        );
+        return { status: 200, body: { t: db.effectiveT, root: db.effectiveT, result } };
+      }
       if (op === "pull") {
         const db = viewOf(body, fence);
         // the peer's own rule: an attribute this database never installed is a
@@ -135,7 +143,11 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
           body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit },
         };
       }
-      if (err instanceof QueryParseError || err instanceof QueryError) {
+      if (
+        err instanceof QueryParseError ||
+        err instanceof QueryError ||
+        err instanceof InvalidRequest
+      ) {
         return { status: 400, body: { error: err.message } };
       }
       return { status: 500, body: { error: err instanceof Error ? err.message : String(err) } };
@@ -147,7 +159,13 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
     const headers = (init.headers ?? {}) as Record<string, string>;
     const body = init.body === undefined ? {} : fromJson(JSON.parse(String(init.body)));
     calls.push({ url: String(url), body, headers });
-    const op = path.endsWith("/transact") ? "transact" : path.endsWith("/query") ? "q" : "pull";
+    const op = path.endsWith("/transact")
+      ? "transact"
+      : path.endsWith("/query")
+        ? "q"
+        : path.endsWith("/install-read")
+          ? "install-read"
+          : "pull";
     const reply = await answer(op, body, Number(headers["x-ramose-min-t"] ?? 0));
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,
@@ -266,17 +284,18 @@ describe("install → transact → q → pull", () => {
     expect(soup![":user/age"]).toBe(36);
 
     // writes stay HTTPS; current-view reads run on the overlay (catch-up sync).
-    // install() reads the installed catalog as a pinned asOf query (peer, not overlay).
+    // install() reads the catalog on POST /install-read, never a session q.
     expect(
       peer.calls.filter((c) => c.url.endsWith("/transact")).map((c) => c.url),
     ).toEqual([
       "https://peer.local/db/movies/transact",
       "https://peer.local/db/movies/transact",
     ]);
+    expect(peer.calls.some((c) => c.url.endsWith("/install-read"))).toBe(true);
     expect(
       peer.frames.filter((f) => (f.op === "q" || f.op === "pull") && f.asOf === undefined),
     ).toEqual([]);
-    expect(peer.frames.some((f) => f.op === "q" && typeof f.asOf === "number")).toBe(true);
+    expect(peer.frames.some((f) => f.op === "q")).toBe(false);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
@@ -324,7 +343,7 @@ describe("install → transact → q → pull", () => {
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Bob"]);
     expect(rows.every((r) => typeof r.id === "number")).toBe(true);
     // current-view q is local — only the first-connect sync rode the socket.
-    // install() reads the catalog as a pinned asOf query.
+    // install() reads the catalog on POST /install-read, never a session q.
     expect(peer.frames.filter((f) => f.op === "q" && f.asOf === undefined)).toEqual([]);
     expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();

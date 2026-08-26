@@ -12,7 +12,8 @@
  *   GET  /health              { ok, service, stage, time, operations: string[] }
  *   POST /db/:name/transact   { tx, clientTxId? }        → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
  *   POST /db/:name/op         { name, entity?, input, clientOpId } → { t, txEid, tempids, datoms, clientOpId, output }
- *   POST /db/:name/query      { query, inputs?, asOf?, history?, occupancy? }   → { t, result }
+ *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
+ *   POST /db/:name/install-read { kind: "catalog"|"occupancy", idents?, asOf? } → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
  *   GET  /db/:name/info                                            → { db, t, principal, … } — `t` and `principal` for everyone; transactor/replica internals for admin
@@ -41,6 +42,8 @@ import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { allowedOrigin, allowsRawTransact, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, occupancyDb, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
+import { InvalidRequest } from "../db/Errors.ts";
+import { parseInstallReadBody, runInstallRead } from "../db/evolution.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { operationNames } from "../db/Operation.ts";
 import { type ServerOptions, prepareOperation } from "./operations.ts";
@@ -447,16 +450,14 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
 
   // ---- reads → replica basis + local execution
   if (rest === "/query" && request.method === "POST") {
-    const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; occupancy?: boolean };
+    const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean };
     if (!body?.query) throw new BadRequest({ message: "body must be { query, inputs? }" });
     if (body.explain) adminOnly(); // planner metadata is not filtered
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
     const store = segmentSource(env, db);
     const readOpts = { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history };
-    const dbv = body.occupancy === true
-      ? await occupancyDb(env, principal, store, basis, readOpts)
-      : await viewDb(env, principal, store, basis, readOpts);
+    const dbv = await viewDb(env, principal, store, basis, readOpts);
     const stats: QueryStats = { clauses: [] };
     const before = { ...store.stats };
     const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
@@ -467,6 +468,38 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     plog.debug("query", { db, ms, rows: Array.isArray(result) ? result.length : 1, basisT: basis.t, basisHit: bf.hit, basisReason: bf.reason, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
     return json(
       { t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) },
+      200,
+      { "x-ramose-ms": String(Date.now() - t0), "x-ramose-r2-gets": String(after.r2Gets - before.r2Gets), "x-ramose-cache-hits": String(after.cacheHits - before.cacheHits), ...basisHeaders(request, env, bf) },
+    );
+  }
+  if (rest === "/install-read" && request.method === "POST") {
+    let parsed;
+    try {
+      parsed = parseInstallReadBody(fromJson(await request.json()));
+    } catch (err) {
+      throw new BadRequest({
+        message: err instanceof InvalidRequest || err instanceof Error ? err.message : String(err),
+      });
+    }
+    const bf = await fetchBasisWithStats(env, db, request);
+    const basis = bf.basis;
+    const store = segmentSource(env, db);
+    const readOpts = { asOf: parsed.asOf };
+    const dbv = await occupancyDb(env, principal, store, basis, readOpts);
+    const stats: QueryStats = { clauses: [] };
+    const before = { ...store.stats };
+    const maxCells = envInt(env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS);
+    const result = await runInstallRead(
+      (q, inputs) => query(dbv, q as any, [...(inputs ?? [])], { stats, maxCells }),
+      parsed,
+    );
+    const after = store.stats;
+    const ms = Date.now() - t0;
+    peerMetrics.queries.mark(1);
+    peerMetrics.queryMs.observe(ms);
+    plog.debug("install-read", { db, ms, kind: parsed.kind, basisT: basis.t, basisHit: bf.hit, basisReason: bf.reason, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
+    return json(
+      { t: basis.t, root: basis.root.t, result },
       200,
       { "x-ramose-ms": String(Date.now() - t0), "x-ramose-r2-gets": String(after.r2Gets - before.r2Gets), "x-ramose-cache-hits": String(after.cacheHits - before.cacheHits), ...basisHeaders(request, env, bf) },
     );

@@ -283,6 +283,23 @@ export const makeDatabases = (
       return result.body;
     });
 
+  const postInstallRead = (
+    name: string,
+    body: Record<string, unknown>,
+  ): Effect.Effect<unknown, DbError> =>
+    Effect.gen(function* () {
+      const result = yield* send({
+        fetch: config.fetch,
+        url: yield* config.url,
+        method: "POST",
+        path: dbPath(name, "/install-read"),
+        token: yield* bearer(config.token),
+        headers: config.headers,
+        body,
+      });
+      return result.body;
+    });
+
   const postOp = (
     name: string,
     invocation: OperationInvocation,
@@ -397,6 +414,7 @@ export const makeDatabases = (
         : frame(socket, op, body, minT);
     },
     transact: (name, tx, clientTxId) => postTx(name, tx, clientTxId),
+    installRead: (name, body) => postInstallRead(name, body),
     operation: (name, invocation) => postOp(name, invocation),
     info,
     principal,
