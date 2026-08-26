@@ -32,6 +32,7 @@ import {
   IncompleteRuleSnapshot,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   BOUND_AUTHORIZATION_IR_VERSION,
+  VALIDATED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   InvalidTraversal,
   LeaseExpired,
@@ -60,6 +61,7 @@ import {
   True,
   type AuthorizationFailure,
   AuthorizationPrincipal,
+  AuthorizationValidationInput,
   BoundAuthorizationIR,
   CatalogBindingInput,
   CatalogBindingTarget,
@@ -76,6 +78,7 @@ import {
   type OperationInputFieldDescriptor,
   OperationInputShape,
   PolicyTemplateIR,
+  ValidatedAuthorizationIR,
   type Present as PresentType,
   type Projected,
   type ProjectedValue,
@@ -102,11 +105,13 @@ export type _noPublicAuthorization = Expect<
       | "Authorization"
       | "PolicyTemplateIR"
       | "BoundAuthorizationIR"
+      | "ValidatedAuthorizationIR"
       | "InstalledAuthorizationIR"
       | "decodePolicyTemplate"
       | "decodeInstalledAuthorization"
       | "bindPolicyTemplate"
       | "bindAgainstAuthoritativeCatalog"
+      | "validateBoundAuthorization"
     >,
     never
   >
@@ -131,7 +136,13 @@ export type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof Rela
 export type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
 export type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
 export type _boundFromSchema = Expect<Equal<BoundAuthorizationIR, typeof BoundAuthorizationIR.Type>>;
+export type _validatedFromSchema = Expect<
+  Equal<ValidatedAuthorizationIR, typeof ValidatedAuthorizationIR.Type>
+>;
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+export type _validationInputFromSchema = Expect<
+  Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
+>;
 export type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
 export type _bindingTargetFromSchema = Expect<
   Equal<CatalogBindingTarget, typeof CatalogBindingTarget.Type>
@@ -224,6 +235,21 @@ export type _boundNotInstalled = Expect<
 >;
 export type _installedNotBound = Expect<
   Equal<Extends<InstalledAuthorizationIR, BoundAuthorizationIR>, false>
+>;
+export type _boundNotValidated = Expect<
+  Equal<Extends<BoundAuthorizationIR, ValidatedAuthorizationIR>, false>
+>;
+export type _validatedNotBound = Expect<
+  Equal<Extends<ValidatedAuthorizationIR, BoundAuthorizationIR>, false>
+>;
+export type _validatedNotInstalled = Expect<
+  Equal<Extends<ValidatedAuthorizationIR, InstalledAuthorizationIR>, false>
+>;
+export type _installedNotValidated = Expect<
+  Equal<Extends<InstalledAuthorizationIR, ValidatedAuthorizationIR>, false>
+>;
+export type _templateNotValidated = Expect<
+  Equal<Extends<PolicyTemplateIR, ValidatedAuthorizationIR>, false>
 >;
 
 type PartialBound = Pick<BoundAuthorizationIR, "rules" | "decisions" | "principal">;
@@ -711,8 +737,20 @@ const _operationFixtures = () => {
     decisions: { entities: [], traits: [], fields: [], operations: [] },
   } satisfies BoundAuthorizationIR;
 
+  const validatedFixture = {
+    ...boundFixture,
+    _tag: "ValidatedAuthorizationIR" as const,
+    version: VALIDATED_AUTHORIZATION_IR_VERSION,
+  } satisfies ValidatedAuthorizationIR;
+
   // @ts-expect-error — a bound intermediate is not installed IR
   const boundAsInstalled: InstalledAuthorizationIR = boundFixture;
+
+  // @ts-expect-error — a validated intermediate is not installed IR
+  const validatedAsInstalled: InstalledAuthorizationIR = validatedFixture;
+
+  // @ts-expect-error — a bound intermediate is not validated IR
+  const boundAsValidated: ValidatedAuthorizationIR = boundFixture;
 
   // @ts-expect-error — a template is not a bound intermediate
   const templateAsBound: BoundAuthorizationIR = templateFixture;
@@ -822,6 +860,8 @@ const _operationFixtures = () => {
     asInstalled,
     asTemplate,
     boundAsInstalled,
+    validatedAsInstalled,
+    boundAsValidated,
     templateAsBound,
     partialAsInstalled,
     ownerHop,

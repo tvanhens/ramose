@@ -3,9 +3,11 @@
  *
  * {@link PolicyTemplateIR} is catalog-relative compiler output. It is not
  * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
- * intermediate for semantic validation (#385). {@link InstalledAuthorizationIR}
- * is the sealed form runtime accepts. The three types are distinct: a
- * template or bound document is not assignable where installed IR is required.
+ * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
+ * post-validation form with recomputed metadata for access-plan derivation
+ * (#386). {@link InstalledAuthorizationIR} is the sealed form runtime accepts.
+ * The four types are distinct: a template, bound, or validated document is not
+ * assignable where installed IR is required.
  *
  * Effect Schema is the source of truth. Binding lives in `bind.ts`.
  */
@@ -41,6 +43,7 @@ import {
 
 export const POLICY_TEMPLATE_IR_VERSION = 1 as const;
 export const BOUND_AUTHORIZATION_IR_VERSION = 1 as const;
+export const VALIDATED_AUTHORIZATION_IR_VERSION = 1 as const;
 export const INSTALLED_AUTHORIZATION_IR_VERSION = 1 as const;
 
 export const PolicyTemplateIRVersion = Schema.Literal(POLICY_TEMPLATE_IR_VERSION);
@@ -48,6 +51,9 @@ export type PolicyTemplateIRVersion = typeof PolicyTemplateIRVersion.Type;
 
 export const BoundAuthorizationIRVersion = Schema.Literal(BOUND_AUTHORIZATION_IR_VERSION);
 export type BoundAuthorizationIRVersion = typeof BoundAuthorizationIRVersion.Type;
+
+export const ValidatedAuthorizationIRVersion = Schema.Literal(VALIDATED_AUTHORIZATION_IR_VERSION);
+export type ValidatedAuthorizationIRVersion = typeof ValidatedAuthorizationIRVersion.Type;
 
 export const InstalledAuthorizationIRVersion = Schema.Literal(INSTALLED_AUTHORIZATION_IR_VERSION);
 export type InstalledAuthorizationIRVersion = typeof InstalledAuthorizationIRVersion.Type;
@@ -167,6 +173,34 @@ export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", 
   decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
 });
 export type BoundAuthorizationIR = typeof BoundAuthorizationIR.Type;
+
+/**
+ * Semantically validated bound document for #386. Rule IDs, usage flags,
+ * depths, and dependencies are recomputed from the expression and catalog
+ * metadata — never taken from the template or bound input. Still
+ * non-executable: no policy hash, identity table, operation table,
+ * trait-composition table, or access plans.
+ */
+export const ValidatedAuthorizationIR = Schema.TaggedStruct("ValidatedAuthorizationIR", {
+  version: ValidatedAuthorizationIRVersion,
+  database: DatabaseId,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: InstalledPrincipalResolution,
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
+  decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
+});
+export type ValidatedAuthorizationIR = typeof ValidatedAuthorizationIR.Type;
+
+/** Input the semantic validator consumes. */
+export const AuthorizationValidationInput = Schema.Struct({
+  bound: BoundAuthorizationIR,
+  descriptor: CatalogDescriptor,
+});
+export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
 
 /**
  * Bound, sealed installed artifact. Runtime accepts only this form.
