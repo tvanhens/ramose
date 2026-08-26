@@ -158,13 +158,35 @@ d("ramose e2e", () => {
     );
     const ts = acks.map((a) => a.t).sort((a, b) => a - b);
     for (let i = 1; i < ts.length; i++) expect(ts[i]).toBe(ts[i - 1] + 1);
-    const count = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
-    expect(count).toBe(42);
+    const lastT = ts[ts.length - 1]!;
+    // The transactor acked consecutive t; the replica can lag a beat under
+    // a loaded local workerd. Wait for a basis that covers the last write.
+    let envelope = await db.queryEnvelope(
+      `[:find (count ?e) . :where [?e :user/email]]`,
+    );
+    for (let i = 0; i < 40 && (envelope.t < lastT || envelope.result !== 42); i++) {
+      await Bun.sleep(50);
+      envelope = await db.queryEnvelope(
+        `[:find (count ?e) . :where [?e :user/email]]`,
+      );
+    }
+    expect(envelope.t).toBeGreaterThanOrEqual(lastT);
+    expect(envelope.result).toBe(42);
   });
 
   test("M5: replica reconnect resumes with no missed datoms; root flips drop novelty", async () => {
     // writes land while the replica is (re)connecting: nothing may be missed
-    const before = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
+    const info0 = await db.info();
+    let beforeEnv = await db.queryEnvelope(
+      `[:find (count ?e) . :where [?e :user/email]]`,
+    );
+    for (let i = 0; i < 40 && beforeEnv.t < (info0.transactor?.t ?? 0); i++) {
+      await Bun.sleep(50);
+      beforeEnv = await db.queryEnvelope(
+        `[:find (count ?e) . :where [?e :user/email]]`,
+      );
+    }
+    const before = beforeEnv.result as number;
     const [rc, ...acks] = await Promise.all([
       db.reconnectReplica(),
       ...Array.from({ length: 25 }, (_, i) =>
