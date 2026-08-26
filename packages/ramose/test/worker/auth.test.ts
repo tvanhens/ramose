@@ -97,7 +97,7 @@ interface Fixture {
 
 /** A policed peer serving `acme`, with schema + a doc Ada owns and Carol cannot see. */
 async function fixture(extra: Record<string, string | undefined> = {}): Promise<Fixture> {
-  const peer = makePeer("acme", { env: policyEnv(extra) });
+  const peer = await makePeer("acme", { env: policyEnv(extra) });
   await peer.seed(SCHEMA);
   const ack = await peer.seed([
     { ":db/id": "ada", ":user/sub": "user_ada" },
@@ -120,7 +120,7 @@ const titles = async (peer: Peer, tok?: string) => {
 
 describe("no policy — today's behaviour, unchanged", () => {
   test("no RAMOSE_TOKEN: open, and the demo console is served", async () => {
-    const peer = makePeer("demo");
+    const peer = await makePeer("demo");
     await peer.seed(SCHEMA);
     expect((await peer.json("/db/demo/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(200);
     expect((await peer.fetch("/")).status).toBe(200);
@@ -128,7 +128,7 @@ describe("no policy — today's behaviour, unchanged", () => {
   });
 
   test("RAMOSE_TOKEN set: shared-token mode, full access with it and 401 without", async () => {
-    const peer = makePeer("demo", { env: { RAMOSE_TOKEN: "s3cret" } });
+    const peer = await makePeer("demo", { env: { RAMOSE_TOKEN: "s3cret" } });
     await peer.seed(SCHEMA);
     const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
     expect((await peer.json("/db/demo/query", { ...q, token: "s3cret" })).status).toBe(200);
@@ -163,7 +163,7 @@ describe("policy configured", () => {
 
   test("a broken verifier denies every /db/* and leaves /health alone", async () => {
     for (const broken of [{ RAMOSE_JWKS_JSON: undefined }, { RAMOSE_JWT_ISS: undefined }, { RAMOSE_JWT_AUD: undefined }, { RAMOSE_POLICY: "{" }]) {
-      const peer = makePeer("acme", { env: policyEnv(broken as Record<string, string | undefined>) });
+      const peer = await makePeer("acme", { env: policyEnv(broken as Record<string, string | undefined>) });
       expect((await peer.json("/health")).status).toBe(200);
       const tok = await token("acme", "admin");
       expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, tok))).status).toBe(401);
@@ -173,7 +173,7 @@ describe("policy configured", () => {
 
   test("a bound verifier with no policy denies every /db/* and leaves /health alone", async () => {
     const from = events.length;
-    const peer = makePeer("acme", {
+    const peer = await makePeer("acme", {
       env: { RAMOSE_JWKS_JSON: JWKS, RAMOSE_JWT_ISS: ISS, RAMOSE_JWT_AUD: AUD },
     });
     await peer.seed(SCHEMA);
@@ -230,7 +230,7 @@ describe("policy configured", () => {
 
     /** A peer whose only difference from `fixture()` is where its keys come from. */
     const peerWith = async (env: Record<string, unknown>): Promise<Peer> => {
-      const peer = makePeer("acme", { env: env as never });
+      const peer = await makePeer("acme", { env: env as never });
       await peer.seed(SCHEMA);
       return peer;
     };
@@ -314,7 +314,7 @@ describe("policy configured", () => {
 
   test("no token is 401 when the policy declares no anonymous class", async () => {
     const closed = { ...POLICY, classes: ["member", "admin"] };
-    const peer = makePeer("acme", { env: policyEnv({ RAMOSE_POLICY: JSON.stringify(closed) }) });
+    const peer = await makePeer("acme", { env: policyEnv({ RAMOSE_POLICY: JSON.stringify(closed) }) });
     await peer.seed(SCHEMA);
     expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(401);
     peer.close();
@@ -525,7 +525,7 @@ describe("ensure and privileged surfaces", () => {
   });
 
   test("User.role is materialized from the token class and updates on re-entry", async () => {
-    const peer = makePeer("acme", { env: policyEnv() });
+    const peer = await makePeer("acme", { env: policyEnv() });
     await peer.seed([
       ...SCHEMA,
       { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
@@ -548,7 +548,7 @@ describe("ensure and privileged surfaces", () => {
   });
 
   test("ramose.attrs name/email materialize on first /info and update on change", async () => {
-    const peer = makePeer("acme", { env: policyEnv() });
+    const peer = await makePeer("acme", { env: policyEnv() });
     await peer.seed([
       ...SCHEMA,
       { ":db/ident": ":user/role", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
@@ -582,7 +582,7 @@ describe("ensure and privileged surfaces", () => {
   });
 
   test("no policy: /info still names the caller — class admin, no entity to resolve", async () => {
-    const peer = makePeer("demo");
+    const peer = await makePeer("demo");
     await peer.seed(SCHEMA);
     const info = await peer.json("/db/demo/info");
     expect(info.body.principal).toEqual({ eid: null, class: "admin" });
@@ -590,7 +590,7 @@ describe("ensure and privileged surfaces", () => {
   });
 
   test("admin /info is not 200 while the transactor answers Worker not found", async () => {
-    const peer = makePeer("demo");
+    const peer = await makePeer("demo");
     await peer.seed(SCHEMA);
     (peer.env as { TRANSACTOR: unknown }).TRANSACTOR = {
       idFromName: (name: string) => ({ name, toString: () => name }),

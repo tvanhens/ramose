@@ -21,7 +21,7 @@ import { schemaTx } from "../src/db/ensure.ts";
 import { Entity, Field, Query, Schema as DbSchema, seedWrite } from "../src/db/internal.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import type { Session } from "../src/db/session.ts";
-import { client, fakePeer, settle, type Call } from "./peer.ts";
+import { client, fakePeer, settle, until, type Call } from "./peer.ts";
 
 import { Meta, Movie, Movies, User } from "./db/fixture.ts";
 
@@ -146,7 +146,7 @@ describe("optimistic transact", () => {
 
     const adaLive = collect(ada.effect.live(names));
     const beaLive = collect(bea.effect.live(names));
-    await settle();
+    await until(() => adaLive.seen.length > 0 && beaLive.seen.length > 0);
     expect(adaLive.seen.at(-1)).toEqual([]);
     expect(beaLive.seen.at(-1)).toEqual([]);
 

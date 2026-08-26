@@ -11,10 +11,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REACT = resolve(here, "../../src/react");
@@ -53,14 +54,25 @@ describe("`ramose/react` is a client module", () => {
   });
 
   test("tsc emit keeps the directive on the published entry", () => {
-    const source = readFileSync(resolve(REACT, "index.ts"), "utf8");
-    const { outputText } = ts.transpileModule(source, {
-      compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-      },
-      fileName: "index.ts",
-    });
-    expect(firstStatement(outputText)).toBe("use client");
+    const outDir = mkdtempSync(join(tmpdir(), "ramose-ts-emit-"));
+    try {
+      execFileSync(resolve(here, "../../../../node_modules/.bin/tsc"), [
+        resolve(REACT, "index.ts"),
+        "--ignoreConfig",
+        "--module",
+        "preserve",
+        "--target",
+        "es2022",
+        "--noResolve",
+        "--noCheck",
+        "--outDir",
+        outDir,
+      ]);
+      expect(firstStatement(readFileSync(resolve(outDir, "index.js"), "utf8"))).toBe(
+        "use client",
+      );
+    } finally {
+      rmSync(outDir, { recursive: true });
+    }
   });
 });

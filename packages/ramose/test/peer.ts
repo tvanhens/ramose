@@ -9,8 +9,10 @@
  */
 
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
+import { TestClock } from "effect/testing";
 import {
   type EffectClientOptions,
   Databases,
@@ -288,6 +290,22 @@ export const httpsClient = (
   });
 
 export const redacted = (value: string) => Redacted.make(value);
+
+/** Run an Effect while advancing its retry sleeps without waiting in real time. */
+export const runWithTestClock = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(effect);
+      // Promise-backed fetch / socket attempts finish outside Effect's
+      // scheduler. Give each one an event-loop turn before advancing the next
+      // retry sleep; six turns cover the transport's six-attempt ladder.
+      for (let n = 0; n < 6; n++) {
+        yield* Effect.promise(() => Bun.sleep(0));
+        yield* TestClock.adjust("1 minute");
+      }
+      return yield* Fiber.join(fiber);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
 
 /** Every pass is a handful of microtasks; a tick is plenty. */
 export const settle = (ms = 20) => Bun.sleep(ms);

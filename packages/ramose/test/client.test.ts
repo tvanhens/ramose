@@ -19,7 +19,13 @@ import * as Stream from "effect/Stream";
 import type { DbError } from "../src/db/internal.ts";
 import { pipe } from "effect/Function";
 import { Databases, layer, Query, schemaTx, seedWrite } from "../src/db/internal.ts";
-import { client, fakePeer, httpsClient, type Call } from "./peer.ts";
+import {
+  client,
+  fakePeer,
+  httpsClient,
+  runWithTestClock,
+  type Call,
+} from "./peer.ts";
 
 import { Movie, Movies, User } from "./db/fixture.ts";
 
@@ -415,43 +421,47 @@ describe("failures arrive tagged, not thrown", () => {
     await c.dispose();
   });
 
-  // Unavailable and NetworkError are transient: `send` walks its whole
-  // jittered retry ladder (up to ~6.4s) before the failure surfaces, which is
-  // longer than bun's default 5s test timeout.
-  const RETRY_LADDER_MS = 15_000;
+  test("a dead transactor is Unavailable with its retry hint", async () => {
+    const peer = failing(503, {
+      error: "transactor aborted",
+      tag: "TransactorDead",
+      retryAfterMs: 500,
+    });
+    const { databases, close } = httpsClient(peer);
+    const e = await runFail(
+      runWithTestClock(
+        seedWrite(databases.db("movies", Movies), function* (tx) {
+          yield* tx.delete(1);
+        }),
+      ),
+    );
+    expect(e._tag).toBe("Unavailable");
+    if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
+    expect(peer.calls).toHaveLength(6);
+    close();
+  });
 
-  test(
-    "a dead transactor is Unavailable with its retry hint",
-    async () => {
-      const peer = failing(503, {
-        error: "transactor aborted",
-        tag: "TransactorDead",
-        retryAfterMs: 500,
-      });
-      const c = client(peer);
-      const e = await runFail(c.ramose.db("movies", Movies).install());
-      expect(e._tag).toBe("Unavailable");
-      if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
-      await c.dispose();
-    },
-    RETRY_LADDER_MS,
-  );
-
-  test(
-    "a transport failure is NetworkError and keeps its cause",
-    async () => {
-      const boom = new Error("connect ECONNREFUSED");
-      const peer = fakePeer();
-      const c = client(peer, {
-        fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
-      });
-      const e = await runFail(c.ramose.db("movies", Movies).install());
-      expect(e._tag).toBe("NetworkError");
-      if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
-      await c.dispose();
-    },
-    RETRY_LADDER_MS,
-  );
+  test("a transport failure is NetworkError and keeps its cause", async () => {
+    const boom = new Error("connect ECONNREFUSED");
+    let attempts = 0;
+    const { databases, close } = httpsClient({
+      fetch: (() => {
+        attempts++;
+        return Promise.reject(boom);
+      }) as unknown as typeof fetch,
+    });
+    const e = await runFail(
+      runWithTestClock(
+        seedWrite(databases.db("movies", Movies), function* (tx) {
+          yield* tx.delete(1);
+        }),
+      ),
+    );
+    expect(e._tag).toBe("NetworkError");
+    if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
+    expect(attempts).toBe(6);
+    close();
+  });
 
   test("a non-JSON error body still classifies by status", async () => {
     const peer = fakePeer();

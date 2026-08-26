@@ -11,7 +11,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { makePeer, post } from "./harness.ts";
 
-const peer = makePeer("acme");
+const peer = await makePeer("acme");
 afterAll(() => peer.close());
 
 const attr = (ident: string, type: string) => ({
