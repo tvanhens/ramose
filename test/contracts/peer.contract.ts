@@ -98,19 +98,32 @@ d("ramose e2e", () => {
     alice = r.tempids.alice;
     bob = r.tempids.bob;
     tAge30 = r.t;
-    // read-your-writes through the replica
-    const names = await db.q<string[]>(`[:find [?n ...] :where [?e :user/name ?n]]`);
+    // Read-your-writes through the replica. A fresh workers.dev isolate can
+    // still hold the warmup basis (no `:user/*` yet); without min-t the
+    // query throws `unknown attribute :user/name` instead of waiting for
+    // the log. Same fence as the concurrent-write cases below.
+    const names = await db.q<string[]>(
+      `[:find [?n ...] :where [?e :user/name ?n]]`,
+      [],
+      { minT: r.t },
+    );
     expect(names.sort()).toEqual(["Alice", "Bob"]);
-    const joined = await db.q<Date>(`[:find ?j . :in $ ?e :where [?e :user/joined ?j]]`, [alice]);
+    const joined = await db.q<Date>(`[:find ?j . :in $ ?e :where [?e :user/joined ?j]]`, [alice], {
+      minT: r.t,
+    });
     expect(joined).toBeInstanceOf(Date);
     expect((joined as Date).toISOString()).toBe("2021-05-05T00:00:00.000Z");
-    const friend = await db.q<string>(`[:find ?fn . :where [?e :user/name "Bob"] [?e :user/friends ?f] [?f :user/name ?fn]]`);
+    const friend = await db.q<string>(
+      `[:find ?fn . :where [?e :user/name "Bob"] [?e :user/friends ?f] [?f :user/name ?fn]]`,
+      [],
+      { minT: r.t },
+    );
     expect(friend).toBe("Alice");
   });
 
   test("update, as-of, history, pull", async () => {
     const u = await db.transact([[":db/add", [":user/email", "alice@example.com"], ":user/age", 31]]);
-    expect(await db.q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(31);
+    expect(await db.q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice], { minT: u.t })).toBe(31);
     expect(await db.asOf(tAge30).q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
     expect(await db.asOf(tSchema).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBeNull();
     const hist = await db.history().q<[number, boolean][]>(`[:find ?a ?op :in $ ?e :where [?e :user/age ?a _ ?op]]`, [alice]);
@@ -121,12 +134,13 @@ d("ramose e2e", () => {
   });
 
   test("unique conflicts are rejected with 409", async () => {
-    await expect(
-      db.transact([
-        userAttrs("Eve", "alice@example.com", { ":user/age": 1 }),
-      ]),
-    ).resolves.toBeDefined(); // upsert (identity)
-    const r = await db.q(`[:find ?n . :in $ ?e :where [?e :user/name ?n]]`, [alice]);
+    const upsert = await db.transact([
+      userAttrs("Eve", "alice@example.com", { ":user/age": 1 }),
+    ]);
+    expect(upsert.t).toBeGreaterThan(0);
+    const r = await db.q(`[:find ?n . :in $ ?e :where [?e :user/name ?n]]`, [alice], {
+      minT: upsert.t,
+    });
     expect(r).toBe("Eve");
     await db.transact([[":db/add", alice, ":user/name", "Alice"]]);
     await expect(
@@ -149,8 +163,16 @@ d("ramose e2e", () => {
     }
     expect((idx.ran ? idx.root.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(bump.t);
     expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
-    const q1 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
-    const q2 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
+    const q1 = await db.queryEnvelope(
+      `[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`,
+      [],
+      { minT: bump.t },
+    );
+    const q2 = await db.queryEnvelope(
+      `[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`,
+      [],
+      { minT: bump.t },
+    );
     expect(q1.result.length).toBe(2);
     expect(q2.result.length).toBe(2);
     if (q2.meta.r2Gets !== null) expect(q2.meta.r2Gets).toBe(0); // warm isolate: no R2 reads
