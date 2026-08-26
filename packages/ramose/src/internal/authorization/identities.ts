@@ -4,8 +4,8 @@
  * Binding (#358) turns relative names into catalog-scoped identities.
  * Runtime decisions are never keyed by a wire name alone (CAT-1).
  *
- * Rule / policy hashes are identity *types* here. Collision-resistant
- * assignment is #357 — these schemas do not hash.
+ * Rule / policy hashes are identity *types* here. #357 requires the
+ * serialized digest representation; semantic recomputation is #358.
  *
  * Effect Schema is the source of truth. Types are `typeof Model.Type`.
  */
@@ -28,16 +28,25 @@ export type CatalogVersion = typeof CatalogVersion.Type;
 export const SchemaFingerprint = Schema.String.pipe(Schema.brand("SchemaFingerprint"));
 export type SchemaFingerprint = typeof SchemaFingerprint.Type;
 
-/** Policy document identity. Later a collision-resistant digest (#357). */
-export const PolicyHash = Schema.String.pipe(Schema.brand("PolicyHash"));
+/**
+ * SHA-256 digest as exactly 64 lowercase hexadecimal characters.
+ * `RuleId` and `PolicyHash` are collision-resistant identities; this
+ * schema requires the serialized digest representation. Semantic
+ * recomputation and comparison of those digests is #358.
+ */
+export const DigestHex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export type DigestHex = typeof DigestHex.Type;
+
+/** Policy document identity. Canonical serialized form is {@link DigestHex}. */
+export const PolicyHash = DigestHex.pipe(Schema.brand("PolicyHash"));
 export type PolicyHash = typeof PolicyHash.Type;
 
 /**
- * Rule identity. Later a collision-resistant canonical digest (#357).
+ * Rule identity. Canonical serialized form is {@link DigestHex}.
  * One identity mapping to two different canonical bodies is an error;
  * silent interning overwrite is forbidden.
  */
-export const RuleId = Schema.String.pipe(Schema.brand("RuleId"));
+export const RuleId = DigestHex.pipe(Schema.brand("RuleId"));
 export type RuleId = typeof RuleId.Type;
 
 /** Entity or trait that owns a field or operation. Ownerless ops are unsupported. */

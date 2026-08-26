@@ -28,9 +28,13 @@ import {
   InvalidIR,
   InvalidTraversal,
   LeaseExpired,
+  AUTHORIZATION_CANONICAL_JSON_VERSION,
+  DigestHex,
   MAX_COLLECTION_SIZE,
   MAX_EXISTS_DEPTH,
   MAX_JSON_DEPTH,
+  MAX_JSON_ENCODED_BYTES,
+  MAX_JSON_NODES,
   MAX_READ_LEASE_MS,
   MAX_STRING_LENGTH,
   MAX_TRAVERSAL_DEPTH,
@@ -69,6 +73,12 @@ import {
   type RelativeOperationId as RelativeOperationIdType,
   type Truth,
 } from "../../../src/internal/authorization/index.ts";
+import {
+  POLICY_HASH_PLACEHOLDER,
+  RULE_OWNS_ISSUE,
+  RULE_RENAME_INPUT,
+  RULE_TAG_GRANT,
+} from "./fixtures.ts";
 
 // @ts-expect-error — not a public package export yet
 import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
@@ -98,6 +108,7 @@ type _catalogIdFromSchema = Expect<Equal<CatalogId, typeof CatalogId.Type>>;
 type _databaseIdFromSchema = Expect<Equal<DatabaseId, typeof DatabaseId.Type>>;
 type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof CatalogVersion.Type>>;
 type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
+type _digestHexFromSchema = Expect<Equal<DigestHex, typeof DigestHex.Type>>;
 type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
 type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
 type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
@@ -371,7 +382,7 @@ const templateFixture: PolicyTemplateIR = {
   },
   rules: [
     {
-      id: RuleId.make("owns-issue"),
+      id: RuleId.make(RULE_OWNS_ISSUE),
       focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: {
         _tag: "eq",
@@ -391,7 +402,7 @@ const templateFixture: PolicyTemplateIR = {
       dependencies: [],
     },
     {
-      id: RuleId.make("rename-input"),
+      id: RuleId.make(RULE_RENAME_INPUT),
       focus: {
         _tag: "operation",
         operation: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
@@ -413,7 +424,7 @@ const templateFixture: PolicyTemplateIR = {
       dependencies: [],
     },
     {
-      id: RuleId.make("tag-grant"),
+      id: RuleId.make(RULE_TAG_GRANT),
       focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
       expr: {
         _tag: "some",
@@ -465,24 +476,24 @@ const templateFixture: PolicyTemplateIR = {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: [RuleId.make("owns-issue")], deny: [] },
+        decision: { allow: [RuleId.make(RULE_OWNS_ISSUE)], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: [RuleId.make("tag-grant")], deny: [] },
+        decision: { allow: [RuleId.make(RULE_TAG_GRANT)], deny: [] },
       },
     ],
     fields: [],
     operations: [
       {
         target: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
-        decision: { allow: [RuleId.make("rename-input")], deny: [] },
+        decision: { allow: [RuleId.make(RULE_RENAME_INPUT)], deny: [] },
       },
       {
         target: RelativeOperationId.make({ owner: issueOwner, localName: "create", target: "none" }),
-        decision: { allow: [RuleId.make("rename-input")], deny: [] },
+        decision: { allow: [RuleId.make(RULE_RENAME_INPUT)], deny: [] },
       },
     ],
   },
@@ -495,7 +506,7 @@ const installedFixture: InstalledAuthorizationIR = {
   catalog,
   catalogVersion: CatalogVersion.make("1"),
   schemaFingerprint: SchemaFingerprint.make("schema"),
-  policyHash: PolicyHash.make("policy"),
+  policyHash: PolicyHash.make(POLICY_HASH_PLACEHOLDER),
   classes: ["member"],
   claims: [
     {
@@ -776,6 +787,16 @@ test("authorization type fixtures compile", () => {
   expect(MAX_JSON_DEPTH).toBeGreaterThan(0);
   expect(MAX_COLLECTION_SIZE).toBeGreaterThan(0);
   expect(MAX_STRING_LENGTH).toBeGreaterThan(0);
+  expect(MAX_JSON_NODES).toBeGreaterThan(MAX_COLLECTION_SIZE);
+  expect(MAX_JSON_ENCODED_BYTES).toBeGreaterThan(MAX_STRING_LENGTH);
+  expect(AUTHORIZATION_CANONICAL_JSON_VERSION).toBe("rfc8785-jcs/1");
+  expect(Schema.is(RuleId)("owns-issue")).toBe(false);
+  expect(Schema.is(PolicyHash)("policy")).toBe(false);
+  expect(Schema.is(RuleId)("AA".repeat(32))).toBe(false);
+  expect(Schema.is(RuleId)("a".repeat(63))).toBe(false);
+  expect(Schema.is(RuleId)(RULE_OWNS_ISSUE)).toBe(true);
+  expect(Schema.is(PolicyHash)(POLICY_HASH_PLACEHOLDER)).toBe(true);
+  expect(Schema.is(DigestHex)(RULE_OWNS_ISSUE)).toBe(true);
   expect(DEFAULT_AUTHORIZATION_BUDGET).toBeGreaterThan(0);
   expect(new InvalidIR({ message: "bad" })._tag).toBe("InvalidIR");
   expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");

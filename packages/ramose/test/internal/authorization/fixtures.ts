@@ -1,7 +1,22 @@
 /**
  * Hand-written canonical JSON for structural decode / serialize tests.
  * Not compiler output. Semantic binding is out of scope.
+ *
+ * `RuleId` / `PolicyHash` are digest-shaped (64 lowercase hex). These
+ * placeholders are structurally valid, not computed hashes.
  */
+
+/** Repeat one byte as a 64-character lowercase hex digest. */
+export const digestHex = (byte: number): string => byte.toString(16).padStart(2, "0").repeat(32);
+
+export const RULE_OWNS_ISSUE = digestHex(0x11);
+export const RULE_RENAME_INPUT = digestHex(0x22);
+export const RULE_TAG_GRANT = digestHex(0x33);
+export const POLICY_HASH_PLACEHOLDER = digestHex(0x44);
+export const POLICY_HASH_OTHER = digestHex(0x45);
+export const RULE_SAME = digestHex(0x55);
+export const RULE_LIT = digestHex(0x66);
+export const RULE_DEPTH = digestHex(0x77);
 
 const issueOwner = { kind: "entity", name: "issue" } as const;
 const taggableOwner = { kind: "trait", name: "taggable" } as const;
@@ -25,7 +40,7 @@ export const templateEncoded = {
   },
   rules: [
     {
-      id: "owns-issue",
+      id: RULE_OWNS_ISSUE,
       focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: {
         _tag: "eq",
@@ -45,7 +60,7 @@ export const templateEncoded = {
       dependencies: [],
     },
     {
-      id: "rename-input",
+      id: RULE_RENAME_INPUT,
       focus: {
         _tag: "operation",
         operation: {
@@ -72,7 +87,7 @@ export const templateEncoded = {
       dependencies: [],
     },
     {
-      id: "tag-grant",
+      id: RULE_TAG_GRANT,
       focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
       expr: {
         _tag: "some",
@@ -128,13 +143,13 @@ export const templateEncoded = {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: ["owns-issue"], deny: [] },
+        decision: { allow: [RULE_OWNS_ISSUE], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: ["tag-grant"], deny: [] },
+        decision: { allow: [RULE_TAG_GRANT], deny: [] },
       },
     ],
     fields: [],
@@ -146,7 +161,7 @@ export const templateEncoded = {
           localName: "rename",
           target: "required",
         },
-        decision: { allow: ["rename-input"], deny: [] },
+        decision: { allow: [RULE_RENAME_INPUT], deny: [] },
       },
       {
         target: {
@@ -155,7 +170,7 @@ export const templateEncoded = {
           localName: "create",
           target: "none",
         },
-        decision: { allow: ["rename-input"], deny: [] },
+        decision: { allow: [RULE_RENAME_INPUT], deny: [] },
       },
     ],
   },
@@ -168,7 +183,7 @@ export const installedEncoded = {
   catalog: "app",
   catalogVersion: "1",
   schemaFingerprint: "schema",
-  policyHash: "policy",
+  policyHash: POLICY_HASH_PLACEHOLDER,
   classes: ["member"],
   claims: [
     {
@@ -232,7 +247,7 @@ export const installedEncoded = {
   ],
   rules: [
     {
-      id: "owns-issue",
+      id: RULE_OWNS_ISSUE,
       focus: { _tag: "entity", entity: { _tag: "EntityId", catalog: "app", name: "issue" } },
       expr: {
         _tag: "eq",
@@ -260,7 +275,7 @@ export const installedEncoded = {
     entities: [
       {
         target: { _tag: "EntityId", catalog: "app", name: "issue" },
-        decision: { allow: ["owns-issue"], deny: [] },
+        decision: { allow: [RULE_OWNS_ISSUE], deny: [] },
       },
     ],
     traits: [],
@@ -269,7 +284,7 @@ export const installedEncoded = {
   },
   accessPlans: [
     {
-      rule: "owns-issue",
+      rule: RULE_OWNS_ISSUE,
       lookups: [
         {
           _tag: "field",

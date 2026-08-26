@@ -1,32 +1,49 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import { sha256Hex } from "../../../src/internal/core/bytes.ts";
 import {
+  AUTHORIZATION_CANONICAL_JSON_VERSION,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
+  MAX_JSON_ENCODED_BYTES,
+  MAX_JSON_NODES,
   MAX_STRING_LENGTH,
   POLICY_TEMPLATE_IR_VERSION,
   canonicalizeInstalledAuthorization,
   canonicalizeJson,
   canonicalizePolicyTemplate,
+  compareCanonicalKeys,
   decodeInstalledAuthorization,
   decodeInstalledAuthorizationResult,
   decodePolicyTemplate,
   decodePolicyTemplateResult,
   encodeInstalledAuthorization,
   encodePolicyTemplate,
-  hashCanonical,
+  hashCanonicalJson,
   hashCanonicalRule,
   hashInstalledAuthorization,
   hashPolicyTemplate,
   hashRelativeRule,
-  sha256Hex,
   type InstalledAuthorizationIR,
+  type JsonValue,
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
-import { emptyTemplateEncoded, installedEncoded, templateEncoded } from "./fixtures.ts";
+import {
+  POLICY_HASH_OTHER,
+  POLICY_HASH_PLACEHOLDER,
+  RULE_DEPTH,
+  RULE_LIT,
+  RULE_OWNS_ISSUE,
+  RULE_SAME,
+  emptyTemplateEncoded,
+  installedEncoded,
+  templateEncoded,
+} from "./fixtures.ts";
+
+const hashOf = <A>(effect: Effect.Effect<A, InvalidIR>) => Effect.runPromise(effect);
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -169,7 +186,7 @@ describe("JSON-only rejections", () => {
         ...emptyTemplateEncoded,
         rules: [
           {
-            id: "r",
+            id: RULE_LIT,
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "and", exprs },
             usesResource: false,
@@ -211,6 +228,63 @@ describe("JSON-only rejections", () => {
     for (let i = 0; i < MAX_JSON_DEPTH + 2; i++) nested = { child: nested };
     const result = decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nested });
     expectInvalid(result, /oversized depth/);
+  });
+
+  test("rejects a broad tree that stays inside depth and collection limits", () => {
+    const bushy = (depth: number): unknown =>
+      depth === 0 ? 0 : { l: bushy(depth - 1), r: bushy(depth - 1) };
+    expect(MAX_JSON_NODES).toBeLessThan(2 ** 13);
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: bushy(12) }),
+      /oversized document/,
+    );
+  });
+
+  test("rejects a document whose encoded strings exceed the byte budget", () => {
+    const fields: Record<string, string> = {};
+    const perString = MAX_STRING_LENGTH;
+    const count = Math.floor(MAX_JSON_ENCODED_BYTES / perString) + 2;
+    for (let i = 0; i < count; i++) fields[`k${i}`] = "x".repeat(perString);
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: fields }),
+      /oversized document/,
+    );
+  });
+
+  test("does not treat a shared DAG reference as a cycle", () => {
+    const shared = { a: 1 };
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: { x: shared, y: shared } }),
+      /extra|unexpected|excess|Key/i,
+    );
+  });
+
+  test("rejects every prototype other than Object.prototype or null", () => {
+    const nestedNull = Object.create(Object.create(null));
+    nestedNull.x = 1;
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nestedNull }),
+      /prototype/,
+    );
+  });
+
+  test("rejects dense-array holes created by a high index", () => {
+    const rules: unknown[] = [];
+    rules[3] = "nope";
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, rules }),
+      /undefined|array|JSON/,
+    );
+  });
+
+  test("rejects a lone surrogate before Schema walks the input", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "\uDEAD" },
+      }),
+      /unicode/,
+    );
   });
 });
 
@@ -270,7 +344,7 @@ describe("schema shape rejections", () => {
         ...emptyTemplateEncoded,
         rules: [
           {
-            id: "lit",
+            id: RULE_LIT,
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "eq", left: { _tag: "lit", value: Number.NaN }, right: { _tag: "lit", value: 1 } },
             usesResource: false,
@@ -293,7 +367,7 @@ describe("schema shape rejections", () => {
         ...emptyTemplateEncoded,
         rules: [
           {
-            id: "depth",
+            id: RULE_DEPTH,
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "const", value: true },
             usesResource: false,
@@ -318,6 +392,36 @@ describe("schema shape rejections", () => {
     const { catalog: _, ...rest } = installedEncoded;
     expectInvalid(decodeInstalledAuthorizationResult(rest), /catalog/i);
   });
+
+  test("rejects a non-digest rule id", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        rules: [
+          {
+            id: "owns-issue",
+            focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+            expr: { _tag: "const", value: true },
+            usesResource: false,
+            usesInput: false,
+            usesMe: false,
+            usesSubject: false,
+            traversalDepth: 0,
+            existsDepth: 0,
+            dependencies: [],
+          },
+        ],
+      }),
+      /pattern|hex|Expected|RuleId/i,
+    );
+  });
+
+  test("rejects a non-digest policy hash", () => {
+    expectInvalid(
+      decodeInstalledAuthorizationResult({ ...clone(installedEncoded), policyHash: "policy" }),
+      /pattern|hex|Expected|PolicyHash/i,
+    );
+  });
 });
 
 describe("rule identity collisions", () => {
@@ -326,7 +430,7 @@ describe("rule identity collisions", () => {
       ...clone(emptyTemplateEncoded),
       rules: [
       {
-        id: "same",
+        id: RULE_SAME,
         focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
         expr: { _tag: "const", value: true },
         usesResource: false,
@@ -338,7 +442,7 @@ describe("rule identity collisions", () => {
         dependencies: [],
       },
       {
-        id: "same",
+        id: RULE_SAME,
         focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
         expr: { _tag: "const", value: false },
         usesResource: false,
@@ -356,7 +460,7 @@ describe("rule identity collisions", () => {
 
   test("fails closed on a duplicate rule id with the same body", () => {
     const rule = {
-      id: "same",
+      id: RULE_SAME,
       focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: { _tag: "const", value: true },
       usesResource: false,
@@ -381,7 +485,7 @@ describe("rule identity collisions", () => {
         decisions: {
           entities: [
             { target, decision: { allow: [], deny: [] } },
-            { target: clone(target), decision: { allow: ["x"], deny: [] } },
+            { target: clone(target), decision: { allow: [RULE_SAME], deny: [] } },
           ],
           traits: [],
           fields: [],
@@ -428,34 +532,88 @@ describe("rule identity collisions", () => {
         ...base,
         accessPlans: [
           base.accessPlans[0],
-          { rule: "owns-issue", lookups: [] },
+          { rule: RULE_OWNS_ISSUE, lookups: [] },
         ],
       }),
       /access-plan identity collision/,
     );
   });
+
+  test("fails closed on duplicate-identical operation descriptors", () => {
+    const base = clone(installedEncoded);
+    expectInvalid(
+      decodeInstalledAuthorizationResult({
+        ...base,
+        operations: [base.operations[0], clone(base.operations[0])],
+      }),
+      /duplicate operation identity/,
+    );
+  });
+
+  test("fails closed when one operation id maps to different input shapes", () => {
+    const base = clone(installedEncoded);
+    expectInvalid(
+      decodeInstalledAuthorizationResult({
+        ...base,
+        operations: [
+          base.operations[0],
+          {
+            ...base.operations[0],
+            input: { _tag: "opaque" },
+          },
+        ],
+      }),
+      /operation identity collision/,
+    );
+  });
 });
 
 describe("canonical serialization", () => {
-  test("SHA-256 empty-string vector", () => {
-    expect(sha256Hex("")).toBe(
+  const utf8 = new TextEncoder();
+
+  test("Web Crypto SHA-256 empty-string vector", async () => {
+    expect(await sha256Hex(utf8.encode(""))).toBe(
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
   });
 
-  test("SHA-256 NIST and multi-block vectors", () => {
-    expect(sha256Hex("abc")).toBe(
+  test("Web Crypto SHA-256 NIST and multi-block vectors", async () => {
+    expect(await sha256Hex(utf8.encode("abc"))).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
-    expect(sha256Hex("hello")).toBe(
+    expect(await sha256Hex(utf8.encode("hello"))).toBe(
       "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
     );
-    expect(sha256Hex("a".repeat(1000))).toBe(
+    expect(await sha256Hex(utf8.encode("a".repeat(1000)))).toBe(
       "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3",
     );
   });
 
-  test("key order does not change the canonical document", () => {
+  test("RFC 8785 goldens for special keys, integers, escapes, and numbers", () => {
+    expect(AUTHORIZATION_CANONICAL_JSON_VERSION).toBe("rfc8785-jcs/1");
+    expect(canonicalizeJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+    expect(canonicalizeJson({ 10: 1, 2: 2 })).toBe('{"10":1,"2":2}');
+    const special = JSON.parse('{"__proto__":1,"constructor":2,"prototype":3}') as JsonValue;
+    expect(canonicalizeJson(special)).toBe('{"__proto__":1,"constructor":2,"prototype":3}');
+    expect(canonicalizeJson(JSON.parse('{"__proto__":{"x":1}}') as JsonValue)).not.toBe("{}");
+    expect(canonicalizeJson('€$\u000f\nA\'B"\\"/')).toBe('"€$\\u000f\\nA\'B\\"\\\\\\"/"');
+    expect(canonicalizeJson("\b\t\n\f\r")).toBe('"\\b\\t\\n\\f\\r"');
+    expect(canonicalizeJson("\u0001")).toBe('"\\u0001"');
+    expect(canonicalizeJson(-0)).toBe("0");
+    expect(canonicalizeJson(0)).toBe("0");
+    expect(canonicalizeJson(1e30)).toBe("1e+30");
+    expect(canonicalizeJson(4.5)).toBe("4.5");
+    expect(canonicalizeJson(0.002)).toBe("0.002");
+    expect(canonicalizeJson(1e-27)).toBe("1e-27");
+    expect(canonicalizeJson([333333333.3333333, 1e30, 4.5, 0.002, 1e-27])).toBe(
+      "[333333333.3333333,1e+30,4.5,0.002,1e-27]",
+    );
+    const rfcKeys = ["\r", "1", "\u0080", "\u00f6", "\u20ac", "\ud83d\ude00", "\ufb33"];
+    const sorted = [...rfcKeys].sort(compareCanonicalKeys);
+    expect(sorted).toEqual(["\r", "1", "\u0080", "\u00f6", "\u20ac", "\ud83d\ude00", "\ufb33"]);
+  });
+
+  test("key order does not change the canonical document", async () => {
     const a = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const reordered = {
       version: 1,
@@ -468,87 +626,89 @@ describe("canonical serialization", () => {
     };
     const b = Effect.runSync(decodePolicyTemplate(reordered));
     expect(canonicalizePolicyTemplate(a)).toBe(canonicalizePolicyTemplate(b));
-    expect(hashPolicyTemplate(a)).toBe(hashPolicyTemplate(b));
+    expect(await hashOf(hashPolicyTemplate(a))).toBe(await hashOf(hashPolicyTemplate(b)));
   });
 
-  test("pretty and compact JSON decode to the same hash", () => {
+  test("pretty and compact JSON decode to the same hash", async () => {
     const compact = JSON.parse(JSON.stringify(emptyTemplateEncoded));
     const pretty = JSON.parse(JSON.stringify(emptyTemplateEncoded, null, 2));
     const a = Effect.runSync(decodePolicyTemplate(compact));
     const b = Effect.runSync(decodePolicyTemplate(pretty));
-    expect(hashPolicyTemplate(a)).toBe(hashPolicyTemplate(b));
+    expect(await hashOf(hashPolicyTemplate(a))).toBe(await hashOf(hashPolicyTemplate(b)));
   });
 
-  test("encode then decode is a stable round trip", () => {
+  test("encode then decode is a stable round trip", async () => {
     const decoded = Effect.runSync(decodePolicyTemplate(clone(templateEncoded)));
     const encoded = encodePolicyTemplate(decoded);
     const again = Effect.runSync(decodePolicyTemplate(encoded));
     expect(canonicalizePolicyTemplate(decoded)).toBe(canonicalizePolicyTemplate(again));
-    expect(hashRelativeRule(decoded.rules[0])).toBe(hashRelativeRule(again.rules[0]));
+    expect(await hashOf(hashRelativeRule(decoded.rules[0]))).toBe(
+      await hashOf(hashRelativeRule(again.rules[0])),
+    );
   });
 
-  test("installed encode/decode is a stable round trip", () => {
+  test("installed encode/decode is a stable round trip", async () => {
     const decoded = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
     const encoded = encodeInstalledAuthorization(decoded);
     const again = Effect.runSync(decodeInstalledAuthorization(encoded));
     expect(canonicalizeInstalledAuthorization(decoded)).toBe(
       canonicalizeInstalledAuthorization(again),
     );
-    expect(hashCanonicalRule(decoded.rules[0])).toBe(hashCanonicalRule(again.rules[0]));
-    expect(hashInstalledAuthorization(decoded)).toBe(hashInstalledAuthorization(again));
+    expect(await hashOf(hashCanonicalRule(decoded.rules[0]))).toBe(
+      await hashOf(hashCanonicalRule(again.rules[0])),
+    );
+    expect(await hashOf(hashInstalledAuthorization(decoded))).toBe(
+      await hashOf(hashInstalledAuthorization(again)),
+    );
   });
 
-  test("golden empty template serialization", () => {
+  test("golden empty template serialization", async () => {
     const decoded = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const canonical = canonicalizePolicyTemplate(decoded);
     expect(canonical).toBe(
       '{"_tag":"PolicyTemplateIR","claims":[],"classes":[],"decisions":{"entities":[],"fields":[],"operations":[],"traits":[]},"principal":{"subjectClaim":"sub"},"rules":[],"version":1}',
     );
-    expect(String(hashPolicyTemplate(decoded))).toBe(
-      "32ac5c7ad4ccc9acc9a03f3c7cc3ff0f7ba90b701db9a9eab5b5e360b140d01b",
-    );
-    expect(hashCanonical(JSON.parse(canonical))).toBe(String(hashPolicyTemplate(decoded)));
+    const digest = String(await hashOf(hashPolicyTemplate(decoded)));
+    expect(digest).toBe("32ac5c7ad4ccc9acc9a03f3c7cc3ff0f7ba90b701db9a9eab5b5e360b140d01b");
+    expect(await hashOf(hashCanonicalJson(JSON.parse(canonical) as JsonValue))).toBe(digest);
   });
 
-  test("golden template and installed hashes are deterministic", () => {
+  test("golden template and installed hashes are deterministic", async () => {
     const template = Effect.runSync(decodePolicyTemplate(clone(templateEncoded)));
     const installed = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
-    expect(String(hashPolicyTemplate(template))).toBe(
-      "37938d247036d4c6151daf60d3102aff2782f8a12eff25ea01d386fd395bb71c",
+    expect(String(await hashOf(hashPolicyTemplate(template)))).toBe(
+      "ba3627858d639dc167115db4c66e8a1e3d112e56e7f8848bce4682ae85a121df",
     );
-    expect(String(hashInstalledAuthorization(installed))).toBe(
-      "ce49343fe038a3402aef2384e4e5cc06a9cda51a57e91650913b4ce825e220f9",
+    expect(String(await hashOf(hashInstalledAuthorization(installed)))).toBe(
+      "b58680da318ac5ffe27d603ac8174967718745da7724bb46e918339fd9ec258e",
     );
-    expect(canonicalizeJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
-    expect(canonicalizeJson({ 10: 1, 2: 2 })).toBe('{"10":1,"2":2}');
-    expect(canonicalizeJson(JSON.parse('{"__proto__":{"x":1}}'))).toBe('{"__proto__":{"x":1}}');
-    expect(canonicalizeJson(JSON.parse('{"__proto__":{"x":1}}'))).not.toBe("{}");
-    expect(String(hashRelativeRule(template.rules[0]))).toBe(
+    expect(String(await hashOf(hashRelativeRule(template.rules[0])))).toBe(
       "706cf08602db9b325fad3bec8806bcc936a2b6471b61e09c5309444f1c6de666",
     );
-    expect(String(hashRelativeRule(template.rules[1]))).toBe(
+    expect(String(await hashOf(hashRelativeRule(template.rules[1])))).toBe(
       "e389c245d4cdd49cb220f7c602d3c127f4bb9083c93378795afa3bafc40d4093",
     );
-    expect(String(hashRelativeRule(template.rules[2]))).toBe(
+    expect(String(await hashOf(hashRelativeRule(template.rules[2])))).toBe(
       "38c66b8a272af0fbbe5bf2007cefb8aa91aa8da2ab52b1f6b0b724bf63b42d5e",
     );
-    expect(String(hashCanonicalRule(installed.rules[0]))).toBe(
+    expect(String(await hashOf(hashCanonicalRule(installed.rules[0])))).toBe(
       "13fd64ba860771677735d3edf65497cef91393039bd51a8164524436802ea57b",
     );
   });
 
-  test("installed policyHash is excluded from the document digest", () => {
+  test("installed policyHash is excluded from the document digest", async () => {
     const installed = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
-    const digest = hashInstalledAuthorization(installed);
+    const digest = await hashOf(hashInstalledAuthorization(installed));
     const encoded = encodeInstalledAuthorization(installed);
     const withDigest = Effect.runSync(
       decodeInstalledAuthorization({ ...encoded, policyHash: String(digest) }),
     );
     const withOther = Effect.runSync(
-      decodeInstalledAuthorization({ ...encoded, policyHash: "other-placeholder" }),
+      decodeInstalledAuthorization({ ...encoded, policyHash: POLICY_HASH_OTHER }),
     );
-    expect(hashInstalledAuthorization(withDigest)).toBe(digest);
-    expect(hashInstalledAuthorization(withOther)).toBe(digest);
+    expect(await hashOf(hashInstalledAuthorization(withDigest))).toBe(digest);
+    expect(await hashOf(hashInstalledAuthorization(withOther))).toBe(digest);
+    expect(String(digest)).not.toBe(POLICY_HASH_PLACEHOLDER);
   });
 });
 

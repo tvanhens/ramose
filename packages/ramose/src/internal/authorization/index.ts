@@ -12,6 +12,7 @@
  */
 
 export * from "./bounds.ts";
+export * from "./canonical-json.ts";
 export * from "./catalog.ts";
 export * from "./decode.ts";
 export * from "./expr.ts";
