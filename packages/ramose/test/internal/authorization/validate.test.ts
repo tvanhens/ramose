@@ -110,6 +110,8 @@ const catalogDescriptor = (): CatalogDescriptor => ({
   fields: [
     scalarField(userOwner, "authId", "upsert"),
     refField(issueOwner, "owner", { _tag: "entity", entity: entity("user") }),
+    refField(issueOwner, "parent", { _tag: "self" }),
+    refField(userOwner, "parent", { _tag: "self" }),
     scalarField(issueOwner, "title"),
     scalarField(issueOwner, "internalNotes"),
     refField(taggableOwner, "tags", { _tag: "entity", entity: entity("tag") }, "many"),
@@ -273,7 +275,7 @@ const nestedTagGrant = () =>
       usesInput: false,
       usesMe: true,
       usesSubject: false,
-      traversalDepth: 2,
+      traversalDepth: 3,
       existsDepth: 0,
       dependencies: [],
     },
@@ -640,6 +642,45 @@ describe("traversal", () => {
     expectFailure(validate(boundDocument([rule])), "InvalidIR", /traversal depth 4 exceeds 3/);
   });
 
+  test("resolves self refs relative to their owners", () => {
+    const compatible = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      {
+        _tag: "eq",
+        left: resourceRef(step(issueOwner, "parent")),
+        right: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 1,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([compatible])));
+    const mismatched = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      {
+        _tag: "eq",
+        left: resourceRef(step(issueOwner, "parent")),
+        right: resourceRef(step(issueOwner, "owner"), step(userOwner, "parent")),
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 2,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(validate(boundDocument([mismatched])), "InvalidIR", /incompatible equality/);
+  });
+
   test("rejects a stale field identity from another catalog", () => {
     const stale = FieldId.make({ catalog: CatalogId.make("other"), owner: issueOwner, localName: "owner" });
     const rule = stamp(
@@ -758,6 +799,45 @@ describe("me, claims, and classes", () => {
       },
     );
     expectFailure(validate(boundDocument([rule])), "InvalidIR", /undeclared class 'admin'/);
+  });
+
+  test("rejects a blank principal subject claim", () => {
+    expectFailure(
+      validate(boundDocument([ownsIssue()], undefined, { principal: { subjectClaim: "" } })),
+      "InvalidIR",
+      /blank principal subject claim/,
+    );
+  });
+
+  test("accepts eq of a trait resource and a composing me", () => {
+    const composing: CatalogDescriptor = {
+      ...descriptor,
+      entities: descriptor.entities.map((row) =>
+        row.id.name === "user" ? { ...row, traits: [trait("taggable")] } : row,
+      ),
+      traitComposition: [
+        ...descriptor.traitComposition,
+        { composer: entity("user"), trait: trait("taggable"), transitive: [trait("taggable")] },
+      ],
+    };
+    const rule = stamp(
+      { _tag: "trait", trait: trait("taggable") },
+      {
+        _tag: "eq",
+        left: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+        right: { _tag: "me" },
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: true,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([rule]), composing));
   });
 });
 
@@ -975,6 +1055,27 @@ describe("targeted and targetless operations", () => {
       operation: operation({ kind: "trait", name: "orphaned" }, "ping", "none"),
     });
     expectFailure(validate(boundDocument([rule])), "InvalidIR", /not reachable/);
+  });
+
+  test("rejects an unreachable targetless trait operation for a trait-focused rule", () => {
+    const rule = alwaysTrue({ _tag: "trait", trait: trait("orphaned") });
+    expectFailure(
+      validate(
+        boundDocument([rule], {
+          entities: [],
+          traits: [],
+          fields: [],
+          operations: [
+            {
+              target: operation({ kind: "trait", name: "orphaned" }, "ping", "none"),
+              decision: { allow: [rule.id], deny: [] },
+            },
+          ],
+        }),
+      ),
+      "InvalidIR",
+      /not reachable/,
+    );
   });
 });
 
@@ -1208,6 +1309,53 @@ describe("bounds", () => {
     const owns = ownsIssue();
     expect(owns.dependencies).toEqual([]);
     expectValidated(validate(boundDocument([owns])));
+  });
+
+  test("accumulates traversal depth across some bindings", () => {
+    const rule = stamp(
+      { _tag: "trait", trait: trait("taggable") },
+      {
+        _tag: "some",
+        collection: resourceRef(step(taggableOwner, "tags")),
+        bind: "tag",
+        pred: {
+          _tag: "has",
+          term: bindRef("tag", step(tagOwner, "grants"), step(grantOwner, "user"), step(userOwner, "authId")),
+        },
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 4,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(validate(boundDocument([rule])), "InvalidIR", /traversal depth 4 exceeds 3/);
+  });
+
+  test("rejects some over a cardinality-one ref", () => {
+    const rule = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      {
+        _tag: "some",
+        collection: resourceRef(step(issueOwner, "owner")),
+        bind: "user",
+        pred: { _tag: "const", value: true },
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 1,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(validate(boundDocument([rule])), "InvalidIR", /some requires a many-valued ref collection/);
   });
 });
 

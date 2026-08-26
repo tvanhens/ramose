@@ -98,6 +98,11 @@ type RowFocus =
   | { readonly _tag: "entity"; readonly entity: EntityId }
   | { readonly _tag: "trait"; readonly trait: TraitId };
 
+type Binding = {
+  readonly focus: RowFocus;
+  readonly traversalDepth: number;
+};
+
 type TermShape =
   | { readonly _tag: "boolean" }
   | { readonly _tag: "subject" }
@@ -410,6 +415,20 @@ const traitReachable = (index: CatalogIndex, trait: TraitId): boolean => {
   return false;
 };
 
+const requireTargetlessTraitReachable = (
+  index: CatalogIndex,
+  operation: OperationDescriptor,
+): Result.Result<void, ValidateFailure> => {
+  if (operation.id.target !== "none" || operation.id.owner.kind !== "trait") {
+    return Result.succeed(undefined);
+  }
+  const trait = index.traits.get(operation.id.owner.name);
+  if (trait === undefined || !traitReachable(index, trait)) {
+    return invalid(`targetless trait operation '${operation.id.localName}' is not reachable`);
+  }
+  return Result.succeed(undefined);
+};
+
 const ownerHasTrait = (index: CatalogIndex, owner: OwnerRef, traitName: string): boolean => {
   if (owner.kind === "trait") {
     if (owner.name === traitName) return true;
@@ -445,13 +464,18 @@ const ownerFocus = (index: CatalogIndex, owner: OwnerRef): Result.Result<RowFocu
   return Result.succeed({ _tag: "trait", trait });
 };
 
-const sameRow = (left: RowFocus, right: RowFocus): boolean => {
-  if (left._tag !== right._tag) return false;
+const sameRow = (index: CatalogIndex, left: RowFocus, right: RowFocus): boolean => {
   if (left._tag === "entity" && right._tag === "entity") {
     return left.entity.catalog === right.entity.catalog && left.entity.name === right.entity.name;
   }
   if (left._tag === "trait" && right._tag === "trait") {
     return left.trait.catalog === right.trait.catalog && left.trait.name === right.trait.name;
+  }
+  if (left._tag === "entity" && right._tag === "trait") {
+    return entityComposes(index, left.entity, right.trait.name);
+  }
+  if (left._tag === "trait" && right._tag === "entity") {
+    return entityComposes(index, right.entity, left.trait.name);
   }
   return false;
 };
@@ -479,25 +503,55 @@ const rowFromRefTarget = (
   }
 };
 
-const refCompatibleWithRow = (target: FieldRefTarget, row: RowFocus): boolean => {
-  if (target._tag === "entity" && row._tag === "entity") {
-    return target.entity.catalog === row.entity.catalog && target.entity.name === row.entity.name;
-  }
-  if (target._tag === "trait" && row._tag === "trait") {
-    return target.trait.catalog === row.trait.catalog && target.trait.name === row.trait.name;
-  }
-  return false;
+const refTargetAsFocus = (target: FieldRefTarget): RowFocus | undefined => {
+  if (target._tag === "entity") return { _tag: "entity", entity: target.entity };
+  if (target._tag === "trait") return { _tag: "trait", trait: target.trait };
+  return undefined;
 };
 
-const sameRefTarget = (left: FieldRefTarget, right: FieldRefTarget): boolean => {
-  if (left._tag !== right._tag) return false;
-  if (left._tag === "entity" && right._tag === "entity") {
-    return left.entity.catalog === right.entity.catalog && left.entity.name === right.entity.name;
+const resolveRefTarget = (
+  index: CatalogIndex,
+  target: FieldRefTarget,
+  owner: OwnerRef,
+): Result.Result<FieldRefTarget, ValidateFailure> => {
+  if (target._tag === "self") {
+    const focus = ownerFocus(index, owner);
+    if (Result.isFailure(focus)) return Result.fail(focus.failure);
+    return Result.succeed(
+      focus.success._tag === "entity"
+        ? { _tag: "entity", entity: focus.success.entity }
+        : { _tag: "trait", trait: focus.success.trait },
+    );
   }
-  if (left._tag === "trait" && right._tag === "trait") {
-    return left.trait.catalog === right.trait.catalog && left.trait.name === right.trait.name;
+  if (target._tag === "entity") {
+    const entity = requireEntity(index, target.entity, "ref target");
+    if (Result.isFailure(entity)) return Result.fail(entity.failure);
+    return Result.succeed({ _tag: "entity", entity: entity.success });
   }
-  return left._tag === "self" || left._tag === "untargeted";
+  if (target._tag === "trait") {
+    const trait = requireTrait(index, target.trait, "ref target");
+    if (Result.isFailure(trait)) return Result.fail(trait.failure);
+    return Result.succeed({ _tag: "trait", trait: trait.success });
+  }
+  return Result.succeed(target);
+};
+
+const refCompatibleWithRow = (
+  index: CatalogIndex,
+  target: FieldRefTarget,
+  row: RowFocus,
+): boolean => {
+  const focus = refTargetAsFocus(target);
+  return focus !== undefined && sameRow(index, focus, row);
+};
+
+const sameRefTarget = (index: CatalogIndex, left: FieldRefTarget, right: FieldRefTarget): boolean => {
+  const leftFocus = refTargetAsFocus(left);
+  const rightFocus = refTargetAsFocus(right);
+  if (leftFocus !== undefined && rightFocus !== undefined) {
+    return sameRow(index, leftFocus, rightFocus);
+  }
+  return left._tag === "untargeted" && right._tag === "untargeted";
 };
 
 const claimScalar = (shape: ClaimShape): ScalarValueType | undefined =>
@@ -524,25 +578,29 @@ const scalarAssignable = (expected: ScalarValueType | "null" | "number", actual:
   return false;
 };
 
-const eqCompatible = (left: TermShape, right: TermShape): boolean => {
+const meCompatibleWith = (index: CatalogIndex, me: EntityId | undefined, other: TermShape): boolean => {
+  if (other._tag === "me") return true;
+  if (other._tag === "row") {
+    return me === undefined || sameRow(index, { _tag: "entity", entity: me }, other.focus);
+  }
+  if (other._tag === "ref") {
+    const focus = refTargetAsFocus(other.target);
+    return focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus));
+  }
+  if (other._tag === "input" && other.shape._tag === "ref") {
+    const focus = refTargetAsFocus(other.shape.refTarget);
+    return focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus));
+  }
+  return false;
+};
+
+const eqCompatible = (index: CatalogIndex, left: TermShape, right: TermShape): boolean => {
   const pair = (a: TermShape, b: TermShape): boolean => {
     if (a._tag === "opaque" || b._tag === "opaque") return false;
     if (a._tag === "boolean" || b._tag === "boolean") return false;
     if (a._tag === "ref" && a.cardinality === "many") return false;
     if (b._tag === "ref" && b.cardinality === "many") return false;
-    if (a._tag === "me") {
-      if (b._tag === "me") return true;
-      if (b._tag === "row" && b.focus._tag === "entity") {
-        return a.entity === undefined || a.entity.name === b.focus.entity.name;
-      }
-      if (b._tag === "ref" && b.target._tag === "entity") {
-        return a.entity === undefined || a.entity.name === b.target.entity.name;
-      }
-      if (b._tag === "input" && b.shape._tag === "ref" && b.shape.refTarget._tag === "entity") {
-        return a.entity === undefined || a.entity.name === b.shape.refTarget.entity.name;
-      }
-      return false;
-    }
+    if (a._tag === "me") return meCompatibleWith(index, a.entity, b);
     if (a._tag === "subject") {
       return (
         b._tag === "subject" ||
@@ -552,17 +610,17 @@ const eqCompatible = (left: TermShape, right: TermShape): boolean => {
       );
     }
     if (a._tag === "row") {
-      if (b._tag === "row") return sameRow(a.focus, b.focus);
-      if (b._tag === "ref") return refCompatibleWithRow(b.target, a.focus);
+      if (b._tag === "row") return sameRow(index, a.focus, b.focus);
+      if (b._tag === "ref") return refCompatibleWithRow(index, b.target, a.focus);
       if (b._tag === "input" && b.shape._tag === "ref") {
-        return refCompatibleWithRow(b.shape.refTarget, a.focus);
+        return refCompatibleWithRow(index, b.shape.refTarget, a.focus);
       }
       return false;
     }
     if (a._tag === "ref") {
-      if (b._tag === "ref") return sameRefTarget(a.target, b.target);
+      if (b._tag === "ref") return sameRefTarget(index, a.target, b.target);
       if (b._tag === "input" && b.shape._tag === "ref") {
-        return sameRefTarget(a.target, b.shape.refTarget);
+        return sameRefTarget(index, a.target, b.shape.refTarget);
       }
       return false;
     }
@@ -581,14 +639,14 @@ const eqCompatible = (left: TermShape, right: TermShape): boolean => {
     if (a._tag === "claim") {
       const scalar = claimScalar(a.shape);
       if (scalar === undefined) return false;
-      return eqCompatible({ _tag: "scalar", valueType: scalar }, b);
+      return eqCompatible(index, { _tag: "scalar", valueType: scalar }, b);
     }
     if (a._tag === "input") {
       if (a.shape._tag === "scalar") {
-        return eqCompatible({ _tag: "scalar", valueType: a.shape.valueType }, b);
+        return eqCompatible(index, { _tag: "scalar", valueType: a.shape.valueType }, b);
       }
       if (a.shape._tag === "ref" && b._tag === "input" && b.shape._tag === "ref") {
-        return sameRefTarget(a.shape.refTarget, b.shape.refTarget);
+        return sameRefTarget(index, a.shape.refTarget, b.shape.refTarget);
       }
       return false;
     }
@@ -602,7 +660,11 @@ const collectionElement = (shape: TermShape): TermShape | undefined => {
     return { _tag: "ref", target: shape.target, cardinality: "one" };
   }
   if (shape._tag === "input" && shape.shape._tag === "array") {
-    return inputShapeType(shape.shape.items);
+    const items = shape.shape.items;
+    if (items._tag === "scalar") return { _tag: "scalar", valueType: items.valueType };
+    if (items._tag === "ref") return { _tag: "ref", target: items.refTarget, cardinality: "one" };
+    if (items._tag === "opaque") return { _tag: "opaque" };
+    return { _tag: "input", shape: items };
   }
   if (shape._tag === "claim" && shape.shape._tag === "array") {
     return { _tag: "claim", shape: shape.shape.items };
@@ -610,32 +672,41 @@ const collectionElement = (shape: TermShape): TermShape | undefined => {
   return undefined;
 };
 
-const inputShapeType = (shape: OperationInputShape): TermShape => {
+const inputShapeType = (
+  index: CatalogIndex,
+  shape: OperationInputShape,
+  owner: OwnerRef,
+): Result.Result<TermShape, ValidateFailure> => {
   switch (shape._tag) {
     case "scalar":
-      return { _tag: "scalar", valueType: shape.valueType };
-    case "ref":
-      return { _tag: "ref", target: shape.refTarget, cardinality: "one" };
+      return Result.succeed({ _tag: "scalar", valueType: shape.valueType });
+    case "ref": {
+      const target = resolveRefTarget(index, shape.refTarget, owner);
+      if (Result.isFailure(target)) return Result.fail(target.failure);
+      return Result.succeed({ _tag: "ref", target: target.success, cardinality: "one" });
+    }
     case "opaque":
-      return { _tag: "opaque" };
+      return Result.succeed({ _tag: "opaque" });
     case "array":
-      return { _tag: "input", shape };
+      return Result.succeed({ _tag: "input", shape });
     case "struct":
-      return { _tag: "input", shape };
+      return Result.succeed({ _tag: "input", shape });
   }
 };
 
 const walkInputPath = (
+  index: CatalogIndex,
   shape: OperationInputShape,
   path: ReadonlyArray<string>,
+  owner: OwnerRef,
 ): Result.Result<TermShape, ValidateFailure> => {
-  if (path.length === 0) return Result.succeed(inputShapeType(shape));
+  if (path.length === 0) return inputShapeType(index, shape, owner);
   switch (shape._tag) {
     case "struct": {
       const key = path[0]!;
       const field = shape.fields.find((entry) => entry.key === key);
       if (field === undefined) return invalid(`unknown operation input path '${path.join(".")}'`);
-      return walkInputPath(field.shape, path.slice(1));
+      return walkInputPath(index, field.shape, path.slice(1), owner);
     }
     case "array":
       return invalid("cannot traverse operation input array by key");
@@ -659,9 +730,11 @@ const claimByKey = (
 };
 
 const validateVocabularies = (
+  subjectClaim: string,
   classes: ReadonlyArray<string>,
   claims: ReadonlyArray<ClaimDescriptor>,
 ): Result.Result<void, ValidateFailure> => {
+  if (subjectClaim.length === 0) return invalid("blank principal subject claim");
   const seenClass = new Set<string>();
   for (const name of classes) {
     if (name.length === 0) return invalid("blank class name");
@@ -709,11 +782,11 @@ const resourceFocus = (
 const operationInput = (
   index: CatalogIndex,
   focus: CanonicalRuleFocus,
-): Result.Result<OperationInputShape | undefined, ValidateFailure> => {
+): Result.Result<{ readonly shape: OperationInputShape; readonly owner: OwnerRef } | undefined, ValidateFailure> => {
   if (focus._tag !== "operation") return Result.succeed(undefined);
   const operation = requireOperation(index, focus.operation, "rule focus operation");
   if (Result.isFailure(operation)) return Result.fail(operation.failure);
-  return Result.succeed(operation.success.input);
+  return Result.succeed({ shape: operation.success.input, owner: operation.success.id.owner });
 };
 
 const meEntity = (
@@ -739,17 +812,14 @@ const walkRef = (
   term: CanonicalRefTerm,
   resource: RowFocus | undefined,
   me: EntityId | undefined,
-  binds: ReadonlyMap<string, RowFocus>,
+  binds: ReadonlyMap<string, Binding>,
   limits: ValidationLimits,
 ): Result.Result<{ readonly shape: TermShape; readonly derived: Derived }, ValidateFailure> => {
   const derived = emptyDerived();
   derived.staticWork = 1 + term.steps.length;
-  if (term.steps.length > limits.maxTraversalDepth) {
-    return invalid(`traversal depth ${term.steps.length} exceeds ${limits.maxTraversalDepth}`);
-  }
-  derived.traversalDepth = term.steps.length;
 
   let current: RowFocus | undefined;
+  let originDepth = 0;
   switch (term.root._tag) {
     case "resource":
       derived.usesResource = true;
@@ -768,10 +838,17 @@ const walkRef = (
     case "bind": {
       const bound = binds.get(term.root.name);
       if (bound === undefined) return invalid(`unbound name '${term.root.name}'`);
-      current = bound;
+      current = bound.focus;
+      originDepth = bound.traversalDepth;
       break;
     }
   }
+
+  const depth = originDepth + term.steps.length;
+  if (depth > limits.maxTraversalDepth) {
+    return invalid(`traversal depth ${depth} exceeds ${limits.maxTraversalDepth}`);
+  }
+  derived.traversalDepth = depth;
 
   if (term.steps.length === 0) {
     if (current === undefined) return invalid("empty traversal has no focus");
@@ -811,10 +888,12 @@ const walkRef = (
 
   if (last === undefined) return invalid("empty traversal has no field");
   if (last.valueType === "ref") {
+    const target = resolveRefTarget(index, last.refTarget, last.id.owner);
+    if (Result.isFailure(target)) return Result.fail(target.failure);
     return Result.succeed({
       shape: {
         _tag: "ref",
-        target: last.refTarget,
+        target: target.success,
         cardinality: collected || last.cardinality === "many" ? "many" : "one",
       },
       derived,
@@ -840,8 +919,8 @@ const walkValue = (
   term: CanonicalValueTerm,
   resource: RowFocus | undefined,
   me: EntityId | undefined,
-  binds: ReadonlyMap<string, RowFocus>,
-  input: OperationInputShape | undefined,
+  binds: ReadonlyMap<string, Binding>,
+  input: { readonly shape: OperationInputShape; readonly owner: OwnerRef } | undefined,
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
 ): Result.Result<{ readonly shape: TermShape; readonly derived: Derived }, ValidateFailure> => {
@@ -870,7 +949,7 @@ const walkValue = (
     }
     case "input": {
       if (input === undefined) return invalid("operation input is not available in this rule focus");
-      const shape = walkInputPath(input, term.path);
+      const shape = walkInputPath(index, input.shape, term.path, input.owner);
       if (Result.isFailure(shape)) return Result.fail(shape.failure);
       return Result.succeed({
         shape: shape.success,
@@ -881,8 +960,8 @@ const walkValue = (
       const bound = binds.get(term.name);
       if (bound === undefined) return invalid(`unbound name '${term.name}'`);
       return Result.succeed({
-        shape: { _tag: "row", focus: bound },
-        derived: { ...emptyDerived(), staticWork: 1 },
+        shape: { _tag: "row", focus: bound.focus },
+        derived: { ...emptyDerived(), staticWork: 1, traversalDepth: bound.traversalDepth },
       });
     }
   }
@@ -893,8 +972,8 @@ const walkExpr = (
   expr: CanonicalAuthorizationExpr,
   resource: RowFocus | undefined,
   me: EntityId | undefined,
-  binds: ReadonlyMap<string, RowFocus>,
-  input: OperationInputShape | undefined,
+  binds: ReadonlyMap<string, Binding>,
+  input: { readonly shape: OperationInputShape; readonly owner: OwnerRef } | undefined,
   classes: ReadonlySet<string>,
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
@@ -954,7 +1033,7 @@ const walkExpr = (
       if (Result.isFailure(right)) return Result.fail(right.failure);
       mergeDerived(derived, left.success.derived);
       mergeDerived(derived, right.success.derived);
-      if (!eqCompatible(left.success.shape, right.success.shape)) {
+      if (!eqCompatible(index, left.success.shape, right.success.shape)) {
         return invalid("incompatible equality operands");
       }
       return Result.succeed(derived);
@@ -983,7 +1062,7 @@ const walkExpr = (
       mergeDerived(derived, collection.success.derived);
       const element = collectionElement(collection.success.shape);
       if (element === undefined) return invalid("membership requires a collection");
-      if (!eqCompatible(value.success.shape, element)) {
+      if (!eqCompatible(index, value.success.shape, element)) {
         return invalid("incompatible membership operands");
       }
       return Result.succeed(derived);
@@ -995,7 +1074,9 @@ const walkExpr = (
       if (expr.bind.length === 0) return invalid("blank binding name");
       if (binds.has(expr.bind)) return invalid(`duplicate binding '${expr.bind}'`);
       const shape = collection.success.shape;
-      if (shape._tag !== "ref") return invalid("some requires a ref collection");
+      if (shape._tag !== "ref" || shape.cardinality !== "many") {
+        return invalid("some requires a many-valued ref collection");
+      }
       const lastStep = expr.collection.steps[expr.collection.steps.length - 1];
       if (lastStep === undefined) return invalid("some requires a ref traversal");
       const row = rowFromRefTarget(index, shape.target, lastStep.field.owner);
@@ -1004,7 +1085,10 @@ const walkExpr = (
         return invalid("some cannot bind an untargeted ref");
       }
       const nextBinds = new Map(binds);
-      nextBinds.set(expr.bind, row.success);
+      nextBinds.set(expr.bind, {
+        focus: row.success,
+        traversalDepth: collection.success.derived.traversalDepth,
+      });
       const pred = walkExpr(
         index,
         expr.pred,
@@ -1033,7 +1117,7 @@ const walkExpr = (
       if (leftEl === undefined || rightEl === undefined) {
         return invalid("overlaps requires two collections");
       }
-      if (!eqCompatible(leftEl, rightEl)) return invalid("incompatible overlaps operands");
+      if (!eqCompatible(index, leftEl, rightEl)) return invalid("incompatible overlaps operands");
       return Result.succeed(derived);
     }
     case "exists": {
@@ -1047,7 +1131,10 @@ const walkExpr = (
       if (expr.bind.length === 0) return invalid("blank binding name");
       if (binds.has(expr.bind)) return invalid(`duplicate binding '${expr.bind}'`);
       const nextBinds = new Map(binds);
-      nextBinds.set(expr.bind, { _tag: "entity", entity: entity.success });
+      nextBinds.set(expr.bind, {
+        focus: { _tag: "entity", entity: entity.success },
+        traversalDepth: 0,
+      });
       const pred = walkExpr(
         index,
         expr.pred,
@@ -1164,15 +1251,7 @@ const validateFocus = (
     case "operation": {
       const operation = requireOperation(index, focus.operation, "rule focus operation");
       if (Result.isFailure(operation)) return Result.fail(operation.failure);
-      if (operation.success.id.owner.kind === "trait" && operation.success.id.target === "none") {
-        const trait = index.traits.get(operation.success.id.owner.name);
-        if (trait === undefined || !traitReachable(index, trait)) {
-          return invalid(
-            `targetless trait operation '${operation.success.id.localName}' is not reachable`,
-          );
-        }
-      }
-      return Result.succeed(undefined);
+      return requireTargetlessTraitReachable(index, operation.success);
     }
   }
 };
@@ -1419,6 +1498,8 @@ const validateDecisions = (
     const key = operationKey(target.success.id);
     if (seenOperations.has(key)) return invalid("duplicate operation decision target");
     seenOperations.add(key);
+    const reachable = requireTargetlessTraitReachable(index, target.success);
+    if (Result.isFailure(reachable)) return Result.fail(reachable.failure);
     const ok = validateDecisionRules(index, entry.decision, rules, (rule) =>
       ruleFitsOperation(index, rule, target.success),
     );
@@ -1469,7 +1550,11 @@ export const validateBoundAuthorizationResult = (
   const index = indexCatalog(boundTarget(input.bound), input.descriptor);
   if (Result.isFailure(index)) return Result.fail(index.failure);
 
-  const vocab = validateVocabularies(input.bound.classes, input.bound.claims);
+  const vocab = validateVocabularies(
+    input.bound.principal.subjectClaim,
+    input.bound.classes,
+    input.bound.claims,
+  );
   if (Result.isFailure(vocab)) return Result.fail(vocab.failure);
 
   const principalOk = meEntity(index.success, input.bound.principal);
