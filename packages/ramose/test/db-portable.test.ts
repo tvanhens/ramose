@@ -202,6 +202,7 @@ describe("the `/db` barrel's public names", () => {
         // schema
         "Field",
         "Entity",
+        "Trait",
         "Schema",
         "string",
         "boolean",

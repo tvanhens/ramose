@@ -6,7 +6,7 @@
  * attribute set and names the flips that would split the data model.
  */
 
-import type { SchemaAttrTx } from "./ensure.ts";
+import { isAttributeTx, type SchemaAttrTx, type SchemaTxOp } from "./ensure.ts";
 import type {
   IncompatibleKind,
   InstallOptions,
@@ -241,7 +241,7 @@ export const incompatibleMessage = (changes: readonly SchemaChange[]): string =>
  * occupied namespace is incompatible.
  */
 export const checkEvolution = (
-  desiredTx: readonly SchemaAttrTx[],
+  desiredTx: readonly SchemaTxOp[],
   installed: readonly InstalledAttr[],
   occupied: ReadonlySet<string>,
   options?: InstallOptions,
@@ -251,6 +251,7 @@ export const checkEvolution = (
   const changes: SchemaChange[] = [];
 
   for (const tx of desiredTx) {
+    if (!isAttributeTx(tx)) continue;
     const desired = desiredOf(tx);
     if (allowed.has(desired.ident)) continue;
     const have = byIdent.get(desired.ident);
@@ -289,7 +290,7 @@ export const checkEvolution = (
  * an optional→required flip, not covered by the hatch.
  */
 export const namespacesNeedingOccupancy = (
-  desiredTx: readonly SchemaAttrTx[],
+  desiredTx: readonly SchemaTxOp[],
   installed: readonly InstalledAttr[],
   options?: InstallOptions,
 ): readonly string[] => {
@@ -298,6 +299,7 @@ export const namespacesNeedingOccupancy = (
   const known = installedNamespaces(installed);
   const needed = new Set<string>();
   for (const tx of desiredTx) {
+    if (!isAttributeTx(tx)) continue;
     const desired = desiredOf(tx);
     if (allowed.has(desired.ident) || !isRequiredAttr(desired)) continue;
     const ns = namespaceOf(desired.ident);
@@ -318,12 +320,13 @@ const retractSubject = (
  * never retracts `:db/optional`; without these ops the flip is a no-op.
  */
 export const optionalRetracts = (
-  desiredTx: readonly SchemaAttrTx[],
+  desiredTx: readonly SchemaTxOp[],
   installed: readonly InstalledAttr[],
 ): readonly OptionalRetract[] => {
   const byIdent = new Map(installed.map((a) => [a.ident, a]));
   const out: OptionalRetract[] = [];
   for (const tx of desiredTx) {
+    if (!isAttributeTx(tx)) continue;
     const desired = desiredOf(tx);
     const have = byIdent.get(desired.ident);
     if (have === undefined || !isRequiredAttr(desired)) continue;
@@ -335,6 +338,6 @@ export const optionalRetracts = (
 
 /** Catalog upsert plus the retracts that make optional→required real. */
 export const installTx = (
-  desiredTx: readonly SchemaAttrTx[],
+  desiredTx: readonly SchemaTxOp[],
   installed: readonly InstalledAttr[],
 ): readonly unknown[] => [...desiredTx, ...optionalRetracts(desiredTx, installed)];

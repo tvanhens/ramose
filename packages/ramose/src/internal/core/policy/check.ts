@@ -35,7 +35,11 @@ export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[
     if (typeof m[":db/ident"] !== "string") return false;
     if (m[":db/id"] !== undefined) return false;
     for (const [k, v] of Object.entries(m)) {
-      if (!k.startsWith(":db/")) return false;
+      const schemaKey =
+        k.startsWith(":db/") ||
+        k === ":ramose/kind" ||
+        k === ":ramose/composes";
+      if (!schemaKey) return false;
       const t = typeof v;
       if (t !== "string" && t !== "number" && t !== "boolean") return false;
     }

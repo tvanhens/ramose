@@ -30,6 +30,13 @@ export * from "./SchemaErrors.ts";
 export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Entity.ts";
+export * from "./Trait.ts";
+export {
+  composerIdent,
+  conflictingFieldName,
+  entityTraitNameClash,
+  traitCycle,
+} from "./compose.ts";
 export * from "./shapes.ts";
 export {
   assertLoweringPurity,

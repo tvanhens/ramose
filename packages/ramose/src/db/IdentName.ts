@@ -24,11 +24,18 @@ export const IDENT_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 export const isIdentName = (name: string): boolean => IDENT_NAME_RE.test(name);
 
 /**
- * Keys `Entity()` stamps onto the record-type object. A user field of the
- * same name would overwrite metadata (`id` → every `select({ id: N.id })`
- * reads a string; `ns` → `install()` emits `:[object Object]/id`).
+ * Keys `Entity()` / `Trait()` stamp onto the record-type object. A user
+ * field of the same name would overwrite metadata (`id` → every
+ * `select({ id: N.id })` reads a string; `ns` → `install()` emits
+ * `:[object Object]/id`; `traits` → composition is lost).
  */
-export const RESERVED_FIELD_KEYS = ["id", "ns", "fields", "_tag"] as const;
+export const RESERVED_FIELD_KEYS = [
+  "id",
+  "ns",
+  "fields",
+  "_tag",
+  "traits",
+] as const;
 
 /** A field key that collides with {@link Entity} metadata. */
 export type ReservedFieldKey = (typeof RESERVED_FIELD_KEYS)[number];
@@ -119,7 +126,8 @@ type NameError<S, Msg extends string> = S & {
 const IDENT_NAME_MSG =
   "invalid name — must match IDENT_NAME_RE" as const;
 const RESERVED_FIELD_MSG =
-  "reserved field name — id, ns, fields, and _tag are Entity metadata" as const;
+  "reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata" as const;
+const TRAIT_COLLISION_MSG = "conflicting flattened field names" as const;
 const SCHEMA_KEY_MSG =
   "Schema key must equal the Entity name" as const;
 const DUPLICATE_ENTITY_MSG = "duplicate entity name" as const;
@@ -222,15 +230,86 @@ export type ValidMerge<
 
 // ── runtime failures (definition time — throws, not DbError) ───────────────
 
-export const invalidIdentName = (kind: "entity" | "field", name: string): Error =>
+export const invalidIdentName = (
+  kind: "entity" | "field" | "trait",
+  name: string,
+): Error =>
   new Error(
     `ramose/schema: invalid ${kind} name ${JSON.stringify(name)} — must match ${IDENT_NAME_RE}`,
   );
 
 export const reservedFieldName = (name: string): Error =>
   new Error(
-    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, and _tag are Entity metadata`,
+    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, and traits are Entity / Trait metadata`,
   );
+
+// ── trait composition (type-level) ─────────────────────────────────────────
+
+type FieldIdent<F> = F extends { readonly ident: infer I extends string }
+  ? I
+  : never;
+
+type FieldCollision<K extends string> = {
+  readonly [P in `conflicting flattened field ${K}`]: true;
+};
+
+type MergeFieldMaps<A, B> = [keyof A & keyof B] extends [never]
+  ? A & B
+  : {
+      [K in keyof A | keyof B]: K extends keyof A
+        ? K extends keyof B
+          ? FieldIdent<A[K]> extends FieldIdent<B[K]>
+            ? FieldIdent<B[K]> extends FieldIdent<A[K]>
+              ? A[K]
+              : FieldCollision<K & string>
+            : FieldCollision<K & string>
+          : A[K]
+        : K extends keyof B
+          ? B[K]
+          : never;
+    };
+
+type NestedTraits<H> = H extends {
+  readonly traits: infer T extends readonly unknown[];
+}
+  ? T
+  : [];
+
+/** Already-stamped fields of `Traits`, merged transitively (diamonds ok). */
+export type FlattenedTraitFields<Traits extends readonly unknown[]> =
+  Traits extends readonly [infer H, ...infer R]
+    ? H extends { readonly fields: infer F extends object }
+      ? MergeFieldMaps<
+          MergeFieldMaps<F, FlattenedTraitFields<NestedTraits<H>>>,
+          FlattenedTraitFields<R>
+        >
+      : FlattenedTraitFields<R>
+    : {};
+
+type CollisionBrandKey<T> = {
+  [K in keyof T]: T[K] extends {
+    readonly [P in `conflicting flattened field ${string}`]: true;
+  }
+    ? K
+    : never;
+}[keyof T];
+
+type HasFieldCollision<T> = [CollisionBrandKey<T>] extends [never]
+  ? false
+  : true;
+
+/**
+ * Options bag: unchanged when flattened names are unique or diamonds;
+ * branded so a colliding `traits: […]` literal is not assignable.
+ */
+export type ValidTraitCompose<
+  Fields,
+  Traits extends readonly unknown[],
+> = HasFieldCollision<
+  MergeFieldMaps<Fields, FlattenedTraitFields<Traits>>
+> extends true
+  ? { readonly traits?: NameError<Traits, typeof TRAIT_COLLISION_MSG> }
+  : unknown;
 
 export const schemaKeyMismatch = (key: string, ns: string): Error =>
   new Error(
