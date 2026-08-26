@@ -22,8 +22,12 @@ const compileThrows = (bindings: Parameters<typeof compileAuthorization>[1], hea
 };
 
 describe("compiler rejection", () => {
-  test("resource-dependent rules on targetless operations", () => {
-    compileThrows([run(seed).allow(ownsIssue)]);
+  test("unbound run() without withOperations is rejected", () => {
+    compileThrows([run(seed).allow(hasClass("member"))]);
+  });
+
+  test("resource-dependent rules on target-none operations", () => {
+    compileThrows([run(Issue.operations.seed).allow(ownsIssue)]);
   });
 
   test("input is inaccessible on read rules", () => {
@@ -60,11 +64,15 @@ describe("compiler rejection", () => {
     compileThrows([read({ ident: ":issue/missing" }).allow(hasClass("member"))]);
   });
 
-  test("unsupported same-entity exists recursion", () => {
+  test("nested exists of the same entity is a bounded self-join", () => {
     const loop = rule(Issue, ({ me }) =>
       exists(TagGrant, (a) => exists(TagGrant, (b) => and(eq(a.user, me), eq(b.user, me)))),
     );
-    compileThrows([read(Issue).allow(loop)]);
+    expect(() => compileAuthorization(head, [read(Issue).allow(loop)])).not.toThrow();
+  });
+
+  test("undeclared hasClass name is rejected", () => {
+    compileThrows([read(Issue).allow(hasClass("not-a-class"))]);
   });
 
   test("unbounded traversal depth", () => {
@@ -113,11 +121,23 @@ describe("compiler rejection", () => {
     compileThrows([read(Extra).allow(hasClass("member"))]);
   });
 
-  test("empty classes fail closed at compile", () => {
-    expect(() =>
-      compileAuthorization({ schema: App, principal: User.sub, classes: [] }, [
-        read(Issue).allow(hasClass("member")),
-      ]),
-    ).toThrow(PolicyError);
+  test("empty classes are allowed when no hasClass is used", () => {
+    const titleIsX = rule(Issue, ({ resource }) => eq(resource.title, "x"));
+    const ir = compileAuthorization({ schema: App, principal: User.sub, classes: [] }, [
+      read(Issue).allow(titleIsX),
+    ]);
+    expect(ir.classes).toEqual([]);
+  });
+
+  test("class/claims-only policies do not require a principal", () => {
+    const ir = compileAuthorization({ schema: App, classes: ["member"] }, [
+      read(Issue).allow(hasClass("member")),
+    ]);
+    expect(ir.principal).toEqual({ subjectClaim: "sub" });
+  });
+
+  test("non-finite number literals are rejected", () => {
+    expect(() => eq(Number.NaN, 1)).toThrow(/finite/);
+    expect(() => eq(Number.POSITIVE_INFINITY, 1)).toThrow(/finite/);
   });
 });

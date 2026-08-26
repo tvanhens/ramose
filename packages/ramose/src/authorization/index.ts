@@ -7,11 +7,13 @@
  */
 
 export {
-  read,
-  run,
-  rule,
-  withOperations,
+  AUTH_LOCAL_NAME,
   AUTH_OWNER,
+  AUTH_TARGET,
+  read,
+  rule,
+  run,
+  withOperations,
   type Allowable,
   type AuthBinding,
   type AuthOperation,
@@ -20,22 +22,24 @@ export {
 } from "./authoring.ts";
 export {
   and,
-  or,
-  not,
   eq,
-  has,
-  some,
-  overlaps,
   exists,
+  has,
   hasClass,
+  not,
+  or,
+  overlaps,
+  some,
   type AuthExpr,
   type AuthPath,
   type Snapshot,
 } from "./expr.ts";
-export { compileAuthorization, type AuthorizationHead } from "./compile.ts";
+export { compileAuthorization, compileTemplate, type AuthorizationHead } from "./compile.ts";
 export {
   AUTHORIZATION_IR_VERSION,
   MAX_TRAVERSAL_DEPTH,
   type AuthorizationIR,
+  type InstalledAuthorizationIR,
+  type PolicyTemplateIR,
 } from "../internal/authorization/ir.ts";
 export { parseAuthorizationIR, serializeAuthorizationIR } from "../internal/authorization/parse.ts";

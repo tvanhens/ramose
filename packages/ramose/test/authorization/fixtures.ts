@@ -78,7 +78,7 @@ export const seed = Op(
   () => ({}),
 );
 
-export const Issue = withOperations(IssueFields, { rename });
+export const Issue = withOperations(IssueFields, { rename, seed });
 
 export const ownsIssue = rule(Issue, ({ me, resource }) => eq(resource.owner, me));
 
@@ -104,5 +104,5 @@ export const taggableBindings = [
   read(Issue.internalNotes).allow(supportNotes),
   run(Issue.operations.rename).allow(ownsIssue, canReadTagged),
   run(Taggable.operations.addTag).allow(canReadTagged),
-  run(seed).allow(hasClass("member")),
+  run(Issue.operations.seed).allow(hasClass("member")),
 ];

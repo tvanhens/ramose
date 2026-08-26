@@ -13,8 +13,11 @@ import { head, taggableBindings } from "./fixtures.ts";
 describe("compileAuthorization", () => {
   test("the Taggable example compiles without special runtime machinery", () => {
     const ir = compileAuthorization(head, taggableBindings);
+    expect(ir.form).toBe("installed");
     expect(ir.version).toBe(AUTHORIZATION_IR_VERSION);
-    expect(ir.principal).toEqual({ ident: ":user/sub", entity: "user" });
+    expect(ir.principal).toEqual({ subjectClaim: "sub", ident: ":user/sub", entity: "user" });
+    expect(ir.catalog.schemaFingerprint.length).toBeGreaterThan(0);
+    expect(ir.policyHash.length).toBe(64);
     expect(ir.classes).toEqual(["member", "support"]);
     expect(ir.identities.entities.map((e) => e.ns)).toEqual(["issue", "tag", "tagGrant", "user"]);
     expect(ir.identities.traits.map((t) => t.ns)).toEqual(["taggable"]);
@@ -55,24 +58,35 @@ describe("compileAuthorization", () => {
     for (const op of ir.identities.operations) {
       expect(op.kind).toBe("operation");
       expect(typeof op.name).toBe("string");
-      expect(typeof op.targetless).toBe("boolean");
+      expect(typeof op.localName).toBe("string");
+      expect(op.owner.kind === "entity" || op.owner.kind === "trait").toBe(true);
+      expect(op.target === "none" || op.target === "resource").toBe(true);
     }
-    expect(ir.identities.operations.find((o) => o.name === "issue/seed")?.targetless).toBe(true);
-    expect(ir.identities.operations.find((o) => o.name === "issue/rename")?.targetless).toBe(false);
+    const seedOp = ir.identities.operations.find((o) => o.name === "issue/seed");
+    expect(seedOp?.target).toBe("none");
+    expect(seedOp?.localName).toBe("seed");
+    expect(seedOp?.owner).toEqual({ kind: "entity", ns: "issue" });
+    expect(ir.identities.operations.find((o) => o.name === "issue/rename")?.target).toBe("resource");
   });
 
-  test("parseAuthorizationIR rejects incomplete compiled state", () => {
+  test("parseAuthorizationIR accepts only a JSON string of the installed form", () => {
     expect(() => parseAuthorizationIR("")).toThrow(PolicyError);
     expect(() => parseAuthorizationIR(null)).toThrow(PolicyError);
     expect(() => parseAuthorizationIR("{")).toThrow(PolicyError);
     expect(() => parseAuthorizationIR({ version: 2 })).toThrow(PolicyError);
     const ir = compileAuthorization(head, taggableBindings);
-    expect(() => parseAuthorizationIR({ ...ir, version: 99 })).toThrow(PolicyError);
+    expect(() => parseAuthorizationIR(JSON.stringify({ ...ir, version: 99 }))).toThrow(PolicyError);
     expect(() =>
-      parseAuthorizationIR({
-        ...ir,
-        rows: { issue: { allow: ["missing-rule"], deny: [] } },
-      }),
+      parseAuthorizationIR(
+        JSON.stringify({
+          ...ir,
+          rows: { issue: { allow: ["missing-rule"], deny: [] } },
+        }),
+      ),
     ).toThrow(PolicyError);
+    const template = { ...ir, form: "template" };
+    delete (template as { catalog?: unknown }).catalog;
+    delete (template as { policyHash?: unknown }).policyHash;
+    expect(() => parseAuthorizationIR(JSON.stringify(template))).toThrow(PolicyError);
   });
 });

@@ -1,8 +1,10 @@
 /**
- * Compile authoring bindings to {@link AuthorizationIR}.
- * Callbacks run once here and are discarded. Validation is fail-closed.
+ * Compile authoring bindings to a catalog-relative template, then install
+ * a sealed {@link InstalledAuthorizationIR}. Callbacks run once and are
+ * discarded. Validation is fail-closed.
  */
 
+import * as Effect from "effect/Effect";
 import type * as SchemaNS from "effect/Schema";
 import type { AnyEntity } from "../db/Entity.ts";
 import type { AnyOperation } from "../db/Operation.ts";
@@ -10,24 +12,27 @@ import type { AnySchema } from "../db/Schema.ts";
 import { PolicyError } from "../db/SchemaErrors.ts";
 import { traitsOf, walkTraits, type ComposerLike } from "../db/compose.ts";
 import type { AnyTrait } from "../db/Trait.ts";
-import {
-  MAX_TRAVERSAL_DEPTH,
-  REGISTERED_CLAIM_KEYS,
-  type AuthorizationIR,
-  type FieldId,
-  type IrDecision,
-  type IrExpr,
-  type IrOperand,
-  type IrPath,
-  type IrRule,
-  type OperationId,
-  type OwnerId,
+import { analyze, exceedsTraversal, exprShapeError } from "../internal/authorization/analyze.ts";
+import { canonicalJson, ruleIdOf } from "../internal/authorization/canonical.ts";
+import { CatalogMismatch, InvalidIR } from "../internal/authorization/errors.ts";
+import { catalogFromTemplate, installAgainstCatalog } from "../internal/authorization/install.ts";
+import type {
+  FieldId,
+  InstalledAuthorizationIR,
+  IrDecision,
+  IrRule,
+  OperationId,
+  OwnerId,
+  PolicyTemplateIR,
+  PrincipalSpec,
 } from "../internal/authorization/ir.ts";
-import { ruleIdOf } from "../internal/authorization/canonical.ts";
-import { parseAuthorizationIR } from "../internal/authorization/parse.ts";
+import { REGISTERED_CLAIM_KEYS } from "../internal/authorization/ir.ts";
+import { recomputeRuleMetadata } from "../internal/authorization/validate.ts";
 import {
-  isTargetless,
+  isBoundOperation,
+  localNameOfOperation,
   ownerOfOperation,
+  targetOfOperation,
   type Allowable,
   type AuthBinding,
   type AuthOperation,
@@ -53,10 +58,10 @@ export interface AuthorizationHead<
   CL extends readonly string[] = readonly string[],
 > {
   readonly schema: C;
-  readonly principal: { readonly ident: string };
-  readonly classes: CL;
+  readonly principal?: { readonly ident: string };
+  readonly classes?: CL;
   readonly claims?: SchemaNS.Struct<SchemaNS.Struct.Fields>;
-  /** Registered operations recorded in IR identities. Missing arms deny. */
+  /** Registered operations recorded when bound via `withOperations`. */
   readonly operations?: readonly AnyOperation[];
 }
 
@@ -67,7 +72,7 @@ interface Catalog {
   readonly traits: ReadonlyMap<string, AnyTrait>;
   readonly fields: ReadonlyMap<string, CatalogField>;
   readonly composed: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly principal: { readonly ident: string; readonly entity: AnyEntity };
+  readonly principal?: { readonly ident: string; readonly entity: AnyEntity };
   readonly classes: ReadonlySet<string>;
   readonly claimKeys: ReadonlySet<string>;
 }
@@ -97,7 +102,7 @@ const structKeys = (schema: unknown): readonly string[] | undefined => {
 
 const buildCatalog = (head: AuthorizationHead): Catalog => {
   if (head == null || typeof head !== "object" || head.schema?._tag !== "Schema") {
-    fail("compile() takes a head { schema, principal, classes }");
+    fail("compile() takes a head { schema, classes? }");
   }
   const entities = new Map<string, AnyEntity>();
   for (const [key, entity] of Object.entries(head.schema.entities)) {
@@ -145,21 +150,25 @@ const buildCatalog = (head: AuthorizationHead): Catalog => {
   for (const trait of traits.values()) indexFocus(trait, { kind: "trait", ns: trait.ns });
   for (const entity of entities.values()) indexFocus(entity, { kind: "entity", ns: entity.ns });
 
+  let principal: Catalog["principal"];
   const principalIdent = head.principal?.ident;
-  if (typeof principalIdent !== "string" || !principalIdent.includes("/")) {
-    return fail("head.principal must be a stamped field (User.sub)");
-  }
-  const principalField = fields.get(principalIdent);
-  if (principalField === undefined || principalField.owner.kind !== "entity") {
-    return fail(`principal ${principalIdent} is not an entity field in the schema`, principalIdent);
-  }
-  const principalEntity = entities.get(principalField.owner.ns);
-  if (principalEntity === undefined) {
-    return fail(`principal ${principalIdent} is not in the schema`, principalIdent);
+  if (principalIdent !== undefined) {
+    if (typeof principalIdent !== "string" || !principalIdent.includes("/")) {
+      return fail("head.principal must be a stamped field (User.sub)");
+    }
+    const principalField = fields.get(principalIdent);
+    if (principalField === undefined || principalField.owner.kind !== "entity") {
+      return fail(`principal ${principalIdent} is not an entity field in the schema`, principalIdent);
+    }
+    const principalEntity = entities.get(principalField.owner.ns);
+    if (principalEntity === undefined) {
+      return fail(`principal ${principalIdent} is not in the schema`, principalIdent);
+    }
+    principal = { ident: principalIdent, entity: principalEntity };
   }
 
-  const classes = head.classes;
-  if (!Array.isArray(classes) || classes.length === 0) fail("classes must not be empty");
+  const classes = head.classes ?? [];
+  if (!Array.isArray(classes)) fail("classes must be an array");
   if (new Set(classes).size !== classes.length) fail("duplicate class");
   for (const name of classes) {
     if (typeof name !== "string" || name.length === 0) fail("class names must be non-empty strings");
@@ -173,176 +182,19 @@ const buildCatalog = (head: AuthorizationHead): Catalog => {
     traits,
     fields,
     composed,
-    principal: { ident: principalIdent, entity: principalEntity },
+    principal,
     classes: new Set(classes),
     claimKeys,
   };
 };
 
-interface Analysis {
-  readonly usesResource: boolean;
-  readonly usesInput: boolean;
-  readonly maxDepth: number;
-  readonly exists: readonly string[];
-  readonly claimKeys: readonly string[];
-  readonly inputKeys: readonly string[];
-  readonly bindDepth: Readonly<Record<string, number>>;
-}
-
-const pathDepth = (path: IrPath): number =>
-  path.steps.filter((step) => step.ident !== undefined && (step.valueType === "ref" || step.ident === ":db/id")).length;
-
-const pathRootKind = (root: string): "resource" | "me" | "claims" | "input" | "bind" => {
-  if (root === "resource" || root === "me" || root === "claims" || root === "input") return root;
-  return "bind";
-};
-
-const analyzePath = (path: IrPath, analysis: MutableAnalysis): void => {
-  const kind = pathRootKind(path.root);
-  if (kind === "resource") analysis.usesResource = true;
-  if (kind === "input") {
-    analysis.usesInput = true;
-    for (const step of path.steps) {
-      if (step.key !== undefined) analysis.inputKeys.add(step.key);
-    }
+const internRule = (intern: Map<string, IrRule>, rule: IrRule, where: string): void => {
+  const sealed = recomputeRuleMetadata(rule);
+  const previous = intern.get(sealed.id);
+  if (previous !== undefined && canonicalJson(previous.expr) !== canonicalJson(sealed.expr)) {
+    fail(`${where}: rule id ${sealed.id} maps to two different bodies`);
   }
-  if (kind === "claims") {
-    for (const step of path.steps) {
-      if (step.key !== undefined) analysis.claimKeys.add(step.key);
-    }
-  }
-  const extra = pathDepth(path);
-  const base = kind === "bind" ? (analysis.bindDepth[path.root] ?? 0) : 0;
-  analysis.maxDepth = Math.max(analysis.maxDepth, base + extra);
-};
-
-interface MutableAnalysis {
-  usesResource: boolean;
-  usesInput: boolean;
-  maxDepth: number;
-  readonly exists: Set<string>;
-  readonly claimKeys: Set<string>;
-  readonly inputKeys: Set<string>;
-  readonly bindDepth: Record<string, number>;
-  readonly existsStack: string[];
-}
-
-const analyzeOperand = (operand: IrOperand, analysis: MutableAnalysis): void => {
-  if (operand.kind === "path") analyzePath(operand.path, analysis);
-};
-
-const analyzeExpr = (expr: IrExpr, analysis: MutableAnalysis): void => {
-  switch (expr.kind) {
-    case "const":
-    case "hasClass":
-      return;
-    case "eq":
-      analyzeOperand(expr.left, analysis);
-      analyzeOperand(expr.right, analysis);
-      return;
-    case "has":
-      analyzePath(expr.path, analysis);
-      if (expr.value !== undefined) analyzeOperand(expr.value, analysis);
-      return;
-    case "some": {
-      analyzePath(expr.path, analysis);
-      const hop = pathDepth(expr.path);
-      const parent = pathRootKind(expr.path.root) === "bind" ? (analysis.bindDepth[expr.path.root] ?? 0) : 0;
-      analysis.bindDepth[expr.bind] = parent + hop;
-      analyzeExpr(expr.body, analysis);
-      return;
-    }
-    case "overlaps":
-      analyzePath(expr.left, analysis);
-      analyzePath(expr.right, analysis);
-      return;
-    case "exists":
-      if (analysis.existsStack.includes(expr.entity)) {
-        fail(`unsupported recursion: exists(${expr.entity}) contains exists(${expr.entity})`);
-      }
-      analysis.exists.add(expr.entity);
-      analysis.existsStack.push(expr.entity);
-      analysis.bindDepth[expr.bind] = 0;
-      analyzeExpr(expr.body, analysis);
-      analysis.existsStack.pop();
-      return;
-    case "and":
-    case "or":
-      for (const child of expr.exprs) analyzeExpr(child, analysis);
-      return;
-    case "not":
-      analyzeExpr(expr.expr, analysis);
-      return;
-  }
-};
-
-const analyze = (expr: IrExpr): Analysis => {
-  const mutable: MutableAnalysis = {
-    usesResource: false,
-    usesInput: false,
-    maxDepth: 0,
-    exists: new Set(),
-    claimKeys: new Set(),
-    inputKeys: new Set(),
-    bindDepth: {},
-    existsStack: [],
-  };
-  analyzeExpr(expr, mutable);
-  return {
-    usesResource: mutable.usesResource,
-    usesInput: mutable.usesInput,
-    maxDepth: mutable.maxDepth,
-    exists: [...mutable.exists],
-    claimKeys: [...mutable.claimKeys],
-    inputKeys: [...mutable.inputKeys],
-    bindDepth: mutable.bindDepth,
-  };
-};
-
-const lastStep = (path: IrPath): IrPath["steps"][number] | undefined => path.steps[path.steps.length - 1];
-
-const validateExprShape = (expr: IrExpr, where: string): void => {
-  switch (expr.kind) {
-    case "some": {
-      const step = lastStep(expr.path);
-      if (step !== undefined && step.cardinality !== "many") {
-        fail(`${where}: some() requires a card-many path`);
-      }
-      validateExprShape(expr.body, where);
-      return;
-    }
-    case "overlaps": {
-      const left = lastStep(expr.left);
-      const right = lastStep(expr.right);
-      if (left?.cardinality !== "many" || right?.cardinality !== "many") {
-        fail(`${where}: overlaps() requires two card-many paths`);
-      }
-      return;
-    }
-    case "eq": {
-      const card = (operand: IrOperand): string | undefined => {
-        if (operand.kind !== "path") return undefined;
-        return lastStep(operand.path)?.cardinality;
-      };
-      if (card(expr.left) === "many" || card(expr.right) === "many") {
-        fail(`${where}: eq() does not compare card-many paths — use has(), some(), or overlaps()`);
-      }
-      return;
-    }
-    case "and":
-    case "or":
-      for (const child of expr.exprs) validateExprShape(child, where);
-      return;
-    case "not":
-      validateExprShape(expr.expr, where);
-      return;
-    case "has":
-    case "exists":
-    case "const":
-    case "hasClass":
-      if (expr.kind === "exists") validateExprShape(expr.body, where);
-      return;
-  }
+  intern.set(sealed.id, sealed);
 };
 
 const lowerRule = (
@@ -350,16 +202,16 @@ const lowerRule = (
   allowable: Allowable,
   where: string,
   targetFocus: AnyFocus | undefined,
-): { readonly rule: IrRule; readonly analysis: Analysis } => {
+): { readonly rule: IrRule } => {
   const lowered = withBindScope(() => {
     if (isAuthExpr(allowable)) return allowable;
     if (allowable._tag !== "AuthRule") fail(`${where}: expected rule(...) or an expression`);
     const focus = allowable.focus;
     const produced = allowable.body({
-      me: mePath(catalog.principal.entity),
+      me: mePath(catalog.principal?.entity),
       resource: snapshotOf(focus, "resource") as never,
-      claims: claimsProxy() as unknown as { readonly [key: string]: import("./expr.ts").AuthPath },
-      input: inputProxy() as unknown as { readonly [key: string]: import("./expr.ts").AuthPath },
+      claims: claimsProxy() as never,
+      input: inputProxy() as never,
     });
     if (produced !== undefined && typeof (produced as { then?: unknown }).then === "function") {
       fail(`${where}: illegal effect — rule callbacks must be synchronous`);
@@ -369,21 +221,29 @@ const lowerRule = (
   });
 
   const expr = (lowered as AuthExpr).expr;
-  validateExprShape(expr, where);
+  const shape = exprShapeError(expr, where);
+  if (shape !== undefined) fail(shape);
   const analysis = analyze(expr);
-  if (analysis.maxDepth > MAX_TRAVERSAL_DEPTH) {
-    fail(`${where}: traversal depth ${analysis.maxDepth} exceeds ${MAX_TRAVERSAL_DEPTH}`);
+  if (exceedsTraversal(analysis)) {
+    fail(`${where}: traversal depth ${analysis.maxDepth} exceeds the limit`);
   }
   for (const key of analysis.claimKeys) {
     if (!catalog.claimKeys.has(key)) fail(`${where}: claim ${JSON.stringify(key)} is not declared`);
   }
+  for (const name of analysis.classNames) {
+    if (!catalog.classes.has(name)) fail(`${where}: class ${JSON.stringify(name)} is not declared`);
+  }
   for (const ns of analysis.exists) {
     if (!catalog.entities.has(ns)) fail(`${where}: exists(${ns}) is not in the schema`, ns);
   }
+  if (analysis.usesMe && catalog.principal === undefined) {
+    fail(`${where}: rules that use me require head.principal`);
+  }
 
-  const focus: AnyFocus = allowable._tag === "AuthRule" ? allowable.focus : (targetFocus ?? catalog.principal.entity);
-  if (allowable._tag === "AuthRule") {
-    if (targetFocus !== undefined) assertReusable(catalog, allowable, targetFocus, where);
+  const focus: AnyFocus =
+    allowable._tag === "AuthRule" ? allowable.focus : (targetFocus ?? catalog.principal?.entity ?? fail(`${where}: expression needs a focus`));
+  if (allowable._tag === "AuthRule" && targetFocus !== undefined) {
+    assertReusable(catalog, allowable, targetFocus, where);
   }
 
   return {
@@ -392,9 +252,12 @@ const lowerRule = (
       focus: ownerIdOf(focus),
       expr,
       usesResource: analysis.usesResource,
+      usesMe: analysis.usesMe,
       usesInput: analysis.usesInput,
+      claims: [...analysis.claimKeys].sort(),
+      classes: [...analysis.classNames].sort(),
+      exists: analysis.exists.map((entity) => ({ entity })).sort((a, b) => a.entity.localeCompare(b.entity)),
     },
-    analysis,
   };
 };
 
@@ -424,23 +287,24 @@ const decisionOf = (
   targetFocus: AnyFocus | undefined,
   intern: Map<string, IrRule>,
   inputKeys: ReadonlySet<string> | undefined,
-  targetless: boolean,
+  targetNone: boolean,
 ): IrDecision => {
   const lowerArms = (arms: readonly Allowable[], side: string): string[] => {
     const ids: string[] = [];
     for (const [i, arm] of arms.entries()) {
       const at = `${where}.${side}[${i}]`;
-      const { rule, analysis } = lowerRule(catalog, arm, at, targetFocus);
-      if (targetless && analysis.usesResource) {
-        fail(`${at}: resource-dependent rule on a targetless operation`);
+      const { rule } = lowerRule(catalog, arm, at, targetFocus);
+      if (targetNone && rule.usesResource) {
+        fail(`${at}: resource-dependent rule on an operation with target "none"`);
       }
-      if (analysis.usesInput) {
+      if (rule.usesInput) {
         if (inputKeys === undefined) return fail(`${at}: input is only valid on run() rules`);
+        const analysis = analyze(rule.expr);
         for (const key of analysis.inputKeys) {
           if (!inputKeys.has(key)) return fail(`${at}: input.${key} is not on the operation`);
         }
       }
-      intern.set(rule.id, rule);
+      internRule(intern, rule, at);
       ids.push(rule.id);
     }
     return ids;
@@ -478,23 +342,34 @@ const putDecision = (
 };
 
 const operationIdentity = (op: AuthOperation): OperationId => {
-  const owner = ownerOfOperation(op);
+  if (!isBoundOperation(op)) {
+    fail(`run(${op.name}) requires withOperations — owner, localName, and target are mandatory`);
+  }
   return {
     kind: "operation",
+    owner: ownerIdOf(ownerOfOperation(op)!),
+    localName: localNameOfOperation(op)!,
     name: op.name,
-    ...(owner !== undefined ? { owner: ownerIdOf(owner) } : {}),
-    targetless: isTargetless(op),
+    target: targetOfOperation(op)!,
   };
 };
 
-/**
- * Compile bindings to a serializable IR document. Round-trips through the
- * fail-closed parser so incomplete output cannot escape.
- */
-export const compileAuthorization = (
-  head: AuthorizationHead,
-  bindings: readonly AuthBinding[],
-): AuthorizationIR => {
+const putOperationId = (opIds: Map<string, OperationId>, id: OperationId, where: string): void => {
+  const existing = opIds.get(id.name);
+  if (existing !== undefined && canonicalJson(existing) !== canonicalJson(id)) {
+    fail(`${where}: operation ${id.name} is already bound to a different identity`);
+  }
+  opIds.set(id.name, id);
+};
+
+const principalSpec = (catalog: Catalog): PrincipalSpec => ({
+  subjectClaim: "sub",
+  ...(catalog.principal !== undefined
+    ? { ident: catalog.principal.ident, entity: catalog.principal.entity.ns }
+    : {}),
+});
+
+const compileTemplateSync = (head: AuthorizationHead, bindings: readonly AuthBinding[]): PolicyTemplateIR => {
   const catalog = buildCatalog(head);
   if (!Array.isArray(bindings)) fail("compile() takes an array of read()/run() bindings");
   const intern = new Map<string, IrRule>();
@@ -506,7 +381,9 @@ export const compileAuthorization = (
 
   for (const op of head.operations ?? []) {
     if (op?._tag !== "Operation") fail("head.operations entries must be Operation values");
-    opIds.set(op.name, operationIdentity(op as AuthOperation));
+    if (isBoundOperation(op as AuthOperation)) {
+      putOperationId(opIds, operationIdentity(op as AuthOperation), "head.operations");
+    }
   }
 
   for (const [index, raw] of bindings.entries()) {
@@ -541,6 +418,7 @@ export const compileAuthorization = (
 
     const op = raw.operation!;
     if (typeof op.name !== "string" || op.name.length === 0) fail(`${where}: operation has no name`);
+    const id = operationIdentity(op);
     const owner = ownerOfOperation(op);
     if (owner?._tag === "Trait" && !catalog.traits.has(owner.ns)) {
       fail(`${where}: trait ${owner.ns} is not reachable in the catalog`, owner.ns);
@@ -549,19 +427,19 @@ export const compileAuthorization = (
       fail(`${where}: entity ${owner.ns} is not in the schema`, owner.ns);
     }
     const inputKeys = new Set(structKeys(op.input) ?? []);
-    const targetless = isTargetless(op);
     putDecision(
       operations,
       op.name,
-      decisionOf(catalog, raw, where, owner, intern, inputKeys, targetless),
+      decisionOf(catalog, raw, where, owner, intern, inputKeys, id.target === "none"),
       `${where} run(${op.name})`,
     );
-    opIds.set(op.name, operationIdentity(op));
+    putOperationId(opIds, id, where);
   }
 
-  const ir: AuthorizationIR = {
+  return {
+    form: "template",
     version: 1,
-    principal: { ident: catalog.principal.ident, entity: catalog.principal.entity.ns },
+    principal: principalSpec(catalog),
     classes: [...catalog.classes],
     claims: [...catalog.claimKeys].sort(),
     identities: {
@@ -578,6 +456,41 @@ export const compileAuthorization = (
     fields,
     operations,
   };
+};
 
-  return parseAuthorizationIR(ir);
+export const compileTemplate = (
+  head: AuthorizationHead,
+  bindings: readonly AuthBinding[],
+): Effect.Effect<PolicyTemplateIR, InvalidIR> =>
+  Effect.try({
+    try: () => compileTemplateSync(head, bindings),
+    catch: (error) =>
+      error instanceof InvalidIR
+        ? error
+        : new InvalidIR({
+            reason: error instanceof PolicyError ? error.message : String(error),
+          }),
+  });
+
+/**
+ * Compile bindings and install against the compile-time catalog.
+ * Returns the sealed installed form runtime accepts.
+ */
+export const compileAuthorization = (
+  head: AuthorizationHead,
+  bindings: readonly AuthBinding[],
+): InstalledAuthorizationIR => {
+  try {
+    const template = compileTemplateSync(head, bindings);
+    return Effect.runSync(installAgainstCatalog(template, catalogFromTemplate(template)));
+  } catch (error) {
+    if (error instanceof PolicyError) throw error;
+    if (error instanceof InvalidIR || error instanceof CatalogMismatch) {
+      throw new PolicyError({ message: `ramose/authorization: ${error.reason}` });
+    }
+    if (error instanceof Error && error.message.startsWith("ramose/authorization:")) {
+      throw new PolicyError({ message: error.message });
+    }
+    throw error;
+  }
 };

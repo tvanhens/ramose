@@ -12,12 +12,12 @@ import {
   read,
   rule,
   run,
-  type AuthorizationIR,
+  type InstalledAuthorizationIR,
   type Snapshot,
 } from "../../src/authorization/index.ts";
-import { Issue, Taggable, User, canReadTagged, head, ownsIssue, seed } from "./fixtures.ts";
+import { Issue, Taggable, User, canReadTagged, head, ownsIssue } from "./fixtures.ts";
 
-type _compileReturnsIR = Expect<Equal<ReturnType<typeof compileAuthorization>, AuthorizationIR>>;
+type _compileReturnsIR = Expect<Equal<ReturnType<typeof compileAuthorization>, InstalledAuthorizationIR>>;
 type _issueOwner = Expect<
   Equal<keyof Snapshot<typeof Issue>, "title" | "owner" | "internalNotes" | "tags" | "id">
 >;
@@ -29,7 +29,7 @@ const _fixtures = () => {
   read(Issue.internalNotes).allow(hasClass("support"));
   run(Issue.operations.rename).allow(ownsIssue, canReadTagged);
   run(Taggable.operations.addTag).allow(canReadTagged);
-  run(seed).allow(hasClass("member"));
+  run(Issue.operations.seed).allow(hasClass("member"));
 
   rule(Issue, ({ me, resource }) => eq(resource.owner, me));
   rule(Issue, ({ resource }) => eq(resource.title, "x"));

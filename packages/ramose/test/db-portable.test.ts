@@ -312,8 +312,6 @@ describe("the root `browser` condition is portable", () => {
     ...ALLOWED,
     "packages/ramose/src/browser.ts",
     "packages/ramose/src/Auth.ts",
-    "packages/ramose/src/authorization/",
-    "packages/ramose/src/internal/authorization/",
   ];
 
   test("no module in the graph imports `alchemy` or the deploy barrel", () => {
@@ -326,7 +324,8 @@ describe("the root `browser` condition is portable", () => {
     expect("connect" in browser).toBe(true);
     expect("policy" in browser).toBe(true);
     expect("Policy" in browser).toBe(true);
-    expect("Authorization" in browser).toBe(true);
+    expect("Authorization" in browser).toBe(false);
+    expect("Authorization" in deploy).toBe(true);
     expect("claims" in browser).toBe(true);
     expect("Server" in browser).toBe(false);
     expect("Database" in browser).toBe(false);

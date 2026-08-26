@@ -1,4 +1,9 @@
-/** Deterministic JSON for IR identity and wire form. */
+/**
+ * Canonical JSON + cryptographic policy/rule identity.
+ * Rule ids and policy hashes are SHA-256 hex of the canonical body.
+ */
+
+import { createHash } from "node:crypto";
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -18,17 +23,12 @@ export const canonicalize = (value: unknown): unknown => {
 
 export const canonicalJson = (value: unknown): string => JSON.stringify(canonicalize(value));
 
-/** FNV-1a 32-bit, hex. Stable across runtimes we ship. */
-export const fnv1a = (text: string): string => {
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-};
+export const sha256Hex = (canonical: string): string =>
+  createHash("sha256").update(canonical, "utf8").digest("hex");
+
+export const hashPolicy = (body: unknown): string => sha256Hex(canonicalJson(body));
 
 export const ruleIdOf = (
   focus: { readonly kind: string; readonly ns: string },
   expr: unknown,
-): string => `r:${focus.kind}:${focus.ns}:${fnv1a(canonicalJson(expr))}`;
+): string => `r:${focus.kind}:${focus.ns}:${sha256Hex(canonicalJson(expr))}`;

@@ -1,19 +1,25 @@
 /**
  * Typed expression builders. Callbacks run at compile time and return
  * data-only trees — nothing here is stored as a closure on the IR.
+ *
+ * Path metadata lives in a WeakMap so schema fields named `root`,
+ * `steps`, `_tag`, or `constructor` cannot collide with the carrier.
  */
 
 import type { AnyEntity } from "../db/Entity.ts";
 import type { AnyTrait } from "../db/Trait.ts";
-import type { IrExpr, IrOperand, IrPath, PathStep } from "../internal/authorization/ir.ts";
+import type { IrExpr, IrOperand, IrPath, JsonLiteral, PathStep } from "../internal/authorization/ir.ts";
 
 export type AnyFocus = AnyEntity | AnyTrait;
 
-export type AuthPath = {
-  readonly _tag: "AuthPath";
+type PathMeta = {
   readonly root: string;
   readonly steps: readonly PathStep[];
 };
+
+const PATH = new WeakMap<object, PathMeta>();
+
+export type AuthPath = object & { readonly __authPath?: never };
 
 export type AuthExpr = {
   readonly _tag: "AuthExpr";
@@ -24,10 +30,8 @@ export type Snapshot<F extends { readonly fields: Readonly<Record<string, unknow
   readonly [K in keyof F["fields"]]: AuthPath;
 } & (F extends AnyEntity ? { readonly id: AuthPath } : {});
 
-const isAuthPath = (value: unknown): value is AuthPath =>
-  typeof value === "object" &&
-  value !== null &&
-  (value as { readonly _tag?: unknown })._tag === "AuthPath";
+export const isAuthPath = (value: unknown): value is AuthPath =>
+  typeof value === "object" && value !== null && PATH.has(value);
 
 export const isAuthExpr = (value: unknown): value is AuthExpr =>
   typeof value === "object" &&
@@ -38,7 +42,8 @@ export const pathOf = (value: unknown): IrPath => {
   if (!isAuthPath(value)) {
     throw new Error("ramose/authorization: expected a path operand");
   }
-  return { root: value.root, steps: value.steps };
+  const meta = PATH.get(value)!;
+  return { root: meta.root, steps: meta.steps };
 };
 
 let bindSeq = 0;
@@ -57,20 +62,24 @@ const nextBind = (): string => `b${bindSeq++}`;
 
 const expr = (node: IrExpr): AuthExpr => ({ _tag: "AuthExpr", expr: node });
 
+const asJsonLiteral = (value: unknown): JsonLiteral => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("ramose/authorization: number literals must be finite JSON numbers");
+    }
+    return value;
+  }
+  throw new Error("ramose/authorization: operand is a path, me, or a finite JSON literal");
+};
+
 const asOperand = (value: unknown): IrOperand => {
   if (isAuthPath(value)) {
-    if (value.root === "me" && value.steps.length === 0) return { kind: "me" };
-    return { kind: "path", path: { root: value.root, steps: value.steps } };
+    const meta = PATH.get(value)!;
+    if (meta.root === "me" && meta.steps.length === 0) return { kind: "me" };
+    return { kind: "path", path: { root: meta.root, steps: meta.steps } };
   }
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return { kind: "lit", value };
-  }
-  throw new Error("ramose/authorization: operand is a path, me, or a literal");
+  return { kind: "lit", value: asJsonLiteral(value) };
 };
 
 export const and = (...exprs: readonly AuthExpr[]): AuthExpr => {
@@ -95,23 +104,31 @@ export const eq = (left: unknown, right: unknown): AuthExpr =>
 
 export const has = (path: AuthPath, value?: unknown): AuthExpr => {
   if (!isAuthPath(path)) throw new Error("ramose/authorization: has() takes a path");
+  const meta = PATH.get(path)!;
   return expr({
     kind: "has",
-    path: { root: path.root, steps: path.steps },
+    path: { root: meta.root, steps: meta.steps },
     ...(value === undefined ? {} : { value: asOperand(value) }),
   });
+};
+
+const makePath = (meta: PathMeta): AuthPath => {
+  const node = Object.create(null) as AuthPath;
+  PATH.set(node, meta);
+  return node;
 };
 
 export const some = (path: AuthPath, pred: (item: AuthPath) => AuthExpr): AuthExpr => {
   if (!isAuthPath(path)) throw new Error("ramose/authorization: some() takes a collection path");
   if (typeof pred !== "function") throw new Error("ramose/authorization: some() takes a predicate");
   const bind = nextBind();
-  const item: AuthPath = { _tag: "AuthPath", root: bind, steps: [] };
+  const item = makePath({ root: bind, steps: [] });
   const body = pred(item);
   if (!isAuthExpr(body)) throw new Error("ramose/authorization: some() predicate must return an expression");
+  const meta = PATH.get(path)!;
   return expr({
     kind: "some",
-    path: { root: path.root, steps: path.steps },
+    path: { root: meta.root, steps: meta.steps },
     bind,
     body: body.expr,
   });
@@ -123,8 +140,8 @@ export const overlaps = (left: AuthPath, right: AuthPath): AuthExpr => {
   }
   return expr({
     kind: "overlaps",
-    left: { root: left.root, steps: left.steps },
-    right: { root: right.root, steps: right.steps },
+    left: pathOf(left),
+    right: pathOf(right),
   });
 };
 
@@ -177,64 +194,54 @@ const resolveTarget = (field: FieldLike, enclosing: AnyFocus): AnyFocus | undefi
 };
 
 const extendPath = (base: AuthPath, field: FieldLike, target: AnyFocus | undefined): AuthPath => {
-  const next: AuthPath = {
-    _tag: "AuthPath",
-    root: base.root,
-    steps: [...base.steps, stepOf(field)],
-  };
+  const meta = PATH.get(base)!;
+  const next = makePath({ root: meta.root, steps: [...meta.steps, stepOf(field)] });
   if (field.valueType === "ref" && field.cardinality !== "many" && target !== undefined) {
     return snapshotFrom(next, target);
   }
   return pathProxy(next, target);
 };
 
-const pathProxy = (node: AuthPath, focus: AnyFocus | undefined): AuthPath =>
-  new Proxy(node, {
-    get(target, prop, receiver) {
-      if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
-      if (prop in target) return Reflect.get(target, prop, receiver);
+const pathProxy = (node: AuthPath, focus: AnyFocus | undefined): AuthPath => {
+  const proxy = new Proxy(node, {
+    get(_target, prop) {
+      if (typeof prop !== "string") return undefined;
       if (focus === undefined) return undefined;
       if (prop === "id" && focus._tag === "Entity") {
-        return extendPath(target, { ident: ":db/id", cardinality: "one", valueType: "ref" }, undefined);
+        return extendPath(node, { ident: ":db/id", cardinality: "one", valueType: "ref" }, undefined);
       }
       const field = (focus.fields as Record<string, FieldLike | undefined>)[prop];
       if (field === undefined) return undefined;
-      return extendPath(target, field, resolveTarget(field, focus));
+      return extendPath(node, field, resolveTarget(field, focus));
     },
   });
+  PATH.set(proxy, PATH.get(node)!);
+  return proxy;
+};
 
 const snapshotFrom = (base: AuthPath, focus: AnyFocus): AuthPath => pathProxy(base, focus);
 
 export const snapshotOf = (focus: AnyFocus, root: string): AuthPath =>
-  snapshotFrom({ _tag: "AuthPath", root, steps: [] }, focus);
+  snapshotFrom(makePath({ root, steps: [] }), focus);
 
-export const claimsProxy = (): AuthPath =>
-  new Proxy({ _tag: "AuthPath" as const, root: "claims", steps: [] as readonly PathStep[] }, {
-    get(target, prop, receiver) {
-      if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
-      if (prop in target) return Reflect.get(target, prop, receiver);
-      return {
-        _tag: "AuthPath" as const,
-        root: "claims",
-        steps: [{ key: prop, cardinality: "one" as const, valueType: "unknown" }],
-      };
+const keyProxy = (root: "claims" | "input"): AuthPath => {
+  const node = makePath({ root, steps: [] });
+  const proxy = new Proxy(node, {
+    get(_target, prop) {
+      if (typeof prop !== "string") return undefined;
+      return makePath({
+        root,
+        steps: [{ key: prop, cardinality: "one", valueType: "unknown" }],
+      });
     },
   });
+  PATH.set(proxy, PATH.get(node)!);
+  return proxy;
+};
 
-export const inputProxy = (): AuthPath =>
-  new Proxy({ _tag: "AuthPath" as const, root: "input", steps: [] as readonly PathStep[] }, {
-    get(target, prop, receiver) {
-      if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
-      if (prop in target) return Reflect.get(target, prop, receiver);
-      return {
-        _tag: "AuthPath" as const,
-        root: "input",
-        steps: [{ key: prop, cardinality: "one" as const, valueType: "unknown" }],
-      };
-    },
-  });
+export const claimsProxy = (): AuthPath => keyProxy("claims");
+
+export const inputProxy = (): AuthPath => keyProxy("input");
 
 export const mePath = (principal?: AnyEntity): AuthPath =>
-  principal === undefined
-    ? { _tag: "AuthPath", root: "me", steps: [] }
-    : snapshotOf(principal, "me");
+  principal === undefined ? makePath({ root: "me", steps: [] }) : snapshotOf(principal, "me");

@@ -14,8 +14,10 @@ import {
   type EvalCtx,
   type RuleRecord,
 } from "../../src/internal/authorization/index.ts";
+import * as Schema from "effect/Schema";
+import { Entity, Field, Ref, Schema as DbSchema } from "../../src/db/internal.ts";
 import { compileAuthorization, eq, read, rule } from "../../src/authorization/index.ts";
-import { head, Issue, ownsIssue, taggableBindings } from "./fixtures.ts";
+import { head, Issue, ownsIssue, taggableBindings, User } from "./fixtures.ts";
 
 const ir = compileAuthorization(head, taggableBindings);
 
@@ -88,9 +90,7 @@ describe("IR evaluation", () => {
     expect(authorizeRow(ir, "tag", ctx())).toBe(false);
     expect(authorizeRow(ir, "missing", ctx())).toBe(false);
     expect(authorizeOperation(ir, "issue/missing", ctx())).toBe(false);
-    expect(authorizeField(ir, { entity: "issue", fieldIdent: ":taggable/tags", trait: "absent" }, ctx())).toBe(
-      false,
-    );
+    expect(authorizeField(ir, { entity: "issue", fieldIdent: ":missing/field" }, ctx())).toBe(false);
   });
 
   test("trait fields AND the composing row policy (POL-2 / POL-5)", () => {
@@ -125,7 +125,7 @@ describe("IR evaluation", () => {
     expect(authorizeRow(ir, "issue", ctx())).toBe(true);
   });
 
-  test("targetless seed allows a class gate and ignores a missing resource", () => {
+  test("target-none seed allows a class gate and ignores a missing resource", () => {
     expect(authorizeOperation(ir, "issue/seed", ctx({ resource: undefined }))).toBe(true);
     expect(authorizeOperation(ir, "issue/seed", ctx({ classes: [] }))).toBe(false);
   });
@@ -133,6 +133,76 @@ describe("IR evaluation", () => {
   test("rename is allowed for the owner", () => {
     expect(authorizeOperation(ir, "issue/rename", ctx())).toBe(true);
     expect(authorizeOperation(ir, "issue/rename", ctx({ me: 99 }))).toBe(false);
+  });
+
+  test("eq of two absent operands denies", () => {
+    const tenantEq = rule(Issue, ({ resource, claims }) => eq(resource.internalNotes, claims.aud));
+    const missing = compileAuthorization(head, [read(Issue).allow(tenantEq)]);
+    expect(
+      authorizeRow(
+        missing,
+        "issue",
+        ctx({
+          resource: { ...issueOwned, attrs: { ":issue/title": "Bug", ":issue/owner": alice } },
+          claims: { org: "acme" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("resource.id reads the record eid, not attrs[:db/id]", () => {
+    const byId = compileAuthorization(head, [
+      read(User).allow(rule(User, ({ me, resource }) => eq(resource.id, me))),
+    ]);
+    const userRow: RuleRecord = { id: alice, type: "user", attrs: { ":user/sub": "alice" } };
+    expect(
+      authorizeRow(
+        byId,
+        "user",
+        ctx({
+          resource: userRow,
+          entities: { ...snapshot(), user: [userRow] },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      authorizeRow(
+        byId,
+        "user",
+        ctx({
+          me: 99,
+          resource: userRow,
+          entities: { ...snapshot(), user: [userRow] },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("a field named root is a path, not a literal", () => {
+    const Node = Entity("node", {
+      root: Field(Schema.String),
+      owner: Field(Ref(() => User)),
+    });
+    const Catalog = DbSchema({ user: User, node: Node });
+    const ownsRoot = rule(Node, ({ resource }) => eq(resource.root, "resource"));
+    const compiled = compileAuthorization(
+      { schema: Catalog, principal: User.sub, classes: ["member"] },
+      [read(Node).allow(ownsRoot)],
+    );
+    const row: RuleRecord = { id: 7, type: "node", attrs: { ":node/root": "other", ":node/owner": alice } };
+    expect(
+      authorizeRow(compiled, "node", ctx({ resource: row, entities: { node: [row], user: snapshot().user! } })),
+    ).toBe(false);
+    expect(
+      authorizeRow(
+        compiled,
+        "node",
+        ctx({
+          resource: { ...row, attrs: { ":node/root": "resource", ":node/owner": alice } },
+          entities: { node: [row], user: snapshot().user! },
+        }),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -142,5 +212,6 @@ describe("runtime isolation", () => {
     const src = readFileSync(resolve(here, "../../src/internal/authorization/eval.ts"), "utf8");
     expect(src.includes("authorization/authoring")).toBe(false);
     expect(src.includes('from "../../authorization')).toBe(false);
+    expect(src.includes("effect/")).toBe(false);
   });
 });

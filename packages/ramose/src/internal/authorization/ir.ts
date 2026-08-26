@@ -1,12 +1,12 @@
 /**
- * Versioned, data-only authorization IR.
+ * Two-stage authorization IR.
  *
- * Runtime evaluates this document. It does not execute authoring callbacks
- * or import the authoring module. Contract: `src/internal/design/authorization.md`
- * (**LANG-1**–**LANG-6**, **POL-1**–**POL-6**, **WR-4**, **FC-1**, **CAT-1**).
+ * Authoring compiles a catalog-relative {@link PolicyTemplateIR}. An
+ * Effectful install binds it against the authoritative catalog and seals
+ * {@link InstalledAuthorizationIR}. Runtime accepts only the installed
+ * form. Contract: `src/internal/design/authorization.md`.
  */
 
-/** Current IR version. There is no legacy document and no adapter. */
 export const AUTHORIZATION_IR_VERSION = 1 as const;
 
 /**
@@ -15,9 +15,14 @@ export const AUTHORIZATION_IR_VERSION = 1 as const;
  */
 export const MAX_TRAVERSAL_DEPTH = 3;
 
+export const REGISTERED_CLAIM_KEYS = ["sub", "iss", "aud", "exp", "nbf"] as const;
+export type RegisteredClaimKey = (typeof REGISTERED_CLAIM_KEYS)[number];
+
+export type JsonLiteral = string | number | boolean | null;
+
 export type OwnerKind = "entity" | "trait";
 
-/** Canonical owner: kind + local name. Catalog id lands in #341. */
+/** Canonical owner: kind + local name. Catalog id lands in later binding work. */
 export interface OwnerId {
   readonly kind: OwnerKind;
   readonly ns: string;
@@ -32,11 +37,18 @@ export interface FieldId {
   readonly valueType: string;
 }
 
+export type OperationTarget = "none" | "resource";
+
+/**
+ * Owner, localName (the `withOperations` map key), and target are
+ * independent and mandatory. Ownerless operations are not in the model.
+ */
 export interface OperationId {
   readonly kind: "operation";
+  readonly owner: OwnerId;
+  readonly localName: string;
   readonly name: string;
-  readonly owner?: OwnerId;
-  readonly targetless: boolean;
+  readonly target: OperationTarget;
 }
 
 export interface PathStep {
@@ -53,7 +65,7 @@ export interface IrPath {
 
 export type IrOperand =
   | { readonly kind: "me" }
-  | { readonly kind: "lit"; readonly value: unknown }
+  | { readonly kind: "lit"; readonly value: JsonLiteral }
   | { readonly kind: "path"; readonly path: IrPath };
 
 export type IrExpr =
@@ -73,7 +85,11 @@ export interface IrRule {
   readonly focus: OwnerId;
   readonly expr: IrExpr;
   readonly usesResource: boolean;
+  readonly usesMe: boolean;
   readonly usesInput: boolean;
+  readonly claims: readonly string[];
+  readonly classes: readonly string[];
+  readonly exists: readonly { readonly entity: string }[];
 }
 
 /** `.allow(a, b)` is OR. Any true deny wins. Missing decision is deny. */
@@ -83,24 +99,35 @@ export interface IrDecision {
 }
 
 /**
- * Compiled authorization document. JSON-serializable, no closures, no
- * functions, canonical identities only.
+ * JWT `sub` always exists. The application `me` row is optional.
+ * Class/claims-only policies need no principal entity.
  */
-export interface AuthorizationIR {
+export interface PrincipalSpec {
+  readonly subjectClaim: "sub";
+  readonly ident?: string;
+  readonly entity?: string;
+}
+
+export interface CatalogBinding {
+  readonly databaseId: string;
+  readonly catalogName: string;
+  readonly catalogVersion: number;
+  readonly schemaFingerprint: string;
+}
+
+export interface IrIdentities {
+  readonly entities: readonly OwnerId[];
+  readonly traits: readonly OwnerId[];
+  readonly fields: readonly FieldId[];
+  readonly operations: readonly OperationId[];
+}
+
+interface PolicyBody {
   readonly version: typeof AUTHORIZATION_IR_VERSION;
-  readonly principal: {
-    readonly ident: string;
-    readonly entity: string;
-  };
+  readonly principal: PrincipalSpec;
   readonly classes: readonly string[];
-  /** Declared claim keys (plus registered JWT keys the compiler allows). */
   readonly claims: readonly string[];
-  readonly identities: {
-    readonly entities: readonly OwnerId[];
-    readonly traits: readonly OwnerId[];
-    readonly fields: readonly FieldId[];
-    readonly operations: readonly OperationId[];
-  };
+  readonly identities: IrIdentities;
   readonly rules: readonly IrRule[];
   readonly rows: { readonly [entityNs: string]: IrDecision };
   readonly traits: { readonly [traitNs: string]: IrDecision };
@@ -108,4 +135,21 @@ export interface AuthorizationIR {
   readonly operations: { readonly [name: string]: IrDecision };
 }
 
-export const REGISTERED_CLAIM_KEYS = ["sub", "iss", "aud", "exp", "nbf"] as const;
+/** Catalog-relative compiler output. Not accepted by runtime. */
+export interface PolicyTemplateIR extends PolicyBody {
+  readonly form: "template";
+}
+
+/**
+ * Sealed installed form. Runtime accepts only this. Contains catalog
+ * identity, schema fingerprint, canonical identities, policy hash, and
+ * recomputed rule metadata.
+ */
+export interface InstalledAuthorizationIR extends PolicyBody {
+  readonly form: "installed";
+  readonly catalog: CatalogBinding;
+  readonly policyHash: string;
+}
+
+/** Runtime document. Alias of the sealed installed form. */
+export type AuthorizationIR = InstalledAuthorizationIR;
