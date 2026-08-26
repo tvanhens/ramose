@@ -157,8 +157,8 @@ function rounded(x, y, w, h, r) {
 }
 
 function drawChip(x, y, fact, opt = {}) {
-  const w = opt.w ?? 236;
-  const h = opt.h ?? 100;
+  const w = opt.w ?? 760;
+  const h = opt.h ?? 300;
   const s = opt.scale ?? 1;
   const alpha = opt.alpha ?? 1;
   const glow = opt.glow ?? 0;
@@ -174,62 +174,62 @@ function drawChip(x, y, fact, opt = {}) {
 
   if (glow > 0) {
     ctx.shadowColor = fact.secret ? "rgba(166,166,166,0.45)" : GREEN;
-    ctx.shadowBlur = 22 * glow;
+    ctx.shadowBlur = 36 * glow;
   }
 
   const fill = fact.secret ? "#121812" : FOREST;
   ctx.fillStyle = fill;
   ctx.strokeStyle = fact.secret ? "#3a3a3a" : HAIR;
-  ctx.lineWidth = 1.25;
-  rounded(-w / 2, -h / 2, w, h, 14);
+  ctx.lineWidth = 2.5;
+  rounded(-w / 2, -h / 2, w, h, 22);
   ctx.fill();
   ctx.shadowBlur = 0;
   ctx.stroke();
 
   const accent = fact.secret ? MUTED : GREEN;
   ctx.fillStyle = accent;
-  ctx.fillRect(-w / 2, -h / 2, 5, h);
+  ctx.fillRect(-w / 2, -h / 2, 10, h);
 
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = MUTED;
-  ctx.font = `500 13px ${MONO}`;
-  ctx.fillText(fact.e, -w / 2 + 22, -h / 2 + 24);
+  ctx.font = `500 32px ${MONO}`;
+  ctx.fillText(fact.e, -w / 2 + 44, -h / 2 + 62);
   ctx.fillStyle = WHITE;
-  ctx.font = `600 22px ${SANS}`;
-  ctx.fillText(fact.a, -w / 2 + 22, 2);
+  ctx.font = `600 72px ${SANS}`;
+  ctx.fillText(fact.a, -w / 2 + 44, 12);
   ctx.fillStyle = fact.secret ? GREY : GREEN_BRIGHT;
-  ctx.font = `500 16px ${MONO}`;
-  ctx.fillText(fact.v, -w / 2 + 22, h / 2 - 22);
+  ctx.font = `500 44px ${MONO}`;
+  ctx.fillText(fact.v, -w / 2 + 44, h / 2 - 58);
 
   ctx.textAlign = "right";
   ctx.fillStyle = MUTED;
-  ctx.font = `500 12px ${MONO}`;
-  ctx.fillText(`t=${fact.t}`, w / 2 - 16, -h / 2 + 24);
+  ctx.font = `500 32px ${MONO}`;
+  ctx.fillText(`t=${fact.t}`, w / 2 - 36, -h / 2 + 62);
 
   if (fact.secret) {
     ctx.fillStyle = "#2a2a2a";
-    rounded(w / 2 - 78, h / 2 - 30, 62, 18, 9);
+    rounded(w / 2 - 196, h / 2 - 80, 160, 48, 24);
     ctx.fill();
     ctx.fillStyle = GREY;
-    ctx.font = `600 10px ${SANS}`;
+    ctx.font = `600 28px ${SANS}`;
     ctx.textAlign = "center";
-    ctx.fillText("OWNER", w / 2 - 47, h / 2 - 20);
+    ctx.fillText("OWNER", w / 2 - 116, h / 2 - 54);
   }
 
   if (strike > 0) {
-    ctx.strokeStyle = `rgba(166,166,166,${0.85 * strike})`;
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = `rgba(166,166,166,${0.9 * strike})`;
+    ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.moveTo(-w / 2 + 18, 0);
-    ctx.lineTo(w / 2 - 18, 0);
+    ctx.moveTo(-w / 2 + 32, 8);
+    ctx.lineTo(w / 2 - 32, 8);
     ctx.stroke();
     ctx.beginPath();
-    const k = 9;
-    ctx.moveTo(w / 2 - 28 - k, -h / 2 + 20 - k);
-    ctx.lineTo(w / 2 - 28 + k, -h / 2 + 20 + k);
-    ctx.moveTo(w / 2 - 28 + k, -h / 2 + 20 - k);
-    ctx.lineTo(w / 2 - 28 - k, -h / 2 + 20 + k);
+    const k = 16;
+    ctx.moveTo(w / 2 - 48 - k, -h / 2 + 44 - k);
+    ctx.lineTo(w / 2 - 48 + k, -h / 2 + 44 + k);
+    ctx.moveTo(w / 2 - 48 + k, -h / 2 + 44 - k);
+    ctx.lineTo(w / 2 - 48 - k, -h / 2 + 44 + k);
     ctx.stroke();
   }
 
@@ -237,9 +237,8 @@ function drawChip(x, y, fact, opt = {}) {
 }
 
 function drawStampParts(x, y, fact, p) {
-  // p: 0 blank plate, then e, a, v, t land like a press.
-  const w = 420;
-  const h = 220;
+  const w = 1520;
+  const h = 680;
   const plate = smooth(0, 0.12, p);
   const eIn = smooth(0.18, 0.34, p);
   const aIn = smooth(0.36, 0.5, p);
@@ -251,16 +250,16 @@ function drawStampParts(x, y, fact, p) {
   ctx.translate(x, y);
   ctx.globalAlpha = plate;
 
-  ctx.fillStyle = "rgba(11,26,16,0.92)";
+  ctx.fillStyle = "rgba(11,26,16,0.94)";
   ctx.strokeStyle = HAIR;
-  ctx.lineWidth = 1.5;
-  rounded(-w / 2, -h / 2, w, h, 22);
+  ctx.lineWidth = 2.5;
+  rounded(-w / 2, -h / 2, w, h, 32);
   ctx.fill();
   ctx.stroke();
 
   if (press > 0) {
-    ctx.fillStyle = `rgba(66,211,122,${0.05 * press})`;
-    rounded(-w / 2, -h / 2, w, h, 22);
+    ctx.fillStyle = `rgba(66,211,122,${0.06 * press})`;
+    rounded(-w / 2, -h / 2, w, h, 32);
     ctx.fill();
   }
 
@@ -270,30 +269,30 @@ function drawStampParts(x, y, fact, p) {
     { label: "value", value: fact.v, ox: -1, oy: 1, k: vIn, accent: true },
     { label: "time", value: `t = ${fact.t}`, ox: 1, oy: 1, k: tIn, accent: true },
   ];
-  const cw = 176;
-  const ch = 78;
+  const cw = 640;
+  const ch = 250;
   for (const cell of cells) {
-    const cx = cell.ox * 96;
-    const cy = cell.oy * 48;
+    const cx = cell.ox * 350;
+    const cy = cell.oy * 156;
     ctx.save();
     ctx.globalAlpha = plate * (0.25 + 0.75 * cell.k);
-    ctx.translate(cx, cy + (1 - cell.k) * 10);
+    ctx.translate(cx, cy + (1 - cell.k) * 16);
     ctx.fillStyle = "#102016";
     ctx.strokeStyle = cell.k > 0.85 ? GREEN : HAIR;
-    ctx.lineWidth = cell.k > 0.85 ? 1.4 : 1;
-    rounded(-cw / 2, -ch / 2, cw, ch, 12);
+    ctx.lineWidth = cell.k > 0.85 ? 3 : 2;
+    rounded(-cw / 2, -ch / 2, cw, ch, 20);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = MUTED;
-    ctx.font = `600 11px ${SANS}`;
-    ctx.letterSpacing = "0.16em";
+    ctx.font = `600 28px ${SANS}`;
+    ctx.letterSpacing = "0.12em";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(cell.label.toUpperCase(), 0, -20);
+    ctx.fillText(cell.label.toUpperCase(), 0, -62);
     ctx.letterSpacing = "0px";
     ctx.fillStyle = cell.accent && cell.k > 0.7 ? GREEN_BRIGHT : WHITE;
-    ctx.font = `600 22px ${MONO}`;
-    ctx.fillText(cell.value, 0, 12);
+    ctx.font = `600 64px ${MONO}`;
+    ctx.fillText(cell.value, 0, 36);
     ctx.restore();
   }
 
@@ -307,14 +306,14 @@ function caption(title, sub, a) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = WHITE;
-  ctx.font = `600 40px ${SANS}`;
-  ctx.letterSpacing = "0.22em";
-  ctx.fillText(title, W / 2, H - 92);
+  ctx.font = `600 80px ${SANS}`;
+  ctx.letterSpacing = "0.04em";
+  ctx.fillText(title, W / 2, H - 128);
   if (sub) {
     ctx.fillStyle = GREY;
-    ctx.font = `500 20px ${SANS}`;
-    ctx.letterSpacing = "0.08em";
-    ctx.fillText(sub, W / 2, H - 52);
+    ctx.font = `500 36px ${SANS}`;
+    ctx.letterSpacing = "0.03em";
+    ctx.fillText(sub, W / 2, H - 56);
   }
   ctx.restore();
 }
@@ -329,87 +328,87 @@ function captionPair(a, b, t, holdA, holdB) {
 
 function drawBrowser(x, y, a, t) {
   if (a <= 0.01) return;
-  const w = 420;
-  const h = 248;
+  const w = 1360;
+  const h = 680;
   ctx.save();
   ctx.globalAlpha = a;
   ctx.translate(x, y);
-  ctx.fillStyle = "rgba(11,26,16,0.94)";
+  ctx.fillStyle = "rgba(11,26,16,0.96)";
   ctx.strokeStyle = HAIR;
-  ctx.lineWidth = 1.4;
-  rounded(-w / 2, -h / 2, w, h, 18);
+  ctx.lineWidth = 2.5;
+  rounded(-w / 2, -h / 2, w, h, 28);
   ctx.fill();
   ctx.stroke();
 
   ctx.fillStyle = "#101810";
-  rounded(-w / 2, -h / 2, w, 40, [18, 18, 0, 0]);
+  rounded(-w / 2, -h / 2, w, 64, [28, 28, 0, 0]);
   ctx.fill();
   ctx.fillStyle = "#c45c5c";
   ctx.beginPath();
-  ctx.arc(-w / 2 + 22, -h / 2 + 20, 5, 0, Math.PI * 2);
+  ctx.arc(-w / 2 + 36, -h / 2 + 32, 9, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#c4a35c";
   ctx.beginPath();
-  ctx.arc(-w / 2 + 40, -h / 2 + 20, 5, 0, Math.PI * 2);
+  ctx.arc(-w / 2 + 66, -h / 2 + 32, 9, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = GREEN;
   ctx.beginPath();
-  ctx.arc(-w / 2 + 58, -h / 2 + 20, 5, 0, Math.PI * 2);
+  ctx.arc(-w / 2 + 96, -h / 2 + 32, 9, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.fillStyle = MUTED;
-  ctx.font = `500 13px ${MONO}`;
+  ctx.font = `500 32px ${MONO}`;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText("localhost:5173", -w / 2 + 80, -h / 2 + 20);
+  ctx.fillText("localhost:5173", -w / 2 + 150, -h / 2 + 32);
 
   ctx.fillStyle = GREY;
-  ctx.font = `500 14px ${SANS}`;
-  ctx.fillText("signed in as ada", -w / 2 + 28, -h / 2 + 72);
+  ctx.font = `500 40px ${SANS}`;
+  ctx.fillText("signed in as ada", -w / 2 + 64, -h / 2 + 168);
   ctx.fillStyle = GREEN;
-  ctx.font = `600 13px ${SANS}`;
-  ctx.letterSpacing = "0.14em";
-  ctx.fillText("MEMBER", -w / 2 + 28, -h / 2 + 98);
+  ctx.font = `600 40px ${SANS}`;
+  ctx.letterSpacing = "0.12em";
+  ctx.fillText("MEMBER", -w / 2 + 64, -h / 2 + 230);
   ctx.letterSpacing = "0px";
 
   ctx.fillStyle = WHITE;
-  ctx.font = `600 26px ${MONO}`;
-  ctx.fillText("Query.from(Issue)", -w / 2 + 28, -h / 2 + 152);
+  ctx.font = `600 76px ${MONO}`;
+  ctx.fillText("Query.from(Issue)", -w / 2 + 64, -h / 2 + 370);
 
   const blink = 0.5 + 0.5 * Math.sin(t * 6);
   ctx.fillStyle = `rgba(66,211,122,${0.25 + 0.55 * blink})`;
-  ctx.fillRect(-w / 2 + 28, -h / 2 + 176, 8, 22);
+  ctx.fillRect(-w / 2 + 64, -h / 2 + 430, 18, 52);
 
-  ctx.fillStyle = MUTED;
-  ctx.font = `500 13px ${MONO}`;
-  ctx.fillText("useLiveQuery(db, q)", -w / 2 + 28, h / 2 - 28);
+  ctx.fillStyle = GREY;
+  ctx.font = `500 40px ${MONO}`;
+  ctx.fillText("useLiveQuery(db, q)", -w / 2 + 64, h / 2 - 64);
   ctx.restore();
 }
 
 function drawResult(x, y, a, assembled) {
   if (a <= 0.01) return;
-  const w = 380;
-  const h = 280;
+  const w = 1500;
+  const h = 720;
   ctx.save();
   ctx.globalAlpha = a;
   ctx.translate(x, y);
-  ctx.fillStyle = "rgba(11,26,16,0.95)";
+  ctx.fillStyle = "rgba(11,26,16,0.96)";
   ctx.strokeStyle = GREEN;
-  ctx.lineWidth = 1.3;
-  rounded(-w / 2, -h / 2, w, h, 18);
+  ctx.lineWidth = 3;
+  rounded(-w / 2, -h / 2, w, h, 28);
   ctx.fill();
   ctx.stroke();
 
   ctx.fillStyle = GREEN;
-  ctx.font = `600 11px ${SANS}`;
-  ctx.letterSpacing = "0.18em";
+  ctx.font = `600 32px ${SANS}`;
+  ctx.letterSpacing = "0.14em";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText("LIVE  ·  FILTERED", -w / 2 + 24, -h / 2 + 28);
+  ctx.fillText("LIVE  ·  FILTERED", -w / 2 + 64, -h / 2 + 64);
   ctx.letterSpacing = "0px";
   ctx.fillStyle = WHITE;
-  ctx.font = `600 28px ${SANS}`;
-  ctx.fillText("issue 17", -w / 2 + 24, -h / 2 + 68);
+  ctx.font = `600 72px ${SANS}`;
+  ctx.fillText("issue 17", -w / 2 + 64, -h / 2 + 156);
 
   const rows = [
     ["title", "Fix login", smooth(0.05, 0.25, assembled)],
@@ -420,18 +419,18 @@ function drawResult(x, y, a, assembled) {
     const k = row[2];
     ctx.save();
     ctx.globalAlpha = a * k;
-    const yy = -h / 2 + 118 + i * 46;
+    const yy = -h / 2 + 268 + i * 100;
     ctx.fillStyle = MUTED;
-    ctx.font = `500 14px ${MONO}`;
-    ctx.fillText(row[0], -w / 2 + 24, yy);
+    ctx.font = `500 36px ${MONO}`;
+    ctx.fillText(row[0], -w / 2 + 64, yy);
     if (row[0] === "note") {
       ctx.fillStyle = MUTED;
-      ctx.font = `500 16px ${SANS}`;
-      ctx.fillText("absent  ·  owner only", -w / 2 + 120, yy);
+      ctx.font = `600 42px ${SANS}`;
+      ctx.fillText("absent  ·  owner only", -w / 2 + 280, yy);
     } else {
       ctx.fillStyle = WHITE;
-      ctx.font = `600 18px ${SANS}`;
-      ctx.fillText(row[1], -w / 2 + 120, yy);
+      ctx.font = `600 48px ${SANS}`;
+      ctx.fillText(row[1], -w / 2 + 280, yy);
     }
     ctx.restore();
   });
@@ -497,14 +496,16 @@ function shatterParticles(cx, cy, seed, age) {
   ctx.restore();
 }
 
-const RAIL_Y = 548;
+const RAIL_Y = 500;
 const GATE_X = 960;
-const PRESS_X = 1080;
-const PRESS_Y = 500;
-const PILE_X = 268;
+const PRESS_X = 960;
+const PRESS_Y = 470;
+const PILE_X = 360;
 
 function pilePos(i) {
-  return { x: PILE_X, y: 300 + i * 92 };
+  // Only the last two completed chips stay on screen, large.
+  const slot = i % 2;
+  return { x: PILE_X, y: 320 + slot * 240 };
 }
 
 function stampSchedule() {
@@ -545,18 +546,18 @@ function drawRail(t, a) {
   grad.addColorStop(0.78, "rgba(66,211,122,0.18)");
   grad.addColorStop(1, "rgba(66,211,122,0)");
   ctx.strokeStyle = grad;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(200, y);
   ctx.lineTo(1720, y);
   ctx.stroke();
 
   // Moving ticks — a belt.
-  ctx.setLineDash([10, 18]);
+  ctx.setLineDash([14, 22]);
   ctx.lineDashOffset = -t * 46;
   ctx.globalAlpha = a * 0.45;
   ctx.strokeStyle = "rgba(166,166,166,0.55)";
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(220, y + 10);
   ctx.lineTo(1700, y + 10);
@@ -569,23 +570,23 @@ function drawGate(t, a) {
   ctx.save();
   ctx.globalAlpha = a;
   const pulseA = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 3.2));
-  const h = 210;
+  const h = 280;
   const g = ctx.createLinearGradient(GATE_X, RAIL_Y - h / 2, GATE_X, RAIL_Y + h / 2);
   g.addColorStop(0, "rgba(66,211,122,0)");
   g.addColorStop(0.5, `rgba(66,211,122,${0.55 * pulseA})`);
   g.addColorStop(1, "rgba(66,211,122,0)");
   ctx.strokeStyle = g;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(GATE_X, RAIL_Y - h / 2);
   ctx.lineTo(GATE_X, RAIL_Y + h / 2);
   ctx.stroke();
   ctx.fillStyle = GREEN;
-  ctx.font = `600 12px ${SANS}`;
-  ctx.letterSpacing = "0.28em";
+  ctx.font = `600 28px ${SANS}`;
+  ctx.letterSpacing = "0.2em";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("POLICY", GATE_X, RAIL_Y - h / 2 - 16);
+  ctx.fillText("POLICY", GATE_X, RAIL_Y - h / 2 - 28);
   ctx.restore();
 }
 
@@ -614,8 +615,8 @@ function draw(t) {
   if (titleIn > 0.01) {
     drawMark({
       x: W / 2,
-      y: H * 0.4,
-      scale: lerp(2.2, 2.32, Math.sin(t * 0.35) * 0.5 + 0.5),
+      y: H * 0.38,
+      scale: lerp(2.7, 2.85, Math.sin(t * 0.35) * 0.5 + 0.5),
       draw: markDraw,
       glow: 0.75,
       alpha: titleIn,
@@ -625,23 +626,23 @@ function draw(t) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = GREEN;
-    ctx.font = `600 15px ${SANS}`;
-    ctx.letterSpacing = "0.46em";
-    ctx.fillText("RAMOSE", W / 2, H * 0.4 - 210);
+    ctx.font = `600 36px ${SANS}`;
+    ctx.letterSpacing = "0.32em";
+    ctx.fillText("RAMOSE", W / 2, H * 0.38 - 268);
     ctx.fillStyle = WHITE;
-    ctx.font = `600 56px ${SANS}`;
-    ctx.letterSpacing = "0.16em";
-    ctx.fillText("HOW A QUERY IS MADE", W / 2, H * 0.4 + 210);
+    ctx.font = `600 96px ${SANS}`;
+    ctx.letterSpacing = "0.04em";
+    ctx.fillText("HOW A QUERY IS MADE", W / 2, H * 0.38 + 268);
     ctx.fillStyle = GREY;
-    ctx.font = `500 18px ${SANS}`;
-    ctx.letterSpacing = "0.12em";
-    ctx.fillText("a short film about facts, policy, and the frontend", W / 2, H * 0.4 + 258);
+    ctx.font = `500 40px ${SANS}`;
+    ctx.letterSpacing = "0.03em";
+    ctx.fillText("a short film about facts, policy, and the frontend", W / 2, H * 0.38 + 348);
     ctx.restore();
   }
 
   const factory = smooth(17.8, 19.1, t) * (1 - smooth(31.8, 33.4, t));
   if (factory > 0.01) {
-    drawAperture(GATE_X, RAIL_Y - 8, 2.15, t, 0.55 + 0.45 * Math.sin((t - 19) * 0.35 + 0.4));
+    drawAperture(GATE_X, RAIL_Y - 8, 1.85, t, 0.55 + 0.45 * Math.sin((t - 19) * 0.35 + 0.4));
     drawRail(t, factory);
     drawGate(t, factory);
   }
@@ -651,15 +652,15 @@ function draw(t) {
   if (pressAlpha > 0.01) {
     ctx.save();
     ctx.globalAlpha = pressAlpha;
-    ctx.fillStyle = "rgba(16,24,18,0.5)";
-    rounded(PRESS_X - 270, PRESS_Y - 248, 540, 36, 8);
+    ctx.fillStyle = "rgba(16,24,18,0.55)";
+    rounded(PRESS_X - 420, PRESS_Y - 400, 840, 64, 14);
     ctx.fill();
     ctx.fillStyle = MUTED;
-    ctx.font = `600 12px ${SANS}`;
-    ctx.letterSpacing = "0.2em";
+    ctx.font = `600 28px ${SANS}`;
+    ctx.letterSpacing = "0.16em";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("FACT  PRESS  ·  E  A  V  T", PRESS_X, PRESS_Y - 230);
+    ctx.fillText("FACT  PRESS  ·  E  A  V  T", PRESS_X, PRESS_Y - 368);
     ctx.restore();
 
     for (const entry of sched) {
@@ -677,110 +678,85 @@ function draw(t) {
     const entry = sched[i];
     const st = factState(entry, t);
     if (st.local < 0) continue;
-    const pile = pilePos(i);
-    let x = PRESS_X;
-    let y = PRESS_Y;
-    let scale = 0.78;
-    let alpha = pressAlpha;
+    let x = 0;
+    let y = 0;
+    let scale = 1;
+    let alpha = 0;
     let glow = 0;
     let strike = 0;
     let shatter = 0;
 
-    if (st.pressP < 1) {
-      if (st.pressP < 0.86) continue;
-      alpha = pressAlpha * smooth(0.86, 1, st.pressP);
-      scale = lerp(0.52, 0.78, smooth(0.86, 1, st.pressP));
-    } else if (!st.done) {
-      const e = easeInOut(st.slideP);
-      x = lerp(PRESS_X, pile.x, e);
-      y = lerp(PRESS_Y, pile.y, e);
-      scale = 0.78;
-      alpha = pressAlpha;
-    } else {
-      const pileFade = 1 - smooth(17.6, 19.0, t);
-      x = pile.x;
-      y = pile.y;
-      scale = 0.78;
-      alpha = lerp(pressAlpha, 1, smooth(14.8, 16.2, t)) * (entry.rail === null ? pileFade : 1);
-      if (entry.fact.retired) strike = smooth(11.85, 12.9, t);
+    // Overwrite beat: two large chips, side by side. No pile of miniatures.
+    if (entry.fact.retired) {
+      const show = smooth(12.15, 12.7, t) * (1 - smooth(14.6, 15.4, t));
+      x = 480;
+      y = 460;
+      alpha = show;
+      strike = smooth(12.2, 13.0, t);
+    } else if (entry.fact.a === "status" && entry.fact.v === '"done"') {
+      const show = smooth(12.15, 12.7, t) * (1 - smooth(14.6, 15.4, t));
+      x = 1440;
+      y = 460;
+      alpha = show;
+    }
 
-      if (entry.rail !== null) {
-        const sort = sorterProgress(entry.rail, t);
-        if (sort.active) {
-          const u = easeInOut(sort.u);
-          x = lerp(PILE_X + 40, 1680, u);
-          y = lerp(pile.y, RAIL_Y, smooth(0, 0.18, u));
-          scale = 0.7;
-          alpha = 1;
-          glow = pulse(u, 0.4, 0.58);
-          if (entry.fact.secret && u > 0.46) {
-            const rej = clamp((u - 0.46) / 0.22, 0, 1);
-            shatter = easeOut(rej);
-            alpha = 1 - easeIn(clamp((u - 0.5) / 0.2, 0, 1));
-            y = RAIL_Y + easeIn(rej) * 110;
-            x = GATE_X + (x - GATE_X) * (1 - rej * 0.85);
-            glow = 0;
-            shatterParticles(GATE_X, RAIL_Y, 904, t - sort.start - sort.travel * 0.46);
-            maskedLabel = pulse(t, sort.start + sort.travel * 0.48, sort.start + sort.travel * 0.48 + 2.4);
-          } else if (!entry.fact.secret && u > 0.8) {
-            alpha *= 1 - smooth(0.82, 1, u);
-          }
-        } else {
-          alpha *= pileFade;
+    if (entry.rail !== null) {
+      const sort = sorterProgress(entry.rail, t);
+      if (sort.active) {
+        const u = easeInOut(sort.u);
+        x = lerp(160, 1760, u);
+        y = RAIL_Y;
+        scale = 1.28;
+        alpha = 1;
+        glow = pulse(u, 0.4, 0.58);
+        strike = 0;
+        if (entry.fact.secret && u > 0.46) {
+          const rej = clamp((u - 0.46) / 0.22, 0, 1);
+          shatter = easeOut(rej);
+          alpha = 1 - easeIn(clamp((u - 0.5) / 0.2, 0, 1));
+          y = RAIL_Y + easeIn(rej) * 140;
+          x = GATE_X + (x - GATE_X) * (1 - rej * 0.85);
+          glow = 0;
+          shatterParticles(GATE_X, RAIL_Y, 904, t - sort.start - sort.travel * 0.46);
+          maskedLabel = pulse(t, sort.start + sort.travel * 0.48, sort.start + sort.travel * 0.48 + 2.4);
+        } else if (!entry.fact.secret && u > 0.8) {
+          alpha *= 1 - smooth(0.82, 1, u);
         }
       }
     }
 
     if (t > 29.4) alpha *= 1 - smooth(29.4, 31.4, t);
-    drawChip(x, y, entry.fact, { scale, alpha, glow, strike, shatter });
+    if (alpha > 0.01) drawChip(x, y, entry.fact, { scale, alpha, glow, strike, shatter });
   }
 
   if (maskedLabel > 0.01) {
     ctx.save();
     ctx.globalAlpha = maskedLabel;
     ctx.fillStyle = GREY;
-    ctx.font = `600 18px ${SANS}`;
-    ctx.letterSpacing = "0.32em";
+    ctx.font = `600 56px ${SANS}`;
+    ctx.letterSpacing = "0.22em";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("MASKED", GATE_X, RAIL_Y + 148);
+    ctx.fillText("MASKED", GATE_X, RAIL_Y + 190);
     ctx.restore();
   }
 
-  const qIn = smooth(15.35, 16.7, t) * (1 - smooth(28.4, 30.0, t));
+  const qIn = smooth(15.2, 16.4, t) * (1 - smooth(17.8, 18.8, t));
   if (qIn > 0.01) {
-    const qx = lerp(2080, 1568, easeOut(smooth(15.35, 16.9, t)));
-    drawBrowser(qx, 214, qIn, t);
-    if (t > 16.7 && t < 20.2) {
-      const ba = pulse(t, 16.7, 20.1);
-      ctx.save();
-      ctx.globalAlpha = ba * 0.65;
-      const grad = ctx.createLinearGradient(1400, 250, 300, RAIL_Y);
-      grad.addColorStop(0, GREEN);
-      grad.addColorStop(1, "rgba(66,211,122,0)");
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 10]);
-      ctx.lineDashOffset = -t * 40;
-      ctx.beginPath();
-      ctx.moveTo(1388, 270);
-      ctx.bezierCurveTo(1100, 340, 620, 480, 300, RAIL_Y);
-      ctx.stroke();
-      ctx.restore();
-    }
+    drawBrowser(960, 430, qIn, t);
   }
 
   const resIn = smooth(27.6, 29.1, t) * (1 - smooth(32.5, 34.0, t));
   if (resIn > 0.01) {
-    drawResult(1568, 560, resIn, smooth(27.8, 30.6, t));
+    drawResult(960, 470, resIn, smooth(27.8, 30.6, t));
   }
 
   const end = smooth(32.3, 33.7, t);
   if (end > 0.01) {
     drawMark({
       x: W / 2,
-      y: H * 0.38,
-      scale: 2.05,
+      y: H * 0.36,
+      scale: 2.55,
       draw: 1,
       glow: 0.7,
       alpha: end,
@@ -790,17 +766,17 @@ function draw(t) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = WHITE;
-    ctx.font = `600 52px ${SANS}`;
-    ctx.letterSpacing = "0.04em";
-    ctx.fillText("Query from the frontend.", W / 2, H * 0.38 + 210);
+    ctx.font = `600 84px ${SANS}`;
+    ctx.letterSpacing = "0.01em";
+    ctx.fillText("Query from the frontend.", W / 2, H * 0.36 + 260);
     ctx.fillStyle = GREEN;
-    ctx.font = `600 28px ${SANS}`;
-    ctx.letterSpacing = "0.06em";
-    ctx.fillText("The database already knows who you are.", W / 2, H * 0.38 + 268);
+    ctx.font = `600 48px ${SANS}`;
+    ctx.letterSpacing = "0.02em";
+    ctx.fillText("The database already knows who you are.", W / 2, H * 0.36 + 340);
     ctx.fillStyle = GREY;
-    ctx.font = `600 18px ${SANS}`;
-    ctx.letterSpacing = "0.28em";
-    ctx.fillText("RAMOSE.AI", W / 2, H * 0.38 + 330);
+    ctx.font = `600 36px ${SANS}`;
+    ctx.letterSpacing = "0.2em";
+    ctx.fillText("RAMOSE.AI", W / 2, H * 0.36 + 420);
     ctx.restore();
   }
 
