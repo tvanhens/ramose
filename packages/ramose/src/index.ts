@@ -42,6 +42,9 @@ export * from "./db/index.ts";
 export { policy } from "./db/Policy.ts";
 export * as Policy from "./db/Policy.ts";
 
+// ── authorization authoring (deploy/build-time; not on the browser entry) ──
+export * as Authorization from "./authorization/index.ts";
+
 // ── the verifier/minter contract ─────────────────────────────────────────
 export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";
 

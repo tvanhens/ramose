@@ -27,6 +27,7 @@ const ADDS = [
   // deploy-time policy
   "Policy",
   "policy",
+  "Authorization",
   "DEFAULT_JWT_MAX_TTL",
   // the verifier/minter contract
   "claims",
