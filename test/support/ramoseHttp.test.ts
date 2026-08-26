@@ -158,6 +158,26 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(n).toBe(2);
   });
 
+  test("transact retries empty 502 with the same clientTxId", async () => {
+    let n = 0;
+    const ids: string[] = [];
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        n++;
+        const body = JSON.parse(String(init?.body)) as { clientTxId?: string };
+        if (typeof body.clientTxId === "string") ids.push(body.clientTxId);
+        if (n === 1) return new Response("", { status: 502 });
+        return json(200, { t: 1, txEid: 1, tempids: {}, datoms: [] });
+      }) as unknown as typeof fetch,
+    });
+    await peer.db("x").transact([{ ":user/name": "a" }]);
+    expect(n).toBe(2);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[0]!.length).toBeGreaterThan(0);
+  });
+
   test("does not retry an application NetworkError 502", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {

@@ -164,6 +164,11 @@ export function isTransientCf(e: unknown): boolean {
   );
 }
 
+const newClientTxId = (): string =>
+  typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 /** The read fence, as the header the peer reads it from. */
 function minTHeader(opts: { minT?: number }): Record<string, string> | undefined {
   return opts.minT !== undefined ? { "x-ramose-min-t": String(opts.minT) } : undefined;
@@ -195,7 +200,11 @@ export class PeerDb {
   }
 
   transact(tx: TxData): Promise<Ack> {
-    return this.client.request<Ack>("POST", this.path("/transact"), { tx });
+    // One id for this call so a transient 502/503 retry is at-most-once.
+    return this.client.request<Ack>("POST", this.path("/transact"), {
+      tx,
+      clientTxId: newClientTxId(),
+    });
   }
 
   /**
