@@ -7,6 +7,7 @@
 import { setDefaultTimeout } from "bun:test";
 import { registerAuthContract } from "../contracts/auth.contract.ts";
 import { registerOperationsContract } from "../contracts/operations.contract.ts";
+import { registerOwnedOperationsContract } from "../contracts/owned-operations.contract.ts";
 import { registerPeerContract } from "../contracts/peer.contract.ts";
 import { registerExamples } from "./examples.ts";
 import { localUrls } from "./fixtures.ts";
@@ -22,6 +23,7 @@ registerPeerContract({
 });
 registerAuthContract({ urls: localUrls });
 registerOperationsContract({ urls: localUrls });
+registerOwnedOperationsContract({ urls: localUrls });
 registerMultiClient({ urls: localUrls });
 registerExamples({ urls: localUrls });
 registerServiceBinding({ urls: localUrls });

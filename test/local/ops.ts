@@ -189,6 +189,58 @@ export const putDanglingRef = Ramose.Operation(
   },
 );
 
+export const Taggable = Ramose.Trait(
+  "taggable",
+  { tags: Ramose.Field.many(Ramose.string()) },
+  {
+    operations: {
+      addTag: Ramose.Operation({
+        input: Schema.Struct({ tag: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, { tag }) {
+          op.self.set(Taggable.tags, tag);
+          return {};
+        },
+      }),
+    },
+  },
+);
+
+export const Issue = Ramose.Entity(
+  "issue",
+  { title: Ramose.string() },
+  {
+    traits: [Taggable],
+    operations: {
+      create: Ramose.Operation({
+        self: false,
+        input: Schema.Struct({ title: Schema.String }),
+        output: Schema.Struct({ id: Ramose.EntityId }),
+        run(op, input) {
+          return { id: op.create({ title: input.title }) };
+        },
+      }),
+      rename: Ramose.Operation({
+        input: Schema.Struct({ title: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, { title }) {
+          op.self.set(Issue.title, title);
+          return {};
+        },
+      }),
+    },
+  },
+);
+
+export const Doc = Ramose.Entity("doc", { body: Ramose.string() }, { traits: [Taggable] });
+
+export const Board = Ramose.Schema({
+  user: User,
+  movie: Movie,
+  issue: Issue,
+  doc: Doc,
+});
+
 export const operations = Ramose.Operations({
   addSession,
   addReefUser,
@@ -209,6 +261,9 @@ export const operations = Ramose.Operations({
   putOnMovie,
   putMissingEid,
   putDanglingRef,
+  createIssue: Issue.operations.create,
+  renameIssue: Issue.operations.rename,
+  addTag: Taggable.operations.addTag,
 });
 
 export const OPERATION_IDS = operations.names();
