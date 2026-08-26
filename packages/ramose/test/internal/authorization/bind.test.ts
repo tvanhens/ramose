@@ -553,6 +553,29 @@ describe("successful binding", () => {
     }
   });
 
+  test("binding clones shared data so freeze does not seal caller inputs", () => {
+    const template = fullTemplate();
+    const descriptor = catalogDescriptor();
+    const classes = template.classes as string[];
+    const issueId = descriptor.entities.find((row) => row.id.name === "issue")!.id;
+    const bound = expectBound(bindPolicyTemplateResult({ target, descriptor, template }));
+
+    expect(Object.isFrozen(template)).toBe(false);
+    expect(Object.isFrozen(template.classes)).toBe(false);
+    expect(Object.isFrozen(template.claims)).toBe(false);
+    expect(Object.isFrozen(descriptor)).toBe(false);
+    expect(Object.isFrozen(issueId)).toBe(false);
+    expect(Object.isFrozen(bound)).toBe(true);
+    expect(Object.isFrozen(bound.classes)).toBe(true);
+    expect(bound.principal.entity).not.toBe(descriptor.fields[0]?.id);
+
+    classes.push("admin");
+    expect(bound.classes).toEqual(["member"]);
+    expect(() => {
+      (bound.classes as string[]).push("support");
+    }).toThrow();
+  });
+
   test("claim and input terms have no identities and pass through", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
     const rename = bound.rules.find((entry) => entry.id === RULE_RENAME_INPUT)!;

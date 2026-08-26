@@ -702,6 +702,22 @@ const bindPrincipal = (
   return Result.succeed({ subjectClaim: principal.subjectClaim, entity: entity.success });
 };
 
+/**
+ * Deep-copy JSON-shaped data so later freeze cannot seal caller-owned
+ * template, descriptor, or identity objects the result still names.
+ */
+const clonePlain = <T>(value: T): T => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => clonePlain(item)) as T;
+  }
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    copy[key] = clonePlain((value as Record<string, unknown>)[key]);
+  }
+  return copy as T;
+};
+
 const freezePlain = <T>(value: T): T => {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
@@ -715,6 +731,8 @@ const freezePlain = <T>(value: T): T => {
   }
   return Object.freeze(value);
 };
+
+const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
 
 /**
  * Pure catalog-binding kernel. Resolves every relative identity in the
@@ -749,7 +767,7 @@ export const bindPolicyTemplateResult = (
     rules: rules.success,
     decisions: decisions.success,
   };
-  return Result.succeed(freezePlain(bound));
+  return Result.succeed(freezeBound(bound));
 };
 
 export const bindPolicyTemplate = Effect.fn("Authorization.bindPolicyTemplate")(function* (
