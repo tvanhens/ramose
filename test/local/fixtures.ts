@@ -59,6 +59,13 @@ export const post = (body: unknown, token?: string) => ({
   ...(token === undefined ? {} : { token }),
 });
 
+const isProxyBlip = (status: number, body: unknown): boolean => {
+  if (status !== 502) return false;
+  if (body === null || typeof body !== "object") return true;
+  const err = (body as { error?: { _tag?: string } }).error;
+  return err?._tag === "ProxyError" || err === undefined;
+};
+
 export const json = async (
   base: string,
   path: string,
@@ -67,18 +74,22 @@ export const json = async (
   const { token, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
-  const res = await fetch(`${base.replace(/\/+$/, "")}${path}`, {
-    ...rest,
-    headers,
-  });
-  const text = await res.text();
-  let body: any;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+  const url = `${base.replace(/\/+$/, "")}${path}`;
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { ...rest, headers });
+    const text = await res.text();
+    let body: any;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+    if (attempt < 2 && isProxyBlip(res.status, body)) {
+      await Bun.sleep(50 * (attempt + 1));
+      continue;
+    }
+    return { status: res.status, body, res };
   }
-  return { status: res.status, body, res };
 };
 
 export const attr = (
@@ -116,17 +127,6 @@ export const seedTx = async (
     `/db/${encodeURIComponent(db)}/transact`,
     post({ tx }, token),
   );
-  if (status === 502) {
-    const retry = await json(
-      base,
-      `/db/${encodeURIComponent(db)}/transact`,
-      post({ tx }, token),
-    );
-    if (retry.status === 200) return retry.body;
-    throw new Error(
-      `seed ${db} failed (${retry.status}): ${JSON.stringify(retry.body)}`,
-    );
-  }
   if (status !== 200) {
     throw new Error(
       `seed ${db} failed (${status}): ${JSON.stringify(body)}`,
