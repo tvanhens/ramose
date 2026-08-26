@@ -788,8 +788,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             built.op,
             args.invocation.input,
           ).pipe(
-            Effect.mapError((e) =>
-              isDatabaseError(e) ? e : classifyTx(e),
+            // `BodyFailed.cause` is the value the body actually threw; classify
+            // that, not the wrapper.
+            Effect.mapError(({ cause }) =>
+              isDatabaseError(cause) ? cause : classifyTx(cause),
             ),
           );
 

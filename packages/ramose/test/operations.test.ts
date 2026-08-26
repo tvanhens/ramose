@@ -35,7 +35,8 @@ import {
   txOps,
   seedWrite,
 } from "../src/db/internal.ts";
-import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
+import { BodyFailed, asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
+import { isDatabaseError } from "../src/db/Errors.ts";
 import { asLookupRef, lowerEntityArg, materializeOutput } from "../src/db/Operation.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, scriptedPeer, httpsClient, settle, until, type Call } from "./peer.ts";
@@ -462,6 +463,37 @@ describe("PrefixHalt is out-of-band", () => {
     const err = new PrefixHalt();
     expect(err).toBeInstanceOf(PrefixHalt);
     expect(err._tag).toBe("ramose/PrefixHalt");
+  });
+});
+
+describe("BodyFailed carries the body's throw", () => {
+  const throwing = (thrown: unknown) => ({
+    body: async (_op: Op) => {
+      throw thrown;
+    },
+  });
+  const failureOf = (thrown: unknown): Promise<unknown> =>
+    Effect.runPromise(runBody(throwing(thrown), stubOp("run").op, {})).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+  // `worker/operations.ts` unwraps with `err instanceof BodyFailed`, so the
+  // class identity has to survive the rejection, not just the shape.
+  test("runPromise rejects with the BodyFailed instance", async () => {
+    const thrown = new OperationRejected({ message: "no", operation: "x" });
+    const err = await failureOf(thrown);
+    expect(err).toBeInstanceOf(BodyFailed);
+    expect((err as BodyFailed).cause).toBe(thrown);
+  });
+
+  // `overlay.ts` classifies `cause`; a thrown DbError has to stay one rather
+  // than being re-classified as an opaque tx failure.
+  test("a thrown DbError is still a DbError under .cause", async () => {
+    const err = await failureOf(new TxRejected({ message: "bad", code: "dangling" }));
+    const cause = (err as BodyFailed).cause;
+    expect(isDatabaseError(cause)).toBe(true);
+    expect((cause as TxRejected)._tag).toBe("TxRejected");
   });
 });
 
