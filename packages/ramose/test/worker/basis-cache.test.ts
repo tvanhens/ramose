@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { BASIS_SAFETY_TTL_MS, BASIS_TTL_MS, cacheModeOf, clearBasisCache, coloHint, fetchBasisWithStats, hintOf, invalidateBasis, minTOf, replicaId, wantsBasisCache } from "../../src/worker/peer.ts";
 
 function fakeEnv(basisT: () => number, extra: Record<string, string> = {}) {
-  const calls: { id: string; url: string; hint?: string }[] = [];
+  const calls: { id: string; url: string; hint?: string; minT?: string }[] = [];
   const env = {
     ...extra,
     REPLICA: {
