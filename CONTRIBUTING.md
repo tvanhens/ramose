@@ -21,8 +21,6 @@ conformance tests can cite them:
 
 - Authorization and noninterference:
   [`packages/ramose/src/internal/design/authorization.md`](packages/ramose/src/internal/design/authorization.md)
-- Authorization IR types (identities, vocabulary, catalog descriptors):
-  [`packages/ramose/src/internal/authorization/`](packages/ramose/src/internal/authorization/)
 
 ## Public vocabulary
 

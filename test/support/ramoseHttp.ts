@@ -23,9 +23,8 @@ export interface PeerOptions {
   headers?: Record<string, string>;
   /**
    * How long (ms) to keep retrying transient Cloudflare platform errors
-   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503, empty-body
-   * 502 from workerd/miniflare, Durable Object storage timeout reset). A
-   * fresh workers.dev hostname is eventually
+   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503, Durable
+   * Object storage timeout reset). A fresh workers.dev hostname is eventually
    * consistent across the edge, so a colo can serve the placeholder well after
    * /health passes; this is the budget for waiting that out. Application
    * errors never retry. Default 0.
@@ -49,13 +48,7 @@ export interface QueryReply<T = unknown> {
 }
 
 export class HttpError extends Error {
-  constructor(
-    msg: string,
-    readonly status: number,
-    readonly code?: string,
-    /** Worker JSON `tag` when the 5xx is an application body, not a gateway drop. */
-    readonly tag?: string,
-  ) {
+  constructor(msg: string, readonly status: number, readonly code?: string) {
     super(msg);
   }
 }
@@ -115,8 +108,7 @@ export class Peer {
     }
     if (!res.ok) {
       const { message, code } = httpErrorMessage(res.status, text, parsed);
-      const tag = typeof parsed?.tag === "string" ? parsed.tag : undefined;
-      throw new HttpError(message, res.status, code, tag);
+      throw new HttpError(message, res.status, code);
     }
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
@@ -153,9 +145,6 @@ function httpErrorMessage(
 export function isTransientCf(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
   if (e.status === 503 || e.status === 429) return true;
-  // Empty / gateway 502 from workerd, miniflare, or the edge. Application 502s
-  // (`NetworkError`) carry a Worker JSON `tag` and must not be swallowed.
-  if (e.status === 502 && e.tag === undefined && e.code === undefined) return true;
   // Platform errors, as normalized by httpErrorMessage, plus the JSON errors
   // a not-yet-converged deploy answers with ("Worker not found." and
   // "Handler does not export a fetch() function." both clear within seconds).
@@ -163,11 +152,6 @@ export function isTransientCf(e: unknown): boolean {
     e.message,
   );
 }
-
-const newClientTxId = (): string =>
-  typeof globalThis.crypto?.randomUUID === "function"
-    ? globalThis.crypto.randomUUID()
-    : `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 /** The read fence, as the header the peer reads it from. */
 function minTHeader(opts: { minT?: number }): Record<string, string> | undefined {
@@ -200,11 +184,7 @@ export class PeerDb {
   }
 
   transact(tx: TxData): Promise<Ack> {
-    // One id for this call so a transient 502/503 retry is at-most-once.
-    return this.client.request<Ack>("POST", this.path("/transact"), {
-      tx,
-      clientTxId: newClientTxId(),
-    });
+    return this.client.request<Ack>("POST", this.path("/transact"), { tx });
   }
 
   /**
