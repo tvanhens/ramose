@@ -7,6 +7,8 @@
  */
 
 import type {
+  CatalogIdent,
+  Eid,
   Equal,
   Expect,
   Tx,
@@ -52,10 +54,26 @@ type _titleIdent = Expect<
   Equal<(typeof Issue)["title"]["ident"], ":issue/title">
 >;
 
+type _boardIdents = Expect<
+  Equal<
+    CatalogIdent<typeof Board>,
+    | ":issue/title"
+    | ":taggable/tag"
+    | ":note/title"
+    | ":soft/note"
+    | ":soft/tags"
+  >
+>;
+
 declare const tx: Tx<typeof Board>;
+declare const issue: Eid<typeof Issue>;
 tx.put(Issue, { title: "Fix login", tag: "urgent" });
 tx.put(Note, { title: "n" });
 tx.put(Note, { title: "n", note: "aside", tags: ["a"] });
+tx.set(issue, Issue.tag, "urgent");
+tx.set(issue, ":taggable/tag", "urgent");
+// @ts-expect-error reconstructed composer ident is not a catalog ident
+tx.set(issue, ":issue/tag", "urgent");
 
 {
   // @ts-expect-error create form requires the required trait field

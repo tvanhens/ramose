@@ -9,12 +9,26 @@ import type { AnySchema } from "./Schema.ts";
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 
 /**
+ * Stamped field ident when it is a literal (`:taggable/tag`); reconstruct
+ * `:${ns}/${key}` when the ident is a wide `string` so `CatalogIdent<AnySchema>`
+ * stays a template literal and does not collapse to `string`.
+ */
+export type IdentOfFieldIn<F, Ns extends string, A extends string> = F extends {
+  readonly ident: infer I extends string;
+}
+  ? string extends I
+    ? Ident<Ns, A>
+    : I
+  : Ident<Ns, A>;
+
+/**
  * Every ident in a catalog, as a union of string literals.
  * `CatalogIdent<typeof Movies>` → `":user/name" | ":movie/title" | …`
  */
 export type CatalogIdent<C extends AnySchema> = {
   [K in keyof C["entities"]]: {
-    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+    [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
+      C["entities"][K]["fields"][A],
       C["entities"][K]["ns"],
       A
     >;
@@ -27,7 +41,8 @@ export type CatalogIdent<C extends AnySchema> = {
  */
 export type AttrAtIdent<C extends AnySchema, I extends string> = {
   [K in keyof C["entities"]]: {
-    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+    [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
+      C["entities"][K]["fields"][A],
       C["entities"][K]["ns"],
       A
     > extends I
@@ -66,7 +81,7 @@ export type ReadAtIdent<C extends AnySchema, I extends string> =
  */
 export type WriteAtEntity<C extends AnySchema, N extends { readonly ns: string; readonly fields: object }> = {
   [K in keyof N["fields"] & string]?:
-    | WriteAtIdent<C, `:${N["ns"]}/${K}`>
+    | WriteAtIdent<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>
     | undefined;
 };
 
@@ -85,8 +100,16 @@ export type LookupRef<C extends AnySchema> = {
         | readonly [{ readonly ident: I }, ValueAtIdent<C, I>];
 }[CatalogIdent<C>];
 
-/** Unique lookups whose ident is on `N` (`:issue/…`, not `:comment/…`). */
-export type OnIdent<N extends AnyEntity> = `:${N["ns"]}/${string}`;
+/** Unique lookups whose ident is on `N` — own namespace or a flattened trait. */
+export type OnIdent<N extends AnyEntity> =
+  | `:${N["ns"]}/${string}`
+  | {
+      [K in keyof N["fields"] & string]: IdentOfFieldIn<
+        N["fields"][K],
+        N["ns"],
+        K
+      >;
+    }[keyof N["fields"] & string];
 
 export type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
   LookupRef<C>,
@@ -132,7 +155,8 @@ export type FieldTargetEntity<F> = F extends {
 /** The entity that owns ident `I` in `C`. */
 export type EntityOfIdent<C extends AnySchema, I extends string> = {
   [K in keyof C["entities"]]: {
-    [A in keyof C["entities"][K]["fields"] & string]: Ident<
+    [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
+      C["entities"][K]["fields"][A],
       C["entities"][K]["ns"],
       A
     > extends I

@@ -17,6 +17,7 @@ import type {
   UnbrandedId,
   ValueAtIdent,
   WriteAtEntity,
+  IdentOfFieldIn,
 } from "./idents.ts";
 
 // ── field / value correlation ──────────────────────────────────────────────
@@ -102,7 +103,7 @@ type PutScalar<
 > =
   | (N["fields"][K] extends { readonly valueType: "ref" }
       ? PutRef<C, H, RefSlotTarget<N, K>>
-      : ValueAtIdent<C, `:${N["ns"]}/${K}`>);
+      : ValueAtIdent<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>);
 
 type PutFieldValue<
   C extends AnySchema,

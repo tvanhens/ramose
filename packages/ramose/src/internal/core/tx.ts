@@ -789,12 +789,21 @@ export async function expandTx(
   };
 
   const inferType = async (e: number): Promise<string | undefined> => {
-    const asserted = await readType(e);
-    if (asserted !== undefined) return asserted;
     const nss = appNamespacesOf(await presentIdents(e));
     const entityNss = [...nss].filter((ns) =>
       db.schema.isEntityIdent(`:${ns}`),
     );
+    if (entityNss.length > 1) {
+      throw new TxError(
+        `cannot create an entity in multiple composed types: ${[...entityNss]
+          .sort()
+          .map((n) => `:${n}`)
+          .join(", ")}`,
+        "tx/wrong-entity",
+      );
+    }
+    const asserted = await readType(e);
+    if (asserted !== undefined) return asserted;
     if (entityNss.length === 1) return `:${entityNss[0]}`;
     return undefined;
   };
@@ -829,6 +838,23 @@ export async function expandTx(
       return typeof v === "string" ? v : undefined;
     })();
     const type = await inferType(e);
+    if (type === undefined && typeBefore === undefined) {
+      const traitNss = new Set<string>();
+      for (const ident of await presentIdents(e)) {
+        if (isSystemIdent(ident)) continue;
+        const ns = nsOfIdent(ident);
+        if (ns.length > 0 && db.schema.isTraitIdent(`:${ns}`)) traitNss.add(ns);
+      }
+      if (traitNss.size > 0) {
+        throw new TxError(
+          `cannot create an entity from trait attributes alone: ${[...traitNss]
+            .sort()
+            .map((n) => `:${n}`)
+            .join(", ")}`,
+          "tx/wrong-entity",
+        );
+      }
+    }
     const composed =
       type !== undefined && db.schema.isEntityIdent(type)
         ? db.schema.transitiveTraits(type)

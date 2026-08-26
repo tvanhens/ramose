@@ -40,6 +40,7 @@ import {
   type Var,
 } from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
+import { traitsOf, walkTraits } from "./compose.ts";
 export { PolicyError };
 
 // ── shapes ─────────────────────────────────────────────────────────────────
@@ -887,6 +888,23 @@ const lower = (p: Policy): CompiledPolicy => {
   const ns: Record<string, PolicyRules> = {};
 
   const attrOwners = new Map<string, string>();
+  const nsOwners = new Map<string, string>();
+  const emitNsRules = (prefix: string, rules: PolicyRules, owner: string): void => {
+    if (Object.keys(rules).length === 0) return;
+    const existing = ns[prefix];
+    if (existing !== undefined) {
+      if (JSON.stringify(existing) !== JSON.stringify(rules)) {
+        fail(
+          `ns.${owner}: ${prefix} conflicts with ns.${nsOwners.get(prefix)}`,
+          `:${prefix}`,
+        );
+      }
+      return;
+    }
+    ns[prefix] = rules;
+    nsOwners.set(prefix, owner);
+  };
+
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     const declared = (
       p.schema.entities as Record<
@@ -894,7 +912,11 @@ const lower = (p: Policy): CompiledPolicy => {
         { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
       >
     )[nsKey]!;
-    if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
+    const wire = toWireRules(entry.rules);
+    emitNsRules(entry.prefix, wire, nsKey);
+    for (const trait of walkTraits(traitsOf(declared)).all) {
+      emitNsRules(trait.ns, wire, nsKey);
+    }
 
     const declaredIdents = entityFieldIdents(declared);
     for (const [ident, own] of Object.entries(entry.attrs)) {

@@ -136,7 +136,15 @@ function nsConjunction(
   policyRules: RuleDef[],
 ): Clause | "skip" | "deny" {
   const arms = policy.ns?.[ns]?.read;
-  if (!arms || arms.length === 0) return "deny";
+  if (!arms || arms.length === 0) {
+    const attrs = policy.attrs ?? {};
+    for (const ident of Object.keys(attrs)) {
+      if (nsPrefix(ident) === ns && (attrs[ident]?.read?.length ?? 0) > 0) {
+        return "skip";
+      }
+    }
+    return "deny";
+  }
   // v1 expression / deny arms: leave this namespace to FilteredDb
   if (arms.some((a) => !isRuleArm(a))) return "skip";
 

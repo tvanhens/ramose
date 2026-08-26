@@ -20,7 +20,12 @@ import {
   txBuilder,
   txOps,
 } from "../../src/db/internal.ts";
-import { query as coreQuery } from "../../src/internal/core/index.ts";
+import {
+  filterDb,
+  parsePolicy,
+  query as coreQuery,
+  type Principal,
+} from "../../src/internal/core/index.ts";
 
 const Taggable = Trait("taggable", {
   tag: string(),
@@ -362,9 +367,63 @@ describe("processTx membership and required trait fields", () => {
     });
     const compiled = JSON.parse(P.compile(authored)) as {
       attrs: Record<string, unknown>;
+      ns?: Record<string, unknown>;
     };
     expect(compiled.attrs[":taggable/tag"]).toBeDefined();
     expect(compiled.attrs[":issue/tag"]).toBeUndefined();
+  });
+
+  test("selecting a trait field under policy returns the row with pushdown on", async () => {
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Catalog = Schema({ actor: Actor, issue: Issue });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const seed = txBuilder(Catalog);
+    Effect.runSync(seed.put(Actor, { sub: "a1" }));
+    Effect.runSync(seed.put(Issue, { title: "an issue", tag: "urgent" }));
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const actorEid = tempids["tmp-1"]!;
+
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: true, attrs: [P.field(Issue.tag, { read: true })] },
+      },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    expect(policy.ns?.taggable).toEqual(policy.ns?.issue);
+
+    const listing = Query.q(() =>
+      pipe(
+        Query.entities(Issue),
+        Query.select({ id: Issue.id, title: Issue.title, tag: Issue.tag }),
+      ),
+    );
+    const { query } = lowerQueryObject(listing);
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "a1",
+      eid: actorEid,
+      claims: { sub: "a1" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+    const rows = (await coreQuery(view, query)) as readonly [
+      { readonly id: number; readonly title: string; readonly tag: string },
+    ][];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]![0]).toMatchObject({ title: "an issue", tag: "urgent" });
+    const filteredOnly = (await coreQuery(view, query, [], { pushdown: false })) as readonly [
+      { readonly id: number; readonly title: string; readonly tag: string },
+    ][];
+    expect(filteredOnly).toEqual(rows);
   });
 
   test("two composers sharing a trait field keep one attr rule", () => {
@@ -395,6 +454,59 @@ describe("processTx membership and required trait fields", () => {
     expect(() => P.compile(conflicting)).toThrow(
       /ns\.task\.attrs: :taggable\/tag conflicts with ns\.issue/,
     );
+
+    const nsConflict = P.policy(head, {
+      issue: { read: true },
+      task: { read: P.class("member") },
+    });
+    expect(() => P.compile(nsConflict)).toThrow(
+      /ns\.task: taggable conflicts with ns\.issue/,
+    );
+  });
+
+  test("two composed entity namespaces on one id are tx/wrong-entity", async () => {
+    const Task = Entity("task", { title: string() }, { traits: [Taggable] });
+    const Mixed = Schema({ issue: Issue, task: Task });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Mixed) as unknown[]);
+
+    await expect(
+      conn.transact([
+        { ":db/id": "tmp-1", ":issue/title": "a", ":task/title": "b" },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining(
+        "cannot create an entity in multiple composed types: :issue, :task",
+      ),
+    });
+
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "tmp-2",
+          ":issue/title": "a",
+          ":task/title": "b",
+          ":taggable/tag": "urgent",
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
+  });
+
+  test("a write of only trait attributes is tx/wrong-entity", async () => {
+    const Two = Trait("two", { a: string(), b: string() });
+    const Doc = Entity("doc", { title: string() }, { traits: [Two] });
+    const Catalog = Schema({ doc: Doc });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    await expect(
+      conn.transact([{ ":db/id": "tmp-1", ":two/a": "x" }]),
+    ).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining(
+        "cannot create an entity from trait attributes alone: :two",
+      ),
+    });
   });
 
   test("a mixed composed+plain create still requires every born namespace", async () => {
