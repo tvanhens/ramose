@@ -345,12 +345,21 @@ type WalkFrame = {
   readonly keys: ReadonlyArray<string> | number;
   index: number;
   readonly depth: number;
+  readonly startNodes: number;
+  readonly startBytes: number;
+};
+
+type SubtreeCost = {
+  readonly nodes: number;
+  readonly bytes: number;
 };
 
 /**
  * Iterative JSON-only inspect. Reads property descriptors so accessors and
  * deep hostile trees fail as `InvalidIR` before Schema walks the input.
- * A global node/key and encoded-byte budget bounds total work.
+ * A global node/key and encoded-byte budget bounds total work, including
+ * the expanded cost of each DAG alias (schema/canonicalize visit every
+ * reference, not just the unique graph).
  */
 const inspectRawJson = (input: unknown): string | undefined => {
   const work: Work = { nodes: 0, bytes: 0 };
@@ -360,14 +369,19 @@ const inspectRawJson = (input: unknown): string | undefined => {
 
   // `false` = on the current path (a cycle). `true` = already validated (a DAG).
   const seen = new WeakMap<object, boolean>();
+  const costs = new WeakMap<object, SubtreeCost>();
   const stack: WalkFrame[] = [];
-  const opened = enterObject(input, 0, seen, stack, work);
+  const opened = enterObject(input, 0, seen, costs, stack, work);
   if (opened !== undefined) return opened;
 
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
     const next = nextChild(frame);
     if (next === undefined) {
+      costs.set(frame.value, {
+        nodes: work.nodes - frame.startNodes,
+        bytes: work.bytes - frame.startBytes,
+      });
       seen.set(frame.value, true);
       stack.pop();
       continue;
@@ -376,7 +390,7 @@ const inspectRawJson = (input: unknown): string | undefined => {
     const leaf = jsonLeafViolation(next.value, work);
     if (leaf !== undefined) return leaf;
     if (typeof next.value === "object" && next.value !== null) {
-      const reason = enterObject(next.value, frame.depth + 1, seen, stack, work);
+      const reason = enterObject(next.value, frame.depth + 1, seen, costs, stack, work);
       if (reason !== undefined) return reason;
     }
   }
@@ -396,20 +410,34 @@ const enterObject = (
   value: object,
   depth: number,
   seen: WeakMap<object, boolean>,
+  costs: WeakMap<object, SubtreeCost>,
   stack: WalkFrame[],
   work: Work,
 ): string | undefined => {
   const cached = seen.get(value);
   if (cached === false) return "rejected cycle";
-  if (cached === true) return undefined;
+  if (cached === true) {
+    const cost = costs.get(value);
+    if (cost === undefined) return "rejected cycle";
+    return charge(work, cost.nodes, cost.bytes);
+  }
   if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
+  const startNodes = work.nodes;
+  const startBytes = work.bytes;
   const shape = objectShapeViolation(value, work);
   if (shape !== undefined) return shape;
   seen.set(value, false);
   if (Array.isArray(value)) {
-    stack.push({ value, keys: value.length, index: 0, depth });
+    stack.push({ value, keys: value.length, index: 0, depth, startNodes, startBytes });
   } else {
-    stack.push({ value, keys: Object.getOwnPropertyNames(value), index: 0, depth });
+    stack.push({
+      value,
+      keys: Object.getOwnPropertyNames(value),
+      index: 0,
+      depth,
+      startNodes,
+      startBytes,
+    });
   }
   return undefined;
 };

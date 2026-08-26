@@ -259,6 +259,17 @@ describe("JSON-only rejections", () => {
     );
   });
 
+  test("charges DAG aliases by their expanded cost", () => {
+    const shared = Object.fromEntries(
+      Array.from({ length: 8 }, (_, i) => [`k${i}`, "x".repeat(8)]),
+    );
+    const copies = Array.from({ length: MAX_COLLECTION_SIZE }, () => shared);
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: copies }),
+      /oversized document/,
+    );
+  });
+
   test("rejects every prototype other than Object.prototype or null", () => {
     const nestedNull = Object.create(Object.create(null));
     nestedNull.x = 1;
@@ -299,6 +310,23 @@ describe("JSON-only rejections", () => {
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
         principal: { subjectClaim: "abc\uDBFF" },
+      }),
+      /unicode/,
+    );
+  });
+
+  test("rejects a high surrogate followed by a non-low surrogate", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "\uD800A" },
+      }),
+      /unicode/,
+    );
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        principal: { subjectClaim: "\uD800\uD800" },
       }),
       /unicode/,
     );
@@ -650,6 +678,17 @@ describe("canonical serialization", () => {
     const sorted = [...rfcKeys].sort(compareCanonicalKeys);
     expect(sorted).toEqual(["\r", "1", "\u0080", "\u00f6", "\u20ac", "\ud83d\ude00", "\ufb33"]);
     expect(() => canonicalizeJson("abc\uD800")).toThrow(/lone surrogate/);
+    expect(() => canonicalizeJson("\uD800A")).toThrow(/lone surrogate/);
+    expect(() => canonicalizeJson({ ["k\uD800"]: 1 })).toThrow(/lone surrogate/);
+  });
+
+  test("hashCanonicalJson rejects lone surrogates without collapsing", async () => {
+    await expect(Effect.runPromise(hashCanonicalJson("abc\uD800"))).rejects.toBeInstanceOf(
+      InvalidIR,
+    );
+    await expect(Effect.runPromise(hashCanonicalJson({ ["k\uDEAD"]: 1 }))).rejects.toBeInstanceOf(
+      InvalidIR,
+    );
   });
 
   test("key order does not change the canonical document", async () => {
