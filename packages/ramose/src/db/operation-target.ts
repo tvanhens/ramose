@@ -82,13 +82,15 @@ export const checkOperationTarget = (
       if (typeof type === "string") {
         return context.traitsOfType(type).includes(ident) ? "ok" : "foreign";
       }
+      const inferred = typeIdentsFromKeys(keys);
       if (
-        typeIdentsFromKeys(keys).some((candidate) =>
-          context.traitsOfType!(candidate).includes(ident),
-        )
+        inferred.some((candidate) => context.traitsOfType!(candidate).includes(ident))
       ) {
         return "ok";
       }
+      // A concrete foreign namespace already answered "not a composer".
+      // Do not let a stray trait-prefixed field revive the prefix fallback.
+      if (inferred.some((candidate) => candidate !== ident)) return "foreign";
     }
     if (traits.length === 0 && typeof type !== "string") {
       if (keys.length === 0) return "dangling";

@@ -265,6 +265,31 @@ describe("runtime target check", () => {
     ).toBe("foreign");
   });
 
+  test("an inferred foreign type is not rescued by a trait-prefixed field", () => {
+    const traitsOfType = (type: string) => (type === ":issue" ? [":taggable"] : []);
+    expect(
+      checkOperationTarget(
+        { ":db/id": 1, ":user/name": "Ada", ":taggable/tags": ["urgent"] },
+        Taggable,
+        { traitsOfType },
+      ),
+    ).toBe("foreign");
+    expect(
+      checkOperationTarget(
+        { ":db/id": 2, ":issue/title": "Fix", ":taggable/tags": ["urgent"] },
+        Taggable,
+        { traitsOfType },
+      ),
+    ).toBe("ok");
+    expect(
+      checkOperationTarget(
+        { ":db/id": 3, ":taggable/tags": ["urgent"] },
+        Taggable,
+        { traitsOfType },
+      ),
+    ).toBe("ok");
+  });
+
   test("entity-only rows without :ramose/type fall back to the namespace prefix", () => {
     expect(
       checkOperationTarget({ ":db/id": 1, ":issue/title": "Fix" }, Issue),
