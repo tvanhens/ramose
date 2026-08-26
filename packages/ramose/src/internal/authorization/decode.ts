@@ -430,7 +430,7 @@ const enterObject = (
   if (cached === true) {
     const cost = costs.get(value);
     if (cost === undefined) return "rejected cycle";
-    if (depth + cost.height - 1 > MAX_JSON_DEPTH) return "rejected oversized depth";
+    if (depth + cost.height > MAX_JSON_DEPTH) return "rejected oversized depth";
     const parent = stack[stack.length - 1];
     if (parent !== undefined) {
       parent.maxChildHeight = Math.max(parent.maxChildHeight, cost.height);

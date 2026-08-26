@@ -270,15 +270,18 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("charges null and boolean leaves toward the work ceiling", () => {
-    const grid = Array.from({ length: 8 }, () =>
-      Array.from({ length: MAX_COLLECTION_SIZE }, () => true),
-    );
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: grid }),
-      /oversized document/,
-    );
-  });
+  test.each([true, false, null] as const)(
+    "charges %s leaves toward the work ceiling",
+    (leaf) => {
+      const grid = Array.from({ length: 8 }, () =>
+        Array.from({ length: MAX_COLLECTION_SIZE }, () => leaf),
+      );
+      expectInvalid(
+        decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: grid }),
+        /oversized document/,
+      );
+    },
+  );
 
   test("rejects a DAG alias whose expanded depth exceeds the ceiling", () => {
     const chain = (n: number, leaf: unknown): unknown => {
