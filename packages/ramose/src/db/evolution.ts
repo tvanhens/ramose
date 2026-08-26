@@ -184,7 +184,12 @@ const flip = (
   kind: Exclude<IncompatibleKind, "required">,
   from: string | undefined,
   to: string | undefined,
-): SchemaChange => ({ ident, kind, from, to });
+): SchemaChange => ({
+  ident,
+  kind,
+  ...(from !== undefined && { from }),
+  ...(to !== undefined && { to }),
+});
 
 /**
  * Namespaces that already have attributes installed — those are the ones

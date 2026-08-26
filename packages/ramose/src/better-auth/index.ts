@@ -59,7 +59,7 @@ export interface ClassGrant {
   /** The policy class the token selects (`ramose.class`). */
   readonly class: string;
   /** App claims (`ramose.attrs`), decoded by the policy's `claims` struct. */
-  readonly attrs?: Readonly<Record<string, unknown>>;
+  readonly attrs?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /** What {@link ClassOf} receives: the caller, the database, the endpoint. */

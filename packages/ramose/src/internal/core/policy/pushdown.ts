@@ -127,11 +127,12 @@ export function conjoinPolicy(ast: Query, view: PushdownView): PushdownResult {
   }
 
   const needsMe = injected.some((c) => usesMe(c, meVar));
+  const outRules = rules.length > 0 ? rules : ast.rules;
   return {
     query: {
       ...ast,
       where: ast.where.concat(injected),
-      rules: rules.length > 0 ? rules : ast.rules,
+      ...(outRules !== undefined ? { rules: outRules } : {}),
     },
     ...(needsMe && principal.eid !== undefined ? { meVar, meValue: principal.eid } : {}),
     covered,

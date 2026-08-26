@@ -49,7 +49,7 @@ export interface FieldOptions {
 
 type FieldFlags = {
   readonly cardinality?: Cardinality;
-  readonly unique?: Uniqueness;
+  readonly unique?: Uniqueness | undefined;
   readonly owned?: boolean;
 };
 
@@ -197,9 +197,10 @@ const mergeFieldOptions = (
 ): FieldOptions => {
   rejectRetiredOptions(extra);
   if (!isField(input)) return extra ?? {};
+  const doc = extra?.doc ?? input.doc;
   return {
     index: extra?.index ?? input.index,
-    doc: extra?.doc ?? input.doc,
+    ...(doc !== undefined && { doc }),
     optional: extra?.optional ?? input.isOptional,
   };
 };

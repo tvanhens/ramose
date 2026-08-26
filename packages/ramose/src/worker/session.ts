@@ -498,7 +498,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     let res: Response;
     try {
-      res = await options.dispatch(plan.rest, { method: plan.method, headers: plan.headers, body: plan.body }, bound);
+      res = await options.dispatch(plan.rest, { method: plan.method, headers: plan.headers, ...(plan.body === undefined ? {} : { body: plan.body }) }, bound);
     } catch (err) {
       send({ id: plan.id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
       return;

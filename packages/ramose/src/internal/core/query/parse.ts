@@ -123,7 +123,7 @@ export function toClause(form: unknown): Clause {
   const rest = arr.slice(i);
   if (rest.length < 1 || rest.length > 5) fail("data pattern needs 1–5 components", form);
   const t = (k: number): Term => (k < rest.length ? toTerm(rest[k]) : blank);
-  const clause: Clause = { kind: "pattern", src, e: t(0), a: t(1), v: t(2) };
+  const clause: Clause = { kind: "pattern", ...(src !== undefined ? { src } : {}), e: t(0), a: t(1), v: t(2) };
   if (rest.length > 3) clause.tx = t(3);
   if (rest.length > 4) clause.op = t(4);
   return clause;
@@ -344,7 +344,19 @@ export function parseQuery(form: unknown): Query {
   const after = toAfter(m.after, order, find);
   const limit = toCount(m.limit, "limit");
   const offset = toCount(m.offset, "offset");
-  return { find, keys, with: withVars, in: inputs, where, rules, having, order, after, limit, offset };
+  return {
+    find,
+    ...(keys !== undefined ? { keys } : {}),
+    with: withVars,
+    in: inputs,
+    where,
+    ...(rules !== undefined ? { rules } : {}),
+    ...(having !== undefined ? { having } : {}),
+    ...(order !== undefined ? { order } : {}),
+    ...(after !== undefined ? { after } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(offset !== undefined ? { offset } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -561,7 +573,10 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
     if (spec.sub !== undefined) out.sub = parsePullPattern(spec.sub);
     if (spec.where !== undefined) out.where = elemPreds(spec.where, x);
     if (spec.order !== undefined) out.order = elemOrders(spec.order, x);
-    if (spec.offset !== undefined) out.offset = toCount(spec.offset, "offset");
+    if (spec.offset !== undefined) {
+      const offset = toCount(spec.offset, "offset");
+      if (offset !== undefined) out.offset = offset;
+    }
     return out;
   }
   if (isKeyword(x)) return { kind: "attr", ...attrName(x, x) };
@@ -576,7 +591,10 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
       const k = expr[i], v = expr[i + 1];
       if (k === ":as") spec.as = String(v);
       else if (k === ":limit") spec.limit = v as number | null;
-      else if (k === ":offset") spec.offset = toCount(v, "offset");
+      else if (k === ":offset") {
+        const offset = toCount(v, "offset");
+        if (offset !== undefined) spec.offset = offset;
+      }
       else if (k === ":where") spec.where = elemPreds(v, x);
       else if (k === ":order") spec.order = elemOrders(v, x);
       else if (k === ":default") spec.default = v;

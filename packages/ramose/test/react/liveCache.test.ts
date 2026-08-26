@@ -52,7 +52,7 @@ describe("retainLive", () => {
   test("a shared terminal error evicts so the next retain creates a new handle", () => {
     const listeners: Array<{
       onValue: (value: unknown) => void;
-      onError?: (error: unknown) => void;
+      onError?: ((error: unknown) => void) | undefined;
     }> = [];
     let created = 0;
     const make = (): Subscription<unknown> => {

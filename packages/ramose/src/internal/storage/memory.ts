@@ -42,7 +42,11 @@ export class MemoryBucket implements R2Like {
     const limit = options.limit ?? 1000;
     const slice = keys.slice(start, start + limit);
     const truncated = start + limit < keys.length;
-    return { objects: slice.map((key) => ({ key, size: this.objects.get(key)!.body.length })), truncated, cursor: truncated ? String(start + limit) : undefined };
+    return {
+      objects: slice.map((key) => ({ key, size: this.objects.get(key)!.body.length })),
+      truncated,
+      ...(truncated && { cursor: String(start + limit) }),
+    };
   }
 }
 

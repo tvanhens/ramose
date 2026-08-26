@@ -62,7 +62,7 @@ import {
  */
 export type PathCarrier = {
   readonly ident: string;
-  readonly cardinality?: Cardinality;
+  readonly cardinality?: Cardinality | undefined;
   readonly __path?: readonly string[];
   /** Cardinality of each hop in `__path` — parallel to it. */
   readonly __cards?: readonly Cardinality[];
@@ -351,15 +351,11 @@ const lowerNestedOpts = (attr: PathCarrier, opts: NestedOpts<never>): PullNested
       );
     }
   }
-  const out: {
-    where?: PullNestedConstraints["where"];
-    order?: PullNestedConstraints["order"];
-    limit?: number;
-    offset?: number;
-  } = {};
+  let where: PullNestedConstraints["where"];
   if (opts.where !== undefined) {
-    out.where = lowerElemFilter(opts.where as readonly ElemFilterFragment[], attr);
+    where = lowerElemFilter(opts.where as readonly ElemFilterFragment[], attr);
   }
+  let order: PullNestedConstraints["order"];
   if (opts.orderBy !== undefined) {
     if (!isRefNav(attr)) {
       throw new Error(
@@ -369,15 +365,20 @@ const lowerNestedOpts = (attr: PathCarrier, opts: NestedOpts<never>): PullNested
     const keys = Array.isArray(opts.orderBy)
       ? (opts.orderBy as readonly (NestedOrderKey | NestedOrderSpec)[])
       : [opts.orderBy as NestedOrderKey | NestedOrderSpec];
-    out.order = keys.map((k) =>
+    order = keys.map((k) =>
       isOrderSpec(k)
         ? lowerElemOrder(k.key, k.dir ?? "asc", k.empty)
         : lowerElemOrder(k, "asc", undefined),
     );
   }
-  if (opts.limit !== undefined) out.limit = nestedCount(opts.limit, "limit");
-  if (opts.offset !== undefined) out.offset = nestedCount(opts.offset, "offset");
-  return out;
+  const limit = opts.limit !== undefined ? nestedCount(opts.limit, "limit") : undefined;
+  const offset = opts.offset !== undefined ? nestedCount(opts.offset, "offset") : undefined;
+  return {
+    ...(where !== undefined && { where }),
+    ...(order !== undefined && { order }),
+    ...(limit !== undefined && { limit }),
+    ...(offset !== undefined && { offset }),
+  };
 };
 
 /** Select options need a collection: only a card-many hop has elements to

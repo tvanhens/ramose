@@ -10,7 +10,7 @@ import { TxMetrics } from "../../../src/internal/transactor/index.ts";
 const SCHEMA = [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")];
 
 async function fresh(analytics?: FakeAnalytics, config = {}) {
-  const h = new Harness({ analytics, config });
+  const h = new Harness({ ...(analytics !== undefined && { analytics }), config });
   await h.transactor.init();
   await h.transactor.transact(SCHEMA);
   return h;

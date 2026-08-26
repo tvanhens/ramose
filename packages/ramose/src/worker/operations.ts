@@ -159,7 +159,7 @@ export interface ExecuteArgs {
   readonly name: string;
   readonly entity: unknown;
   readonly input: unknown;
-  readonly clientOpId?: string;
+  readonly clientOpId?: string | undefined;
 }
 
 export interface ExecuteReady {
@@ -167,7 +167,7 @@ export interface ExecuteReady {
   /** Raw body return — live handles, not wire-encoded. Use `encodeOutput`. */
   readonly output: unknown;
   readonly principal: Principal;
-  readonly clientOpId?: string;
+  readonly clientOpId?: string | undefined;
   /** Resolve handles against the commit's tempid map, then encode. */
   encodeOutput(tempids: Readonly<Record<string, number>>): Promise<unknown>;
 }
@@ -284,11 +284,10 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
     principal: {
       eid: args.principal.eid ?? null,
       class: args.principal.class,
-      sub: args.principal.sub,
-      name:
-        typeof args.principal.claims.attrs?.name === "string"
-          ? args.principal.claims.attrs.name
-          : undefined,
+      ...(args.principal.sub === undefined ? {} : { sub: args.principal.sub }),
+      ...(typeof args.principal.claims.attrs?.name === "string"
+        ? { name: args.principal.claims.attrs.name }
+        : {}),
       claims: { ...args.principal.claims },
     },
     self,
@@ -341,7 +340,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
       message: err instanceof Error ? err.message : String(err),
       operation: operation.name,
       step: "body",
-      reason: tag,
+      ...(tag === undefined ? {} : { reason: tag }),
     });
   }
 

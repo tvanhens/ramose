@@ -131,7 +131,11 @@ export type SelectExtra = CellRecord | ((focus: AnyVar) => CellRecord);
 
 export type PipeStage =
   | { readonly kind: "frag"; readonly frag: Fragment<AnyVar, unknown> }
-  | { readonly kind: "select"; readonly shape: Shape; readonly extra?: SelectExtra }
+  | {
+      readonly kind: "select";
+      readonly shape: Shape;
+      readonly extra?: SelectExtra | undefined;
+    }
   | {
       readonly kind: "orderBy";
       readonly key: string | PathCarrier;

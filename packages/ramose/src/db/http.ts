@@ -34,7 +34,11 @@ export type FetchLike = (
 
 /** The ambient `fetch`, bound once. */
 export const globalFetch: FetchLike = (url, init) =>
-  fetch(url, { method: init.method, headers: init.headers, body: init.body });
+  fetch(url, {
+    method: init.method,
+    headers: init.headers,
+    ...(init.body !== undefined && { body: init.body }),
+  });
 
 /** Adapt a standard `fetch` (what {@link ClientOptions} takes) to the seam. */
 export const fromStandardFetch = (f: typeof fetch): FetchLike =>

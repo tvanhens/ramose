@@ -263,7 +263,7 @@ export const client = (
   const runtime = ManagedRuntime.make(
     layer({
       url: options.url ?? "https://peer.example.com",
-      token: options.token,
+      ...(options.token !== undefined && { token: options.token }),
       fetch: options.fetch ?? peer.fetch,
       webSocket: options.webSocket ?? peer.webSocket,
     }),

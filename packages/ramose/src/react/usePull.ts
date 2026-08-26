@@ -91,9 +91,9 @@ export function useLivePull<C extends Schema.Any, const P>(
     [view, key, astKey],
     [view, key, astKey],
     {
-      initialData: options?.initialData,
-      initialT: options?.initialT,
-      suspense: options?.suspense,
+      ...(options?.initialData !== undefined && { initialData: options.initialData }),
+      ...(options?.initialT !== undefined && { initialT: options.initialT }),
+      ...(options?.suspense !== undefined && { suspense: options.suspense }),
       suspendKey: `live\0${viewKeyOf(db)}\0${key}\0${astKey}`,
       basis: () => readT(db),
       refetch: () => db.pull<P>(subject, pattern),
@@ -132,9 +132,9 @@ export function usePull<C extends Schema.Any, const P>(
     () => readT(db),
     [view, key, astKey],
     {
-      initialData: options?.initialData,
-      initialT: options?.initialT,
-      suspense: options?.suspense,
+      ...(options?.initialData !== undefined && { initialData: options.initialData }),
+      ...(options?.initialT !== undefined && { initialT: options.initialT }),
+      ...(options?.suspense !== undefined && { suspense: options.suspense }),
       suspendKey: `one\0${viewKeyOf(db)}\0${key}\0${astKey}`,
     },
   );

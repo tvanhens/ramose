@@ -395,23 +395,21 @@ export function useLiveQuery(
     owned ? [cacheKey] : [source],
     owned ? [viewKey, structureKey] : [source],
     {
-      initialData: opts?.initialData,
-      initialT: opts?.initialT,
-      suspense: opts?.suspense,
+      ...(opts?.initialData !== undefined && { initialData: opts.initialData }),
+      ...(opts?.initialT !== undefined && { initialT: opts.initialT }),
+      ...(opts?.suspense !== undefined && { suspense: opts.suspense }),
       suspendKey,
       basis: () => readT(dbRef.current),
-      refetch:
-        owned
-          ? () => (dbRef.current as ReadDb).query(queryRef.current!)
-          : undefined,
-      seam:
-        owned
-          ? {
-              generation: () => seamOf(dbRef.current!)?.generation() ?? 0,
-              status: () => seamOf(dbRef.current!)?.status() ?? "offline",
-              onWake: (cb) => seamOf(dbRef.current!)?.onWake(cb),
-            }
-          : undefined,
+      ...(owned && {
+        refetch: () => (dbRef.current as ReadDb).query(queryRef.current!),
+      }),
+      ...(owned && {
+        seam: {
+          generation: () => seamOf(dbRef.current!)?.generation() ?? 0,
+          status: () => seamOf(dbRef.current!)?.status() ?? "offline",
+          onWake: (cb) => seamOf(dbRef.current!)?.onWake(cb),
+        },
+      }),
     },
   );
 }

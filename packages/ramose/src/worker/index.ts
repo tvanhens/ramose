@@ -221,7 +221,8 @@ const recordHttp = (request: Request, info: RequestInfo, status: number, ms: num
   Effect.gen(function* () {
     const ae = yield* Analytics;
     if (!ae.bound) return;
-    yield* ae.writeDataPoint(httpPoint({ db: info.db, colo: (request as { cf?: { colo?: string } }).cf?.colo, route: info.route, status, ms }));
+    const colo = (request as { cf?: { colo?: string } }).cf?.colo;
+    yield* ae.writeDataPoint(httpPoint({ db: info.db, ...(colo !== undefined ? { colo } : {}), route: info.route, status, ms }));
     peerMetrics.aeWrites++;
   }).pipe(Effect.ignoreCause);
 
@@ -453,7 +454,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
     const store = segmentSource(env, db);
-    const dbv = await viewDb(env, principal, store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+    const dbv = await viewDb(env, principal, store, basis, { ...(typeof body.asOf === "number" && { asOf: body.asOf }), history: !!body.history });
     const stats: QueryStats = { clauses: [] };
     const before = { ...store.stats };
     const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
@@ -472,7 +473,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const body = fromJson(await request.json()) as { eid: number | string | [string, unknown]; pattern: unknown; asOf?: number; history?: boolean };
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
-    const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+    const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { ...(typeof body.asOf === "number" && { asOf: body.asOf }), history: !!body.history });
     // an attribute this database has never installed is a bad request, not a
     // silently missing key — the pull engine is lenient, the API is not
     const pattern = normalizePullPattern(body.pattern);
@@ -487,7 +488,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
     const asOf = url.searchParams.has("asOf") ? Number(url.searchParams.get("asOf")) : undefined;
-    const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { asOf });
+    const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { ...(asOf !== undefined && { asOf }) });
     return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ramose-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   if (rest === "/info" && request.method === "GET") {

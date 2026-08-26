@@ -531,8 +531,8 @@ const definePatch = <
       on: entity as never,
       input: structOf(entity, keys) as Schema.Codec<PatchInput<E, Keys>, unknown>,
       output: emptyOutput,
-      doc: options?.doc,
-      schema: options?.schema,
+      ...(options?.doc !== undefined && { doc: options.doc }),
+      ...(options?.schema !== undefined && { schema: options.schema }),
     },
     (op, input) => {
       const self = (op as { readonly self?: unknown }).self;
@@ -630,7 +630,7 @@ const makeRegistry = <const M extends Record<string, AnyOperation>>(
   return {
     _tag: "Operations",
     operations,
-    schema,
+    ...(schema !== undefined && { schema }),
     get,
     names: () => namesOfRegistry(operations),
     cards: () => cardsOfRegistry(operations, get),

@@ -212,6 +212,18 @@ export const validatePeerWiring = (worker: unknown): string | undefined => {
   return undefined;
 };
 
+/**
+ * `Cloudflare.Worker`'s route config has no bare `undefined` in its
+ * `zoneName` / `zoneId` unions (only `string`, or a wrapped `Config` /
+ * `Effect` / `Output`) — so an *absent* key, not a present-but-`undefined`
+ * one, is what a caller who left them unset must produce.
+ */
+const cloudflareRoute = (route: PeerRoute) => ({
+  pattern: route.pattern,
+  ...(route.zoneName !== undefined ? { zoneName: route.zoneName } : {}),
+  ...(route.zoneId !== undefined ? { zoneId: route.zoneId } : {}),
+});
+
 const storageDecl = (storage: PeerStorage | undefined) => {
   if (storage === undefined) return Cloudflare.R2.Bucket(PEER_DEFAULTS.storage);
   if (typeof storage === "string") return Cloudflare.R2.Bucket(storage);
@@ -264,7 +276,7 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         ...options.env,
         ...options.authEnv,
       },
-      ...(options.routes !== undefined ? { routes: [...options.routes] } : {}),
+      ...(options.routes !== undefined ? { routes: options.routes.map(cloudflareRoute) } : {}),
     });
     return worker;
   });

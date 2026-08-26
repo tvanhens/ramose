@@ -24,7 +24,7 @@ const databasesThrough = (peer: Peer) =>
       peer.fetch(url, {
         method: init.method,
         headers: init.headers,
-        body: init.body,
+        ...(init.body !== undefined && { body: init.body }),
       }),
   }).databases;
 

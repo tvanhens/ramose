@@ -236,7 +236,10 @@ export const refTargetOf = (
   if (resolve === undefined) return undefined;
   return () => {
     const target = resolve();
-    return { fields: target.fields ?? {}, ns: target.ns };
+    return {
+      fields: target.fields ?? {},
+      ...(target.ns !== undefined && { ns: target.ns }),
+    };
   };
 };
 

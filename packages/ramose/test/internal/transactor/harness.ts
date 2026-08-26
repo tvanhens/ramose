@@ -94,8 +94,8 @@ export class Harness implements TransactorHost {
   /** this database's view of it (db/<name>/…), as the DO shell hands it to the Transactor */
   readonly bucket: R2Like;
   readonly config: TransactorConfig;
-  readonly analytics: AnalyticsEngineDatasetLike | undefined;
-  readonly policy: CompiledPolicy | undefined;
+  readonly analytics?: AnalyticsEngineDatasetLike;
+  readonly policy?: CompiledPolicy;
   readonly subscribers = new Set<FakeSocket>();
   alarm: number | null = null;
   aborted: string | undefined;
@@ -114,8 +114,8 @@ export class Harness implements TransactorHost {
     this.raw = bucket ?? new MemoryBucket();
     this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
-    this.analytics = opts.analytics;
-    this.policy = opts.policy;
+    if (opts.analytics !== undefined) this.analytics = opts.analytics;
+    if (opts.policy !== undefined) this.policy = opts.policy;
     this.failAt = opts.failWriteAt;
     this.clock = opts.now ?? (() => Date.now());
     this.transactor = new Transactor(this);

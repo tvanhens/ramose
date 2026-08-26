@@ -448,8 +448,8 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     if (st.policy && who) who = await withEid(st.policy, who, after);
     return decideSessionTx({
       datoms: entry.datoms.map(fromWireDatom),
-      policy: st.policy,
-      principal: who,
+      ...(st.policy !== undefined && { policy: st.policy }),
+      ...(who !== undefined && { principal: who }),
       ruleDbAfter: after,
       ruleDbBefore: before,
     });
@@ -488,7 +488,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     return openSession(ws as unknown as SocketLike, {
       listen: false,
       seed,
-      principal: seed.principal,
+      ...(seed.principal !== undefined && { principal: seed.principal }),
       dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
       authenticate: (token) => principalForToken(this.env, token.length === 0 ? undefined : token, dbName),
       provision: (p) => this.provisionPrincipal(p),
@@ -593,7 +593,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         explain?: boolean;
       };
       if (!body?.query) return json({ error: "body must be { query, inputs? }" }, 400);
-      const dbv = await viewDb(this.env, who, this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+      const dbv = await viewDb(this.env, who, this.store, basis, {
+        ...(typeof body.asOf === "number" && { asOf: body.asOf }),
+        history: !!body.history,
+      });
       const stats: QueryStats = { clauses: [] };
       const result = await runQuery(dbv, body.query as never, body.inputs ?? [], { stats, maxCells: envInt(this.env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
       return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs);
@@ -605,7 +608,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         asOf?: number;
         history?: boolean;
       };
-      const dbv = await viewDb(this.env, who, this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+      const dbv = await viewDb(this.env, who, this.store, basis, {
+        ...(typeof body.asOf === "number" && { asOf: body.asOf }),
+        history: !!body.history,
+      });
       if (body.eid === undefined || body.pattern === undefined) return json({ error: "body must be { eid, pattern }" }, 400);
       const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as never);
       if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs);
@@ -615,7 +621,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     if (em && init.method === "GET") {
       const asOfRaw = new URL(`https://replica${rest}`).searchParams.get("asOf");
       const asOf = asOfRaw !== null ? Number(asOfRaw) : undefined;
-      const dbv = await viewDb(this.env, who, this.store, basis, { asOf: Number.isFinite(asOf as number) ? asOf : undefined });
+      const dbv = await viewDb(this.env, who, this.store, basis, {
+        ...(Number.isFinite(asOf as number) && { asOf: asOf as number }),
+      });
       return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, hdrs);
     }
     return json({ error: "not found" }, 404);
@@ -731,7 +739,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
         const basis = makeBasis(dbName, this.root, this.entries);
         const before = { ...this.store.stats };
-        const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+        const db = await dbFromBasis(this.store, basis, {
+          ...(typeof body.asOf === "number" && { asOf: body.asOf }),
+          history: !!body.history,
+        });
         this.stats.queries++;
         const hdrs = () => ({
           "x-ramose-basis-t": String(basis.t),

@@ -453,7 +453,7 @@ export function parsePolicy(json: unknown): CompiledPolicy {
     ...(schemaClasses !== undefined ? { schemaClasses } : {}),
     claims: o.claims,
     attrs,
-    ns,
+    ...(ns !== undefined ? { ns } : {}),
     ...(operations !== undefined ? { operations } : {}),
     ...(ruleDefs !== undefined ? { rules: ruleDefs } : {}),
   };

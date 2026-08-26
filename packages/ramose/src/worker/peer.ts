@@ -20,7 +20,7 @@ export function segmentSource(env: RamoseEnv, db: string): R2NodeStore {
   if (!source) {
     if (sources.size >= MAX_SOURCES) sources.delete(sources.keys().next().value!);
     const cache = (globalThis as any).caches?.default;
-    source = new R2NodeStore(prefixedBucket(env.STORE, dbPrefix(db)), { maxNodes: 2048, cache: cache ? cacheApiTier(cache) : undefined });
+    source = new R2NodeStore(prefixedBucket(env.STORE, dbPrefix(db)), { maxNodes: 2048, ...(cache ? { cache: cacheApiTier(cache) } : {}) });
     sources.set(db, source);
   }
   return source;

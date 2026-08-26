@@ -45,6 +45,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
     const self = this;
+    const policy = enforcedPolicy(env);
     const host: TransactorHost = {
       get dbName() {
         if (!self.dbName) throw new Error("transactor has no database assigned (pass ?db=<name>)");
@@ -62,9 +63,9 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
       now: () => Date.now(),
       config: configFromEnv(env),
       // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
-      analytics: env.ANALYTICS,
+      ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
       // parsed once per isolate; present = the commit loop enforces it
-      policy: enforcedPolicy(env),
+      ...(policy !== undefined && { policy }),
     };
     this.core = new Transactor(host);
   }

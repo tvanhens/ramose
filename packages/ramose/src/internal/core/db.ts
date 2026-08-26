@@ -55,7 +55,7 @@ export interface DbOptions {
   basisT: number;
   schema: Schema;
   nextEid: number;
-  asOfT?: number;
+  asOfT?: number | undefined;
   history?: boolean;
 }
 

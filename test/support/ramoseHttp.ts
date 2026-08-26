@@ -17,7 +17,8 @@ import { fromJson, toJson } from "../../packages/ramose/src/internal/core/json.t
 import type { TxData } from "../../packages/ramose/src/internal/core/tx.ts";
 
 export interface PeerOptions {
-  token?: string;
+  /** Explicitly `undefined` is fine here (e.g. `target.token?.()`) — only absence, not presence-of-undefined, is checked (`if (this.opts.token)`). */
+  token?: string | undefined;
   fetch?: typeof fetch;
   /** Extra request headers, e.g. `x-ramose-replica-hint: enam`, `x-ramose-cache-basis: 1`, `x-ramose-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
@@ -52,9 +53,9 @@ export class HttpError extends Error {
   constructor(
     msg: string,
     readonly status: number,
-    readonly code?: string,
+    readonly code?: string | undefined,
     /** Worker JSON `tag` when the 5xx is an application body, not a gateway drop. */
-    readonly tag?: string,
+    readonly tag?: string | undefined,
   ) {
     super(msg);
   }
@@ -105,7 +106,7 @@ export class Peer {
     // send `Connection: close`, which evicts that socket from Bun's pool so
     // the attempt after it dials a fresh server. Verified: Bun honors this.
     if (fresh) headers.connection = "close";
-    const res = await this.f(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(toJson(body)) });
+    const res = await this.f(this.base + path, { method, headers, ...(body !== undefined && { body: JSON.stringify(toJson(body)) }) });
     const text = await res.text();
     let parsed: any;
     try {
@@ -135,7 +136,7 @@ function httpErrorMessage(
   status: number,
   text: string,
   parsed: { error?: unknown; code?: unknown } | null,
-): { message: string; code?: string } {
+): { message: string; code?: string | undefined } {
   const code = typeof parsed?.code === "string" ? parsed.code : undefined;
   const raw = typeof parsed?.error === "string" ? parsed.error : text;
   if (isCfPlatformText(raw) || isCfPlatformText(text)) {

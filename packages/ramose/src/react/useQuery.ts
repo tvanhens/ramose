@@ -50,9 +50,9 @@ export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
     () => readT(db),
     [viewDep(db), astKey],
     {
-      initialData: options?.initialData,
-      initialT: options?.initialT,
-      suspense: options?.suspense,
+      ...(options?.initialData !== undefined && { initialData: options.initialData }),
+      ...(options?.initialT !== undefined && { initialT: options.initialT }),
+      ...(options?.suspense !== undefined && { suspense: options.suspense }),
       suspendKey: `one\0${viewKeyOf(db)}\0${astKey}`,
     },
   );

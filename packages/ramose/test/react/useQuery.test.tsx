@@ -43,7 +43,7 @@ const scrubPeer = (
       }
       return {
         body: { t: frame.asOf, result: rowsFor(spec.title) },
-        delay: spec.delay,
+        ...(spec.delay !== undefined && { delay: spec.delay }),
       };
     },
   });

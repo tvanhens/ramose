@@ -295,7 +295,7 @@ export async function listRoots(bucket: R2Like): Promise<number[]> {
   const ts: number[] = [];
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ prefix: "roots/", cursor, limit: 1000 });
+    const page = await bucket.list({ prefix: "roots/", ...(cursor !== undefined && { cursor }), limit: 1000 });
     for (const o of page.objects) ts.push(Number(o.key.slice("roots/".length)));
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
@@ -326,7 +326,7 @@ export async function listLogChunks(bucket: R2Like, sinceT = 0): Promise<LogChun
   const out: LogChunkRef[] = [];
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ prefix: "log/", cursor, limit: 1000 });
+    const page = await bucket.list({ prefix: "log/", ...(cursor !== undefined && { cursor }), limit: 1000 });
     for (const o of page.objects) {
       const m = /^log\/(\d+)-(\d+)$/.exec(o.key);
       if (!m) continue;
@@ -392,7 +392,7 @@ export async function gcSweep(
   for (const prefix of ["seg/", "n/"]) {
     let cursor: string | undefined;
     do {
-      const page = await bucket.list({ prefix, cursor, limit: 1000 });
+      const page = await bucket.list({ prefix, ...(cursor !== undefined && { cursor }), limit: 1000 });
       const doomed: string[] = [];
       for (const o of page.objects) {
         scanned++;

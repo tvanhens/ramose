@@ -255,7 +255,11 @@ export interface Policy<
 export type Class<P extends { readonly classes: readonly string[] }> = P["classes"][number];
 
 const fail = (message: string, ident?: string, cause?: unknown): never => {
-  throw new PolicyError({ message: `ramose/policy: ${message}`, ident, cause });
+  throw new PolicyError({
+    message: `ramose/policy: ${message}`,
+    ...(ident !== undefined && { ident }),
+    ...(cause !== undefined && { cause }),
+  });
 };
 
 /** Keep `CL` inferred from the head, not widened by arm literals. */
@@ -839,7 +843,9 @@ export function policy<
     classes,
     ...(superuser !== undefined ? { superuser } : {}),
     schemaClasses,
-    claims: head.claims as Schema.Struct<Schema.Struct.Fields> | undefined,
+    ...(head.claims !== undefined
+      ? { claims: head.claims as Schema.Struct<Schema.Struct.Fields> }
+      : {}),
     ns,
     operations: compiledOps,
     unarmedOperations,

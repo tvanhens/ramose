@@ -153,7 +153,7 @@ export const installCatalog = Effect.fn(function* (args: {
   readonly url: string;
   readonly token: Redacted.Redacted<string> | undefined;
   readonly schema: Schema.Any;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | undefined;
 }) {
   const { name, url, token, schema } = args;
   if (url === undefined || url === "") {

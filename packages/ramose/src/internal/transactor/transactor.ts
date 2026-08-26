@@ -106,21 +106,21 @@ export interface TransactorStats {
 interface Pending {
   tx: TxData;
   /** verified by the Worker; trusted metadata (the DO is only reachable behind the internal secret) */
-  principal?: Principal;
+  principal?: Principal | undefined;
   /** opaque client id; a replay of a recent id returns the original ack */
-  clientTxId?: string;
+  clientTxId?: string | undefined;
   /** Encoded operation output to persist with the ack (effects must not re-run). */
   opOutput?: unknown;
   /**
    * Peer-owned write (principal provisioning). Skips `checkTx` and the
    * pre-write provision hook — the ops *are* the provision.
    */
-  system?: boolean;
+  system?: boolean | undefined;
   /**
    * Worker already authorized this tx as a named operation. Skips the
    * raw-transact data deny (schema / superuser only).
    */
-  fromOperation?: boolean;
+  fromOperation?: boolean | undefined;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
 }

@@ -18,7 +18,7 @@ type Thenable<A> = Promise<A> & {
 export interface SuspendSlot<A, E> {
   promise: Thenable<A>;
   data?: A;
-  t?: number;
+  t?: number | undefined;
   error?: E;
   /** Tear down a pending live acquire. Idempotent; settled slots are already released. */
   release?: () => void;

@@ -139,9 +139,9 @@ export type RefOverlay = ReadonlyMap<string, readonly number[]>;
 export const DEFAULT_VISIBLE_SET_MAX = 10_000;
 
 export interface PolicyMemoOptions {
-  readonly maxCells?: number;
+  readonly maxCells?: number | undefined;
   /** `0` disables set materialization (the #154 per-entity path). */
-  readonly visibleSetMax?: number;
+  readonly visibleSetMax?: number | undefined;
 }
 
 export type VisibleSetFallbackReason = "size" | "budget";

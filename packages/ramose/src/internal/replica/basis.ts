@@ -34,7 +34,7 @@ export interface Basis {
 
 export function makeBasis(db: string, root: RootRecord, entries: readonly LogEntry[], replica?: string): Basis {
   const t = entries.length ? entries[entries.length - 1].t : root.t;
-  return { v: 1, db, t, root, novelty: entries.map(txFrame), replica };
+  return { v: 1, db, t, root, novelty: entries.map(txFrame), ...(replica !== undefined && { replica }) };
 }
 
 /** Per-isolate cache of derived schemas keyed by root (EAVT hash). */

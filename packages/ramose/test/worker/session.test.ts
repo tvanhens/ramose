@@ -53,7 +53,7 @@ interface Call {
   rest: string;
   method: string;
   headers: Record<string, string>;
-  body?: string;
+  body?: string | undefined;
 }
 
 /** Records every dispatched sub-request; answers with whatever `reply` returns. */
@@ -984,7 +984,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
       decideSessionTx({
         datoms: entry.datoms.map(fromWireDatom),
         policy,
-        principal,
+        ...(principal !== undefined && { principal }),
         ruleDbAfter: conn.db().asOf(entry.t),
         ruleDbBefore: conn.db().asOf(Math.max(0, entry.t - 1)),
       });

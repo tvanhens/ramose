@@ -120,7 +120,7 @@ export interface QueryOptions {
 }
 
 export interface QueryStats {
-  clauses: { clause: string; strategy: string; origin?: ClauseOrigin; index?: string; rowsIn: number; rowsOut: number; seeks: number; scanned: number; ms: number }[];
+  clauses: { clause: string; strategy: string; origin?: ClauseOrigin | undefined; index?: string | undefined; rowsIn: number; rowsOut: number; seeks: number; scanned: number; ms: number }[];
   /** budget usage: peak intermediate cells vs the limit */
   budget?: { maxCells: number; peakCells: number };
 }
@@ -412,24 +412,28 @@ function substClause(c: Clause, sub: (name: string) => Term): Clause {
   };
   switch (c.kind) {
     case "pattern": {
-      const out: PatternClause = { kind: "pattern", src: c.src, e: t(c.e), a: t(c.a), v: t(c.v) };
+      const out: PatternClause = { kind: "pattern", ...(c.src !== undefined ? { src: c.src } : {}), e: t(c.e), a: t(c.a), v: t(c.v) };
       if (c.tx) out.tx = t(c.tx);
       if (c.op) out.op = t(c.op);
       if (c.origin) out.origin = c.origin;
       return out;
     }
     case "pred":
-      return { kind: "pred", fn: c.fn, args: c.args.map(t), origin: c.origin };
+      return { kind: "pred", fn: c.fn, args: c.args.map(t), ...(c.origin !== undefined ? { origin: c.origin } : {}) };
     case "fn": {
       const binding = substBinding(c.binding, sub);
-      return { kind: "fn", fn: c.fn, args: c.args.map(t), binding, origin: c.origin };
+      return { kind: "fn", fn: c.fn, args: c.args.map(t), binding, ...(c.origin !== undefined ? { origin: c.origin } : {}) };
     }
-    case "not":
-      return { kind: "not", join: c.join?.map(joinName).filter((v): v is string => v !== null), clauses: c.clauses.map((x) => substClause(x, sub)), origin: c.origin };
-    case "or":
-      return { kind: "or", join: c.join?.map(joinName).filter((v): v is string => v !== null), branches: c.branches.map((b) => b.map((x) => substClause(x, sub))), origin: c.origin };
+    case "not": {
+      const join = c.join?.map(joinName).filter((v): v is string => v !== null);
+      return { kind: "not", ...(join !== undefined ? { join } : {}), clauses: c.clauses.map((x) => substClause(x, sub)), ...(c.origin !== undefined ? { origin: c.origin } : {}) };
+    }
+    case "or": {
+      const join = c.join?.map(joinName).filter((v): v is string => v !== null);
+      return { kind: "or", ...(join !== undefined ? { join } : {}), branches: c.branches.map((b) => b.map((x) => substClause(x, sub))), ...(c.origin !== undefined ? { origin: c.origin } : {}) };
+    }
     case "rule-call":
-      return { kind: "rule-call", name: c.name, args: c.args.map(t), origin: c.origin };
+      return { kind: "rule-call", name: c.name, args: c.args.map(t), ...(c.origin !== undefined ? { origin: c.origin } : {}) };
   }
 }
 
@@ -1299,7 +1303,7 @@ class Executor {
     // ---- index nested loop: one seek per distinct join tuple, batched per
     // (index, prefix shape) so a single cursor serves all seeks in key order.
     stat.strategy = "seek-join";
-    type Residual = { e?: number; a?: number; vk?: string; tx?: number; op?: boolean };
+    type Residual = { e?: number | undefined; a?: number | undefined; vk?: string | undefined; tx?: number | undefined; op?: boolean | undefined };
     type Batch = { prefixes: Prefix[]; groups: Group[]; residual: (Residual | null)[] };
     const batches = new Map<number, Batch>(); // key: index*16 + prefix-shape bits
     for (const g of groupList) {

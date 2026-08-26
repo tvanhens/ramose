@@ -48,7 +48,7 @@ export const fromStream = <A, E>(
 ): Subscription<A, E> => {
   type Listener = {
     readonly onValue: (value: A) => void;
-    readonly onError?: (error: E) => void;
+    readonly onError?: ((error: E) => void) | undefined;
     readonly onEnd?: () => void;
   };
 

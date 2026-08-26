@@ -78,7 +78,7 @@ const user = (sub: string, eid: number | undefined, cls = "member"): Principal =
   kind: "user",
   class: cls,
   sub,
-  eid,
+  ...(eid !== undefined && { eid }),
   claims: { sub },
   db: "acme",
 });

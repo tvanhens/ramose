@@ -424,7 +424,7 @@ const attachSeam = (
 interface Pass<A> {
   readonly value: A;
   readonly t: number;
-  readonly viewed?: number;
+  readonly viewed?: number | undefined;
 }
 
 /** The pause between `live` passes that failed non-terminally, in ms. */
@@ -494,7 +494,7 @@ const makeRead = <C extends AnySchema>(
     {
       readonly rows: unknown;
       readonly t: number;
-      readonly viewed?: number;
+      readonly viewed?: number | undefined;
     },
     DbError | NotOne
   > =>
@@ -947,7 +947,11 @@ export const makeDb = <C extends AnySchema>(
           wire,
           name,
           schema,
-          view,
+          {
+            ...(view.asOf !== undefined && { asOf: view.asOf }),
+            ...(view.history !== undefined && { history: view.history }),
+            ...(view.minT !== undefined && { minT: view.minT }),
+          },
           bad,
           operation,
           contextual ? a : undefined,

@@ -30,10 +30,10 @@ import {
 export { OperationRejected, QueryBudgetExceeded, Unauthorized };
 
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly message?: string }> {}
-export class BadRequest extends Data.TaggedError("BadRequest")<{ readonly message: string; readonly trace?: string }> {}
+export class BadRequest extends Data.TaggedError("BadRequest")<{ readonly message: string; readonly trace?: string | undefined }> {}
 /** A Transactor/Replica DO answered with a non-2xx; passed through verbatim. */
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly status: number; readonly body: string; readonly headers?: Record<string, string> }> {}
-export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string }> {}
+export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string | undefined }> {}
 
 export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal | OperationRejected;
 
@@ -77,7 +77,7 @@ export interface HttpError {
   readonly body?: Record<string, unknown>;
   /** Verbatim body text (upstream pass-through). */
   readonly raw?: string;
-  readonly headers?: Record<string, string>;
+  readonly headers?: Record<string, string> | undefined;
 }
 
 /** Tagged failure → status + body fields. Pure; index.ts turns it into a `Response`. */

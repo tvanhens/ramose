@@ -63,10 +63,10 @@ export interface Attribute {
   readonly ident: string;
   readonly valueType: VT;
   readonly cardinality: Cardinality;
-  readonly unique?: Uniqueness;
+  readonly unique?: Uniqueness | undefined;
   readonly index: boolean;
   readonly isComponent: boolean;
-  readonly doc?: string;
+  readonly doc?: string | undefined;
   /** Card-one field the schema marked optional — not required at create. */
   readonly optional?: boolean;
 }
@@ -144,14 +144,14 @@ export function bootstrapDatoms(): Datom[] {
 // ---------------------------------------------------------------------------
 
 interface Partial {
-  ident?: string;
-  valueType?: string;
-  cardinality?: string;
-  unique?: string;
-  index?: boolean;
-  isComponent?: boolean;
-  optional?: boolean;
-  doc?: string;
+  ident?: string | undefined;
+  valueType?: string | undefined;
+  cardinality?: string | undefined;
+  unique?: string | undefined;
+  index?: boolean | undefined;
+  isComponent?: boolean | undefined;
+  optional?: boolean | undefined;
+  doc?: string | undefined;
 }
 
 export class Schema {

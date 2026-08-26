@@ -54,13 +54,13 @@ const log = componentLogger("peer");
 export interface AuthState {
   /** `RAMOSE_POLICY` is set */
   readonly configured: boolean;
-  readonly policy?: CompiledPolicy;
+  readonly policy?: CompiledPolicy | undefined;
   /** set = deny every `/db/*` (malformed policy, or an incomplete verifier) */
   readonly broken?: string;
   readonly issuers?: readonly string[];
-  readonly aud?: string;
+  readonly aud?: string | undefined;
   readonly maxTtl: number;
-  readonly keys?: JWTVerifyGetKey;
+  readonly keys?: JWTVerifyGetKey | undefined;
 }
 
 type AuthEnv = Pick<
@@ -263,7 +263,14 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
 
   let payload: JWTPayload;
   try {
-    ({ payload } = await jwtVerify(token, st.keys as JWTVerifyGetKey, { algorithms: ALGS, issuer: st.issuers as string[], audience: st.aud }));
+    ({ payload } = await jwtVerify(token, st.keys as JWTVerifyGetKey, {
+      algorithms: ALGS,
+      issuer: st.issuers as string[],
+      // `st.aud` is always set alongside `st.keys` (see `build`); the omission
+      // guard is for the type only — `jose` treats a present `undefined` as
+      // "check audience against undefined", not "skip the check".
+      ...(st.aud !== undefined ? { audience: st.aud } : {}),
+    }));
   } catch (err) {
     reportVerifyFailure(err);
     throw new Unauthorized({});
@@ -278,14 +285,15 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
   const attrs = ramose.attrs === undefined ? undefined : claimObject(ramose.attrs);
   if (ramose.attrs !== undefined && attrs === undefined) throw new Unauthorized({});
 
+  const aud = typeof payload.aud === "string" ? payload.aud : st.aud;
   const principal: Principal = Object.freeze({
     kind: "user",
     class: ramose.class,
     sub: payload.sub,
     claims: Object.freeze({
       sub: payload.sub,
-      iss: payload.iss,
-      aud: typeof payload.aud === "string" ? payload.aud : st.aud,
+      ...(payload.iss === undefined ? {} : { iss: payload.iss }),
+      ...(aud === undefined ? {} : { aud }),
       exp: payload.exp,
       ...(attrs === undefined ? {} : { attrs }),
     }),

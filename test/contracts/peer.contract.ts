@@ -299,6 +299,15 @@ d("ramose session socket e2e", () => {
   const sessionDb = `${dbName}-session`;
   const urlOf = () => target.url();
   const token = tokenOf();
+  /**
+   * `token` is omitted (not set to `undefined`) when absent —
+   * `EffectClientOptions.token` is `T | undefined`-narrow under
+   * `exactOptionalPropertyTypes`.
+   */
+  const effectOptions = (url: string): RamoseEffect.EffectClientOptions => ({
+    url,
+    ...(token !== undefined && { token: Effect.succeed(Redacted.make(token)) }),
+  });
 
   /**
    * The alchemy client's own transient retry is a ~6s ladder; a fresh
@@ -319,10 +328,7 @@ d("ramose session socket e2e", () => {
   test(
     "one socket queries and pulls; a write on another connection wakes db.live",
     async () => {
-      const options = {
-        url: urlOf(),
-        token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
-      };
+      const options = effectOptions(urlOf());
       const a = ManagedRuntime.make(RamoseEffect.layer(options));
       const b = ManagedRuntime.make(RamoseEffect.layer(options));
       try {
@@ -438,12 +444,7 @@ d("ramose session socket e2e", () => {
   test(
     "aggregates, groupBy and `.after` paging over the wire",
     async () => {
-      const rt = ManagedRuntime.make(
-        RamoseEffect.layer({
-          url: urlOf(),
-          token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
-        }),
-      );
+      const rt = ManagedRuntime.make(RamoseEffect.layer(effectOptions(urlOf())));
       try {
         const db = rt
           .runSync(RamoseEffect.Databases)
@@ -648,10 +649,7 @@ d("ramose session socket e2e", () => {
   test(
     "two clients moving two existing issues both see both moves on live (no refresh)",
     async () => {
-      const options = {
-        url: urlOf(),
-        token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
-      };
+      const options = effectOptions(urlOf());
       const phoneRt = ManagedRuntime.make(RamoseEffect.layer(options));
       const computerRt = ManagedRuntime.make(RamoseEffect.layer(options));
       const boardDb = `${dbName}-reef-two`;
