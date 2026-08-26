@@ -13,7 +13,7 @@ import * as Stream from "effect/Stream";
 import * as Ramose from "../../packages/ramose/src/db/index.ts";
 import * as RamoseEffect from "../../packages/ramose/src/db/effect.ts";
 import { addReefIssue, addReefUser, addSession, moveReefIssue } from "../../e2e-ops.ts";
-import { attrMap, Peer } from "../support/ramoseHttp.ts";
+import { attrMap, isTransientCf, Peer } from "../support/ramoseHttp.ts";
 
 const { Query, Q } = Ramose;
 
@@ -154,14 +154,22 @@ d("ramose e2e", () => {
     // become required on later creates). On a slow workers.dev first test
     // the 5s index alarm can already have absorbed earlier txs (`ran:false`).
     const bump = await db.transact([[":db/add", alice, ":user/age", 32]]);
-    let idx = await db.index();
+    let idx: { ran?: boolean; root?: { t?: number } } | undefined;
     let after = await db.info();
-    for (let i = 0; i < 40 && !idx.ran && (after.transactor.root.t ?? 0) < bump.t; i++) {
-      await Bun.sleep(100);
-      idx = await db.index();
+    // A workers.dev index can 500 with "Durable Object storage operation
+    // exceeded timeout" after the per-request retry budget. Keep polling:
+    // the transactor root is the authority, and a later index still counts.
+    for (let i = 0; i < 8; i++) {
+      try {
+        idx = await db.index();
+      } catch (e) {
+        if (!isTransientCf(e)) throw e;
+      }
       after = await db.info();
+      if (idx?.ran || (after.transactor.root.t ?? 0) >= bump.t) break;
+      await Bun.sleep(250);
     }
-    expect((idx.ran ? idx.root.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(bump.t);
+    expect((idx?.ran ? idx.root?.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(bump.t);
     expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
     const q1 = await db.queryEnvelope(
       `[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`,
@@ -178,7 +186,7 @@ d("ramose e2e", () => {
     if (q2.meta.r2Gets !== null) expect(q2.meta.r2Gets).toBe(0); // warm isolate: no R2 reads
     // as-of still correct after the root flip
     expect(await db.asOf(tAge30).q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
-  });
+  }, 180_000);
 
   test("serialized t under concurrent clients (no gaps / dupes)", async () => {
     const acks = await Promise.all(
