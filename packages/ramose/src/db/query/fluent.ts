@@ -159,7 +159,7 @@ const withDefaultShape = (pipe: Pipeline): Pipeline => {
     (s) => s.kind === "orderBy" || s.kind === "limit" || s.kind === "offset",
   );
   const head = idx === -1 ? pipe : { ...pipe, stages: pipe.stages.slice(0, idx) };
-  const next = selectStage(entityShape(pipe.ns))(head);
+  const next = selectStage(entityShape(pipe.ns))(head as never);
   return idx === -1 ? next : { ...next, stages: [...next.stages, ...pipe.stages.slice(idx)] };
 };
 
@@ -319,9 +319,9 @@ const makeFluent = <N extends AnyQueryRoot, Row>(
       ...orders,
       { key, dir: dir ?? "asc", empty: opts?.empty ?? "last" },
     ], limitN, offsetN);
-  fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
-  fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
-  fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek, orders, limitN, offsetN);
+  fluent.limit = ((n: number) => next(limitStage(n)(pipe as never))) as FluentQuery<N, Row>["limit"];
+  fluent.offset = ((n: number) => next(offsetStage(n)(pipe as never))) as FluentQuery<N, Row>["offset"];
+  fluent.ids = () => makeFluent(ns, idsStage()(pipe as never), stripCursor, take, seek, orders, limitN, offsetN);
   // terminals stay on the same object so `.where(…).one()` typechecks
   const baseOne = qv.one.bind(qv);
   const baseFail = qv.oneOrFail.bind(qv);
@@ -357,5 +357,5 @@ export const from = <N extends AnyQueryRoot>(ns: N): FluentQuery<N, EntityRow<N>
   if (tag !== "Entity" && tag !== "Trait") {
     throw new Error("ramose/query: Query.from(...) takes an entity or a trait");
   }
-  return makeFluent(ns, entities(ns), false);
+  return makeFluent(ns, entities(ns) as Pipeline, false);
 };

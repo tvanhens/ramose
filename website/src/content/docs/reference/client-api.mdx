@@ -65,7 +65,7 @@ export const Todos = Ramose.Schema({ todo: Todo });
 
 **`Ramose.Entity(name, fields, options?)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields`, `_tag` and `traits` are reserved. `{ traits: [Taggable] }` flattens trait fields onto the entity; `Issue.tag === Taggable.tag` and the ident stays `:taggable/tag`.
 
-**`Ramose.Trait(name, fields, options?)`** — a reusable field group. Trait fields keep the trait namespace when composed. The result carries those fields plus `Taggable.id`, so `Query.from(Taggable)` and `Ref(Taggable)` work like an entity. Entities and traits may compose traits transitively; a diamond that reaches the same trait is idempotent; two different fields with the same flattened name fail at definition and `install()`.
+**`Ramose.Trait(name, fields, options?)`** — a reusable field group. Trait fields keep the trait namespace when composed. `Taggable.id` is the same id cell as an entity, so `Query.from(Taggable)` and `Ref(Taggable)` work. Entities and traits may compose traits transitively; a diamond that reaches the same trait is idempotent; two different fields with the same flattened name fail at definition and `install()`.
 
 **Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity | Trait)`. Each takes `doc` / `index` / `optional` and composes with `Field.many` / `Field.unique` / `Field.owned`.
 
@@ -339,7 +339,7 @@ const me = await db.principal();
 
 ## Queries
 
-**`Query.from(Entity | Trait)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is the `Query` namespace on `ramose/db` (`Ramose.Query` when you import the module as a namespace). The chain is immutable. `Query.from(Taggable)` scans explicit trait membership (an object with no tags is still taggable) and the default row is id plus trait fields. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Put changing values in `.where` and pass the value to `db.query` / `db.live` / `useLive` — no bindings argument.
+**`Query.from(Entity | Trait)`** builds a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)); `Query` is the `Query` namespace on `ramose/db` (`Ramose.Query` when you import the module as a namespace). The chain is immutable. A trait root scans membership, not field presence; the default row is id plus trait fields. `Query.q` remains the generator/kernel constructor for joins, aggregates, and disjunction ([The query language](/reference/query-language/)). Put changing values in `.where` and pass the value to `db.query` / `db.live` / `useLive` — no bindings argument.
 
 ```ts
 Query.from(Todo)                         // every todo…

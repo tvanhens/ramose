@@ -170,7 +170,7 @@ export interface QueryOrder {
  * body the same value is a clause source: `yield* entities(Issue)`
  * mints the branded focus var and contributes membership.
  */
-export interface Pipeline<Row = unknown, N extends AnyQueryRoot = AnyEntity> {
+export interface Pipeline<Row = unknown, N extends AnyQueryRoot = AnyQueryRoot> {
   readonly _tag: "Pipeline";
   readonly ns: N;
   readonly stages: readonly PipeStage[];

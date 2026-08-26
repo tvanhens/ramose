@@ -513,7 +513,8 @@ async function evalArms(
  * Is `op` allowed on attribute `attrIdent` at `ctx.e`? The attribute rule
  * ANDs with (only narrows) its namespace rule; either alone applies; neither
  * denies. Trait fields additionally AND the trait's shared namespace rule
- * with the composing entity's row rule.
+ * with the composing entity's row rule. A pushdown skip on the entity
+ * namespace does not cover a trait attr on a different var.
  */
 export async function allowsOp(
   policy: CompiledPolicy,
@@ -532,6 +533,7 @@ export async function allowsOp(
   const entityArms = entityNs === undefined ? undefined : policy.ns?.[entityNs]?.[op];
   const traitArms = isTrait && rawPrefix !== undefined ? policy.ns?.[rawPrefix]?.[op] : undefined;
   const skipEntity =
+    !isTrait &&
     op === "read" &&
     ctx.overlay === undefined &&
     ctx.memo.skipsNsBackstop(entityNs);

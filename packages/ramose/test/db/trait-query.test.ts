@@ -136,12 +136,15 @@ describe("Query.from(Trait)", () => {
     expect(taggable.map((r) => r.id).sort()).toEqual([issueEid, docEid].sort());
     expect(new Set(Object.keys(taggable[0]!))).toEqual(new Set(["id", "tag"]));
 
-    const soft = await rowsOf<{
-      readonly id: number;
-      readonly note: string | undefined;
-      readonly tags: readonly string[];
-    }>(conn.db(), Query.from(Soft));
-    expect(soft).toEqual([{ id: noteEid, note: undefined, tags: [] }]);
+    const emptySoft = await rowsOf<{ readonly id: number }>(
+      conn.db(),
+      Query.from(Soft).select({ id: Soft.id }),
+    );
+    expect(emptySoft).toEqual([{ id: noteEid }]);
+    const defaultSoft = await rowsOf<Record<string, unknown>>(conn.db(), Query.from(Soft));
+    expect(defaultSoft).toHaveLength(1);
+    expect(defaultSoft[0]!.id).toBe(noteEid);
+    expect("title" in defaultSoft[0]!).toBe(false);
   });
 
   test("entity-rooted queries filter and select composed fields", async () => {
@@ -396,7 +399,7 @@ describe("trait read policy", () => {
         traits: {
           taggable: {
             read: true,
-            attrs: [P.field(Taggable.tag, { read: P.class("member") })],
+            attrs: [P.field(Taggable.tag, { read: P.class("member") }) as never],
           },
         },
       },

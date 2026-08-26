@@ -27,6 +27,7 @@ import { schemaTraits } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent, EntityTraitNs } from "./idents.ts";
 import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
+import type { AnyTrait } from "./Trait.ts";
 import type { AnyOperation, AnyOperations, Operation } from "./Operation.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
@@ -380,7 +381,7 @@ export { classFn as class };
 export const field = <
   A extends AttrRef,
   M,
-  N extends AnyEntity = AnyEntity,
+  N extends AnyQueryRoot = AnyEntity,
   CL extends string = string,
 >(
   a: A,
@@ -824,6 +825,7 @@ export function policy<
       if (declared === undefined) {
         fail(`traits.${traitKey}: ${JSON.stringify(traitKey)} is not a trait in the schema`);
       }
+      const trait = declared as AnyTrait;
       const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
       for (const key of Object.keys(nsSpec)) {
         if (REJECTED_WRITE_KEYS.has(key)) {
@@ -832,9 +834,9 @@ export function policy<
           );
         }
       }
-      const prefix = declared.ns;
+      const prefix = trait.ns;
       const where = `traits.${traitKey}`;
-      const fieldIdents = entityFieldIdents(declared);
+      const fieldIdents = entityFieldIdents(trait);
       const rules = compileSpec(nsSpec, where, prefix, prefix, fieldIdents);
       const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
       for (const a of nsSpec.attrs ?? []) {

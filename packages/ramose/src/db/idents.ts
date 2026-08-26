@@ -145,8 +145,15 @@ export type EntityRef<
   | H;
 
 /** Transitive trait names on a composer (direct + nested). */
-export type TransitiveTraitNs<T> = T extends { readonly ns: infer Ns extends string }
-  ? Ns | (T extends { readonly traits: readonly (infer Inner)[] } ? TransitiveTraitNs<Inner> : never)
+export type TransitiveTraitNs<T> = T extends {
+  readonly _tag: "Trait";
+  readonly ns: infer Ns extends string;
+}
+  ? Ns | (T extends { readonly traits: readonly (infer Inner)[] }
+      ? Inner extends { readonly _tag: "Trait" }
+        ? TransitiveTraitNs<Inner>
+        : never
+      : never)
   : never;
 
 /** Trait names an entity composes, walking `traits` transitively. */

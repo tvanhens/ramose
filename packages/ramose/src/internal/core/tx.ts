@@ -951,7 +951,7 @@ export async function expandTx(
   const hasTraitMembership = async (e: number, traitIdent: string): Promise<boolean> => {
     const tr = traitAttr();
     if (tr !== undefined) {
-      for (const tv of await current(e, tr.id)) {
+      for (const tv of (await current(e, tr.id)).values()) {
         if (tv.v === traitIdent) return true;
       }
     }

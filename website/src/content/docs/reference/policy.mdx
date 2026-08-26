@@ -27,7 +27,7 @@ const policy = Ramose.policy(
   },
   {
     issue: { read, attrs? },
-    traits: { taggable: { read, attrs? } },
+    traits: { taggable: { read } },
     operations: { createIssueOp, setTitleOp, … },
   },
 );
@@ -86,15 +86,15 @@ export const policy = Ramose.policy(
 
 - `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
-- The second argument is one block per record type (reads), optional `traits:` (shared field reads), plus `operations:` (writes). A record type with no `read` is invisible; a trait field also needs that trait's `read`. A registered operation with no arm **denies** everyone but `superuser`.
+- The second argument is one block per record type, optional `traits:`, plus `operations:`. A record type with no `read` is invisible; a registered operation with no arm **denies** everyone but `superuser`.
 
 `Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no schema class, or `P.class(superuser)`. `P.class` omits `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
 
-Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
+Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`). Inline arms write `(me) => …` with `me` fully typed.
 
 ## Reads: per-fact masks
 
-The only per-fact verb is `read`. It is checked on every query, pull and live query — including `asOf` and `history` views. Namespace `read` is the default for every attribute; `P.field` narrows one attribute. Trait fields AND the composing entity's row rule with the shared `traits.taggable.read` — two composers do not union grants.
+The only per-fact verb is `read`. It is checked on every query, pull and live query — including `asOf` and `history` views. Namespace `read` is the default for every attribute; `P.field` narrows one attribute.
 
 ```ts
 issue: { read: true, attrs: [P.field(Issue.privateNote, { read: P.class("owner") })] }
