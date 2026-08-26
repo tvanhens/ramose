@@ -5,17 +5,15 @@ description: Your data model in one TypeScript file — record types, fields, re
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-This page is everything about the **schema** — your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)). It is for anyone who has built the first app and wants to model real data.
+This page is the **schema** — your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)). For anyone who has built the first app and wants to model real data.
 
 <Learn learn={["The three constructors and what each means", "Every value type and option", "What is safe to change later"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }]} minutes={8} />
 
 ## Three pieces, and that is the whole vocabulary
 
 - **`Ramose.string()`** (and the other value shorthands) declare one **field** — a named, typed slot ([glossary](/concepts/glossary/#field)).
-- **`Ramose.Entity`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`. Names match `IDENT_NAME_RE`; `id` / `ns` / `fields` / `_tag` / `traits` are reserved. `{ traits: [Taggable] }` flattens `Ramose.Trait` fields onto the entity; those fields keep the trait ident.
+- **`Ramose.Entity`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`. Names match `IDENT_NAME_RE`; `id` / `ns` / `fields` / `_tag` / `traits` are reserved. `{ traits: [Taggable] }` flattens `Ramose.Trait` fields and keeps their idents.
 - **`Ramose.Schema`** collects record types into the schema a database installs. The object key must be the entity's name; `Schema([User, Label])` does that for you.
-
-A raw [Effect Schema](https://effect.website) is still accepted as the advanced form (`Ramose.Field(schema)`); app schemas do not import it.
 
 ## Reef's schema, annotated
 
@@ -92,7 +90,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
 
-Shorthands take the option bag (`doc`, `index`, `optional`) and compose with `Field.many` / `Field.unique` / `Field.owned`. A raw Effect Schema is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type. Anything else types `valueType` as missing; wrap with `Ramose.stored(schema, vt)` or use `Ramose.Enum([...])`. Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay as that advanced-form vocabulary — `Field(Ramose.Uuid)` row types are `string`.
+Shorthands take the option bag (`doc`, `index`, `optional`) and compose with `Field.many` / `Field.unique` / `Field.owned`. A raw [Effect Schema](https://effect.website) is the advanced form: `Ramose.Field(schema)` — `String` / `Number` / `Boolean` infer a value type. Anything else types `valueType` as missing; wrap with `Ramose.stored(schema, vt)` or use `Ramose.Enum([...])`. Branded schemas (`Long`, `Instant`, `Uuid`, `Bytes`) stay that vocabulary — `Field(Ramose.Uuid)` rows are `string`.
 
 ## Many, unique, owned
 
@@ -111,13 +109,13 @@ These three are the function, not bag keys.
 
 | option | default | effect |
 | --- | --- | --- |
-| `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never a required key. A field is also optional when the Effect schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`, `Schema.optional`) — say `optional: true` explicitly if you mean it. |
+| `optional` | `false` | omitted at create; `| undefined` on the default row. Card-many is already an empty set and is never required. Also optional when the Effect schema admits `undefined` — say `optional: true` if you mean it. |
 | `index` | true when the field is unique | keeps a value-ordered index, so you can look a record up by value |
 | `doc` | none | a description stored with the field |
 
 ## References between records
 
-`Ramose.Ref(User)` points at another record; `Ref(Taggable)` at any composer of that trait. Naming the target lets a query hop through it (`Query.follow(Issue.assignee)`) or backwards (`Query.backlink(Issue.creator)` — the issues that point at this user), and lets a shape nest (`Issue.assignee.select({ … })`) or read backwards (`Issue.creator.reverse.select({ … })`). Write `Ref(() => Other)` only when the target is declared later (a cycle).
+`Ramose.Ref(User)` points at another record; `Ref(Taggable)` at any composer of that trait. Naming the target lets a query hop through it (`Query.follow(Issue.assignee)`) or backwards (`Query.backlink(Issue.creator)`), and lets a shape nest (`Issue.assignee.select({ … })`) or read backwards (`Issue.creator.reverse.select({ … })`). Write `Ref(() => Other)` only when the target is declared later.
 
 ## Types flow out of the schema
 
@@ -153,13 +151,13 @@ A database installed before required-at-transact reads every card-one field as r
 
 ## The signed-in user row
 
-The peer always writes the principal ident (`sub`). It writes `role` only when that attr exists and is string-typed. It *may* stamp matching `ramose.attrs` at login, but those keys are per-token and never guaranteed — they do not make a required field provisionable. Any other required field on that entity — including a required non-string `role` — makes session establishment itself `tx/required` (409). Mark those fields `optional: true` — Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` fail closed if a required field is unprovisionable.
+The peer always writes the principal ident (`sub`). It writes `role` only when that attr exists and is string-typed. Matching `ramose.attrs` at login are per-token and never guaranteed — they do not make a required field provisionable. Any other required field — including a required non-string `role` — makes session establishment `tx/required` (409). Mark those fields `optional: true` — Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` fail closed if a required field is unprovisionable.
 
 ## Changing a schema later
 
 Adding a field or a record type is another install; the app keeps running. There is no destructive migration to fear, because Ramose never rewrites a **fact** — one statement about one record's field ([glossary](/concepts/glossary/#fact)). Old data keeps the field it was written with, reads of the past keep working, and removing a field from the schema does not delete the facts that used it.
 
-`install()` reads the installed fields first and refuses a change that would split the data model: a field's value type, whether it holds one value or many, adding or changing a unique key, a new required field on a record type that already has rows, or tightening a ref target (`Ref` → `Ref(Taggable)`, or one target → another) on existing rows. The failure is `IncompatibleSchema`, listing every incompatible ident. Compatible changes — a new optional field, a new record type, a `doc` edit, an optional→required flip on a record type with no rows, dropping a ref target — apply silently. An optional→required flip retracts `:db/optional` so requiredness is actually enforced. To apply an incompatible change anyway (you have migrated the data, or you accept the split), pass `install({ allowIncompatible: [":issue/title"] })`.
+`install()` reads the installed fields first and refuses a split: value type, one-vs-many, adding or changing a unique key, a new required field on existing rows, or tightening a ref target on existing rows (`Ref` → `Ref(Taggable)`). The failure is `IncompatibleSchema`, listing every incompatible ident. Compatible changes — a new optional field, a new record type, a `doc` edit, an optional→required flip with no rows, dropping a ref target — apply silently. An optional→required flip retracts `:db/optional`. To apply an incompatible change anyway, pass `install({ allowIncompatible: [":issue/title"] })`.
 
 Dropping an option is quieter still: nothing goes over the wire, so the old setting stays. Under a policy, only a schema class may add a new ident. Re-installing an already-deployed schema from a member token is a silent no-op (`db.install()` is safe to run twice); a new field or record type is 403.
 
