@@ -264,7 +264,7 @@ export interface TxHandle<C extends AnySchema = AnySchema> {
     value?: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
-  delete(): Effect.Effect<void>;
+  readonly delete: Effect.Effect<void>;
 }
 
 // ── builder ────────────────────────────────────────────────────────────────
@@ -525,10 +525,9 @@ const makeHandle = <C extends AnySchema>(
         ops.push([":db/retract", eid, lowerAttr(field), lowerWriteValue(value)]);
       }
     }),
-  delete: () =>
-    Effect.sync(() => {
-      ops.push([":db/retractEntity", eid]);
-    }),
+  delete: Effect.sync(() => {
+    ops.push([":db/retractEntity", eid]);
+  }),
 });
 
 /**

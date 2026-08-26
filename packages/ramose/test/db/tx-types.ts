@@ -133,7 +133,7 @@ tx.set(handle, Movie.title, "not a movie but types allow any ns");
 }
 handle.remove(User.age, 35);
 handle.remove(User.name);
-handle.delete();
+handle.delete;
 tx.remove(handle, User.friends, 1002);
 tx.delete(handle);
 tx.entity([User.name, "Ada"]);

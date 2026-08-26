@@ -70,13 +70,7 @@
           "promiseInEffectSuccess": "error",
           "scopeInLayerEffect": "error",
           "unknownInEffectCatch": "error",
-          // Suggestion-level rules, also raised to `error`. `lazyEffect`
-          // is deliberately left at its default: it fires on
-          // `providers()` / `DatabaseProvider()` / `ServerProvider()`,
-          // whose zero-argument shape is alchemy's convention across
-          // every provider package, and on `basis()` / `principal()` /
-          // `delete()`, whose promise-side twins stay methods — making
-          // only the Effect ones properties would break that symmetry.
+          // Suggestion-level rules, also raised to `error`.
           "abortControllerInEffect": "error",
           "catchAllToMapError": "error",
           "catchChainToFirstSuccessOf": "error",
@@ -89,6 +83,7 @@
           "effectMapVoid": "error",
           "effectSucceedWithVoid": "error",
           "flatMapToMap": "error",
+          "lazyEffect": "error",
           "leakingRequirements": "error",
           "multipleCatchTag": "error",
           "preferTypedSchemaDecoder": "error",

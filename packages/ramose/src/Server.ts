@@ -1022,6 +1022,11 @@ const ProviderLocal = () =>
   });
 
 /** @internal Registered by `providers()`. */
+// Kept as a zero-argument factory rather than a bare Layer value: as a
+// value the whole provider graph would be constructed at module load,
+// on every import, instead of when a stack actually asks for it. It is
+// also the shape alchemy uses in every provider package it ships.
+// @effect-diagnostics-next-line lazyEffect:off
 export const ServerProvider = () =>
   ProviderLayer.dual(Server, {
     local: () => ProviderLocal(),

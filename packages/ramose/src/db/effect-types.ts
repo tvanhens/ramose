@@ -53,7 +53,7 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
     pattern: PullPattern<C, P>,
   ): Stream.Stream<Pull<C, P> | null, DbError>;
 
-  basis(): Effect.Effect<{ readonly t: number }, DbError>;
+  readonly basis: Effect.Effect<{ readonly t: number }, DbError>;
 
   asOf(t: number): EffectReadDb<C>;
   readonly history: EffectReadDb<C>;
@@ -61,7 +61,7 @@ export interface EffectReadDb<C extends AnySchema = AnySchema> {
 
 export interface EffectDb<C extends AnySchema = AnySchema>
   extends EffectReadDb<C> {
-  principal(): Effect.Effect<DbPrincipal<C>, DbError>;
+  readonly principal: Effect.Effect<DbPrincipal<C>, DbError>;
 
   install(
     options?: InstallOptions,

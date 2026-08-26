@@ -673,8 +673,7 @@ const makeRead = <C extends AnySchema>(
     // a pinned view answers from its own coordinate; a live view (history
     // included) asks the peer, not `session.t` — that is 0 before the first
     // frame and lags a fresh peer, while `/info` is authoritative and cheap
-    basis: () =>
-      fenced(
+    basis: fenced(
         view.asOf !== undefined
           ? Effect.succeed({ t: view.asOf })
           : Effect.suspend(() =>
@@ -808,7 +807,7 @@ const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
       fromStream(
         inner.livePull(subject as never, pattern as never),
       )) as ReadDb<C>["livePull"],
-    basis: () => asPromise(inner.basis()),
+    basis: () => asPromise(inner.basis),
     asOf: (t: number) => wrapRead(inner.asOf(t)),
     get history() {
       return wrapRead(inner.history);
@@ -822,7 +821,7 @@ const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
 const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
   const db = {
     ...wrapRead(inner),
-    principal: () => asPromise(inner.principal()),
+    principal: () => asPromise(inner.principal),
     install: (options?: InstallOptions) => asPromise(inner.install(options)),
     run: ((operation: AnyOperation, a: unknown, b?: unknown) =>
       asPromise(
@@ -894,7 +893,7 @@ export const makeDb = <C extends AnySchema>(
   const effectDb: EffectDb<C> = {
     ...read,
 
-    principal: () =>
+    principal:
       bad !== undefined
         ? Effect.fail<DbError>(bad)
         : Effect.suspend(() => wire.principal(name)).pipe(

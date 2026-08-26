@@ -355,7 +355,7 @@ export interface RuntimeOpHandle {
   readonly eid: unknown;
   set(field: unknown, value: unknown): Effect.Effect<void>;
   remove(field: unknown, value?: unknown): Effect.Effect<void>;
-  delete(): Effect.Effect<void>;
+  readonly delete: Effect.Effect<void>;
 }
 
 export interface RuntimeOp {

@@ -183,7 +183,7 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
     runSync(entity.remove(field, value));
   },
   delete: () => {
-    runSync(entity.delete());
+    runSync(entity.delete);
   },
 });
 

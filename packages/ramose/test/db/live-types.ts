@@ -173,20 +173,20 @@ export type _past = Expect<Equal<typeof past, Stream.Stream<Names, DbError>>>;
 const hist = db.history.effect.live(namesQ);
 export type _hist = Expect<Equal<typeof hist, Stream.Stream<Names, DbError>>>;
 
-// ── basis() requires nothing: `R = never`, on every view ──────────────────
+// ── basis requires nothing: `R = never`, on every view ───────────────────
 
-const basis = db.effect.basis();
+const basis = db.effect.basis;
 export type _basis = Expect<
   Equal<typeof basis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
 export type _basisR = Expect<Equal<Effect.Services<typeof basis>, never>>;
 export type _basisErr = Expect<Equal<Effect.Error<typeof basis>, DbError>>;
 
-const pinnedBasis = db.asOf(3).effect.basis();
+const pinnedBasis = db.asOf(3).effect.basis;
 export type _pinnedBasis = Expect<
   Equal<typeof pinnedBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
-const historyBasis = db.history.effect.basis();
+const historyBasis = db.history.effect.basis;
 export type _historyBasis = Expect<
   Equal<typeof historyBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
