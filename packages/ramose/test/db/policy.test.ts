@@ -813,6 +813,29 @@ describe("masked attributes in pull patterns", () => {
   });
 });
 
+describe("an empty traits container", () => {
+  const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+  const Issue = Entity("issue", { title: Field(Schema.String) }, { traits: [Taggable] });
+  const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+  const Catalog = DbSchema({ actor: Actor, issue: Issue });
+
+  test("compiles traits: {} when the catalog has no traits entity", () => {
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, issue: { read: true }, traits: {} },
+    );
+    expect(() => P.compile(authored)).not.toThrow();
+    expect(() =>
+      P.compile(authored, { pulls: [{ tag: Issue.tag }] }),
+    ).toThrow(PolicyError);
+  });
+});
+
 describe("an entity named traits", () => {
   const Traits = Entity("traits", { label: Field(Schema.String) });
   const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });

@@ -1165,9 +1165,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    // Trait roots scan explicit membership. Composed entities share trait
-    // idents with other composers — membership is the engine-owned type
-    // fact, not an `or` over flattened fields.
+    // Trait roots scan explicit `:ramose/trait`, stamped when an entity
+    // is first typed. Composed entities share trait idents with other
+    // composers — membership is not an `or` over flattened fields.
+    // Evolving composition onto existing rows does not backfill that
+    // stamp; pre-evolution composers stay invisible to `Query.from`.
     if (ns._tag === "Trait") {
       ruleDefs.push([[wireName, e], [e, RAMOSE_TRAIT_IDENT, `:${ns.ns}`]]);
     } else if (traitsOf(ns).length > 0) {

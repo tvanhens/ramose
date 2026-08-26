@@ -795,7 +795,10 @@ export function policy<
     rawTraits !== null &&
     typeof rawTraits === "object" &&
     !Array.isArray(rawTraits) &&
-    Object.keys(rawTraits).some((k) => traitsByNs.has(k));
+    (Object.keys(rawTraits).some((k) => traitsByNs.has(k)) ||
+      // `traits: {}` is a typed empty container (every trait denied),
+      // not an entity arm — unless the catalog has Entity("traits").
+      (Object.keys(rawTraits).length === 0 && traitsEntity === undefined));
   const traitSpec = isTraitContainer
     ? (rawTraits as Record<string, NsRuleSpec<unknown> & Record<string, unknown>>)
     : undefined;

@@ -120,6 +120,26 @@ describe("Query.from(Trait)", () => {
     ]);
   });
 
+  test("does not backfill membership when an existing entity begins composing a trait", async () => {
+    const Before = Schema({ todo: Entity("todo", { title: string() }) });
+    const After = Schema({
+      todo: Entity("todo", { title: string() }, { traits: [Taggable] }),
+    });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Before) as unknown[]);
+    const seed = txBuilder(Before);
+    Effect.runSync(seed.put(Before.entities.todo, { title: "pre-evolution" }));
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const todoEid = tempids["tmp-1"]!;
+    await conn.transact(schemaTx(After) as unknown[]);
+    const listing = await rowsOf<{ readonly id: number }>(
+      conn.db(),
+      Query.from(Taggable).select({ id: Taggable.id }),
+    );
+    expect(listing).toEqual([]);
+    expect((await conn.db().entity(todoEid))?.[":ramose/trait"]).toBeUndefined();
+  });
+
   test("returns every composer, including empty optional/many fields", async () => {
     const conn = await open();
     const tx = txBuilder(Catalog);

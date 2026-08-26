@@ -31,6 +31,7 @@ import {
   installedOptionalQuery,
   installedRefTargetQuery,
   installedUniqueQuery,
+  identsNeedingRefTargetOccupancy,
   namespacesNeedingOccupancy,
   type InstalledAttr,
 } from "./evolution.ts";
@@ -937,6 +938,14 @@ export const makeDb = <C extends AnySchema>(
           if (idents.length === 0) continue;
           const hit = yield* snap.query(occupancyQuery(idents));
           if (hit !== null) occupied.add(ns);
+        }
+        for (const ident of identsNeedingRefTargetOccupancy(
+          desired,
+          installed,
+          options,
+        )) {
+          const hit = yield* snap.query(occupancyQuery([ident]));
+          if (hit !== null) occupied.add(ident);
         }
         const refused = checkEvolution(desired, installed, occupied, options);
         if (refused !== undefined) return yield* Effect.fail(refused);

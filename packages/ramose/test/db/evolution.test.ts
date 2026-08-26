@@ -35,6 +35,7 @@ import {
   makeDatabases,
   namespaceOf,
   namespacesNeedingOccupancy,
+  identsNeedingRefTargetOccupancy,
   occupancyIdents,
   optionalRetracts,
   Ref,
@@ -365,7 +366,7 @@ describe("checkEvolution", () => {
     const bareToTrait = checkEvolution(
       schemaTx(Targeted),
       [bareTarget],
-      new Set(["favorite"]),
+      new Set([":favorite/target"]),
     );
     expect(bareToTrait?.changes).toEqual([
       {
@@ -381,7 +382,7 @@ describe("checkEvolution", () => {
     const retarget = checkEvolution(
       schemaTx(Retargeted),
       [taggedTarget],
-      new Set(["favorite"]),
+      new Set([":favorite/target"]),
     );
     expect(retarget?.changes).toEqual([
       {
@@ -395,10 +396,13 @@ describe("checkEvolution", () => {
       checkEvolution(schemaTx(Targeted), [bareTarget], new Set()),
     ).toBeUndefined();
     expect(
-      checkEvolution(schemaTx(Targeted), [taggedTarget], new Set(["favorite"])),
+      checkEvolution(schemaTx(Targeted), [taggedTarget], new Set([":favorite/target"])),
     ).toBeUndefined();
     expect(
-      checkEvolution(schemaTx(Targeted), [bareTarget], new Set(["favorite"]), {
+      checkEvolution(schemaTx(Targeted), [bareTarget], new Set(["favorite"])),
+    ).toBeUndefined();
+    expect(
+      checkEvolution(schemaTx(Targeted), [bareTarget], new Set([":favorite/target"]), {
         allowIncompatible: [":favorite/target"],
       }),
     ).toBeUndefined();
@@ -420,7 +424,7 @@ describe("checkEvolution", () => {
     ).toBeUndefined();
   });
 
-  test("namespacesNeedingOccupancy includes a ref-target tighten", () => {
+  test("identsNeedingRefTargetOccupancy is the tightened ident", () => {
     const Taggable = Trait("taggable", { tag: Field(Schema.String) });
     const Targeted = DbSchema({
       favorite: Entity("favorite", { target: Ref(Taggable) }),
@@ -430,11 +434,12 @@ describe("checkEvolution", () => {
       valueType: ":db.type/ref",
       cardinality: ":db.cardinality/one",
     };
-    expect(namespacesNeedingOccupancy(schemaTx(Targeted), [bareTarget])).toEqual([
-      "favorite",
+    expect(identsNeedingRefTargetOccupancy(schemaTx(Targeted), [bareTarget])).toEqual([
+      ":favorite/target",
     ]);
+    expect(namespacesNeedingOccupancy(schemaTx(Targeted), [bareTarget])).toEqual([]);
     expect(
-      namespacesNeedingOccupancy(schemaTx(Targeted), [bareTarget], {
+      identsNeedingRefTargetOccupancy(schemaTx(Targeted), [bareTarget], {
         allowIncompatible: [":favorite/target"],
       }),
     ).toEqual([]);
@@ -818,6 +823,34 @@ describe("install() against a live engine", () => {
     const err = await runFail(submitRaw(db, [{ ":note/title": "other" }]));
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
+    await p.dispose();
+  });
+
+  test("tightening an unused optional ref on a populated namespace applies", async () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Untargeted = DbSchema({
+      favorite: Entity("favorite", {
+        title: Field(Schema.String),
+        target: Field(Ref, { optional: true }),
+      }),
+    });
+    const Targeted = DbSchema({
+      favorite: Entity("favorite", {
+        title: Field(Schema.String),
+        target: Field(Ref(Taggable), { optional: true }),
+      }),
+    });
+    const p = await peer();
+    const db = p.ramose.db("notes", Untargeted);
+    await db.install();
+    await run(
+      seedWrite(db, function* (tx) {
+        const fav = yield* tx.entity();
+        yield* fav.set(Untargeted.entities.favorite.title, "no target");
+      }),
+    );
+    const report = await p.ramose.db("notes", Targeted).install();
+    expect(report.t).toBeGreaterThan(0);
     await p.dispose();
   });
 

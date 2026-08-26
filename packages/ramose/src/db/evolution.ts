@@ -260,11 +260,12 @@ export const incompatibleMessage = (changes: readonly SchemaChange[]): string =>
 /**
  * Diff the desired catalog against the installed attribute set.
  *
- * `occupied` is the set of namespaces that already have at least one
- * entity. A new required field (or an optional→required flip) on an
- * occupied namespace is incompatible. Tightening `:ramose/refTarget`
- * on an occupied namespace is also incompatible — existing values are
- * not re-validated. Dropping a target is a compatible retract.
+ * `occupied` holds namespace names (`favorite`) for required-field
+ * checks and attribute idents (`:favorite/target`) for ref-target
+ * tightening. A new required field on an occupied namespace is
+ * incompatible. Tightening `:ramose/refTarget` is incompatible only
+ * when that ident already has values. Dropping a target is a
+ * compatible retract.
  */
 export const checkEvolution = (
   desiredTx: readonly SchemaTxOp[],
@@ -303,7 +304,7 @@ export const checkEvolution = (
       changes.push({ ident: desired.ident, kind: "required" });
     }
     if (
-      occupied.has(namespaceOf(desired.ident)) &&
+      occupied.has(desired.ident) &&
       desired.refTarget !== undefined &&
       have.refTarget !== desired.refTarget
     ) {
@@ -321,9 +322,8 @@ export const checkEvolution = (
 };
 
 /**
- * Namespaces that still need an occupancy read: a new required field,
- * an optional→required flip, or a ref-target tighten, not covered by
- * the hatch.
+ * Namespaces that still need an occupancy read: a new required field
+ * or an optional→required flip, not covered by the hatch.
  */
 export const namespacesNeedingOccupancy = (
   desiredTx: readonly SchemaTxOp[],
@@ -337,22 +337,37 @@ export const namespacesNeedingOccupancy = (
   for (const tx of desiredTx) {
     if (!isAttributeTx(tx)) continue;
     const desired = desiredOf(tx);
-    if (allowed.has(desired.ident)) continue;
+    if (allowed.has(desired.ident) || !isRequiredAttr(desired)) continue;
     const ns = namespaceOf(desired.ident);
     if (!known.has(ns)) continue;
     const have = byIdent.get(desired.ident);
-    if (isRequiredAttr(desired) && (have === undefined || !isRequiredAttr(have))) {
-      needed.add(ns);
-    }
-    if (
-      desired.refTarget !== undefined &&
-      have !== undefined &&
-      have.refTarget !== desired.refTarget
-    ) {
-      needed.add(ns);
-    }
+    if (have === undefined || !isRequiredAttr(have)) needed.add(ns);
   }
   return [...needed];
+};
+
+/**
+ * Idents whose existing values must be read before a ref-target tighten
+ * can apply. Namespace occupancy is the wrong proxy — an unused optional
+ * ref on an otherwise-populated record is safe to target.
+ */
+export const identsNeedingRefTargetOccupancy = (
+  desiredTx: readonly SchemaTxOp[],
+  installed: readonly InstalledAttr[],
+  options?: InstallOptions,
+): readonly string[] => {
+  const allowed = new Set(options?.allowIncompatible ?? []);
+  const byIdent = new Map(installed.map((a) => [a.ident, a]));
+  const needed: string[] = [];
+  for (const tx of desiredTx) {
+    if (!isAttributeTx(tx)) continue;
+    const desired = desiredOf(tx);
+    if (allowed.has(desired.ident) || desired.refTarget === undefined) continue;
+    const have = byIdent.get(desired.ident);
+    if (have === undefined || have.refTarget === desired.refTarget) continue;
+    needed.push(desired.ident);
+  }
+  return needed;
 };
 
 const retractSubject = (
