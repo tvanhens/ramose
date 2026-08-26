@@ -10,7 +10,6 @@
  * Structural success is not runtime acceptance — binding is #358.
  */
 
-import { createHash } from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -21,6 +20,7 @@ import {
 } from "./bounds.ts";
 import { InvalidIR } from "./failures.ts";
 import { PolicyHash, RuleId } from "./identities.ts";
+import { sha256Hex } from "./sha256.ts";
 import {
   CanonicalAuthorizationRule,
   InstalledAuthorizationIR,
@@ -94,8 +94,7 @@ export const canonicalizeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): string => canonicalizeJson(encodeInstalledAuthorization(document));
 
-export const sha256Hex = (canonical: string): string =>
-  createHash("sha256").update(canonical, "utf8").digest("hex");
+export { sha256Hex } from "./sha256.ts";
 
 export const hashCanonical = (value: unknown): string => sha256Hex(canonicalizeJson(value));
 

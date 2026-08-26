@@ -440,6 +440,18 @@ describe("canonical serialization", () => {
     );
   });
 
+  test("SHA-256 NIST and multi-block vectors", () => {
+    expect(sha256Hex("abc")).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(sha256Hex("hello")).toBe(
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    );
+    expect(sha256Hex("a".repeat(1000))).toBe(
+      "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3",
+    );
+  });
+
   test("key order does not change the canonical document", () => {
     const a = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const reordered = {
