@@ -129,11 +129,13 @@ describe("shorthand schemaTx", () => {
         ":db/ident": ":issue/labels",
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/many",
+        ":ramose/refTarget": ":label",
       },
       {
         ":db/ident": ":issue/author",
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/one",
+        ":ramose/refTarget": ":user",
       },
     ]);
   });

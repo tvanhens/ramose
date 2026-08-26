@@ -47,7 +47,7 @@ export {
   type ValueOf,
 } from "./Field.ts";
 export { Schema, type AnySchema } from "./Schema.ts";
-export { Entity, type AnyEntity } from "./Entity.ts";
+export { Entity, type AnyEntity, type AnyQueryRoot } from "./Entity.ts";
 export { Trait, type AnyTrait } from "./Trait.ts";
 export {
   Bytes,

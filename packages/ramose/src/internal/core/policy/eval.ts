@@ -512,7 +512,8 @@ async function evalArms(
 /**
  * Is `op` allowed on attribute `attrIdent` at `ctx.e`? The attribute rule
  * ANDs with (only narrows) its namespace rule; either alone applies; neither
- * denies.
+ * denies. Trait fields additionally AND the trait's shared namespace rule
+ * with the composing entity's row rule.
  */
 export async function allowsOp(
   policy: CompiledPolicy,
@@ -527,39 +528,59 @@ export async function allowsOp(
   const rawPrefix = nsPrefix(attrIdent);
   const isTrait =
     rawPrefix !== undefined && ctx.db.schema.isTraitIdent(`:${rawPrefix}`);
-  // Trait attributes keep the trait ident (`:taggable/tag`). Grant is the
-  // composing entity's namespace (`ns.issue`), never a shared `ns.taggable`
-  // that would union two composers. A shared attr rule only narrows; it
-  // cannot grant on a composer that declared no policy.
-  const prefix = isTrait ? ((await entityNsOf(ctx)) ?? rawPrefix) : rawPrefix;
-  const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
-  // Pushdown already conjoined this namespace's read rule. Skip the ns-level
-  // check (do not cache — a later raw read must still enforce) and apply
-  // only attr-level narrowing. Trait attrs never take this path: pushdown
-  // keeps trait prefixes out of `nsByVar`, so a var that reads only a trait
-  // attr is never conjoined. Remapping that attr to the composer ns would
-  // then consult `covered` under a namespace the plan never filtered.
-  if (
+  const entityNs = isTrait ? await entityNsOf(ctx) : rawPrefix;
+  const entityArms = entityNs === undefined ? undefined : policy.ns?.[entityNs]?.[op];
+  const traitArms = isTrait && rawPrefix !== undefined ? policy.ns?.[rawPrefix]?.[op] : undefined;
+  const skipEntity =
     op === "read" &&
-    !isTrait &&
     ctx.overlay === undefined &&
-    ctx.memo.skipsNsBackstop(prefix)
-  ) {
-    if (!attrArms) return true;
-    return evalArms(attrArms, ctx, policy.rules, false);
-  }
-  // Reads: one set query per named rule, then membership. Writes keep the
-  // per-entity path — they touch few entities and create arms need the overlay.
+    ctx.memo.skipsNsBackstop(entityNs);
+  const skipTrait =
+    isTrait &&
+    op === "read" &&
+    ctx.overlay === undefined &&
+    ctx.memo.skipsNsBackstop(rawPrefix);
   const useVisibleSet =
     op === "read" && ctx.overlay === undefined && ctx.memo.visibleSetMax > 0;
+
+  const evalNs = async (
+    arms: readonly import("./ast.ts").PolicyArm[] | undefined,
+    skip: boolean,
+  ): Promise<boolean | undefined> => {
+    if (skip) return true;
+    if (!arms || arms.length === 0) return undefined;
+    return evalArms(arms, ctx, policy.rules, useVisibleSet);
+  };
+
+  const entityOk = await evalNs(entityArms, skipEntity);
+  const traitOk = isTrait ? await evalNs(traitArms, skipTrait) : true;
   let res: boolean;
-  if (isTrait && !nsArms) res = false;
-  else if (attrArms && nsArms) {
+  if (isTrait) {
+    // Entity row rule and the shared trait rule both apply. A missing
+    // side is deny — two composers do not union grants through the trait.
+    if (entityOk !== true || traitOk !== true) res = false;
+    else if (attrArms) res = await evalArms(attrArms, ctx, policy.rules, useVisibleSet);
+    else res = true;
+  } else if (
+    op === "read" &&
+    skipEntity &&
+    ctx.overlay === undefined
+  ) {
+    // Do not cache — a later raw read must still enforce the ns rule.
+    if (!attrArms) return true;
+    return evalArms(attrArms, ctx, policy.rules, false);
+  } else if (attrArms && entityArms) {
     res =
-      (await evalArms(nsArms, ctx, policy.rules, useVisibleSet)) &&
+      entityOk === true &&
       (await evalArms(attrArms, ctx, policy.rules, useVisibleSet));
-  } else if (attrArms || nsArms) res = await evalArms((attrArms ?? nsArms)!, ctx, policy.rules, useVisibleSet);
-  else res = false;
+  } else if (attrArms || entityArms) {
+    res = attrArms
+      ? await evalArms(attrArms, ctx, policy.rules, useVisibleSet)
+      : entityOk === true;
+  } else res = false;
+  // A grant that rode a pushdown skip is not cached — a later raw read
+  // must still enforce the skipped namespace.
+  if (isTrait && res && (skipEntity || skipTrait)) return res;
   return ctx.memo.setOp(key, res);
 }
 

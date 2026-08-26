@@ -8,10 +8,12 @@ import {
 } from "./compose.ts";
 import {
   stamp,
+  stampIdField,
   type FieldMap,
   type StampedMap,
 } from "./Entity.ts";
 import type { AnyField } from "./Field.ts";
+import { type AttrNav, type PathCarrier } from "./shapes.ts";
 import {
   invalidIdentName,
   isIdentName,
@@ -48,6 +50,20 @@ export type Trait<
   readonly fields: StampedMap<Name, Fields>;
   /** Direct composed traits, in author order. */
   readonly traits: readonly { readonly ns: string }[];
+  /**
+   * Pseudo-field `:db/id`. Same cell as {@link import("./Entity.ts").Entity.id}
+   * so `select({ id: Taggable.id })` brands as `Eid<Taggable>`.
+   */
+  readonly id: AttrNav<
+    AnyField & {
+      readonly schema: { readonly Type: number };
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: "ref";
+      readonly cardinality: "one";
+      readonly _ns?: Trait<Name, Fields>;
+    } & PathCarrier
+  >;
 } & StampedMap<Name, Fields>;
 
 /**
@@ -128,6 +144,7 @@ export function Trait<
     ns: name,
     fields: merged,
     traits: direct,
+    id: stampIdField(),
     ...merged,
   } as Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits>;
 }

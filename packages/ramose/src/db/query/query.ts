@@ -16,11 +16,11 @@
  */
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
-import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
+import { RAMOSE_TRAIT_IDENT, RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
 import { traitsOf } from "../compose.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "../Entity.ts";
 import {
   lowerOrderPath,
   requiredClauses,
@@ -170,7 +170,7 @@ export interface QueryOrder {
  * body the same value is a clause source: `yield* entities(Issue)`
  * mints the branded focus var and contributes membership.
  */
-export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
+export interface Pipeline<Row = unknown, N extends AnyQueryRoot = AnyEntity> {
   readonly _tag: "Pipeline";
   readonly ns: N;
   readonly stages: readonly PipeStage[];
@@ -1131,7 +1131,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     readonly hasRet: boolean;
   }
   const byRule = new Map<RuleValue, RuleEntry>();
-  const byNs = new Map<AnyEntity, RuleEntry>();
+  const byNs = new Map<AnyQueryRoot, RuleEntry>();
   const takenNames = new Map<string, unknown>();
   const ruleDefs: unknown[] = [];
 
@@ -1157,7 +1157,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return entry;
   };
 
-  const registerMembership = (ns: AnyEntity): RuleEntry => {
+  const registerMembership = (ns: AnyQueryRoot): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
     const wireName = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(/[^A-Za-z0-9_]/g, "_");
@@ -1165,9 +1165,12 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    // Composed entities share trait idents with other composers. Membership
-    // is the engine-owned type fact, not an `or` over flattened fields.
-    if (traitsOf(ns).length > 0) {
+    // Trait roots scan explicit membership. Composed entities share trait
+    // idents with other composers — membership is the engine-owned type
+    // fact, not an `or` over flattened fields.
+    if (ns._tag === "Trait") {
+      ruleDefs.push([[wireName, e], [e, RAMOSE_TRAIT_IDENT, `:${ns.ns}`]]);
+    } else if (traitsOf(ns).length > 0) {
       ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
     } else {
       const prefix = `:${ns.ns}/`;

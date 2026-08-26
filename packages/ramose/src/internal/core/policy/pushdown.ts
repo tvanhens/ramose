@@ -157,8 +157,9 @@ function nsConjunction(
 ): Clause | "skip" | "deny" {
   const arms = policy.ns?.[ns]?.read;
   if (!arms || arms.length === 0) {
-    // Trait prefixes are not policy keys; FilteredDb remaps them to the
-    // entity type. Same skip when the prefix only appears as an attr rule.
+    // A trait prefix with no authored rule is not a deny — entity row
+    // rules still decide visibility; FilteredDb hides trait fields.
+    // Same skip when the prefix only appears as an attr rule.
     if (db.schema.isTraitIdent(`:${ns}`)) return "skip";
     const attrs = policy.attrs ?? {};
     for (const ident of Object.keys(attrs)) {
@@ -321,11 +322,16 @@ function recordPatternNs(
     return;
   }
   if (ident === RAMOSE_TRAIT_IDENT) {
-    onVarAttr();
+    if (c.v.kind === "const" && typeof c.v.value === "string") {
+      const ns = composerNs(c.v.value);
+      if (ns) add(nsByVar, c.e.name, ns);
+    } else {
+      onVarAttr();
+    }
     return;
   }
   const ns = ident === undefined ? undefined : nsPrefix(ident);
-  if (ns && !db.schema.isTraitIdent(`:${ns}`)) add(nsByVar, c.e.name, ns);
+  if (ns) add(nsByVar, c.e.name, ns);
 }
 
 function collectPatterns(

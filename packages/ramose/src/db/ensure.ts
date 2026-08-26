@@ -7,7 +7,7 @@ import {
 } from "./compose.ts";
 import { isOptionalField, type AnyField } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
-import { inferDbValueType, toWireValueType } from "./valueTypes.ts";
+import { inferDbValueType, refTargetOf, toWireValueType } from "./valueTypes.ts";
 
 export const RAMOSE_KIND_ENTITY = ":ramose.kind/entity";
 export const RAMOSE_KIND_TRAIT = ":ramose.kind/trait";
@@ -21,6 +21,7 @@ export interface SchemaAttrTx {
   readonly ":db/isComponent"?: true;
   readonly ":db/optional"?: true;
   readonly ":db/doc"?: string;
+  readonly ":ramose/refTarget"?: string;
 }
 
 /** Type / trait ident plus composition edges. Not an attribute. */
@@ -65,6 +66,12 @@ export const attributeTx = (
   }
   if (field.doc !== undefined) {
     (out as { ":db/doc": string })[":db/doc"] = field.doc;
+  }
+  if (valueType === "ref") {
+    const ns = refTargetOf(field.schema)?.()?.ns;
+    if (typeof ns === "string" && ns.length > 0) {
+      (out as { ":ramose/refTarget": string })[":ramose/refTarget"] = `:${ns}`;
+    }
   }
   return out;
 };

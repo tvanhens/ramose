@@ -87,7 +87,7 @@ Every record type also gets an `id` field for free (`Issue.id`).
 | `Ramose.int()` | a whole `number`, stored as a long — it is a JavaScript number, so nothing above 2⁵³ is exact |
 | `Ramose.timestamp()` | a point in time — you pass and receive a `Date` |
 | `Ramose.Enum(["low", "med", "high"])` | one of those strings |
-| `Ramose.Ref(User)` · `Ramose.Ref.self` | a reference to a record of that type · of the same type |
+| `Ramose.Ref(User)` · `Ramose.Ref(Taggable)` · `Ramose.Ref.self` | a reference to a record of that type · of any composer of that trait · of the same type |
 | `Ramose.Ref(() => Other)` | the same, as a thunk — only when `Other` is declared later |
 | `Ramose.uuid()` | a canonical UUID `string` |
 | `Ramose.bytes()` | binary data (`Uint8Array`) |
@@ -117,7 +117,7 @@ These three are the function, not bag keys.
 
 ## References between records
 
-`Ramose.Ref(User)` points at another record. Naming the target lets a query hop through it (`Query.follow(Issue.assignee)`) or backwards (`Query.backlink(Issue.creator)` — the issues that point at this user), and lets a shape nest (`Issue.assignee.select({ … })`) or read backwards (`Issue.creator.reverse.select({ … })`). Write `Ref(() => Other)` only when the target is declared later (a cycle).
+`Ramose.Ref(User)` points at another record; `Ramose.Ref(Taggable)` points at any composer of that trait. Naming the target lets a query hop through it (`Query.follow(Issue.assignee)`) or backwards (`Query.backlink(Issue.creator)` — the issues that point at this user), and lets a shape nest (`Issue.assignee.select({ … })`) or read backwards (`Issue.creator.reverse.select({ … })`). Write `Ref(() => Other)` only when the target is declared later (a cycle).
 
 ## Types flow out of the schema
 

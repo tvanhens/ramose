@@ -4,13 +4,15 @@ import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
 import { composerIdent, traitsOf } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
-import type { AnyEntity } from "./Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
+import type { AnyTrait } from "./Trait.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import { TxRejected } from "./Errors.ts";
 import type {
   AttrAtIdent,
   CatalogIdent,
+  ComposersOfTrait,
   EntityRef,
   FieldTargetEntity,
   LookupRef,
@@ -78,11 +80,16 @@ export type TxKnownEntity<C extends AnySchema> = string extends keyof C["entitie
   ? AnyEntity
   : C["entities"][keyof C["entities"]];
 
-/** Targeted ref → that entity; `Ref.self` / untargeted → the enclosing entity. */
+/** Targeted ref → that entity or trait; `Ref.self` / untargeted → the enclosing entity. */
 type RefSlotTarget<N extends AnyEntity, K extends string> =
   [FieldTargetEntity<N["fields"][K]>] extends [never]
     ? N
     : FieldTargetEntity<N["fields"][K]>;
+
+/** `Ref(Taggable)` admits every composer plus the trait itself. */
+type ExpandRefTarget<C extends AnySchema, T> = [T] extends [AnyTrait]
+  ? ComposersOfTrait<C, Extract<T, AnyTrait>> | T
+  : T;
 
 /**
  * Ref forms `put` accepts. Same {@link EntityRef} vocabulary as `set` /
@@ -91,9 +98,15 @@ type RefSlotTarget<N extends AnyEntity, K extends string> =
 type PutRef<
   C extends AnySchema,
   H = TxHandle<C>,
-  Target extends AnyEntity = AnyEntity,
+  Target extends AnyQueryRoot = AnyEntity,
 > =
-  | EntityRef<C, Target, H>
+  | EntityRef<
+      C,
+      ExpandRefTarget<C, Target> extends AnyQueryRoot
+        ? ExpandRefTarget<C, Target>
+        : AnyEntity,
+      H
+    >
   | { readonly eid: number | null; readonly class: string };
 
 type PutScalar<

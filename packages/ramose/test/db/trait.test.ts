@@ -399,10 +399,11 @@ describe("processTx membership and required trait fields", () => {
       {
         actor: { read: true },
         issue: { read: true, attrs: [P.field(Issue.tag, { read: true })] },
+        traits: { taggable: { read: true } },
       },
     );
     const policy = parsePolicy(JSON.parse(P.compile(authored)));
-    expect(policy.ns?.taggable).toBeUndefined();
+    expect(policy.ns?.taggable).toBeDefined();
     expect(policy.ns?.issue).toBeDefined();
 
     const listing = Query.q(() =>
@@ -467,7 +468,11 @@ describe("processTx membership and required trait fields", () => {
         classes: ["member"] as const,
         schemaClasses: ["member"] as const,
       },
-      { actor: { read: true }, issue: { read: ownIssue } },
+      {
+        actor: { read: true },
+        issue: { read: ownIssue },
+        traits: { taggable: { read: true } },
+      },
     );
     const policy = parsePolicy(JSON.parse(P.compile(authored)));
     const principal: Principal = {
@@ -683,10 +688,14 @@ describe("processTx membership and required trait fields", () => {
         classes: ["member"] as const,
         schemaClasses: ["member"] as const,
       },
-      { actor: { read: true }, issue: { read: true } },
+      {
+        actor: { read: true },
+        issue: { read: true },
+        traits: { taggable: { read: true } },
+      },
     );
     const policy = parsePolicy(JSON.parse(P.compile(authored)));
-    expect(policy.ns?.taggable).toBeUndefined();
+    expect(policy.ns?.taggable).toBeDefined();
     expect(policy.ns?.secret).toBeUndefined();
 
     const principal: Principal = {

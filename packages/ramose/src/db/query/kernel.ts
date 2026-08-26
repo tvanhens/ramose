@@ -27,7 +27,7 @@
 
 import { FUNCTIONS } from "../../internal/core/query/builtins.ts";
 import type { Eid } from "../Eid.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "../Entity.ts";
 import type { InFocus } from "./focus.ts";
 import type { FocusShape, Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
@@ -46,7 +46,7 @@ export type VarKind = "entity" | "value" | "t" | "tx" | "op";
  * {@link AnyEntity} (unconstrained).
  */
 export type VarNs<T> = T extends { readonly _ns: infer E }
-  ? E extends AnyEntity
+  ? E extends AnyQueryRoot
     ? E
     : AnyEntity
   : AnyEntity;
@@ -58,7 +58,7 @@ export type VarNs<T> = T extends { readonly _ns: infer E }
  * (phantom); `N` is the focus namespace an entity var is branded with
  * (the same brand {@link Eid} carries — not a fourth vocabulary).
  */
-export interface Var<T = unknown, N extends AnyEntity = VarNs<T>> {
+export interface Var<T = unknown, N extends AnyQueryRoot = VarNs<T>> {
   readonly _tag: "QVar";
   readonly id: number;
   /** @internal refined as positions are minted; drives cell reshaping */
@@ -79,7 +79,7 @@ export type FocusOf<V> = V extends Var<any, infer N> ? N : AnyEntity;
 let nextVarId = 1;
 
 /** @internal Mint a fresh var. Public spelling is {@link Q.var}. */
-export const mkVar = <T = unknown, N extends AnyEntity = VarNs<T>>(
+export const mkVar = <T = unknown, N extends AnyQueryRoot = VarNs<T>>(
   kind: VarKind = "value",
   ns?: string,
 ): Var<T, N> => ({ _tag: "QVar", id: nextVarId++, kind, ns }) as Var<T, N>;
@@ -216,7 +216,7 @@ export type SubBody =
   | NotCommand;
 
 /** `entities(ns)` in a generator body: mint a branded var, membership rule. */
-export interface MemberCommand<N extends AnyEntity = AnyEntity> extends Yieldable<Var<Eid<N>>> {
+export interface MemberCommand<N extends AnyQueryRoot = AnyEntity> extends Yieldable<Var<Eid<N>>> {
   readonly _tag: "member";
   readonly ns: N;
 }
@@ -241,7 +241,7 @@ export type AnyCommand =
 
 export interface MemberClause {
   readonly _tag: "memberOf";
-  readonly ns: AnyEntity;
+  readonly ns: AnyQueryRoot;
   readonly v: AnyVar;
 }
 
@@ -327,7 +327,7 @@ const dispatch = (cmd: AnyCommand, ctx: BuildCtx): unknown => {
       ctx.clauses.push({ _tag: "notGroup", clauses: collectBody(cmd.body) });
       return undefined;
     case "member": {
-      const v = mkVar<Eid<AnyEntity>>("entity", cmd.ns.ns);
+      const v = mkVar<Eid<AnyQueryRoot>>("entity", cmd.ns.ns);
       ctx.clauses.push({ _tag: "memberOf", ns: cmd.ns, v });
       return v;
     }

@@ -7,7 +7,7 @@ import { isAttrRef } from "./attrRef.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
-import type { AnyEntity, FieldMap } from "./Entity.ts";
+import type { AnyEntity, AnyQueryRoot, FieldMap } from "./Entity.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ export interface PullOptional<F = unknown> {
    */
   readonly select: F extends { readonly valueType: "ref" }
     ? {
-        <const N extends AnyEntity>(
+        <const N extends AnyQueryRoot>(
           pattern: AllShape<N>,
         ): PullOptional<PullNested<F, AllShape<N>>>;
         <const P extends Record<string, unknown>>(
@@ -168,7 +168,7 @@ export const pick = <
  * runtime. The same term nests under a ref `.select`:
  * `Todo.owner.select(all(User))` lowers to the peer's `{:todo/owner [*]}`.
  */
-export interface AllShape<N extends AnyEntity = AnyEntity> {
+export interface AllShape<N extends AnyQueryRoot = AnyEntity> {
   readonly _tag: "all";
   readonly ns: N;
 }
@@ -179,7 +179,7 @@ export interface AllShape<N extends AnyEntity = AnyEntity> {
  * The same wildcard `db.pull(eid, ["*"])` asks for, with the namespace's
  * idents typed.
  */
-export const all = <const N extends AnyEntity>(ns: N): AllShape<N> => ({
+export const all = <const N extends AnyQueryRoot>(ns: N): AllShape<N> => ({
   _tag: "all",
   ns,
 });
@@ -284,7 +284,7 @@ type FieldsResult<F> = {
  * no cast. An id attr without the phantom stays a plain `number`.
  */
 export type IdCell<F> = F extends { readonly _ns?: infer N }
-  ? [NonNullable<N>] extends [AnyEntity]
+  ? [NonNullable<N>] extends [AnyQueryRoot]
     ? Eid<NonNullable<N>>
     : number
   : number;
@@ -364,7 +364,7 @@ type NestedResult<A, P, Enclosing = unknown> = [P] extends [
 ]
   ? CardOf<A, Unroll<Enclosing, D>>
   : [P] extends [
-        { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
+        { readonly _tag: "all"; readonly ns: infer N extends AnyQueryRoot },
       ]
     ? A extends { readonly cardinality: "many" }
       ? readonly AllRow<N>[]
@@ -570,7 +570,7 @@ export type IdentPullResult<
  * Typing them would mean naming a catalog, which a namespace-scoped query
  * does not have — so the keys named here are the ones you may rely on.
  */
-export type AllRow<N extends AnyEntity> = {
+export type AllRow<N extends AnyQueryRoot> = {
   readonly ":db/id": number;
 } & {
   readonly [A in keyof N["fields"] & string as Ident<
@@ -679,7 +679,7 @@ type ValidatePullIdents<C extends AnySchema, P> = [IdentsIn<P>] extends [
  * `all(N)` → the wildcard map, keyed by `N`'s idents ({@link AllRow}).
  */
 export type Pull<C extends AnySchema, P> = [P] extends [
-  { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
+  { readonly _tag: "all"; readonly ns: infer N extends AnyQueryRoot },
 ]
   ? AllRow<N>
   : [P] extends [readonly unknown[]]

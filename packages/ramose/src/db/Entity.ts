@@ -174,6 +174,27 @@ export type AnyEntity = {
   };
 };
 
+/**
+ * Query / ref / policy focus: an entity or a trait. Both expose stamped
+ * `fields` and a namespace; membership lowering reads `_tag`.
+ */
+export type AnyQueryRoot = {
+  readonly _tag: "Entity" | "Trait";
+  readonly ns: string;
+  readonly fields: {
+    readonly [key: string]: AnyField & { readonly ident: string };
+  };
+};
+
+export const isQueryRoot = (value: unknown): value is AnyQueryRoot => {
+  if (typeof value !== "object" || value === null) return false;
+  const tag = (value as { _tag?: unknown })._tag;
+  return (
+    (tag === "Entity" || tag === "Trait") &&
+    typeof (value as { ns?: unknown }).ns === "string"
+  );
+};
+
 export type EntityOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
 > = {
@@ -236,6 +257,22 @@ const stampOne = (
     },
   }) as StampedField<string, string, AnyField>;
 };
+
+/** Pseudo-field `:db/id` shared by Entity and Trait. */
+export const stampIdField = () =>
+  attachAttrNav({
+    _tag: "Field" as const,
+    schema: null as never,
+    cardinality: "one" as const,
+    unique: undefined,
+    index: false,
+    owned: false,
+    doc: undefined,
+    valueType: "ref" as const,
+    isOptional: false,
+    attrName: "id" as const,
+    ident: ":db/id" as const,
+  });
 
 export const stamp = <Name extends string, Fields extends FieldMap>(
   name: Name,
@@ -302,19 +339,7 @@ export function Entity<
     stamped as Record<string, unknown>,
     flattened,
   );
-  const idField = attachAttrNav({
-    _tag: "Field" as const,
-    schema: null as never,
-    cardinality: "one" as const,
-    unique: undefined,
-    index: false,
-    owned: false,
-    doc: undefined,
-    valueType: "ref" as const,
-    isOptional: false,
-    attrName: "id" as const,
-    ident: ":db/id" as const,
-  });
+  const idField = stampIdField();
   return {
     _tag: "Entity" as const,
     ns: name,

@@ -13,7 +13,7 @@
  */
 
 import type { Eid } from "../Eid.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "../Entity.ts";
 import type { UnbrandedId } from "../idents.ts";
 import type {
   AttrValue,
@@ -40,12 +40,12 @@ import { isPipeline, type Pipeline, type PipeStage, type SelectExtra } from "./q
 
 // ── the pipeline value ──────────────────────────────────────────────────────
 
-const addStage = <Row, N extends AnyEntity>(
+const addStage = <Row, N extends AnyQueryRoot>(
   p: Pipeline<unknown, N>,
   stage: PipeStage,
 ): Pipeline<Row, N> => makePipeline(p.ns, [...p.stages, stage]);
 
-const makePipeline = <Row, N extends AnyEntity>(
+const makePipeline = <Row, N extends AnyQueryRoot>(
   ns: N,
   stages: readonly PipeStage[],
 ): Pipeline<Row, N> => ({
@@ -67,18 +67,23 @@ const makePipeline = <Row, N extends AnyEntity>(
 });
 
 /** The row a bare (select-less) pipeline yields: the matched entity id. */
-export type IdRow<N extends AnyEntity = AnyEntity> = { readonly id: Eid<N> };
+export type IdRow<N extends AnyQueryRoot = AnyEntity> = { readonly id: Eid<N> };
 
 /**
- * The source stage: the entities of one namespace. There is no entity
- * table — membership means "has at least one fact in the namespace", named
- * as a catalog-generated rule so the planner can treat it as a scan; when
- * the pipeline already constrains the focus through a namespace attr, the
- * rule is entailed and lowering emits nothing.
+ * The source stage: the entities of one namespace, or the composers of
+ * one trait. Membership is an explicit type / trait fact when the catalog
+ * records composition; otherwise "has at least one fact in the namespace".
+ * Named as a catalog-generated rule so the planner can treat it as a scan;
+ * when the pipeline already constrains the focus through a namespace attr,
+ * the rule is entailed and lowering emits nothing.
  */
-export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
-  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
-    throw new Error("ramose/query: entities(...) takes an entity");
+export const entities = <N extends AnyQueryRoot>(ns: N): Pipeline<IdRow<N>, N> => {
+  if (typeof ns !== "object" || ns === null) {
+    throw new Error("ramose/query: entities(...) takes an entity or a trait");
+  }
+  const tag = (ns as { _tag?: unknown })._tag;
+  if (tag !== "Entity" && tag !== "Trait") {
+    throw new Error("ramose/query: entities(...) takes an entity or a trait");
   }
   return makePipeline(ns, []);
 };
@@ -94,7 +99,7 @@ export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
 type FilterOut<X> = [X] extends [never]
   ? QueryGen<void>
   : [X] extends [Pipeline<infer Row, infer N>]
-    ? [N] extends [AnyEntity]
+    ? [N] extends [AnyQueryRoot]
       ? Pipeline<Row, N>
       : QueryGen<void>
     : QueryGen<void>;
@@ -121,7 +126,7 @@ type FilterParam<X, A> = [X] extends [Pipeline<any, infer N>]
  * (`{ _ident?: never }`).
  */
 export type FilterStage<
-  N extends AnyEntity = AnyEntity,
+  N extends AnyQueryRoot = AnyEntity,
   A = void,
 > = <X>(
   x: FilterParam<X, A>,
@@ -132,7 +137,7 @@ export type FilterStage<
 type FollowOut<A extends AttrLike, X> = [X] extends [never]
   ? QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
   : [X] extends [Pipeline<infer _Row, infer N>]
-    ? [N] extends [AnyEntity]
+    ? [N] extends [AnyQueryRoot]
       ? Pipeline<IdRow<RefTarget<A, N>>, RefTarget<A, N>>
       : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
     : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>;

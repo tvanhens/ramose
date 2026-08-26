@@ -1,10 +1,11 @@
 /** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
 import type { Eid } from "./Eid.ts";
-import type { AnyEntity } from "./Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
 import type { Tempid } from "./entityArg.ts";
 import type { ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
+import type { AnyTrait } from "./Trait.ts";
 
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 
@@ -133,21 +134,41 @@ export type UnbrandedId = number & { readonly _ns?: never };
  */
 export type EntityRef<
   C extends AnySchema,
-  N extends AnyEntity = CatalogEntity<C>,
+  N extends AnyQueryRoot = CatalogEntity<C>,
   H = never,
 > =
   | Eid<N>
   | { readonly id: Eid<N> }
   | Tempid
-  | LookupRefFor<C, N>
+  | LookupRefFor<C, Extract<N, AnyEntity>>
   | UnbrandedId
   | H;
 
-/** Target entity of a `Ref(User)` field; `never` for `Ref.self` / untargeted. */
+/** Transitive trait names on a composer (direct + nested). */
+export type TransitiveTraitNs<T> = T extends { readonly ns: infer Ns extends string }
+  ? Ns | (T extends { readonly traits: readonly (infer Inner)[] } ? TransitiveTraitNs<Inner> : never)
+  : never;
+
+/** Trait names an entity composes, walking `traits` transitively. */
+export type EntityTraitNs<N> = N extends { readonly traits: readonly (infer T)[] }
+  ? TransitiveTraitNs<T>
+  : never;
+
+/** Entities in `C` that compose trait `T` (including transitive). */
+export type ComposersOfTrait<
+  C extends AnySchema,
+  T extends { readonly ns: string },
+> = {
+  [K in keyof C["entities"]]: T["ns"] extends EntityTraitNs<C["entities"][K]>
+    ? C["entities"][K] & AnyEntity
+    : never;
+}[keyof C["entities"]];
+
+/** Target of a `Ref(User)` / `Ref(Taggable)` field; `never` for `Ref.self` / untargeted. */
 export type FieldTargetEntity<F> = F extends {
   readonly schema: { readonly _target?: infer T };
 }
-  ? Exclude<T, undefined> extends AnyEntity
+  ? Exclude<T, undefined> extends AnyQueryRoot
     ? Exclude<T, undefined>
     : never
   : never;
@@ -165,15 +186,22 @@ export type EntityOfIdent<C extends AnySchema, I extends string> = {
   }[keyof C["entities"][K]["fields"] & string];
 }[keyof C["entities"]];
 
+type RefDeclaredTarget<C extends AnySchema, I extends string> = FieldTargetEntity<
+  AttrAtIdent<C, I>
+>;
+
 /**
- * Ref write target: `Ref(User)` → `User`; `Ref.self` / untargeted → the
- * enclosing entity of the ident.
+ * Ref write target: `Ref(User)` → `User`; `Ref(Taggable)` → every composer
+ * of that trait (plus the trait itself, for `Query.from(Taggable)` rows);
+ * `Ref.self` / untargeted → the enclosing entity of the ident.
  */
 export type RefWriteTarget<C extends AnySchema, I extends string> = [
-  FieldTargetEntity<AttrAtIdent<C, I>>,
+  RefDeclaredTarget<C, I>,
 ] extends [never]
   ? EntityOfIdent<C, I>
-  : FieldTargetEntity<AttrAtIdent<C, I>>;
+  : [RefDeclaredTarget<C, I>] extends [AnyTrait]
+    ? ComposersOfTrait<C, Extract<RefDeclaredTarget<C, I>, AnyTrait>> | RefDeclaredTarget<C, I>
+    : RefDeclaredTarget<C, I>;
 
 /**
  * Write value for a ref-typed ident: {@link EntityRef} of the declared

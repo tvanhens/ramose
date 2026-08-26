@@ -948,6 +948,32 @@ export async function expandTx(
     );
   }
 
+  const hasTraitMembership = async (e: number, traitIdent: string): Promise<boolean> => {
+    const tr = traitAttr();
+    if (tr !== undefined) {
+      for (const tv of await current(e, tr.id)) {
+        if (tv.v === traitIdent) return true;
+      }
+    }
+    const type = await inferType(e);
+    if (type === undefined) return false;
+    return db.schema.transitiveTraits(type).includes(traitIdent);
+  };
+
+  for (const op of expanded) {
+    if (op.kind !== "add" || op.attr.valueType !== ValueTag.Ref) continue;
+    const target = op.attr.refTarget;
+    if (target === undefined || !db.schema.isTraitIdent(target)) continue;
+    const eid = op.datom.v;
+    if (typeof eid !== "number") continue;
+    if (!(await hasTraitMembership(eid, target))) {
+      throw new TxError(
+        `entity ${eid} is not a ${nsOfComposer(target)}`,
+        "tx/wrong-entity",
+      );
+    }
+  }
+
   // Tx entity instant (first, so tx datoms sort together nicely).
   out.unshift({ e: txe, a: DB_TX_INSTANT, vt: ValueTag.Inst, v: txInstant, t, op: true });
 

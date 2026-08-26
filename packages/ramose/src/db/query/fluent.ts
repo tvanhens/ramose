@@ -1,5 +1,5 @@
 /**
- * `Query.from(Entity)` — the primary app spelling.
+ * `Query.from(Entity | Trait)` — the primary app spelling.
  *
  * Thin wrappers over the existing immutable pipeline AST. Stage functions
  * stay one tier down for the generator/kernel path; this chain is the
@@ -8,7 +8,7 @@
  */
 
 import type { Eid } from "../Eid.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "../Entity.ts";
 import type { FocusAttr } from "./focus.ts";
 import type {
   AttrValue,
@@ -61,10 +61,10 @@ type FriendlyScalar<T> = T extends Date ? Date : T;
  * The entity a `Ref(Issue)` field points at. Self-refs resolve to the
  * enclosing entity. Untargeted refs stay `AnyEntity`.
  */
-type RefTarget<A, Enclosing extends AnyEntity> = A extends {
+type RefTarget<A, Enclosing extends AnyQueryRoot> = A extends {
   readonly schema: { readonly _target?: infer T };
 }
-  ? [T] extends [AnyEntity]
+  ? [T] extends [AnyQueryRoot]
     ? T
     : Enclosing
   : AnyEntity;
@@ -73,15 +73,15 @@ type RefTarget<A, Enclosing extends AnyEntity> = A extends {
  * A ref under the default shape: an `{ id }` cell branded with the
  * *target* entity, never auto-nested. `Comment.issue` → `{ id: Eid<Issue> }`.
  */
-export type RefIdCell<N extends AnyEntity = AnyEntity> = {
+export type RefIdCell<N extends AnyQueryRoot = AnyEntity> = {
   readonly id: Eid<N>;
 };
 
-type ScalarRow<A, Enclosing extends AnyEntity> = IsRef<A> extends true
+type ScalarRow<A, Enclosing extends AnyQueryRoot> = IsRef<A> extends true
   ? RefIdCell<RefTarget<A, Enclosing>>
   : FriendlyScalar<Exclude<AttrValue<A>, undefined>>;
 
-type FieldRow<A, Enclosing extends AnyEntity> = IsMany<A> extends true
+type FieldRow<A, Enclosing extends AnyQueryRoot> = IsMany<A> extends true
   ? readonly ScalarRow<A, Enclosing>[]
   : IsOptional<A> extends true
     ? ScalarRow<A, Enclosing> | undefined
@@ -93,21 +93,21 @@ type FieldRow<A, Enclosing extends AnyEntity> = IsMany<A> extends true
  * required scalars stay required. Card-many are arrays. Not `all(N)` /
  * `[*]` — lowering expands `N.fields` into this shape.
  */
-export type EntityRow<N extends AnyEntity> = {
+export type EntityRow<N extends AnyQueryRoot> = {
   readonly id: Eid<N>;
 } & {
   readonly [K in keyof N["fields"]]: FieldRow<N["fields"][K], N>;
 };
 
 /** Expand `N.fields` into the pull shape the default row serializes as. */
-const entityId = (ns: AnyEntity): PathCarrier =>
-  (ns as AnyEntity & { readonly id: PathCarrier }).id;
+const entityId = (ns: AnyQueryRoot): PathCarrier =>
+  (ns as AnyQueryRoot & { readonly id: PathCarrier }).id;
 
-/** The entity `Ref(Issue)` was declared against — has `.id` for the nested cell. */
+/** The entity or trait `Ref(Issue)` / `Ref(Taggable)` was declared against. */
 const refTargetEntity = (
   field: { readonly schema?: unknown },
-  source: AnyEntity,
-): AnyEntity => {
+  source: AnyQueryRoot,
+): AnyQueryRoot => {
   const schema = field.schema as
     | { readonly _resolve?: () => unknown; readonly _self?: boolean }
     | undefined;
@@ -118,9 +118,10 @@ const refTargetEntity = (
   if (
     typeof target === "object" &&
     target !== null &&
-    (target as { _tag?: unknown })._tag === "Entity"
+    ((target as { _tag?: unknown })._tag === "Entity" ||
+      (target as { _tag?: unknown })._tag === "Trait")
   ) {
-    return target as AnyEntity;
+    return target as AnyQueryRoot;
   }
   return source;
 };
@@ -130,7 +131,7 @@ const refTargetEntity = (
  * runtime so a missing fact does not drop the row; {@link EntityRow} still
  * types required scalars as required (optimistic about presence).
  */
-export const entityShape = (ns: AnyEntity): Shape => {
+export const entityShape = (ns: AnyQueryRoot): Shape => {
   const sourceId = entityId(ns);
   const out: Record<string, unknown> = { id: sourceId };
   for (const [key, field] of Object.entries(ns.fields)) {
@@ -172,7 +173,7 @@ type EqValue<A> = IsRef<A> extends true
  * Object-literal equality filters. Keys are the entity's fields (plus `id`);
  * a wrong key or value type is a compile error.
  */
-export type WhereEq<N extends AnyEntity> = {
+export type WhereEq<N extends AnyQueryRoot> = {
   readonly [K in keyof N["fields"]]?: EqValue<N["fields"][K]>;
 } & {
   readonly id?: Eid<N> | number | { readonly id: number };
@@ -185,7 +186,7 @@ export type WhereEq<N extends AnyEntity> = {
  */
 const EQ_CLAUSE = new WeakMap<object, { readonly key: string; readonly value: unknown }>();
 
-const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pipeline => {
+const applyEq = (pipe: Pipeline, ns: AnyQueryRoot, eq: Record<string, unknown>): Pipeline => {
   const kept = [...pipe.stages];
   const prior: { key: string; value: unknown }[] = [];
   while (kept.length > 0) {
@@ -227,7 +228,7 @@ const applyStages = (
  * returns a new value, hoistable at module scope exactly as `Query.q` is.
  */
 export interface FluentQuery<
-  N extends AnyEntity = AnyEntity,
+  N extends AnyQueryRoot = AnyEntity,
   Row = unknown,
   Out = readonly Row[],
 > extends QueryObject<Row, Out> {
@@ -272,7 +273,7 @@ export interface FluentQuery<
   ids(): FluentQuery<N, IdRow<N>>;
 }
 
-const makeFluent = <N extends AnyEntity, Row>(
+const makeFluent = <N extends AnyQueryRoot, Row>(
   ns: N,
   pipe: Pipeline,
   stripCursor: boolean,
@@ -342,14 +343,19 @@ const makeFluent = <N extends AnyEntity, Row>(
 };
 
 /**
- * Start a fluent query at an entity. Select-less, the row is the full
- * entity (friendly keys); `.select` narrows, `.ids` keeps today's id-only
- * cheap subscription. Put changing values in `.where` — two independently
+ * Start a fluent query at an entity or a trait. Select-less, the row is
+ * the full focus (friendly keys); a trait root exposes id and trait
+ * fields. `.select` narrows, `.ids` keeps today's id-only cheap
+ * subscription. Put changing values in `.where` — two independently
  * built queries with the same literals share a live subscription.
  */
-export const from = <N extends AnyEntity>(ns: N): FluentQuery<N, EntityRow<N>> => {
-  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
-    throw new Error("ramose/query: Query.from(...) takes an entity");
+export const from = <N extends AnyQueryRoot>(ns: N): FluentQuery<N, EntityRow<N>> => {
+  if (typeof ns !== "object" || ns === null) {
+    throw new Error("ramose/query: Query.from(...) takes an entity or a trait");
+  }
+  const tag = (ns as { _tag?: unknown })._tag;
+  if (tag !== "Entity" && tag !== "Trait") {
+    throw new Error("ramose/query: Query.from(...) takes an entity or a trait");
   }
   return makeFluent(ns, entities(ns), false);
 };

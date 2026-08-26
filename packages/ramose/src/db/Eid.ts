@@ -14,14 +14,14 @@
  */
 
 import type { AnySchema } from "./Schema.ts";
-import type { AnyEntity } from "./Entity.ts";
+import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
 
 /**
  * Namespace-branded cell: the raw id the peer answered, typed as belonging
  * to `N`. Required `_ns` — an optional brand would let any bare `number`
  * pass for a cell.
  */
-export type NamespaceEid<N extends AnyEntity> = number & {
+export type NamespaceEid<N extends AnyQueryRoot> = number & {
   readonly _ns: N;
 };
 
@@ -34,12 +34,12 @@ export type SchemaEid<C extends AnySchema> = {
   [K in keyof C["entities"]]: NamespaceEid<C["entities"][K] & AnyEntity>;
 }[keyof C["entities"]];
 
-export type Eid<S extends AnySchema | AnyEntity = AnyEntity> = [S] extends [
-  AnyEntity,
+export type Eid<S extends AnySchema | AnyQueryRoot = AnyEntity> = [S] extends [
+  AnyQueryRoot,
 ]
   ? NamespaceEid<S>
   : SchemaEid<Extract<S, AnySchema>>;
 
 /** @internal Query rows and reports brand raw ids with this. */
-export const makeEid = <S extends AnySchema | AnyEntity>(id: number): Eid<S> =>
+export const makeEid = <S extends AnySchema | AnyQueryRoot>(id: number): Eid<S> =>
   id as Eid<S>;

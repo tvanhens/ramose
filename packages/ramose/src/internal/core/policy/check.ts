@@ -38,7 +38,8 @@ export function isSchemaTx(tx: unknown): tx is readonly Record<string, unknown>[
       const schemaKey =
         k.startsWith(":db/") ||
         k === ":ramose/kind" ||
-        k === ":ramose/composes";
+        k === ":ramose/composes" ||
+        k === ":ramose/refTarget";
       if (!schemaKey) return false;
       const t = typeof v;
       if (t !== "string" && t !== "number" && t !== "boolean") return false;

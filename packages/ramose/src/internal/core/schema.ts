@@ -32,6 +32,7 @@ export const RAMOSE_TRAIT = 47;
 export const RAMOSE_KIND = 48;
 export const RAMOSE_COMPOSES = 49;
 export const DB_TX_INSTANT = 50;
+export const RAMOSE_REF_TARGET = 61;
 export const DB_DOC = 62;
 
 export const RAMOSE_TYPE_IDENT = ":ramose/type";
@@ -40,6 +41,7 @@ export const RAMOSE_KIND_IDENT = ":ramose/kind";
 export const RAMOSE_COMPOSES_IDENT = ":ramose/composes";
 export const RAMOSE_KIND_ENTITY = ":ramose.kind/entity";
 export const RAMOSE_KIND_TRAIT = ":ramose.kind/trait";
+export const RAMOSE_REF_TARGET_IDENT = ":ramose/refTarget";
 
 /** First entity id handed out to user entities. */
 export const FIRST_USER_EID = 1000;
@@ -69,6 +71,8 @@ export interface Attribute {
   readonly doc?: string;
   /** Card-one field the schema marked optional — not required at create. */
   readonly optional?: boolean;
+  /** Declared target ident of a ref (`:taggable`, `:issue`). */
+  readonly refTarget?: string;
 }
 
 export const VALUE_TYPE_IDENTS: Record<string, VT> = {
@@ -109,6 +113,7 @@ const BOOTSTRAP_SPECS: (AttributeSpec & { id: number })[] = [
   { id: RAMOSE_TRAIT, ident: RAMOSE_TRAIT_IDENT, valueType: ":db.type/string", cardinality: "many", index: true, doc: "Trait membership" },
   { id: RAMOSE_KIND, ident: RAMOSE_KIND_IDENT, valueType: ":db.type/string", cardinality: "one", doc: "Ident is an entity type or a trait" },
   { id: RAMOSE_COMPOSES, ident: RAMOSE_COMPOSES_IDENT, valueType: ":db.type/string", cardinality: "many", doc: "Direct trait composition" },
+  { id: RAMOSE_REF_TARGET, ident: RAMOSE_REF_TARGET_IDENT, valueType: ":db.type/string", cardinality: "one", doc: "Declared target of a ref attribute" },
   { id: DB_TX_INSTANT, ident: ":db/txInstant", valueType: ":db.type/instant", cardinality: "one", index: true },
   { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
 ];
@@ -152,6 +157,7 @@ interface Partial {
   isComponent?: boolean;
   optional?: boolean;
   doc?: string;
+  refTarget?: string;
 }
 
 export class Schema {
@@ -244,6 +250,11 @@ export class Schema {
           if (d.op) this.kinds.set(d.e, d.v as string);
           else if (this.kinds.get(d.e) === d.v) this.kinds.delete(d.e);
           break;
+        case RAMOSE_REF_TARGET:
+          if (!p) this.partials.set(d.e, (p = {}));
+          p.refTarget = d.op ? (d.v as string) : undefined;
+          touched.add(d.e);
+          break;
         case RAMOSE_COMPOSES: {
           const set = this.composeEdges.get(d.e) ?? new Set<string>();
           if (d.op) set.add(d.v as string);
@@ -281,6 +292,7 @@ export class Schema {
       isComponent: !!p.isComponent,
       doc: p.doc,
       optional: !!p.optional,
+      ...(p.refTarget !== undefined ? { refTarget: p.refTarget } : {}),
     };
     this.byId.set(e, attr);
     this.byIdent.set(attr.ident, attr);

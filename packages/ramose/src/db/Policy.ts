@@ -23,9 +23,10 @@ import { isOptionalField, type AnyField } from "./Field.ts";
 import { roleIdentOf } from "../internal/core/policy/provision.ts";
 import { inferDbValueType } from "./valueTypes.ts";
 import type { AnySchema } from "./Schema.ts";
+import { schemaTraits } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
-import type { CatalogIdent } from "./idents.ts";
-import type { AnyEntity } from "./Entity.ts";
+import type { CatalogIdent, EntityTraitNs } from "./idents.ts";
+import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
 import type { AnyOperation, AnyOperations, Operation } from "./Operation.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
@@ -72,14 +73,14 @@ export type PrincipalMe<C extends AnySchema, I extends string> = Me<NsOfPrincipa
  * Trait fields keep the trait's ident (`Issue.tags` → `:taggable/tags`)
  * while still belonging to the composing entity's field set.
  */
-export type EntityFieldIdent<N extends AnyEntity> = {
+export type EntityFieldIdent<N extends AnyQueryRoot> = {
   [K in keyof N["fields"]]: N["fields"][K] extends { readonly ident: infer I extends string }
     ? I
     : never;
 }[keyof N["fields"]];
 
 /** A stamped field of `N` — the `A` a forward `FilterStage` may capture. */
-type EntityField<N extends AnyEntity> = N["fields"][keyof N["fields"]];
+type EntityField<N extends AnyQueryRoot> = N["fields"][keyof N["fields"]];
 
 /**
  * `(me) => fragment` — the arm closes over the typed principal token.
@@ -90,7 +91,7 @@ type EntityField<N extends AnyEntity> = N["fields"][keyof N["fields"]];
  * handwritten generator is branded with `N` as its focus; `{ _ident?: never }`
  * keeps a wrong-entity `Query.is` from sneaking through the generator branch.
  */
-export type FragFn<M, N extends AnyEntity = AnyEntity> = (me: M) =>
+export type FragFn<M, N extends AnyQueryRoot = AnyEntity> = (me: M) =>
   | FilterStage<N, EntityField<N>>
   | FilterStage
   | ReverseFilter<AttrLike>
@@ -117,30 +118,30 @@ export interface ClassFn<CL extends string = string> {
  * JWT class gate as a config record — `rule` is contextually typed, so
  * inline `(me) => …` needs no annotation. `rule` defaults to `true`.
  */
-export type ClassConfig<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
+export type ClassConfig<M, N extends AnyQueryRoot = AnyEntity, CL extends string = string> = {
   readonly class: CL | readonly CL[];
   readonly rule?: true | FragFn<M, N>;
 };
 
 /** One allow arm: a fragment, `true` (empty / public), or a class gate. */
-export type ArmValue<M, N extends AnyEntity = AnyEntity, CL extends string = string> =
+export type ArmValue<M, N extends AnyQueryRoot = AnyEntity, CL extends string = string> =
   | true
   | FragFn<M, N>
   | ClassGate<true | FragFn<M, N>, CL>
   | ClassConfig<M, N, CL>;
 
 /** Arms per op; an array is OR. Only `read` — writes are {@link OperationArms}. */
-export type RuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = {
+export type RuleSpec<M, N extends AnyQueryRoot = AnyEntity, CL extends string = string> = {
   readonly [K in Op]?: ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[];
 };
 
-export interface AttrRule<M = unknown, N extends AnyEntity = AnyEntity, CL extends string = string> {
+export interface AttrRule<M = unknown, N extends AnyQueryRoot = AnyEntity, CL extends string = string> {
   readonly _tag: "AttrRule";
   readonly attr: string;
   readonly rules: RuleSpec<M, N, CL>;
 }
 
-export type NsRuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = RuleSpec<
+export type NsRuleSpec<M, N extends AnyQueryRoot = AnyEntity, CL extends string = string> = RuleSpec<
   M,
   N,
   CL
@@ -204,6 +205,31 @@ export interface PolicyHead<
   readonly operations?: AnyOperations;
 }
 
+type FieldIdent<F> = F extends { readonly ident: infer I extends string } ? I : never;
+
+/** Trait names reachable from `C`'s entities. */
+export type SchemaTraitName<C extends AnySchema> = {
+  [K in keyof C["entities"]]: EntityTraitNs<C["entities"][K]>;
+}[keyof C["entities"]];
+
+/** Stamped fields whose ident lives under `:${Name}/`. */
+type FieldsOfTrait<C extends AnySchema, Name extends string> = {
+  [K in keyof C["entities"]]: {
+    [A in keyof C["entities"][K]["fields"] & string as FieldIdent<
+      C["entities"][K]["fields"][A]
+    > extends `:${Name}/${string}`
+      ? A
+      : never]: C["entities"][K]["fields"][A];
+  };
+}[keyof C["entities"]];
+
+/** Policy focus for a trait arm — trait fields only, not composer fields. */
+type TraitFocus<C extends AnySchema, Name extends string> = {
+  readonly _tag: "Trait";
+  readonly ns: Name;
+  readonly fields: FieldsOfTrait<C, Name>;
+};
+
 export type PolicyArms<
   C extends AnySchema,
   M,
@@ -211,6 +237,10 @@ export type PolicyArms<
   Ops extends AnyOperations | undefined = undefined,
 > = {
   readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
+} & {
+  readonly traits?: {
+    readonly [K in SchemaTraitName<C> & string]?: NsRuleSpec<M, TraitFocus<C, K>, CL[number]>;
+  };
 } & (Ops extends AnyOperations
   ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
   : { readonly operations?: undefined });
@@ -731,9 +761,11 @@ export function policy<
   const maskedReads = new Set<string>();
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
+  const traitSpec = body.traits as Record<string, NsRuleSpec<unknown> & Record<string, unknown>> | undefined;
+  const traitsByNs = schemaTraits(schema);
 
   for (const [nsKey, rawSpec] of Object.entries(body)) {
-    if (nsKey === "operations" || rawSpec === undefined) continue;
+    if (nsKey === "operations" || nsKey === "traits" || rawSpec === undefined) continue;
     const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
     for (const key of Object.keys(nsSpec)) {
       if (REJECTED_WRITE_KEYS.has(key)) {
@@ -780,6 +812,57 @@ export function policy<
     }
 
     ns[nsKey] = { prefix, rules, attrs };
+  }
+
+  if (traitSpec !== undefined) {
+    if (traitSpec === null || typeof traitSpec !== "object" || Array.isArray(traitSpec)) {
+      fail("traits: expected an object of trait arms");
+    }
+    for (const [traitKey, rawSpec] of Object.entries(traitSpec)) {
+      if (rawSpec === undefined) continue;
+      const declared = traitsByNs.get(traitKey);
+      if (declared === undefined) {
+        fail(`traits.${traitKey}: ${JSON.stringify(traitKey)} is not a trait in the schema`);
+      }
+      const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
+      for (const key of Object.keys(nsSpec)) {
+        if (REJECTED_WRITE_KEYS.has(key)) {
+          fail(
+            `traits.${traitKey}.${key}: write verbs are gone — authorize ${key} on the named operation in operations:`,
+          );
+        }
+      }
+      const prefix = declared.ns;
+      const where = `traits.${traitKey}`;
+      const fieldIdents = entityFieldIdents(declared);
+      const rules = compileSpec(nsSpec, where, prefix, prefix, fieldIdents);
+      const attrs: Record<string, Record<string, readonly CompiledArm[]>> = {};
+      for (const a of nsSpec.attrs ?? []) {
+        if (a?._tag !== "AttrRule") fail(`${where}.attrs expects P.field(...)`);
+        if (!idents.has(a.attr)) fail(`${where}.attrs: ${a.attr} is not in the schema`, a.attr);
+        if (!fieldIdents.has(a.attr)) {
+          fail(`${where}.attrs: ${a.attr} is not a field of the ${traitKey} trait`, a.attr);
+        }
+        for (const key of Object.keys(a.rules as object)) {
+          if (REJECTED_WRITE_KEYS.has(key)) {
+            fail(`${where}.attrs["${a.attr}"].${key}: attribute write arms are gone — use operations:`);
+          }
+        }
+        const r = compileSpec(
+          a.rules,
+          `${where}.attrs["${a.attr}"]`,
+          `${prefix}/${a.attr.slice(a.attr.lastIndexOf("/") + 1)}`,
+          prefix,
+          fieldIdents,
+        );
+        attrs[a.attr] = r;
+        if (r.read !== undefined) maskedReads.add(a.attr);
+      }
+      if (ns[traitKey] !== undefined) {
+        fail(`traits.${traitKey}: ${JSON.stringify(traitKey)} is already an entity arm`);
+      }
+      ns[traitKey] = { prefix, rules, attrs };
+    }
   }
 
   const compiledOps: Record<string, readonly CompiledArm[]> = {};
@@ -871,14 +954,12 @@ const toWireRules = (rules: Readonly<Record<string, readonly CompiledArm[]>>): P
 
 /**
  * Lower to the compiled AST. Namespace rules are emitted once, under `ns`
- * (entity prefixes only — trait prefixes are not fanned out). `allowsOp`
- * remaps a trait attr to the entity's `:ramose/type` namespace so two
- * composers of the same trait do not union their grants. `attrs` carries
- * only the attributes that narrow their namespace. Core ANDs
- * `attrs[ident][op]` with `ns[prefix][op]` and falls back to whichever side is
- * present (internal/core/policy/eval.ts#allowsOp), so an attribute inherits its
- * namespace without being named and an attribute rule is emitted alone — core
- * supplies the narrowing. A trait attr with no rule on the entity type denies.
+ * (entity prefixes and authored trait prefixes). Trait field reads AND the
+ * composing entity's row rule with the trait's shared `ns.taggable` rule so
+ * two composers do not union their grants. `attrs` carries only the
+ * attributes that narrow their namespace. Core ANDs `attrs[ident][op]` with
+ * the applicable namespace rule(s) (internal/core/policy/eval.ts#allowsOp).
+ * A trait attr with no trait `read` and no entity `read` denies.
  *
  * Fragment arms compile to named query rules in `rules`; `true` is the empty
  * fragment (public) and does not emit a rule. `RAMOSE_POLICY` is a Cloudflare
@@ -890,13 +971,18 @@ const lower = (p: Policy): CompiledPolicy => {
   const ns: Record<string, PolicyRules> = {};
 
   const attrOwners = new Map<string, string>();
+  const traitsByNs = schemaTraits(p.schema);
   for (const [nsKey, entry] of Object.entries(p.ns)) {
-    const declared = (
-      p.schema.entities as Record<
-        string,
-        { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
-      >
-    )[nsKey]!;
+    const declared =
+      (
+        p.schema.entities as Record<
+          string,
+          { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
+        >
+      )[nsKey] ?? traitsByNs.get(nsKey);
+    if (declared === undefined) {
+      fail(`ns.${nsKey}: ${JSON.stringify(nsKey)} is not in the schema`);
+    }
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
     const declaredIdents = entityFieldIdents(declared);
