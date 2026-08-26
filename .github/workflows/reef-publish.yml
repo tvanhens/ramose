@@ -1,116 +1,26 @@
-# Production publish of the Reef demo (examples/reef/): deploy the Alchemy
-# `prod` stage on every push to master / main.
+# FROZEN — Reef is not deployed during the authorization redesign
+# (issue #335, tracker #351). Do not re-enable this workflow until the
+# dedicated rebuild and redeploy (#350).
 #
-# The demo serves at https://reef.ramose.ai on one hostname:
-#   /db/*   → the Ramose peer   (a Worker route, examples/reef/src/infra/resources.ts)
-#   /*      → the auth Worker   (a custom domain, examples/reef/src/infra/api.ts)
-#            which also serves the built SPA as its assets
-# Same-origin means the browser never preflights a transact, and the peer's
-# workers.dev hostname stays up for the `Ramose.Server` health check.
+# examples/reef is kept as a reference and is excluded from typecheck and
+# unit tests. Later authorization PRs must not edit it to stay green.
 #
-# One pass, not two: the peer's URL is the demo hostname, known before any
-# deploy, so the SPA is built with `VITE_RAMOSE_URL` up front and shipped as
-# the auth Worker's assets in the same deploy. (Without a pinned hostname the
-# peer URL is only knowable *after* a deploy, which is why the manual flow in
-# examples/reef/README.md deploys twice.)
-#
-# State: `ALCHEMY_STATE=local` with `.alchemy/` carried between runs via the
-# Actions cache, like docs-publish.yml — the CI token deliberately lacks the
-# scopes `Cloudflare.state()` needs (see CONTRIBUTING.md). Unlike the docs
-# site, this stack owns a D1 database (accounts, orgs, JWKS keys) and an R2
-# bucket (every workspace's datoms), and Alchemy's generated names carry a
-# random suffix — so a cache eviction would mint empty replacements and orphan
-# the live data. `REEF_DOMAIN` pins the physical names (see
-# examples/reef/src/infra/domain.ts) and `--adopt` reattaches them.
-# `BetterAuthSecret` is Alchemy.Random (state-only, not adopt-able): a
-# 411-byte cache restore remints it. Old cookies die; password sign-in
-# still works. JWKS private keys stay encrypted with the old secret —
-# `ramoseToken` mints a replacement key, and Reef's jwt plugin sets
-# `disableSettingJwtHeader` so `/get-session` does not have to decrypt.
-#
-# Credentials come from the GitHub Environment "Development" — same as
-# docs-publish.yml. The token needs **Account / D1 / Edit** on top of the
-# minimum in CONTRIBUTING.md, plus zone access to manage the hostname.
-name: Reef publish
+# This file stays in the workflow list so the freeze is obvious: no push
+# or pull_request trigger deploys Reef. A manual run refuses to publish.
+name: Reef publish (frozen)
 
 on:
-  push:
-    branches: [master, main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: reef-publish
-  cancel-in-progress: false
-
 jobs:
-  publish:
-    name: publish-prod
+  frozen:
+    name: refuse-deploy
     runs-on: ubuntu-latest
-    environment: Development
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - name: Install
-        run: bun install --frozen-lockfile
-      - name: Restore stack state
-        uses: actions/cache/restore@v4
-        with:
-          path: .alchemy
-          key: reef-prod-state-${{ github.run_id }}
-          restore-keys: |
-            reef-prod-state-
-      - name: Deploy prod stage
-        id: deploy
-        env:
-          CI: "1"
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # Unset it and this is an ordinary personal deploy: no custom domain,
-          # no route, no pinned names. Production is exactly this variable.
-          REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
-          ALCHEMY_STATE: local
+      - name: Reef production publish is frozen
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
-            exit 1
-          fi
-          # `ramose`'s exports resolve `bun` → src but `default` → dist, and
-          # Vite is not Bun: without this the SPA silently bundles whatever
-          # packages/ramose/dist was left over from, while the peer Worker
-          # (resolved by alchemy under Bun) ships current src. Skipping it does
-          # not fail the build — it ships a stale client.
-          bun run scripts/build-packages.ts
-          # The SPA talks to the peer at its own origin, so bake that in first.
-          VITE_RAMOSE_URL="https://$REEF_DOMAIN" bunx vite build examples/reef
-          bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --yes --adopt
-          echo "### Reef demo published" >> "$GITHUB_STEP_SUMMARY"
-          echo "https://$REEF_DOMAIN" >> "$GITHUB_STEP_SUMMARY"
-      - name: Smoke-test the deploy
-        env:
-          REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
-        run: |
-          fail=0
-          # The SPA, from the auth Worker's assets.
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$REEF_DOMAIN/")
-          [ "$code" = "200" ] || { echo "::error::SPA returned $code"; fail=1; }
-          # Better Auth's key set — what the peer verifies tokens against.
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$REEF_DOMAIN/api/auth/jwks")
-          [ "$code" = "200" ] || { echo "::error::JWKS returned $code"; fail=1; }
-          # /db/* must reach the peer, not the SPA's catch-all. An unauthenticated
-          # probe is JSON from the peer; the asset fallback would be text/html.
-          ct=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 30 "https://$REEF_DOMAIN/db/probe/info")
-          case "$ct" in
-            application/json*) ;;
-            *) echo "::error::/db/* served '$ct' — the peer route is not winning over the asset fallback"; fail=1 ;;
-          esac
-          exit $fail
-      - name: Save stack state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .alchemy
-          key: reef-prod-state-${{ github.run_id }}-${{ github.run_attempt }}
+          echo "::error::Reef production publish is frozen during the authorization redesign (#335 / #351). Rebuild and redeploy is #350. This workflow does not deploy."
+          exit 1

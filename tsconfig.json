@@ -49,5 +49,12 @@
     "examples/**/*.ts",
     "examples/**/*.tsx"
   ],
-  "exclude": ["node_modules", ".alchemy", "dist"]
+  "exclude": [
+    "node_modules",
+    ".alchemy",
+    "dist",
+    // Frozen during the authorization redesign (#335 / #351). Rebuild is #350.
+    // Do not typecheck Reef until then — later auth PRs must not have to edit it.
+    "examples/reef"
+  ]
 }

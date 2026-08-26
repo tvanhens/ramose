@@ -33,11 +33,13 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 - The peer runs under Alchemy/miniflare, which emulates R2 + both Durable Objects
   in one process — there is **no external database** to start.
 - Non-obvious startup requirements for `bun alchemy dev`:
-  - Prefer `bun run dev:todos` / `bun run dev:reef` — those scripts set
+  - Prefer `bun run dev:todos` — that script sets
     `CI=1`, `ALCHEMY_STATE=local`, a 32-hex placeholder account id, and
     `CLOUDFLARE_API_TOKEN=x`. Without `CI=1`, Alchemy tries interactive
     login and fails with `AuthError: No credentials configured` even in
-    local mode.
+    local mode. `dev:reef` exists for inspecting the frozen Reef source
+    (authorization redesign); Reef is excluded from typecheck, unit tests,
+    and deploy workflows until the dedicated rebuild.
   - Equivalent one-liner:
     `CI=1 ALCHEMY_STATE=local CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=x bun alchemy dev examples/todos/alchemy.run.ts`
 - **Port gotcha:** this Alchemy version serves the peer on **`http://localhost:1337`**,
