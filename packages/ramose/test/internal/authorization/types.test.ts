@@ -52,6 +52,7 @@ import {
   type CompleteProjected,
   type FieldDescriptor,
   type IncompleteProjected,
+  type InputTerm,
   type InstalledAuthorizationIR,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
@@ -238,6 +239,13 @@ type _topLevelArrayOk = Expect<
 >;
 type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
 
+type InputRootTerm = { readonly _tag: "input"; readonly path: readonly [] };
+type _inputRootOk = Expect<Extends<InputRootTerm, InputTerm>>;
+type InputFieldTerm = { readonly _tag: "input"; readonly path: readonly ["title"] };
+type _inputFieldOk = Expect<Extends<InputFieldTerm, InputTerm>>;
+type InputKeyOnly = { readonly _tag: "input"; readonly key: "title" };
+type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
+
 type BindingWithoutDatabase = {
   readonly catalog: CatalogDescriptor;
   readonly template: PolicyTemplateIR;
@@ -344,7 +352,7 @@ const templateFixture: PolicyTemplateIR = {
         _tag: "and",
         exprs: [
           { _tag: "hasClass", class: "member" },
-          { _tag: "has", term: { _tag: "input", key: "title" } },
+          { _tag: "has", term: { _tag: "input", path: ["title"] } },
           { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
         ],
       },
@@ -645,6 +653,11 @@ const _operationFixtures = () => {
   // @ts-expect-error — top-level input is a shape, not a bare field map
   const asTopLevel: OperationInputShape = fieldsOnlyInput;
 
+  const inputRoot: InputTerm = { _tag: "input", path: [] };
+  const inputField: InputTerm = { _tag: "input", path: ["title"] };
+  // @ts-expect-error — whole-input and nested fields use path, not key
+  const inputByKey: InputTerm = { _tag: "input", key: "title" };
+
   const claimKeys = ["teams"] as const;
   // @ts-expect-error — claim vocabulary stores shapes, not bare keys
   const asClaims: ClaimVocabulary = claimKeys;
@@ -675,6 +688,9 @@ const _operationFixtures = () => {
     presentMany,
     topLevelArray,
     asTopLevel,
+    inputRoot,
+    inputField,
+    inputByKey,
     asClaims,
     asBind,
   };

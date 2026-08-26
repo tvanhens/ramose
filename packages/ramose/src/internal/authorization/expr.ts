@@ -42,10 +42,14 @@ export type ClaimTerm = {
   readonly key: string;
 };
 
-/** Typed operation input. Key must belong to that operation's input descriptor. */
+/**
+ * Typed operation input. `path` walks struct keys; `[]` is the input root.
+ * A root term is required when the operation codec is a top-level scalar,
+ * ref, or array — there is no field key to name.
+ */
 export type InputTerm = {
   readonly _tag: "input";
-  readonly key: string;
+  readonly path: readonly string[];
 };
 
 /** Existential or `some` binding. */
@@ -89,7 +93,7 @@ export type EqExpr<I extends IdentitySpace = RelativeIdentities> = {
   readonly right: ValueTerm<I>;
 };
 
-/** Presence of a value (field, input key, optional `me`). */
+/** Presence of a value (field, input path including the root, optional `me`). */
 export type HasExpr<I extends IdentitySpace = RelativeIdentities> = {
   readonly _tag: "has";
   readonly term: ValueTerm<I>;
