@@ -68,7 +68,9 @@ export class LeaseExpired extends Data.TaggedError("LeaseExpired")<{
  * No payload — a later HTTP mapper must emit a fixed denial, not resource
  * or policy details. Diagnostics stay on the internal failure that caused this.
  */
-export class AuthorizationDenied extends Data.TaggedError("AuthorizationDenied") {}
+export class AuthorizationDenied extends Data.TaggedError(
+  "AuthorizationDenied",
+) {}
 
 export type AuthorizationFailure =
   | InvalidIR
