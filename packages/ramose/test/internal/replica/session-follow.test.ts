@@ -75,6 +75,7 @@ type ReplicaWalk = {
   fetch(request: Request): Promise<Response>;
   applyDatoms(e: LogEntry): Promise<void>;
   handleFrame(frame: unknown): Promise<void>;
+  onUpstreamData(data: string): Promise<void>;
   adoptRoot(rec: RootRecord): void;
   live: Map<FakeSocket, Session>;
 };
@@ -249,6 +250,34 @@ describe("QueryReplicaDO apply-then-notify", () => {
     );
     expect(recovered.status).toBe(200);
     expect(((await recovered.json()) as { t: number }).t).toBe(11);
+    expect(replica.basisT).toBe(11);
+  });
+
+  test("an upstream pong fences catch-up so a silent novelty socket still advances", async () => {
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              return Response.json({
+                earliestLogT: 11,
+                entries: [txFrame(entry(11))],
+                t: 11,
+              });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    await replica.onUpstreamData(JSON.stringify({ v: 1, kind: "pong", t: 11 }));
     expect(replica.basisT).toBe(11);
   });
 

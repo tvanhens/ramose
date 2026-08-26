@@ -88,6 +88,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   private syncing: Promise<void> | undefined;
   /** In-order apply of upstream frames; `sync` drains this before serving a basis. */
   private applyChain: Promise<void> = Promise.resolve();
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectDelayMs = 0;
+  private watchTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastUpstreamAt = 0;
   readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
   private readonly log = componentLogger("replica");
   /** Live session protocol objects (rebuilt from hibernation attachments). */
@@ -254,21 +258,87 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     ws.accept();
     this.ws = ws;
     this.stats.reconnects++;
+    this.reconnectDelayMs = 0;
+    this.lastUpstreamAt = Date.now();
     this.log.info("replica.connect", { db: this.dbName, from: this.basisT, reconnects: this.stats.reconnects, novelty: this.entries.length });
     ws.addEventListener("message", (ev) => this.enqueueFrame(ev));
     const drop = () => {
       if (this.ws === ws) this.ws = undefined;
-      // Live sessions stall until the next inbound request if we only
-      // reconnect from `sync()`. Resume from the watermark on drop.
-      void this.ensureConnected().catch((err) => {
-        this.log.warn("replica.reconnect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
-      });
+      // Listening sessions never call `sync()`. Retry with backoff until the
+      // socket is back or every attached session is gone.
+      this.scheduleReconnect();
     };
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
+    this.armWatch();
     // give the hello + catch-up a moment so the first basis is fresh
     await new Promise((r) => setTimeout(r, 20));
     await this.drainFrames();
+  }
+
+  private listening(): boolean {
+    return this.ctx.getWebSockets().length > 0;
+  }
+
+  /** Retry `ensureConnected` with backoff while live sessions are attached. */
+  private scheduleReconnect(): void {
+    if (this.ws && (this.ws.readyState === 1 || this.ws.readyState === 0)) return;
+    if (this.connecting || this.reconnectTimer !== undefined) return;
+    const delay = this.reconnectDelayMs;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      const run = this.ensureConnected()
+        .then(() => {
+          this.reconnectDelayMs = 0;
+          this.armWatch();
+        })
+        .catch((err) => {
+          this.log.warn("replica.reconnect.failed", { db: this.dbName, error: String(err), basisT: this.basisT, delayMs: this.reconnectDelayMs });
+          this.reconnectDelayMs = this.reconnectDelayMs === 0 ? 250 : Math.min(8_000, this.reconnectDelayMs * 2);
+          if (this.listening()) this.scheduleReconnect();
+        });
+      this.ctx.waitUntil?.(run);
+    }, delay);
+  }
+
+  /**
+   * Ping the transactor while sessions are attached. A pong carries `t` and
+   * runs `catchUpTo` so an open-but-silent novelty socket still wakes live
+   * subscribers. No pong for a few ticks → drop and reconnect.
+   */
+  private armWatch(): void {
+    if (this.watchTimer !== undefined) return;
+    this.watchTimer = setTimeout(() => {
+      this.watchTimer = undefined;
+      void this.tickWatch().finally(() => {
+        if (this.listening() || this.ws?.readyState === 1) this.armWatch();
+      });
+    }, 2_000);
+  }
+
+  private async tickWatch(): Promise<void> {
+    if (!this.listening()) return;
+    if (!this.ws || this.ws.readyState !== 1) {
+      this.scheduleReconnect();
+      return;
+    }
+    if (this.lastUpstreamAt !== 0 && Date.now() - this.lastUpstreamAt > 6_000) {
+      this.log.warn("replica.upstream.stale", { db: this.dbName, basisT: this.basisT, silentMs: Date.now() - this.lastUpstreamAt });
+      try {
+        this.ws.close(1000, "stale");
+      } catch {
+        /* already gone */
+      }
+      this.ws = undefined;
+      this.scheduleReconnect();
+      return;
+    }
+    try {
+      this.ws.send(JSON.stringify({ kind: "ping" }));
+    } catch {
+      this.ws = undefined;
+      this.scheduleReconnect();
+    }
   }
 
   /**
@@ -287,10 +357,27 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   private enqueueFrame(ev: MessageEvent): void {
-    void this.enqueue(async () => {
+    void this.onUpstreamData(String(ev.data));
+  }
+
+  /** Transactor novelty frames, or a `pong` that fences catch-up for live sessions. */
+  private async onUpstreamData(data: string): Promise<void> {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(data);
+    } catch (err) {
+      console.error("replica: bad frame", err);
+      return;
+    }
+    this.lastUpstreamAt = Date.now();
+    if (raw !== null && typeof raw === "object" && (raw as { kind?: unknown }).kind === "pong") {
+      const t = (raw as { t?: unknown }).t;
+      if (typeof t === "number") await this.catchUpTo(t);
+      return;
+    }
+    await this.enqueue(async () => {
       try {
-        const frame = JSON.parse(String(ev.data)) as WireFrame;
-        await this.handleFrame(frame);
+        await this.handleFrame(raw as WireFrame);
       } catch (err) {
         console.error("replica: bad frame", err);
       }
@@ -306,6 +393,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * Pull `(basisT, minT]` from the transactor SQL log when the WS
    * subscription is open-but-stale (broadcasts dropped under load).
    * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
+   * Fenced HTTP reads and upstream `pong` (live-session watch) both call this.
    */
   private async catchUpTo(minT: number | undefined): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
@@ -327,6 +415,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         // transactor unreachable: serve from R2 (root + log chunks) — stale but consistent
         this.log.warn("replica.connect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
         await this.catchUpFromR2(this.basisT).catch(() => undefined);
+        if (this.listening()) this.scheduleReconnect();
       }
     })().finally(() => (this.syncing = undefined));
     return this.syncing;
