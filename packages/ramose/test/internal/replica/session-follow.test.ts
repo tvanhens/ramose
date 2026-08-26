@@ -213,7 +213,7 @@ describe("QueryReplicaDO apply-then-notify", () => {
     expect(replica.basisT).toBe(12);
   });
 
-  test("a failed minT catch-up does not prevent a later fenced read from applying", async () => {
+  test("a thrown /log fetch falls back to R2 and does not block a later fenced read", async () => {
     let failLog = true;
     const env = {
       STORE: new MemoryBucket(),
@@ -239,10 +239,11 @@ describe("QueryReplicaDO apply-then-notify", () => {
     const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
     expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
     replica.adoptRoot(rootAt(10));
-    const failed = await replica.fetch(
+    const fallback = await replica.fetch(
       new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "11" } }),
     );
-    expect(failed.status).toBe(500);
+    expect(fallback.status).toBe(200);
+    expect(((await fallback.json()) as { t: number }).t).toBe(10);
     expect(replica.basisT).toBe(10);
     failLog = false;
     const recovered = await replica.fetch(

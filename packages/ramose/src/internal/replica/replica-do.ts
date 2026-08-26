@@ -212,17 +212,21 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   /** Fetch (from, to] from the transactor's HTTP /log, falling back to R2 chunks. */
   private async fillGap(from: number, to: number): Promise<void> {
     if (!this.dbName) return;
-    const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-    const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, { headers: internalHeaders(this.env) });
-    if (res.ok) {
-      const body = (await res.json()) as { earliestLogT: number; entries: any[] };
-      if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
-        for (const f of body.entries) {
-          const e = entryFromFrame(f);
-          if (e.t === this.basisT + 1) await this.applyDatoms(e);
+    try {
+      const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
+      const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, { headers: internalHeaders(this.env) });
+      if (res.ok) {
+        const body = (await res.json()) as { earliestLogT: number; entries: any[] };
+        if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
+          for (const f of body.entries) {
+            const e = entryFromFrame(f);
+            if (e.t === this.basisT + 1) await this.applyDatoms(e);
+          }
+          return;
         }
-        return;
       }
+    } catch (err) {
+      this.log.warn("replica.log.fetch.failed", { db: this.dbName, error: String(err), from, to });
     }
     await this.catchUpFromR2(from, to);
   }
@@ -270,7 +274,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     };
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
-    this.armWatch();
+    if (this.listening()) this.armWatch();
     // give the hello + catch-up a moment so the first basis is fresh
     await new Promise((r) => setTimeout(r, 20));
     await this.drainFrames();
@@ -290,7 +294,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       const run = this.ensureConnected()
         .then(() => {
           this.reconnectDelayMs = 0;
-          this.armWatch();
+          if (this.listening()) this.armWatch();
         })
         .catch((err) => {
           this.log.warn("replica.reconnect.failed", { db: this.dbName, error: String(err), basisT: this.basisT, delayMs: this.reconnectDelayMs });
@@ -311,7 +315,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.watchTimer = setTimeout(() => {
       this.watchTimer = undefined;
       void this.tickWatch().finally(() => {
-        if (this.listening() || this.ws?.readyState === 1) this.armWatch();
+        if (this.listening()) this.armWatch();
       });
     }, 2_000);
   }
@@ -625,6 +629,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
+    this.armWatch();
     const raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
     const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
     const writes = parseWritesHeader(request.headers.get(WRITES_HEADER));
