@@ -74,10 +74,17 @@ async function allowsNsRead(
   policy: CompiledPolicy,
   ns: string,
   ctx: EvalCtx,
+  useBackstopSkip = true,
 ): Promise<boolean> {
   const nsArms = policy.ns?.[ns]?.read;
   if (!nsArms || nsArms.length === 0) return false;
-  if (ctx.overlay === undefined && ctx.memo.skipsNsBackstop(ns)) return true;
+  if (
+    useBackstopSkip &&
+    ctx.overlay === undefined &&
+    ctx.memo.skipsNsBackstop(ns)
+  ) {
+    return true;
+  }
   const useVisibleSet =
     ctx.overlay === undefined && ctx.memo.visibleSetMax > 0;
   return evalArms(nsArms, ctx, policy.rules, useVisibleSet);
@@ -90,6 +97,10 @@ async function allowsNsRead(
  * fields; pushdown records the same split (`recordMembershipNs`, and
  * trait-field prefixes do not record the trait ns).
  * They are not schema metadata.
+ *
+ * A pushdown skip on the composing entity ns does not cover a
+ * `:ramose/trait` datom on a different var — same reason `allowsOp`
+ * refuses `skipsNsBackstop` for trait attrs.
  */
 export async function allowsMembershipRead(
   policy: CompiledPolicy,
@@ -104,7 +115,7 @@ export async function allowsMembershipRead(
   if (d.a === RAMOSE_TRAIT) {
     const ns = await entityNsOf(ctx);
     if (ns === undefined) return false;
-    return allowsNsRead(policy, ns, ctx);
+    return allowsNsRead(policy, ns, ctx, false);
   }
   return false;
 }

@@ -311,6 +311,11 @@ function substClause(c: Clause, map: ReadonlyMap<string, Term>): Clause {
  * that datom by the composing entity's type. Recording `owned` here
  * would AND `ns.owned.read` onto `Query.from(Owned).select({ id })`.
  * Trait-field prefixes (`:owned/tag`) also do not record `owned`.
+ *
+ * A const `:ramose/trait` still signals `onVarAttr`. Otherwise `?t` is
+ * invisible to the coverage loop: a sibling entity var can mark the
+ * composing ns covered, and `allowsMembershipRead` would skip the
+ * entity row rule via `skipsNsBackstop`.
  */
 function recordMembershipNs(
   ident: string,
@@ -329,7 +334,7 @@ function recordMembershipNs(
     return true;
   }
   if (ident === RAMOSE_TRAIT_IDENT) {
-    if (c.v.kind !== "const") onVarAttr();
+    onVarAttr();
     return true;
   }
   return false;

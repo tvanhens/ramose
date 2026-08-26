@@ -507,6 +507,86 @@ describe("trait read policy", () => {
     expect((await view.entity(mine))?.[":owned/tag"]).toBe("a");
   });
 
+  test("a const trait root does not skip the composing entity row rule", async () => {
+    const Owned = Trait("owned", {
+      owner: Ref(() => Actor),
+      tag: string(),
+    });
+    const Ticket = Entity("issue", { title: string() }, { traits: [Owned] });
+    const Catalog = Schema({ actor: Actor, issue: Ticket });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":actor/sub": "alice" },
+      { ":db/id": "bob", ":actor/sub": "bob" },
+      {
+        ":db/id": "mine",
+        ":issue/title": "alice-issue",
+        ":owned/owner": "alice",
+        ":owned/tag": "a",
+      },
+      {
+        ":db/id": "theirs",
+        ":issue/title": "bob-issue",
+        ":owned/owner": "bob",
+        ":owned/tag": "b",
+      },
+    ]);
+    const mine = tempids.mine!;
+    const theirs = tempids.theirs!;
+    const own = (me: P.Me<typeof Actor>) => Query.is(Owned.owner, me);
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        issue: { read: own },
+        traits: { owned: { read: true } },
+      },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "alice",
+      eid: tempids.alice!,
+      claims: { sub: "alice" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+    const listing = Query.q(function* () {
+      const t = yield* Query.entities(Owned);
+      const i = yield* Query.entities(Ticket);
+      return { t, i };
+    });
+    const { query } = lowerQueryObject(listing);
+    const ast = parseQuery(query);
+    const pd = conjoinPolicy(ast, policyView(view)!);
+    expect(pd.covered).toEqual([]);
+    const on = (await coreQuery(view, query)) as readonly {
+      readonly t: number;
+      readonly i: number;
+    }[][];
+    const off = (await coreQuery(view, query, [], { pushdown: false })) as readonly {
+      readonly t: number;
+      readonly i: number;
+    }[][];
+    const pairs = (rows: readonly { readonly t: number; readonly i: number }[][]) =>
+      rows.map((r) => [r[0]!.t, r[0]!.i]).sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!);
+    expect(pairs(on)).toEqual([[mine, mine]]);
+    expect(pairs(off)).toEqual(pairs(on));
+    const traitIds = (await rowsOf<{ readonly id: number }>(
+      view,
+      Query.from(Owned).select({ id: Owned.id }),
+    )).map((r) => r.id);
+    expect(traitIds).toEqual([mine]);
+    expect(traitIds).not.toContain(theirs);
+  });
+
   test("orderBy on a trait field does not drop rows FilteredDb keeps", async () => {
     const Owned = Trait("owned", {
       owner: Ref(() => Actor),
