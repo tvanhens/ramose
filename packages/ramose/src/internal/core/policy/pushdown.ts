@@ -304,6 +304,36 @@ function substClause(c: Clause, map: ReadonlyMap<string, Term>): Clause {
   }
 }
 
+/**
+ * Membership patterns pair with {@link allowsMembershipRead}:
+ * `:ramose/type :issue` records `issue`; `:ramose/trait :owned` records
+ * nothing. The trait value is not a row namespace — FilteredDb judges
+ * that datom by the composing entity's type. Recording `owned` here
+ * would AND `ns.owned.read` onto `Query.from(Owned).select({ id })`.
+ */
+function recordMembershipNs(
+  ident: string,
+  c: PatternClause,
+  nsByVar: Map<string, Set<string>>,
+  onVarAttr: () => void,
+): boolean {
+  if (c.e.kind !== "var") return false;
+  if (ident === RAMOSE_TYPE_IDENT) {
+    if (c.v.kind === "const" && typeof c.v.value === "string") {
+      const ns = composerNs(c.v.value);
+      if (ns) add(nsByVar, c.e.name, ns);
+    } else {
+      onVarAttr();
+    }
+    return true;
+  }
+  if (ident === RAMOSE_TRAIT_IDENT) {
+    if (c.v.kind !== "const") onVarAttr();
+    return true;
+  }
+  return false;
+}
+
 function recordPatternNs(
   c: PatternClause,
   db: Db,
@@ -312,22 +342,7 @@ function recordPatternNs(
 ): void {
   if (c.e.kind !== "var") return;
   const ident = identOf(c.a, db);
-  if (ident === RAMOSE_TYPE_IDENT) {
-    if (c.v.kind === "const" && typeof c.v.value === "string") {
-      const ns = composerNs(c.v.value);
-      if (ns) add(nsByVar, c.e.name, ns);
-    } else {
-      onVarAttr();
-    }
-    return;
-  }
-  if (ident === RAMOSE_TRAIT_IDENT) {
-    // Membership visibility is the composing entity's row rule
-    // (`allowsMembershipRead`). The trait ns rule gates trait *fields*,
-    // not the row. Recording the trait prefix here would conjoin
-    // `ns.taggable.read` onto `Query.from(Taggable)` and disagree with
-    // the FilteredDb backstop when that arm is a named fragment.
-    if (c.v.kind !== "const") onVarAttr();
+  if (ident !== undefined && recordMembershipNs(ident, c, nsByVar, onVarAttr)) {
     return;
   }
   const ns = ident === undefined ? undefined : nsPrefix(ident);

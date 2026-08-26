@@ -30,8 +30,11 @@ import {
   txOps,
 } from "../../src/db/internal.ts";
 import {
+  conjoinPolicy,
   filterDb,
   parsePolicy,
+  parseQuery,
+  policyView,
   query as coreQuery,
   type Principal,
 } from "../../src/internal/core/index.ts";
@@ -390,8 +393,8 @@ describe("trait read policy", () => {
       owner: Ref(() => Actor),
       tag: string(),
     });
-    const Ticket = Entity("ticket", { title: string() }, { traits: [Owned] });
-    const Catalog = Schema({ actor: Actor, ticket: Ticket });
+    const Ticket = Entity("issue", { title: string() }, { traits: [Owned] });
+    const Catalog = Schema({ actor: Actor, issue: Ticket });
     const conn = await Connection.create();
     await conn.transact(schemaTx(Catalog) as unknown[]);
     const { tempids } = await conn.transact([
@@ -399,13 +402,13 @@ describe("trait read policy", () => {
       { ":db/id": "bob", ":actor/sub": "bob" },
       {
         ":db/id": "mine",
-        ":ticket/title": "alice-ticket",
+        ":issue/title": "alice-issue",
         ":owned/owner": "alice",
         ":owned/tag": "a",
       },
       {
         ":db/id": "theirs",
-        ":ticket/title": "bob-ticket",
+        ":issue/title": "bob-issue",
         ":owned/owner": "bob",
         ":owned/tag": "b",
       },
@@ -422,7 +425,7 @@ describe("trait read policy", () => {
       },
       {
         actor: { read: true },
-        ticket: { read: true },
+        issue: { read: true },
         traits: { owned: { read: own } },
       },
     );
@@ -438,6 +441,10 @@ describe("trait read policy", () => {
     const view = filterDb(conn.db(), conn.db(), policy, principal);
     const listing = Query.from(Owned).select({ id: Owned.id });
     const { query } = lowerQueryObject(listing);
+    const ast = parseQuery(query);
+    const pd = conjoinPolicy(ast, policyView(view)!);
+    expect(pd.query.where).toEqual(ast.where);
+    expect(pd.covered).toEqual([]);
     const on = (await coreQuery(view, query)) as readonly [{ readonly id: number }][];
     const off = (await coreQuery(view, query, [], { pushdown: false })) as readonly [
       { readonly id: number },
@@ -446,6 +453,7 @@ describe("trait read policy", () => {
       rows.map((r) => r[0]!.id).sort();
     expect(ids(on)).toEqual([mine, theirs].sort());
     expect(ids(off)).toEqual(ids(on));
+    expect((await view.entity(theirs))?.[":ramose/trait"]).toEqual([":owned"]);
     expect((await view.entity(theirs))?.[":owned/tag"]).toBeUndefined();
     expect((await view.entity(mine))?.[":owned/tag"]).toBe("a");
   });
