@@ -270,6 +270,32 @@ describe("JSON-only rejections", () => {
     );
   });
 
+  test("charges null and boolean leaves toward the work ceiling", () => {
+    const grid = Array.from({ length: 8 }, () =>
+      Array.from({ length: MAX_COLLECTION_SIZE }, () => true),
+    );
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: grid }),
+      /oversized document/,
+    );
+  });
+
+  test("rejects a DAG alias whose expanded depth exceeds the ceiling", () => {
+    const chain = (n: number, leaf: unknown): unknown => {
+      let value = leaf;
+      for (let i = 0; i < n; i++) value = { n: value };
+      return value;
+    };
+    const shared = chain(60, 1);
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        extra: { a: shared, b: chain(60, shared) },
+      }),
+      /oversized depth/,
+    );
+  });
+
   test("rejects every prototype other than Object.prototype or null", () => {
     const nestedNull = Object.create(Object.create(null));
     nestedNull.x = 1;

@@ -347,11 +347,13 @@ type WalkFrame = {
   readonly depth: number;
   readonly startNodes: number;
   readonly startBytes: number;
+  maxChildHeight: number;
 };
 
 type SubtreeCost = {
   readonly nodes: number;
   readonly bytes: number;
+  readonly height: number;
 };
 
 /**
@@ -378,12 +380,19 @@ const inspectRawJson = (input: unknown): string | undefined => {
     const frame = stack[stack.length - 1]!;
     const next = nextChild(frame);
     if (next === undefined) {
+      const height = frame.maxChildHeight + 1;
+      if (frame.depth + height - 1 > MAX_JSON_DEPTH) return "rejected oversized depth";
       costs.set(frame.value, {
         nodes: work.nodes - frame.startNodes,
         bytes: work.bytes - frame.startBytes,
+        height,
       });
       seen.set(frame.value, true);
       stack.pop();
+      const parent = stack[stack.length - 1];
+      if (parent !== undefined) {
+        parent.maxChildHeight = Math.max(parent.maxChildHeight, height);
+      }
       continue;
     }
     if (next.violation !== undefined) return next.violation;
@@ -392,6 +401,8 @@ const inspectRawJson = (input: unknown): string | undefined => {
     if (typeof next.value === "object" && next.value !== null) {
       const reason = enterObject(next.value, frame.depth + 1, seen, costs, stack, work);
       if (reason !== undefined) return reason;
+    } else {
+      frame.maxChildHeight = Math.max(frame.maxChildHeight, 0);
     }
   }
   return undefined;
@@ -419,6 +430,11 @@ const enterObject = (
   if (cached === true) {
     const cost = costs.get(value);
     if (cost === undefined) return "rejected cycle";
+    if (depth + cost.height - 1 > MAX_JSON_DEPTH) return "rejected oversized depth";
+    const parent = stack[stack.length - 1];
+    if (parent !== undefined) {
+      parent.maxChildHeight = Math.max(parent.maxChildHeight, cost.height);
+    }
     return charge(work, cost.nodes, cost.bytes);
   }
   if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
@@ -428,7 +444,15 @@ const enterObject = (
   if (shape !== undefined) return shape;
   seen.set(value, false);
   if (Array.isArray(value)) {
-    stack.push({ value, keys: value.length, index: 0, depth, startNodes, startBytes });
+    stack.push({
+      value,
+      keys: value.length,
+      index: 0,
+      depth,
+      startNodes,
+      startBytes,
+      maxChildHeight: 0,
+    });
   } else {
     stack.push({
       value,
@@ -437,6 +461,7 @@ const enterObject = (
       depth,
       startNodes,
       startBytes,
+      maxChildHeight: 0,
     });
   }
   return undefined;
@@ -517,6 +542,8 @@ const jsonLeafViolation = (value: unknown, work: Work): string | undefined => {
     if (hasLoneSurrogate(value)) return "rejected unicode";
     return charge(work, 1, UTF8.encode(value).byteLength);
   }
+  if (value === null) return charge(work, 1, 4);
+  if (typeof value === "boolean") return charge(work, 1, value ? 4 : 5);
   return undefined;
 };
 
