@@ -120,7 +120,9 @@ export async function resolveProvisionedEid(policy: CompiledPolicy, principal: P
   if (principal.eid !== undefined) return principal.eid;
   // Schema may not be installed yet (first authenticated write on an empty
   // policed db). `entid` throws on an unknown attr; skip until it exists.
+  // Lookup refs are valid for every unique attr (`identity` or `value`);
+  // `wantedFacts` still refuses to *write* a strict unique principal.
   const attr = db.attr(policy.principal);
-  if (attr === undefined || attr.unique !== "identity") return undefined;
+  if (attr === undefined || attr.unique === undefined) return undefined;
   return db.entid([policy.principal, principal.sub] as never);
 }
