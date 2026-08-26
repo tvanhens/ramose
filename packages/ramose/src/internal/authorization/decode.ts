@@ -34,15 +34,6 @@ import {
 
 const STRICT = { onExcessProperty: "error" as const };
 
-const TrustJson = Schema.Json.pipe(
-  Schema.check(
-    Schema.makeFilter((input) => {
-      const reason = jsonBoundViolation(input);
-      return reason === undefined ? undefined : reason;
-    }),
-  ),
-);
-
 export type PolicyTemplateIREncoded = typeof PolicyTemplateIR.Encoded;
 export type InstalledAuthorizationIREncoded = typeof InstalledAuthorizationIR.Encoded;
 export type RelativeAuthorizationRuleEncoded = typeof RelativeAuthorizationRule.Encoded;
@@ -85,7 +76,42 @@ export const encodeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): InstalledAuthorizationIREncoded => Schema.encodeUnknownSync(InstalledAuthorizationIR)(document);
 
-export const canonicalizeJson = (value: unknown): string => JSON.stringify(sortJson(value));
+/**
+ * Lexical canonical JSON. Object members are emitted in `sort()` order so
+ * integer-like keys and `__proto__` are not rewritten by JS enumeration
+ * or the inherited prototype setter.
+ */
+export const canonicalizeJson = (value: unknown): string => {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      return JSON.stringify(value);
+    case "string":
+      return JSON.stringify(value);
+    case "object":
+      break;
+    default:
+      throw new TypeError("ramose/authorization: canonicalizeJson expects JSON");
+  }
+  if (Array.isArray(value)) {
+    let out = "[";
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) out += ",";
+      out += canonicalizeJson(value[i]);
+    }
+    return `${out}]`;
+  }
+  const keys = Object.keys(value).sort();
+  let out = "{";
+  for (let i = 0; i < keys.length; i++) {
+    if (i > 0) out += ",";
+    const key = keys[i];
+    out += `${JSON.stringify(key)}:${canonicalizeJson((value as Record<string, unknown>)[key])}`;
+  }
+  return `${out}}`;
+};
 
 export const canonicalizePolicyTemplate = (document: PolicyTemplateIRType): string =>
   canonicalizeJson(encodePolicyTemplate(document));
@@ -102,22 +128,28 @@ export const hashPolicyTemplate = (document: PolicyTemplateIRType): PolicyHash =
   PolicyHash.make(sha256Hex(canonicalizePolicyTemplate(document)));
 
 export const hashInstalledAuthorization = (document: InstalledAuthorizationIRType): PolicyHash =>
-  PolicyHash.make(sha256Hex(canonicalizeInstalledAuthorization(document)));
+  PolicyHash.make(
+    hashCanonical(omitKey(encodeInstalledAuthorization(document), "policyHash")),
+  );
 
 export const hashRelativeRule = (rule: RelativeAuthorizationRuleType): RuleId =>
-  RuleId.make(hashCanonical(ruleIdentityBody(Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule))));
+  RuleId.make(hashCanonical(omitKey(Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule), "id")));
 
 export const hashCanonicalRule = (rule: CanonicalAuthorizationRuleType): RuleId =>
-  RuleId.make(hashCanonical(ruleIdentityBody(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule))));
+  RuleId.make(hashCanonical(omitKey(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule), "id")));
 
 const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
   encodeRule: (rule: unknown) => unknown,
   input: unknown,
 ): Result.Result<A, InvalidIR> => {
-  const json = Schema.decodeUnknownResult(TrustJson)(input);
+  const hostile = inspectRawJson(input);
+  if (hostile !== undefined) {
+    return Result.fail(new InvalidIR({ message: hostile }));
+  }
+  const json = Schema.decodeUnknownResult(Schema.Json)(input);
   if (Result.isFailure(json)) {
-    return Result.fail(toInvalidIR(json.failure.message, input));
+    return Result.fail(new InvalidIR({ message: json.failure.message }));
   }
   const decoded = decode(json.success);
   if (Result.isFailure(decoded)) {
@@ -139,8 +171,7 @@ const identityCollision = (
   }
   const bodies = new Map<string, string>();
   for (const rule of document.rules) {
-    const encoded = encodeRule(rule);
-    const body = canonicalizeJson(ruleIdentityBody(encoded));
+    const body = canonicalizeJson(omitKey(encodeRule(rule), "id"));
     const previous = bodies.get(rule.id);
     if (previous !== undefined && previous !== body) {
       return new InvalidIR({
@@ -243,135 +274,143 @@ const uniqueEncoded = (values: ReadonlyArray<unknown>, label: string): InvalidIR
   return undefined;
 };
 
-const ruleIdentityBody = (encoded: unknown): unknown => {
+const omitKey = (encoded: unknown, key: string): unknown => {
   if (typeof encoded !== "object" || encoded === null || Array.isArray(encoded)) {
     return encoded;
   }
-  const { id: _id, ...body } = encoded as { readonly id?: unknown } & Record<string, unknown>;
+  const body: Record<string, unknown> = Object.create(null);
+  for (const name of Object.keys(encoded)) {
+    if (name !== key) body[name] = (encoded as Record<string, unknown>)[name];
+  }
   return body;
 };
 
-const toInvalidIR = (schemaMessage: string, input: unknown): InvalidIR =>
-  new InvalidIR({ message: jsonRejectionMessage(input) ?? schemaMessage });
-
-const jsonRejectionMessage = (input: unknown): string | undefined => {
-  if (input === undefined) return "rejected undefined";
-  if (typeof input === "function") return "rejected function";
-  if (typeof input === "symbol") return "rejected symbol";
-  if (typeof input === "bigint") return "rejected bigint";
-  if (typeof input === "number") {
-    if (Number.isNaN(input)) return "rejected NaN";
-    if (!Number.isFinite(input)) return "rejected Infinity";
-  }
-  return firstJsonViolation(input);
+type WalkFrame = {
+  readonly value: object;
+  readonly keys: ReadonlyArray<string> | number;
+  index: number;
+  readonly depth: number;
 };
 
-const firstJsonViolation = (input: unknown): string | undefined => {
-  const seen = new WeakSet<object>();
-  const visit = (value: unknown, depth: number): string | undefined => {
-    if (value === undefined) return "rejected undefined";
-    if (typeof value === "function") return "rejected function";
-    if (typeof value === "symbol") return "rejected symbol";
-    if (typeof value === "bigint") return "rejected bigint";
-    if (typeof value === "number") {
-      if (Number.isNaN(value)) return "rejected NaN";
-      if (!Number.isFinite(value)) return "rejected Infinity";
-      return undefined;
+/**
+ * Iterative JSON-only inspect. Reads property descriptors so accessors and
+ * deep hostile trees fail as `InvalidIR` before Schema walks the input.
+ */
+const inspectRawJson = (input: unknown): string | undefined => {
+  const root = jsonLeafViolation(input);
+  if (root !== undefined) return root;
+  if (typeof input !== "object" || input === null) return undefined;
+
+  // `false` = on the current path (a cycle). `true` = already validated (a DAG).
+  const seen = new WeakMap<object, boolean>();
+  const stack: WalkFrame[] = [];
+  const opened = enterObject(input, 0, seen, stack);
+  if (opened !== undefined) return opened;
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const next = nextChild(frame);
+    if (next === undefined) {
+      seen.set(frame.value, true);
+      stack.pop();
+      continue;
     }
-    if (typeof value === "string") {
-      return value.length > MAX_STRING_LENGTH ? "rejected oversized string" : undefined;
-    }
-    if (typeof value !== "object" || value === null) return undefined;
-    if (seen.has(value)) return "rejected cycle";
-    if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
-    seen.add(value);
-    if (Array.isArray(value)) {
-      if (value.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-      const extra = Object.getOwnPropertyNames(value).filter(
-        (name) => name !== "length" && !/^(0|[1-9]\d*)$/.test(name),
-      );
-      if (extra.length > 0) return "rejected non-JSON array";
-      if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-      for (const item of value) {
-        const reason = visit(item, depth + 1);
-        if (reason !== undefined) return reason;
-      }
-      return undefined;
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (
-      prototype !== null &&
-      prototype !== Object.prototype &&
-      Object.getPrototypeOf(prototype) !== null
-    ) {
-      return "rejected prototype";
-    }
-    const names = Object.getOwnPropertyNames(value);
-    if (names.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-    if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-    for (const name of names) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, name);
-      if (descriptor?.get !== undefined || descriptor?.set !== undefined) {
-        return "rejected prototype";
-      }
-      const reason = visit((value as Record<string, unknown>)[name], depth + 1);
+    if (next.violation !== undefined) return next.violation;
+    const leaf = jsonLeafViolation(next.value);
+    if (leaf !== undefined) return leaf;
+    if (typeof next.value === "object" && next.value !== null) {
+      const reason = enterObject(next.value, frame.depth + 1, seen, stack);
       if (reason !== undefined) return reason;
     }
-    return undefined;
-  };
-  return visit(input, 0);
-};
-
-const jsonBoundViolation = (input: Schema.Json): string | undefined => {
-  const visit = (value: Schema.Json, depth: number): string | undefined => {
-    if (typeof value === "string") {
-      return value.length > MAX_STRING_LENGTH ? "rejected oversized string" : undefined;
-    }
-    if (typeof value !== "object" || value === null) return undefined;
-    if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
-    if (Array.isArray(value)) {
-      if (value.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-      if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-      if (hasExtraArrayKeys(value)) return "rejected non-JSON array";
-      for (const item of value) {
-        const reason = visit(item, depth + 1);
-        if (reason !== undefined) return reason;
-      }
-      return undefined;
-    }
-    const names = Object.getOwnPropertyNames(value);
-    if (names.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-    if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-    if (hasAccessor(value)) return "rejected prototype";
-    const record = value as { readonly [key: string]: Schema.Json };
-    for (const name of names) {
-      const reason = visit(record[name], depth + 1);
-      if (reason !== undefined) return reason;
-    }
-    return undefined;
-  };
-  return visit(input, 0);
-};
-
-const hasExtraArrayKeys = (value: object): boolean =>
-  Object.getOwnPropertyNames(value).some(
-    (name) => name !== "length" && !/^(0|[1-9]\d*)$/.test(name),
-  );
-
-const hasAccessor = (value: object): boolean =>
-  Object.getOwnPropertyNames(value).some((name) => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, name);
-    return descriptor?.get !== undefined || descriptor?.set !== undefined;
-  });
-
-const sortJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (typeof value !== "object" || value === null) return value;
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    sorted[key] = sortJson((value as Record<string, unknown>)[key]);
   }
-  return sorted;
+  return undefined;
+};
+
+const enterObject = (
+  value: object,
+  depth: number,
+  seen: WeakMap<object, boolean>,
+  stack: WalkFrame[],
+): string | undefined => {
+  const cached = seen.get(value);
+  if (cached === false) return "rejected cycle";
+  if (cached === true) return undefined;
+  if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
+  const shape = objectShapeViolation(value);
+  if (shape !== undefined) return shape;
+  seen.set(value, false);
+  if (Array.isArray(value)) {
+    stack.push({ value, keys: value.length, index: 0, depth });
+  } else {
+    stack.push({ value, keys: Object.getOwnPropertyNames(value), index: 0, depth });
+  }
+  return undefined;
+};
+
+const nextChild = (
+  frame: WalkFrame,
+): { readonly value: unknown; readonly violation?: undefined } | { readonly violation: string } | undefined => {
+  if (typeof frame.keys === "number") {
+    if (frame.index >= frame.keys) return undefined;
+    const name = String(frame.index++);
+    return childFromDescriptor(frame.value, name, true);
+  }
+  if (frame.index >= frame.keys.length) return undefined;
+  return childFromDescriptor(frame.value, frame.keys[frame.index++], false);
+};
+
+const childFromDescriptor = (
+  value: object,
+  name: string,
+  arrayIndex: boolean,
+): { readonly value: unknown; readonly violation?: undefined } | { readonly violation: string } => {
+  const descriptor = Object.getOwnPropertyDescriptor(value, name);
+  if (descriptor === undefined) {
+    return { violation: arrayIndex ? "rejected undefined" : "rejected prototype" };
+  }
+  if (descriptor.get !== undefined || descriptor.set !== undefined) {
+    return { violation: "rejected prototype" };
+  }
+  return { value: descriptor.value };
+};
+
+const objectShapeViolation = (value: object): string | undefined => {
+  if (Array.isArray(value)) {
+    if (value.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
+    if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
+    const extra = Object.getOwnPropertyNames(value).some(
+      (name) => name !== "length" && !/^(0|[1-9]\d*)$/.test(name),
+    );
+    return extra ? "rejected non-JSON array" : undefined;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    prototype !== null &&
+    prototype !== Object.prototype &&
+    Object.getPrototypeOf(prototype) !== null
+  ) {
+    return "rejected prototype";
+  }
+  const names = Object.getOwnPropertyNames(value);
+  if (names.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
+  if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
+  return undefined;
+};
+
+const jsonLeafViolation = (value: unknown): string | undefined => {
+  if (value === undefined) return "rejected undefined";
+  if (typeof value === "function") return "rejected function";
+  if (typeof value === "symbol") return "rejected symbol";
+  if (typeof value === "bigint") return "rejected bigint";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "rejected NaN";
+    if (!Number.isFinite(value)) return "rejected Infinity";
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.length > MAX_STRING_LENGTH ? "rejected oversized string" : undefined;
+  }
+  return undefined;
 };
 
 const freezePlain = <T>(value: T): T => {

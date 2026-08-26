@@ -141,13 +141,18 @@ describe("JSON-only rejections", () => {
     expectInvalid(decodePolicyTemplateResult(input), /symbol|JSON/);
   });
 
-  test("rejects an accessor property", () => {
+  test("rejects an accessor property without invoking it", () => {
+    let reads = 0;
     const input = { ...emptyTemplateEncoded } as Record<string, unknown>;
     Object.defineProperty(input, "sneak", {
       enumerable: true,
-      get: () => 1,
+      get: () => {
+        reads += 1;
+        return 1;
+      },
     });
     expectInvalid(decodePolicyTemplateResult(input), /prototype|JSON|function/);
+    expect(reads).toBe(0);
   });
 
   test("rejects extra own properties on an array", () => {
@@ -201,13 +206,11 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("rejects oversized depth", () => {
+  test("rejects oversized depth as InvalidIR without throwing", () => {
     let nested: unknown = null;
     for (let i = 0; i < MAX_JSON_DEPTH + 2; i++) nested = { child: nested };
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nested }),
-      /oversized depth|JSON/,
-    );
+    const result = decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nested });
+    expectInvalid(result, /oversized depth/);
   });
 });
 
@@ -514,9 +517,12 @@ describe("canonical serialization", () => {
       "37938d247036d4c6151daf60d3102aff2782f8a12eff25ea01d386fd395bb71c",
     );
     expect(String(hashInstalledAuthorization(installed))).toBe(
-      "ec682cb1a98ef237e5356beff30018b077c223cc72513b8652e99db2e0235378",
+      "ce49343fe038a3402aef2384e4e5cc06a9cda51a57e91650913b4ce825e220f9",
     );
     expect(canonicalizeJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+    expect(canonicalizeJson({ 10: 1, 2: 2 })).toBe('{"10":1,"2":2}');
+    expect(canonicalizeJson(JSON.parse('{"__proto__":{"x":1}}'))).toBe('{"__proto__":{"x":1}}');
+    expect(canonicalizeJson(JSON.parse('{"__proto__":{"x":1}}'))).not.toBe("{}");
     expect(String(hashRelativeRule(template.rules[0]))).toBe(
       "706cf08602db9b325fad3bec8806bcc936a2b6471b61e09c5309444f1c6de666",
     );
@@ -529,6 +535,20 @@ describe("canonical serialization", () => {
     expect(String(hashCanonicalRule(installed.rules[0]))).toBe(
       "13fd64ba860771677735d3edf65497cef91393039bd51a8164524436802ea57b",
     );
+  });
+
+  test("installed policyHash is excluded from the document digest", () => {
+    const installed = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
+    const digest = hashInstalledAuthorization(installed);
+    const encoded = encodeInstalledAuthorization(installed);
+    const withDigest = Effect.runSync(
+      decodeInstalledAuthorization({ ...encoded, policyHash: String(digest) }),
+    );
+    const withOther = Effect.runSync(
+      decodeInstalledAuthorization({ ...encoded, policyHash: "other-placeholder" }),
+    );
+    expect(hashInstalledAuthorization(withDigest)).toBe(digest);
+    expect(hashInstalledAuthorization(withOther)).toBe(digest);
   });
 });
 
