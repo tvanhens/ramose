@@ -60,6 +60,8 @@ type FieldDescriptorBase = {
   readonly id: FieldId;
   readonly cardinality: FieldCardinality;
   readonly unique?: FieldUniqueness;
+  /** AVET membership. Distinct from uniqueness — `Field(..., { index: true })`. */
+  readonly index: boolean;
   readonly optional: boolean;
   readonly owned: boolean;
 };
@@ -99,14 +101,16 @@ export type OperationInputFieldDescriptor = {
   readonly shape: OperationInputShape;
 };
 
-/** Authoritative typed input for one owned operation. */
-export type OperationInputDescriptor = {
-  readonly fields: readonly OperationInputFieldDescriptor[];
-};
+/**
+ * Authoritative typed input for one owned operation.
+ * The codec itself may be a struct, array, scalar, ref, or opaque value —
+ * not only a top-level field map.
+ */
+export type OperationInputDescriptor = OperationInputShape;
 
 export type OperationDescriptor = {
   readonly id: OperationId;
-  readonly input: OperationInputDescriptor;
+  readonly input: OperationInputShape;
 };
 
 export type TraitComposition = {

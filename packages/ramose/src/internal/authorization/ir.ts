@@ -132,6 +132,8 @@ export type InstalledAuthorizationIR = {
 
 /** Input later slices pass to the Effectful catalog binder. */
 export type CatalogBindingInput = {
+  /** Database this catalog is being installed into. Not derivable from catalog id. */
+  readonly database: DatabaseId;
   readonly catalog: CatalogDescriptor;
   readonly template: PolicyTemplateIR;
 };

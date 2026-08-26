@@ -47,15 +47,19 @@ import {
   type AuthorizationPrincipal,
   type CatalogBindingInput,
   type CatalogDescriptor,
+  type ClaimDescriptor,
+  type ClaimVocabulary,
   type CompleteProjected,
   type FieldDescriptor,
   type IncompleteProjected,
   type InstalledAuthorizationIR,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
+  type OperationInputShape,
   type PolicyTemplateIR,
   type Present as PresentType,
   type Projected,
+  type ProjectedValue,
   type RelativeOperationId as RelativeOperationIdType,
   type Truth,
 } from "../../../src/internal/authorization/index.ts";
@@ -174,10 +178,20 @@ type RefFieldWithTarget = {
   readonly valueType: "ref";
   readonly refTarget: { readonly _tag: "entity"; readonly entity: ReturnType<typeof EntityId> };
   readonly cardinality: "one";
+  readonly index: true;
   readonly optional: false;
   readonly owned: false;
 };
 type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
+
+type IndexedFieldMissingFlag = {
+  readonly id: ReturnType<typeof FieldId>;
+  readonly valueType: "string";
+  readonly cardinality: "one";
+  readonly optional: false;
+  readonly owned: false;
+};
+type _indexRequired = Expect<Equal<Extends<IndexedFieldMissingFlag, FieldDescriptor>, false>>;
 
 type _missingMeIsProjected = Expect<Extends<typeof MissingMeProjection, Projected>>;
 type _missingMeIsIncomplete = Expect<
@@ -193,6 +207,44 @@ type _missingMeIsNotEntityAbsent = Expect<
 type _presentUndefinedNever = Expect<Equal<PresentType<undefined>, never>>;
 type _presentOptionalNever = Expect<Equal<PresentType<string | undefined>, never>>;
 type _presentScalarOk = Expect<Extends<PresentType<string>, Projected>>;
+type _presentInstantOk = Expect<Extends<PresentType<Date>, Projected>>;
+type _presentBytesOk = Expect<Extends<PresentType<Uint8Array>, Projected>>;
+type _presentManyOk = Expect<Extends<PresentType<readonly number[]>, Projected>>;
+type _projectedValueCoversStorage = Expect<
+  Extends<Date | Uint8Array | readonly string[], ProjectedValue>
+>;
+
+type KeyOnlyClaims = readonly ["teams"];
+type _claimKeysRejected = Expect<Equal<Extends<KeyOnlyClaims, ClaimVocabulary>, false>>;
+
+type TeamsClaim = {
+  readonly key: "teams";
+  readonly optional: false;
+  readonly shape: {
+    readonly _tag: "array";
+    readonly items: { readonly _tag: "scalar"; readonly valueType: "string" };
+  };
+};
+type _claimShapePreserved = Expect<Extends<TeamsClaim, ClaimDescriptor>>;
+
+type StructOnlyInput = {
+  readonly fields: readonly OperationInputFieldDescriptor[];
+};
+type _topLevelFieldsRejected = Expect<
+  Equal<Extends<StructOnlyInput, OperationInputShape>, false>
+>;
+type _topLevelArrayOk = Expect<
+  Extends<{ readonly _tag: "array"; readonly items: { readonly _tag: "opaque" } }, OperationInputShape>
+>;
+type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
+
+type BindingWithoutDatabase = {
+  readonly catalog: CatalogDescriptor;
+  readonly template: PolicyTemplateIR;
+};
+type _databaseRequiredOnBind = Expect<
+  Equal<Extends<BindingWithoutDatabase, CatalogBindingInput>, false>
+>;
 
 type FlatScalarInput = {
   readonly key: "labels";
@@ -242,7 +294,21 @@ const templateFixture: PolicyTemplateIR = {
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,
   classes: [],
-  claims: ["org"],
+  claims: [
+    {
+      key: "org",
+      optional: false,
+      shape: { _tag: "scalar", valueType: "string" },
+    },
+    {
+      key: "teams",
+      optional: true,
+      shape: {
+        _tag: "array",
+        items: { _tag: "scalar", valueType: "string" },
+      },
+    },
+  ],
   principal: {
     subjectClaim: "sub",
     entity: RelativeFieldId({ kind: "entity", name: "user" }, "authId"),
@@ -375,7 +441,21 @@ const installedFixture: InstalledAuthorizationIR = {
   schemaFingerprint: SchemaFingerprint("schema"),
   policyHash: PolicyHash("policy"),
   classes: ["member"],
-  claims: ["org"],
+  claims: [
+    {
+      key: "org",
+      optional: false,
+      shape: { _tag: "scalar", valueType: "string" },
+    },
+    {
+      key: "teams",
+      optional: true,
+      shape: {
+        _tag: "array",
+        items: { _tag: "scalar", valueType: "string" },
+      },
+    },
+  ],
   principal: {
     subjectClaim: "sub",
     entity: FieldId(catalog, { kind: "entity", name: "user" }, "authId"),
@@ -401,6 +481,7 @@ const installedFixture: InstalledAuthorizationIR = {
     {
       id: OperationId(catalog, issueOwner, "rename", "required"),
       input: {
+        _tag: "struct",
         fields: [
           {
             key: "title",
@@ -413,30 +494,22 @@ const installedFixture: InstalledAuthorizationIR = {
     {
       id: OperationId(catalog, issueOwner, "create", "none"),
       input: {
-        fields: [
-          {
-            key: "title",
-            optional: false,
-            shape: { _tag: "scalar", valueType: "string" },
-          },
-          {
-            key: "labels",
-            optional: true,
-            shape: {
-              _tag: "array",
-              items: {
-                _tag: "struct",
-                fields: [
-                  {
-                    key: "name",
-                    optional: false,
-                    shape: { _tag: "scalar", valueType: "string" },
-                  },
-                ],
-              },
+        _tag: "array",
+        items: {
+          _tag: "struct",
+          fields: [
+            {
+              key: "title",
+              optional: false,
+              shape: { _tag: "scalar", valueType: "string" },
             },
-          },
-        ],
+            {
+              key: "name",
+              optional: false,
+              shape: { _tag: "scalar", valueType: "string" },
+            },
+          ],
+        },
       },
     },
   ],
@@ -457,6 +530,7 @@ const catalogDescriptor: CatalogDescriptor = {
       valueType: "ref",
       refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
       cardinality: "one",
+      index: false,
       optional: false,
       owned: false,
     },
@@ -466,6 +540,7 @@ const catalogDescriptor: CatalogDescriptor = {
 };
 
 const bindingInput: CatalogBindingInput = {
+  database: DatabaseId("todos"),
   catalog: catalogDescriptor,
   template: templateFixture,
 };
@@ -501,6 +576,7 @@ const _operationFixtures = () => {
     valueType: "ref",
     refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
     cardinality: "one",
+    index: true,
     optional: false,
     owned: false,
   };
@@ -510,9 +586,20 @@ const _operationFixtures = () => {
     id: FieldId(catalog, issueOwner, "owner"),
     valueType: "ref",
     cardinality: "one",
+    index: false,
     optional: false,
     owned: false,
   };
+
+  const unindexed = {
+    id: FieldId(catalog, issueOwner, "title"),
+    valueType: "string" as const,
+    cardinality: "one" as const,
+    optional: false as const,
+    owned: false as const,
+  };
+  // @ts-expect-error — index is distinct from uniqueness and is required
+  const missingIndex: FieldDescriptor = unindexed;
 
   const nestedLabels: OperationInputFieldDescriptor = {
     key: "labels",
@@ -544,6 +631,31 @@ const _operationFixtures = () => {
   // @ts-expect-error — Present cannot hold undefined
   const presentUndefined = Present(undefined);
 
+  const presentInstant: PresentType<Date> = Present(new Date(0));
+  const presentBytes: PresentType<Uint8Array> = Present(new Uint8Array());
+  const presentMany: PresentType<readonly string[]> = Present(["a"]);
+
+  const topLevelArray: OperationInputShape = {
+    _tag: "array",
+    items: { _tag: "opaque" },
+  };
+  const fieldsOnlyInput = {
+    fields: [] as const,
+  };
+  // @ts-expect-error — top-level input is a shape, not a bare field map
+  const asTopLevel: OperationInputShape = fieldsOnlyInput;
+
+  const claimKeys = ["teams"] as const;
+  // @ts-expect-error — claim vocabulary stores shapes, not bare keys
+  const asClaims: ClaimVocabulary = claimKeys;
+
+  const bindWithoutDb = {
+    catalog: catalogDescriptor,
+    template: templateFixture,
+  };
+  // @ts-expect-error — binding names the target database
+  const asBind: CatalogBindingInput = bindWithoutDb;
+
   return {
     ownedTargetless,
     traitOwned,
@@ -553,10 +665,18 @@ const _operationFixtures = () => {
     asTemplate,
     ownerHop,
     ownerWithoutTarget,
+    missingIndex,
     nestedLabels,
     flattenedLabels,
     flattenedAsInput,
     presentUndefined,
+    presentInstant,
+    presentBytes,
+    presentMany,
+    topLevelArray,
+    asTopLevel,
+    asClaims,
+    asBind,
   };
 };
 

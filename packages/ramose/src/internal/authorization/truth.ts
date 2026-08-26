@@ -24,8 +24,16 @@ export const Incomplete = (reason: IncompleteReason): Incomplete => ({
   reason,
 });
 
-/** JSON-safe scalar a complete projection may hold. */
+/** JSON-safe subset. Storage projections also admit {@link Date} and {@link Uint8Array}. */
 export type ProjectedScalar = string | number | boolean | null;
+
+/**
+ * One storage cell for any {@link import("./catalog.ts").AuthorizationValueType}:
+ * string, long/double/ref (number), boolean, uuid (string), instant (`Date`),
+ * bytes (`Uint8Array`). Cardinality-many is a readonly array of those atoms.
+ */
+export type ProjectedAtom = string | number | boolean | Date | Uint8Array;
+export type ProjectedValue = ProjectedAtom | readonly ProjectedAtom[];
 
 /**
  * A value that exists on the rule snapshot.
@@ -33,7 +41,7 @@ export type ProjectedScalar = string | number | boolean | null;
  * `T` must not include `undefined` — absence is {@link FieldAbsent} /
  * {@link EntityAbsent} / {@link MissingMeProjection}, never JS `undefined`.
  */
-export type Present<T = ProjectedScalar> = [undefined] extends [T]
+export type Present<T = ProjectedValue> = [undefined] extends [T]
   ? never
   : {
       readonly _tag: "Present";
@@ -65,7 +73,7 @@ export type MissingMeProjection = { readonly _tag: "MissingMe" };
  * Completeness-aware cell. Complete vs absent vs not-loaded vs missing
  * `me` are distinct tags — none of these is `undefined`.
  */
-export type Projected<T = ProjectedScalar> =
+export type Projected<T = ProjectedValue> =
   | Present<T>
   | FieldAbsent
   | EntityAbsent
@@ -74,7 +82,7 @@ export type Projected<T = ProjectedScalar> =
   | BudgetExhaustedProjection
   | MissingMeProjection;
 
-export type CompleteProjected<T = ProjectedScalar> =
+export type CompleteProjected<T = ProjectedValue> =
   | Present<T>
   | FieldAbsent
   | EntityAbsent;
@@ -85,7 +93,7 @@ export type IncompleteProjected =
   | BudgetExhaustedProjection
   | MissingMeProjection;
 
-export const Present = <T = ProjectedScalar>(
+export const Present = <T = ProjectedValue>(
   value: [undefined] extends [T] ? never : T,
 ): Present<T> => {
   if (value === undefined) {

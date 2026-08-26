@@ -12,6 +12,25 @@
 import type { EntityId, FieldId, RelativeFieldId } from "./identities.ts";
 import type { JsonValue } from "./json.ts";
 
+/** JWT JSON scalar a declared claim may hold. */
+export type ClaimScalarType = "string" | "long" | "double" | "boolean";
+
+/**
+ * Authoritative shape of one declared claim. Nested arrays/structs stay
+ * intact so the binder can check `teams: Schema.Array(Schema.String)`.
+ */
+export type ClaimShape =
+  | { readonly _tag: "scalar"; readonly valueType: ClaimScalarType }
+  | { readonly _tag: "struct"; readonly fields: readonly ClaimDescriptor[] }
+  | { readonly _tag: "array"; readonly items: ClaimShape }
+  | { readonly _tag: "opaque" };
+
+export type ClaimDescriptor = {
+  readonly key: string;
+  readonly optional: boolean;
+  readonly shape: ClaimShape;
+};
+
 /** JWT subject claim name. The verified subject always exists. */
 export type SubjectClaim = string;
 
@@ -51,5 +70,5 @@ export type AuthorizationPrincipal = {
 /** Declared class names. Empty is allowed. */
 export type ClassVocabulary = readonly string[];
 
-/** Declared claim keys. Arbitrary string-indexed access is not typed. */
-export type ClaimVocabulary = readonly string[];
+/** Declared claims with shapes. Empty is allowed. Keys alone are not enough. */
+export type ClaimVocabulary = readonly ClaimDescriptor[];
