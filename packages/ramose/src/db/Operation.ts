@@ -847,7 +847,7 @@ const cardOf = (op: AnyOperation, schema?: AnySchema): OperationCard => {
     ...(typeof ns === "string" && ns.length > 0 ? { on: ns } : {}),
     ...(typeof ownerNs === "string" && ownerNs.length > 0 ? { owner: ownerNs } : {}),
     ...(typeof local === "string" && local.length > 0 ? { local } : {}),
-    ...(owned || ns !== undefined ? { self: op.on !== undefined } : {}),
+    ...(owned ? { self: op.on !== undefined } : {}),
     ...(composers !== undefined ? { composers } : {}),
   };
 };
@@ -1053,8 +1053,25 @@ export const defineOperations = <
   operations?: OpsFitCatalog<C, M> & M,
 ): DefinedOperations<C, M> => {
   const extras = (operations ?? {}) as Record<string, AnyOperation>;
-  const merged = assembleOperations(schema, extras);
-  return makeRegistry(merged, schema) as unknown as DefinedOperations<C, M>;
+  const harvested = harvestOwnedOperations(schema);
+  const out: Record<string, AnyOperation> = {};
+  const byName = new Map<string, AnyOperation>();
+  for (const [key, op] of Object.entries(extras)) {
+    const existing = byName.get(op.name);
+    if (existing !== undefined && existing !== op) {
+      throw duplicateOperationIdentity(op.name);
+    }
+    byName.set(op.name, op);
+    out[key] = op;
+  }
+  for (const op of Object.values(harvested)) {
+    const existing = byName.get(op.name);
+    if (existing === op) continue;
+    if (existing !== undefined) throw duplicateOperationIdentity(op.name);
+    byName.set(op.name, op);
+    out[op.name] = op;
+  }
+  return makeRegistry(out as M & Record<string, AnyOperation>, schema) as unknown as DefinedOperations<C, M>;
 };
 
 /** Sorted unique wire ids in a registry. */

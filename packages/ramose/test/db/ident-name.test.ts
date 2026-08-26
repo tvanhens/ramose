@@ -47,7 +47,14 @@ describe("ident names", () => {
   });
 
   test("reserved field keys are the Entity metadata names", () => {
-    expect([...RESERVED_FIELD_KEYS]).toEqual(["id", "ns", "fields", "_tag", "traits"]);
+    expect([...RESERVED_FIELD_KEYS]).toEqual([
+      "id",
+      "ns",
+      "fields",
+      "_tag",
+      "traits",
+      "operations",
+    ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
     }
