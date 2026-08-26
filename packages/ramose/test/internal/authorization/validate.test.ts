@@ -29,6 +29,7 @@ import {
   sha256HexSync,
   validateBoundAuthorization,
   validateBoundAuthorizationResult,
+  validateBoundAuthorizationResultForTest,
   type BoundAuthorizationIR,
   type CanonicalAuthorizationExpr,
   type CanonicalAuthorizationRule,
@@ -164,6 +165,14 @@ const catalogDescriptor = (): CatalogDescriptor => ({
     {
       id: operation({ kind: "trait", name: "orphaned" }, "ping", "none"),
       input: { _tag: "opaque" },
+    },
+    {
+      id: operation(issueOwner, "reparentMany", "required"),
+      input: { _tag: "array", items: { _tag: "ref", refTarget: { _tag: "self" } } },
+    },
+    {
+      id: operation(userOwner, "reparentMany", "required"),
+      input: { _tag: "array", items: { _tag: "ref", refTarget: { _tag: "self" } } },
     },
   ],
   traitComposition: [
@@ -525,7 +534,7 @@ describe("tampered derived metadata", () => {
             : { [flag]: !rule[flag] }),
       };
       const pattern =
-        flag === "dependencies" ? /recursive named-rule invocation|tampered dependencies/ : new RegExp(`tampered ${flag}`);
+        flag === "dependencies" ? /named-rule dependencies must be empty/ : new RegExp(`tampered ${flag}`);
       expectFailure(validate(boundDocument([tampered])), "InvalidIR", pattern);
     });
   }
@@ -701,22 +710,22 @@ describe("traversal", () => {
 });
 
 describe("named rules and bindings", () => {
-  test("rejects a self-referential named-rule dependency", () => {
+  test("rejects a non-empty named-rule dependency", () => {
     const rule = ownsIssue();
     expectFailure(
       validate(boundDocument([{ ...rule, dependencies: [rule.id] }])),
       "InvalidIR",
-      /recursive named-rule invocation/,
+      /named-rule dependencies must be empty/,
     );
   });
 
-  test("rejects a named-rule dependency cycle", () => {
+  test("rejects a two-rule dependency list as non-empty", () => {
     const a = ownsIssue();
     const b = fieldRule();
     expectFailure(
       validate(boundDocument([{ ...a, dependencies: [b.id] }, { ...b, dependencies: [a.id] }])),
       "InvalidIR",
-      /dependency cycle|tampered dependencies/,
+      /named-rule dependencies must be empty/,
     );
   });
 });
@@ -806,6 +815,78 @@ describe("me, claims, and classes", () => {
       validate(boundDocument([ownsIssue()], undefined, { principal: { subjectClaim: "" } })),
       "InvalidIR",
       /blank principal subject claim/,
+    );
+  });
+
+  test("rejects a nested blank claim key", () => {
+    expectFailure(
+      validate(
+        boundDocument([ownsIssue()], undefined, {
+          claims: [
+            {
+              key: "profile",
+              optional: false,
+              shape: {
+                _tag: "struct",
+                fields: [{ key: "", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
+              },
+            },
+          ],
+        }),
+      ),
+      "InvalidIR",
+      /blank claim key/,
+    );
+  });
+
+  test("rejects a nested duplicate claim key", () => {
+    expectFailure(
+      validate(
+        boundDocument([ownsIssue()], undefined, {
+          claims: [
+            {
+              key: "profile",
+              optional: false,
+              shape: {
+                _tag: "struct",
+                fields: [
+                  { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                  { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+      "InvalidIR",
+      /duplicate claim key 'org'/,
+    );
+  });
+
+  test("rejects a duplicate claim key nested inside an array", () => {
+    expectFailure(
+      validate(
+        boundDocument([ownsIssue()], undefined, {
+          claims: [
+            {
+              key: "teams",
+              optional: false,
+              shape: {
+                _tag: "array",
+                items: {
+                  _tag: "struct",
+                  fields: [
+                    { key: "id", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                    { key: "id", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                  ],
+                },
+              },
+            },
+          ],
+        }),
+      ),
+      "InvalidIR",
+      /duplicate claim key 'id'/,
     );
   });
 
@@ -1003,6 +1084,185 @@ describe("operation input", () => {
       },
     );
     expectValidated(validate(boundDocument([rule])));
+  });
+
+  test("rejects duplicate nested operation input keys", () => {
+    const ambiguous: CatalogDescriptor = {
+      ...descriptor,
+      operations: descriptor.operations.map((row) =>
+        row.id.localName === "rename"
+          ? {
+              ...row,
+              input: {
+                _tag: "struct",
+                fields: [
+                  { key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                  {
+                    key: "meta",
+                    optional: true,
+                    shape: {
+                      _tag: "struct",
+                      fields: [
+                        { key: "note", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                        { key: "note", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                      ],
+                    },
+                  },
+                ],
+              },
+            }
+          : row,
+      ),
+    };
+    expectFailure(validate(boundDocument([renameInput()]), ambiguous), "InvalidIR", /duplicate operation input key 'note'/);
+  });
+
+  test("rejects a blank nested operation input key", () => {
+    const blank: CatalogDescriptor = {
+      ...descriptor,
+      operations: descriptor.operations.map((row) =>
+        row.id.localName === "rename"
+          ? {
+              ...row,
+              input: {
+                _tag: "struct",
+                fields: [
+                  {
+                    key: "meta",
+                    optional: true,
+                    shape: {
+                      _tag: "struct",
+                      fields: [{ key: "", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
+                    },
+                  },
+                ],
+              },
+            }
+          : row,
+      ),
+    };
+    expectFailure(validate(boundDocument([alwaysTrue({ _tag: "operation", operation: operation(issueOwner, "rename", "required") })]), blank), "InvalidIR", /blank operation input key/);
+  });
+
+  test("accepts membership of a resource in an array of owner-relative Ref.self", () => {
+    const rule = stamp(
+      { _tag: "operation", operation: operation(issueOwner, "reparentMany", "required") },
+      {
+        _tag: "in",
+        value: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+        collection: { _tag: "input", path: [] },
+      },
+      {
+        usesResource: true,
+        usesInput: true,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([rule])));
+  });
+
+  test("rejects membership of me in an incompatible array of Ref.self", () => {
+    const rule = stamp(
+      { _tag: "operation", operation: operation(issueOwner, "reparentMany", "required") },
+      {
+        _tag: "in",
+        value: { _tag: "me" },
+        collection: { _tag: "input", path: [] },
+      },
+      {
+        usesResource: false,
+        usesInput: true,
+        usesMe: true,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(validate(boundDocument([rule])), "InvalidIR", /incompatible membership operands/);
+  });
+
+  test("accepts membership of me in a User-owned array of Ref.self", () => {
+    const rule = stamp(
+      { _tag: "operation", operation: operation(userOwner, "reparentMany", "required") },
+      {
+        _tag: "in",
+        value: { _tag: "me" },
+        collection: { _tag: "input", path: [] },
+      },
+      {
+        usesResource: false,
+        usesInput: true,
+        usesMe: true,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([rule])));
+  });
+});
+
+describe("catalog trait composition", () => {
+  test("rejects extra traits declared in the derived transitive closure", () => {
+    const extra: CatalogDescriptor = {
+      ...descriptor,
+      traitComposition: [
+        {
+          composer: entity("issue"),
+          trait: trait("taggable"),
+          transitive: [trait("taggable"), trait("orphaned")],
+        },
+      ],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), extra),
+      "InvalidIR",
+      /contradictory trait composition/,
+    );
+  });
+
+  test("rejects a missing trait in the derived transitive closure", () => {
+    const missing: CatalogDescriptor = {
+      ...descriptor,
+      traits: [
+        { id: trait("taggable"), traits: [trait("named")] },
+        { id: trait("named"), traits: [] },
+        { id: trait("orphaned"), traits: [] },
+      ],
+      traitComposition: [
+        {
+          composer: entity("issue"),
+          trait: trait("taggable"),
+          transitive: [trait("taggable")],
+        },
+      ],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), missing),
+      "InvalidIR",
+      /contradictory trait composition/,
+    );
+  });
+
+  test("rejects a composition row for a trait the entity does not compose", () => {
+    const invented: CatalogDescriptor = {
+      ...descriptor,
+      traitComposition: [
+        ...descriptor.traitComposition,
+        { composer: entity("user"), trait: trait("taggable"), transitive: [trait("taggable")] },
+      ],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), invented),
+      "InvalidIR",
+      /does not compose trait 'taggable'/,
+    );
   });
 });
 
@@ -1291,7 +1551,7 @@ describe("bounds", () => {
   test("rejects a static work budget overflow", () => {
     const owns = ownsIssue();
     expectFailure(
-      validateBoundAuthorizationResult(
+      validateBoundAuthorizationResultForTest(
         { bound: boundDocument([owns]), descriptor },
         {
           maxTraversalDepth: 3,
@@ -1303,6 +1563,65 @@ describe("bounds", () => {
       "InvalidIR",
       /static work .* exceeds 1/,
     );
+  });
+
+  test("rejects non-finite test limit overrides", () => {
+    const input = { bound: boundDocument([ownsIssue()]), descriptor };
+    expectFailure(
+      validateBoundAuthorizationResultForTest(input, { maxTraversalDepth: Number.POSITIVE_INFINITY }),
+      "InvalidIR",
+      /invalid maxTraversalDepth/,
+    );
+    expectFailure(
+      validateBoundAuthorizationResultForTest(input, { maxExistsDepth: Number.NaN }),
+      "InvalidIR",
+      /invalid maxExistsDepth/,
+    );
+    expectFailure(
+      validateBoundAuthorizationResultForTest(input, { maxStaticWork: -1 }),
+      "InvalidIR",
+      /invalid maxStaticWork/,
+    );
+  });
+
+  test("clamps test overrides so callers cannot widen hard limits", () => {
+    const over = stamp(
+      { _tag: "trait", trait: trait("taggable") },
+      {
+        _tag: "has",
+        term: resourceRef(
+          step(taggableOwner, "tags"),
+          step(tagOwner, "grants"),
+          step(grantOwner, "user"),
+          step(userOwner, "authId"),
+        ),
+      },
+      {
+        usesResource: true,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 4,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(
+      validateBoundAuthorizationResultForTest(
+        { bound: boundDocument([over]), descriptor },
+        { maxTraversalDepth: 100 },
+      ),
+      "InvalidIR",
+      /traversal depth 4 exceeds 3/,
+    );
+    expect(validateBoundAuthorizationResult.length).toBe(1);
+    const widened = (
+      validateBoundAuthorizationResult as (
+        input: { bound: BoundAuthorizationIR; descriptor: CatalogDescriptor },
+        limits?: { maxStaticWork: number },
+      ) => ReturnType<typeof validateBoundAuthorizationResult>
+    )({ bound: boundDocument([ownsIssue()]), descriptor }, { maxStaticWork: Number.POSITIVE_INFINITY });
+    expectValidated(widened);
   });
 
   test("zero named-rule dependencies is the boundary", () => {

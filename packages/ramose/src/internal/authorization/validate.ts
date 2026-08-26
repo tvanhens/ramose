@@ -3,8 +3,8 @@
  *
  * Consumes {@link BoundAuthorizationIR} and one authoritative
  * {@link CatalogDescriptor}. Recomputes every security-owned rule property
- * from the bound expression. Template-supplied flags, depths, dependencies,
- * and rule IDs are never trusted.
+ * from the bound expression. Template-supplied flags, depths, and rule IDs
+ * are never trusted. Named-rule dependencies must be empty until #382.
  *
  * Pure and synchronous. Effect wraps only the typed failure boundary.
  * Failures stay {@link InvalidIR} / {@link CatalogMismatch} — this layer
@@ -68,11 +68,54 @@ export type ValidationLimits = {
   readonly maxStaticWork: number;
 };
 
+/**
+ * Hard production ceilings. Callers cannot widen these. The current
+ * language has no named-rule invocation, so {@link maxDependencies} is 0.
+ */
 export const defaultValidationLimits: ValidationLimits = {
   maxTraversalDepth: MAX_TRAVERSAL_DEPTH,
   maxExistsDepth: MAX_EXISTS_DEPTH,
   maxDependencies: 0,
   maxStaticWork: DEFAULT_AUTHORIZATION_BUDGET,
+};
+
+const isFiniteNatural = (value: number): boolean =>
+  Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+
+/**
+ * Test-only tightening. Each override must be a finite natural number and
+ * is clamped at the corresponding hard constant so Infinity/NaN cannot
+ * disable traversal, exists, or work restrictions.
+ */
+const tightenValidationLimits = (
+  overrides: Partial<ValidationLimits> | undefined,
+): Result.Result<ValidationLimits, ValidateFailure> => {
+  if (overrides === undefined) return Result.succeed(defaultValidationLimits);
+  const clamp = (
+    key: keyof ValidationLimits,
+    hard: number,
+  ): Result.Result<number, ValidateFailure> => {
+    const value = overrides[key];
+    if (value === undefined) return Result.succeed(hard);
+    if (!isFiniteNatural(value)) {
+      return invalid(`invalid ${key}: must be a finite natural number`);
+    }
+    return Result.succeed(Math.min(value, hard));
+  };
+  const maxTraversalDepth = clamp("maxTraversalDepth", defaultValidationLimits.maxTraversalDepth);
+  if (Result.isFailure(maxTraversalDepth)) return Result.fail(maxTraversalDepth.failure);
+  const maxExistsDepth = clamp("maxExistsDepth", defaultValidationLimits.maxExistsDepth);
+  if (Result.isFailure(maxExistsDepth)) return Result.fail(maxExistsDepth.failure);
+  const maxDependencies = clamp("maxDependencies", defaultValidationLimits.maxDependencies);
+  if (Result.isFailure(maxDependencies)) return Result.fail(maxDependencies.failure);
+  const maxStaticWork = clamp("maxStaticWork", defaultValidationLimits.maxStaticWork);
+  if (Result.isFailure(maxStaticWork)) return Result.fail(maxStaticWork.failure);
+  return Result.succeed({
+    maxTraversalDepth: maxTraversalDepth.success,
+    maxExistsDepth: maxExistsDepth.success,
+    maxDependencies: maxDependencies.success,
+    maxStaticWork: maxStaticWork.success,
+  });
 };
 
 const SEPARATOR = "\u0000";
@@ -115,7 +158,7 @@ type TermShape =
       readonly cardinality: FieldCardinality;
     }
   | { readonly _tag: "claim"; readonly shape: ClaimShape }
-  | { readonly _tag: "input"; readonly shape: OperationInputShape }
+  | { readonly _tag: "input"; readonly shape: OperationInputShape; readonly owner: OwnerRef }
   | { readonly _tag: "opaque" };
 
 type Derived = {
@@ -294,31 +337,9 @@ const indexCatalog = (
     if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
     const key = operationKey(operation.id);
     if (operations.has(key)) return invalid(`ambiguous operation '${key}'`);
+    const keys = validateInputShapeKeys(operation.input);
+    if (Result.isFailure(keys)) return Result.fail(keys.failure);
     operations.set(key, operation);
-  }
-
-  for (const row of descriptor.traitComposition) {
-    const composerOk = catalogOfIdentity(row.composer, target, "trait-composition composer");
-    if (Result.isFailure(composerOk)) return Result.fail(composerOk.failure);
-    const traitOk = catalogOfIdentity(row.trait, target, "trait-composition trait");
-    if (Result.isFailure(traitOk)) return Result.fail(traitOk.failure);
-    if (!entities.has(row.composer.name)) {
-      return invalid(`missing composer entity '${row.composer.name}'`);
-    }
-    if (!traits.has(row.trait.name)) {
-      return invalid(`missing composed trait '${row.trait.name}'`);
-    }
-    const composed = entityTraitEdges.get(row.composer.name) ?? new Set<string>();
-    composed.add(row.trait.name);
-    for (const transitive of row.transitive) {
-      const scoped = catalogOfIdentity(transitive, target, "trait-composition transitive");
-      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-      if (!traits.has(transitive.name)) {
-        return invalid(`missing transitive trait '${transitive.name}'`);
-      }
-      composed.add(transitive.name);
-    }
-    entityTraitEdges.set(row.composer.name, composed);
   }
 
   const traitTraits = closeTraits(traitTraitEdges);
@@ -333,6 +354,62 @@ const indexCatalog = (
       }
     }
     entityTraits.set(name, seen);
+  }
+
+  const seenComposition = new Set<string>();
+  for (const row of descriptor.traitComposition) {
+    const composerOk = catalogOfIdentity(row.composer, target, "trait-composition composer");
+    if (Result.isFailure(composerOk)) return Result.fail(composerOk.failure);
+    const traitOk = catalogOfIdentity(row.trait, target, "trait-composition trait");
+    if (Result.isFailure(traitOk)) return Result.fail(traitOk.failure);
+    if (!entities.has(row.composer.name)) {
+      return invalid(`missing composer entity '${row.composer.name}'`);
+    }
+    if (!traits.has(row.trait.name)) {
+      return invalid(`missing composed trait '${row.trait.name}'`);
+    }
+    const compositionKey = `${row.composer.name}${SEPARATOR}${row.trait.name}`;
+    if (seenComposition.has(compositionKey)) {
+      return invalid(
+        `duplicate trait composition '${row.composer.name}'/'${row.trait.name}'`,
+      );
+    }
+    seenComposition.add(compositionKey);
+    const computed = entityTraits.get(row.composer.name);
+    if (computed === undefined || !computed.has(row.trait.name)) {
+      return invalid(
+        `entity '${row.composer.name}' does not compose trait '${row.trait.name}'`,
+      );
+    }
+    const expected = new Set<string>([row.trait.name]);
+    const nested = traitTraits.get(row.trait.name);
+    if (nested !== undefined) {
+      for (const child of nested) expected.add(child);
+    }
+    const declared = new Set<string>();
+    for (const transitive of row.transitive) {
+      const scoped = catalogOfIdentity(transitive, target, "trait-composition transitive");
+      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
+      if (!traits.has(transitive.name)) {
+        return invalid(`missing transitive trait '${transitive.name}'`);
+      }
+      if (declared.has(transitive.name)) {
+        return invalid(`duplicate transitive trait '${transitive.name}'`);
+      }
+      declared.add(transitive.name);
+    }
+    if (expected.size !== declared.size) {
+      return invalid(
+        `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
+      );
+    }
+    for (const name of expected) {
+      if (!declared.has(name)) {
+        return invalid(
+          `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
+        );
+      }
+    }
   }
 
   return Result.succeed({
@@ -588,7 +665,9 @@ const meCompatibleWith = (index: CatalogIndex, me: EntityId | undefined, other: 
     return focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus));
   }
   if (other._tag === "input" && other.shape._tag === "ref") {
-    const focus = refTargetAsFocus(other.shape.refTarget);
+    const resolved = resolveRefTarget(index, other.shape.refTarget, other.owner);
+    if (Result.isFailure(resolved)) return false;
+    const focus = refTargetAsFocus(resolved.success);
     return focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus));
   }
   return false;
@@ -613,14 +692,16 @@ const eqCompatible = (index: CatalogIndex, left: TermShape, right: TermShape): b
       if (b._tag === "row") return sameRow(index, a.focus, b.focus);
       if (b._tag === "ref") return refCompatibleWithRow(index, b.target, a.focus);
       if (b._tag === "input" && b.shape._tag === "ref") {
-        return refCompatibleWithRow(index, b.shape.refTarget, a.focus);
+        const target = resolveRefTarget(index, b.shape.refTarget, b.owner);
+        return Result.isSuccess(target) && refCompatibleWithRow(index, target.success, a.focus);
       }
       return false;
     }
     if (a._tag === "ref") {
       if (b._tag === "ref") return sameRefTarget(index, a.target, b.target);
       if (b._tag === "input" && b.shape._tag === "ref") {
-        return sameRefTarget(index, a.target, b.shape.refTarget);
+        const target = resolveRefTarget(index, b.shape.refTarget, b.owner);
+        return Result.isSuccess(target) && sameRefTarget(index, a.target, target.success);
       }
       return false;
     }
@@ -646,7 +727,13 @@ const eqCompatible = (index: CatalogIndex, left: TermShape, right: TermShape): b
         return eqCompatible(index, { _tag: "scalar", valueType: a.shape.valueType }, b);
       }
       if (a.shape._tag === "ref" && b._tag === "input" && b.shape._tag === "ref") {
-        return sameRefTarget(index, a.shape.refTarget, b.shape.refTarget);
+        const left = resolveRefTarget(index, a.shape.refTarget, a.owner);
+        const right = resolveRefTarget(index, b.shape.refTarget, b.owner);
+        return (
+          Result.isSuccess(left) &&
+          Result.isSuccess(right) &&
+          sameRefTarget(index, left.success, right.success)
+        );
       }
       return false;
     }
@@ -655,21 +742,30 @@ const eqCompatible = (index: CatalogIndex, left: TermShape, right: TermShape): b
   return pair(left, right) || pair(right, left);
 };
 
-const collectionElement = (shape: TermShape): TermShape | undefined => {
+const collectionElement = (
+  index: CatalogIndex,
+  shape: TermShape,
+): Result.Result<TermShape | undefined, ValidateFailure> => {
   if (shape._tag === "ref" && shape.cardinality === "many") {
-    return { _tag: "ref", target: shape.target, cardinality: "one" };
+    return Result.succeed({ _tag: "ref", target: shape.target, cardinality: "one" });
   }
   if (shape._tag === "input" && shape.shape._tag === "array") {
     const items = shape.shape.items;
-    if (items._tag === "scalar") return { _tag: "scalar", valueType: items.valueType };
-    if (items._tag === "ref") return { _tag: "ref", target: items.refTarget, cardinality: "one" };
-    if (items._tag === "opaque") return { _tag: "opaque" };
-    return { _tag: "input", shape: items };
+    if (items._tag === "scalar") {
+      return Result.succeed({ _tag: "scalar", valueType: items.valueType });
+    }
+    if (items._tag === "ref") {
+      const target = resolveRefTarget(index, items.refTarget, shape.owner);
+      if (Result.isFailure(target)) return Result.fail(target.failure);
+      return Result.succeed({ _tag: "ref", target: target.success, cardinality: "one" });
+    }
+    if (items._tag === "opaque") return Result.succeed({ _tag: "opaque" });
+    return Result.succeed({ _tag: "input", shape: items, owner: shape.owner });
   }
   if (shape._tag === "claim" && shape.shape._tag === "array") {
-    return { _tag: "claim", shape: shape.shape.items };
+    return Result.succeed({ _tag: "claim", shape: shape.shape.items });
   }
-  return undefined;
+  return Result.succeed(undefined);
 };
 
 const inputShapeType = (
@@ -688,9 +784,9 @@ const inputShapeType = (
     case "opaque":
       return Result.succeed({ _tag: "opaque" });
     case "array":
-      return Result.succeed({ _tag: "input", shape });
+      return Result.succeed({ _tag: "input", shape, owner });
     case "struct":
-      return Result.succeed({ _tag: "input", shape });
+      return Result.succeed({ _tag: "input", shape, owner });
   }
 };
 
@@ -704,9 +800,11 @@ const walkInputPath = (
   switch (shape._tag) {
     case "struct": {
       const key = path[0]!;
-      const field = shape.fields.find((entry) => entry.key === key);
-      if (field === undefined) return invalid(`unknown operation input path '${path.join(".")}'`);
-      return walkInputPath(index, field.shape, path.slice(1), owner);
+      if (key.length === 0) return invalid("blank operation input key");
+      const matches = shape.fields.filter((entry) => entry.key === key);
+      if (matches.length === 0) return invalid(`unknown operation input path '${path.join(".")}'`);
+      if (matches.length > 1) return invalid(`ambiguous operation input key '${key}'`);
+      return walkInputPath(index, matches[0]!.shape, path.slice(1), owner);
     }
     case "array":
       return invalid("cannot traverse operation input array by key");
@@ -729,6 +827,51 @@ const claimByKey = (
   return Result.succeed(found[0]!);
 };
 
+const validateKeyedShapes = (
+  fields: ReadonlyArray<{ readonly key: string; readonly shape: ClaimShape | OperationInputShape }>,
+  kind: "claim" | "operation input",
+  nest: (shape: ClaimShape | OperationInputShape) => Result.Result<void, ValidateFailure>,
+): Result.Result<void, ValidateFailure> => {
+  const seen = new Set<string>();
+  for (const field of fields) {
+    if (field.key.length === 0) return invalid(`blank ${kind} key`);
+    if (seen.has(field.key)) return invalid(`duplicate ${kind} key '${field.key}'`);
+    seen.add(field.key);
+    const nested = nest(field.shape);
+    if (Result.isFailure(nested)) return Result.fail(nested.failure);
+  }
+  return Result.succeed(undefined);
+};
+
+const validateClaimShapeKeys = (shape: ClaimShape): Result.Result<void, ValidateFailure> => {
+  switch (shape._tag) {
+    case "scalar":
+    case "opaque":
+      return Result.succeed(undefined);
+    case "array":
+      return validateClaimShapeKeys(shape.items);
+    case "struct":
+      return validateKeyedShapes(shape.fields, "claim", (nested) =>
+        validateClaimShapeKeys(nested as ClaimShape),
+      );
+  }
+};
+
+const validateInputShapeKeys = (shape: OperationInputShape): Result.Result<void, ValidateFailure> => {
+  switch (shape._tag) {
+    case "scalar":
+    case "opaque":
+    case "ref":
+      return Result.succeed(undefined);
+    case "array":
+      return validateInputShapeKeys(shape.items);
+    case "struct":
+      return validateKeyedShapes(shape.fields, "operation input", (nested) =>
+        validateInputShapeKeys(nested as OperationInputShape),
+      );
+  }
+};
+
 const validateVocabularies = (
   subjectClaim: string,
   classes: ReadonlyArray<string>,
@@ -746,6 +889,8 @@ const validateVocabularies = (
     if (claim.key.length === 0) return invalid("blank claim key");
     if (seenClaim.has(claim.key)) return invalid(`duplicate claim '${claim.key}'`);
     seenClaim.add(claim.key);
+    const nested = validateClaimShapeKeys(claim.shape);
+    if (Result.isFailure(nested)) return Result.fail(nested.failure);
   }
   return Result.succeed(undefined);
 };
@@ -904,6 +1049,7 @@ const walkRef = (
       shape: {
         _tag: "input",
         shape: { _tag: "array", items: { _tag: "scalar", valueType: last.valueType } },
+        owner: last.id.owner,
       },
       derived,
     });
@@ -1060,9 +1206,10 @@ const walkExpr = (
       if (Result.isFailure(collection)) return Result.fail(collection.failure);
       mergeDerived(derived, value.success.derived);
       mergeDerived(derived, collection.success.derived);
-      const element = collectionElement(collection.success.shape);
-      if (element === undefined) return invalid("membership requires a collection");
-      if (!eqCompatible(index, value.success.shape, element)) {
+      const element = collectionElement(index, collection.success.shape);
+      if (Result.isFailure(element)) return Result.fail(element.failure);
+      if (element.success === undefined) return invalid("membership requires a collection");
+      if (!eqCompatible(index, value.success.shape, element.success)) {
         return invalid("incompatible membership operands");
       }
       return Result.succeed(derived);
@@ -1112,12 +1259,16 @@ const walkExpr = (
       if (Result.isFailure(right)) return Result.fail(right.failure);
       mergeDerived(derived, left.success.derived);
       mergeDerived(derived, right.success.derived);
-      const leftEl = collectionElement(left.success.shape);
-      const rightEl = collectionElement(right.success.shape);
-      if (leftEl === undefined || rightEl === undefined) {
+      const leftEl = collectionElement(index, left.success.shape);
+      if (Result.isFailure(leftEl)) return Result.fail(leftEl.failure);
+      const rightEl = collectionElement(index, right.success.shape);
+      if (Result.isFailure(rightEl)) return Result.fail(rightEl.failure);
+      if (leftEl.success === undefined || rightEl.success === undefined) {
         return invalid("overlaps requires two collections");
       }
-      if (!eqCompatible(index, leftEl, rightEl)) return invalid("incompatible overlaps operands");
+      if (!eqCompatible(index, leftEl.success, rightEl.success)) {
+        return invalid("incompatible overlaps operands");
+      }
       return Result.succeed(derived);
     }
     case "exists": {
@@ -1170,33 +1321,6 @@ const sameIds = (left: ReadonlyArray<RuleId>, right: ReadonlyArray<RuleId>): boo
   return true;
 };
 
-const dependencyCycle = (
-  nodes: ReadonlyArray<{ readonly id: RuleId; readonly dependencies: ReadonlyArray<RuleId> }>,
-): "self" | "cycle" | undefined => {
-  const edges = new Map<RuleId, ReadonlyArray<RuleId>>();
-  for (const node of nodes) edges.set(node.id, node.dependencies);
-  const visiting = new Set<RuleId>();
-  const visited = new Set<RuleId>();
-  const visit = (id: RuleId): "self" | "cycle" | undefined => {
-    if (visited.has(id)) return undefined;
-    if (visiting.has(id)) return "cycle";
-    visiting.add(id);
-    for (const dep of edges.get(id) ?? []) {
-      if (dep === id) return "self";
-      const nested = visit(dep);
-      if (nested !== undefined) return nested;
-    }
-    visiting.delete(id);
-    visited.add(id);
-    return undefined;
-  };
-  for (const node of nodes) {
-    const found = visit(node.id);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-};
-
 const compareDerived = (
   rule: CanonicalAuthorizationRule,
   derived: Derived,
@@ -1208,16 +1332,11 @@ const compareDerived = (
   if (rule.usesSubject !== derived.usesSubject) return invalid("tampered usesSubject");
   if (rule.traversalDepth !== derived.traversalDepth) return invalid("tampered traversalDepth");
   if (rule.existsDepth !== derived.existsDepth) return invalid("tampered existsDepth");
-  if (!sameIds(rule.dependencies, derived.dependencies)) {
-    const cycle = dependencyCycle([{ id: rule.id, dependencies: rule.dependencies }]);
-    if (cycle === "self") return invalid("recursive named-rule invocation");
-    if (cycle === "cycle") return invalid("dependency cycle");
-    return invalid("tampered dependencies");
+  if (rule.dependencies.length > 0 || derived.dependencies.length > 0) {
+    return invalid("named-rule dependencies must be empty");
   }
-  if (derived.dependencies.length > limits.maxDependencies) {
-    return invalid(
-      `named-rule dependencies ${derived.dependencies.length} exceed ${limits.maxDependencies}`,
-    );
+  if (!sameIds(rule.dependencies, derived.dependencies)) {
+    return invalid("tampered dependencies");
   }
   if (derived.traversalDepth > limits.maxTraversalDepth) {
     return invalid(`traversal depth ${derived.traversalDepth} exceeds ${limits.maxTraversalDepth}`);
@@ -1539,13 +1658,9 @@ const boundTarget = (bound: BoundAuthorizationIR): CatalogBindingTarget => ({
   schemaFingerprint: bound.schemaFingerprint,
 });
 
-/**
- * Pure semantic kernel. Recomputes rule hashes and derived flags. Does not
- * derive access plans or assemble {@link import("./ir.ts").InstalledAuthorizationIR}.
- */
-export const validateBoundAuthorizationResult = (
+const validateBoundAuthorizationWithLimits = (
   input: AuthorizationValidationInput,
-  limits: ValidationLimits = defaultValidationLimits,
+  limits: ValidationLimits,
 ): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> => {
   const index = indexCatalog(boundTarget(input.bound), input.descriptor);
   if (Result.isFailure(index)) return Result.fail(index.failure);
@@ -1580,10 +1695,6 @@ export const validateBoundAuthorizationResult = (
     rules.push(validated.success);
   }
 
-  const cycle = dependencyCycle(rules);
-  if (cycle === "self") return invalid("recursive named-rule invocation");
-  if (cycle === "cycle") return invalid("dependency cycle");
-
   const decisions = validateDecisions(index.success, input.bound.decisions, byId);
   if (Result.isFailure(decisions)) return Result.fail(decisions.failure);
 
@@ -1603,11 +1714,33 @@ export const validateBoundAuthorizationResult = (
   return Result.succeed(freezeValidated(validated));
 };
 
+/**
+ * Pure semantic kernel. Recomputes rule hashes and derived flags. Does not
+ * derive access plans or assemble {@link import("./ir.ts").InstalledAuthorizationIR}.
+ * Production entry: hard validation limits only.
+ */
+export const validateBoundAuthorizationResult = (
+  input: AuthorizationValidationInput,
+): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> =>
+  validateBoundAuthorizationWithLimits(input, defaultValidationLimits);
+
+/**
+ * Test-only path. Overrides must be finite natural numbers and are clamped
+ * at the hard constants so callers can only tighten restrictions.
+ */
+export const validateBoundAuthorizationResultForTest = (
+  input: AuthorizationValidationInput,
+  limits: Partial<ValidationLimits>,
+): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> => {
+  const tightened = tightenValidationLimits(limits);
+  if (Result.isFailure(tightened)) return Result.fail(tightened.failure);
+  return validateBoundAuthorizationWithLimits(input, tightened.success);
+};
+
 export const validateBoundAuthorization = Effect.fn("Authorization.validateBoundAuthorization")(
   function* (
     input: AuthorizationValidationInput,
-    limits: ValidationLimits = defaultValidationLimits,
   ): Effect.fn.Return<ValidatedAuthorizationIRType, ValidateFailure> {
-    return yield* Effect.fromResult(validateBoundAuthorizationResult(input, limits));
+    return yield* Effect.fromResult(validateBoundAuthorizationResult(input));
   },
 );
