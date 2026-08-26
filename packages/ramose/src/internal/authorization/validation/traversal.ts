@@ -85,6 +85,9 @@ export const meEntity = (
   if (field.success.id.owner.kind !== "entity") {
     return invalid("principal field must be entity-owned");
   }
+  if (field.success.valueType !== "string" && field.success.valueType !== "uuid") {
+    return invalid("principal field must be string-compatible");
+  }
   const entity = index.entities.get(field.success.id.owner.name);
   if (entity === undefined) return invalid("missing principal entity");
   return Result.succeed(entity);

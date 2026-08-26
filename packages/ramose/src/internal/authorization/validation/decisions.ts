@@ -35,24 +35,6 @@ const uniqueDecisionIds = (
   return Result.succeed(undefined);
 };
 
-const fieldOwnerMatchesEntity = (
-  index: PreparedAuthorizationCatalog,
-  field: FieldDescriptor,
-  entity: EntityId,
-): boolean => {
-  if (field.id.owner.kind === "entity") return field.id.owner.name === entity.name;
-  return entityComposes(index, entity, field.id.owner.name);
-};
-
-const fieldOwnerMatchesTrait = (
-  index: PreparedAuthorizationCatalog,
-  field: FieldDescriptor,
-  trait: TraitId,
-): boolean => {
-  if (field.id.owner.kind === "trait") return traitComposes(index, trait, field.id.owner.name);
-  return false;
-};
-
 const ruleFitsEntity = (
   index: PreparedAuthorizationCatalog,
   rule: CanonicalAuthorizationRule,
@@ -80,9 +62,12 @@ const ruleFitsField = (
   field: FieldDescriptor,
 ): boolean => {
   if (rule.focus._tag === "field") return fieldKey(rule.focus.field) === fieldKey(field.id);
-  if (rule.focus._tag === "entity") return fieldOwnerMatchesEntity(index, field, rule.focus.entity);
-  if (rule.focus._tag === "trait") return fieldOwnerMatchesTrait(index, field, rule.focus.trait);
-  return false;
+  if (field.id.owner.kind === "entity") {
+    const owner = index.entities.get(field.id.owner.name);
+    return owner !== undefined && ruleFitsEntity(index, rule, owner);
+  }
+  const owner = index.traits.get(field.id.owner.name);
+  return owner !== undefined && ruleFitsTrait(index, rule, owner);
 };
 
 const ruleFitsOperation = (

@@ -3,9 +3,11 @@
  *
  * {@link CatalogDescriptor} is structurally decoded by its schema first.
  * This module indexes one descriptor, recomputes trait closure from direct
- * composition, and compares declared `traitComposition.transitive` to that
- * closure. The result is consumed by semantic validation; binding can adopt
- * the same view later without changing this kernel.
+ * composition, rejects composition cycles, and compares declared
+ * `traitComposition.transitive` to that closure. Every direct entity/trait
+ * edge must have a compiled composition row. Operation owners must exist.
+ * The result is consumed by semantic validation; binding can adopt the same
+ * view later without changing this kernel.
  */
 
 import * as Result from "effect/Result";
@@ -94,23 +96,40 @@ const validateTarget = (
   return Result.succeed(undefined);
 };
 
-const closeTraits = (edges: Map<string, Set<string>>): Map<string, Set<string>> => {
+const closeTraits = (
+  edges: Map<string, Set<string>>,
+): Result.Result<Map<string, Set<string>>, ValidateFailure> => {
   const closed = new Map<string, Set<string>>();
-  for (const [name, direct] of edges) {
-    const seen = new Set<string>();
-    const stack = [...direct];
-    while (stack.length > 0) {
-      const next = stack.pop()!;
-      if (seen.has(next)) continue;
-      seen.add(next);
-      const nested = edges.get(next);
-      if (nested !== undefined) {
-        for (const child of nested) stack.push(child);
+  const visit = (
+    name: string,
+    active: string[],
+    done: Set<string>,
+  ): Result.Result<void, ValidateFailure> => {
+    if (active.includes(name)) {
+      return invalid(`trait composition cycle: ${[...active, name].join(" → ")}`);
+    }
+    if (done.has(name)) return Result.succeed(undefined);
+    active.push(name);
+    const nested = edges.get(name);
+    if (nested !== undefined) {
+      for (const child of nested) {
+        const ok = visit(child, active, done);
+        if (Result.isFailure(ok)) return Result.fail(ok.failure);
       }
     }
-    closed.set(name, seen);
+    active.pop();
+    done.add(name);
+    return Result.succeed(undefined);
+  };
+  for (const [name, direct] of edges) {
+    const done = new Set<string>();
+    for (const child of direct) {
+      const ok = visit(child, [], done);
+      if (Result.isFailure(ok)) return Result.fail(ok.failure);
+    }
+    closed.set(name, done);
   }
-  return closed;
+  return Result.succeed(closed);
 };
 
 export const prepareAuthorizationCatalog = (
@@ -168,12 +187,22 @@ export const prepareAuthorizationCatalog = (
     if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
     const key = operationKey(operation.id);
     if (operations.has(key)) return invalid(`ambiguous operation '${key}'`);
+    const owner = operation.id.owner;
+    if (owner.kind === "entity") {
+      if (!entities.has(owner.name)) {
+        return invalid(`missing operation owner entity '${owner.name}'`);
+      }
+    } else if (!traits.has(owner.name)) {
+      return invalid(`missing operation owner trait '${owner.name}'`);
+    }
     const keys = validateInputShapeKeys(operation.input);
     if (Result.isFailure(keys)) return Result.fail(keys.failure);
     operations.set(key, operation);
   }
 
-  const traitTraits = closeTraits(traitTraitEdges);
+  const closed = closeTraits(traitTraitEdges);
+  if (Result.isFailure(closed)) return Result.fail(closed.failure);
+  const traitTraits = closed.success;
   const entityTraits = new Map<string, Set<string>>();
   for (const [name, direct] of entityTraitEdges) {
     const seen = new Set<string>();
@@ -235,6 +264,14 @@ export const prepareAuthorizationCatalog = (
         return invalid(
           `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
         );
+      }
+    }
+  }
+
+  for (const [entityName, direct] of entityTraitEdges) {
+    for (const traitName of direct) {
+      if (!seenComposition.has(`${entityName}${SEPARATOR}${traitName}`)) {
+        return invalid(`missing trait composition for '${entityName}'/'${traitName}'`);
       }
     }
   }

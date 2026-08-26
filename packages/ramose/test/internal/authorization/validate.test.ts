@@ -818,6 +818,50 @@ describe("me, claims, and classes", () => {
     );
   });
 
+  test("rejects a non-string principal lookup field", () => {
+    const longAuthId: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((entry) =>
+        entry.id.localName === "authId" ? { ...entry, valueType: "long" as const } : entry,
+      ),
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), longAuthId),
+      "InvalidIR",
+      /principal field must be string-compatible/,
+    );
+  });
+
+  test("rejects a ref principal lookup field", () => {
+    const refAuthId: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((entry) =>
+        entry.id.localName === "authId"
+          ? {
+              ...entry,
+              valueType: "ref" as const,
+              refTarget: { _tag: "entity" as const, entity: entity("user") },
+            }
+          : entry,
+      ),
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), refAuthId),
+      "InvalidIR",
+      /principal field must be string-compatible/,
+    );
+  });
+
+  test("accepts a uuid principal lookup field", () => {
+    const uuidAuthId: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((entry) =>
+        entry.id.localName === "authId" ? { ...entry, valueType: "uuid" as const } : entry,
+      ),
+    };
+    expectValidated(validate(boundDocument([ownsIssue()]), uuidAuthId));
+  });
+
   test("rejects a nested blank claim key", () => {
     expectFailure(
       validate(
@@ -1264,6 +1308,64 @@ describe("catalog trait composition", () => {
       /does not compose trait 'taggable'/,
     );
   });
+
+  test("rejects a trait composition cycle instead of folding it into the closure", () => {
+    const cyclic: CatalogDescriptor = {
+      ...descriptor,
+      traits: [
+        { id: trait("taggable"), traits: [] },
+        { id: trait("orphaned"), traits: [] },
+        { id: trait("loop-a"), traits: [trait("loop-b")] },
+        { id: trait("loop-b"), traits: [trait("loop-a")] },
+      ],
+    };
+    expectFailure(validate(boundDocument([ownsIssue()]), cyclic), "InvalidIR", /trait composition cycle/);
+  });
+
+  test("rejects a missing compiled composition row for a direct entity trait", () => {
+    const missingRow: CatalogDescriptor = {
+      ...descriptor,
+      traitComposition: [],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), missingRow),
+      "InvalidIR",
+      /missing trait composition for 'issue'\/'taggable'/,
+    );
+  });
+
+  test("accepts a diamond trait composition without treating it as a cycle", () => {
+    const diamond: CatalogDescriptor = {
+      ...descriptor,
+      entities: [
+        { id: entity("user"), traits: [] },
+        { id: entity("issue"), traits: [trait("taggable"), trait("diamond")] },
+        { id: entity("tag"), traits: [] },
+        { id: entity("tag-grant"), traits: [] },
+      ],
+      traits: [
+        { id: trait("taggable"), traits: [] },
+        { id: trait("orphaned"), traits: [] },
+        { id: trait("left"), traits: [trait("shared")] },
+        { id: trait("right"), traits: [trait("shared")] },
+        { id: trait("shared"), traits: [] },
+        { id: trait("diamond"), traits: [trait("left"), trait("right")] },
+      ],
+      traitComposition: [
+        {
+          composer: entity("issue"),
+          trait: trait("taggable"),
+          transitive: [trait("taggable")],
+        },
+        {
+          composer: entity("issue"),
+          trait: trait("diamond"),
+          transitive: [trait("diamond"), trait("left"), trait("right"), trait("shared")],
+        },
+      ],
+    };
+    expectValidated(validate(boundDocument([ownsIssue()]), diamond));
+  });
 });
 
 describe("targeted and targetless operations", () => {
@@ -1335,6 +1437,22 @@ describe("targeted and targetless operations", () => {
       ),
       "InvalidIR",
       /not reachable/,
+    );
+  });
+
+  test("rejects a targetless operation whose entity owner is missing", () => {
+    const ghost = { kind: "entity" as const, name: "ghost" };
+    const missingOwner: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        ...descriptor.operations,
+        { id: operation(ghost, "ping", "none"), input: { _tag: "opaque" } },
+      ],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), missingOwner),
+      "InvalidIR",
+      /missing operation owner entity 'ghost'/,
     );
   });
 });
@@ -1449,6 +1567,80 @@ describe("decision and focus compatibility", () => {
           traits: [],
           fields: [
             { target: field(issueOwner, "internalNotes"), decision: { allow: [owns.id], deny: [] } },
+          ],
+          operations: [],
+        }),
+      ),
+    );
+  });
+
+  test("rejects an entity-focused rule on a trait-owned field", () => {
+    const owns = ownsIssue();
+    expectFailure(
+      validate(
+        boundDocument([owns], {
+          entities: [],
+          traits: [],
+          fields: [{ target: field(taggableOwner, "tags"), decision: { allow: [owns.id], deny: [] } }],
+          operations: [],
+        }),
+      ),
+      "InvalidIR",
+      /incompatible with field decision/,
+    );
+  });
+
+  test("rejects a subtrait-focused rule on a parent trait field", () => {
+    const withSubtrait: CatalogDescriptor = {
+      ...descriptor,
+      traits: [
+        { id: trait("taggable"), traits: [] },
+        { id: trait("orphaned"), traits: [] },
+        { id: trait("labeled"), traits: [trait("taggable")] },
+      ],
+    };
+    const rule = alwaysTrue({ _tag: "trait", trait: trait("labeled") });
+    expectFailure(
+      validate(
+        boundDocument(
+          [rule],
+          {
+            entities: [],
+            traits: [],
+            fields: [{ target: field(taggableOwner, "tags"), decision: { allow: [rule.id], deny: [] } }],
+            operations: [],
+          },
+        ),
+        withSubtrait,
+      ),
+      "InvalidIR",
+      /incompatible with field decision/,
+    );
+  });
+
+  test("accepts a trait-focused rule on that trait's field", () => {
+    const tags = tagGrant();
+    expectValidated(
+      validate(
+        boundDocument([tags], {
+          entities: [],
+          traits: [],
+          fields: [{ target: field(taggableOwner, "tags"), decision: { allow: [tags.id], deny: [] } }],
+          operations: [],
+        }),
+      ),
+    );
+  });
+
+  test("accepts a trait-focused rule on a composing entity field", () => {
+    const tags = tagGrant();
+    expectValidated(
+      validate(
+        boundDocument([tags], {
+          entities: [],
+          traits: [],
+          fields: [
+            { target: field(issueOwner, "internalNotes"), decision: { allow: [tags.id], deny: [] } },
           ],
           operations: [],
         }),
