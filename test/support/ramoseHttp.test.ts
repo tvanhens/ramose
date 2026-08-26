@@ -130,6 +130,75 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(n).toBe(2);
   });
 
+  test("retries empty HTTP 502 then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) return new Response("", { status: 502 });
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("retries non-JSON gateway 502 then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) return new Response("Bad Gateway", { status: 502 });
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("transact retries empty 502 with the same clientTxId", async () => {
+    let n = 0;
+    const ids: string[] = [];
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        n++;
+        const body = JSON.parse(String(init?.body)) as { clientTxId?: string };
+        if (typeof body.clientTxId === "string") ids.push(body.clientTxId);
+        if (n === 1) return new Response("", { status: 502 });
+        return json(200, { t: 1, txEid: 1, tempids: {}, datoms: [] });
+      }) as unknown as typeof fetch,
+    });
+    await peer.db("x").transact([{ ":user/name": "a" }]);
+    expect(n).toBe(2);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[0]!.length).toBeGreaterThan(0);
+  });
+
+  test("does not retry an application NetworkError 502", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        return json(502, { error: "upstream reset", tag: "NetworkError" });
+      }) as unknown as typeof fetch,
+    });
+    try {
+      await peer.health();
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpError);
+      expect((e as HttpError).status).toBe(502);
+      expect((e as HttpError).tag).toBe("NetworkError");
+      expect((e as HttpError).message).toBe("upstream reset");
+    }
+    expect(n).toBe(1);
+  });
+
   test("does not retry an application 409", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
