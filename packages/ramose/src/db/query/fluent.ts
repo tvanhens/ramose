@@ -134,7 +134,7 @@ export const entityShape = (ns: AnyEntity): Shape => {
   const sourceId = entityId(ns);
   const out: Record<string, unknown> = { id: sourceId };
   for (const [key, field] of Object.entries(ns.fields)) {
-    const f = field as {
+    const f = field as unknown as {
       readonly valueType?: string;
       readonly cardinality?: string;
       readonly schema?: unknown;

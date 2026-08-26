@@ -12,7 +12,7 @@ This page is everything about the **schema** — your data model as one TypeScri
 ## Three pieces, and that is the whole vocabulary
 
 - **`Ramose.string()`** (and the other value shorthands) declare one **field** — a named, typed slot ([glossary](/concepts/glossary/#field)).
-- **`Ramose.Entity`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`. Names match `IDENT_NAME_RE`; `id` / `ns` / `fields` / `_tag` are reserved.
+- **`Ramose.Entity`** groups fields into a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)). `Issue.title` is `:issue/title` on the wire; you always write `Issue.title`. Names match `IDENT_NAME_RE`; `id` / `ns` / `fields` / `_tag` / `traits` are reserved. `{ traits: [Taggable] }` flattens `Ramose.Trait` fields onto the entity; those fields keep the trait ident.
 - **`Ramose.Schema`** collects record types into the schema a database installs. The object key must be the entity's name; `Schema([User, Label])` does that for you.
 
 A raw [Effect Schema](https://effect.website) is still accepted as the advanced form (`Ramose.Field(schema)`); app schemas do not import it.

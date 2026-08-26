@@ -3,7 +3,13 @@
 import type { Datom, IndexId, Prefix } from "../datom.ts";
 import { Db, type DbOptions } from "../db.ts";
 import type { CompiledPolicy } from "./ast.ts";
-import { PolicyMemo, allowsOp, isSystemAttrId } from "./eval.ts";
+import {
+  PolicyMemo,
+  allowsMembershipRead,
+  allowsOp,
+  isMembershipAttrId,
+  isSystemAttrId,
+} from "./eval.ts";
 import { type Principal, isSuperuser } from "./principal.ts";
 
 export interface PolicyView {
@@ -65,15 +71,19 @@ export class FilteredDb extends Db {
    * enforcement backstop for pull, history, raw access, and attr narrowing.
    */
   async visible(d: Datom): Promise<boolean> {
-    if (isSystemAttrId(d.a)) return true;
-    const attr = this.view.ruleDb.attr(d.a) ?? this.schema.attr(d.a);
-    if (!attr) return false;
-    return allowsOp(this.view.policy, "read", attr.ident, {
+    const ctx = {
       db: this.view.ruleDb,
       principal: this.view.principal,
       e: d.e,
       memo: this.view.memo,
-    });
+    };
+    if (isMembershipAttrId(d.a)) {
+      return allowsMembershipRead(this.view.policy, d, ctx);
+    }
+    if (isSystemAttrId(d.a)) return true;
+    const attr = this.view.ruleDb.attr(d.a) ?? this.schema.attr(d.a);
+    if (!attr) return false;
+    return allowsOp(this.view.policy, "read", attr.ident, ctx);
   }
 
   private async keep(ds: Datom[]): Promise<Datom[]> {

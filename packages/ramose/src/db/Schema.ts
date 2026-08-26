@@ -1,8 +1,13 @@
 /** Composition of entities; the typed client's type parameter. */
 
+import {
+  assertEntityTraitNames,
+  assertUniqueIdents,
+  reachableTraits,
+  type ComposerLike,
+} from "./compose.ts";
 import type { AnyEntity } from "./Entity.ts";
 import {
-  conflictingIdent,
   duplicateEntityName,
   schemaKeyMismatch,
   type EntitiesFromArray,
@@ -10,6 +15,7 @@ import {
   type ValidEntityMap,
   type ValidMerge,
 } from "./IdentName.ts";
+import type { AnyTrait } from "./Trait.ts";
 
 export type EntityMap = Record<string, AnyEntity>;
 
@@ -27,15 +33,10 @@ const isEntity = (value: unknown): value is AnyEntity =>
   (value as { readonly _tag?: unknown })._tag === "Entity" &&
   typeof (value as { readonly ns?: unknown }).ns === "string";
 
-const assertIdents = (entities: EntityMap): void => {
-  const seen = new Set<string>();
-  for (const entity of Object.values(entities)) {
-    for (const key of Object.keys(entity.fields)) {
-      const ident = `:${entity.ns}/${key}`;
-      if (seen.has(ident)) throw conflictingIdent(ident);
-      seen.add(ident);
-    }
-  }
+const assertCatalog = (entities: EntityMap): void => {
+  assertUniqueIdents(Object.values(entities) as ComposerLike[]);
+  const traits = reachableTraits(Object.values(entities) as ComposerLike[]);
+  assertEntityTraitNames(Object.keys(entities), traits);
 };
 
 const fromList = (list: readonly unknown[]): EntityMap => {
@@ -49,7 +50,7 @@ const fromList = (list: readonly unknown[]): EntityMap => {
     if (Object.hasOwn(entities, value.ns)) throw duplicateEntityName(value.ns);
     entities[value.ns] = value;
   }
-  assertIdents(entities);
+  assertCatalog(entities);
   return entities;
 };
 
@@ -65,7 +66,7 @@ const fromMap = (input: EntityMap): EntityMap => {
     if (seen.has(entity.ns)) throw duplicateEntityName(entity.ns);
     seen.add(entity.ns);
   }
-  assertIdents(input);
+  assertCatalog(input);
   return input;
 };
 
@@ -106,7 +107,7 @@ export const merge = <const A extends EntityMap, const B extends EntityMap>(
     if (Object.hasOwn(left.entities, ns)) throw duplicateEntityName(ns);
   }
   const entities = { ...left.entities, ...right.entities };
-  assertIdents(entities);
+  assertCatalog(entities);
   return { _tag: "Schema", entities };
 };
 
@@ -114,3 +115,12 @@ export type EntityOf<
   C extends AnySchema,
   K extends keyof C["entities"],
 > = C["entities"][K];
+
+/** Reachable traits of `schema`, keyed by trait name. */
+export const schemaTraits = (
+  schema: AnySchema,
+): ReadonlyMap<string, AnyTrait> =>
+  reachableTraits(Object.values(schema.entities) as ComposerLike[]) as unknown as ReadonlyMap<
+    string,
+    AnyTrait
+  >;

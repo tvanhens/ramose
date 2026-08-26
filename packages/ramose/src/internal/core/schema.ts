@@ -26,8 +26,20 @@ export const DB_UNIQUE = 42;
 export const DB_IS_COMPONENT = 43;
 export const DB_INDEX = 44;
 export const DB_OPTIONAL = 45;
+/** Instance membership — stamped on ordinary user entities; policy-judged by the named type, not as schema metadata. */
+export const RAMOSE_TYPE = 46;
+export const RAMOSE_TRAIT = 47;
+export const RAMOSE_KIND = 48;
+export const RAMOSE_COMPOSES = 49;
 export const DB_TX_INSTANT = 50;
 export const DB_DOC = 62;
+
+export const RAMOSE_TYPE_IDENT = ":ramose/type";
+export const RAMOSE_TRAIT_IDENT = ":ramose/trait";
+export const RAMOSE_KIND_IDENT = ":ramose/kind";
+export const RAMOSE_COMPOSES_IDENT = ":ramose/composes";
+export const RAMOSE_KIND_ENTITY = ":ramose.kind/entity";
+export const RAMOSE_KIND_TRAIT = ":ramose.kind/trait";
 
 /** First entity id handed out to user entities. */
 export const FIRST_USER_EID = 1000;
@@ -93,6 +105,10 @@ const BOOTSTRAP_SPECS: (AttributeSpec & { id: number })[] = [
   { id: DB_IS_COMPONENT, ident: ":db/isComponent", valueType: ":db.type/boolean", cardinality: "one" },
   { id: DB_INDEX, ident: ":db/index", valueType: ":db.type/boolean", cardinality: "one" },
   { id: DB_OPTIONAL, ident: ":db/optional", valueType: ":db.type/boolean", cardinality: "one" },
+  { id: RAMOSE_TYPE, ident: RAMOSE_TYPE_IDENT, valueType: ":db.type/string", cardinality: "one", index: true, doc: "Concrete entity type membership" },
+  { id: RAMOSE_TRAIT, ident: RAMOSE_TRAIT_IDENT, valueType: ":db.type/string", cardinality: "many", index: true, doc: "Trait membership" },
+  { id: RAMOSE_KIND, ident: RAMOSE_KIND_IDENT, valueType: ":db.type/string", cardinality: "one", doc: "Ident is an entity type or a trait" },
+  { id: RAMOSE_COMPOSES, ident: RAMOSE_COMPOSES_IDENT, valueType: ":db.type/string", cardinality: "many", doc: "Direct trait composition" },
   { id: DB_TX_INSTANT, ident: ":db/txInstant", valueType: ":db.type/instant", cardinality: "one", index: true },
   { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
 ];
@@ -145,6 +161,10 @@ export class Schema {
   private readonly idents = new Map<string, number>();
   private readonly identOf = new Map<number, string>();
   private readonly partials = new Map<number, Partial>();
+  /** ident entity eid → `:ramose.kind/entity` | `:ramose.kind/trait` */
+  private readonly kinds = new Map<number, string>();
+  /** ident entity eid → direct composed trait idents */
+  private readonly composeEdges = new Map<number, Set<string>>();
 
   static bootstrap(): Schema {
     return new Schema().apply(bootstrapDatoms());
@@ -157,6 +177,8 @@ export class Schema {
     for (const [k, v] of this.idents) s.idents.set(k, v);
     for (const [k, v] of this.identOf) s.identOf.set(k, v);
     for (const [k, v] of this.partials) s.partials.set(k, { ...v });
+    for (const [k, v] of this.kinds) s.kinds.set(k, v);
+    for (const [k, v] of this.composeEdges) s.composeEdges.set(k, new Set(v));
     return s;
   }
 
@@ -176,6 +198,8 @@ export class Schema {
           } else {
             if (this.idents.get(d.v as string) === d.e) this.idents.delete(d.v as string);
             this.identOf.delete(d.e);
+            this.kinds.delete(d.e);
+            this.composeEdges.delete(d.e);
             if (p.ident === d.v) p.ident = undefined;
           }
           touched.add(d.e);
@@ -216,6 +240,18 @@ export class Schema {
           p.doc = d.op ? (d.v as string) : undefined;
           touched.add(d.e);
           break;
+        case RAMOSE_KIND:
+          if (d.op) this.kinds.set(d.e, d.v as string);
+          else if (this.kinds.get(d.e) === d.v) this.kinds.delete(d.e);
+          break;
+        case RAMOSE_COMPOSES: {
+          const set = this.composeEdges.get(d.e) ?? new Set<string>();
+          if (d.op) set.add(d.v as string);
+          else set.delete(d.v as string);
+          if (set.size === 0) this.composeEdges.delete(d.e);
+          else this.composeEdges.set(d.e, set);
+          break;
+        }
         default:
           break;
       }
@@ -267,6 +303,40 @@ export class Schema {
   }
   attributes(): Attribute[] {
     return [...this.byId.values()];
+  }
+
+  /** `:ramose.kind/entity` | `:ramose.kind/trait` when installed. */
+  kindOf(ident: string): string | undefined {
+    const e = this.idents.get(ident);
+    return e === undefined ? undefined : this.kinds.get(e);
+  }
+
+  isTraitIdent(ident: string): boolean {
+    return this.kindOf(ident) === RAMOSE_KIND_TRAIT;
+  }
+
+  isEntityIdent(ident: string): boolean {
+    return this.kindOf(ident) === RAMOSE_KIND_ENTITY;
+  }
+
+  /** Direct `:ramose/composes` targets of `ident`. */
+  composesOf(ident: string): readonly string[] {
+    const e = this.idents.get(ident);
+    if (e === undefined) return [];
+    return [...(this.composeEdges.get(e) ?? [])];
+  }
+
+  /** Transitive composed trait idents, diamonds collapsed, sorted. */
+  transitiveTraits(ident: string): readonly string[] {
+    const out = new Set<string>();
+    const stack = [...this.composesOf(ident)];
+    while (stack.length > 0) {
+      const next = stack.pop()!;
+      if (out.has(next)) continue;
+      out.add(next);
+      for (const inner of this.composesOf(next)) stack.push(inner);
+    }
+    return [...out].sort();
   }
 
   /** Should datoms of attribute `a` be in AVET? (indexed or unique) */

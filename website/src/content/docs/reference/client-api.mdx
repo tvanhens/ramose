@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Databases, layer,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Field` · `Entity` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `IDENT_NAME_RE` · `isIdentName` · `RESERVED_FIELD_KEYS` · `isReservedFieldKey` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `IncompatibleSchema` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
+| `ramose/db` | `Field` · `Entity` · `Trait` · `Schema` · `string` · `boolean` · `int` · `float` · `timestamp` · `uuid` · `bytes` · `Enum` · `Ref` · `Instant` · `Uuid` · `Long` · `Bytes` · `stored` · `Q` · `Query` · `all` · `again` · `values` · `EntityId` · `Operation` · `Operations` · `defineOperations` · `checkOperationsCoverage` · `operationNames` · `operationCards` · `PrefixHalt` · `connect` · `token` · `DATABASE_NAME_RE` · `isDatabaseName` · `IDENT_NAME_RE` · `isIdentName` · `RESERVED_FIELD_KEYS` · `isReservedFieldKey` · `isDatabaseError` · `PolicyError` · `OperationsCoverageError` · `IncompatibleSchema` · `OperationRejected`, the nine `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `Databases` · `layer` · `asRead` · `PEER_COMPAT` · `providers` · `Providers` · `Policy` · `DEFAULT_JWT_MAX_TTL` · `claims` · `errorToHttp` · `errorResponse` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -63,7 +63,9 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-**`Ramose.Entity(name, fields)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields` and `_tag` are reserved.
+**`Ramose.Entity(name, fields, options?)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields`, `_tag` and `traits` are reserved. `{ traits: [Taggable] }` flattens trait fields onto the entity; `Issue.tag === Taggable.tag` and the ident stays `:taggable/tag`.
+
+**`Ramose.Trait(name, fields, options?)`** — a reusable field group. Trait fields keep the trait namespace when composed. Entities and traits may compose traits transitively; a diamond that reaches the same trait is idempotent; two different fields with the same flattened name fail at definition and `install()`.
 
 **Value shorthands** — `string()`, `boolean()`, `int()`, `float()`, `timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, `Ref(Entity)`. Each takes `doc` / `index` / `optional` and composes with `Field.many` / `Field.unique` / `Field.owned`.
 
@@ -185,7 +187,7 @@ const db = ramose.db("todos", Todos);
 if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only");
 ```
 
-**`Ramose.IDENT_NAME_RE`** / **`Ramose.isIdentName(name)`** — entity and field names: `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. **`RESERVED_FIELD_KEYS`** / **`isReservedFieldKey`** are `id`, `ns`, `fields`, `_tag`. A bad name throws from `Entity` / `Schema`.
+**`Ramose.IDENT_NAME_RE`** / **`Ramose.isIdentName(name)`** — entity and field names: `/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/`. **`RESERVED_FIELD_KEYS`** / **`isReservedFieldKey`** are `id`, `ns`, `fields`, `_tag`, `traits`. A bad name throws from `Entity` / `Trait` / `Schema`.
 
 ## Db
 

@@ -23,10 +23,11 @@ export interface PeerOptions {
   headers?: Record<string, string>;
   /**
    * How long (ms) to keep retrying transient Cloudflare platform errors
-   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503). A fresh
-   * workers.dev hostname is eventually consistent across the edge, so a colo
-   * can serve the placeholder well after /health passes; this is the budget
-   * for waiting that out. Application errors never retry. Default 0.
+   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503, Durable
+   * Object storage timeout reset). A fresh workers.dev hostname is eventually
+   * consistent across the edge, so a colo can serve the placeholder well after
+   * /health passes; this is the budget for waiting that out. Application
+   * errors never retry. Default 0.
    */
   retryTransientMs?: number;
 }
@@ -147,7 +148,7 @@ export function isTransientCf(e: unknown): boolean {
   // Platform errors, as normalized by httpErrorMessage, plus the JSON errors
   // a not-yet-converged deploy answers with ("Worker not found." and
   // "Handler does not export a fetch() function." both clear within seconds).
-  return /Worker not found|Handler does not export a fetch|Cloudflare error 1\d{3}|workers\.dev edge/i.test(
+  return /Worker not found|Handler does not export a fetch|Cloudflare error 1\d{3}|workers\.dev edge|Durable Object storage operation exceeded timeout|object to be reset/i.test(
     e.message,
   );
 }

@@ -16,7 +16,8 @@
  */
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
-import { TX_BASE } from "../../internal/core/schema.ts";
+import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
+import { traitsOf } from "../compose.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
 import type { AnyEntity } from "../Entity.ts";
@@ -1164,8 +1165,17 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    const idents = Object.values(ns.fields).map((a) => (a as { ident: string }).ident);
-    ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
+    // Composed entities share trait idents with other composers. Membership
+    // is the engine-owned type fact, not an `or` over flattened fields.
+    if (traitsOf(ns).length > 0) {
+      ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
+    } else {
+      const prefix = `:${ns.ns}/`;
+      const idents = Object.values(ns.fields)
+        .map((a) => (a as { ident: string }).ident)
+        .filter((ident) => ident.startsWith(prefix));
+      ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
+    }
     return entry;
   };
 

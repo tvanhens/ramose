@@ -38,6 +38,25 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(connectionHeaders).toEqual([undefined, "close", "close"]);
   });
 
+  test("retries Durable Object storage timeout reset then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          return json(500, {
+            error:
+              "Durable Object storage operation exceeded timeout which caused object to be reset.",
+          });
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
   test("retries error 1104 then succeeds", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
@@ -174,5 +193,23 @@ describe("PeerDb EDN query shapes", () => {
     const scalar = await db.q<number>(FIND_COUNT);
     expect(scalar).toBe(67);
     expect(scalar).toBeGreaterThan(0);
+  });
+
+  test("queryEnvelope forwards x-ramose-min-t when fenced", async () => {
+    let seen: string | undefined;
+    const peer = new Peer("http://peer.test", {
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        seen = headers?.["x-ramose-min-t"];
+        return new Response(JSON.stringify({ t: 71, root: 7, result: 67 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const db = peer.db("e2e");
+    const envelope = await db.queryEnvelope<number>(FIND_COUNT, [], { minT: 71 });
+    expect(seen).toBe("71");
+    expect(envelope.t).toBe(71);
   });
 });

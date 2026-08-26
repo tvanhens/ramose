@@ -38,6 +38,10 @@ import {
   DB_TX_INSTANT,
   DB_UNIQUE,
   DB_VALUE_TYPE,
+  RAMOSE_KIND,
+  RAMOSE_KIND_ENTITY,
+  RAMOSE_TRAIT_IDENT,
+  RAMOSE_TYPE_IDENT,
   VALUE_TYPE_IDENTS,
   isTxEid,
   txEid,
@@ -546,6 +550,14 @@ export async function expandTx(
     if (attr.id === DB_IDENT && (typeof tv.v !== "string" || tv.v[0] !== ":")) {
       throw new TxError(`:db/ident must be a keyword-like string starting with ':'`, "tx/schema");
     }
+    if (
+      (attr.ident === RAMOSE_TYPE_IDENT ||
+        attr.ident === RAMOSE_TRAIT_IDENT ||
+        attr.id === RAMOSE_KIND) &&
+      (typeof tv.v !== "string" || tv.v[0] !== ":")
+    ) {
+      throw new TxError(`${attr.ident} must be a keyword-like string starting with ':'`, "tx/schema");
+    }
   };
 
   const nsOfIdent = (ident: string): string => {
@@ -553,12 +565,27 @@ export async function expandTx(
     return slash > 0 ? ident.slice(1, slash) : "";
   };
 
+  /** `:issue/title` → `issue`; composer idents `:issue` / `:taggable` → the name. */
+  const nsOfComposer = (ident: string): string => {
+    const ns = nsOfIdent(ident);
+    if (ns.length > 0) return ns;
+    return ident.startsWith(":") ? ident.slice(1) : ident;
+  };
+
+  const isSystemIdent = (ident: string): boolean =>
+    ident.startsWith(":db/") || ident.startsWith(":ramose/");
+
+  const isMembershipIdent = (ident: string): boolean =>
+    ident === RAMOSE_TYPE_IDENT || ident === RAMOSE_TRAIT_IDENT;
+
   const appNamespacesOf = (idents: readonly string[]): Set<string> => {
     const nss = new Set<string>();
     for (const ident of idents) {
-      if (ident.startsWith(":db/")) continue;
+      if (isSystemIdent(ident)) continue;
       const ns = nsOfIdent(ident);
-      if (ns.length > 0) nss.add(ns);
+      if (ns.length === 0) continue;
+      if (db.schema.isTraitIdent(`:${ns}`)) continue;
+      nss.add(ns);
     }
     return nss;
   };
@@ -603,6 +630,18 @@ export async function expandTx(
     return appNamespacesOf(Object.keys(row).filter((k) => k !== ":db/id"));
   };
 
+  const typeAttr = (): Attribute | undefined => db.attr(RAMOSE_TYPE_IDENT);
+  const traitAttr = (): Attribute | undefined => db.attr(RAMOSE_TRAIT_IDENT);
+
+  const readType = async (e: number): Promise<string | undefined> => {
+    const attr = typeAttr();
+    if (attr === undefined) return undefined;
+    const vals = await current(e, attr.id);
+    if (vals.size === 0) return undefined;
+    const first = vals.values().next().value;
+    return typeof first?.v === "string" ? first.v : undefined;
+  };
+
   /**
    * `preTx`: only namespaces that existed before this tx. Add/set use that so
    * a same-tx bag can still take a second namespace; put onto a pre-existing
@@ -617,11 +656,26 @@ export async function expandTx(
       throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
     }
     const ns = nsOfIdent(attr.ident);
-    if (ns.length === 0 || attr.ident.startsWith(":db/")) return;
+    if (ns.length === 0 || isSystemIdent(attr.ident)) return;
     const existing = preTx
       ? await dbAppNamespaces(e)
       : appNamespacesOf(await presentIdents(e));
-    if (existing.size > 0 && !existing.has(ns)) {
+    if (existing.size === 0) return;
+    if (existing.has(ns)) return;
+    const allowed = new Set(existing);
+    for (const entityNs of existing) {
+      for (const trait of db.schema.transitiveTraits(`:${entityNs}`)) {
+        allowed.add(nsOfComposer(trait));
+      }
+    }
+    const typeIdent = await readType(e);
+    if (typeIdent !== undefined) {
+      allowed.add(nsOfComposer(typeIdent));
+      for (const trait of db.schema.transitiveTraits(typeIdent)) {
+        allowed.add(nsOfComposer(trait));
+      }
+    }
+    if (!allowed.has(ns)) {
       throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
     }
   };
@@ -693,6 +747,24 @@ export async function expandTx(
         !a.optional,
     );
 
+  const requiredOfType = (typeIdent: string): Attribute[] => {
+    const nss = [
+      nsOfComposer(typeIdent),
+      ...db.schema.transitiveTraits(typeIdent).map(nsOfComposer),
+    ];
+    const out: Attribute[] = [];
+    const seen = new Set<string>();
+    for (const ns of nss) {
+      if (ns.length === 0) continue;
+      for (const attr of requiredOfNs(ns)) {
+        if (seen.has(attr.ident)) continue;
+        seen.add(attr.ident);
+        out.push(attr);
+      }
+    }
+    return out;
+  };
+
   const missingRequired = async (e: number, nss: Set<string>): Promise<string[]> => {
     const missing: string[] = [];
     for (const ns of nss) {
@@ -704,6 +776,38 @@ export async function expandTx(
     return missing;
   };
 
+  const missingRequiredAttrs = async (
+    e: number,
+    attrs: readonly Attribute[],
+  ): Promise<string[]> => {
+    const missing: string[] = [];
+    for (const attr of attrs) {
+      const vals = await current(e, attr.id);
+      if (vals.size === 0) missing.push(attr.ident);
+    }
+    return missing;
+  };
+
+  const inferType = async (e: number): Promise<string | undefined> => {
+    const nss = appNamespacesOf(await presentIdents(e));
+    const entityNss = [...nss].filter((ns) =>
+      db.schema.isEntityIdent(`:${ns}`),
+    );
+    if (entityNss.length > 1) {
+      throw new TxError(
+        `cannot create an entity in multiple composed types: ${[...entityNss]
+          .sort()
+          .map((n) => `:${n}`)
+          .join(", ")}`,
+        "tx/wrong-entity",
+      );
+    }
+    const asserted = await readType(e);
+    if (asserted !== undefined) return asserted;
+    if (entityNss.length === 1) return `:${entityNss[0]}`;
+    return undefined;
+  };
+
   // First datom in a new app namespace is a creation in that namespace —
   // required fields must be present, including on an existing entity (H1/H2).
   const touched = new Set<number>();
@@ -712,13 +816,109 @@ export async function expandTx(
     touched.add(op.e);
   }
 
+  for (const op of expanded) {
+    if (!isMembershipIdent(op.attr.ident)) continue;
+    if (op.fromRetractEntity) continue;
+    // Typed put stamps `:ramose/type` so inferType can see the composer
+    // when the attr map has no own-namespace keys. Permit that one form
+    // on a newly allocated entity; `:ramose/trait` and all other
+    // membership writes stay engine-owned.
+    if (
+      op.kind === "add" &&
+      op.attr.ident === RAMOSE_TYPE_IDENT &&
+      typeof op.datom.v === "string" &&
+      db.schema.isEntityIdent(op.datom.v) &&
+      newEntities.has(op.e)
+    ) {
+      continue;
+    }
+    throw new TxError(
+      op.kind === "retract"
+        ? `cannot retract system fact ${op.attr.ident}`
+        : `cannot write system fact ${op.attr.ident}`,
+      "tx/system",
+    );
+  }
+
   for (const e of touched) {
     if (retracted.has(e) || isTxEid(e)) continue;
+    const typeBefore = await (async () => {
+      if (!(await db.exists(e)) || retracted.has(e)) return undefined;
+      const attr = typeAttr();
+      if (attr === undefined) return undefined;
+      const row = await db.entity(e);
+      const v = row?.[RAMOSE_TYPE_IDENT];
+      return typeof v === "string" ? v : undefined;
+    })();
+    const type = await inferType(e);
+    const traitNss = new Set<string>();
+    for (const ident of await presentIdents(e)) {
+      if (isSystemIdent(ident)) continue;
+      const ns = nsOfIdent(ident);
+      if (ns.length > 0 && db.schema.isTraitIdent(`:${ns}`)) traitNss.add(ns);
+    }
+    // Trait attributes may only land on a composer that actually composes
+    // that trait. `appNamespacesOf` drops trait nss (so they never reach
+    // `born` / `missingRequired`), `requiredOfType` only walks the inferred
+    // type's traits, and `assertWriteTarget` no-ops on create — a foreign
+    // required or optional-only trait attr would otherwise persist with no
+    // `:ramose/trait` stamp, leaving an unrepairable row.
+    if (type === undefined && typeBefore === undefined) {
+      if (traitNss.size > 0) {
+        throw new TxError(
+          `cannot create an entity from trait attributes alone: ${[...traitNss]
+            .sort()
+            .map((n) => `:${n}`)
+            .join(", ")}`,
+          "tx/wrong-entity",
+        );
+      }
+    } else if (type !== undefined) {
+      const allowed = new Set(db.schema.transitiveTraits(type).map(nsOfComposer));
+      for (const ns of [...traitNss].sort()) {
+        if (!allowed.has(ns)) {
+          throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
+        }
+      }
+    }
+    const composed =
+      type !== undefined && db.schema.isEntityIdent(type)
+        ? db.schema.transitiveTraits(type)
+        : [];
+
+    if (typeBefore !== undefined) {
+      const typeAfter = await readType(e);
+      if (typeAfter !== undefined && typeAfter !== typeBefore) {
+        throw new TxError(`cannot change system fact ${RAMOSE_TYPE_IDENT}`, "tx/system");
+      }
+    } else if (type !== undefined && db.schema.isEntityIdent(type)) {
+      const ta = typeAttr();
+      const tr = traitAttr();
+      if (ta !== undefined) {
+        await emitAdd(e, ta, { vt: ValueTag.Str, v: type });
+      }
+      if (tr !== undefined) {
+        for (const trait of composed) {
+          await emitAdd(e, tr, { vt: ValueTag.Str, v: trait });
+        }
+      }
+    }
+
     const before = await dbAppNamespaces(e);
     const after = appNamespacesOf(await presentIdents(e));
     const born = new Set<string>();
     for (const ns of after) {
       if (!before.has(ns)) born.add(ns);
+    }
+    const typeIsNew = type !== undefined && typeBefore === undefined;
+    if (typeIsNew && db.schema.isEntityIdent(type)) {
+      const missing = await missingRequiredAttrs(e, requiredOfType(type));
+      if (missing.length > 0) {
+        throw new TxError(
+          `entity ${nsOfComposer(type)} is missing required fields: ${missing.join(", ")}`,
+          "tx/required",
+        );
+      }
     }
     if (born.size === 0) continue;
     const missing = await missingRequired(e, born);

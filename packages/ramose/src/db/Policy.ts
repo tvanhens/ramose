@@ -870,12 +870,15 @@ const toWireRules = (rules: Readonly<Record<string, readonly CompiledArm[]>>): P
 };
 
 /**
- * Lower to the compiled AST. Namespace rules are emitted once, under `ns`;
- * `attrs` carries only the attributes that narrow their namespace. Core ANDs
+ * Lower to the compiled AST. Namespace rules are emitted once, under `ns`
+ * (entity prefixes only — trait prefixes are not fanned out). `allowsOp`
+ * remaps a trait attr to the entity's `:ramose/type` namespace so two
+ * composers of the same trait do not union their grants. `attrs` carries
+ * only the attributes that narrow their namespace. Core ANDs
  * `attrs[ident][op]` with `ns[prefix][op]` and falls back to whichever side is
  * present (internal/core/policy/eval.ts#allowsOp), so an attribute inherits its
  * namespace without being named and an attribute rule is emitted alone — core
- * supplies the narrowing.
+ * supplies the narrowing. A trait attr with no rule on the entity type denies.
  *
  * Fragment arms compile to named query rules in `rules`; `true` is the empty
  * fragment (public) and does not emit a rule. `RAMOSE_POLICY` is a Cloudflare
@@ -886,15 +889,33 @@ const lower = (p: Policy): CompiledPolicy => {
   const attrs: Record<string, AttrRules> = {};
   const ns: Record<string, PolicyRules> = {};
 
+  const attrOwners = new Map<string, string>();
   for (const [nsKey, entry] of Object.entries(p.ns)) {
-    const declared = (p.schema.entities as Record<string, { fields: Record<string, unknown> }>)[nsKey]!;
+    const declared = (
+      p.schema.entities as Record<
+        string,
+        { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
+      >
+    )[nsKey]!;
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
-    const declaredIdents = new Set(Object.keys(declared.fields).map((key) => `:${entry.prefix}/${key}`));
+    const declaredIdents = entityFieldIdents(declared);
     for (const [ident, own] of Object.entries(entry.attrs)) {
       if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the schema`, ident);
       const narrowed = toWireRules(own);
-      if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed;
+      if (Object.keys(narrowed).length === 0) continue;
+      const existing = attrs[ident];
+      if (existing !== undefined) {
+        if (JSON.stringify(existing) !== JSON.stringify(narrowed)) {
+          fail(
+            `ns.${nsKey}.attrs: ${ident} conflicts with ns.${attrOwners.get(ident)}`,
+            ident,
+          );
+        }
+        continue;
+      }
+      attrs[ident] = narrowed;
+      attrOwners.set(ident, nsKey);
     }
   }
 

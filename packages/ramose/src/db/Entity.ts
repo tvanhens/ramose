@@ -1,13 +1,21 @@
 /** Named group of fields. `User.name` is the stamped field ref (`:user/name`). */
 
+import {
+  flattenTraitFields,
+  mergeComposerFields,
+  walkTraits,
+  type ComposerLike,
+} from "./compose.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import {
   invalidIdentName,
   isIdentName,
   isReservedFieldKey,
   reservedFieldName,
+  type FlattenedTraitFields,
   type ValidFieldMap,
   type ValidIdentName,
+  type ValidTraitCompose,
 } from "./IdentName.ts";
 import {
   attachAttrNav,
@@ -17,6 +25,7 @@ import {
   type AttrNav,
   type PathCarrier,
 } from "./shapes.ts";
+import type { AnyTrait } from "./Trait.ts";
 
 export type FieldMap = Record<string, AnyField>;
 
@@ -110,8 +119,11 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
 /**
  * Stamped fields plus metadata. Address a field as `User.name`.
  * `fields` is the iteration map (`schemaTx`, `pick`, policy) — not a
- * second public handle. `id`, `ns`, `fields`, and `_tag` cannot be field
- * names, so spreading cannot overwrite metadata.
+ * second public handle. `id`, `ns`, `fields`, `_tag`, and `traits` cannot
+ * be field names, so spreading cannot overwrite metadata.
+ *
+ * Composed trait fields are intersected onto the instance (`Issue.tag`)
+ * and keep the trait ident (`Issue.tag.ident === ":taggable/tag"`).
  */
 export type Entity<
   Name extends string = string,
@@ -124,6 +136,11 @@ export type Entity<
    * so schema / policy / pull can walk keys without listing them.
    */
   readonly fields: StampedMap<Name, Fields>;
+  /**
+   * Direct composed traits, in author order. Empty when the entity
+   * composes none.
+   */
+  readonly traits: readonly { readonly ns: string }[];
   /**
    * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
    * field so it is a valid shape field, and
@@ -144,10 +161,23 @@ export type Entity<
   >;
 } & StampedMap<Name, Fields>;
 
+/**
+ * Bound for entity-generic helpers. `fields` is a wide record so a
+ * composer with flattened trait fields stays assignable — `StampedMap`
+ * would demand `orDefault(unknown)` and reject specific field refs.
+ */
 export type AnyEntity = {
   readonly _tag: "Entity";
   readonly ns: string;
-  readonly fields: StampedMap<string, FieldMap>;
+  readonly fields: {
+    readonly [key: string]: AnyField & { readonly ident: string };
+  };
+};
+
+export type EntityOptions<
+  Traits extends readonly AnyTrait[] = readonly AnyTrait[],
+> = {
+  readonly traits?: Traits;
 };
 
 export declare namespace Entity {
@@ -207,7 +237,7 @@ const stampOne = (
   }) as StampedField<string, string, AnyField>;
 };
 
-const stamp = <Name extends string, Fields extends FieldMap>(
+export const stamp = <Name extends string, Fields extends FieldMap>(
   name: Name,
   fields: Fields,
 ): StampedMap<Name, Fields> => {
@@ -229,17 +259,49 @@ const assertFieldKeys = (fields: FieldMap): void => {
   }
 };
 
+type EntityWithTraits<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+> = Entity<Name, Fields> &
+  FlattenedTraitFields<Traits> & {
+    readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+    readonly traits: Traits;
+  };
+
 /** Group fields under one ident prefix. */
-export const Entity = <
+export function Entity<const Name extends string, Fields extends FieldMap>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+): Entity<Name, Fields>;
+export function Entity<
   const Name extends string,
   Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[],
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-): Entity<Name, Fields> => {
+  options: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
+): EntityWithTraits<Name, Fields, Traits>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options?: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
+): Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits> {
   assertEntityName(name);
   assertFieldKeys(fields);
+  const direct = (options?.traits ?? []) as readonly ComposerLike[];
+  walkTraits(direct);
   const stamped = stamp(name, fields);
+  const flattened = flattenTraitFields(direct);
+  const merged = mergeComposerFields(
+    stamped as Record<string, unknown>,
+    flattened,
+  );
   const idField = attachAttrNav({
     _tag: "Field" as const,
     schema: null as never,
@@ -256,11 +318,12 @@ export const Entity = <
   return {
     _tag: "Entity" as const,
     ns: name,
-    fields: stamped,
+    fields: merged,
+    traits: direct,
     id: idField,
-    ...stamped,
-  } as Entity<Name, Fields>;
-};
+    ...merged,
+  } as Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits>;
+}
 
 export type FieldOf<
   N extends AnyEntity,
@@ -270,4 +333,6 @@ export type FieldOf<
 export type IdentOf<
   N extends AnyEntity,
   K extends keyof N["fields"] & string,
-> = `:${N["ns"]}/${K}`;
+> = N["fields"][K] extends { readonly ident: infer I extends string }
+  ? I
+  : `:${N["ns"]}/${K}`;

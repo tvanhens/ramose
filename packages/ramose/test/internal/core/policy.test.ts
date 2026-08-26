@@ -379,12 +379,19 @@ describe("isSchemaTx", () => {
   test("a map-form ensure of :db/* scalars is schema", () => {
     expect(isSchemaTx([ensure])).toBe(true);
     expect(isSchemaTx([ensure, { ...ensure, ":db/ident": ":doc/audit", ":db/index": true }])).toBe(true);
+    expect(
+      isSchemaTx([
+        { ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/entity" },
+        { ":db/ident": ":issue", ":ramose/composes": ":taggable" },
+      ]),
+    ).toBe(true);
   });
 
   test("empty, vector, extra app keys, nested maps, and :db/id are not schema", () => {
     expect(isSchemaTx([])).toBe(false);
     expect(isSchemaTx([[":db/add", 1, ":doc/title", "x"]])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":doc/title": "PWNED" }])).toBe(false);
+    expect(isSchemaTx([{ ":db/ident": ":x", ":ramose/type": ":issue" }])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":doc/owner": { ":db/id": 1, ":doc/title": "PWNED" } }])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":db/id": 42 }])).toBe(false);
     expect(isSchemaTx([{ ...ensure, ":db/id": "attr" }])).toBe(false);

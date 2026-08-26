@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
+import { composerIdent, traitsOf } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
@@ -17,6 +18,7 @@ import type {
   UnbrandedId,
   ValueAtIdent,
   WriteAtEntity,
+  IdentOfFieldIn,
 } from "./idents.ts";
 
 // ── field / value correlation ──────────────────────────────────────────────
@@ -102,7 +104,7 @@ type PutScalar<
 > =
   | (N["fields"][K] extends { readonly valueType: "ref" }
       ? PutRef<C, H, RefSlotTarget<N, K>>
-      : ValueAtIdent<C, `:${N["ns"]}/${K}`>);
+      : ValueAtIdent<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>);
 
 type PutFieldValue<
   C extends AnySchema,
@@ -127,9 +129,11 @@ type FieldIsOptional<F> = F extends { readonly cardinality: "many" }
   ? true
   : F extends { readonly isOptional: true }
     ? true
-    : undefined extends ValueOf<F extends AnyField ? F : never>
+    : F extends { readonly default: unknown }
       ? true
-      : false;
+      : undefined extends ValueOf<F extends AnyField ? F : never>
+        ? true
+        : false;
 
 type RequiredPutKeys<N extends AnyEntity> = {
   [K in keyof N["fields"] & string]: FieldIsOptional<N["fields"][K]> extends true
@@ -419,6 +423,18 @@ const lowerPut = (
   attrs: Record<string, unknown>,
 ): { readonly map: TxMap; readonly extras: TxOp[] } => {
   const map: Record<string, unknown> = { ":db/id": eid };
+  // Composed creates can carry only trait attrs. Thread the composer so
+  // processTx does not treat a typed put as a raw trait-only write.
+  if (traitsOf(entity).length > 0) {
+    const ns =
+      typeof entity === "object" &&
+      entity !== null &&
+      "ns" in entity &&
+      typeof (entity as { ns: unknown }).ns === "string"
+        ? (entity as { ns: string }).ns
+        : "";
+    if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
+  }
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;
