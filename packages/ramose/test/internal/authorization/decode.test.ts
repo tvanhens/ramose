@@ -45,7 +45,8 @@ import {
 
 const hashOf = <A>(effect: Effect.Effect<A, InvalidIR>) => Effect.runPromise(effect);
 
-const clone = <T>(value: T): T => structuredClone(value);
+/** JSON-tree clone. Parsed JSON has no shared object identity. */
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegExp) => {
   expect(Result.isFailure(result)).toBe(true);
@@ -55,6 +56,24 @@ const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegEx
     expect(result.failure.message).toMatch(pattern);
   }
 };
+
+/** Rows of `leaf` totaling `leaves` values. Node count is 1 + rows + leaves. */
+const leafRows = (leaf: unknown, leaves: number): unknown[] => {
+  const rows: unknown[] = [];
+  let left = leaves;
+  while (left > 0) {
+    const n = Math.min(MAX_COLLECTION_SIZE, left);
+    rows.push(Array.from({ length: n }, () => leaf));
+    left -= n;
+  }
+  return rows;
+};
+
+/** Array of objects whose keys are `leaf`. Node count is 1 + objects + 2 * objects * keys. */
+const leafObjects = (leaf: unknown, objects: number, keys: number): unknown[] =>
+  Array.from({ length: objects }, (_, i) =>
+    Object.fromEntries(Array.from({ length: keys }, (_, j) => [`k${i}_${j}`, leaf])),
+  );
 
 const expectPlainFrozen = (value: object) => {
   expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
@@ -251,53 +270,61 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("does not treat a shared DAG reference as a cycle", () => {
+  test("rejects a small repeated object reference as an alias", () => {
     const shared = { a: 1 };
     expectInvalid(
       decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: { x: shared, y: shared } }),
-      /extra|unexpected|excess|Key/i,
+      /alias/,
     );
   });
 
-  test("charges DAG aliases by their expanded cost", () => {
-    const shared = Object.fromEntries(
-      Array.from({ length: 8 }, (_, i) => [`k${i}`, "x".repeat(8)]),
-    );
-    const copies = Array.from({ length: MAX_COLLECTION_SIZE }, () => shared);
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: copies }),
-      /oversized document/,
-    );
-  });
-
-  test.each([true, false, null] as const)(
-    "charges %s leaves toward the work ceiling",
-    (leaf) => {
-      const grid = Array.from({ length: 8 }, () =>
-        Array.from({ length: MAX_COLLECTION_SIZE }, () => leaf),
-      );
-      expectInvalid(
-        decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: grid }),
-        /oversized document/,
-      );
-    },
-  );
-
-  test("rejects a DAG alias whose expanded depth exceeds the ceiling", () => {
+  test("rejects a repeated reference spliced below the depth ceiling before Schema walks it", () => {
     const chain = (n: number, leaf: unknown): unknown => {
       let value = leaf;
       for (let i = 0; i < n; i++) value = { n: value };
       return value;
     };
-    const shared = chain(60, 1);
+    const shared = { n: 1 };
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
-        extra: { a: shared, b: chain(60, shared) },
+        extra: { a: shared, b: chain(10, shared) },
       }),
-      /oversized depth/,
+      /alias/,
     );
   });
+
+  test("accepts independently allocated but structurally equal subtrees", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        extra: { x: { a: 1 }, y: { a: 1 } },
+      }),
+      /extra|unexpected|excess|Key/i,
+    );
+  });
+
+  test.each([true, false, null] as const)(
+    "charges a broad array of %s leaves at the exact node limit and one over",
+    (leaf) => {
+      // 4 inner arrays + 4091 leaves + 1 outer array = 4096 nodes.
+      const exact = leafRows(leaf, 4091);
+      expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
+      const over = leafRows(leaf, 4092);
+      expectInvalid(decodePolicyTemplateResult(over), /oversized document/);
+    },
+  );
+
+  test.each([true, false, null] as const)(
+    "charges a broad object of %s leaves at the exact node limit and one over",
+    (leaf) => {
+      // 1 outer array + 5 objects + 5×409 keys + 5×409 leaves = 4096 nodes.
+      const exact = leafObjects(leaf, 5, 409);
+      expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
+      exact.push(leaf);
+      expectInvalid(decodePolicyTemplateResult(exact), /oversized document/);
+    },
+  );
 
   test("rejects every prototype other than Object.prototype or null", () => {
     const nestedNull = Object.create(Object.create(null));
@@ -484,7 +511,8 @@ describe("schema shape rejections", () => {
   });
 
   test("rejects an installed document missing catalog identity", () => {
-    const { catalog: _, ...rest } = installedEncoded;
+    const rest = clone(installedEncoded) as Record<string, unknown>;
+    delete rest.catalog;
     expectInvalid(decodeInstalledAuthorizationResult(rest), /catalog/i);
   });
 
@@ -598,7 +626,7 @@ describe("rule identity collisions", () => {
       rules: [
         base.rules[0],
         {
-          ...base.rules[0],
+          ...clone(base.rules[0]),
           expr: { _tag: "const", value: false },
         },
       ],
@@ -613,7 +641,7 @@ describe("rule identity collisions", () => {
         ...base,
         identities: {
           ...base.identities,
-          entities: [base.identities.entities[0], base.identities.entities[0]],
+          entities: [base.identities.entities[0], clone(base.identities.entities[0])],
         },
       }),
       /duplicate entity identity/,
@@ -653,7 +681,7 @@ describe("rule identity collisions", () => {
         operations: [
           base.operations[0],
           {
-            ...base.operations[0],
+            ...clone(base.operations[0]),
             input: { _tag: "opaque" },
           },
         ],
