@@ -26,6 +26,7 @@ import {
   query as coreQuery,
   type Principal,
 } from "../../src/internal/core/index.ts";
+import { decideSessionTx } from "../../src/worker/session-sync.ts";
 
 const Taggable = Trait("taggable", {
   tag: string(),
@@ -397,7 +398,8 @@ describe("processTx membership and required trait fields", () => {
       },
     );
     const policy = parsePolicy(JSON.parse(P.compile(authored)));
-    expect(policy.ns?.taggable).toEqual(policy.ns?.issue);
+    expect(policy.ns?.taggable).toBeUndefined();
+    expect(policy.ns?.issue).toBeDefined();
 
     const listing = Query.q(() =>
       pipe(
@@ -455,13 +457,16 @@ describe("processTx membership and required trait fields", () => {
       /ns\.task\.attrs: :taggable\/tag conflicts with ns\.issue/,
     );
 
-    const nsConflict = P.policy(head, {
+    const nsDifferent = P.policy(head, {
       issue: { read: true },
       task: { read: P.class("member") },
     });
-    expect(() => P.compile(nsConflict)).toThrow(
-      /ns\.task: taggable conflicts with ns\.issue/,
-    );
+    const nsCompiled = JSON.parse(P.compile(nsDifferent)) as {
+      ns?: Record<string, unknown>;
+    };
+    expect(nsCompiled.ns?.taggable).toBeUndefined();
+    expect(nsCompiled.ns?.issue).toBeDefined();
+    expect(nsCompiled.ns?.task).toBeDefined();
   });
 
   test("two composed entity namespaces on one id are tx/wrong-entity", async () => {
@@ -528,6 +533,223 @@ describe("processTx membership and required trait fields", () => {
       message: expect.stringContaining(
         "entity issue is missing required fields: :todo/body",
       ),
+    });
+  });
+
+  test("a composer with no policy does not inherit another composer's trait grant", async () => {
+    const Secret = Entity("secret", { code: string() }, { traits: [Taggable] });
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Catalog = Schema({ actor: Actor, issue: Issue, secret: Secret });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const seed = txBuilder(Catalog);
+    Effect.runSync(seed.put(Actor, { sub: "a1" }));
+    Effect.runSync(seed.put(Issue, { title: "public", tag: "public-tag" }));
+    Effect.runSync(seed.put(Secret, { code: "s", tag: "TOP-SECRET" }));
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const actorEid = tempids["tmp-1"]!;
+    const issueEid = tempids["tmp-2"]!;
+    const secretEid = tempids["tmp-3"]!;
+
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, issue: { read: true } },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    expect(policy.ns?.taggable).toBeUndefined();
+    expect(policy.ns?.secret).toBeUndefined();
+
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "a1",
+      eid: actorEid,
+      claims: { sub: "a1" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+
+    expect(await view.entity(secretEid)).toBeUndefined();
+    const issueRow = await view.entity(issueEid);
+    expect(issueRow?.[":taggable/tag"]).toBe("public-tag");
+    expect(issueRow?.[":issue/title"]).toBe("public");
+
+    const tags = { find: ["?e", "?t"], where: [["?e", ":taggable/tag", "?t"]] };
+    const tagOn = (await coreQuery(view, tags)) as readonly [number, string][];
+    const tagOff = (await coreQuery(view, tags, [], { pushdown: false })) as readonly [
+      number,
+      string,
+    ][];
+    expect(tagOn).toEqual([[issueEid, "public-tag"]]);
+    expect(tagOff).toEqual(tagOn);
+
+    const codes = { find: ["?e", "?c"], where: [["?e", ":secret/code", "?c"]] };
+    expect(await coreQuery(view, codes)).toEqual([]);
+    expect(await coreQuery(view, codes, [], { pushdown: false })).toEqual([]);
+
+    const secretListing = Query.q(() =>
+      pipe(Query.entities(Secret), Query.select({ id: Secret.id })),
+    );
+    const { query: secretQuery } = lowerQueryObject(secretListing);
+    expect(await coreQuery(view, secretQuery)).toEqual([]);
+    expect(await coreQuery(view, secretQuery, [], { pushdown: false })).toEqual([]);
+
+    const issueListing = Query.q(() =>
+      pipe(Query.entities(Issue), Query.select({ id: Issue.id, tag: Issue.tag })),
+    );
+    const { query: issueQuery } = lowerQueryObject(issueListing);
+    const issueOn = (await coreQuery(view, issueQuery)) as readonly [
+      { readonly id: number; readonly tag: string },
+    ][];
+    const issueOff = (await coreQuery(view, issueQuery, [], { pushdown: false })) as readonly [
+      { readonly id: number; readonly tag: string },
+    ][];
+    expect(issueOn).toEqual([[{ id: issueEid, tag: "public-tag" }]]);
+    expect(issueOff).toEqual(issueOn);
+  });
+
+  test("membership facts are judged by the named type, not as system attrs", async () => {
+    const Secret = Entity("secret", { title: string() }, { traits: [Taggable] });
+    const Plain = Entity("plain", { title: string() });
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Catalog = Schema({ actor: Actor, secret: Secret, plain: Plain });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const seed = txBuilder(Catalog);
+    Effect.runSync(seed.put(Actor, { sub: "a1" }));
+    Effect.runSync(seed.put(Secret, { title: "hidden", tag: "s" }));
+    Effect.runSync(seed.put(Plain, { title: "p" }));
+    const { tempids } = await conn.transact([...txOps(seed)]);
+    const actorEid = tempids["tmp-1"]!;
+    const secretEid = tempids["tmp-2"]!;
+
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true } },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "a1",
+      eid: actorEid,
+      claims: { sub: "a1" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+
+    const types = { find: ["?e", "?t"], where: [["?e", ":ramose/type", "?t"]] };
+    expect(await coreQuery(view, types)).toEqual([]);
+    expect(await coreQuery(view, types, [], { pushdown: false })).toEqual([]);
+
+    const titles = { find: ["?e", "?t"], where: [["?e", ":secret/title", "?t"]] };
+    expect(await coreQuery(view, titles)).toEqual([]);
+    expect(await coreQuery(view, titles, [], { pushdown: false })).toEqual([]);
+
+    expect(await view.entity(secretEid)).toBeUndefined();
+
+    const secretListing = Query.q(() =>
+      pipe(Query.entities(Secret), Query.select({ id: Secret.id })),
+    );
+    const { query: secretQuery } = lowerQueryObject(secretListing);
+    expect(await coreQuery(view, secretQuery)).toEqual([]);
+    expect(await coreQuery(view, secretQuery, [], { pushdown: false })).toEqual([]);
+
+    const plainListing = Query.q(() =>
+      pipe(Query.entities(Plain), Query.select({ id: Plain.id })),
+    );
+    const { query: plainQuery } = lowerQueryObject(plainListing);
+    expect(await coreQuery(view, plainQuery)).toEqual([]);
+    expect(await coreQuery(view, plainQuery, [], { pushdown: false })).toEqual([]);
+
+    const before = conn.db();
+    const more = txBuilder(Catalog);
+    Effect.runSync(more.put(Secret, { title: "another", tag: "x" }));
+    const rep = await conn.transact([...txOps(more)]);
+    const decision = await decideSessionTx({
+      datoms: rep.txData,
+      policy,
+      principal,
+      ruleDbAfter: conn.db(),
+      ruleDbBefore: before,
+    });
+    expect(decision.kind).toBe("skip");
+  });
+
+  test("a foreign required trait attribute is tx/wrong-entity at create", async () => {
+    const Two = Trait("two", { a: string(), b: string() });
+    const Doc = Entity("doc", { title: string() }, { traits: [Two] });
+    const Other = Entity("other", { title: string() }, { traits: [Taggable] });
+    const Catalog = Schema({ doc: Doc, other: Other });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "tmp-1",
+          ":other/title": "x",
+          ":taggable/tag": "t",
+          ":two/a": "1",
+        },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining("is not a two"),
+    });
+
+    const created = await conn.transact([
+      { ":db/id": "tmp-ok", ":other/title": "ok", ":taggable/tag": "t" },
+    ]);
+    const e = created.tempids["tmp-ok"]!;
+    await expect(
+      conn.transact([{ ":db/id": e, ":two/a": "1" }]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
+    await expect(
+      conn.transact([[":db/add", e, ":two/b", "2"]]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
+
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "tmp-plain",
+          ":other/title": "x",
+          ":taggable/tag": "t",
+          ":doc/title": "y",
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
+  });
+
+  test("a foreign optional-only trait attribute is tx/wrong-entity at create", async () => {
+    const Solo = Trait("solo", { note: string({ optional: true }) });
+    const Other = Entity("other", { title: string() }, { traits: [Taggable] });
+    const Holder = Entity("holder", { title: string() }, { traits: [Solo] });
+    const Catalog = Schema({ other: Other, holder: Holder });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    await expect(
+      conn.transact([
+        {
+          ":db/id": "tmp-1",
+          ":other/title": "x",
+          ":taggable/tag": "t",
+          ":solo/note": "n",
+        },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/wrong-entity",
+      message: expect.stringContaining("is not a solo"),
     });
   });
 

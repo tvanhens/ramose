@@ -18,7 +18,12 @@ import { Db, type DbOptions } from "../db.ts";
 import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, query } from "../query/engine.ts";
 import { parseQuery } from "../query/parse.ts";
 import type { Query } from "../query/ast.ts";
-import { FIRST_USER_EID } from "../schema.ts";
+import {
+  FIRST_USER_EID,
+  RAMOSE_TRAIT,
+  RAMOSE_TYPE,
+  RAMOSE_TYPE_IDENT,
+} from "../schema.ts";
 import { logEvent } from "../telemetry.ts";
 import { sortedUnion } from "../tree.ts";
 import {
@@ -33,9 +38,72 @@ import {
 } from "./ast.ts";
 import { type Principal, claimValue, holdsClass } from "./principal.ts";
 
-/** Bootstrap `:db/*` attributes: schema and tx metadata are not secret. */
+/**
+ * Bootstrap `:db/*` attributes: schema and tx metadata are not secret.
+ * `:ramose/type` and `:ramose/trait` are below {@link FIRST_USER_EID} but
+ * live on ordinary user entities — judge those with
+ * {@link allowsMembershipRead}, not this predicate.
+ */
 export function isSystemAttrId(a: number): boolean {
   return a < FIRST_USER_EID;
+}
+
+/** Instance membership facts (`:ramose/type`, `:ramose/trait`). */
+export function isMembershipAttrId(a: number): boolean {
+  return a === RAMOSE_TYPE || a === RAMOSE_TRAIT;
+}
+
+const composerNs = (ident: string): string | undefined => {
+  if (ident[0] !== ":" || ident.includes("/")) return undefined;
+  return ident.slice(1);
+};
+
+async function entityTypeIdent(db: Db, e: number): Promise<string | undefined> {
+  const attr = db.attr(RAMOSE_TYPE_IDENT);
+  if (attr === undefined) return undefined;
+  const d = await db.first(Index.EAVT, { e, a: attr.id });
+  return typeof d?.v === "string" ? d.v : undefined;
+}
+
+async function entityNsOf(ctx: EvalCtx): Promise<string | undefined> {
+  const type = await entityTypeIdent(ctx.db, ctx.e);
+  return type === undefined ? undefined : composerNs(type);
+}
+
+async function allowsNsRead(
+  policy: CompiledPolicy,
+  ns: string,
+  ctx: EvalCtx,
+): Promise<boolean> {
+  const nsArms = policy.ns?.[ns]?.read;
+  if (!nsArms || nsArms.length === 0) return false;
+  if (ctx.overlay === undefined && ctx.memo.skipsNsBackstop(ns)) return true;
+  const useVisibleSet =
+    ctx.overlay === undefined && ctx.memo.visibleSetMax > 0;
+  return evalArms(nsArms, ctx, policy.rules, useVisibleSet);
+}
+
+/**
+ * Membership datoms are judged by the namespace named in their value
+ * (`:ramose/type :secret` → `ns.secret.read`) or, for `:ramose/trait`,
+ * by the entity's type. They are not schema metadata.
+ */
+export async function allowsMembershipRead(
+  policy: CompiledPolicy,
+  d: Datom,
+  ctx: EvalCtx,
+): Promise<boolean> {
+  if (d.a === RAMOSE_TYPE) {
+    const ns = typeof d.v === "string" ? composerNs(d.v) : undefined;
+    if (ns === undefined) return false;
+    return allowsNsRead(policy, ns, ctx);
+  }
+  if (d.a === RAMOSE_TRAIT) {
+    const ns = await entityNsOf(ctx);
+    if (ns === undefined) return false;
+    return allowsNsRead(policy, ns, ctx);
+  }
+  return false;
 }
 
 export interface PolicyError {
@@ -456,7 +524,14 @@ export async function allowsOp(
   const hit = ctx.memo.getOp(key);
   if (hit !== undefined) return hit;
   const attrArms = policy.attrs[attrIdent]?.[op];
-  const prefix = nsPrefix(attrIdent);
+  const rawPrefix = nsPrefix(attrIdent);
+  const isTrait =
+    rawPrefix !== undefined && ctx.db.schema.isTraitIdent(`:${rawPrefix}`);
+  // Trait attributes keep the trait ident (`:taggable/tag`). Grant is the
+  // composing entity's namespace (`ns.issue`), never a shared `ns.taggable`
+  // that would union two composers. A shared attr rule only narrows; it
+  // cannot grant on a composer that declared no policy.
+  const prefix = isTrait ? ((await entityNsOf(ctx)) ?? rawPrefix) : rawPrefix;
   const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
   // Pushdown already conjoined this namespace's read rule. Skip the ns-level
   // check (do not cache — a later raw read must still enforce) and apply
@@ -470,7 +545,8 @@ export async function allowsOp(
   const useVisibleSet =
     op === "read" && ctx.overlay === undefined && ctx.memo.visibleSetMax > 0;
   let res: boolean;
-  if (attrArms && nsArms) {
+  if (isTrait && !nsArms) res = false;
+  else if (attrArms && nsArms) {
     res =
       (await evalArms(nsArms, ctx, policy.rules, useVisibleSet)) &&
       (await evalArms(attrArms, ctx, policy.rules, useVisibleSet));

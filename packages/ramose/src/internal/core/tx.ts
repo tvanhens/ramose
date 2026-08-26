@@ -838,13 +838,19 @@ export async function expandTx(
       return typeof v === "string" ? v : undefined;
     })();
     const type = await inferType(e);
+    const traitNss = new Set<string>();
+    for (const ident of await presentIdents(e)) {
+      if (isSystemIdent(ident)) continue;
+      const ns = nsOfIdent(ident);
+      if (ns.length > 0 && db.schema.isTraitIdent(`:${ns}`)) traitNss.add(ns);
+    }
+    // Trait attributes may only land on a composer that actually composes
+    // that trait. `appNamespacesOf` drops trait nss (so they never reach
+    // `born` / `missingRequired`), `requiredOfType` only walks the inferred
+    // type's traits, and `assertWriteTarget` no-ops on create — a foreign
+    // required or optional-only trait attr would otherwise persist with no
+    // `:ramose/trait` stamp, leaving an unrepairable row.
     if (type === undefined && typeBefore === undefined) {
-      const traitNss = new Set<string>();
-      for (const ident of await presentIdents(e)) {
-        if (isSystemIdent(ident)) continue;
-        const ns = nsOfIdent(ident);
-        if (ns.length > 0 && db.schema.isTraitIdent(`:${ns}`)) traitNss.add(ns);
-      }
       if (traitNss.size > 0) {
         throw new TxError(
           `cannot create an entity from trait attributes alone: ${[...traitNss]
@@ -853,6 +859,13 @@ export async function expandTx(
             .join(", ")}`,
           "tx/wrong-entity",
         );
+      }
+    } else if (type !== undefined) {
+      const allowed = new Set(db.schema.transitiveTraits(type).map(nsOfComposer));
+      for (const ns of [...traitNss].sort()) {
+        if (!allowed.has(ns)) {
+          throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
+        }
       }
     }
     const composed =

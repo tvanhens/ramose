@@ -20,8 +20,10 @@ import {
   Index,
   POLICY_OPS,
   PolicyMemo,
+  allowsMembershipRead,
   allowsOp,
   filterDb,
+  isMembershipAttrId,
   isSuperuser,
   isSystemAttrId,
   toWireDatom,
@@ -98,10 +100,12 @@ export function grantIdents(policy: CompiledPolicy): Set<string> {
 }
 
 async function isVisible(d: Datom, ruleDb: Db, policy: CompiledPolicy, principal: Principal, memo: PolicyMemo): Promise<boolean> {
+  const ctx = { db: ruleDb, principal, e: d.e, memo };
+  if (isMembershipAttrId(d.a)) return allowsMembershipRead(policy, d, ctx);
   if (isSystemAttrId(d.a)) return true;
   const attr = ruleDb.attr(d.a) ?? ruleDb.schema.attr(d.a);
   if (!attr) return false;
-  return allowsOp(policy, "read", attr.ident, { db: ruleDb, principal, e: d.e, memo });
+  return allowsOp(policy, "read", attr.ident, ctx);
 }
 
 /** Did `e` already have a current-view fact before this tx? */

@@ -40,7 +40,6 @@ import {
   type Var,
 } from "./query/index.ts";
 import { PolicyError } from "./SchemaErrors.ts";
-import { traitsOf, walkTraits } from "./compose.ts";
 export { PolicyError };
 
 // ── shapes ─────────────────────────────────────────────────────────────────
@@ -871,12 +870,15 @@ const toWireRules = (rules: Readonly<Record<string, readonly CompiledArm[]>>): P
 };
 
 /**
- * Lower to the compiled AST. Namespace rules are emitted once, under `ns`;
- * `attrs` carries only the attributes that narrow their namespace. Core ANDs
+ * Lower to the compiled AST. Namespace rules are emitted once, under `ns`
+ * (entity prefixes only — trait prefixes are not fanned out). `allowsOp`
+ * remaps a trait attr to the entity's `:ramose/type` namespace so two
+ * composers of the same trait do not union their grants. `attrs` carries
+ * only the attributes that narrow their namespace. Core ANDs
  * `attrs[ident][op]` with `ns[prefix][op]` and falls back to whichever side is
  * present (internal/core/policy/eval.ts#allowsOp), so an attribute inherits its
  * namespace without being named and an attribute rule is emitted alone — core
- * supplies the narrowing.
+ * supplies the narrowing. A trait attr with no rule on the entity type denies.
  *
  * Fragment arms compile to named query rules in `rules`; `true` is the empty
  * fragment (public) and does not emit a rule. `RAMOSE_POLICY` is a Cloudflare
@@ -888,23 +890,6 @@ const lower = (p: Policy): CompiledPolicy => {
   const ns: Record<string, PolicyRules> = {};
 
   const attrOwners = new Map<string, string>();
-  const nsOwners = new Map<string, string>();
-  const emitNsRules = (prefix: string, rules: PolicyRules, owner: string): void => {
-    if (Object.keys(rules).length === 0) return;
-    const existing = ns[prefix];
-    if (existing !== undefined) {
-      if (JSON.stringify(existing) !== JSON.stringify(rules)) {
-        fail(
-          `ns.${owner}: ${prefix} conflicts with ns.${nsOwners.get(prefix)}`,
-          `:${prefix}`,
-        );
-      }
-      return;
-    }
-    ns[prefix] = rules;
-    nsOwners.set(prefix, owner);
-  };
-
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     const declared = (
       p.schema.entities as Record<
@@ -912,11 +897,7 @@ const lower = (p: Policy): CompiledPolicy => {
         { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
       >
     )[nsKey]!;
-    const wire = toWireRules(entry.rules);
-    emitNsRules(entry.prefix, wire, nsKey);
-    for (const trait of walkTraits(traitsOf(declared)).all) {
-      emitNsRules(trait.ns, wire, nsKey);
-    }
+    if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
     const declaredIdents = entityFieldIdents(declared);
     for (const [ident, own] of Object.entries(entry.attrs)) {

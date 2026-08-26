@@ -11,6 +11,7 @@
  */
 
 import { type CompiledPolicy, isRuleArm, nsPrefix } from "./ast.ts";
+import { RAMOSE_TRAIT_IDENT, RAMOSE_TYPE_IDENT } from "../schema.ts";
 import { type Principal, holdsClass } from "./principal.ts";
 import type { Db } from "../db.ts";
 import {
@@ -59,16 +60,25 @@ export function conjoinPolicy(ast: Query, view: PushdownView): PushdownResult {
   const { policy, principal, ruleDb } = view;
   if (policy.version !== 2) return { query: ast, covered: [] };
 
+  const policyRules = parsePolicyRules(policy.rules);
+  const allRules = policyRules.concat(ast.rules ?? []);
   const nsByVar = new Map<string, Set<string>>();
   const topEntity = new Set<string>();
   let variableAttr = false;
-  collectPatterns(ast.where, ruleDb, nsByVar, topEntity, () => {
-    variableAttr = true;
-  }, true);
+  collectPatterns(
+    ast.where,
+    ruleDb,
+    nsByVar,
+    topEntity,
+    () => {
+      variableAttr = true;
+    },
+    true,
+    allRules,
+    new Set(),
+  );
 
   if (nsByVar.size === 0) return { query: ast, covered: [] };
-
-  const policyRules = parsePolicyRules(policy.rules);
   const used = allVars(ast);
   const meVar = freshVar(POLICY_ME_VAR, used);
   const injected: Clause[] = [];
@@ -77,7 +87,16 @@ export function conjoinPolicy(ast: Query, view: PushdownView): PushdownResult {
   for (const [varName, nss] of nsByVar) {
     if (!topEntity.has(varName)) continue;
     for (const ns of nss) {
-      const clause = nsConjunction(policy, principal, ns, meVar, varName, ast.where, policyRules);
+      const clause = nsConjunction(
+        policy,
+        principal,
+        ns,
+        meVar,
+        varName,
+        ast.where,
+        policyRules,
+        ruleDb,
+      );
       if (clause === "skip") continue;
       if (clause === "deny") {
         injected.push(neverClause());
@@ -134,9 +153,13 @@ function nsConjunction(
   eVar: string,
   where: Clause[],
   policyRules: RuleDef[],
+  db: Db,
 ): Clause | "skip" | "deny" {
   const arms = policy.ns?.[ns]?.read;
   if (!arms || arms.length === 0) {
+    // Trait prefixes are not policy keys; FilteredDb remaps them to the
+    // entity type. Same skip when the prefix only appears as an attr rule.
+    if (db.schema.isTraitIdent(`:${ns}`)) return "skip";
     const attrs = policy.attrs ?? {};
     for (const ident of Object.keys(attrs)) {
       if (nsPrefix(ident) === ns && (attrs[ident]?.read?.length ?? 0) > 0) {
@@ -249,6 +272,62 @@ function samePattern(have: PatternClause, want: PatternClause, rename: (n: strin
   return eq(have.e, want.e) && eq(have.a, want.a) && eq(have.v, want.v);
 }
 
+function composerNs(ident: string): string | undefined {
+  if (ident[0] !== ":" || ident.includes("/")) return undefined;
+  return ident.slice(1);
+}
+
+function substTerm(t: Term, map: ReadonlyMap<string, Term>): Term {
+  return t.kind === "var" && map.has(t.name) ? map.get(t.name)! : t;
+}
+
+function substClause(c: Clause, map: ReadonlyMap<string, Term>): Clause {
+  switch (c.kind) {
+    case "pattern":
+      return {
+        ...c,
+        e: substTerm(c.e, map),
+        a: substTerm(c.a, map),
+        v: substTerm(c.v, map),
+        ...(c.tx !== undefined ? { tx: substTerm(c.tx, map) } : {}),
+        ...(c.op !== undefined ? { op: substTerm(c.op, map) } : {}),
+      };
+    case "not":
+      return { ...c, clauses: c.clauses.map((x) => substClause(x, map)) };
+    case "or":
+      return { ...c, branches: c.branches.map((b) => b.map((x) => substClause(x, map))) };
+    case "rule-call":
+    case "pred":
+    case "fn":
+      return { ...c, args: c.args.map((a) => substTerm(a, map)) };
+  }
+}
+
+function recordPatternNs(
+  c: PatternClause,
+  db: Db,
+  nsByVar: Map<string, Set<string>>,
+  onVarAttr: () => void,
+): void {
+  if (c.e.kind !== "var") return;
+  const ident = identOf(c.a, db);
+  if (ident === RAMOSE_TYPE_IDENT) {
+    if (c.v.kind === "const" && typeof c.v.value === "string") {
+      const ns = composerNs(c.v.value);
+      if (ns) add(nsByVar, c.e.name, ns);
+    } else {
+      onVarAttr();
+    }
+    return;
+  }
+  if (ident === RAMOSE_TRAIT_IDENT) {
+    onVarAttr();
+    return;
+  }
+  const ns = ident === undefined ? undefined : nsPrefix(ident);
+  if (ns && !db.schema.isTraitIdent(`:${ns}`)) add(nsByVar, c.e.name, ns);
+}
+
 function collectPatterns(
   clauses: Clause[],
   db: Db,
@@ -256,6 +335,8 @@ function collectPatterns(
   topEntity: Set<string>,
   onVarAttr: () => void,
   top: boolean,
+  rules: readonly RuleDef[],
+  expanding: Set<string>,
 ): void {
   for (const c of clauses) {
     switch (c.kind) {
@@ -263,19 +344,44 @@ function collectPatterns(
         if (c.e.kind === "var") {
           if (top) topEntity.add(c.e.name);
           if (c.a.kind === "var" || c.a.kind === "blank") onVarAttr();
-          else {
-            const ident = identOf(c.a, db);
-            const ns = ident === undefined ? undefined : nsPrefix(ident);
-            if (ns) add(nsByVar, c.e.name, ns);
-          }
+          else recordPatternNs(c, db, nsByVar, onVarAttr);
         }
         break;
       }
+      case "rule-call": {
+        if (top) {
+          const focus = [...c.args].reverse().find((a) => a.kind === "var");
+          if (focus?.kind === "var") topEntity.add(focus.name);
+        }
+        if (expanding.has(c.name)) break;
+        expanding.add(c.name);
+        for (const def of rules) {
+          if (def.name !== c.name) continue;
+          const map = new Map<string, Term>();
+          for (let i = 0; i < def.args.length && i < c.args.length; i++) {
+            map.set(def.args[i]!, c.args[i]!);
+          }
+          collectPatterns(
+            def.clauses.map((x) => substClause(x, map)),
+            db,
+            nsByVar,
+            topEntity,
+            onVarAttr,
+            false,
+            rules,
+            expanding,
+          );
+        }
+        expanding.delete(c.name);
+        break;
+      }
       case "not":
-        collectPatterns(c.clauses, db, nsByVar, topEntity, onVarAttr, false);
+        collectPatterns(c.clauses, db, nsByVar, topEntity, onVarAttr, false, rules, expanding);
         break;
       case "or":
-        for (const b of c.branches) collectPatterns(b, db, nsByVar, topEntity, onVarAttr, false);
+        for (const b of c.branches) {
+          collectPatterns(b, db, nsByVar, topEntity, onVarAttr, false, rules, expanding);
+        }
         break;
       default:
         break;

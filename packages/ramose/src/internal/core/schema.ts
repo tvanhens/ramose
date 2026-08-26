@@ -26,6 +26,7 @@ export const DB_UNIQUE = 42;
 export const DB_IS_COMPONENT = 43;
 export const DB_INDEX = 44;
 export const DB_OPTIONAL = 45;
+/** Instance membership — stamped on ordinary user entities; policy-judged by the named type, not as schema metadata. */
 export const RAMOSE_TYPE = 46;
 export const RAMOSE_TRAIT = 47;
 export const RAMOSE_KIND = 48;
