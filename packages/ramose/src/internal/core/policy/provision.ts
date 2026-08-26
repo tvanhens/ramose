@@ -118,5 +118,9 @@ export async function provisionTx(policy: CompiledPolicy, principal: Principal, 
 export async function resolveProvisionedEid(policy: CompiledPolicy, principal: Principal, db: Db): Promise<number | undefined> {
   if (!shouldProvision(principal)) return principal.eid;
   if (principal.eid !== undefined) return principal.eid;
+  // Schema may not be installed yet (first authenticated write on an empty
+  // policed db). `entid` throws on an unknown attr; skip until it exists.
+  const attr = db.attr(policy.principal);
+  if (attr === undefined || attr.unique !== "identity") return undefined;
   return db.entid([policy.principal, principal.sub] as never);
 }

@@ -1,8 +1,9 @@
 /**
  * Host Worker bound to the open Ramose peer.
  *
- * Lives in its own module so `main: import.meta.url` does not pull
- * `Alchemy.Stack` into the workerd bundle (alchemy 2.0.0-beta.72).
+ * Lives in its own module and imports `Open` from `open.ts` so
+ * `main: import.meta.url` does not pull `Alchemy.Stack` or the JWKS
+ * Worker declaration into the workerd bundle (alchemy 2.0.0-beta.72).
  */
 
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -10,8 +11,8 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as Ramose from "ramose";
+import { Open } from "./open.ts";
 import { createNamed, Movies, User } from "./ops.ts";
-import { Open } from "./resources.ts";
 
 const { Query } = Ramose;
 const namesQuery = Query.from(User).select({ name: User.name });

@@ -44,6 +44,7 @@ describe("provisionTx", () => {
   test("no principal attr deployed → nothing to write", async () => {
     const conn = await Connection.create();
     expect(await provisionTx(POLICY, user("ada"), conn.db())).toBeUndefined();
+    expect(await resolveProvisionedEid(POLICY, user("ada"), conn.db())).toBeUndefined();
   });
 
   test("first session upserts sub + role; re-entry is a no-op; a class change writes role", async () => {

@@ -17,7 +17,10 @@ import {
   POLICY_SCHEMA_JSON,
   SHARED_TOKEN,
 } from "./auth-keys.ts";
+import { Open } from "./open.ts";
 import { Movies, operations } from "./ops.ts";
+
+export { Open };
 
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
@@ -29,14 +32,6 @@ const jwtAuth = (policy: string) =>
     issuers: ISS,
     aud: AUD,
   }) satisfies Ramose.ServerAuth;
-
-/** Open peer: no token, no policy, full operations registry. */
-export const Open = Ramose.Server("Open", {
-  peer: "OpenPeer",
-  storage: "OpenStore",
-  main: worker,
-  operations,
-});
 
 /** Empty registry — `GET /health` lists `[]`. */
 export const Empty = Ramose.Server("Empty", {
