@@ -322,12 +322,12 @@ function recordPatternNs(
     return;
   }
   if (ident === RAMOSE_TRAIT_IDENT) {
-    if (c.v.kind === "const" && typeof c.v.value === "string") {
-      const ns = composerNs(c.v.value);
-      if (ns) add(nsByVar, c.e.name, ns);
-    } else {
-      onVarAttr();
-    }
+    // Membership visibility is the composing entity's row rule
+    // (`allowsMembershipRead`). The trait ns rule gates trait *fields*,
+    // not the row. Recording the trait prefix here would conjoin
+    // `ns.taggable.read` onto `Query.from(Taggable)` and disagree with
+    // the FilteredDb backstop when that arm is a named fragment.
+    if (c.v.kind !== "const") onVarAttr();
     return;
   }
   const ns = ident === undefined ? undefined : nsPrefix(ident);
