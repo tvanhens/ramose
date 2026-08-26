@@ -514,6 +514,31 @@ describe("owned operation policy keys", () => {
     };
     expect(json.operations?.["taggable/addTag"]).toBeDefined();
   });
+
+  test("an empty operation arm list stays unarmed", () => {
+    const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
+    const Board = DbSchema({ user: User, issue: Issue, doc: Doc });
+    const ops = defineOperations(Board);
+    const policy = P.policy(
+      {
+        schema: Board,
+        principal: User.sub,
+        classes: ["member"],
+        schemaClasses: ["member"],
+        operations: ops,
+      },
+      {
+        issue: {
+          operations: {
+            rename: [],
+            create: P.class("member"),
+          },
+        },
+      },
+    );
+    expect(policy.unarmedOperations).toContain("issue/rename");
+    expect(policy.unarmedOperations).not.toContain("issue/create");
+  });
 });
 
 describe("Operations() still registers standalone ops", () => {

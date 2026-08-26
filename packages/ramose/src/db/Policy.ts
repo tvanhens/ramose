@@ -805,6 +805,7 @@ export function policy<
     arms: readonly CompiledArm[],
     where: string,
   ): void => {
+    if (arms.length === 0) return;
     const existing = armedWhere.get(wireName);
     if (existing !== undefined) {
       fail(
