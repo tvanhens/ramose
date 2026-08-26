@@ -246,6 +246,17 @@ describe("processTx membership and required trait fields", () => {
     ]);
   });
 
+  test("a later write may set an optional trait field on the composer", async () => {
+    const conn = await setup();
+    const created = txBuilder(Board);
+    Effect.runSync(created.put(Note, { title: "n" }));
+    const { tempids } = await conn.transact([...txOps(created)]);
+    const e = tempids["tmp-1"]!;
+    await conn.transact([[":db/add", e, ":soft/note", "aside"]]);
+    const row = await conn.db().entity(e);
+    expect(row?.[":soft/note"]).toBe("aside");
+  });
+
   test("optional and card-many trait fields may be omitted", async () => {
     const conn = await setup();
     const tx = txBuilder(Board);

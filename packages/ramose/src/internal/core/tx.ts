@@ -565,6 +565,13 @@ export async function expandTx(
     return slash > 0 ? ident.slice(1, slash) : "";
   };
 
+  /** `:issue/title` → `issue`; composer idents `:issue` / `:taggable` → the name. */
+  const nsOfComposer = (ident: string): string => {
+    const ns = nsOfIdent(ident);
+    if (ns.length > 0) return ns;
+    return ident.startsWith(":") ? ident.slice(1) : ident;
+  };
+
   const isSystemIdent = (ident: string): boolean =>
     ident.startsWith(":db/") || ident.startsWith(":ramose/");
 
@@ -668,14 +675,14 @@ export async function expandTx(
     const allowed = new Set(existing);
     for (const entityNs of existing) {
       for (const trait of db.schema.transitiveTraits(`:${entityNs}`)) {
-        allowed.add(nsOfIdent(trait));
+        allowed.add(nsOfComposer(trait));
       }
     }
     const typeIdent = await readType(e);
     if (typeIdent !== undefined) {
-      allowed.add(nsOfIdent(typeIdent));
+      allowed.add(nsOfComposer(typeIdent));
       for (const trait of db.schema.transitiveTraits(typeIdent)) {
-        allowed.add(nsOfIdent(trait));
+        allowed.add(nsOfComposer(trait));
       }
     }
     if (!allowed.has(ns)) {
@@ -752,8 +759,8 @@ export async function expandTx(
 
   const requiredOfType = (typeIdent: string): Attribute[] => {
     const nss = [
-      nsOfIdent(typeIdent),
-      ...db.schema.transitiveTraits(typeIdent).map(nsOfIdent),
+      nsOfComposer(typeIdent),
+      ...db.schema.transitiveTraits(typeIdent).map(nsOfComposer),
     ];
     const out: Attribute[] = [];
     const seen = new Set<string>();
