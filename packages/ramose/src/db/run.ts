@@ -80,11 +80,9 @@ export const runOperation = <C extends AnySchema, O>(
   if (bad !== undefined) return Effect.fail(bad);
   return Effect.gen(function* () {
     if (operation.on !== undefined && entityArg === undefined) {
-      return yield* Effect.fail(
-        new InvalidRequest({
-          message: `operation ${operation.name} is contextual and needs an entity`,
-        }),
-      );
+      return yield* new InvalidRequest({
+        message: `operation ${operation.name} is contextual and needs an entity`,
+      });
     }
     const input = yield* decodeInput(operation.input, inputArg);
     const entity = operation.on !== undefined ? lowerEntityArg(entityArg) : undefined;

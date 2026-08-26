@@ -26,7 +26,7 @@ import {
 const Todo = Entity("todo", {
   title: Field(Schema.String),
   done: Field(Schema.Boolean),
-  rank: Field(Schema.Number),
+  rank: Field(Schema.Finite),
 });
 
 const allTodos = Query.from(Todo).ids();

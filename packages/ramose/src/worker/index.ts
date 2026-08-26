@@ -565,7 +565,7 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo,
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/" || url.pathname === "/index.html") {
       // a peer that enforces a policy is not a demo console
-      if (authState(env).configured) return yield* Effect.fail(new NotFound({}));
+      if (authState(env).configured) return yield* new NotFound({});
       return new Response(DEMO_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (url.pathname === "/health") {
@@ -580,13 +580,13 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo,
     }
 
     const m = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
-    if (!m) return yield* Effect.fail(new NotFound({}));
+    if (!m) return yield* new NotFound({});
     const db = decodeURIComponent(m[1]);
     const rest = m[2] ?? "/";
     info.db = db;
     info.path = rest;
     info.route = routeOf(rest, request.method);
-    if (!validDbName(db)) return yield* Effect.fail(new BadRequest({ message: "invalid database name" }));
+    if (!validDbName(db)) return yield* new BadRequest({ message: "invalid database name" });
     // the verified caller is a positional argument of `route`: no header sniffing downstream
     const principal = yield* Effect.tryPromise({
       try: () => principalOf(env, request, db),

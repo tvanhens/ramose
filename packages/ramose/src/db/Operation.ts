@@ -149,7 +149,7 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * `{ id: handle }`) in an `EntityId` slot — {@link finalizeOutput}
  * rematerializes it after the writer assigns eids.
  */
-export const EntityId: typeof Schema.Number = Schema.Number;
+export const EntityId: typeof Schema.Finite = Schema.Finite;
 
 /**
  * What a body may return for output type `O`: a handle is legal
@@ -801,7 +801,7 @@ export const finalizeOutput = (
   tempids: Readonly<Record<string, number>>,
 ): Effect.Effect<unknown, InvalidRequest> =>
   encodeOutput(schema, materializeOutput(value, tempids)).pipe(
-    Effect.catch(() => Effect.succeed(materializeOutput(value, tempids))),
+    Effect.orElseSucceed(() => materializeOutput(value, tempids)),
   );
 
 /** Decode a wire output back into the operation's output type. */

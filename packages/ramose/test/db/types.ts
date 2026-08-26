@@ -111,7 +111,7 @@ export type _friendsVt = Expect<
 // helpers + primitives stamp valueType; stored() brands a custom pair
 const Typed = Entity("typed", {
   s: Field(Schema.String),
-  n: Field(Schema.Number),
+  n: Field(Schema.Finite),
   b: Field(Schema.Boolean),
   l: Field(Long),
   r: Field(Ref.self),

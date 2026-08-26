@@ -24,7 +24,7 @@ const ReefIssue = Ramose.Entity("issue", {
 export const addSession = Ramose.Operation(
   "e2e/add-session",
   {
-    input: Schema.Struct({ name: Schema.String, n: Schema.Number }),
+    input: Schema.Struct({ name: Schema.String, n: Schema.Finite }),
     output: Schema.Struct({}),
   },
   (op, input) => {
@@ -53,8 +53,8 @@ export const addReefIssue = Ramose.Operation(
     input: Schema.Struct({
       title: Schema.String,
       status: Schema.String,
-      rank: Schema.Number,
-      creatorId: Schema.Number,
+      rank: Schema.Finite,
+      creatorId: Schema.Finite,
     }),
     output: Schema.Struct({}),
   },

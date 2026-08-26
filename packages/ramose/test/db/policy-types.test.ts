@@ -28,7 +28,7 @@ import type { Var } from "../../src/db/query/kernel.ts";
 
 const User = Entity("user", {
   sub: Field.unique(Schema.String, "upsert"),
-  age: Field(Schema.Number),
+  age: Field(Schema.Finite),
 });
 const Org = Entity("org", { members: Field.many(Ref(() => User)) });
 const Doc = Entity("doc", { title: Field(Schema.String), owner: Field(Ref(() => User)) });

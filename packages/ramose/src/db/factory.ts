@@ -76,6 +76,9 @@ const bearer = (
   token: Effect.Effect<Redacted.Redacted<string>, DbError> | undefined,
 ): Effect.Effect<string | undefined, DbError> =>
   token === undefined
+    // Not `Effect.void`: `undefined` is a value of the declared success type
+    // `string | undefined` (the token is absent), not an empty result.
+    // @effect-diagnostics-next-line effectSucceedWithVoid:off
     ? Effect.succeed(undefined)
     : token.pipe(
         Effect.map((t) => {

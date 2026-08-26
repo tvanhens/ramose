@@ -800,7 +800,7 @@ describe("put", () => {
       schema: Movies,
       input: Schema.Struct({
         name: Schema.String,
-        age: Schema.optional(Schema.Number),
+        age: Schema.optional(Schema.Finite),
       }),
       output: Schema.Struct({}),
     },

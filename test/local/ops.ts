@@ -48,7 +48,7 @@ export const ping = Ramose.Operation(
   "ping",
   {
     input: Schema.Struct({}),
-    output: Schema.Struct({ n: Schema.Number }),
+    output: Schema.Struct({ n: Schema.Finite }),
   },
   async (op) => {
     const n = await op.effect("count", () => 1);
@@ -89,7 +89,7 @@ export const createCoded = Ramose.Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({
       id: Ramose.EntityId,
-      code: Schema.NumberFromString,
+      code: Schema.FiniteFromString,
     }),
   },
   (op, input) => {
@@ -154,7 +154,7 @@ export const putOnMovie = Ramose.Operation(
   "user/put-on-movie",
   {
     schema: Movies,
-    input: Schema.Struct({ eid: Schema.Number }),
+    input: Schema.Struct({ eid: Schema.Finite }),
     output: Schema.Struct({}),
   },
   (op, input) => {

@@ -58,7 +58,6 @@ import type { EntityRef } from "./idents.ts";
 import {
   tryLowerQueryObject,
   type AnyQueryObject,
-  type LoweredKernelQuery,
   type Page,
   type QueryObject,
 } from "./query/index.ts";
@@ -499,18 +498,15 @@ const makeRead = <C extends AnySchema>(
     DbError | NotOne
   > =>
     Effect.gen(function* () {
-      let lowered: LoweredKernelQuery;
-      try {
-        lowered = tryLowerQueryObject(input);
-      } catch (e) {
-        return yield* Effect.fail(
+      const lowered = yield* Effect.try({
+        try: () => tryLowerQueryObject(input),
+        catch: (e) =>
           e instanceof InvalidRequest
             ? e
             : new InvalidRequest({
                 message: e instanceof Error ? e.message : String(e),
               }),
-        );
-      }
+      });
       const reply = record(
         yield* wire.read(
           name,
@@ -532,7 +528,7 @@ const makeRead = <C extends AnySchema>(
       // `finalize` applies the query's terminal too: a page wraps, a take
       // unwraps — an `oneOrFail()` miss comes back as the NotOne to fail with
       const rows = lowered.finalize(reply.result);
-      if (rows instanceof NotOne) return yield* Effect.fail(rows);
+      if (rows instanceof NotOne) return yield* rows;
       return { rows, t, viewed };
     });
 
@@ -912,7 +908,7 @@ export const makeDb = <C extends AnySchema>(
 
     install: (options?: InstallOptions) =>
       Effect.gen(function* () {
-        if (bad !== undefined) return yield* Effect.fail(bad);
+        if (bad !== undefined) return yield* bad;
         // asOf pins the read to the peer — the overlay already has this
         // catalog applied locally, so a live query would not see the
         // installed set. A far-future t is the current basis.
@@ -936,7 +932,7 @@ export const makeDb = <C extends AnySchema>(
           if (hit !== null) occupied.add(ns);
         }
         const refused = checkEvolution(desired, installed, occupied, options);
-        if (refused !== undefined) return yield* Effect.fail(refused);
+        if (refused !== undefined) return yield* refused;
         return yield* submit(installTx(desired, installed));
       }),
 

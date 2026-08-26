@@ -923,11 +923,11 @@ const attributes = Effect.fn(function* (
   defaults: Required<ServerProbe>,
 ) {
   const badAuth = checkAuth(props.auth);
-  if (badAuth !== undefined) return yield* Effect.fail(new InvalidRequest({ message: badAuth }));
+  if (badAuth !== undefined) return yield* new InvalidRequest({ message: badAuth });
   if (props.worker !== undefined) {
     const badWiring = validatePeerWiring(props.worker);
     if (badWiring !== undefined) {
-      return yield* Effect.fail(new InvalidRequest({ message: badWiring }));
+      return yield* new InvalidRequest({ message: badWiring });
     }
     const hatch =
       typeof props.worker !== "object" ||
@@ -936,11 +936,11 @@ const attributes = Effect.fn(function* (
     if (hatch) {
       const badMatch = compareAuthToWorker(props.auth, props.token, props.worker);
       if (badMatch !== undefined) {
-        return yield* Effect.fail(new InvalidRequest({ message: badMatch }));
+        return yield* new InvalidRequest({ message: badMatch });
       }
       const badWrites = compareWritesToWorker(props.writes, props.worker);
       if (badWrites !== undefined) {
-        return yield* Effect.fail(new InvalidRequest({ message: badWrites }));
+        return yield* new InvalidRequest({ message: badWrites });
       }
     }
     warnWritesAllPolicy(props.writes, props.auth, props.worker);
@@ -949,12 +949,10 @@ const attributes = Effect.fn(function* (
   const worker = resolveWorker(props.worker as ServerWorker);
   const chosen = props.url ?? worker.url;
   if (chosen === undefined || chosen === "") {
-    return yield* Effect.fail(
-      new InvalidRequest({
-        message:
-          "ramose: the server has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit `url`",
-      }),
-    );
+    return yield* new InvalidRequest({
+      message:
+        "ramose: the server has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit `url`",
+    });
   }
   const url = trimSlashes(chosen);
   yield* probeHealth(url, props.probe, defaults);
@@ -962,13 +960,13 @@ const attributes = Effect.fn(function* (
     const body = yield* fetchHealthJson(url, coverageTimeoutMs(props.probe, defaults));
     const badOps = compareOperationsToHealth(props.operations, body);
     if (badOps !== undefined) {
-      return yield* Effect.fail(badOps);
+      return yield* badOps;
     }
     const authPolicy = props.auth?.policy;
     const policyJson = isBound(authPolicy) ? authPolicy : undefined;
     const badPolicyOps = compareOperationsToPolicy(props.operations, policyJson);
     if (badPolicyOps !== undefined) {
-      return yield* Effect.fail(badPolicyOps);
+      return yield* badPolicyOps;
     }
   }
   const token = redact(props.token);

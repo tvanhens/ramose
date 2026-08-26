@@ -657,7 +657,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           notify();
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
+            // `options.post` is `Effect<unknown, DbError>` — requirements
+            // channel `never` — so there are no surrounding services for a
+            // child Effect to inherit and `runPromiseWith` would add nothing.
             const run = () =>
+              // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
                 options.post(
                   pending.find((l) => l.clientTxId === id)?.tx ?? (tx as unknown[]),
@@ -833,7 +837,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               );
               return Effect.void;
             }
+            // `postOp` is `Effect<unknown, DbError>` — requirements channel
+            // `never` — so there are no surrounding services to inherit here
+            // either; see the note on `run` above.
             const runPost = () =>
+              // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
                 postOp(
                   pending.find((l) => l.clientTxId === id)?.invocation ??

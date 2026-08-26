@@ -179,7 +179,7 @@ type RefFn = {
  */
 /** Untargeted ref — the branded schema `Field(Ref)` / `Field(Ramose.Ref)` uses. */
 export const untargetedRef = asVt(
-  Schema.Number.annotate({ identifier: "ramose/ref" }),
+  Schema.Finite.annotate({ identifier: "ramose/ref" }),
   "ref",
 );
 
@@ -187,13 +187,13 @@ export const Ref: RefFn = Object.assign(
   <const N extends EntityLike>(
     target: N | (() => N),
   ): TargetedRef<N["fields"], N["ns"], N> =>
-    Object.assign(asVt(Schema.Number.annotate({ identifier: "ramose/ref" }), "ref"), {
+    Object.assign(asVt(Schema.Finite.annotate({ identifier: "ramose/ref" }), "ref"), {
       _resolve: resolveRefTarget(target),
     }) as TargetedRef<N["fields"], N["ns"], N>,
   {
     self: Object.assign(
       asVt(
-        Schema.Number.annotate({ identifier: "ramose/ref-self" }),
+        Schema.Finite.annotate({ identifier: "ramose/ref-self" }),
         "ref",
       ),
       { _self: true as const },
@@ -245,7 +245,7 @@ export const refTargetOf = (
 
 /** Integer long. Lowers to `:db.type/long` (plain `Schema.Number` is double). */
 export const Long = asVt(
-  Schema.Number.annotate({ identifier: "ramose/long" }),
+  Schema.Finite.annotate({ identifier: "ramose/long" }),
   "long",
 );
 export type Long = Schema.Schema.Type<typeof Long>;

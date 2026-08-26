@@ -143,7 +143,7 @@ describe("advanced Field(schema)", () => {
   test("raw Effect Schema still installs when inference holds", () => {
     const Note = Entity("note", {
       body: Field(Schema.String),
-      n: Field(Schema.Number),
+      n: Field(Schema.Finite),
       ok: Field(Schema.Boolean),
     });
     expect(schemaTx(DbSchema({ note: Note }))).toEqual([

@@ -54,7 +54,6 @@
         // `alchemy` resolving at once, which for an Effect-based package means
         // two distinct service identities and a Layer that silently does not
         // satisfy the requirement it looks like it satisfies.
-        // Suggestion-level rules are deliberately left as suggestions.
         "diagnosticSeverity": {
           "duplicatePackage": "error",
           "effectFnIife": "error",
@@ -70,7 +69,45 @@
           "outdatedApi": "error",
           "promiseInEffectSuccess": "error",
           "scopeInLayerEffect": "error",
-          "unknownInEffectCatch": "error"
+          "unknownInEffectCatch": "error",
+          // Suggestion-level rules, also raised to `error`. `lazyEffect`
+          // is deliberately left at its default: it fires on
+          // `providers()` / `DatabaseProvider()` / `ServerProvider()`,
+          // whose zero-argument shape is alchemy's convention across
+          // every provider package, and on `basis()` / `principal()` /
+          // `delete()`, whose promise-side twins stay methods — making
+          // only the Effect ones properties would break that symmetry.
+          "abortControllerInEffect": "error",
+          "catchAllToMapError": "error",
+          "catchChainToFirstSuccessOf": "error",
+          "catchTagToCatchReason": "error",
+          "catchToIgnore": "error",
+          "catchToOrElseSucceed": "error",
+          "catchUnfailableEffect": "error",
+          "effectFnOpportunity": "error",
+          "effectMapFlatten": "error",
+          "effectMapVoid": "error",
+          "effectSucceedWithVoid": "error",
+          "flatMapToMap": "error",
+          "leakingRequirements": "error",
+          "multipleCatchTag": "error",
+          "preferTypedSchemaDecoder": "error",
+          "preferUnsafeConstructor": "error",
+          "redundantMapError": "error",
+          "redundantOrDie": "error",
+          "redundantSchemaTagIdentifier": "error",
+          "returnEffectInGen": "error",
+          "runEffectInsideEffect": "error",
+          "schemaNumber": "error",
+          "schemaStructWithTag": "error",
+          "schemaSyncInEffect": "error",
+          "syncToSucceed": "error",
+          "tryCatchInEffectGen": "error",
+          "unnecessaryEffectGen": "error",
+          "unnecessaryFailYieldableError": "error",
+          "unnecessaryPipe": "error",
+          "unnecessaryPipeChain": "error",
+          "unnecessaryTypeofType": "error"
         }
       }
     ]

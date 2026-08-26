@@ -583,7 +583,7 @@ describe("both write paths reject identically", () => {
     "person/put-on-film",
     {
       schema: Films,
-      input: Schema.Struct({ eid: Schema.Number }),
+      input: Schema.Struct({ eid: Schema.Finite }),
       output: Schema.Struct({}),
     },
     (op, input) => {

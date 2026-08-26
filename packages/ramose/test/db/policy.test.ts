@@ -390,7 +390,7 @@ describe("deploy-time errors", () => {
 
     const Numbered = Entity("user", {
       sub: Field.unique(Schema.String, "upsert"),
-      role: Field(Schema.Number),
+      role: Field(Schema.Finite),
     });
     const NumberedCatalog = DbSchema({ user: Numbered });
     expect(() =>

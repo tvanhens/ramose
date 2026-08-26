@@ -157,11 +157,9 @@ export const installCatalog = Effect.fn(function* (args: {
 }) {
   const { name, url, token, schema } = args;
   if (url === undefined || url === "") {
-    return yield* Effect.fail(
-      new InvalidRequest({
-        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
-      }),
-    );
+    return yield* new InvalidRequest({
+      message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
+    });
   }
   const timeoutMs = Math.max(1, args.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
   const { databases, close } = makeDatabases({

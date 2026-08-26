@@ -165,9 +165,7 @@ describe("registration happens at bind time", () => {
 
     // the init closure: bind the capability, return a handler, run nothing
     await resolve(
-      Effect.gen(function* () {
-        yield* makeHttpSource(srv);
-      }),
+      Effect.asVoid(makeHttpSource(srv)),
       layer,
     );
 
