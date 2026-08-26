@@ -10,6 +10,7 @@ import { pipe } from "effect/Function";
 import {
   Entity,
   Field,
+  Policy as P,
   Query,
   Schema,
   Trait,
@@ -344,6 +345,56 @@ describe("processTx membership and required trait fields", () => {
     const issueRow = await conn.db().entity(tuples[0]![0]!.id);
     expect(issueRow?.[":issue/title"]).toBe("an issue");
     expect(issueRow?.[":task/title"]).toBeUndefined();
+  });
+
+  test("P.field on a stamped trait ident compiles", () => {
+    const Task = Entity("task", { title: string() }, { traits: [Taggable] });
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Catalog = Schema({ actor: Actor, issue: Issue, task: Task });
+    const head = {
+      schema: Catalog,
+      principal: Actor.sub,
+      classes: ["member"] as const,
+      schemaClasses: ["member"] as const,
+    };
+    const authored = P.policy(head, {
+      issue: { attrs: [P.field(Issue.tag, { read: P.class("member") })] },
+    });
+    const compiled = JSON.parse(P.compile(authored)) as {
+      attrs: Record<string, unknown>;
+    };
+    expect(compiled.attrs[":taggable/tag"]).toBeDefined();
+    expect(compiled.attrs[":issue/tag"]).toBeUndefined();
+  });
+
+  test("two composers sharing a trait field keep one attr rule", () => {
+    const Task = Entity("task", { title: string() }, { traits: [Taggable] });
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Catalog = Schema({ actor: Actor, issue: Issue, task: Task });
+    const head = {
+      schema: Catalog,
+      principal: Actor.sub,
+      classes: ["member"] as const,
+      schemaClasses: ["member"] as const,
+    };
+    const same = P.policy(head, {
+      issue: { attrs: [P.field(Issue.tag, { read: P.class("member") })] },
+      task: { attrs: [P.field(Task.tag, { read: P.class("member") })] },
+    });
+    const compiled = JSON.parse(P.compile(same)) as {
+      attrs: Record<string, unknown>;
+    };
+    expect(compiled.attrs[":taggable/tag"]).toEqual({
+      read: [{ _tag: "allow", class: ["member"], rule: true }],
+    });
+
+    const conflicting = P.policy(head, {
+      issue: { attrs: [P.field(Issue.tag, { read: P.class("member") })] },
+      task: { attrs: [P.field(Task.tag, { read: true })] },
+    });
+    expect(() => P.compile(conflicting)).toThrow(
+      /ns\.task\.attrs: :taggable\/tag conflicts with ns\.issue/,
+    );
   });
 
   test("existing entity-only schemas still create without membership facts", async () => {

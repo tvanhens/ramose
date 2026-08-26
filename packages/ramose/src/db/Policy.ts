@@ -886,15 +886,33 @@ const lower = (p: Policy): CompiledPolicy => {
   const attrs: Record<string, AttrRules> = {};
   const ns: Record<string, PolicyRules> = {};
 
+  const attrOwners = new Map<string, string>();
   for (const [nsKey, entry] of Object.entries(p.ns)) {
-    const declared = (p.schema.entities as Record<string, { fields: Record<string, unknown> }>)[nsKey]!;
+    const declared = (
+      p.schema.entities as Record<
+        string,
+        { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
+      >
+    )[nsKey]!;
     if (Object.keys(entry.rules).length > 0) ns[entry.prefix] = toWireRules(entry.rules);
 
-    const declaredIdents = new Set(Object.keys(declared.fields).map((key) => `:${entry.prefix}/${key}`));
+    const declaredIdents = entityFieldIdents(declared);
     for (const [ident, own] of Object.entries(entry.attrs)) {
       if (!declaredIdents.has(ident)) fail(`ns.${nsKey}.attrs: ${ident} is not in the schema`, ident);
       const narrowed = toWireRules(own);
-      if (Object.keys(narrowed).length > 0) attrs[ident] = narrowed;
+      if (Object.keys(narrowed).length === 0) continue;
+      const existing = attrs[ident];
+      if (existing !== undefined) {
+        if (JSON.stringify(existing) !== JSON.stringify(narrowed)) {
+          fail(
+            `ns.${nsKey}.attrs: ${ident} conflicts with ns.${attrOwners.get(ident)}`,
+            ident,
+          );
+        }
+        continue;
+      }
+      attrs[ident] = narrowed;
+      attrOwners.set(ident, nsKey);
     }
   }
 
