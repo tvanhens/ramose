@@ -204,7 +204,7 @@ const titles = async (peer: Peer, tok?: string) => {
 
 describe("GET /health lists registered operation ids", () => {
   test("the peer reports the registry it was built with", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     const { status, body } = await peer.json("/health");
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
@@ -226,7 +226,7 @@ describe("GET /health lists registered operation ids", () => {
   });
 
   test("an empty registry reports an empty list", async () => {
-    const peer = makePeer("movies");
+    const peer = await makePeer("movies");
     const { body } = await peer.json("/health");
     expect(body.operations).toEqual([]);
     peer.close();
@@ -235,7 +235,7 @@ describe("GET /health lists registered operation ids", () => {
 
 describe("POST /db/:name/op", () => {
   test("unknown name is 400, not 409", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",
@@ -247,7 +247,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("invalid input is 400", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status } = await peer.json(
       "/db/movies/op",
@@ -258,7 +258,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("contextual entity: dangling and foreign-namespace are 409 before effects", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const seed = await peer.seed([
       { ":db/id": "ada", ":user/name": "Ada" },
@@ -321,7 +321,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("a lookup-shaped entity resolves when the row exists and is dangling when it does not", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     await peer.seed([{ ":user/name": "Ada" }]);
 
@@ -360,7 +360,7 @@ describe("POST /db/:name/op", () => {
 
   test("the same clientOpId replays the original ack and does not re-run effects", async () => {
     effectRuns = 0;
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const first = await peer.json(
       "/db/movies/op",
@@ -383,7 +383,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("a write op replay keeps t and does not insert a second row", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const first = await peer.json(
       "/db/movies/op",
@@ -413,7 +413,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("a clientOpId replay returns the same encoded output as the first commit", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const first = await peer.json(
       "/db/movies/op",
@@ -446,7 +446,7 @@ describe("POST /db/:name/op", () => {
   });
 
   test("put with a unique field unifies a second write onto the same row", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const created = await peer.json(
       "/db/movies/op",
@@ -551,7 +551,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("no writes / no RAMOSE_WRITES: app-class token is denied on /transact; /op works; admin and the seed token keep /transact", async () => {
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: envOf(),
     });
@@ -581,7 +581,7 @@ describe('writes: "operations" is the peer default', () => {
 
     // `$token` is not admin and is not an app class — seed/install still
     // reaches /transact (ensure of an already-deployed catalog is a no-op).
-    const seeded = makePeer("movies", {
+    const seeded = await makePeer("movies", {
       operations,
       env: { ...envOf(), RAMOSE_TOKEN: "s3cret" },
     });
@@ -602,7 +602,7 @@ describe('writes: "operations" is the peer default', () => {
       { operations, writes: "all" as const, env: envOf() },
       { operations, env: { ...envOf(), RAMOSE_WRITES: "all" } },
     ]) {
-      const peer = makePeer("movies", options);
+      const peer = await makePeer("movies", options);
       await peer.seed(schemaTx(Movies) as unknown[]);
       await peer.seed([{ ":user/name": "user_ada" }]);
       const raw = await peer.json(
@@ -617,7 +617,7 @@ describe('writes: "operations" is the peer default', () => {
 
   test("policy + writes: all emits writes.all-with-policy once; data tx stays closed", async () => {
     const from = events.length;
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: { ...envOf(), RAMOSE_WRITES: "all" },
     });
@@ -663,7 +663,7 @@ describe('writes: "operations" is the peer default', () => {
       rules: [neverRule],
     };
     effectRuns = 0;
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: {
         RAMOSE_POLICY: JSON.stringify(v2),
@@ -699,7 +699,7 @@ describe('writes: "operations" is the peer default', () => {
       },
     };
     effectRuns = 0;
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: {
         RAMOSE_POLICY: JSON.stringify(v1),
@@ -723,7 +723,7 @@ describe('writes: "operations" is the peer default', () => {
 
   test("a class-only arm on a bare op still runs", async () => {
     effectRuns = 0;
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: envOf(),
     });
@@ -742,7 +742,7 @@ describe('writes: "operations" is the peer default', () => {
 
   test("unrecognized RAMOSE_WRITES warns and fails closed to operations", async () => {
     const from = events.length;
-    const peer = makePeer("movies", {
+    const peer = await makePeer("movies", {
       operations,
       env: { ...envOf(), RAMOSE_WRITES: "All" },
     });
@@ -762,7 +762,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("put missing a required field is 409 TxRejected tx/required", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",
@@ -775,7 +775,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("update of a missing row is 409 TxRejected tx/missing-entity", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",
@@ -788,7 +788,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("H1 put on bootstrap eid is 409 TxRejected tx/required", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",
@@ -801,7 +801,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("H2 put onto another namespace is 409 TxRejected tx/wrong-entity", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const seeded = await peer.seed([{ ":db/id": "heat", ":movie/title": "Heat" }]);
     const filmEid = seeded.tempids.heat!;
@@ -820,7 +820,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("H3 put at a nonexistent eid is 409 TxRejected tx/missing-entity", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",
@@ -833,7 +833,7 @@ describe('writes: "operations" is the peer default', () => {
   });
 
   test("H4 dangling ref is 409 TxRejected tx/missing-entity", async () => {
-    const peer = makePeer("movies", { operations });
+    const peer = await makePeer("movies", { operations });
     await peer.seed(schemaTx(Movies) as unknown[]);
     const { status, body } = await peer.json(
       "/db/movies/op",

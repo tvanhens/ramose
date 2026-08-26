@@ -8,10 +8,17 @@
  * is stood in for, because it reaches the transactor over a WebSocket pair that
  * does not exist outside Workers — it serves the basis straight off the writer,
  * which makes reads see writes with no lag.
+ *
+ * `makePeer` awaits the mocked graph instead of closing over a top-level
+ * `const` from `await import`. It is a hoisted function declaration, and
+ * `mock.module("cloudflare:workers")` re-enters this file when two
+ * `test/worker` files share a Bun process (`--parallel`); a `const` from
+ * that import would still be in its TDZ.
  */
 
 import { Database } from "bun:sqlite";
 import { mock } from "bun:test";
+import type { AnyOperations } from "../../src/db/Operation.ts";
 import type { RamoseEnv, SqlLike } from "../../src/internal/transactor/index.ts";
 import { internalGate } from "../../src/internal/transactor/index.ts";
 import { makeBasis } from "../../src/internal/replica/basis.ts";
@@ -19,6 +26,7 @@ import { MemoryBucket } from "../../src/internal/storage/memory.ts";
 import { sqliteLike } from "../internal/transactor/harness.ts";
 import { clearAuthCache } from "../../src/worker/auth.ts";
 import { clearBasisCache, clearSegmentSources } from "../../src/worker/peer.ts";
+import { loadWorkerGraph } from "./harness-graph.ts";
 
 mock.module("cloudflare:workers", () => ({
   DurableObject: class {
@@ -29,9 +37,10 @@ mock.module("cloudflare:workers", () => ({
   },
 }));
 
-const { TransactorDO } = await import("../../src/internal/transactor/transactor-do.ts");
-const { createServer, clearWritesWarning } = await import("../../src/worker/index.ts");
-import type { AnyOperations } from "../../src/db/Operation.ts";
+// Start the load after the mock is installed. The promise lives in
+// `harness-graph.ts` so a re-entered evaluation of this file cannot put
+// `makePeer` in front of an uninitialized `const`.
+void loadWorkerGraph();
 
 /** `DurableObjectState`, as much of it as the Transactor shell touches. */
 function fakeState(db: Database) {
@@ -76,7 +85,12 @@ export interface Peer {
 }
 
 /** A peer serving exactly one database name. */
-export function makePeer(dbName: string, options: ServerOptions = {}): Peer {
+export async function makePeer(dbName: string, options: ServerOptions = {}): Promise<Peer> {
+  const {
+    transactor: { TransactorDO },
+    worker: { createServer, clearWritesWarning },
+  } = await loadWorkerGraph();
+
   clearAuthCache();
   clearBasisCache();
   clearSegmentSources();
