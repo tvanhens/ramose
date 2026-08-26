@@ -38,8 +38,9 @@ export const Stack = Alchemy.Stack(
   },
   Effect.gen(function* () {
     const open = yield* Open;
-    const workerName = yield* (yield* open.workerName);
-    const app = yield* makeApp(workerName);
+    // workerName is an Output; Worker env classification unwraps it
+    // when the App resource applies (RuntimeContext is ambient there).
+    const app = yield* makeApp(open.workerName as unknown as string);
     const empty = yield* Empty;
     const token = yield* Token;
     const policy = yield* Policy;
