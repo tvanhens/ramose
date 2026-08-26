@@ -212,6 +212,46 @@ describe("QueryReplicaDO apply-then-notify", () => {
     expect(replica.basisT).toBe(12);
   });
 
+  test("a failed minT catch-up does not prevent a later fenced read from applying", async () => {
+    let failLog = true;
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              if (failLog) throw new Error("log down");
+              return Response.json({
+                earliestLogT: 11,
+                entries: [txFrame(entry(11))],
+                t: 11,
+              });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    const failed = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "11" } }),
+    );
+    expect(failed.status).toBe(500);
+    expect(replica.basisT).toBe(10);
+    failLog = false;
+    const recovered = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "11" } }),
+    );
+    expect(recovered.status).toBe(200);
+    expect(((await recovered.json()) as { t: number }).t).toBe(11);
+    expect(replica.basisT).toBe(11);
+  });
+
   test("handleFrame of t+2 while t+1 is unapplied does not stamp the tip or dump", async () => {
     const { replica, attach } = await bootReplica(10);
     const a = attach();

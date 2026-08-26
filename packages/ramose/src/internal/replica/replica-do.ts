@@ -271,8 +271,23 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     await this.drainFrames();
   }
 
+  /**
+   * Run `work` after every previously queued apply, without letting a
+   * rejection become the permanent `applyChain` value (later frames would
+   * skip their callbacks). The returned promise still rejects so a fenced
+   * read can fail the request.
+   */
+  private enqueue(work: () => Promise<void>): Promise<void> {
+    const next = this.applyChain.then(work);
+    this.applyChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   private enqueueFrame(ev: MessageEvent): void {
-    this.applyChain = this.applyChain.then(async () => {
+    void this.enqueue(async () => {
       try {
         const frame = JSON.parse(String(ev.data)) as WireFrame;
         await this.handleFrame(frame);
@@ -282,14 +297,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     });
   }
 
-  /** Wait until every queued upstream frame has been applied. */
+  /** Wait for the apply-chain tail captured now — do not chase later frames. */
   private async drainFrames(): Promise<void> {
-    let tip = this.applyChain;
-    await tip;
-    while (this.applyChain !== tip) {
-      tip = this.applyChain;
-      await tip;
-    }
+    await this.applyChain;
   }
 
   /**
@@ -300,11 +310,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   private async catchUpTo(minT: number | undefined): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
     const target = minT;
-    this.applyChain = this.applyChain.then(async () => {
+    await this.enqueue(async () => {
       if (this.basisT >= target) return;
       await this.fillGap(this.basisT, target);
     });
-    await this.drainFrames();
   }
 
   /** Make sure we are connected and caught up (bounded wait). */
