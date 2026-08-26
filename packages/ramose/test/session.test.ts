@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
 import { isDatabaseError, Query, Unauthorized } from "../src/db/internal.ts";
-import { client, fakePeer, settle } from "./peer.ts";
+import { client, fakePeer, runWithTestClock, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -234,21 +234,21 @@ describe("a socket that goes away", () => {
     await c.dispose();
   });
 
-  // A read that keeps failing walks the whole transient ladder (six attempts,
-  // ~2–6s of jittered sleep) before the failure is the caller's.
-  test(
-    "and is NetworkError once the retries are spent",
-    async () => {
-      const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
-      const c = client(peer);
-      expect((await runFail(c.ramose.db("movies", Movies).asOf(2).query(eids)))._tag).toBe(
-        "NetworkError",
-      );
-      expect(peer.sockets).toHaveLength(6);
-      await c.dispose();
-    },
-    15_000,
-  );
+  test("and is NetworkError once the retries are spent", async () => {
+    const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
+    const c = client(peer);
+    expect(
+      (
+        await runFail(
+          runWithTestClock(
+            c.ramose.db("movies", Movies).effect.asOf(2).query(eids),
+          ),
+        )
+      )._tag,
+    ).toBe("NetworkError");
+    expect(peer.sockets).toHaveLength(6);
+    await c.dispose();
+  });
 
   test("but the next read reconnects, re-reading the token", async () => {
     let issued = 0;

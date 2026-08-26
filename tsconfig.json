@@ -17,7 +17,6 @@
     "jsx": "react-jsx",
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
-    "baseUrl": ".",
     // The one published package maps to its source here, so `typecheck` reads
     // the source of truth and never needs a build first: `exports` resolves
     // `types` to `dist/*.d.ts` for consumers, so without these mappings tsc
@@ -26,14 +25,14 @@
     // — no wildcard. Engine internals are reached with workspace-relative
     // paths, not `ramose/internal/*`.
     "paths": {
-      "ramose": ["packages/ramose/src/index.ts"],
-      "ramose/db": ["packages/ramose/src/db/index.ts"],
-      "ramose/db/effect": ["packages/ramose/src/db/effect.ts"],
-      "ramose/worker": ["packages/ramose/src/worker/index.ts"],
-      "ramose/react": ["packages/ramose/src/react/index.ts"],
-      "ramose/better-auth": ["packages/ramose/src/better-auth/index.ts"],
-      "ramose/better-auth/client": ["packages/ramose/src/better-auth/client.ts"],
-      "ramose/effect": ["packages/ramose/src/effect.ts"]
+      "ramose": ["./packages/ramose/src/index.ts"],
+      "ramose/db": ["./packages/ramose/src/db/index.ts"],
+      "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
+      "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
+      "ramose/react": ["./packages/ramose/src/react/index.ts"],
+      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
+      "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
+      "ramose/effect": ["./packages/ramose/src/effect.ts"]
     }
   },
   "include": [
