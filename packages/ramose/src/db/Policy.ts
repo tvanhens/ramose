@@ -26,7 +26,13 @@ import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AnyOperation, AnyOperations, Operation } from "./Operation.ts";
+import {
+  harvestOwnedOperations,
+  type AnyOperation,
+  type AnyOperations,
+  type Operation,
+} from "./Operation.ts";
+import { schemaTraits } from "./Schema.ts";
 import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 import {
   Q,
@@ -77,6 +83,13 @@ export type EntityFieldIdent<N extends AnyEntity> = {
     ? I
     : never;
 }[keyof N["fields"]];
+
+/** Entity or trait — a policy fragment's focus. */
+export type PolicyFocus = {
+  readonly fields: {
+    readonly [key: string]: AnyField & { readonly ident: string };
+  };
+};
 
 /** A stamped field of `N` — the `A` a forward `FilterStage` may capture. */
 type EntityField<N extends AnyEntity> = N["fields"][keyof N["fields"]];
@@ -140,12 +153,49 @@ export interface AttrRule<M = unknown, N extends AnyEntity = AnyEntity, CL exten
   readonly rules: RuleSpec<M, N, CL>;
 }
 
+type OwnerOpArms<
+  Owner,
+  M,
+  CL extends string,
+> = Owner extends { readonly operations: infer Ops }
+  ? Ops extends Record<string, AnyOperation>
+    ? { readonly [K in keyof Ops]?: OperationArmValue<Ops[K], M, CL> }
+    : {}
+  : {};
+
 export type NsRuleSpec<M, N extends AnyEntity = AnyEntity, CL extends string = string> = RuleSpec<
   M,
   N,
   CL
 > & {
   readonly attrs?: readonly AttrRule<M, N, CL>[];
+  readonly operations?: OwnerOpArms<N, M, CL>;
+};
+
+type NestedTrait<T> = T extends { readonly traits: infer Ts }
+  ? Ts extends readonly unknown[]
+    ? (Ts[number] extends { readonly _tag: "Trait"; readonly ns: string }
+        ? Ts[number]
+        : never) | NestedTrait<Ts[number]>
+    : never
+  : never;
+
+type SchemaTrait<C extends AnySchema> = {
+  [K in keyof C["entities"]]: NestedTrait<C["entities"][K]>;
+}[keyof C["entities"]];
+
+export type TraitPolicySpec<
+  M,
+  C extends AnySchema,
+  CL extends string = string,
+> = {
+  readonly [Ns in SchemaTrait<C>["ns"] & string]?: {
+    readonly operations?: OwnerOpArms<
+      Extract<SchemaTrait<C>, { readonly ns: Ns }>,
+      M,
+      CL
+    >;
+  };
 };
 
 /**
@@ -162,12 +212,14 @@ export type OperationArmValue<
   O extends AnyOperation,
   M,
   CL extends string = string,
-> = O extends Operation<any, any, any, infer N, any>
+> =   O extends Operation<any, any, any, infer N, any, any>
   ? [N] extends [undefined]
     ? ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[]
-    : N extends AnyEntity
-      ? ArmValue<M, N, CL> | readonly ArmValue<M, N, CL>[]
-      : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[]
+    : N extends { readonly _tag: "Entity" }
+      ? ArmValue<M, N extends AnyEntity ? N : AnyEntity, CL> | readonly ArmValue<M, N extends AnyEntity ? N : AnyEntity, CL>[]
+      : N extends { readonly _tag: "Trait" }
+        ? ArmValue<M, AnyEntity, CL> | readonly ArmValue<M, AnyEntity, CL>[]
+        : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[]
   : ClassOnlyArm<CL> | readonly ClassOnlyArm<CL>[];
 
 /** Typed keys off the registry — no string op names in app code. */
@@ -211,6 +263,8 @@ export type PolicyArms<
   Ops extends AnyOperations | undefined = undefined,
 > = {
   readonly [K in keyof C["entities"]]?: NsRuleSpec<M, C["entities"][K], CL[number]>;
+} & {
+  readonly traits?: TraitPolicySpec<M, C, CL[number]>;
 } & (Ops extends AnyOperations
   ? { readonly operations?: OperationArms<Ops, M, CL[number]> }
   : { readonly operations?: undefined });
@@ -728,12 +782,42 @@ export function policy<
   const REJECTED_WRITE_KEYS = new Set(["set", "remove", "delete", "create", "preset"]);
 
   const ns: Record<string, NsRules> = {};
+  const compiledOps: Record<string, readonly CompiledArm[]> = {};
   const maskedReads = new Set<string>();
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
 
+  const compileOperationArms = (
+    operation: AnyOperation,
+    raw: unknown,
+    where: string,
+  ): readonly CompiledArm[] => {
+    const list = Array.isArray(raw) ? raw : [raw];
+    if (list.length === 0) return [];
+    const on = operation.on as
+      | { readonly ns?: string; readonly fields: Record<string, { readonly ident?: unknown }> }
+      | undefined;
+    const fieldIdents = on !== undefined ? entityFieldIdents(on) : new Set<string>();
+    const entityKey = on?.ns ?? `op/${operation.name}`;
+    return list.map((arm, i) => {
+      const armWhere = `${where}${list.length > 1 ? `[${i}]` : ""}`;
+      const { body: armBody } = unwrapGate(arm as ArmValue<unknown>);
+      if (armBody !== true && on === undefined) {
+        fail(`${armWhere}: a targetless operation takes a class gate only`);
+      }
+      return compileArm(
+        arm as ArmValue<unknown>,
+        armWhere,
+        `op/${operation.name}`,
+        "run",
+        entityKey,
+        fieldIdents,
+      );
+    });
+  };
+
   for (const [nsKey, rawSpec] of Object.entries(body)) {
-    if (nsKey === "operations" || rawSpec === undefined) continue;
+    if (nsKey === "operations" || nsKey === "traits" || rawSpec === undefined) continue;
     const nsSpec = rawSpec as NsRuleSpec<unknown> & Record<string, unknown>;
     for (const key of Object.keys(nsSpec)) {
       if (REJECTED_WRITE_KEYS.has(key)) {
@@ -780,10 +864,69 @@ export function policy<
     }
 
     ns[nsKey] = { prefix, rules, attrs };
+
+    const owned = (nsSpec as { readonly operations?: Record<string, unknown> }).operations;
+    if (owned !== undefined) {
+      const bound = (
+        entity as { readonly operations?: Record<string, AnyOperation> }
+      ).operations ?? {};
+      for (const [key, raw] of Object.entries(owned)) {
+        if (raw === undefined) continue;
+        const operation = bound[key];
+        if (operation === undefined || operation._tag !== "Operation") {
+          fail(`ns.${nsKey}.operations.${key}: ${JSON.stringify(key)} is not an operation of ${nsKey}`);
+        }
+        const wireName = operation.name;
+        if (typeof wireName !== "string" || wireName.length === 0) {
+          fail(`ns.${nsKey}.operations.${key}: operation has no name`);
+        }
+        compiledOps[wireName] = compileOperationArms(
+          operation,
+          raw,
+          `ns.${nsKey}.operations.${key}`,
+        );
+      }
+    }
   }
 
-  const compiledOps: Record<string, readonly CompiledArm[]> = {};
   const registry = head.operations;
+
+  const traitsSpec = body.traits as Record<string, { readonly operations?: Record<string, unknown> }> | undefined;
+  if (traitsSpec !== undefined) {
+    const traits = schemaTraits(schema);
+    for (const [nsKey, spec] of Object.entries(traitsSpec)) {
+      if (spec === undefined) continue;
+      const trait = traits.get(nsKey);
+      if (trait === undefined) {
+        fail(`traits.${nsKey}: ${JSON.stringify(nsKey)} is not a reachable trait`);
+      }
+      for (const key of Object.keys(spec as object)) {
+        if (key !== "operations") {
+          fail(`traits.${nsKey}.${key}: only operations: is authored on a trait arm`);
+        }
+      }
+      const owned = spec.operations;
+      if (owned === undefined) continue;
+      const bound = (
+        trait as { readonly operations?: Record<string, AnyOperation> }
+      ).operations ?? {};
+      for (const [key, raw] of Object.entries(owned)) {
+        if (raw === undefined) continue;
+        const operation = bound[key];
+        if (operation === undefined || operation._tag !== "Operation") {
+          fail(
+            `traits.${nsKey}.operations.${key}: ${JSON.stringify(key)} is not an operation of ${nsKey}`,
+          );
+        }
+        compiledOps[operation.name] = compileOperationArms(
+          operation,
+          raw,
+          `traits.${nsKey}.operations.${key}`,
+        );
+      }
+    }
+  }
+
   if (operationSpec !== undefined) {
     if (registry === undefined || registry._tag !== "Operations") {
       fail("operations: needs the registry on the policy head (head.operations)");
@@ -799,32 +942,17 @@ export function policy<
       if (typeof wireName !== "string" || wireName.length === 0) {
         fail(`operations.${key}: operation has no name`);
       }
-      const list = Array.isArray(raw) ? raw : [raw];
-      if (list.length === 0) continue;
-      const on = operation.on as
-        | { readonly ns?: string; readonly fields: Record<string, { readonly ident?: unknown }> }
-        | undefined;
-      const fieldIdents = on !== undefined ? entityFieldIdents(on) : new Set<string>();
-      const entityKey = on?.ns ?? `op/${wireName}`;
-      compiledOps[wireName] = list.map((arm, i) => {
-        const where = `operations.${key}${list.length > 1 ? `[${i}]` : ""}`;
-        const { body } = unwrapGate(arm as ArmValue<unknown>);
-        if (body !== true && on === undefined) {
-          fail(`${where}: a bare (no-on) operation takes a class gate only`);
-        }
-        return compileArm(
-          arm as ArmValue<unknown>,
-          where,
-          `op/${wireName}`,
-          "run",
-          entityKey,
-          fieldIdents,
-        );
-      });
+      compiledOps[wireName] = compileOperationArms(operation, raw, `operations.${key}`);
     }
   }
 
-  const registeredNames = registry !== undefined ? [...registry.names()] : [];
+  const harvestedNames = Object.keys(harvestOwnedOperations(schema));
+  const registeredNames = [
+    ...new Set([
+      ...(registry !== undefined ? registry.names() : []),
+      ...harvestedNames,
+    ]),
+  ];
   const armed = new Set(Object.keys(compiledOps));
   const unarmedOperations = registeredNames.filter((n) => !armed.has(n));
 

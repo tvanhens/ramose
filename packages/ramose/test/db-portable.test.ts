@@ -243,6 +243,8 @@ describe("the `/db` barrel's public names", () => {
         "Operations",
         "PrefixHalt",
         "defineOperations",
+        "assembleOperations",
+        "harvestOwnedOperations",
         "checkOperationsCoverage",
         "operationNames",
         "operationCards",

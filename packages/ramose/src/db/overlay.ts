@@ -39,6 +39,7 @@ import {
   type AnyOperation,
   type OperationInvocation,
 } from "./Operation.ts";
+import { checkOperationTarget } from "./operation-target.ts";
 import {
   type DbError,
   fromResponse,
@@ -46,6 +47,7 @@ import {
   InvalidRequest,
   isDatabaseError,
   NetworkError,
+  OperationRejected,
   QueryBudgetExceeded,
   TxRejected,
 } from "./Errors.ts";
@@ -744,6 +746,25 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               return args.invocation.entity;
             }
           });
+          if (args.operation.on !== undefined && typeof self === "number") {
+            const check = yield* Effect.promise(async () => {
+              const db = view();
+              if (!(await db.exists(self))) return "dangling" as const;
+              return checkOperationTarget(await db.entity(self), args.operation.on!);
+            });
+            if (check !== "ok") {
+              return yield* Effect.fail(
+                new OperationRejected({
+                  message:
+                    check === "dangling"
+                      ? `entity ${self} does not exist`
+                      : `entity ${self} is not a ${args.operation.on.ns}`,
+                  operation: args.operation.name,
+                  reason: check,
+                }),
+              );
+            }
+          }
           const built = buildOp({
             schema: args.schema,
             db: args.db,
@@ -753,6 +774,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               claims: {},
             },
             self,
+            createEntity: args.operation.createEntity,
             effects: "halt",
             q: (input) =>
               Effect.tryPromise({

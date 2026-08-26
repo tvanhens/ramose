@@ -72,7 +72,7 @@ describe("Entity()", () => {
   test("rejects a reserved field key before it can overwrite metadata", () => {
     for (const key of RESERVED_FIELD_KEYS) {
       expect(() => Entity("post", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
+        /reserved — id, ns, fields, _tag, traits, and operations are Entity \/ Trait metadata/,
       );
     }
     const Post = Entity("post", { title: string() });

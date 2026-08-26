@@ -31,16 +31,18 @@ type _sameTodo = Expect<
   Equal<(typeof ByArray)["entities"]["todo"], typeof Todo>
 >;
 
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
 Entity("post", { id: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
 Entity("post", { ns: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
 Entity("post", { fields: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
 Entity("post", { _tag: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
 Entity("post", { traits: string() });
+// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata
+Entity("post", { operations: string() });
 
 // @ts-expect-error invalid name — must match IDENT_NAME_RE
 Entity("my ns/x", { title: string() });

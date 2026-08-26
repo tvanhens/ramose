@@ -39,6 +39,7 @@ import {
   decodeInput,
   finalizeOutput,
 } from "../db/Operation.ts";
+import { checkOperationTarget } from "../db/operation-target.ts";
 import { lowerPullPattern } from "../db/Pull.ts";
 import { tryLowerQueryObject } from "../db/query/index.ts";
 import { authState, checkWrite, viewDb, withEid } from "./auth.ts";
@@ -106,18 +107,13 @@ const withOps = async (base: CoreDb, ops: readonly unknown[]): Promise<CoreDb> =
   return overlayOn(base, expansion.datoms);
 };
 
-const entityNamespaceOk = async (
+const entityTargetOk = async (
   db: CoreDb,
   eid: number,
-  ns: string,
+  owner: { readonly _tag?: string; readonly ns: string },
 ): Promise<"ok" | "dangling" | "foreign"> => {
   if (!(await db.exists(eid))) return "dangling";
-  const row = await db.entity(eid);
-  if (row === undefined) return "dangling";
-  const keys = Object.keys(row).filter((k) => k !== ":db/id" && !k.startsWith(":db/"));
-  if (keys.length === 0) return "dangling";
-  const prefix = `:${ns}/`;
-  return keys.some((k) => k.startsWith(prefix)) ? "ok" : "foreign";
+  return checkOperationTarget(await db.entity(eid), owner);
 };
 
 const installOn = (
@@ -249,7 +245,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
       });
     }
     // Filtered `dbv` only — see the viewDb comment above.
-    const check = await entityNamespaceOk(dbv, eid, operation.on.ns);
+    const check = await entityTargetOk(dbv, eid, operation.on);
     if (check !== "ok") {
       throw new OperationRejected({
         message:
@@ -292,6 +288,7 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
       claims: { ...args.principal.claims },
     },
     self,
+    createEntity: operation.createEntity,
     effects: "run",
     effectCtx: {
       env: args.env,

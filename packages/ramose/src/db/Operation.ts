@@ -20,6 +20,16 @@ import { type DbError, InvalidRequest, OperationsCoverageError } from "./Errors.
 import type { AnyEntity } from "./Entity.ts";
 import { asLookupRef, lowerEntityArg, tempid, type Tempid } from "./entityArg.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
+import {
+  duplicateOperationIdentity,
+  invalidIdentName,
+  isIdentName,
+} from "./IdentName.ts";
+import {
+  reachableTraits,
+  traitsOf,
+  type ComposerLike,
+} from "./compose.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
@@ -52,10 +62,15 @@ type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
     ? PutAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
     : Record<string, unknown>;
 
+type OwnerCreateSchema<E extends AnyEntity> = {
+  readonly _tag: "Schema";
+  readonly entities: { readonly [K in E["ns"]]: E };
+};
+
 type OpPutCreateAttrs<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
     ? PutCreateAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
-    : Record<string, unknown>;
+    : PutCreateAttrs<OwnerCreateSchema<E>, E, AnyOpHandle<C>>;
 
 type OpUpdateMapAttrs<C extends AnySchema, E extends AnyEntity> =
   [ConcreteCatalog<C>] extends [true]
@@ -98,17 +113,75 @@ type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
     ? PutSubject<C, E, TxHandle<C> | AnyOpHandle<C>>
     : OpEntity<C>;
 
+/** Drop a wide `string` ns so `readonly { ns: string }[]` is not every trait. */
+type SpecificNs<N> = string extends N ? never : N;
+
+type NestedTraitNss<T, Seen extends string = never> = T extends {
+  readonly ns: infer N extends string;
+  readonly traits?: infer Ts;
+}
+  ? SpecificNs<N> extends never
+    ? never
+    : SpecificNs<N> extends Seen
+      ? never
+      : SpecificNs<N> | (Ts extends readonly unknown[]
+          ? NestedTraitNss<Ts[number], Seen | SpecificNs<N>>
+          : never)
+  : never;
+
+/** Transitive composed trait names of an entity (or trait). */
+export type AllTraitNss<E> = E extends { readonly traits: infer Ts }
+  ? Ts extends readonly unknown[]
+    ? NestedTraitNss<Ts[number]>
+    : never
+  : never;
+
+type ComposesTrait<E, T extends { readonly ns: string }> = T["ns"] extends AllTraitNss<E>
+  ? true
+  : false;
+
+/** Concrete entities of `C` that compose trait `T` (transitive). */
+export type ComposersOf<
+  C extends AnySchema,
+  T extends { readonly ns: string },
+> = {
+  [K in keyof C["entities"]]: ComposesTrait<C["entities"][K], T> extends true
+    ? C["entities"][K] & AnyEntity
+    : never;
+}[keyof C["entities"]];
+
+export type OperationOwner = {
+  readonly _tag: "Entity" | "Trait";
+  readonly ns: string;
+  readonly fields: {
+    readonly [key: string]: { readonly ident: string };
+  };
+};
+
+type OwnerEid<N> = N extends { readonly _tag: "Entity" }
+  ? Eid<N extends AnyEntity ? N : AnyEntity> | Tempid
+  : N extends { readonly _tag: "Trait" }
+    ? UnbrandedId | Tempid
+    : never;
+
 /**
  * `db.run`'s contextual entity — the shared {@link EntityRef} vocabulary,
  * narrowed to `N`. A branded cell of the wrong entity is rejected. The
  * unbranded-number hatch remains (mint-by-id). Bare `string` does not —
  * pass {@link Tempid} (`op.tempid("ada")` / `tempid("ada")`).
+ *
+ * A trait-owned instance operation accepts any composer of that trait.
  */
-export type RunEntity<C extends AnySchema, N extends AnyEntity> = EntityRef<
-  C,
-  N,
-  TxHandle<C> | AnyOpHandle<C>
->;
+export type RunEntity<
+  C extends AnySchema,
+  N extends OperationOwner,
+> = N extends { readonly _tag: "Trait"; readonly ns: string }
+  ? EntityRef<
+      C,
+      [ComposersOf<C, N>] extends [never] ? AnyEntity : ComposersOf<C, N>,
+      TxHandle<C> | AnyOpHandle<C>
+    >
+  : EntityRef<C, N & AnyEntity, TxHandle<C> | AnyOpHandle<C>>;
 
 /**
  * Distributes over a union `C` so every member must cover `OC`. A
@@ -235,15 +308,26 @@ export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
  */
 export interface Op<
   C extends AnySchema = AnySchema,
-  N extends AnyEntity | undefined = undefined,
+  N extends OperationOwner | undefined = undefined,
+  Create extends { readonly _tag: "Entity" } | undefined = undefined,
 > {
   /**
-   * The entity a contextual operation is bound to (`on: Entity`).
-   * Absent on a non-contextual operation. `eid` is the `on` cell — an
-   * {@link Eid} or a {@link Tempid} when `db.run` was given a named tempid.
+   * The target a contextual operation is bound to (`on` / default `self`).
+   * Absent on `{ self: false }` and on a standalone non-contextual
+   * operation. `eid` is the target cell — an {@link Eid} or a
+   * {@link Tempid} when `db.run` was given a named tempid.
    */
-  readonly self: [N] extends [AnyEntity]
-    ? OpHandle<C, Eid<N> | Tempid>
+  readonly self: [N] extends [OperationOwner]
+    ? OpHandle<C, OwnerEid<N>>
+    : undefined;
+  /**
+   * Create a row of the owning entity. Present only on an entity-owned
+   * `{ self: false }` operation — the owner is already known, so there
+   * is no entity argument. Enforces that entity's complete create shape
+   * (required entity + trait fields).
+   */
+  readonly create: [Create] extends [{ readonly _tag: "Entity" }]
+    ? (attrs: OpPutCreateAttrs<C, Create & AnyEntity>) => OpHandle<C>
     : undefined;
   /** The authenticated caller. On the client this is `db.principal()`. */
   readonly principal: OpPrincipal;
@@ -329,20 +413,30 @@ export interface Operation<
   Name extends string = string,
   I = unknown,
   O = unknown,
-  N extends AnyEntity | undefined = undefined,
+  N extends OperationOwner | undefined = undefined,
   C extends AnySchema = AnySchema,
+  Create extends { readonly _tag: "Entity" } | undefined = undefined,
 > {
   readonly _tag: "Operation";
   readonly name: Name;
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on: N | undefined;
+  /** Defining entity or trait when this operation was bound from an owner map. */
+  readonly owner?: OperationOwner;
+  /** Local map key when bound from an owner map (`addTag` of `taggable/addTag`). */
+  readonly localName?: string;
+  /**
+   * Entity an owner-scoped `{ self: false }` operation may `op.create`.
+   * Absent on trait-owned and standalone operations.
+   */
+  readonly createEntity?: AnyEntity;
   /** Humans read this in the docs; later MCP uses it as the tool description. */
   readonly doc: string | undefined;
-  readonly body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>;
+  readonly body: (op: Op<C, N, Create>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>;
 }
 
-export type AnyOperation = Operation<string, any, any, any, any>;
+export type AnyOperation = Operation<string, any, any, any, any, any>;
 
 /**
  * Runtime handle the overlay and Worker actually build. Effect-flavored —
@@ -376,6 +470,7 @@ export interface RuntimeOp {
   put(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   update(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   update(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  create?(attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(
@@ -422,13 +517,18 @@ export interface DefinedOperations<
 
 /**
  * One registered operation, as discovery later reads it. Name is the
- * wire id; `doc` is the human / tool description; `on` is the entity ns
- * when the op is contextual.
+ * wire id; `doc` is the human / tool description; `on` is the target
+ * owner ns when the op takes `self`. Owned operations also record the
+ * defining owner, local key, and (for traits) applicable composers.
  */
 export interface OperationCard {
   readonly name: string;
   readonly doc?: string;
   readonly on?: string;
+  readonly owner?: string;
+  readonly local?: string;
+  readonly self?: boolean;
+  readonly composers?: readonly string[];
 }
 
 export interface OperationSchemas<
@@ -454,6 +554,70 @@ type OnEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? C["entities"][keyof C["entities"]] | undefined
   : AnyEntity | undefined;
 
+/**
+ * Authoring spec for an owner-map operation. `self` defaults to `true`.
+ * The enclosing entity / trait supplies identity and target context.
+ */
+export type OwnedOperationInit<
+  I = unknown,
+  O = unknown,
+  Self extends boolean = boolean,
+> = {
+  readonly input: Schema.Codec<I, unknown>;
+  readonly output?: Schema.Codec<O, unknown>;
+  readonly self?: Self;
+  readonly doc?: string;
+  readonly run: (
+    op: Op<AnySchema, any, any>,
+    input: I,
+  ) => Promise<OutputDraft<O>> | OutputDraft<O>;
+};
+
+export interface UnboundOperation<
+  I = unknown,
+  O = unknown,
+  Self extends boolean = boolean,
+> extends OwnedOperationInit<I, O, Self> {
+  readonly _tag: "UnboundOperation";
+  readonly self: Self;
+  readonly output: Schema.Codec<O, unknown>;
+  readonly doc: string | undefined;
+}
+
+type CodecType<S> = S extends { readonly Type: infer T }
+  ? T
+  : S extends Schema.Codec<infer T, any>
+    ? T
+    : unknown;
+
+type AsOpTarget<Owner> = Owner extends OperationOwner ? Owner : never;
+
+type AsCreateEntity<Owner> = Owner extends { readonly _tag: "Entity" }
+  ? Owner
+  : undefined;
+
+export type BoundOwnerOp<
+  Name extends string,
+  K extends string,
+  Spec,
+  Owner extends OperationOwner,
+> = Operation<
+  `${Name}/${K}`,
+  Spec extends { readonly input: infer I } ? CodecType<I> : unknown,
+  Spec extends { readonly output: infer O } ? CodecType<O> : {},
+  Spec extends { readonly self: false } ? undefined : AsOpTarget<Owner>,
+  AnySchema,
+  Spec extends { readonly self: false } ? AsCreateEntity<Owner> : undefined
+>;
+
+export type BoundOwnerOps<
+  Name extends string,
+  Ops,
+  Owner extends OperationOwner,
+> = {
+  readonly [K in keyof Ops]: BoundOwnerOp<Name, K & string, Ops[K], Owner>;
+};
+
 /** Concrete entity of `C` — {@link Operation.patch}'s `on` target. */
 type CatalogEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? C["entities"][keyof C["entities"]]
@@ -464,8 +628,8 @@ const emptyOutput = Schema.Struct({});
 const docOf = (doc: string | undefined): string | undefined =>
   doc === undefined || doc === "" ? undefined : doc;
 
-/** Define one named operation. */
-const defineOperation = <
+/** Define one named standalone operation. */
+const defineNamedOperation = <
   Name extends string,
   I,
   O = {},
@@ -484,6 +648,56 @@ const defineOperation = <
   doc: docOf(schemas.doc),
   body,
 });
+
+type OwnedOpSpec = {
+  readonly input: Schema.Codec<any, unknown>;
+  readonly output?: Schema.Codec<any, unknown>;
+  readonly self?: boolean;
+  readonly doc?: string;
+  readonly run: (op: Op<AnySchema, any, any>, input: any) => any;
+};
+
+/** Owner-map form: `const` keeps `self: false` a literal; `run` is contextual. */
+const defineOwnedOperation = <const T extends OwnedOpSpec>(
+  spec: T,
+): T & { readonly _tag: "UnboundOperation" } => {
+  const init = spec as OwnedOperationInit;
+  return Object.assign(spec as object, {
+    _tag: "UnboundOperation" as const,
+    self: init.self !== false,
+    output: init.output ?? emptyOutput,
+    doc: docOf(init.doc),
+  }) as unknown as T & { readonly _tag: "UnboundOperation" };
+};
+
+/** Define one named operation, or an unbound owner-map operation. */
+function defineOperation<const T extends OwnedOpSpec>(
+  spec: T,
+): T & { readonly _tag: "UnboundOperation" };
+function defineOperation<
+  Name extends string,
+  I,
+  O = {},
+  C extends AnySchema = AnySchema,
+  N extends OnEntity<C> = undefined,
+>(
+  name: Name,
+  schemas: OperationSchemas<I, O, N, C>,
+  body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
+): Operation<Name, I, O, N, C>;
+function defineOperation(
+  nameOrSpec: string | object,
+  schemas?: OperationSchemas<any, any, any, any>,
+  body?: (op: Op<any, any>, input: any) => any,
+): unknown {
+  if (typeof nameOrSpec !== "string") {
+    return defineOwnedOperation(nameOrSpec as OwnedOpSpec);
+  }
+  if (schemas === undefined || body === undefined) {
+    throw new Error("ramose: Operation(name, schemas, body) needs schemas and a body");
+  }
+  return defineNamedOperation(nameOrSpec, schemas, body);
+}
 
 type FieldSchemaType<E extends AnyEntity, K extends string> = E["fields"][K] extends {
   readonly schema: { readonly Type: infer T };
@@ -525,7 +739,7 @@ const definePatch = <
   keys: Keys,
   options?: { readonly doc?: string; readonly schema?: C },
 ): Operation<Name, PatchInput<E, Keys>, {}, E, C> => {
-  const operation = defineOperation(
+  const operation = defineNamedOperation(
     name,
     {
       on: entity as never,
@@ -579,7 +793,7 @@ type OperationFor<C extends AnySchema> = OperationDefine<C> & {
 const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
   Object.assign(
     ((name, schemas, body) =>
-      defineOperation(name, { ...schemas, schema }, body)) as OperationDefine<C>,
+      defineNamedOperation(name, { ...schemas, schema }, body)) as OperationDefine<C>,
     {
       patch: ((name, entity, keys, options) =>
         definePatch(name, entity, keys, { ...options, schema })) as OperationPatch<C>,
@@ -600,21 +814,53 @@ const namesOfRegistry = (operations: Record<string, AnyOperation>): string[] => 
   return [...names].sort();
 };
 
+const composersOfTrait = (
+  schema: AnySchema | undefined,
+  traitNs: string,
+): readonly string[] | undefined => {
+  if (schema === undefined) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = (composer: ComposerLike): boolean => {
+    if (composer.ns === traitNs) return true;
+    return traitsOf(composer).some(walk);
+  };
+  for (const entity of Object.values(schema.entities)) {
+    if (!walk(entity as ComposerLike) || seen.has(entity.ns)) continue;
+    seen.add(entity.ns);
+    out.push(entity.ns);
+  }
+  return out.length === 0 ? undefined : out.sort();
+};
+
+const cardOf = (op: AnyOperation, schema?: AnySchema): OperationCard => {
+  const ns = op.on?.ns;
+  const ownerNs = op.owner?.ns;
+  const local = op.localName;
+  const owned = op.owner !== undefined;
+  const traitOn =
+    op.on !== undefined && (op.on as { readonly _tag?: string })._tag === "Trait";
+  const composers = traitOn ? composersOfTrait(schema, op.on!.ns) : undefined;
+  return {
+    name: op.name,
+    ...(op.doc !== undefined ? { doc: op.doc } : {}),
+    ...(typeof ns === "string" && ns.length > 0 ? { on: ns } : {}),
+    ...(typeof ownerNs === "string" && ownerNs.length > 0 ? { owner: ownerNs } : {}),
+    ...(typeof local === "string" && local.length > 0 ? { local } : {}),
+    ...(owned || ns !== undefined ? { self: op.on !== undefined } : {}),
+    ...(composers !== undefined ? { composers } : {}),
+  };
+};
+
 const cardsOfRegistry = (
   operations: Record<string, AnyOperation>,
   get: (name: string) => AnyOperation | undefined,
+  schema?: AnySchema,
 ): OperationCard[] =>
   namesOfRegistry(operations).flatMap((name) => {
     const op = get(name);
     if (op === undefined) return [];
-    const ns = op.on?.ns;
-    return [
-      {
-        name,
-        ...(op.doc !== undefined ? { doc: op.doc } : {}),
-        ...(typeof ns === "string" && ns.length > 0 ? { on: ns } : {}),
-      },
-    ];
+    return [cardOf(op, schema)];
   });
 
 const makeRegistry = <const M extends Record<string, AnyOperation>>(
@@ -633,8 +879,141 @@ const makeRegistry = <const M extends Record<string, AnyOperation>>(
     schema,
     get,
     names: () => namesOfRegistry(operations),
-    cards: () => cardsOfRegistry(operations, get),
+    cards: () => cardsOfRegistry(operations, get, schema),
   };
+};
+
+const isUnboundOperation = (
+  value: unknown,
+): value is UnboundOperation | OwnedOperationInit =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { readonly run?: unknown }).run === "function" &&
+  (value as { readonly input?: unknown }).input != null;
+
+const isBoundOperation = (value: unknown): value is AnyOperation =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { readonly _tag?: unknown })._tag === "Operation" &&
+  typeof (value as { readonly name?: unknown }).name === "string";
+
+const operationsOf = (
+  composer: unknown,
+): Readonly<Record<string, AnyOperation>> => {
+  if (typeof composer !== "object" || composer === null) return {};
+  const ops = (composer as { readonly operations?: unknown }).operations;
+  if (ops == null || typeof ops !== "object") return {};
+  return ops as Record<string, AnyOperation>;
+};
+
+/** Bind an owner-map spec to a permanent wire identity `owner/key`. */
+export const bindOwnedOperations = <
+  const Ops extends Record<string, unknown>,
+>(
+  owner: OperationOwner,
+  operations: Ops | undefined,
+): BoundOwnerOps<typeof owner.ns, Ops, typeof owner> => {
+  const out: Record<string, AnyOperation> = {};
+  if (operations === undefined) {
+    return out as BoundOwnerOps<typeof owner.ns, Ops, typeof owner>;
+  }
+  for (const [key, spec] of Object.entries(operations)) {
+    if (!isIdentName(key)) throw invalidIdentName("operation", key);
+    if (isBoundOperation(spec)) {
+      throw new Error(
+        `ramose: ${owner.ns}.${key} is already a named operation — use Ramose.Operation({ input, run }) in an owner map`,
+      );
+    }
+    if (!isUnboundOperation(spec)) {
+      throw new Error(
+        `ramose: ${owner.ns}.${key} must be Ramose.Operation({ input, run })`,
+      );
+    }
+    const takesSelf = spec.self !== false;
+    const createEntity =
+      !takesSelf && owner._tag === "Entity" ? (owner as AnyEntity) : undefined;
+    out[key] = {
+      _tag: "Operation",
+      name: `${owner.ns}/${key}`,
+      input: spec.input,
+      output: (spec.output ?? emptyOutput) as Schema.Codec<unknown, unknown>,
+      on: takesSelf ? owner : undefined,
+      owner,
+      localName: key,
+      ...(createEntity !== undefined ? { createEntity } : {}),
+      doc: docOf(spec.doc),
+      body: spec.run as AnyOperation["body"],
+    };
+  }
+  return out as BoundOwnerOps<typeof owner.ns, Ops, typeof owner>;
+};
+
+const addHarvested = (
+  into: Record<string, AnyOperation>,
+  byName: Map<string, AnyOperation>,
+  op: AnyOperation,
+): void => {
+  const existing = byName.get(op.name);
+  if (existing !== undefined && existing !== op) {
+    throw duplicateOperationIdentity(op.name);
+  }
+  byName.set(op.name, op);
+  into[op.name] = op;
+};
+
+/** Owned operations reachable from a schema: entity maps, then each trait once. */
+export const harvestOwnedOperations = (
+  schema: AnySchema,
+): Record<string, AnyOperation> => {
+  const out: Record<string, AnyOperation> = {};
+  const byName = new Map<string, AnyOperation>();
+  for (const entity of Object.values(schema.entities)) {
+    for (const op of Object.values(operationsOf(entity))) {
+      if (isBoundOperation(op)) addHarvested(out, byName, op);
+    }
+  }
+  const traits = reachableTraits(Object.values(schema.entities) as ComposerLike[]);
+  for (const trait of traits.values()) {
+    for (const op of Object.values(operationsOf(trait))) {
+      if (isBoundOperation(op)) addHarvested(out, byName, op);
+    }
+  }
+  return out;
+};
+
+const mergeOperationMaps = (
+  ...maps: ReadonlyArray<Readonly<Record<string, AnyOperation>>>
+): Record<string, AnyOperation> => {
+  const out: Record<string, AnyOperation> = {};
+  const byName = new Map<string, AnyOperation>();
+  for (const map of maps) {
+    for (const op of Object.values(map)) {
+      addHarvested(out, byName, op);
+    }
+  }
+  return out;
+};
+
+/**
+ * Merge harvested owned operations with an extra registry or map.
+ * Same definition reached twice is idempotent; two different definitions
+ * on one wire identity throw.
+ */
+export const assembleOperations = (
+  schemas: AnySchema | readonly AnySchema[],
+  extra?: AnyOperations | Readonly<Record<string, AnyOperation>>,
+): Record<string, AnyOperation> => {
+  const list = Array.isArray(schemas) ? schemas : [schemas];
+  const harvested = list.map(harvestOwnedOperations);
+  const extras: Readonly<Record<string, AnyOperation>> =
+    extra !== undefined &&
+    typeof extra === "object" &&
+    extra !== null &&
+    "_tag" in extra &&
+    (extra as { readonly _tag?: unknown })._tag === "Operations"
+      ? (extra as AnyOperations).operations
+      : ((extra as Readonly<Record<string, AnyOperation>> | undefined) ?? {});
+  return mergeOperationMaps(...harvested, extras);
 };
 
 /** A deploy-time / client registry of operations. */
@@ -668,12 +1047,15 @@ type OpsFitCatalog<C extends AnySchema, M extends Record<string, AnyOperation>> 
  */
 export const defineOperations = <
   C extends AnySchema,
-  const M extends Record<string, AnyOperation>,
+  const M extends Record<string, AnyOperation> = {},
 >(
   schema: C,
-  operations: OpsFitCatalog<C, M> & M,
-): DefinedOperations<C, M> =>
-  makeRegistry(operations, schema) as unknown as DefinedOperations<C, M>;
+  operations?: OpsFitCatalog<C, M> & M,
+): DefinedOperations<C, M> => {
+  const extras = (operations ?? {}) as Record<string, AnyOperation>;
+  const merged = assembleOperations(schema, extras);
+  return makeRegistry(merged, schema) as unknown as DefinedOperations<C, M>;
+};
 
 /** Sorted unique wire ids in a registry. */
 export const operationNames = (ops: AnyOperations | undefined): string[] =>

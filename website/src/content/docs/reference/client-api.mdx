@@ -63,7 +63,7 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-**`Ramose.Entity(name, fields, options?)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields`, `_tag` and `traits` are reserved. `{ traits: [Taggable] }` flattens trait fields onto the entity; `Issue.tag === Taggable.tag` and the ident stays `:taggable/tag`.
+**`Ramose.Entity(name, fields, options?)`** — a **record type**, a named group of fields like a table ([glossary](/concepts/glossary/#record-type)). The result carries every field as a handle (`Todo.title`, full name `:todo/title`) plus `Todo.id`, the record's numeric **id** ([glossary](/concepts/glossary/#id)), usable in `where`, `select` and `orderBy`. Names match `IDENT_NAME_RE`; `id`, `ns`, `fields`, `_tag`, `traits` and `operations` are reserved. `{ traits: [Taggable] }` flattens trait fields onto the entity; `Issue.tag === Taggable.tag` and the ident stays `:taggable/tag`. `{ operations: { rename: Ramose.Operation({ input, run }) } }` binds entity-owned writes; the map key is the local name and the wire id is `issue/rename`.
 
 **`Ramose.Trait(name, fields, options?)`** — a reusable field group. Trait fields keep the trait namespace when composed. Entities and traits may compose traits transitively; a diamond that reaches the same trait is idempotent; two different fields with the same flattened name fail at definition and `install()`.
 
@@ -278,6 +278,8 @@ App writes go through `db.run`. There is no public `db.transact`. Raw `POST /tra
 
 **`Ramose.Operation(name, schemas, body)`** — one named write. `name` (`issue/move`) is the wire contract; renaming one, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. Input and output codecs are Effect Schema (`ramose/effect`). Return a handle (or `{ id: handle }`) with `EntityId` in the output schema; `db.run` resolves it after the writer assigns ids.
 
+**`Ramose.Operation({ input, output?, self?, doc?, run })`** — the owner-map form, used inside `Entity` / `Trait` `operations:`. The map key is the local name; the owner plus key is the wire identity. Do not repeat a name, namespace, or `on`. `self` defaults to `true`.
+
 ```ts title="examples/todos/src/todos.ts#add-todo-op"
 export const addTodoOp = Ramose.Operation(
   "todo/add",
@@ -305,7 +307,15 @@ export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
 });
 ```
 
-**`Ramose.defineOperations(catalog, { … })`** — the shared registry both the app and the peer entry import. Pass it to `createServer({ operations })` and `Server({ operations, main })`. `Ramose.Operations({ … })` is the catalog-free form. `operationNames` / `operationCards` list wire ids and discovery cards.
+Entities and traits may own operations in the same options bag as `traits`. The map key is the local name; the owner plus key is the wire identity (`issue/create`, `taggable/addTag`). `self` defaults to `true` (the operation takes a target). `{ self: false }` is owner-scoped and drops the entity argument from `db.run`. Trait operations stay on the trait and accept any composer. `defineOperations(catalog)` harvests owned operations by schema reachability.
+
+```ts
+await db.run(Issue.operations.create, { title: "Fix login" });
+await db.run(Issue.operations.rename, issueId, { title: "Fix auth" });
+await db.run(Taggable.operations.addTag, issueId, { tag: "urgent" });
+```
+
+**`Ramose.defineOperations(catalog, { … })`** — the shared registry both the app and the peer entry import. Pass it to `createServer({ operations })` and `Server({ operations, main })`. `Ramose.Operations({ … })` is the catalog-free form. `operationNames` / `operationCards` list wire ids and discovery cards. Owned operations on the catalog are harvested automatically.
 
 `checkOperationsCoverage(client, peer)` (or `connect({ operations }).checkOperations()`, or `Server({ operations })` at deploy) fails with `OperationsCoverageError` when the peer is missing an id the client ships.
 

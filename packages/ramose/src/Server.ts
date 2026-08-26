@@ -48,6 +48,8 @@ import { installCatalog } from "./Database.ts";
 import { InvalidRequest, NetworkError, OperationsCoverageError, PolicyError } from "./db/Errors.ts";
 import {
   type AnyOperations,
+  Operations,
+  assembleOperations,
   checkOperationsCoverage,
 } from "./db/Operation.ts";
 import { checkOperationsPolicyCoverage } from "./db/Policy.ts";
@@ -623,6 +625,21 @@ const healthOperationsOf = (health: unknown): string[] => {
  * fail the deploy as {@link OperationsCoverageError} so `missing` and
  * `instanceof` survive; extra peer ops are fine. Unset `operations` skips.
  */
+/**
+ * Harvest owned operations from seeded catalogs and merge with an
+ * explicit registry. Duplicate wire identities bound to different
+ * definitions are assembly errors.
+ */
+export const assembleServerOperations = (
+  databases: Record<string, DatabaseSeed> | undefined,
+  extra?: AnyOperations,
+): AnyOperations | undefined => {
+  const schemas =
+    databases === undefined ? [] : Object.values(databases).map(schemaOf);
+  if (schemas.length === 0) return extra;
+  return Operations(assembleOperations(schemas, extra));
+};
+
 export const compareOperationsToHealth = (
   operations: AnyOperations | undefined,
   health: unknown,
@@ -958,15 +975,19 @@ const attributes = Effect.fn(function* (
   }
   const url = trimSlashes(chosen);
   yield* probeHealth(url, props.probe, defaults);
-  if (props.operations !== undefined) {
+  const assembledOps = assembleServerOperations(
+    props.databases as Record<string, DatabaseSeed> | undefined,
+    props.operations as AnyOperations | undefined,
+  );
+  if (assembledOps !== undefined) {
     const body = yield* fetchHealthJson(url, coverageTimeoutMs(props.probe, defaults));
-    const badOps = compareOperationsToHealth(props.operations, body);
+    const badOps = compareOperationsToHealth(assembledOps, body);
     if (badOps !== undefined) {
       return yield* Effect.fail(badOps);
     }
     const authPolicy = props.auth?.policy;
     const policyJson = isBound(authPolicy) ? authPolicy : undefined;
-    const badPolicyOps = compareOperationsToPolicy(props.operations, policyJson);
+    const badPolicyOps = compareOperationsToPolicy(assembledOps, policyJson);
     if (badPolicyOps !== undefined) {
       return yield* Effect.fail(badPolicyOps);
     }

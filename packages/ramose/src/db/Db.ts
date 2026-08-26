@@ -41,12 +41,12 @@ import {
 } from "./Errors.ts";
 export { IncompatibleSchema } from "./Errors.ts";
 export type { InstallOptions, SchemaChange } from "./Errors.ts";
-import type { AnyEntity } from "./Entity.ts";
 import type {
   AnyOperation,
   OpReport,
   Operation,
   OperationInvocation,
+  OperationOwner,
   RunArg,
   RunEntity,
 } from "./Operation.ts";
@@ -291,19 +291,20 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
   /**
    * Run a named operation. Decode input, apply the optimistic prefix (steps
    * before the first `op.effect`) as a pending layer, and POST the invocation.
-   * A contextual operation (`on: Entity`) takes the entity as the second
-   * argument. A *branded* cell of the wrong entity is rejected; an unbranded
-   * number and a nominal `tempid("ada")` are deliberate hatches.
-   * Lookups must use a unique attr of the `on` entity.
+   * A contextual operation (`on` / default `self`) takes the entity as the
+   * second argument. A *branded* cell of the wrong entity is rejected; an
+   * unbranded number and a nominal `tempid("ada")` are deliberate hatches.
+   * Trait operations accept any composer. Lookups must use a unique attr
+   * of the target owner.
    *
    * A schema-less operation runs on any db. An operation bound with
    * `schema:` runs on a db that has at least that catalog's entity keys.
    */
   run<I, O, OC extends AnySchema = AnySchema>(
-    operation: Operation<string, I, O, undefined, OC>,
+    operation: Operation<string, I, O, undefined, OC, any>,
     input: RunArg<C, OC, I>,
   ): Promise<OpReport<O, C>>;
-  run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
+  run<I, O, N extends OperationOwner, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
     entity: RunArg<C, OC, RunEntity<C, N>>,
     input: I,

@@ -8,7 +8,7 @@ import Next from "../../../components/Next.astro";
 
 App writes go through `db.run` — a named **operation**. Raw `POST /transact` is closed for app-class tokens by default; superuser and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
 
-Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line:
+Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). Entities and traits may own operations (`Issue.operations.rename`, `Taggable.operations.addTag`) — the map key plus owner is the wire identity, and `defineOperations(catalog)` harvests them. A trivial field update is `Operation.patch` — one line:
 
 ```ts title="examples/reef/src/app/mutations.ts#set-title-op"
 export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {

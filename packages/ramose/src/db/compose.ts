@@ -20,6 +20,16 @@ export const traitsOf = (composer: unknown): readonly ComposerLike[] => {
   return Array.isArray(traits) ? (traits as readonly ComposerLike[]) : [];
 };
 
+/** Bound operations stamped on an entity or trait, if any. */
+export const operationsOf = (
+  composer: unknown,
+): Readonly<Record<string, { readonly name: string }>> => {
+  if (typeof composer !== "object" || composer === null) return {};
+  const ops = (composer as { readonly operations?: unknown }).operations;
+  if (ops == null || typeof ops !== "object") return {};
+  return ops as Record<string, { readonly name: string }>;
+};
+
 export const composerIdent = (ns: string): `:${string}` => `:${ns}`;
 
 export const fieldIdentOf = (

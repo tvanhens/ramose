@@ -22,11 +22,18 @@ import {
   type ValidIdentName,
   type ValidTraitCompose,
 } from "./IdentName.ts";
+import {
+  bindOwnedOperations,
+  type BoundOwnerOps,
+  type OperationOwner,
+} from "./Operation.ts";
 
 export type TraitOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
+  Ops = {},
 > = {
   readonly traits?: Traits;
+  readonly operations?: Ops;
 };
 
 /**
@@ -38,6 +45,7 @@ export type TraitOptions<
 export type Trait<
   Name extends string = string,
   Fields extends FieldMap = FieldMap,
+  Ops extends Record<string, unknown> = {},
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
@@ -48,6 +56,8 @@ export type Trait<
   readonly fields: StampedMap<Name, Fields>;
   /** Direct composed traits, in author order. */
   readonly traits: readonly { readonly ns: string }[];
+  /** Operations this trait owns. Not copied onto composers. */
+  readonly operations: BoundOwnerOps<Name, Ops, Trait<Name, Fields>>;
 } & StampedMap<Name, Fields>;
 
 /**
@@ -62,6 +72,7 @@ export type AnyTrait = {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
   readonly traits: readonly { readonly ns: string }[];
+  readonly operations?: Readonly<Record<string, { readonly name: string }>>;
 };
 
 export declare namespace Trait {
@@ -80,14 +91,22 @@ const assertFieldKeys = (fields: FieldMap): void => {
   }
 };
 
+type TraitOwner<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+> = Trait<Name, Fields> & FlattenedTraitFields<Traits>;
+
 type TraitWithTraits<
   Name extends string,
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
+  Ops extends Record<string, unknown> = {},
 > = Trait<Name, Fields> &
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
+    readonly operations: BoundOwnerOps<Name, Ops, TraitOwner<Name, Fields, Traits>>;
   };
 
 /** Group fields under one ident prefix, optionally composing other traits. */
@@ -98,21 +117,23 @@ export function Trait<const Name extends string, Fields extends FieldMap>(
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Record<string, unknown> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: TraitOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): TraitWithTraits<Name, Fields, Traits>;
+  options: TraitOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+): TraitWithTraits<Name, Fields, Traits, Ops>;
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Record<string, unknown> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: TraitOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits> {
+  options?: TraitOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+): Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits, Ops> {
   assertTraitName(name);
   assertFieldKeys(fields);
   const direct = (options?.traits ?? []) as readonly ComposerLike[];
@@ -123,11 +144,17 @@ export function Trait<
     stamped as Record<string, unknown>,
     flattened,
   );
-  return {
+  const trait = {
     _tag: "Trait" as const,
     ns: name,
     fields: merged,
     traits: direct,
     ...merged,
-  } as Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits>;
+    operations: {},
+  };
+  trait.operations = bindOwnedOperations(
+    trait as unknown as OperationOwner,
+    options?.operations as Record<string, unknown> | undefined,
+  );
+  return trait as Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits, Ops>;
 }

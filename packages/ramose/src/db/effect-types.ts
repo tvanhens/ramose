@@ -21,6 +21,7 @@ import type { AnyEntity } from "./Entity.ts";
 import type {
   OpReport,
   Operation,
+  OperationOwner,
   RunArg,
   RunEntity,
 } from "./Operation.ts";
@@ -68,10 +69,10 @@ export interface EffectDb<C extends AnySchema = AnySchema>
   ): Effect.Effect<TxReport<C>, DbError | IncompatibleSchema>;
 
   run<I, O, OC extends AnySchema = AnySchema>(
-    operation: Operation<string, I, O, undefined, OC>,
+    operation: Operation<string, I, O, undefined, OC, any>,
     input: RunArg<C, OC, I>,
   ): Effect.Effect<OpReport<O, C>, DbError>;
-  run<I, O, N extends AnyEntity, OC extends AnySchema = AnySchema>(
+  run<I, O, N extends OperationOwner, OC extends AnySchema = AnySchema>(
     operation: Operation<string, I, O, N, OC>,
     entity: RunArg<C, OC, RunEntity<C, N>>,
     input: I,

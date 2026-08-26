@@ -12,14 +12,13 @@
  */
 
 import type {
-  AnyEntity,
   AnyOperation,
   Db,
   OpReport,
   Operation,
   Schema,
 } from "../db/index.ts";
-import type { RunArg, RunEntity } from "../db/Operation.ts";
+import type { OperationOwner, RunArg, RunEntity } from "../db/Operation.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** What `run` resolves — always, so `void run(...)` is safe. */
@@ -65,7 +64,7 @@ type ContextualRun<
   C extends Schema.Any,
   I,
   O,
-  N extends AnyEntity,
+  N extends OperationOwner,
   OC extends Schema.Any,
   E,
 > = (
@@ -95,14 +94,14 @@ export function useOperation<
   E = unknown,
 >(
   db: Db<C>,
-  operation: Operation<string, I, O, undefined, OC>,
+  operation: Operation<string, I, O, undefined, OC, any>,
   options?: OperationOptions<E>,
 ): OperationHandle<NonContextualRun<C, I, O, OC, E>, E>;
 export function useOperation<
   C extends Schema.Any,
   I,
   O,
-  N extends AnyEntity,
+  N extends OperationOwner,
   OC extends Schema.Any = Schema.Any,
   E = unknown,
 >(

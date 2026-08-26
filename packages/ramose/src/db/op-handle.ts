@@ -6,6 +6,7 @@
 
 import * as Effect from "effect/Effect";
 import type { AnySchema } from "./Schema.ts";
+import type { AnyEntity } from "./Entity.ts";
 import { type DbError, InternalError, InvalidRequest, isDatabaseError } from "./Errors.ts";
 import {
   type AnyOperation,
@@ -40,6 +41,8 @@ export interface OpHandleOptions {
    * `"run"` — server: evaluate the thunk with `ctx`.
    */
   readonly effects: "halt" | "run";
+  /** Entity an owner-scoped `{ self: false }` operation may `op.create`. */
+  readonly createEntity?: AnyEntity;
   readonly effectCtx?: {
     readonly env: unknown;
     readonly databases: {
@@ -164,6 +167,15 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     delete: tx.delete,
     put: tx.put,
     update: tx.update,
+    ...(options.createEntity !== undefined
+      ? {
+          create: (attrs: unknown) =>
+            (tx.put as (entity: unknown, attrs: unknown) => Effect.Effect<RuntimeOpHandle>)(
+              options.createEntity,
+              attrs,
+            ),
+        }
+      : {}),
   };
 
   return {
@@ -187,11 +199,11 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
 });
 
 /** Wrap the Effect runtime handle as the async `Op` a body sees. */
-export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
+export const asPromiseOp = (op: RuntimeOp): Op<any, any, any> => {
   const entity = ((id?: unknown) =>
     promiseEntity(
       runSync(id === undefined ? op.entity() : op.entity(id)),
-    )) as Op<any, any>["entity"];
+    )) as Op<any, any, any>["entity"];
 
   return {
     self: (op.self === undefined
@@ -222,6 +234,9 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
           b === undefined ? op.update(entity, a) : op.update(entity, a, b),
         ),
       )) as Op<any, any>["update"],
+    create: (op.create !== undefined
+      ? (attrs: unknown) => promiseEntity(runSync(op.create!(attrs)))
+      : undefined) as any,
     query: ((input: AnyQueryObject) =>
       asPromise(op.query(input))) as Op["query"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),

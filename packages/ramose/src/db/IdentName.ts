@@ -35,6 +35,7 @@ export const RESERVED_FIELD_KEYS = [
   "fields",
   "_tag",
   "traits",
+  "operations",
 ] as const;
 
 /** A field key that collides with {@link Entity} metadata. */
@@ -231,7 +232,7 @@ export type ValidMerge<
 // ── runtime failures (definition time — throws, not DbError) ───────────────
 
 export const invalidIdentName = (
-  kind: "entity" | "field" | "trait",
+  kind: "entity" | "field" | "trait" | "operation",
   name: string,
 ): Error =>
   new Error(
@@ -240,7 +241,12 @@ export const invalidIdentName = (
 
 export const reservedFieldName = (name: string): Error =>
   new Error(
-    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, and traits are Entity / Trait metadata`,
+    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata`,
+  );
+
+export const duplicateOperationIdentity = (name: string): Error =>
+  new Error(
+    `ramose: duplicate operation identity ${JSON.stringify(name)}`,
   );
 
 // ── trait composition (type-level) ─────────────────────────────────────────

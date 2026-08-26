@@ -85,7 +85,7 @@ export const policy = Ramose.policy(
 
 - `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
-- The second argument is one block per record type (reads) plus `operations:` (writes). A record type with no `read` is invisible; a registered operation with no arm **denies** everyone but `superuser`.
+- The second argument is one block per record type (reads) plus `operations:` (writes). A record type with no `read` is invisible; a registered operation with no arm **denies** everyone but `superuser`. Entity-owned operations may also be armed under that entity (`issue.operations.rename`); trait-owned operations live under `traits.taggable.operations`. A `{ self: false }` operation takes a class gate only — there is no target row.
 
 `Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no schema class, or `P.class(superuser)`. `P.class` omits `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
 
