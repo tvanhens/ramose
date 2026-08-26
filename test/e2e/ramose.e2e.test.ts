@@ -162,8 +162,14 @@ d("ramose e2e", () => {
     ]);
     expect(rc.ok).toBe(true);
     const lastT = Math.max(...acks.map((a) => a.t));
-    // read-your-writes: the basis served after the last ack covers it
-    const q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
+    // Each write invalidates the basis cache on the isolate that handled it.
+    // A follow-up query without a fence can land on a different isolate whose
+    // peer-mode cache still holds the pre-batch snapshot (TTL 10 minutes) —
+    // the failure mode is `q.t` stuck at the previous test's basis (e.g. 46)
+    // while `lastT` is 71. `x-ramose-min-t` is the read-your-writes fence.
+    const q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`, [], {
+      minT: lastT,
+    });
     expect(q.t).toBeGreaterThanOrEqual(lastT);
     expect(q.result).toBe(before + 25);
     const info1 = await db.info();
@@ -179,7 +185,9 @@ d("ramose e2e", () => {
     }
     expect(info2.replica.stats.rootFlips).toBeGreaterThan(info1.replica.stats.rootFlips);
     expect(info2.replica.novelty).toBeLessThan(info1.replica.novelty);
-    expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBe(before + 25);
+    expect(
+      await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`, [], { minT: lastT }),
+    ).toBe(before + 25);
   });
 
   test("M7: an over-budget query is refused with a tagged 413, not an OOM", async () => {

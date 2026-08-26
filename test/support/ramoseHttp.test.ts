@@ -175,4 +175,22 @@ describe("PeerDb EDN query shapes", () => {
     expect(scalar).toBe(67);
     expect(scalar).toBeGreaterThan(0);
   });
+
+  test("queryEnvelope forwards x-ramose-min-t when fenced", async () => {
+    let seen: string | undefined;
+    const peer = new Peer("http://peer.test", {
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        seen = headers?.["x-ramose-min-t"];
+        return new Response(JSON.stringify({ t: 71, root: 7, result: 67 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const db = peer.db("e2e");
+    const envelope = await db.queryEnvelope<number>(FIND_COUNT, [], { minT: 71 });
+    expect(seen).toBe("71");
+    expect(envelope.t).toBe(71);
+  });
 });
