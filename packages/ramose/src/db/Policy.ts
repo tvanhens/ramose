@@ -782,7 +782,7 @@ export function policy<
 
   const REJECTED_WRITE_KEYS = new Set(["set", "remove", "delete", "create", "preset"]);
 
-  const ns: Record<string, NsRules> = {};
+  const ns: Record<string, NsRules> = Object.create(null) as Record<string, NsRules>;
   const maskedReads = new Set<string>();
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
@@ -919,7 +919,7 @@ export function policy<
         attrs[a.attr] = r;
         if (r.read !== undefined) maskedReads.add(a.attr);
       }
-      if (ns[traitKey] !== undefined) {
+      if (Object.hasOwn(ns, traitKey)) {
         fail(`traits.${traitKey}: ${JSON.stringify(traitKey)} is already an entity arm`);
       }
       ns[traitKey] = { prefix, rules, attrs };

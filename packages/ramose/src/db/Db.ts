@@ -449,6 +449,13 @@ const terminal = (e: { readonly _tag: string }): boolean =>
 /** `[User.name, "Ada"]` and `[":user/name", "Ada"]` both lower to the wire form. */
 const lowerSubject = (subject: unknown): unknown => lowerEntityArg(subject);
 
+/** Occupancy reads for `install()` — not part of the public read surface. */
+type OccupancyRead<C extends AnySchema> = EffectReadDb<C> & {
+  readonly queryOccupancy: (
+    input: AnyQueryObject,
+  ) => Effect.Effect<unknown, DbError | NotOne>;
+};
+
 /** @internal Everything a `Db` and its `ReadDb` views share. */
 const makeRead = <C extends AnySchema>(
   wire: Wire,
@@ -456,7 +463,7 @@ const makeRead = <C extends AnySchema>(
   schema: C,
   view: View,
   bad: InvalidRequest | undefined,
-): EffectReadDb<C> => {
+): OccupancyRead<C> => {
   const fenced = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
     bad === undefined ? effect : Effect.fail(bad as E);
 
@@ -492,6 +499,7 @@ const makeRead = <C extends AnySchema>(
     input: AnyQueryObject,
     minT: number | undefined,
     raw = false,
+    occupancy = false,
   ): Effect.Effect<
     {
       readonly rows: unknown;
@@ -522,6 +530,7 @@ const makeRead = <C extends AnySchema>(
             inputs: [],
             asOf: view.asOf,
             history: view.history === true ? true : undefined,
+            occupancy: occupancy === true ? true : undefined,
           }),
           minT ?? view.minT,
         ),
@@ -646,7 +655,7 @@ const makeRead = <C extends AnySchema>(
       ),
     );
 
-  const read: EffectReadDb<C> = {
+  const read: OccupancyRead<C> = {
     name,
     schema,
 
@@ -658,6 +667,16 @@ const makeRead = <C extends AnySchema>(
           ),
         ),
       )) as EffectReadDb<C>["query"],
+
+    /** Unfiltered occupancy for `install()` — schema-class gated on the peer. */
+    queryOccupancy: (input: AnyQueryObject) =>
+      fenced(
+        Effect.suspend(() =>
+          runQuery(input, undefined, false, true).pipe(
+            Effect.map((r) => r.rows),
+          ),
+        ),
+      ),
 
     live: ((input: AnyQueryObject) =>
       liveStanding(input, false)) as EffectReadDb<C>["live"],
@@ -936,7 +955,7 @@ export const makeDb = <C extends AnySchema>(
         for (const ns of namespacesNeedingOccupancy(desired, installed, options)) {
           const idents = occupancyIdents(installed, ns);
           if (idents.length === 0) continue;
-          const hit = yield* snap.query(occupancyQuery(idents));
+          const hit = yield* snap.queryOccupancy(occupancyQuery(idents));
           if (hit !== null) occupied.add(ns);
         }
         for (const ident of identsNeedingRefTargetOccupancy(
@@ -944,7 +963,7 @@ export const makeDb = <C extends AnySchema>(
           installed,
           options,
         )) {
-          const hit = yield* snap.query(occupancyQuery([ident]));
+          const hit = yield* snap.queryOccupancy(occupancyQuery([ident]));
           if (hit !== null) occupied.add(ident);
         }
         const refused = checkEvolution(desired, installed, occupied, options);

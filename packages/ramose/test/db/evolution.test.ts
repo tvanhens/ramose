@@ -11,16 +11,21 @@ import {
   QueryError,
   QueryParseError,
   TxError,
+  filterDb,
   fromJson,
+  parsePolicy,
   query,
   toJson,
   toWireDatom,
+  type Db as EngineDb,
+  type Principal,
 } from "../../src/internal/core/index.ts";
 import {
   Entity,
   Field,
   IncompatibleSchema,
   Long,
+  Policy as P,
   Schema as DbSchema,
   assembleInstalled,
   checkEvolution,
@@ -37,7 +42,9 @@ import {
   namespacesNeedingOccupancy,
   identsNeedingRefTargetOccupancy,
   occupancyIdents,
+  occupancyQuery,
   optionalRetracts,
+  Query,
   Ref,
   refTargetRetracts,
   schemaTx,
@@ -558,7 +565,9 @@ const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<u
 };
 
 /** HTTPS-only peer so install()'s asOf catalog read hits the engine, not an overlay. */
-const peer = async () => {
+const peer = async (opts?: {
+  readonly filter?: () => ((db: EngineDb) => EngineDb) | undefined;
+}) => {
   const conn = await Connection.create();
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const path = new URL(String(url)).pathname;
@@ -579,9 +588,16 @@ const peer = async () => {
         );
       }
       if (path.endsWith("/query")) {
-        const b = body as { query: object; inputs?: unknown[]; asOf?: number };
+        const b = body as {
+          query: object;
+          inputs?: unknown[];
+          asOf?: number;
+          occupancy?: boolean;
+        };
         let db = conn.db();
         if (typeof b.asOf === "number") db = db.asOf(b.asOf);
+        const filter = b.occupancy === true ? undefined : opts?.filter?.();
+        if (filter !== undefined) db = filter(db);
         const result = await query(db, b.query, b.inputs ?? []);
         return new Response(
           JSON.stringify(toJson({ t: db.effectiveT, result })),
@@ -883,6 +899,72 @@ describe("install() against a live engine", () => {
       kind: "refTarget",
       to: ":taggable",
     });
+    await p.dispose();
+  });
+
+  test("ref-target occupancy is unfiltered when the schema class cannot read the ref", async () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+    const Todo = Entity("todo", { title: Field(Schema.String) });
+    const Untargeted = DbSchema({
+      actor: Actor,
+      todo: Todo,
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    const Targeted = DbSchema({
+      actor: Actor,
+      todo: Todo,
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const authored = P.policy(
+      {
+        schema: Untargeted,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, todo: { read: true } },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    let filter: ((db: EngineDb) => EngineDb) | undefined;
+    const p = await peer({ filter: () => filter });
+    const db = p.ramose.db("notes", Untargeted);
+    await db.install();
+    const seeded = await run(
+      seedWrite(db, function* (tx) {
+        yield* tx.entity().pipe(
+          Effect.flatMap((actor) => actor.set(Actor.sub, "member-1")),
+        );
+        const todo = yield* tx.entity();
+        yield* todo.set(Todo.title, "plain");
+        const fav = yield* tx.entity();
+        yield* fav.set(Untargeted.entities.favorite.target, todo.eid);
+      }),
+    );
+    const actorEid = (await db.asOf(Number.MAX_SAFE_INTEGER).query(
+      Query.from(Actor).select({ id: Actor.id }).one(),
+    ))?.id;
+    expect(typeof actorEid).toBe("number");
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "member-1",
+      eid: actorEid as number,
+    };
+    filter = (engine) => filterDb(engine, engine, policy, principal);
+    const hidden = await p.ramose
+      .db("notes", Untargeted)
+      .asOf(Number.MAX_SAFE_INTEGER)
+      .query(occupancyQuery([":favorite/target"]));
+    expect(hidden).toBeNull();
+    const e = await runFail(p.ramose.db("notes", Targeted).install());
+    expect(e).toBeInstanceOf(IncompatibleSchema);
+    expect((e as IncompatibleSchema).changes[0]).toMatchObject({
+      ident: ":favorite/target",
+      kind: "refTarget",
+      to: ":taggable",
+    });
+    expect(seeded.t).toBeGreaterThan(0);
     await p.dispose();
   });
 

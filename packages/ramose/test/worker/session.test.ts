@@ -95,6 +95,14 @@ describe("planOf: frame → sub-request", () => {
     expect(JSON.parse(p.body)).toEqual({ query: "[:find ?e :where [?e :name]]", inputs: [7], asOf: 3, history: true, explain: true });
   });
 
+  test("q occupancy: true is forwarded on /query", () => {
+    const p = planOf({ id: 1, op: "q", query: "[:find ?e]", occupancy: true }) as any;
+    expect(p.error).toBeUndefined();
+    expect(JSON.parse(p.body)).toEqual({ query: "[:find ?e]", occupancy: true });
+    const omitted = planOf({ id: 2, op: "q", query: "[:find ?e]", occupancy: false }) as any;
+    expect(JSON.parse(omitted.body)).toEqual({ query: "[:find ?e]" });
+  });
+
   test("pull → POST /pull; transact → POST /transact { tx }", () => {
     const pull = planOf({ id: 2, op: "pull", eid: [":person/email", "a@b.c"], pattern: ["*"], asOf: 4 }) as any;
     expect([pull.rest, pull.method]).toEqual(["/pull", "POST"]);

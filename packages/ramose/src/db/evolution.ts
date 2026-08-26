@@ -91,7 +91,9 @@ export const installedRefTargetQuery = q(function* () {
 
 /**
  * Any entity that asserts one of `idents`. `.one()` so occupancy is a
- * single row or `null`.
+ * single row or `null`. `install()` must run this against the unfiltered
+ * store — a schema class that cannot read the ident would otherwise see
+ * `null` and skip an incompatible tighten.
  */
 export const occupancyQuery = (idents: readonly string[]) => {
   const listed = idents.filter((ident) => ident.length > 0);

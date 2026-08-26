@@ -12,7 +12,7 @@
  *   GET  /health              { ok, service, stage, time, operations: string[] }
  *   POST /db/:name/transact   { tx, clientTxId? }        → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
  *   POST /db/:name/op         { name, entity?, input, clientOpId } → { t, txEid, tempids, datoms, clientOpId, output }
- *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
+ *   POST /db/:name/query      { query, inputs?, asOf?, history?, occupancy? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
  *   GET  /db/:name/info                                            → { db, t, principal, … } — `t` and `principal` for everyone; transactor/replica internals for admin
@@ -39,7 +39,7 @@ import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, allowsRawTransact, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
+import { allowedOrigin, allowsRawTransact, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, occupancyDb, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { operationNames } from "../db/Operation.ts";
@@ -447,13 +447,16 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
 
   // ---- reads → replica basis + local execution
   if (rest === "/query" && request.method === "POST") {
-    const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean };
+    const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; occupancy?: boolean };
     if (!body?.query) throw new BadRequest({ message: "body must be { query, inputs? }" });
     if (body.explain) adminOnly(); // planner metadata is not filtered
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
     const store = segmentSource(env, db);
-    const dbv = await viewDb(env, principal, store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+    const readOpts = { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history };
+    const dbv = body.occupancy === true
+      ? await occupancyDb(env, principal, store, basis, readOpts)
+      : await viewDb(env, principal, store, basis, readOpts);
     const stats: QueryStats = { clauses: [] };
     const before = { ...store.stats };
     const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });

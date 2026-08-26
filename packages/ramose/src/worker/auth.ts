@@ -407,6 +407,30 @@ export async function viewDb(
   return filterDb(data, current, st.policy, await withEid(st.policy, principal, current));
 }
 
+/**
+ * Occupancy for `install()`: schema classes (and superuser / open mode)
+ * read the raw store. A filtered view would hide values the caller cannot
+ * read and let a ref-target tighten slip past `IncompatibleSchema`.
+ */
+export async function occupancyDb(
+  env: RamoseEnv,
+  principal: Principal,
+  store: NodeSource,
+  basis: Basis,
+  opts: { asOf?: number; history?: boolean } = {},
+): Promise<Db> {
+  const st = authState(env);
+  if (st.configured && st.policy === undefined) throw new Unauthorized({});
+  if (
+    st.policy !== undefined &&
+    !isSuperuser(principal, st.policy) &&
+    !canChangeSchema(principal, st.policy)
+  ) {
+    throw new Unauthorized({ status: 403, code: "policy" });
+  }
+  return dbFromBasis(store, basis, opts);
+}
+
 export { isSchemaTx };
 
 /** Every op is a map form carrying `:db/ident` — i.e. an `ensure`. */

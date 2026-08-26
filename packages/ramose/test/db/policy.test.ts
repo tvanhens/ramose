@@ -856,6 +856,54 @@ describe("an entity named traits", () => {
   });
 });
 
+describe("a trait named constructor", () => {
+  const Ctor = Trait("constructor", { flag: Field(Schema.String) });
+  const Item = Entity("item", { title: Field(Schema.String) }, { traits: [Ctor] });
+  const Actor = Entity("actor", { sub: Field.unique(Schema.String, "upsert") });
+  const Catalog = DbSchema({ actor: Actor, item: Item });
+
+  test("traits: { constructor: { read: true } } compiles", () => {
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        item: { read: true },
+        traits: { constructor: { read: true } },
+      },
+    );
+    expect(() =>
+      P.compile(authored, { pulls: [{ flag: Item.flag }] }),
+    ).not.toThrow();
+  });
+
+  test("traits: { toString: { read: true } } compiles", () => {
+    const Label = Trait("toString", { flag: Field(Schema.String) });
+    const Row = Entity("row", { title: Field(Schema.String) }, { traits: [Label] });
+    const App = DbSchema({ actor: Actor, row: Row });
+    const authored = P.policy(
+      {
+        schema: App,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        row: { read: true },
+        traits: { toString: { read: true } },
+      },
+    );
+    expect(() =>
+      P.compile(authored, { pulls: [{ flag: Row.flag }] }),
+    ).not.toThrow();
+  });
+});
+
 describe("a trait named read", () => {
   const Read = Trait("read", { flag: Field(Schema.String) });
   const Item = Entity("item", { title: Field(Schema.String) }, { traits: [Read] });
