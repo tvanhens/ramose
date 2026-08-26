@@ -687,6 +687,8 @@ test("authorization type fixtures compile", () => {
   expect(False._tag).toBe("False");
   expect(Incomplete(NotLoaded)._tag).toBe("Incomplete");
   expect(Present(1)._tag).toBe("Present");
+  expect(Present(new Date(0)).value).toBeInstanceOf(Date);
+  expect(Present(new Uint8Array([1])).value).toBeInstanceOf(Uint8Array);
   expect(() => Present(undefined as never)).toThrow(/Present cannot hold undefined/);
   expect(FieldAbsent._tag).toBe("FieldAbsent");
   expect(EntityAbsent._tag).toBe("EntityAbsent");
