@@ -12,6 +12,7 @@ import {
   Field,
   Policy as P,
   Query,
+  Ref,
   Schema,
   Trait,
   string,
@@ -426,6 +427,85 @@ describe("processTx membership and required trait fields", () => {
       { readonly id: number; readonly title: string; readonly tag: string },
     ][];
     expect(filteredOnly).toEqual(rows);
+  });
+
+  test("a trait attr on an unconjoined var is filtered under both pushdown paths", async () => {
+    const Actor = Entity("actor", { sub: Field.unique(string(), "upsert") });
+    const Owned = Entity(
+      "issue",
+      { title: string(), owner: Field(Ref(() => Actor)) },
+      { traits: [Taggable] },
+    );
+    const Catalog = Schema({ actor: Actor, issue: Owned });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const { tempids } = await conn.transact([
+      { ":db/id": "alice", ":actor/sub": "alice" },
+      { ":db/id": "bob", ":actor/sub": "bob" },
+      {
+        ":db/id": "mine",
+        ":issue/title": "alice-issue",
+        ":issue/owner": "alice",
+        ":taggable/tag": "PUBLIC",
+      },
+      {
+        ":db/id": "theirs",
+        ":issue/title": "bob-issue",
+        ":issue/owner": "bob",
+        ":taggable/tag": "TOP-SECRET",
+      },
+    ]);
+    const mine = tempids.mine!;
+    const ownIssue = (me: P.Me<typeof Actor>) => Query.is(Owned.owner, me);
+    const authored = P.policy(
+      {
+        schema: Catalog,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      { actor: { read: true }, issue: { read: ownIssue } },
+    );
+    const policy = parsePolicy(JSON.parse(P.compile(authored)));
+    const principal: Principal = {
+      kind: "user",
+      class: "member",
+      sub: "alice",
+      eid: tempids.alice!,
+      claims: { sub: "alice" },
+      db: "test",
+    };
+    const view = filterDb(conn.db(), conn.db(), policy, principal);
+    const expected: readonly [number, string][] = [[mine, "PUBLIC"]];
+
+    const leak = {
+      find: ["?b", "?g"],
+      where: [
+        ["?a", ":issue/title", "?t"],
+        ["?b", ":taggable/tag", "?g"],
+      ],
+    };
+    const leakOn = (await coreQuery(view, leak)) as readonly [number, string][];
+    const leakOff = (await coreQuery(view, leak, [], { pushdown: false })) as readonly [
+      number,
+      string,
+    ][];
+    expect(leakOn).toEqual(expected);
+    expect(leakOff).toEqual(expected);
+
+    const sameVar = {
+      find: ["?e", "?g"],
+      where: [
+        ["?e", ":issue/title", "?t"],
+        ["?e", ":taggable/tag", "?g"],
+      ],
+    };
+    const sameOn = (await coreQuery(view, sameVar)) as readonly [number, string][];
+    const sameOff = (await coreQuery(view, sameVar, [], {
+      pushdown: false,
+    })) as readonly [number, string][];
+    expect(sameOn).toEqual(expected);
+    expect(sameOff).toEqual(expected);
   });
 
   test("two composers sharing a trait field keep one attr rule", () => {

@@ -535,8 +535,16 @@ export async function allowsOp(
   const nsArms = prefix === undefined ? undefined : policy.ns?.[prefix]?.[op];
   // Pushdown already conjoined this namespace's read rule. Skip the ns-level
   // check (do not cache — a later raw read must still enforce) and apply
-  // only attr-level narrowing.
-  if (op === "read" && ctx.overlay === undefined && ctx.memo.skipsNsBackstop(prefix)) {
+  // only attr-level narrowing. Trait attrs never take this path: pushdown
+  // keeps trait prefixes out of `nsByVar`, so a var that reads only a trait
+  // attr is never conjoined. Remapping that attr to the composer ns would
+  // then consult `covered` under a namespace the plan never filtered.
+  if (
+    op === "read" &&
+    !isTrait &&
+    ctx.overlay === undefined &&
+    ctx.memo.skipsNsBackstop(prefix)
+  ) {
     if (!attrArms) return true;
     return evalArms(attrArms, ctx, policy.rules, false);
   }
