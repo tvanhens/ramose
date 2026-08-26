@@ -19,3 +19,7 @@ packages/*/NOTICE
 # agents/, skills/, commands/) is deliberately NOT ignored so it can be checked in.
 .claude/worktrees/
 .claude/settings.local.json
+
+# Incremental typecheck cache (tsconfig.json sets `incremental: true`). Machine
+# -local and ~2MB — rebuilt on demand by `bun run typecheck`.
+*.tsbuildinfo

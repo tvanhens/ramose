@@ -3,13 +3,21 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
-    "module": "ESNext",
+    // Bundled code: Vite, Bun and the Workers build own module transformation,
+    // so tsc is a type-checker only and keeps `preserve` + `bundler` rather
+    // than the `NodeNext` rules that apply when tsc is the compiler.
+    "module": "preserve",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "incremental": true,
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowImportingTsExtensions": true,
