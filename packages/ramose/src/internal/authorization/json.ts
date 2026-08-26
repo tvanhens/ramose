@@ -2,11 +2,30 @@
  * JSON-only values admitted in IR literals and claim maps.
  * Non-JSON values (functions, symbols, bigint, `NaN`, infinities) are
  * rejected by the structural decoder (#357).
+ *
+ * The recursive `JsonValue` type exists only to break the inference cycle.
+ * `Schema.Schema<JsonValue>` checks the schema against that type.
  */
 
-export type JsonScalar = string | number | boolean | null;
+import * as Schema from "effect/Schema";
+
+export const JsonScalar = Schema.Union([
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Null,
+]);
+export type JsonScalar = typeof JsonScalar.Type;
 
 export type JsonValue =
   | JsonScalar
-  | readonly JsonValue[]
+  | ReadonlyArray<JsonValue>
   | { readonly [key: string]: JsonValue };
+
+export const JsonValue: Schema.Schema<JsonValue> = Schema.suspend(() =>
+  Schema.Union([
+    JsonScalar,
+    Schema.Array(JsonValue),
+    Schema.Record(Schema.String, JsonValue),
+  ]),
+);

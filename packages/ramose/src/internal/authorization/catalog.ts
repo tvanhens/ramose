@@ -3,9 +3,12 @@
  *
  * #358 binds a template against {@link CatalogDescriptor}. #341 supplies
  * the real catalog-local identities; tests may use an in-memory descriptor.
+ *
+ * Effect Schema is the source of truth. Types are `typeof Model.Type`.
  */
 
-import type {
+import * as Schema from "effect/Schema";
+import {
   CatalogId,
   CatalogVersion,
   EntityId,
@@ -20,29 +23,47 @@ import type {
  * Storage value type a field or operation input key holds.
  * Mirrors the public catalog value-type names without importing `ramose/db`.
  */
-export type AuthorizationValueType =
-  | "string"
-  | "long"
-  | "double"
-  | "boolean"
-  | "ref"
-  | "uuid"
-  | "instant"
-  | "bytes";
+export const AuthorizationValueType = Schema.Literals([
+  "string",
+  "long",
+  "double",
+  "boolean",
+  "ref",
+  "uuid",
+  "instant",
+  "bytes",
+]);
+export type AuthorizationValueType = typeof AuthorizationValueType.Type;
 
-export type FieldCardinality = "one" | "many";
-export type FieldUniqueness = "upsert" | "strict";
+export const ScalarValueType = Schema.Literals([
+  "string",
+  "long",
+  "double",
+  "boolean",
+  "uuid",
+  "instant",
+  "bytes",
+]);
+export type ScalarValueType = typeof ScalarValueType.Type;
 
-export type EntityDescriptor = {
-  readonly id: EntityId;
+export const FieldCardinality = Schema.Literals(["one", "many"]);
+export type FieldCardinality = typeof FieldCardinality.Type;
+
+export const FieldUniqueness = Schema.Literals(["upsert", "strict"]);
+export type FieldUniqueness = typeof FieldUniqueness.Type;
+
+export const EntityDescriptor = Schema.Struct({
+  id: EntityId,
   /** Direct composed traits. Transitive closure is {@link TraitComposition}. */
-  readonly traits: readonly TraitId[];
-};
+  traits: Schema.Array(TraitId),
+});
+export type EntityDescriptor = typeof EntityDescriptor.Type;
 
-export type TraitDescriptor = {
-  readonly id: TraitId;
-  readonly traits: readonly TraitId[];
-};
+export const TraitDescriptor = Schema.Struct({
+  id: TraitId,
+  traits: Schema.Array(TraitId),
+});
+export type TraitDescriptor = typeof TraitDescriptor.Type;
 
 /**
  * Where a ref field (or ref-shaped operation input) points.
@@ -50,102 +71,136 @@ export type TraitDescriptor = {
  * that `organization` belongs to the referenced type — `valueType: "ref"`
  * alone is not enough. `self` is `Ref.self`; `untargeted` is `Field(Ref)`.
  */
-export type FieldRefTarget =
-  | { readonly _tag: "entity"; readonly entity: EntityId }
-  | { readonly _tag: "trait"; readonly trait: TraitId }
-  | { readonly _tag: "self" }
-  | { readonly _tag: "untargeted" };
+export const FieldRefTarget = Schema.Union([
+  Schema.TaggedStruct("entity", { entity: EntityId }),
+  Schema.TaggedStruct("trait", { trait: TraitId }),
+  Schema.TaggedStruct("self", {}),
+  Schema.TaggedStruct("untargeted", {}),
+]);
+export type FieldRefTarget = typeof FieldRefTarget.Type;
 
-type FieldDescriptorBase = {
-  readonly id: FieldId;
-  readonly cardinality: FieldCardinality;
-  readonly unique?: FieldUniqueness;
+const FieldDescriptorBase = {
+  id: FieldId,
+  cardinality: FieldCardinality,
+  unique: Schema.optionalKey(FieldUniqueness),
   /** AVET membership. Distinct from uniqueness — `Field(..., { index: true })`. */
-  readonly index: boolean;
-  readonly optional: boolean;
-  readonly owned: boolean;
+  index: Schema.Boolean,
+  optional: Schema.Boolean,
+  owned: Schema.Boolean,
 };
 
-export type ScalarFieldDescriptor = FieldDescriptorBase & {
-  readonly valueType: Exclude<AuthorizationValueType, "ref">;
-};
+export const ScalarFieldDescriptor = Schema.Struct({
+  ...FieldDescriptorBase,
+  valueType: ScalarValueType,
+});
+export type ScalarFieldDescriptor = typeof ScalarFieldDescriptor.Type;
 
-export type RefFieldDescriptor = FieldDescriptorBase & {
-  readonly valueType: "ref";
-  readonly refTarget: FieldRefTarget;
-};
+export const RefFieldDescriptor = Schema.Struct({
+  ...FieldDescriptorBase,
+  valueType: Schema.Literal("ref"),
+  refTarget: FieldRefTarget,
+});
+export type RefFieldDescriptor = typeof RefFieldDescriptor.Type;
 
-export type FieldDescriptor = ScalarFieldDescriptor | RefFieldDescriptor;
+export const FieldDescriptor = Schema.Union([ScalarFieldDescriptor, RefFieldDescriptor]);
+export type FieldDescriptor = typeof FieldDescriptor.Type;
+
+export const OperationInputScalarShape = Schema.TaggedStruct("scalar", { valueType: ScalarValueType });
+export type OperationInputScalarShape = typeof OperationInputScalarShape.Type;
+
+export const OperationInputRefShape = Schema.TaggedStruct("ref", { refTarget: FieldRefTarget });
+export type OperationInputRefShape = typeof OperationInputRefShape.Type;
+
+export const OperationInputOpaqueShape = Schema.TaggedStruct("opaque", {});
+export type OperationInputOpaqueShape = typeof OperationInputOpaqueShape.Type;
 
 /**
  * Recursive authoritative shape of one operation input key.
  * Nested arrays/structs stay intact; `opaque` is valid input that policy
  * expressions cannot traverse by key.
+ *
+ * Recursive types exist only to break the inference cycle. The Schema
+ * annotations check those types against the runtime models.
  */
-export type OperationInputShape =
-  | {
-      readonly _tag: "scalar";
-      readonly valueType: Exclude<AuthorizationValueType, "ref">;
-    }
-  | { readonly _tag: "ref"; readonly refTarget: FieldRefTarget }
-  | {
-      readonly _tag: "struct";
-      readonly fields: readonly OperationInputFieldDescriptor[];
-    }
-  | { readonly _tag: "array"; readonly items: OperationInputShape }
-  | { readonly _tag: "opaque" };
-
 export type OperationInputFieldDescriptor = {
   readonly key: string;
   readonly optional: boolean;
   readonly shape: OperationInputShape;
 };
 
+export type OperationInputShape =
+  | OperationInputScalarShape
+  | OperationInputRefShape
+  | OperationInputOpaqueShape
+  | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationInputFieldDescriptor> }
+  | { readonly _tag: "array"; readonly items: OperationInputShape };
+
+export const OperationInputFieldDescriptor: Schema.Schema<OperationInputFieldDescriptor> =
+  Schema.Struct({
+    key: Schema.String,
+    optional: Schema.Boolean,
+    shape: Schema.suspend(() => OperationInputShape),
+  });
+
+export const OperationInputShape: Schema.Schema<OperationInputShape> = Schema.Union([
+  OperationInputScalarShape,
+  OperationInputRefShape,
+  Schema.TaggedStruct("struct", { fields: Schema.Array(OperationInputFieldDescriptor) }),
+  Schema.TaggedStruct("array", { items: Schema.suspend(() => OperationInputShape) }),
+  OperationInputOpaqueShape,
+]);
+
 /**
  * Authoritative typed input for one owned operation.
  * The codec itself may be a struct, array, scalar, ref, or opaque value —
  * not only a top-level field map.
  */
+export const OperationInputDescriptor = OperationInputShape;
 export type OperationInputDescriptor = OperationInputShape;
 
-export type OperationDescriptor = {
-  readonly id: OperationId;
-  readonly input: OperationInputShape;
-};
+export const OperationDescriptor = Schema.Struct({
+  id: OperationId,
+  input: OperationInputShape,
+});
+export type OperationDescriptor = typeof OperationDescriptor.Type;
 
-export type TraitComposition = {
-  readonly composer: EntityId;
-  readonly trait: TraitId;
-  readonly transitive: readonly TraitId[];
-};
+export const TraitComposition = Schema.Struct({
+  composer: EntityId,
+  trait: TraitId,
+  transitive: Schema.Array(TraitId),
+});
+export type TraitComposition = typeof TraitComposition.Type;
 
 /**
  * Authoritative catalog the binder validates against.
  * Cross-catalog and stale identities fail binding (CAT-3, CAT-5).
  */
-export type CatalogDescriptor = {
-  readonly id: CatalogId;
-  readonly version: CatalogVersion;
-  readonly fingerprint: SchemaFingerprint;
-  readonly entities: readonly EntityDescriptor[];
-  readonly traits: readonly TraitDescriptor[];
-  readonly fields: readonly FieldDescriptor[];
-  readonly operations: readonly OperationDescriptor[];
-  readonly traitComposition: readonly TraitComposition[];
-};
+export const CatalogDescriptor = Schema.Struct({
+  id: CatalogId,
+  version: CatalogVersion,
+  fingerprint: SchemaFingerprint,
+  entities: Schema.Array(EntityDescriptor),
+  traits: Schema.Array(TraitDescriptor),
+  fields: Schema.Array(FieldDescriptor),
+  operations: Schema.Array(OperationDescriptor),
+  traitComposition: Schema.Array(TraitComposition),
+});
+export type CatalogDescriptor = typeof CatalogDescriptor.Type;
 
 /**
  * Facts and index lookups a decision requires. Computed in #358; this is
  * the type shape installed IR will carry.
  */
-export type RuleAccessLookup =
-  | { readonly _tag: "field"; readonly field: FieldId }
-  | { readonly _tag: "entity"; readonly entity: EntityId }
-  | { readonly _tag: "exists"; readonly entity: EntityId; readonly fields: readonly FieldId[] }
-  | { readonly _tag: "index"; readonly field: FieldId };
+export const RuleAccessLookup = Schema.Union([
+  Schema.TaggedStruct("field", { field: FieldId }),
+  Schema.TaggedStruct("entity", { entity: EntityId }),
+  Schema.TaggedStruct("exists", { entity: EntityId, fields: Schema.Array(FieldId) }),
+  Schema.TaggedStruct("index", { field: FieldId }),
+]);
+export type RuleAccessLookup = typeof RuleAccessLookup.Type;
 
-export type RuleAccessPlan = {
-  readonly rule: RuleId;
-  readonly lookups: readonly RuleAccessLookup[];
-};
-
+export const RuleAccessPlan = Schema.Struct({
+  rule: RuleId,
+  lookups: Schema.Array(RuleAccessLookup),
+});
+export type RuleAccessPlan = typeof RuleAccessPlan.Type;

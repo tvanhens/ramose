@@ -1,10 +1,12 @@
 /**
  * Authorization identities, IR vocabulary, and catalog descriptors.
  *
- * Internal module. Not a public package export. Later #337 slices add
- * decoding, binding, the authoring API, and the evaluator on top of these
- * types. Runtime enforcement (#343) will import installed types from here
- * without importing authoring.
+ * Internal module. Not a public package export. Persisted and
+ * boundary-crossing models are Effect Schema definitions; TypeScript
+ * types are `typeof Model.Type`. #357 applies these schemas for
+ * decoding, encoding, canonicalization, and hashing. Runtime
+ * enforcement (#343) will import installed types from here without
+ * importing authoring.
  *
  * Contract: `src/internal/design/authorization.md`.
  */

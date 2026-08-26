@@ -5,127 +5,126 @@
  * Runtime decisions are never keyed by a wire name alone (CAT-1).
  *
  * Rule / policy hashes are identity *types* here. Collision-resistant
- * assignment is #357 — these constructors do not hash.
+ * assignment is #357 — these schemas do not hash.
+ *
+ * Effect Schema is the source of truth. Types are `typeof Model.Type`.
  */
 
-declare const CatalogIdBrand: unique symbol;
-declare const DatabaseIdBrand: unique symbol;
-declare const CatalogVersionBrand: unique symbol;
-declare const SchemaFingerprintBrand: unique symbol;
-declare const PolicyHashBrand: unique symbol;
-declare const RuleIdBrand: unique symbol;
+import * as Schema from "effect/Schema";
 
 /** Installed catalog identity. Distinct from a local entity/trait name. */
-export type CatalogId = string & { readonly [CatalogIdBrand]: typeof CatalogIdBrand };
-export const CatalogId = (value: string): CatalogId => value as CatalogId;
+export const CatalogId = Schema.String.pipe(Schema.brand("CatalogId"));
+export type CatalogId = typeof CatalogId.Type;
 
 /** Database the installed catalog is bound to. */
-export type DatabaseId = string & { readonly [DatabaseIdBrand]: typeof DatabaseIdBrand };
-export const DatabaseId = (value: string): DatabaseId => value as DatabaseId;
+export const DatabaseId = Schema.String.pipe(Schema.brand("DatabaseId"));
+export type DatabaseId = typeof DatabaseId.Type;
 
 /** Catalog generation the IR was validated against (CAT-5). */
-export type CatalogVersion = string & {
-  readonly [CatalogVersionBrand]: typeof CatalogVersionBrand;
-};
-export const CatalogVersion = (value: string): CatalogVersion => value as CatalogVersion;
+export const CatalogVersion = Schema.String.pipe(Schema.brand("CatalogVersion"));
+export type CatalogVersion = typeof CatalogVersion.Type;
 
 /** Fingerprint of the authoritative schema/catalog the IR was bound to. */
-export type SchemaFingerprint = string & {
-  readonly [SchemaFingerprintBrand]: typeof SchemaFingerprintBrand;
-};
-export const SchemaFingerprint = (value: string): SchemaFingerprint =>
-  value as SchemaFingerprint;
+export const SchemaFingerprint = Schema.String.pipe(Schema.brand("SchemaFingerprint"));
+export type SchemaFingerprint = typeof SchemaFingerprint.Type;
 
 /** Policy document identity. Later a collision-resistant digest (#357). */
-export type PolicyHash = string & { readonly [PolicyHashBrand]: typeof PolicyHashBrand };
-export const PolicyHash = (value: string): PolicyHash => value as PolicyHash;
+export const PolicyHash = Schema.String.pipe(Schema.brand("PolicyHash"));
+export type PolicyHash = typeof PolicyHash.Type;
 
 /**
  * Rule identity. Later a collision-resistant canonical digest (#357).
  * One identity mapping to two different canonical bodies is an error;
  * silent interning overwrite is forbidden.
  */
-export type RuleId = string & { readonly [RuleIdBrand]: typeof RuleIdBrand };
-export const RuleId = (value: string): RuleId => value as RuleId;
+export const RuleId = Schema.String.pipe(Schema.brand("RuleId"));
+export type RuleId = typeof RuleId.Type;
 
 /** Entity or trait that owns a field or operation. Ownerless ops are unsupported. */
-export type OwnerKind = "entity" | "trait";
+export const OwnerKind = Schema.Literals(["entity", "trait"]);
+export type OwnerKind = typeof OwnerKind.Type;
 
-export type OwnerRef = {
-  readonly kind: OwnerKind;
-  readonly name: string;
-};
+export const OwnerRef = Schema.Struct({
+  kind: OwnerKind,
+  name: Schema.String,
+});
+export type OwnerRef = typeof OwnerRef.Type;
 
 /**
  * Target presence is independent of ownership.
  * `none` comes from `self: false`, not from a missing owner.
  */
-export type OperationTarget = "required" | "none";
+export const OperationTarget = Schema.Literals(["required", "none"]);
+export type OperationTarget = typeof OperationTarget.Type;
 
-export type RelativeEntityId = {
-  readonly _tag: "RelativeEntityId";
-  readonly name: string;
-};
+export const RelativeEntityId = Schema.TaggedStruct("RelativeEntityId", {
+  name: Schema.String,
+});
+export type RelativeEntityId = typeof RelativeEntityId.Type;
 
-export type RelativeTraitId = {
-  readonly _tag: "RelativeTraitId";
-  readonly name: string;
-};
+export const RelativeTraitId = Schema.TaggedStruct("RelativeTraitId", {
+  name: Schema.String,
+});
+export type RelativeTraitId = typeof RelativeTraitId.Type;
 
-export type RelativeFieldId = {
-  readonly _tag: "RelativeFieldId";
-  readonly owner: OwnerRef;
-  readonly localName: string;
-};
+export const RelativeFieldId = Schema.TaggedStruct("RelativeFieldId", {
+  owner: OwnerRef,
+  localName: Schema.String,
+});
+export type RelativeFieldId = typeof RelativeFieldId.Type;
 
 /**
  * Catalog-relative operation identity. `owner` and `target` are both
  * required and independent — an owned targetless op is valid.
  */
-export type RelativeOperationId = {
-  readonly _tag: "RelativeOperationId";
-  readonly owner: OwnerRef;
-  readonly localName: string;
-  readonly target: OperationTarget;
-};
+export const RelativeOperationId = Schema.TaggedStruct("RelativeOperationId", {
+  owner: OwnerRef,
+  localName: Schema.String,
+  target: OperationTarget,
+});
+export type RelativeOperationId = typeof RelativeOperationId.Type;
 
-export type EntityId = {
-  readonly _tag: "EntityId";
-  readonly catalog: CatalogId;
-  readonly name: string;
-};
+export const EntityId = Schema.TaggedStruct("EntityId", {
+  catalog: CatalogId,
+  name: Schema.String,
+});
+export type EntityId = typeof EntityId.Type;
 
-export type TraitId = {
-  readonly _tag: "TraitId";
-  readonly catalog: CatalogId;
-  readonly name: string;
-};
+export const TraitId = Schema.TaggedStruct("TraitId", {
+  catalog: CatalogId,
+  name: Schema.String,
+});
+export type TraitId = typeof TraitId.Type;
 
-export type FieldId = {
-  readonly _tag: "FieldId";
-  readonly catalog: CatalogId;
-  readonly owner: OwnerRef;
-  readonly localName: string;
-};
+export const FieldId = Schema.TaggedStruct("FieldId", {
+  catalog: CatalogId,
+  owner: OwnerRef,
+  localName: Schema.String,
+});
+export type FieldId = typeof FieldId.Type;
 
 /**
  * Canonical operation identity. Encodes catalog, owner, local name, and
  * target independently. Runtime must not key decisions by wire name alone.
  */
-export type OperationId = {
-  readonly _tag: "OperationId";
-  readonly catalog: CatalogId;
-  readonly owner: OwnerRef;
-  readonly localName: string;
-  readonly target: OperationTarget;
-};
+export const OperationId = Schema.TaggedStruct("OperationId", {
+  catalog: CatalogId,
+  owner: OwnerRef,
+  localName: Schema.String,
+  target: OperationTarget,
+});
+export type OperationId = typeof OperationId.Type;
 
-export type CanonicalIdentity = EntityId | TraitId | FieldId | OperationId;
-export type RelativeIdentity =
-  | RelativeEntityId
-  | RelativeTraitId
-  | RelativeFieldId
-  | RelativeOperationId;
+export const CanonicalIdentity = Schema.Union([EntityId, TraitId, FieldId, OperationId]);
+export type CanonicalIdentity = typeof CanonicalIdentity.Type;
+
+export const RelativeIdentity = Schema.Union([
+  RelativeEntityId,
+  RelativeTraitId,
+  RelativeFieldId,
+  RelativeOperationId,
+]);
+export type RelativeIdentity = typeof RelativeIdentity.Type;
 
 /** Identity flavor used to parameterize expressions, rules, and decisions. */
 export interface IdentitySpace {
@@ -149,65 +148,42 @@ export interface CanonicalIdentities extends IdentitySpace {
   readonly operation: OperationId;
 }
 
-export const RelativeEntityId = (name: string): RelativeEntityId => ({
-  _tag: "RelativeEntityId",
-  name,
-});
+/** Identity-schema bag a factory can instantiate while preserving each schema. */
+export type AnyIdentitySchemaSpace<
+  Entity extends Schema.Top = Schema.Top,
+  Trait extends Schema.Top = Schema.Top,
+  Field extends Schema.Top = Schema.Top,
+  Operation extends Schema.Top = Schema.Top,
+> = {
+  readonly entity: Entity;
+  readonly trait: Trait;
+  readonly field: Field;
+  readonly operation: Operation;
+};
 
-export const RelativeTraitId = (name: string): RelativeTraitId => ({
-  _tag: "RelativeTraitId",
-  name,
-});
+/** Schema space a factory uses to build relative or canonical IR. */
+export type IdentitySchemaSpace<
+  Entity extends Schema.Top = typeof RelativeEntityId | typeof EntityId,
+  Trait extends Schema.Top = typeof RelativeTraitId | typeof TraitId,
+  Field extends Schema.Top = typeof RelativeFieldId | typeof FieldId,
+  Operation extends Schema.Top = typeof RelativeOperationId | typeof OperationId,
+> = {
+  readonly entity: Entity;
+  readonly trait: Trait;
+  readonly field: Field;
+  readonly operation: Operation;
+};
 
-export const RelativeFieldId = (owner: OwnerRef, localName: string): RelativeFieldId => ({
-  _tag: "RelativeFieldId",
-  owner,
-  localName,
-});
+export const RelativeIdentitySchemas = {
+  entity: RelativeEntityId,
+  trait: RelativeTraitId,
+  field: RelativeFieldId,
+  operation: RelativeOperationId,
+} as const satisfies IdentitySchemaSpace;
 
-export const RelativeOperationId = (
-  owner: OwnerRef,
-  localName: string,
-  target: OperationTarget,
-): RelativeOperationId => ({
-  _tag: "RelativeOperationId",
-  owner,
-  localName,
-  target,
-});
-
-export const EntityId = (catalog: CatalogId, name: string): EntityId => ({
-  _tag: "EntityId",
-  catalog,
-  name,
-});
-
-export const TraitId = (catalog: CatalogId, name: string): TraitId => ({
-  _tag: "TraitId",
-  catalog,
-  name,
-});
-
-export const FieldId = (
-  catalog: CatalogId,
-  owner: OwnerRef,
-  localName: string,
-): FieldId => ({
-  _tag: "FieldId",
-  catalog,
-  owner,
-  localName,
-});
-
-export const OperationId = (
-  catalog: CatalogId,
-  owner: OwnerRef,
-  localName: string,
-  target: OperationTarget,
-): OperationId => ({
-  _tag: "OperationId",
-  catalog,
-  owner,
-  localName,
-  target,
-});
+export const CanonicalIdentitySchemas = {
+  entity: EntityId,
+  trait: TraitId,
+  field: FieldId,
+  operation: OperationId,
+} as const satisfies IdentitySchemaSpace;

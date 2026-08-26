@@ -44,20 +44,20 @@ import {
   TraitId,
   True,
   type AuthorizationFailure,
-  type AuthorizationPrincipal,
-  type CatalogBindingInput,
+  AuthorizationPrincipal,
+  CatalogBindingInput,
   type CatalogDescriptor,
-  type ClaimDescriptor,
+  ClaimDescriptor,
   type ClaimVocabulary,
   type CompleteProjected,
-  type FieldDescriptor,
+  FieldDescriptor,
   type IncompleteProjected,
-  type InputTerm,
-  type InstalledAuthorizationIR,
+  InputTerm,
+  InstalledAuthorizationIR,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
-  type OperationInputShape,
-  type PolicyTemplateIR,
+  OperationInputShape,
+  PolicyTemplateIR,
   type Present as PresentType,
   type Projected,
   type ProjectedValue,
@@ -75,9 +75,30 @@ type _noPublicAuthorization = Expect<
   Equal<Extract<PublicKeys, "Authorization" | "PolicyTemplateIR" | "InstalledAuthorizationIR">, never>
 >;
 
-const catalog = CatalogId("app");
+const catalog = CatalogId.make("app");
 const issueOwner = { kind: "entity" as const, name: "issue" };
 const taggableOwner = { kind: "trait" as const, name: "taggable" };
+
+type _catalogIdFromSchema = Expect<Equal<CatalogId, typeof CatalogId.Type>>;
+type _databaseIdFromSchema = Expect<Equal<DatabaseId, typeof DatabaseId.Type>>;
+type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof CatalogVersion.Type>>;
+type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
+type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
+type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
+type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
+type _traitIdFromSchema = Expect<Equal<TraitId, typeof TraitId.Type>>;
+type _fieldIdFromSchema = Expect<Equal<FieldId, typeof FieldId.Type>>;
+type _operationIdFromSchema = Expect<Equal<OperationIdType, typeof OperationId.Type>>;
+type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof RelativeFieldId.Type>>;
+type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
+type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
+type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
+type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
+type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
+type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
+type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
+type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
 
 type OwnerlessOperation = {
   readonly _tag: "OperationId";
@@ -166,7 +187,7 @@ type _truthIncompleteHasReason = Expect<
 >;
 
 type MissingRefTarget = {
-  readonly id: ReturnType<typeof FieldId>;
+  readonly id: FieldId;
   readonly valueType: "ref";
   readonly cardinality: "one";
   readonly optional: false;
@@ -175,9 +196,9 @@ type MissingRefTarget = {
 type _refTargetRequired = Expect<Equal<Extends<MissingRefTarget, FieldDescriptor>, false>>;
 
 type RefFieldWithTarget = {
-  readonly id: ReturnType<typeof FieldId>;
+  readonly id: FieldId;
   readonly valueType: "ref";
-  readonly refTarget: { readonly _tag: "entity"; readonly entity: ReturnType<typeof EntityId> };
+  readonly refTarget: { readonly _tag: "entity"; readonly entity: EntityId };
   readonly cardinality: "one";
   readonly index: true;
   readonly optional: false;
@@ -186,7 +207,7 @@ type RefFieldWithTarget = {
 type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
 
 type IndexedFieldMissingFlag = {
-  readonly id: ReturnType<typeof FieldId>;
+  readonly id: FieldId;
   readonly valueType: "string";
   readonly cardinality: "one";
   readonly optional: false;
@@ -319,18 +340,18 @@ const templateFixture: PolicyTemplateIR = {
   ],
   principal: {
     subjectClaim: "sub",
-    entity: RelativeFieldId({ kind: "entity", name: "user" }, "authId"),
+    entity: RelativeFieldId.make({ owner: { kind: "entity", name: "user" }, localName: "authId" }),
   },
   rules: [
     {
-      id: RuleId("owns-issue"),
+      id: RuleId.make("owns-issue"),
       focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: {
         _tag: "eq",
         left: {
           _tag: "ref",
           root: { _tag: "resource" },
-          steps: [{ field: RelativeFieldId(issueOwner, "owner") }],
+          steps: [{ field: RelativeFieldId.make({ owner: issueOwner, localName: "owner" }) }],
         },
         right: { _tag: "me" },
       },
@@ -343,10 +364,10 @@ const templateFixture: PolicyTemplateIR = {
       dependencies: [],
     },
     {
-      id: RuleId("rename-input"),
+      id: RuleId.make("rename-input"),
       focus: {
         _tag: "operation",
-        operation: RelativeOperationId(issueOwner, "rename", "required"),
+        operation: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
       },
       expr: {
         _tag: "and",
@@ -365,14 +386,14 @@ const templateFixture: PolicyTemplateIR = {
       dependencies: [],
     },
     {
-      id: RuleId("tag-grant"),
+      id: RuleId.make("tag-grant"),
       focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
       expr: {
         _tag: "some",
         collection: {
           _tag: "ref",
           root: { _tag: "resource" },
-          steps: [{ field: RelativeFieldId(taggableOwner, "tags") }],
+          steps: [{ field: RelativeFieldId.make({ owner: taggableOwner, localName: "tags" }) }],
         },
         bind: "tag",
         pred: {
@@ -387,7 +408,7 @@ const templateFixture: PolicyTemplateIR = {
                 left: {
                   _tag: "ref",
                   root: { _tag: "bind", name: "grant" },
-                  steps: [{ field: RelativeFieldId({ kind: "entity", name: "tag-grant" }, "user") }],
+                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "user" }) }],
                 },
                 right: { _tag: "me" },
               },
@@ -396,7 +417,7 @@ const templateFixture: PolicyTemplateIR = {
                 left: {
                   _tag: "ref",
                   root: { _tag: "bind", name: "grant" },
-                  steps: [{ field: RelativeFieldId({ kind: "entity", name: "tag-grant" }, "tag") }],
+                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "tag" }) }],
                 },
                 right: { _tag: "bind", name: "tag" },
               },
@@ -417,24 +438,24 @@ const templateFixture: PolicyTemplateIR = {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: [RuleId("owns-issue")], deny: [] },
+        decision: { allow: [RuleId.make("owns-issue")], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: [RuleId("tag-grant")], deny: [] },
+        decision: { allow: [RuleId.make("tag-grant")], deny: [] },
       },
     ],
     fields: [],
     operations: [
       {
-        target: RelativeOperationId(issueOwner, "rename", "required"),
-        decision: { allow: [RuleId("rename-input")], deny: [] },
+        target: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
+        decision: { allow: [RuleId.make("rename-input")], deny: [] },
       },
       {
-        target: RelativeOperationId(issueOwner, "create", "none"),
-        decision: { allow: [RuleId("rename-input")], deny: [] },
+        target: RelativeOperationId.make({ owner: issueOwner, localName: "create", target: "none" }),
+        decision: { allow: [RuleId.make("rename-input")], deny: [] },
       },
     ],
   },
@@ -443,11 +464,11 @@ const templateFixture: PolicyTemplateIR = {
 const installedFixture: InstalledAuthorizationIR = {
   _tag: "InstalledAuthorizationIR",
   version: INSTALLED_AUTHORIZATION_IR_VERSION,
-  database: DatabaseId("todos"),
+  database: DatabaseId.make("todos"),
   catalog,
-  catalogVersion: CatalogVersion("1"),
-  schemaFingerprint: SchemaFingerprint("schema"),
-  policyHash: PolicyHash("policy"),
+  catalogVersion: CatalogVersion.make("1"),
+  schemaFingerprint: SchemaFingerprint.make("schema"),
+  policyHash: PolicyHash.make("policy"),
   classes: ["member"],
   claims: [
     {
@@ -466,28 +487,28 @@ const installedFixture: InstalledAuthorizationIR = {
   ],
   principal: {
     subjectClaim: "sub",
-    entity: FieldId(catalog, { kind: "entity", name: "user" }, "authId"),
+    entity: FieldId.make({ catalog, owner: { kind: "entity", name: "user" }, localName: "authId" }),
   },
   identities: {
-    entities: [EntityId(catalog, "issue")],
-    traits: [TraitId(catalog, "taggable")],
-    fields: [FieldId(catalog, issueOwner, "owner")],
+    entities: [EntityId.make({ catalog, name: "issue" })],
+    traits: [TraitId.make({ catalog, name: "taggable" })],
+    fields: [FieldId.make({ catalog, owner: issueOwner, localName: "owner" })],
     operations: [
-      OperationId(catalog, issueOwner, "rename", "required"),
-      OperationId(catalog, issueOwner, "create", "none"),
-      OperationId(catalog, taggableOwner, "addTag", "required"),
+      OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
+      OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
+      OperationId.make({ catalog, owner: taggableOwner, localName: "addTag", target: "required" }),
     ],
   },
   traitComposition: [
     {
-      composer: EntityId(catalog, "issue"),
-      trait: TraitId(catalog, "taggable"),
-      transitive: [TraitId(catalog, "taggable")],
+      composer: EntityId.make({ catalog, name: "issue" }),
+      trait: TraitId.make({ catalog, name: "taggable" }),
+      transitive: [TraitId.make({ catalog, name: "taggable" })],
     },
   ],
   operations: [
     {
-      id: OperationId(catalog, issueOwner, "rename", "required"),
+      id: OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
       input: {
         _tag: "struct",
         fields: [
@@ -500,7 +521,7 @@ const installedFixture: InstalledAuthorizationIR = {
       },
     },
     {
-      id: OperationId(catalog, issueOwner, "create", "none"),
+      id: OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
       input: {
         _tag: "array",
         items: {
@@ -528,15 +549,15 @@ const installedFixture: InstalledAuthorizationIR = {
 
 const catalogDescriptor: CatalogDescriptor = {
   id: catalog,
-  version: CatalogVersion("1"),
-  fingerprint: SchemaFingerprint("schema"),
-  entities: [{ id: EntityId(catalog, "issue"), traits: [TraitId(catalog, "taggable")] }],
-  traits: [{ id: TraitId(catalog, "taggable"), traits: [] }],
+  version: CatalogVersion.make("1"),
+  fingerprint: SchemaFingerprint.make("schema"),
+  entities: [{ id: EntityId.make({ catalog, name: "issue" }), traits: [TraitId.make({ catalog, name: "taggable" })] }],
+  traits: [{ id: TraitId.make({ catalog, name: "taggable" }), traits: [] }],
   fields: [
     {
-      id: FieldId(catalog, issueOwner, "owner"),
+      id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
       valueType: "ref",
-      refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
+      refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
       cardinality: "one",
       index: false,
       optional: false,
@@ -548,14 +569,24 @@ const catalogDescriptor: CatalogDescriptor = {
 };
 
 const bindingInput: CatalogBindingInput = {
-  database: DatabaseId("todos"),
+  database: DatabaseId.make("todos"),
   catalog: catalogDescriptor,
   template: templateFixture,
 };
 
 const _operationFixtures = () => {
-  const ownedTargetless: OperationIdType = OperationId(catalog, issueOwner, "create", "none");
-  const traitOwned: OperationIdType = OperationId(catalog, taggableOwner, "addTag", "required");
+  const ownedTargetless: OperationIdType = OperationId.make({
+    catalog,
+    owner: issueOwner,
+    localName: "create",
+    target: "none",
+  });
+  const traitOwned: OperationIdType = OperationId.make({
+    catalog,
+    owner: taggableOwner,
+    localName: "addTag",
+    target: "required",
+  });
 
   // @ts-expect-error — owner cannot be omitted
   const noOwner: OperationIdType = {
@@ -580,9 +611,9 @@ const _operationFixtures = () => {
   const asTemplate: PolicyTemplateIR = installedFixture;
 
   const ownerHop: FieldDescriptor = {
-    id: FieldId(catalog, issueOwner, "owner"),
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
     valueType: "ref",
-    refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
+    refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
     cardinality: "one",
     index: true,
     optional: false,
@@ -591,7 +622,7 @@ const _operationFixtures = () => {
 
   // @ts-expect-error — ref fields must name the referenced entity/trait
   const ownerWithoutTarget: FieldDescriptor = {
-    id: FieldId(catalog, issueOwner, "owner"),
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
     valueType: "ref",
     cardinality: "one",
     index: false,
@@ -600,7 +631,7 @@ const _operationFixtures = () => {
   };
 
   const unindexed = {
-    id: FieldId(catalog, issueOwner, "title"),
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "title" }),
     valueType: "string" as const,
     cardinality: "one" as const,
     optional: false as const,
@@ -728,4 +759,6 @@ test("authorization type fixtures compile", () => {
   expect(new AuthorizationDenied()._tag).toBe("AuthorizationDenied");
   // @ts-expect-error — denial carries no diagnostic payload
   new AuthorizationDenied({ message: "exists" });
+  expect(Object.getPrototypeOf(templateFixture)).toBe(Object.prototype);
+  expect(Object.getPrototypeOf(installedFixture)).toBe(Object.prototype);
 });

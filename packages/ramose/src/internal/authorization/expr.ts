@@ -4,143 +4,262 @@
  * Authoring callbacks are build-time macros. Runtime evaluates this data,
  * not those callbacks. No aggregates, ordering, limiting, unrestricted
  * recursion, database effects, or author functions appear here (LANG-1–3).
+ *
+ * Effect Schema is the source of truth. Parameterized nodes are factories
+ * over relative or canonical identity schemas. Types are `typeof Model.Type`
+ * except the recursive expression unions, which exist only to break the
+ * inference cycle and are checked by `Schema.Decoder<…>`.
  */
 
-import type { IdentitySpace, RelativeIdentities } from "./identities.ts";
-import type { JsonScalar } from "./json.ts";
+import * as Schema from "effect/Schema";
+import {
+  CanonicalIdentitySchemas,
+  RelativeEntityId,
+  RelativeIdentitySchemas,
+  type AnyIdentitySchemaSpace,
+  type CanonicalIdentities,
+  type EntityId,
+  type IdentitySpace,
+  type RelativeIdentities,
+} from "./identities.ts";
+import { JsonScalar } from "./json.ts";
 
-export type PathRoot =
-  | { readonly _tag: "resource" }
-  | { readonly _tag: "me" }
-  | { readonly _tag: "bind"; readonly name: string };
+export const PathRoot = Schema.Union([
+  Schema.TaggedStruct("resource", {}),
+  Schema.TaggedStruct("me", {}),
+  Schema.TaggedStruct("bind", { name: Schema.String }),
+]);
+export type PathRoot = typeof PathRoot.Type;
 
-export type PathStep<I extends IdentitySpace = RelativeIdentities> = {
-  readonly field: I["field"];
-};
+export const PathStep = <F extends Schema.Top>(field: F) => Schema.Struct({ field });
 
 /** Typed fixed-depth ref traversal. Depth is `steps.length`; bounded at install. */
-export type RefTerm<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "ref";
-  readonly root: PathRoot;
-  readonly steps: readonly PathStep<I>[];
-};
+export const RefTerm = <F extends Schema.Top>(field: F) =>
+  Schema.TaggedStruct("ref", {
+    root: PathRoot,
+    steps: Schema.Array(PathStep(field)),
+  });
 
-export type LitTerm = {
-  readonly _tag: "lit";
-  readonly value: JsonScalar;
-};
+export const LitTerm = Schema.TaggedStruct("lit", {
+  value: JsonScalar,
+});
+export type LitTerm = typeof LitTerm.Type;
 
 /** Verified JWT subject. Always present in authorization context. */
-export type SubjectTerm = { readonly _tag: "subject" };
+export const SubjectTerm = Schema.TaggedStruct("subject", {});
+export type SubjectTerm = typeof SubjectTerm.Type;
 
 /** Optional application principal row. Incomplete when no row resolves. */
-export type MeTerm = { readonly _tag: "me" };
+export const MeTerm = Schema.TaggedStruct("me", {});
+export type MeTerm = typeof MeTerm.Type;
 
 /** Typed claim access. Key must be in the declared claims vocabulary. */
-export type ClaimTerm = {
-  readonly _tag: "claim";
-  readonly key: string;
-};
+export const ClaimTerm = Schema.TaggedStruct("claim", {
+  key: Schema.String,
+});
+export type ClaimTerm = typeof ClaimTerm.Type;
 
 /**
  * Typed operation input. `path` walks struct keys; `[]` is the input root.
  * A root term is required when the operation codec is a top-level scalar,
  * ref, or array — there is no field key to name.
  */
-export type InputTerm = {
-  readonly _tag: "input";
-  readonly path: readonly string[];
-};
+export const InputTerm = Schema.TaggedStruct("input", {
+  path: Schema.Array(Schema.String),
+});
+export type InputTerm = typeof InputTerm.Type;
 
 /** Existential or `some` binding. */
-export type BindTerm = {
-  readonly _tag: "bind";
-  readonly name: string;
-};
+export const BindTerm = Schema.TaggedStruct("bind", {
+  name: Schema.String,
+});
+export type BindTerm = typeof BindTerm.Type;
 
-export type ValueTerm<I extends IdentitySpace = RelativeIdentities> =
-  | LitTerm
-  | SubjectTerm
-  | MeTerm
-  | ClaimTerm
-  | InputTerm
-  | BindTerm
-  | RefTerm<I>;
+export const ValueTerm = <F extends Schema.Top>(field: F) =>
+  Schema.Union([
+    LitTerm,
+    SubjectTerm,
+    MeTerm,
+    ClaimTerm,
+    InputTerm,
+    BindTerm,
+    RefTerm(field),
+  ]);
 
-export type ConstExpr = {
-  readonly _tag: "const";
-  readonly value: boolean;
-};
+export const ConstExpr = Schema.TaggedStruct("const", {
+  value: Schema.Boolean,
+});
+export type ConstExpr = typeof ConstExpr.Type;
 
-export type AndExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "and";
-  readonly exprs: readonly AuthorizationExpr<I>[];
-};
+export const HasClassExpr = Schema.TaggedStruct("hasClass", {
+  class: Schema.String,
+});
+export type HasClassExpr = typeof HasClassExpr.Type;
 
-export type OrExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "or";
-  readonly exprs: readonly AuthorizationExpr<I>[];
-};
+export const AndExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("and", { exprs: Schema.Array(expr) });
 
-export type NotExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "not";
-  readonly expr: AuthorizationExpr<I>;
-};
+export const OrExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("or", { exprs: Schema.Array(expr) });
 
-export type EqExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "eq";
-  readonly left: ValueTerm<I>;
-  readonly right: ValueTerm<I>;
-};
+export const NotExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("not", { expr });
 
-/** Presence of a value (field, input path including the root, optional `me`). */
-export type HasExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "has";
-  readonly term: ValueTerm<I>;
-};
+export const EqExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("eq", { left: value, right: value });
 
-/** Membership of a value in a cardinality-many collection. */
-export type InExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "in";
-  readonly value: ValueTerm<I>;
-  readonly collection: ValueTerm<I>;
-};
+export const HasExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("has", { term: value });
 
-export type SomeExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "some";
-  readonly collection: RefTerm<I>;
-  readonly bind: string;
-  readonly pred: AuthorizationExpr<I>;
-};
+export const InExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("in", { value, collection: value });
 
-export type OverlapsExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "overlaps";
-  readonly left: RefTerm<I>;
-  readonly right: RefTerm<I>;
-};
+export const SomeExpr = <R extends Schema.Top, E extends Schema.Top>(ref: R, expr: E) =>
+  Schema.TaggedStruct("some", {
+    collection: ref,
+    bind: Schema.String,
+    pred: expr,
+  });
 
-/** Typed exists over an entity. Nested exists is bounded; self-joins are allowed. */
-export type ExistsExpr<I extends IdentitySpace = RelativeIdentities> = {
-  readonly _tag: "exists";
-  readonly entity: I["entity"];
-  readonly bind: string;
-  readonly pred: AuthorizationExpr<I>;
-};
+export const OverlapsExpr = <R extends Schema.Top>(ref: R) =>
+  Schema.TaggedStruct("overlaps", { left: ref, right: ref });
 
-export type HasClassExpr = {
-  readonly _tag: "hasClass";
-  readonly class: string;
-};
+export const ExistsExpr = <Entity extends Schema.Top, E extends Schema.Top>(entity: Entity, expr: E) =>
+  Schema.TaggedStruct("exists", {
+    entity,
+    bind: Schema.String,
+    pred: expr,
+  });
 
-export type AuthorizationExpr<I extends IdentitySpace = RelativeIdentities> =
+export const RelativePathStep = PathStep(RelativeIdentitySchemas.field);
+export type RelativePathStep = typeof RelativePathStep.Type;
+export const CanonicalPathStep = PathStep(CanonicalIdentitySchemas.field);
+export type CanonicalPathStep = typeof CanonicalPathStep.Type;
+
+export const RelativeRefTerm = RefTerm(RelativeIdentitySchemas.field);
+export type RelativeRefTerm = typeof RelativeRefTerm.Type;
+export const CanonicalRefTerm = RefTerm(CanonicalIdentitySchemas.field);
+export type CanonicalRefTerm = typeof CanonicalRefTerm.Type;
+
+export const RelativeValueTerm = ValueTerm(RelativeIdentitySchemas.field);
+export type RelativeValueTerm = typeof RelativeValueTerm.Type;
+export const CanonicalValueTerm = ValueTerm(CanonicalIdentitySchemas.field);
+export type CanonicalValueTerm = typeof CanonicalValueTerm.Type;
+
+export type RelativeAuthorizationExpr =
   | ConstExpr
-  | AndExpr<I>
-  | OrExpr<I>
-  | NotExpr<I>
-  | EqExpr<I>
-  | HasExpr<I>
-  | InExpr<I>
-  | SomeExpr<I>
-  | OverlapsExpr<I>
-  | ExistsExpr<I>
-  | HasClassExpr;
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<RelativeAuthorizationExpr> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<RelativeAuthorizationExpr> }
+  | { readonly _tag: "not"; readonly expr: RelativeAuthorizationExpr }
+  | { readonly _tag: "eq"; readonly left: RelativeValueTerm; readonly right: RelativeValueTerm }
+  | { readonly _tag: "has"; readonly term: RelativeValueTerm }
+  | { readonly _tag: "in"; readonly value: RelativeValueTerm; readonly collection: RelativeValueTerm }
+  | {
+      readonly _tag: "some";
+      readonly collection: RelativeRefTerm;
+      readonly bind: string;
+      readonly pred: RelativeAuthorizationExpr;
+    }
+  | { readonly _tag: "overlaps"; readonly left: RelativeRefTerm; readonly right: RelativeRefTerm }
+  | {
+      readonly _tag: "exists";
+      readonly entity: RelativeEntityId;
+      readonly bind: string;
+      readonly pred: RelativeAuthorizationExpr;
+    };
+
+export type CanonicalAuthorizationExpr =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExpr> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExpr> }
+  | { readonly _tag: "not"; readonly expr: CanonicalAuthorizationExpr }
+  | { readonly _tag: "eq"; readonly left: CanonicalValueTerm; readonly right: CanonicalValueTerm }
+  | { readonly _tag: "has"; readonly term: CanonicalValueTerm }
+  | { readonly _tag: "in"; readonly value: CanonicalValueTerm; readonly collection: CanonicalValueTerm }
+  | {
+      readonly _tag: "some";
+      readonly collection: CanonicalRefTerm;
+      readonly bind: string;
+      readonly pred: CanonicalAuthorizationExpr;
+    }
+  | { readonly _tag: "overlaps"; readonly left: CanonicalRefTerm; readonly right: CanonicalRefTerm }
+  | {
+      readonly _tag: "exists";
+      readonly entity: EntityId;
+      readonly bind: string;
+      readonly pred: CanonicalAuthorizationExpr;
+    };
+
+const authorizationExprUnion = <
+  Entity extends Schema.Top,
+  Trait extends Schema.Top,
+  Field extends Schema.Top,
+  Operation extends Schema.Top,
+  E extends Schema.Top,
+>(
+  ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+  expr: E,
+) => {
+  const value = ValueTerm(ids.field);
+  const ref = RefTerm(ids.field);
+  return Schema.Union([
+    ConstExpr,
+    AndExpr(expr),
+    OrExpr(expr),
+    NotExpr(expr),
+    EqExpr(value),
+    HasExpr(value),
+    InExpr(value),
+    SomeExpr(ref, expr),
+    OverlapsExpr(ref),
+    ExistsExpr(ids.entity, expr),
+    HasClassExpr,
+  ]);
+};
+
+export const AuthorizationExpr = <I extends AnyIdentitySchemaSpace>(
+  ids: I,
+): I extends typeof CanonicalIdentitySchemas
+  ? Schema.Decoder<CanonicalAuthorizationExpr, unknown>
+  : Schema.Decoder<RelativeAuthorizationExpr, unknown> =>
+  (ids.entity === CanonicalIdentitySchemas.entity
+    ? CanonicalAuthorizationExpr
+    : RelativeAuthorizationExpr) as I extends typeof CanonicalIdentitySchemas
+    ? Schema.Decoder<CanonicalAuthorizationExpr, unknown>
+    : Schema.Decoder<RelativeAuthorizationExpr, unknown>;
+
+export const RelativeAuthorizationExpr: Schema.Decoder<RelativeAuthorizationExpr, unknown> =
+  Schema.suspend(() => authorizationExprUnion(RelativeIdentitySchemas, RelativeAuthorizationExpr));
+
+export const CanonicalAuthorizationExpr: Schema.Decoder<CanonicalAuthorizationExpr, unknown> =
+  Schema.suspend(() => authorizationExprUnion(CanonicalIdentitySchemas, CanonicalAuthorizationExpr));
+
+export type PathStep<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalPathStep
+  : RelativePathStep;
+
+export type RefTerm<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalRefTerm
+  : RelativeRefTerm;
+
+export type ValueTerm<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalValueTerm
+  : RelativeValueTerm;
+
+export type AndExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "and" }>;
+export type OrExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "or" }>;
+export type NotExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "not" }>;
+export type EqExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "eq" }>;
+export type HasExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "has" }>;
+export type InExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "in" }>;
+export type SomeExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "some" }>;
+export type OverlapsExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "overlaps" }>;
+export type ExistsExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "exists" }>;
+
+export type AuthorizationExpr<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalAuthorizationExpr
+  : I extends RelativeIdentities
+    ? RelativeAuthorizationExpr
+    : RelativeAuthorizationExpr | CanonicalAuthorizationExpr;
