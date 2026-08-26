@@ -27,11 +27,11 @@ export const validateVocabularies = (
   classes: ReadonlyArray<string>,
   claims: ReadonlyArray<ClaimDescriptor>,
 ): Result.Result<void, ValidateFailure> => {
-  const subject = Schema.decodeUnknownResult(SubjectClaim)(subjectClaim);
+  const subject = Schema.decodeResult(SubjectClaim)(subjectClaim);
   if (Result.isFailure(subject)) return schemaFailure(subject.failure);
-  const classVocab = Schema.decodeUnknownResult(ClassVocabulary)(classes);
+  const classVocab = Schema.decodeResult(ClassVocabulary)(classes);
   if (Result.isFailure(classVocab)) return schemaFailure(classVocab.failure);
-  const claimVocab = Schema.decodeUnknownResult(ClaimVocabulary)(claims);
+  const claimVocab = Schema.decodeResult(ClaimVocabulary)(claims);
   if (Result.isFailure(claimVocab)) return schemaFailure(claimVocab.failure);
   return Result.succeed(undefined);
 };
@@ -39,7 +39,7 @@ export const validateVocabularies = (
 export const validateInputShapeKeys = (
   shape: OperationInputShape,
 ): Result.Result<void, ValidateFailure> => {
-  const decoded = Schema.decodeUnknownResult(OperationInputShapeSchema)(shape);
+  const decoded = Schema.decodeResult(OperationInputShapeSchema)(shape);
   if (Result.isFailure(decoded)) return schemaFailure(decoded.failure);
   return Result.succeed(undefined);
 };
