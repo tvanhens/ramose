@@ -31,6 +31,7 @@ import {
   MAX_READ_LEASE_MS,
   MAX_TRAVERSAL_DEPTH,
   MissingMe,
+  MissingMeProjection,
   NotLoaded,
   OperationId,
   POLICY_TEMPLATE_IR_VERSION,
@@ -46,10 +47,14 @@ import {
   type AuthorizationPrincipal,
   type CatalogBindingInput,
   type CatalogDescriptor,
+  type CompleteProjected,
+  type FieldDescriptor,
   type IncompleteProjected,
   type InstalledAuthorizationIR,
   type OperationId as OperationIdType,
+  type OperationInputFieldDescriptor,
   type PolicyTemplateIR,
+  type Present as PresentType,
   type Projected,
   type RelativeOperationId as RelativeOperationIdType,
   type Truth,
@@ -153,6 +158,71 @@ type _incompleteIsNotPresent = Expect<
 >;
 type _truthIncompleteHasReason = Expect<
   Extends<{ readonly _tag: "Incomplete"; readonly reason: typeof MissingMe }, Truth>
+>;
+
+type MissingRefTarget = {
+  readonly id: ReturnType<typeof FieldId>;
+  readonly valueType: "ref";
+  readonly cardinality: "one";
+  readonly optional: false;
+  readonly owned: false;
+};
+type _refTargetRequired = Expect<Equal<Extends<MissingRefTarget, FieldDescriptor>, false>>;
+
+type RefFieldWithTarget = {
+  readonly id: ReturnType<typeof FieldId>;
+  readonly valueType: "ref";
+  readonly refTarget: { readonly _tag: "entity"; readonly entity: ReturnType<typeof EntityId> };
+  readonly cardinality: "one";
+  readonly optional: false;
+  readonly owned: false;
+};
+type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
+
+type _missingMeIsProjected = Expect<Extends<typeof MissingMeProjection, Projected>>;
+type _missingMeIsIncomplete = Expect<
+  Extends<typeof MissingMeProjection, IncompleteProjected>
+>;
+type _missingMeIsNotComplete = Expect<
+  Equal<Extends<typeof MissingMeProjection, CompleteProjected>, false>
+>;
+type _missingMeIsNotEntityAbsent = Expect<
+  Equal<Extends<typeof MissingMeProjection, typeof EntityAbsent>, false>
+>;
+
+type _presentUndefinedNever = Expect<Equal<PresentType<undefined>, never>>;
+type _presentOptionalNever = Expect<Equal<PresentType<string | undefined>, never>>;
+type _presentScalarOk = Expect<Extends<PresentType<string>, Projected>>;
+
+type FlatScalarInput = {
+  readonly key: "labels";
+  readonly valueType: "string";
+  readonly cardinality: "many";
+  readonly optional: false;
+};
+type _flatInputRejected = Expect<
+  Equal<Extends<FlatScalarInput, OperationInputFieldDescriptor>, false>
+>;
+
+type NestedArrayStructInput = {
+  readonly key: "labels";
+  readonly optional: false;
+  readonly shape: {
+    readonly _tag: "array";
+    readonly items: {
+      readonly _tag: "struct";
+      readonly fields: readonly [
+        {
+          readonly key: "name";
+          readonly optional: false;
+          readonly shape: { readonly _tag: "scalar"; readonly valueType: "string" };
+        },
+      ];
+    };
+  };
+};
+type _nestedInputPreserved = Expect<
+  Extends<NestedArrayStructInput, OperationInputFieldDescriptor>
 >;
 
 type FailureTags = AuthorizationFailure["_tag"];
@@ -331,13 +401,42 @@ const installedFixture: InstalledAuthorizationIR = {
     {
       id: OperationId(catalog, issueOwner, "rename", "required"),
       input: {
-        fields: [{ key: "title", valueType: "string", cardinality: "one", optional: false }],
+        fields: [
+          {
+            key: "title",
+            optional: false,
+            shape: { _tag: "scalar", valueType: "string" },
+          },
+        ],
       },
     },
     {
       id: OperationId(catalog, issueOwner, "create", "none"),
       input: {
-        fields: [{ key: "title", valueType: "string", cardinality: "one", optional: false }],
+        fields: [
+          {
+            key: "title",
+            optional: false,
+            shape: { _tag: "scalar", valueType: "string" },
+          },
+          {
+            key: "labels",
+            optional: true,
+            shape: {
+              _tag: "array",
+              items: {
+                _tag: "struct",
+                fields: [
+                  {
+                    key: "name",
+                    optional: false,
+                    shape: { _tag: "scalar", valueType: "string" },
+                  },
+                ],
+              },
+            },
+          },
+        ],
       },
     },
   ],
@@ -356,6 +455,7 @@ const catalogDescriptor: CatalogDescriptor = {
     {
       id: FieldId(catalog, issueOwner, "owner"),
       valueType: "ref",
+      refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
       cardinality: "one",
       optional: false,
       owned: false,
@@ -396,7 +496,68 @@ const _operationFixtures = () => {
   // @ts-expect-error — installed IR is not a template
   const asTemplate: PolicyTemplateIR = installedFixture;
 
-  return { ownedTargetless, traitOwned, noOwner, noTarget, asInstalled, asTemplate };
+  const ownerHop: FieldDescriptor = {
+    id: FieldId(catalog, issueOwner, "owner"),
+    valueType: "ref",
+    refTarget: { _tag: "entity", entity: EntityId(catalog, "user") },
+    cardinality: "one",
+    optional: false,
+    owned: false,
+  };
+
+  // @ts-expect-error — ref fields must name the referenced entity/trait
+  const ownerWithoutTarget: FieldDescriptor = {
+    id: FieldId(catalog, issueOwner, "owner"),
+    valueType: "ref",
+    cardinality: "one",
+    optional: false,
+    owned: false,
+  };
+
+  const nestedLabels: OperationInputFieldDescriptor = {
+    key: "labels",
+    optional: false,
+    shape: {
+      _tag: "array",
+      items: {
+        _tag: "struct",
+        fields: [
+          {
+            key: "name",
+            optional: false,
+            shape: { _tag: "scalar", valueType: "string" },
+          },
+        ],
+      },
+    },
+  };
+
+  const flattenedLabels = {
+    key: "labels",
+    valueType: "string",
+    cardinality: "many",
+    optional: false,
+  };
+  // @ts-expect-error — nested input is not a single storage scalar
+  const flattenedAsInput: OperationInputFieldDescriptor = flattenedLabels;
+
+  // @ts-expect-error — Present cannot hold undefined
+  const presentUndefined = Present(undefined);
+
+  return {
+    ownedTargetless,
+    traitOwned,
+    noOwner,
+    noTarget,
+    asInstalled,
+    asTemplate,
+    ownerHop,
+    ownerWithoutTarget,
+    nestedLabels,
+    flattenedLabels,
+    flattenedAsInput,
+    presentUndefined,
+  };
 };
 
 test("authorization type fixtures compile", () => {
@@ -406,8 +567,10 @@ test("authorization type fixtures compile", () => {
   expect(False._tag).toBe("False");
   expect(Incomplete(NotLoaded)._tag).toBe("Incomplete");
   expect(Present(1)._tag).toBe("Present");
+  expect(() => Present(undefined as never)).toThrow(/Present cannot hold undefined/);
   expect(FieldAbsent._tag).toBe("FieldAbsent");
   expect(EntityAbsent._tag).toBe("EntityAbsent");
+  expect(MissingMeProjection._tag).toBe("MissingMe");
   expect(MissingMe._tag).toBe("MissingMe");
   expect(InvalidTraversal._tag).toBe("InvalidTraversal");
   expect(BudgetExhausted._tag).toBe("BudgetExhausted");

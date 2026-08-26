@@ -30,11 +30,15 @@ export type ProjectedScalar = string | number | boolean | null;
 /**
  * A value that exists on the rule snapshot.
  * Distinct from authoritative absence and from not-loaded data.
+ * `T` must not include `undefined` — absence is {@link FieldAbsent} /
+ * {@link EntityAbsent} / {@link MissingMeProjection}, never JS `undefined`.
  */
-export type Present<T = ProjectedScalar> = {
-  readonly _tag: "Present";
-  readonly value: T;
-};
+export type Present<T = ProjectedScalar> = [undefined] extends [T]
+  ? never
+  : {
+      readonly _tag: "Present";
+      readonly value: T;
+    };
 
 /** Field is authoritatively absent (usable in presence/absence policies). */
 export type FieldAbsent = { readonly _tag: "FieldAbsent" };
@@ -52,8 +56,14 @@ export type InvalidTraversalProjection = { readonly _tag: "InvalidTraversal" };
 export type BudgetExhaustedProjection = { readonly _tag: "BudgetExhausted" };
 
 /**
- * Completeness-aware cell. Complete vs absent vs not-loaded are
- * distinct tags — none of these is `undefined`.
+ * No application principal row. Incomplete — not {@link EntityAbsent}.
+ * Term evaluation must propagate `Incomplete(MissingMe)`.
+ */
+export type MissingMeProjection = { readonly _tag: "MissingMe" };
+
+/**
+ * Completeness-aware cell. Complete vs absent vs not-loaded vs missing
+ * `me` are distinct tags — none of these is `undefined`.
  */
 export type Projected<T = ProjectedScalar> =
   | Present<T>
@@ -61,7 +71,8 @@ export type Projected<T = ProjectedScalar> =
   | EntityAbsent
   | NotLoadedProjection
   | InvalidTraversalProjection
-  | BudgetExhaustedProjection;
+  | BudgetExhaustedProjection
+  | MissingMeProjection;
 
 export type CompleteProjected<T = ProjectedScalar> =
   | Present<T>
@@ -71,12 +82,17 @@ export type CompleteProjected<T = ProjectedScalar> =
 export type IncompleteProjected =
   | NotLoadedProjection
   | InvalidTraversalProjection
-  | BudgetExhaustedProjection;
+  | BudgetExhaustedProjection
+  | MissingMeProjection;
 
-export const Present = <T = ProjectedScalar>(value: T): Present<T> => ({
-  _tag: "Present",
-  value,
-});
+export const Present = <T = ProjectedScalar>(
+  value: [undefined] extends [T] ? never : T,
+): Present<T> => {
+  if (value === undefined) {
+    throw new TypeError("ramose/authorization: Present cannot hold undefined");
+  }
+  return { _tag: "Present", value } as Present<T>;
+};
 
 export const FieldAbsent: FieldAbsent = { _tag: "FieldAbsent" };
 export const EntityAbsent: EntityAbsent = { _tag: "EntityAbsent" };
@@ -87,3 +103,4 @@ export const InvalidTraversalProjection: InvalidTraversalProjection = {
 export const BudgetExhaustedProjection: BudgetExhaustedProjection = {
   _tag: "BudgetExhausted",
 };
+export const MissingMeProjection: MissingMeProjection = { _tag: "MissingMe" };

@@ -44,20 +44,59 @@ export type TraitDescriptor = {
   readonly traits: readonly TraitId[];
 };
 
-export type FieldDescriptor = {
+/**
+ * Where a ref field (or ref-shaped operation input) points.
+ * Required so a later hop such as `Issue.owner.organization` can check
+ * that `organization` belongs to the referenced type — `valueType: "ref"`
+ * alone is not enough. `self` is `Ref.self`; `untargeted` is `Field(Ref)`.
+ */
+export type FieldRefTarget =
+  | { readonly _tag: "entity"; readonly entity: EntityId }
+  | { readonly _tag: "trait"; readonly trait: TraitId }
+  | { readonly _tag: "self" }
+  | { readonly _tag: "untargeted" };
+
+type FieldDescriptorBase = {
   readonly id: FieldId;
-  readonly valueType: AuthorizationValueType;
   readonly cardinality: FieldCardinality;
   readonly unique?: FieldUniqueness;
   readonly optional: boolean;
   readonly owned: boolean;
 };
 
+export type ScalarFieldDescriptor = FieldDescriptorBase & {
+  readonly valueType: Exclude<AuthorizationValueType, "ref">;
+};
+
+export type RefFieldDescriptor = FieldDescriptorBase & {
+  readonly valueType: "ref";
+  readonly refTarget: FieldRefTarget;
+};
+
+export type FieldDescriptor = ScalarFieldDescriptor | RefFieldDescriptor;
+
+/**
+ * Recursive authoritative shape of one operation input key.
+ * Nested arrays/structs stay intact; `opaque` is valid input that policy
+ * expressions cannot traverse by key.
+ */
+export type OperationInputShape =
+  | {
+      readonly _tag: "scalar";
+      readonly valueType: Exclude<AuthorizationValueType, "ref">;
+    }
+  | { readonly _tag: "ref"; readonly refTarget: FieldRefTarget }
+  | {
+      readonly _tag: "struct";
+      readonly fields: readonly OperationInputFieldDescriptor[];
+    }
+  | { readonly _tag: "array"; readonly items: OperationInputShape }
+  | { readonly _tag: "opaque" };
+
 export type OperationInputFieldDescriptor = {
   readonly key: string;
-  readonly valueType: AuthorizationValueType;
-  readonly cardinality: FieldCardinality;
   readonly optional: boolean;
+  readonly shape: OperationInputShape;
 };
 
 /** Authoritative typed input for one owned operation. */
