@@ -28,6 +28,7 @@ import {
   Ref,
   Schema,
   Trait,
+  all,
   string,
 } from "../../src/db/internal.ts";
 
@@ -182,6 +183,12 @@ type _favTarget = Expect<
     { readonly id: Eid<typeof Taggable>; readonly tag: string }
   >
 >;
+const favoritesAll = Query.from(Favorite).select({
+  target: Favorite.target.select(all(Taggable)),
+});
+type _favAllTarget = Expect<
+  Equal<Row<typeof favoritesAll>["target"], AllRow<typeof Taggable>>
+>;
 
 const pipedTaggable = Query.q(() =>
   pipe(Query.entities(Taggable), Query.select({ tag: Taggable.tag })),
@@ -218,4 +225,16 @@ type _allOuter = Expect<
 >;
 type _noOuterValue = Expect<
   Equal<":outer/value" extends keyof AllRow<typeof Outer> ? true : false, false>
+>;
+const outerIds = Query.from(Outer).select({ id: Outer.id });
+type _outerSelectId = Expect<
+  Equal<Row<typeof outerIds>["id"], Eid<typeof Outer>>
+>;
+const Nested = Entity("nested", { title: string() }, { traits: [Outer] });
+const NestedCatalog = Schema({ nested: Nested });
+type _outerEidInSchema = Expect<
+  Extends<Eid<typeof Outer>, SchemaEid<typeof NestedCatalog>>
+>;
+type _outerSelectIsSubject = Expect<
+  Extends<Row<typeof outerIds>["id"], EntityRef<typeof NestedCatalog>>
 >;

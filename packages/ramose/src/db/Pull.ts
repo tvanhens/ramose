@@ -7,7 +7,7 @@ import { isAttrRef } from "./attrRef.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, IdentOfFieldIn } from "./idents.ts";
-import type { AnyEntity, AnyQueryRoot, FieldMap } from "./Entity.ts";
+import type { AnyQueryRoot, FieldMap } from "./Entity.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ export const pick = <
  * runtime. The same term nests under a ref `.select`:
  * `Todo.owner.select(all(User))` lowers to the peer's `{:todo/owner [*]}`.
  */
-export interface AllShape<N extends AnyQueryRoot = AnyEntity> {
+export interface AllShape<N extends AnyQueryRoot = AnyQueryRoot> {
   readonly _tag: "all";
   readonly ns: N;
 }

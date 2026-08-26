@@ -283,9 +283,9 @@ export interface Db<C extends AnySchema = AnySchema> extends ReadDb<C> {
   /**
    * Idempotent catalog upsert, as an ordinary transaction. Reads the
    * installed fields first and fails with {@link IncompatibleSchema} when a
-   * value type, cardinality, uniqueness, or a new required field on
-   * existing rows would change. Pass `{ allowIncompatible: [":ident"] }`
-   * to apply those idents anyway.
+   * value type, cardinality, uniqueness, a new required field on existing
+   * rows, or a tighter ref target on existing rows would change. Pass
+   * `{ allowIncompatible: [":ident"] }` to apply those idents anyway.
    */
   install(options?: InstallOptions): Promise<TxReport<C>>;
 

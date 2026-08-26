@@ -917,9 +917,15 @@ export function policy<
   // readable composer. Pulling those card-one fields as required would drop
   // the whole entity — mark them masked so `checkPulls` can fail at compile.
   // `traits: { taggable: { read: true } }` stays unmasked except for `P.field`.
+  // Only this trait's own idents (`:taggable/*`). A composed inner trait
+  // keeps its own arm — flattening must not hide `:inner/*` when Inner
+  // is public and Outer is gated.
   for (const [traitNs, trait] of traitsByNs) {
     if (isUnconditionallyPublicRead(ns[traitNs])) continue;
-    for (const ident of entityFieldIdents(trait)) maskedReads.add(ident);
+    const owned = `:${traitNs}/`;
+    for (const ident of entityFieldIdents(trait)) {
+      if (ident.startsWith(owned)) maskedReads.add(ident);
+    }
   }
 
   const compiledOps: Record<string, readonly CompiledArm[]> = {};

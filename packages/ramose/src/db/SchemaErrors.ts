@@ -25,13 +25,19 @@ export class PolicyError extends Data.TaggedError("PolicyError")<{
 export interface InstallOptions {
   /**
    * Idents (`:todo/title`) whose incompatible flips — value type,
-   * cardinality, uniqueness, or a new required field on existing rows —
-   * are applied anyway. Unlisted idents still fail the check.
+   * cardinality, uniqueness, a new required field on existing rows, or
+   * tightening a ref target on existing rows — are applied anyway.
+   * Unlisted idents still fail the check.
    */
   readonly allowIncompatible?: readonly string[];
 }
 
-export type IncompatibleKind = "valueType" | "cardinality" | "unique" | "required";
+export type IncompatibleKind =
+  | "valueType"
+  | "cardinality"
+  | "unique"
+  | "required"
+  | "refTarget";
 
 export interface SchemaChange {
   readonly ident: string;

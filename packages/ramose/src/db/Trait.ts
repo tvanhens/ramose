@@ -54,17 +54,20 @@ export type Trait<
    * Pseudo-field `:db/id`. Same cell as {@link import("./Entity.ts").Entity.id}
    * so `select({ id: Taggable.id })` brands as `Eid<Taggable>`.
    */
-  readonly id: AttrNav<
-    AnyField & {
-      readonly schema: { readonly Type: number };
-      readonly attrName: "id";
-      readonly ident: ":db/id";
-      readonly valueType: "ref";
-      readonly cardinality: "one";
-      readonly _ns?: Trait<Name, Fields>;
-    } & PathCarrier
-  >;
+  readonly id: TraitIdNav<Trait<Name, Fields>>;
 } & StampedMap<Name, Fields>;
+
+/** `:db/id` branded with the full trait type, including composed traits. */
+type TraitIdNav<N> = AttrNav<
+  AnyField & {
+    readonly schema: { readonly Type: number };
+    readonly attrName: "id";
+    readonly ident: ":db/id";
+    readonly valueType: "ref";
+    readonly cardinality: "one";
+    readonly _ns?: N;
+  } & PathCarrier
+>;
 
 /**
  * Bound for trait-generic helpers. `fields` is a wide record so a
@@ -100,10 +103,11 @@ type TraitWithTraits<
   Name extends string,
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
-> = Trait<Name, Fields> &
+> = Omit<Trait<Name, Fields>, "id" | "fields" | "traits"> &
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
+    readonly id: TraitIdNav<TraitWithTraits<Name, Fields, Traits>>;
   };
 
 /** Group fields under one ident prefix, optionally composing other traits. */

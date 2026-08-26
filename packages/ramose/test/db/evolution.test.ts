@@ -347,6 +347,99 @@ describe("checkEvolution", () => {
     ]);
   });
 
+  test("tightening a ref target on occupied rows is IncompatibleSchema", () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Other = Trait("other", { label: Field(Schema.String) });
+    const Targeted = DbSchema({
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const Retargeted = DbSchema({
+      favorite: Entity("favorite", { target: Ref(Other) }),
+    });
+    const bareTarget: import("../../src/db/evolution.ts").InstalledAttr = {
+      ident: ":favorite/target",
+      valueType: ":db.type/ref",
+      cardinality: ":db.cardinality/one",
+    };
+    const taggedTarget = { ...bareTarget, refTarget: ":taggable" };
+    const bareToTrait = checkEvolution(
+      schemaTx(Targeted),
+      [bareTarget],
+      new Set(["favorite"]),
+    );
+    expect(bareToTrait?.changes).toEqual([
+      {
+        ident: ":favorite/target",
+        kind: "refTarget",
+        from: undefined,
+        to: ":taggable",
+      },
+    ]);
+    expect(bareToTrait?.message).toContain(
+      ":favorite/target refTarget none → :taggable",
+    );
+    const retarget = checkEvolution(
+      schemaTx(Retargeted),
+      [taggedTarget],
+      new Set(["favorite"]),
+    );
+    expect(retarget?.changes).toEqual([
+      {
+        ident: ":favorite/target",
+        kind: "refTarget",
+        from: ":taggable",
+        to: ":other",
+      },
+    ]);
+    expect(
+      checkEvolution(schemaTx(Targeted), [bareTarget], new Set()),
+    ).toBeUndefined();
+    expect(
+      checkEvolution(schemaTx(Targeted), [taggedTarget], new Set(["favorite"])),
+    ).toBeUndefined();
+    expect(
+      checkEvolution(schemaTx(Targeted), [bareTarget], new Set(["favorite"]), {
+        allowIncompatible: [":favorite/target"],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("dropping a ref target stays compatible", () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Untargeted = DbSchema({
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    const taggedTarget: import("../../src/db/evolution.ts").InstalledAttr = {
+      ident: ":favorite/target",
+      valueType: ":db.type/ref",
+      cardinality: ":db.cardinality/one",
+      refTarget: ":taggable",
+    };
+    expect(
+      checkEvolution(schemaTx(Untargeted), [taggedTarget], new Set(["favorite"])),
+    ).toBeUndefined();
+  });
+
+  test("namespacesNeedingOccupancy includes a ref-target tighten", () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Targeted = DbSchema({
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const bareTarget: import("../../src/db/evolution.ts").InstalledAttr = {
+      ident: ":favorite/target",
+      valueType: ":db.type/ref",
+      cardinality: ":db.cardinality/one",
+    };
+    expect(namespacesNeedingOccupancy(schemaTx(Targeted), [bareTarget])).toEqual([
+      "favorite",
+    ]);
+    expect(
+      namespacesNeedingOccupancy(schemaTx(Targeted), [bareTarget], {
+        allowIncompatible: [":favorite/target"],
+      }),
+    ).toEqual([]);
+  });
+
   test("optionalRetracts uses the attribute eid", () => {
     const Tight = DbSchema({
       note: Entity("note", {
@@ -725,6 +818,38 @@ describe("install() against a live engine", () => {
     const err = await runFail(submitRaw(db, [{ ":note/title": "other" }]));
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
+    await p.dispose();
+  });
+
+  test("tightening a bare ref to a trait target on existing rows fails", async () => {
+    const Taggable = Trait("taggable", { tag: Field(Schema.String) });
+    const Todo = Entity("todo", { title: Field(Schema.String) });
+    const Untargeted = DbSchema({
+      todo: Todo,
+      favorite: Entity("favorite", { target: Field(Ref) }),
+    });
+    const Targeted = DbSchema({
+      todo: Todo,
+      favorite: Entity("favorite", { target: Ref(Taggable) }),
+    });
+    const p = await peer();
+    const db = p.ramose.db("notes", Untargeted);
+    await db.install();
+    await run(
+      seedWrite(db, function* (tx) {
+        const todo = yield* tx.entity();
+        yield* todo.set(Todo.title, "plain");
+        const fav = yield* tx.entity();
+        yield* fav.set(Untargeted.entities.favorite.target, todo.eid);
+      }),
+    );
+    const e = await runFail(p.ramose.db("notes", Targeted).install());
+    expect(e).toBeInstanceOf(IncompatibleSchema);
+    expect((e as IncompatibleSchema).changes[0]).toMatchObject({
+      ident: ":favorite/target",
+      kind: "refTarget",
+      to: ":taggable",
+    });
     await p.dispose();
   });
 

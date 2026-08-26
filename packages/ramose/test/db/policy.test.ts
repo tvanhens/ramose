@@ -779,6 +779,38 @@ describe("masked attributes in pull patterns", () => {
     expect(() => P.compile(narrowed, { pulls: [tagged] })).toThrow(PolicyError);
     expect(() => P.compile(narrowed, { pulls: [taggedOptional] })).not.toThrow();
   });
+
+  test("a gated outer trait does not mask a public inner trait's fields", () => {
+    const Inner = Trait("inner", { value: Field(Schema.String) });
+    const Outer = Trait("outer", { label: Field(Schema.String) }, { traits: [Inner] });
+    const Item = Entity("item", { title: Field(Schema.String) }, { traits: [Outer] });
+    const NestedApp = DbSchema({ actor: Actor, item: Item });
+    const authored = P.policy(
+      {
+        schema: NestedApp,
+        principal: Actor.sub,
+        classes: ["member"] as const,
+        schemaClasses: ["member"] as const,
+      },
+      {
+        actor: { read: true },
+        item: { read: true },
+        traits: {
+          inner: { read: true },
+          outer: { read: P.class("member") },
+        },
+      },
+    );
+    expect(() =>
+      P.compile(authored, { pulls: [{ value: Item.value }] }),
+    ).not.toThrow();
+    expect(() =>
+      P.compile(authored, { pulls: [{ label: Item.label }] }),
+    ).toThrow(PolicyError);
+    expect(() =>
+      P.compile(authored, { pulls: [{ label: Item.label }] }),
+    ).toThrow(/:outer\/label/);
+  });
 });
 
 describe("an entity named traits", () => {

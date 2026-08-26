@@ -198,6 +198,9 @@ const desiredOf = (tx: SchemaAttrTx): InstalledAttr => ({
   cardinality: tx[":db/cardinality"],
   ...(tx[":db/unique"] === undefined ? {} : { unique: tx[":db/unique"] }),
   ...(tx[":db/optional"] === true ? { optional: true } : {}),
+  ...(tx[":ramose/refTarget"] === undefined
+    ? {}
+    : { refTarget: tx[":ramose/refTarget"] }),
 });
 
 const flip = (
@@ -259,7 +262,9 @@ export const incompatibleMessage = (changes: readonly SchemaChange[]): string =>
  *
  * `occupied` is the set of namespaces that already have at least one
  * entity. A new required field (or an optional→required flip) on an
- * occupied namespace is incompatible.
+ * occupied namespace is incompatible. Tightening `:ramose/refTarget`
+ * on an occupied namespace is also incompatible — existing values are
+ * not re-validated. Dropping a target is a compatible retract.
  */
 export const checkEvolution = (
   desiredTx: readonly SchemaTxOp[],
@@ -297,6 +302,15 @@ export const checkEvolution = (
     if (!isRequiredAttr(have) && isRequiredAttr(desired) && occupied.has(namespaceOf(desired.ident))) {
       changes.push({ ident: desired.ident, kind: "required" });
     }
+    if (
+      occupied.has(namespaceOf(desired.ident)) &&
+      desired.refTarget !== undefined &&
+      have.refTarget !== desired.refTarget
+    ) {
+      changes.push(
+        flip(desired.ident, "refTarget", have.refTarget, desired.refTarget),
+      );
+    }
   }
 
   if (changes.length === 0) return undefined;
@@ -307,8 +321,9 @@ export const checkEvolution = (
 };
 
 /**
- * Namespaces that still need an occupancy read: a new required field, or
- * an optional→required flip, not covered by the hatch.
+ * Namespaces that still need an occupancy read: a new required field,
+ * an optional→required flip, or a ref-target tighten, not covered by
+ * the hatch.
  */
 export const namespacesNeedingOccupancy = (
   desiredTx: readonly SchemaTxOp[],
@@ -322,11 +337,20 @@ export const namespacesNeedingOccupancy = (
   for (const tx of desiredTx) {
     if (!isAttributeTx(tx)) continue;
     const desired = desiredOf(tx);
-    if (allowed.has(desired.ident) || !isRequiredAttr(desired)) continue;
+    if (allowed.has(desired.ident)) continue;
     const ns = namespaceOf(desired.ident);
     if (!known.has(ns)) continue;
     const have = byIdent.get(desired.ident);
-    if (have === undefined || !isRequiredAttr(have)) needed.add(ns);
+    if (isRequiredAttr(desired) && (have === undefined || !isRequiredAttr(have))) {
+      needed.add(ns);
+    }
+    if (
+      desired.refTarget !== undefined &&
+      have !== undefined &&
+      have.refTarget !== desired.refTarget
+    ) {
+      needed.add(ns);
+    }
   }
   return [...needed];
 };

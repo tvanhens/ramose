@@ -16,7 +16,7 @@
 
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
-import type { AnyEntity, AnyQueryRoot } from "./Entity.ts";
+import type { AnyQueryRoot } from "./Entity.ts";
 import type { AttrIdent, FocusIdents } from "./query/focus.ts";
 import { lowerElemFilter, type ElemFilterFragment } from "./query/elemFilter.ts";
 import type { EidCell, Var } from "./query/kernel.ts";
@@ -571,7 +571,7 @@ type NestedSelectResult<A, S, Enclosing = unknown> = [S] extends [
     ? readonly Unroll<Enclosing, D>[]
     : Unroll<Enclosing, D>
   : [S] extends [
-        { readonly _tag: "all"; readonly ns: infer N extends AnyEntity },
+        { readonly _tag: "all"; readonly ns: infer N extends AnyQueryRoot },
       ]
     ? A extends { readonly cardinality: "many" }
       ? readonly AllRow<N>[]
