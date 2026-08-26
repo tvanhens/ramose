@@ -136,10 +136,17 @@ d("ramose e2e", () => {
 
   test("index run publishes a root; queries stay consistent; repeat query hits cache", async () => {
     const before = await db.info();
-    const idx = await db.index();
-    expect(idx.ran).toBe(true);
-    expect(idx.root.t).toBeGreaterThanOrEqual(tAge30);
-    const after = await db.info();
+    // Guarantee novelty. On a slow workers.dev first test the 5s index
+    // alarm can already have absorbed the earlier txs (`runNow` → ran:false).
+    const note = await db.transact([attrMap(":user/note", "string")]);
+    let idx = await db.index();
+    let after = await db.info();
+    for (let i = 0; i < 40 && !idx.ran && (after.transactor.root.t ?? 0) < note.t; i++) {
+      await Bun.sleep(100);
+      idx = await db.index();
+      after = await db.info();
+    }
+    expect((idx.ran ? idx.root.t : after.transactor.root.t) ?? 0).toBeGreaterThanOrEqual(note.t);
     expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
     const q1 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
     const q2 = await db.queryEnvelope(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
