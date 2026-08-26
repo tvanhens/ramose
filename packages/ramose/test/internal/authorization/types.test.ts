@@ -28,8 +28,11 @@ import {
   InvalidIR,
   InvalidTraversal,
   LeaseExpired,
+  MAX_COLLECTION_SIZE,
   MAX_EXISTS_DEPTH,
+  MAX_JSON_DEPTH,
   MAX_READ_LEASE_MS,
+  MAX_STRING_LENGTH,
   MAX_TRAVERSAL_DEPTH,
   MissingMe,
   MissingMeProjection,
@@ -74,7 +77,17 @@ import type { InstalledAuthorizationIR as _PublicInstalled } from "ramose/db";
 
 type PublicKeys = keyof typeof import("ramose");
 type _noPublicAuthorization = Expect<
-  Equal<Extract<PublicKeys, "Authorization" | "PolicyTemplateIR" | "InstalledAuthorizationIR">, never>
+  Equal<
+    Extract<
+      PublicKeys,
+      | "Authorization"
+      | "PolicyTemplateIR"
+      | "InstalledAuthorizationIR"
+      | "decodePolicyTemplate"
+      | "decodeInstalledAuthorization"
+    >,
+    never
+  >
 >;
 
 const catalog = CatalogId.make("app");
@@ -760,6 +773,9 @@ test("authorization type fixtures compile", () => {
   expect(MAX_TRAVERSAL_DEPTH).toBe(3);
   expect(MAX_EXISTS_DEPTH).toBe(3);
   expect(MAX_READ_LEASE_MS).toBe(5_000);
+  expect(MAX_JSON_DEPTH).toBeGreaterThan(0);
+  expect(MAX_COLLECTION_SIZE).toBeGreaterThan(0);
+  expect(MAX_STRING_LENGTH).toBeGreaterThan(0);
   expect(DEFAULT_AUTHORIZATION_BUDGET).toBeGreaterThan(0);
   expect(new InvalidIR({ message: "bad" })._tag).toBe("InvalidIR");
   expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");

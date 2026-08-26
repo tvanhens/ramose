@@ -85,8 +85,8 @@ export const AuthorizationRule = <
     usesInput: Schema.Boolean,
     usesMe: Schema.Boolean,
     usesSubject: Schema.Boolean,
-    traversalDepth: Schema.Number,
-    existsDepth: Schema.Number,
+    traversalDepth: Schema.Natural,
+    existsDepth: Schema.Natural,
     dependencies: Schema.Array(RuleId),
   });
 
