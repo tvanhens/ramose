@@ -1,9 +1,9 @@
 /**
  * The open (unauthenticated) peer used by the host App Worker.
  *
- * The Worker is declared here (hatch) so App can service-bind it without
- * importing a `Ramose.Server` into an Effect-Worker bundle. `app-main.ts`
- * is a plain async handler; `app.ts` puts this Worker in `env.Open`.
+ * The Worker is declared here (hatch) so App can service-bind it. Durable
+ * Object logical ids match `ownedPeerDurableObjects` so this peer shares
+ * the same local DO namespaces as the other owned Servers.
  */
 
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -15,12 +15,14 @@ export const OpenPeer = Cloudflare.Worker("OpenPeer", {
   compatibility: Ramose.PEER_COMPAT,
   env: {
     [Ramose.PEER_BINDINGS.store]: Cloudflare.R2.Bucket("OpenStore"),
-    [Ramose.PEER_BINDINGS.transactor]: Cloudflare.DurableObject("OpenTransactor", {
-      className: Ramose.PEER_DO_CLASSES.transactor,
-    }),
-    [Ramose.PEER_BINDINGS.replica]: Cloudflare.DurableObject("OpenReplica", {
-      className: Ramose.PEER_DO_CLASSES.replica,
-    }),
+    [Ramose.PEER_BINDINGS.transactor]: Cloudflare.DurableObject(
+      Ramose.PEER_DO_CLASSES.transactor,
+      { className: Ramose.PEER_DO_CLASSES.transactor },
+    ),
+    [Ramose.PEER_BINDINGS.replica]: Cloudflare.DurableObject(
+      Ramose.PEER_DO_CLASSES.replica,
+      { className: Ramose.PEER_DO_CLASSES.replica },
+    ),
   },
 });
 

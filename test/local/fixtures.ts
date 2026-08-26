@@ -116,6 +116,17 @@ export const seedTx = async (
     `/db/${encodeURIComponent(db)}/transact`,
     post({ tx }, token),
   );
+  if (status === 502) {
+    const retry = await json(
+      base,
+      `/db/${encodeURIComponent(db)}/transact`,
+      post({ tx }, token),
+    );
+    if (retry.status === 200) return retry.body;
+    throw new Error(
+      `seed ${db} failed (${retry.status}): ${JSON.stringify(retry.body)}`,
+    );
+  }
   if (status !== 200) {
     throw new Error(
       `seed ${db} failed (${status}): ${JSON.stringify(body)}`,

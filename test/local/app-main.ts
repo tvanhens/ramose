@@ -2,23 +2,31 @@
  * Host-Worker fetch handler. Bundled as-is (async Worker, no Effect
  * entry) so workerd never evaluates `Ramose.Server` or Alchemy.Stack.
  *
- * `env.Open` is the service binding to the owned open peer — the same
- * hop `Ramose.Databases(Server)` lowers onto (`env[LogicalId].fetch`).
+ * Uses the same client factory as `Ramose.Databases(Server)`: a service
+ * binding `fetch` and no WebSocket (live is unavailable on this hop).
  */
 
-import * as Ramose from "ramose/db";
+import * as Effect from "effect/Effect";
+import { makeDatabases } from "../../packages/ramose/src/db/factory.ts";
 import { createNamed, Movies, User } from "./ops.ts";
+import * as Ramose from "ramose/db";
 
 const namesQuery = Ramose.Query.from(User).select({ name: User.name });
 
-type Peer = { fetch: typeof fetch };
+type Peer = {
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+};
 
-const connectThrough = (peer: Peer) =>
-  Ramose.connect({
-    url: "https://ramose.internal",
-    fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
-      peer.fetch(input as RequestInfo, init)) as typeof fetch,
-  });
+const databasesThrough = (peer: Peer) =>
+  makeDatabases({
+    url: Effect.succeed("https://ramose.internal"),
+    fetch: (url, init) =>
+      peer.fetch(url, {
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+      }),
+  }).databases;
 
 export default {
   async fetch(request: Request, env: { Open: Peer }): Promise<Response> {
@@ -30,7 +38,7 @@ export default {
       return Response.json({ error: "not found" }, { status: 404 });
     }
     const name = path.slice("/t/".length);
-    const ramose = connectThrough(env.Open);
+    const ramose = databasesThrough(env.Open);
     try {
       const db = ramose.db(name, Movies);
       if (request.method === "PUT") {
@@ -47,8 +55,6 @@ export default {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return Response.json({ error: message }, { status: 500 });
-    } finally {
-      await ramose.close();
     }
   },
 };
