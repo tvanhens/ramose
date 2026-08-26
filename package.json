@@ -62,10 +62,10 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "@alchemy.run/better-auth": "^2.0.0-beta.72",
+    "@alchemy.run/better-auth": "^2.0.0-beta.74",
     "@effect/platform-bun": ">=4.0.0-beta.105",
     "@effect/platform-node": ">=4.0.0-beta.105",
-    "alchemy": "2.0.0-beta.72",
+    "alchemy": "2.0.0-beta.74",
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-beta.105",
     "ramose": "workspace:*"

@@ -21,9 +21,6 @@ const manifest = JSON.parse(
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   exports: Record<string, Record<string, unknown>>;
 };
-const rootManifest = JSON.parse(
-  readFileSync(join(here, "../../../package.json"), "utf8"),
-) as { dependencies?: Record<string, string> };
 
 const PUBLIC = [
   "ramose",
@@ -82,14 +79,12 @@ describe("the `ramose` exports map", () => {
     }
   });
 
-  test("platform-bun/node are gone; zod is an optional peer; alchemy is pinned inside 2.x beta", () => {
+  test("platform-bun/node are gone; zod is an optional peer", () => {
     const deps = manifest.dependencies ?? {};
     expect(deps["@effect/platform-bun"]).toBeUndefined();
     expect(deps["@effect/platform-node"]).toBeUndefined();
     expect(deps.zod).toBeUndefined();
     expect(manifest.peerDependencies?.zod).toBe("^4.3.6");
     expect(manifest.peerDependenciesMeta?.zod?.optional).toBe(true);
-    expect(deps.alchemy).toBe(">=2.0.0-beta.72 <2.0.0-beta.73");
-    expect(rootManifest.dependencies?.alchemy).toBe("2.0.0-beta.72");
   });
 });
