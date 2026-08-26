@@ -938,7 +938,7 @@ describe("install() against a live engine", () => {
         const todo = yield* tx.entity();
         yield* todo.set(Todo.title, "plain");
         const fav = yield* tx.entity();
-        yield* fav.set(Untargeted.entities.favorite.target, todo.eid);
+        yield* fav.set(Untargeted.entities.favorite.target, todo.eid as number);
       }),
     );
     const actorEid = (await db.asOf(Number.MAX_SAFE_INTEGER).query(
@@ -950,6 +950,8 @@ describe("install() against a live engine", () => {
       class: "member",
       sub: "member-1",
       eid: actorEid as number,
+      claims: { sub: "member-1" },
+      db: "notes",
     };
     filter = (engine) => filterDb(engine, engine, policy, principal);
     const hidden = await p.ramose

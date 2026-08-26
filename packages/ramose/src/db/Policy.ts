@@ -419,6 +419,10 @@ const catalogIdents = (schema: AnySchema): ReadonlySet<string> => {
   return out;
 };
 
+/** Own catalog entity only — `entities.constructor` is `Object`. */
+const ownEntity = <T>(entities: object, key: string): T | undefined =>
+  Object.hasOwn(entities, key) ? (entities as Record<string, T>)[key] : undefined;
+
 /** Stamped idents on `entity.fields` — not `:${ns}/${key}`, so trait fields count. */
 const entityFieldIdents = (entity: {
   readonly fields: Readonly<Record<string, { readonly ident?: unknown }>>;
@@ -787,9 +791,7 @@ export function policy<
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
   const traitsByNs = schemaTraits(schema);
-  const traitsEntity = (
-    schema.entities as Record<string, { ns: string } | undefined>
-  ).traits;
+  const traitsEntity = ownEntity<{ ns: string }>(schema.entities, "traits");
   const rawTraits = body.traits;
   const isPlainObject = (
     value: unknown,
@@ -824,12 +826,10 @@ export function policy<
         );
       }
     }
-    const declared = (
-      schema.entities as Record<
-        string,
-        { ns: string; fields: Record<string, { readonly ident?: unknown }> } | undefined
-      >
-    )[nsKey];
+    const declared = ownEntity<{
+      ns: string;
+      fields: Record<string, { readonly ident?: unknown }>;
+    }>(schema.entities, nsKey);
     if (declared === undefined) fail(`ns key ${JSON.stringify(nsKey)} is not in the schema`);
     const entity = declared!;
     const prefix = entity.ns;
@@ -1050,12 +1050,9 @@ const lower = (p: Policy): CompiledPolicy => {
   const traitsByNs = schemaTraits(p.schema);
   for (const [nsKey, entry] of Object.entries(p.ns)) {
     const declared =
-      (
-        p.schema.entities as Record<
-          string,
-          { fields: Readonly<Record<string, { readonly ident?: unknown }>> }
-        >
-      )[nsKey] ?? traitsByNs.get(nsKey);
+      ownEntity<{
+        fields: Readonly<Record<string, { readonly ident?: unknown }>>;
+      }>(p.schema.entities, nsKey) ?? traitsByNs.get(nsKey);
     if (declared === undefined) {
       fail(`ns.${nsKey}: ${JSON.stringify(nsKey)} is not in the schema`);
     }

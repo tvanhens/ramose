@@ -450,10 +450,13 @@ const terminal = (e: { readonly _tag: string }): boolean =>
 const lowerSubject = (subject: unknown): unknown => lowerEntityArg(subject);
 
 /** Occupancy reads for `install()` — not part of the public read surface. */
-type OccupancyRead<C extends AnySchema> = EffectReadDb<C> & {
-  readonly queryOccupancy: (
-    input: AnyQueryObject,
-  ) => Effect.Effect<unknown, DbError | NotOne>;
+type OccupancyRead<C extends AnySchema> = Omit<
+  EffectReadDb<C>,
+  "asOf" | "history"
+> & {
+  readonly queryOccupancy: EffectReadDb<C>["query"];
+  readonly asOf: (t: number) => OccupancyRead<C>;
+  readonly history: OccupancyRead<C>;
 };
 
 /** @internal Everything a `Db` and its `ReadDb` views share. */
@@ -669,14 +672,14 @@ const makeRead = <C extends AnySchema>(
       )) as EffectReadDb<C>["query"],
 
     /** Unfiltered occupancy for `install()` — schema-class gated on the peer. */
-    queryOccupancy: (input: AnyQueryObject) =>
+    queryOccupancy: ((input: AnyQueryObject) =>
       fenced(
         Effect.suspend(() =>
           runQuery(input, undefined, false, true).pipe(
             Effect.map((r) => r.rows),
           ),
         ),
-      ),
+      )) as EffectReadDb<C>["query"],
 
     live: ((input: AnyQueryObject) =>
       liveStanding(input, false)) as EffectReadDb<C>["live"],
@@ -938,11 +941,14 @@ export const makeDb = <C extends AnySchema>(
         // catalog applied locally, so a live query would not see the
         // installed set. A far-future t is the current basis.
         const snap = read.asOf(Number.MAX_SAFE_INTEGER);
+        // Catalog + occupancy must be unfiltered: a schema class that
+        // cannot read an attr would otherwise see a missing install and
+        // treat a tighten as a new namespace.
         const [core, uniques, optionals, refTargets] = yield* Effect.all([
-          snap.query(installedCoreQuery),
-          snap.query(installedUniqueQuery),
-          snap.query(installedOptionalQuery),
-          snap.query(installedRefTargetQuery),
+          snap.queryOccupancy(installedCoreQuery),
+          snap.queryOccupancy(installedUniqueQuery),
+          snap.queryOccupancy(installedOptionalQuery),
+          snap.queryOccupancy(installedRefTargetQuery),
         ]);
         const installed: InstalledAttr[] = assembleInstalled(
           core,
