@@ -439,7 +439,7 @@ invariants. The mapping is a citation index, not a backlog.
 
 | Issue | Invariants the issue must prove |
 |---|---|
-| 337 Policy authoring API and IR | **LANG-1**–**LANG-6**, **POL-1**–**POL-6**, **WR-4**, **FC-1**, **CAT-1** |
+| 337 Policy authoring API and IR | **LANG-1**–**LANG-6**, **POL-1**–**POL-6**, **WR-4**, **FC-1**, **CAT-1**. Types live in `src/internal/authorization/`. |
 | 338 Remove the legacy pipeline | **TCB-1**, **CUR-2**, **OPT-1**, **OPT-4**, **AUTH-1**, **FC-3**, **ID-3** |
 | 339 Raw / rule / application snapshots | **TCB-1**–**TCB-4**, **CUR-4**, **HIST-1**, **HIST-2**, **HIST-4**, **FC-1** |
 | 340 Canonical membership | **ID-1**–**ID-5**, **POL-8**, **HIST-4**, **FC-1**, **WR-5** |
