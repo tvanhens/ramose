@@ -126,6 +126,8 @@ db.run(Issue.operations.rename, docId, { title: "x" });
 // @ts-expect-error this catalog has no Taggable composer
 lonely.run(Taggable.operations.addTag, userId, { tag: "x" });
 lonely.run(Taggable.operations.addTag, 1001, { tag: "x" });
+// @ts-expect-error create is bound to the issue catalog
+lonely.run(Issue.operations.create, { title: "x" });
 
 {
   const create = Issue.operations.create;

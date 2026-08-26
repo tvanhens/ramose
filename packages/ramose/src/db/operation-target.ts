@@ -33,6 +33,28 @@ const asList = (value: unknown): readonly unknown[] => {
 const userKeys = (row: Readonly<Record<string, unknown>>): readonly string[] =>
   Object.keys(row).filter((key) => key !== ":db/id" && !key.startsWith(":db/"));
 
+/** Namespace prefixes of user fields (`:issue/title` → `:issue`). */
+const typeIdentsFromKeys = (keys: readonly string[]): readonly string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (
+      !key.startsWith(":") ||
+      key === RAMOSE_TYPE_IDENT ||
+      key === RAMOSE_TRAIT_IDENT
+    ) {
+      continue;
+    }
+    const slash = key.indexOf("/", 1);
+    if (slash <= 1) continue;
+    const typeIdent = key.slice(0, slash);
+    if (seen.has(typeIdent)) continue;
+    seen.add(typeIdent);
+    out.push(typeIdent);
+  }
+  return out;
+};
+
 export const targetKindOf = (
   owner: OperationTargetOwner,
 ): OperationTargetKind => (owner._tag === "Trait" ? "trait" : "entity");
@@ -53,13 +75,22 @@ export const checkOperationTarget = (
     const traits = asList(row[RAMOSE_TRAIT_IDENT]);
     if (traits.includes(ident)) return "ok";
     const type = row[RAMOSE_TYPE_IDENT];
-    if (typeof type === "string" && context?.traitsOfType !== undefined) {
-      return context.traitsOfType(type).includes(ident) ? "ok" : "foreign";
+    const keys = userKeys(row).filter(
+      (key) => key !== RAMOSE_TYPE_IDENT && key !== RAMOSE_TRAIT_IDENT,
+    );
+    if (context?.traitsOfType !== undefined) {
+      if (typeof type === "string") {
+        return context.traitsOfType(type).includes(ident) ? "ok" : "foreign";
+      }
+      if (
+        typeIdentsFromKeys(keys).some((candidate) =>
+          context.traitsOfType!(candidate).includes(ident),
+        )
+      ) {
+        return "ok";
+      }
     }
     if (traits.length === 0 && typeof type !== "string") {
-      const keys = userKeys(row).filter(
-        (key) => key !== RAMOSE_TYPE_IDENT && key !== RAMOSE_TRAIT_IDENT,
-      );
       if (keys.length === 0) return "dangling";
       const prefix = `${ident}/`;
       return keys.some((key) => key.startsWith(prefix)) ? "ok" : "foreign";

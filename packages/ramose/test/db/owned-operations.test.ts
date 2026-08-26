@@ -21,6 +21,8 @@ import {
   harvestOwnedOperations,
   schemaTx,
   string,
+  txBuilder,
+  txOps,
 } from "../../src/db/internal.ts";
 import { asPromiseOp, buildOp, runBody } from "../../src/db/op-handle.ts";
 import { checkOperationTarget } from "../../src/db/operation-target.ts";
@@ -248,6 +250,21 @@ describe("runtime target check", () => {
     ).toBe("foreign");
   });
 
+  test("trait membership infers an unstamped composer from own-namespace fields", () => {
+    const row = { ":db/id": 1, ":issue/title": "Fix" };
+    expect(checkOperationTarget(row, Taggable)).toBe("foreign");
+    expect(
+      checkOperationTarget(row, Taggable, {
+        traitsOfType: (type) => (type === ":issue" ? [":taggable"] : []),
+      }),
+    ).toBe("ok");
+    expect(
+      checkOperationTarget(row, Taggable, {
+        traitsOfType: (type) => (type === ":issue" ? [":timestamped"] : []),
+      }),
+    ).toBe("foreign");
+  });
+
   test("entity-only rows without :ramose/type fall back to the namespace prefix", () => {
     expect(
       checkOperationTarget({ ":db/id": 1, ":issue/title": "Fix" }, Issue),
@@ -326,6 +343,14 @@ describe("op.create and self", () => {
     expect(typeof eid).toBe("number");
     const row = await conn.db().entity(eid!);
     expect(row?.[":ramose/type"]).toBe(":note");
+  });
+
+  test("an empty put onto an existing eid does not stamp membership", () => {
+    const Note = Entity("note", { tags: Field.many(string()) });
+    const Notes = DbSchema({ note: Note });
+    const tx = txBuilder(Notes);
+    Effect.runSync(tx.put(Note, 1001, {}));
+    expect(txOps(tx)).toEqual([{ ":db/id": 1001 }]);
   });
 
   test("instance operations expose self and do not expose create", () => {

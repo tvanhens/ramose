@@ -596,6 +596,10 @@ type AsCreateEntity<Owner> = Owner extends { readonly _tag: "Entity" }
   ? Owner
   : undefined;
 
+type OwnerCatalog<Owner extends OperationOwner> = Owner extends AnyEntity
+  ? OwnerCreateSchema<Owner>
+  : AnySchema;
+
 export type BoundOwnerOp<
   Name extends string,
   K extends string,
@@ -606,7 +610,7 @@ export type BoundOwnerOp<
   Spec extends { readonly input: infer I } ? CodecType<I> : unknown,
   Spec extends { readonly output: infer O } ? CodecType<O> : {},
   Spec extends { readonly self: false } ? undefined : AsOpTarget<Owner>,
-  AnySchema,
+  OwnerCatalog<Owner>,
   Spec extends { readonly self: false } ? AsCreateEntity<Owner> : undefined
 >;
 
