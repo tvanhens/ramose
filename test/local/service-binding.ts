@@ -7,7 +7,7 @@ import { json, uniqueDb, type LocalUrls } from "./fixtures.ts";
 
 export function registerServiceBinding(target: { urls: () => LocalUrls }): void {
   describe("service binding", () => {
-    test("a host Worker installs and writes through env.Open.fetch", async () => {
+    test("a host Worker installs and writes through the Open service binding", async () => {
       const { appUrl } = target.urls();
       const name = uniqueDb("bind");
       const created = await json(appUrl, `/t/${name}`, { method: "PUT" });

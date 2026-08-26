@@ -1,59 +1,34 @@
 /**
  * Host Worker bound to the open Ramose peer.
  *
- * Lives in its own module and imports `Open` from `open.ts` so
- * `main: import.meta.url` does not pull `Alchemy.Stack` or the JWKS
- * Worker declaration into the workerd bundle (alchemy 2.0.0-beta.72).
+ * Async Worker (`main` points at `app-main.ts`) so the workerd bundle
+ * is a plain `fetch` handler. An Effect Worker with `main: import.meta.url`
+ * that imports `Ramose.Server` pulls deploy-time Alchemy into the isolate
+ * and dies at startup (`TypeError: (intermediate value).resolve is not a
+ * function`, alchemy 2.0.0-beta.72).
+ *
+ * `env.Open` is the owned peer Worker (`Server.Props.worker`) — a
+ * service binding, the same hop `Ramose.Databases(Server)` registers.
  */
 
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as Ramose from "ramose";
 import { Open } from "./open.ts";
-import { createNamed, Movies, User } from "./ops.ts";
 
-const { Query } = Ramose;
-const namesQuery = Query.from(User).select({ name: User.name });
+type WorkerResource = { readonly Type?: string; readonly workerName?: string };
 
-export const App = Cloudflare.Worker(
-  "App",
-  { main: import.meta.url },
-  Effect.gen(function* () {
-    const ramose = yield* Ramose.Databases(Open);
+const openPeer = Effect.gen(function* () {
+  yield* Open;
+  const worker = (Open as { Props?: { worker?: WorkerResource } }).Props?.worker;
+  if (worker === undefined) {
+    return yield* Effect.die(new Error("Open peer Worker is not ready"));
+  }
+  return worker;
+});
 
-    return {
-      fetch: Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const path = request.url.split("?")[0] ?? "/";
-        if (path === "/health") {
-          return yield* HttpServerResponse.json({ ok: true, via: "service-binding" });
-        }
-        if (!path.startsWith("/t/")) {
-          return yield* HttpServerResponse.json({ error: "not found" }, { status: 404 });
-        }
-        const name = path.slice("/t/".length);
-        const db = ramose.db(name, Movies);
-        if (request.method === "PUT") {
-          const report = yield* db.effect.install();
-          return yield* HttpServerResponse.json({ name, t: report.t });
-        }
-        const report = yield* db.effect.run(createNamed, { name: "Ada" });
-        const names = yield* report.dbAfter.effect.query(namesQuery);
-        return yield* HttpServerResponse.json({
-          name,
-          t: report.t,
-          names: names.map((row) => row.name),
-        });
-      }).pipe(
-        Effect.catch((e) => {
-          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
-          return HttpServerResponse.json(body, { status, headers });
-        }),
-      ),
-    };
-  }).pipe(Effect.provide(Ramose.layer)),
-);
+export const App = Cloudflare.Worker("App", {
+  main: import.meta.resolve("./app-main.ts"),
+  env: { Open: openPeer },
+});
 
 export default App;
