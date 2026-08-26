@@ -133,7 +133,7 @@
   "dependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
     "alchemy": ">=2.0.0-beta.74 <2.0.0-beta.75",
-    "effect": ">=4.0.0-beta.105 <5.0.0",
+    "effect": ">=4.0.0-rc.110 <5.0.0",
     "jose": "^6.0.0"
   },
   "peerDependencies": {
