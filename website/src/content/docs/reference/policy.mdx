@@ -85,11 +85,11 @@ export const policy = Ramose.policy(
 
 - `principal` — the **signed-in user** is the record whose `principal` field equals the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). In an arm, `me` is that record, fully typed, no annotation.
 - `classes` — the **roles** a token may carry ([glossary](/concepts/glossary/#role)); `P.class` is a claims gate in front of an arm, not an expression.
-- The second argument is one block per record type (reads) plus `operations:` (writes). A record type with no `read` is invisible; a registered operation with no arm **denies** everyone but `superuser`. Entity-owned operations may also be armed under that entity (`issue.operations.rename`); trait-owned operations live under `traits.taggable.operations`. A `{ self: false }` operation takes a class gate only — there is no target row.
+- The second argument is one block per record type (reads) plus `operations:` (writes). A record type with no `read` is invisible; a registered operation with no arm **denies** everyone but `superuser`.
 
 `Ramose.policy` throws at deploy on an unknown field, class or record type, an empty or duplicate class list, a `principal` outside the schema, a rule the query validator rejects, a rule that never binds its focus as that entity (own field, reverse ref, named rule — not a foreign e-slot), no schema class, or `P.class(superuser)`. `P.class` omits `superuser`; `Ramose.Policy.Class<typeof policy>` is the `classes` union.
 
-Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`), which they need anyway for reuse in app queries. Inline arms write `(me) => …` with `me` fully typed.
+Standalone rules annotate `me` once (`(me: Ramose.Policy.Me<typeof User>) => …`). Inline arms write `(me) => …` with `me` typed.
 
 ## Reads: per-fact masks
 
@@ -103,9 +103,9 @@ Each takes one arm or a list (OR). An arm is a fragment, an array of fragments, 
 
 ## Writes: per-operation arms
 
-Writes are authorized at the named operation, not per fact. The body's `operations:` keys are the registry bindings (typed off `head.operations`); they lower to the operation's wire name. An arm is what an arm is on `read`: `true`, `P.class(...)`, `{ class, rule }`, or an array (OR). Operations are deny-by-default.
+Writes are authorized at the named operation. Body `operations:` keys are registry bindings (typed off `head.operations`) and lower to the wire name. Entity-owned keys also live under the owner (`issue.operations.rename`); trait-owned under `traits.taggable.operations`. An arm matches `read`: `true`, `P.class(...)`, `{ class, rule }`, or an array (OR).
 
-- A **bare** (no-`on`) operation takes a class gate only. A rule fragment is a compile error. A wire arm that still names a rule (or a v1 expression that reads the entity) on a registry-bare op is **denied** at runtime and rejected at deploy — the rule is not ignored.
+- A **bare** (`self: false` / no-`on`) operation takes a class gate only. A rule fragment is a compile error. A wire arm that still names a rule (or a v1 expression that reads the entity) on a registry-bare op is **denied** at runtime and rejected at deploy — the rule is not ignored.
 - An operation with `on:` may name `rule: (me) => fragment`. The rule runs against the **resolved target** before the body executes — one named-rule query with `self` as the focus.
 - A registered operation with no arm denies everyone but `superuser`. Reef declares no `superuser`, so an unarmed op there denies everyone; compile-time coverage is what keeps that safe.
 - `P.compile(policy, { operations })` and `Ramose.Server({ operations, auth: { policy } })` fail the deploy if an armed name is not in the registry, or if a rule arm is attached to a registry-bare op.
