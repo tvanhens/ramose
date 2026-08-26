@@ -175,6 +175,43 @@ describe("QueryReplicaDO apply-then-notify", () => {
     expect(b.session.watermark).toBe(12);
   });
 
+  test("GET /basis with minT fills from the transactor log when the subscription is stale", async () => {
+    const pending = [entry(11), entry(12)];
+    const env = {
+      STORE: new MemoryBucket(),
+      TRANSACTOR: {
+        idFromName: () => ({ toString: () => "tx" }),
+        get: () => ({
+          fetch: async (url: string) => {
+            const href = String(url);
+            if (href.includes("/log")) {
+              const u = new URL(href);
+              const from = Number(u.searchParams.get("from") ?? "0");
+              const to = Number(u.searchParams.get("to") ?? String(Number.MAX_SAFE_INTEGER));
+              const entries = pending.filter((e) => e.t > from && e.t <= to).map((e) => txFrame(e));
+              return Response.json({ earliestLogT: 11, entries, t: 12 });
+            }
+            return new Response("unavailable", { status: 503 });
+          },
+        }),
+      },
+    } as unknown as RamoseEnv;
+    const { state } = replicaCtx();
+    const replica = new QueryReplicaDO(state as never, env) as unknown as ReplicaWalk;
+    expect((await replica.fetch(new Request("https://replica/info?db=acme"))).status).toBe(200);
+    replica.adoptRoot(rootAt(10));
+    expect(replica.basisT).toBe(10);
+    const stale = await replica.fetch(new Request("https://replica/basis?db=acme"));
+    expect(stale.status).toBe(200);
+    expect(((await stale.json()) as { t: number }).t).toBe(10);
+    const fresh = await replica.fetch(
+      new Request("https://replica/basis?db=acme", { headers: { "x-ramose-min-t": "12" } }),
+    );
+    expect(fresh.status).toBe(200);
+    expect(((await fresh.json()) as { t: number }).t).toBe(12);
+    expect(replica.basisT).toBe(12);
+  });
+
   test("handleFrame of t+2 while t+1 is unapplied does not stamp the tip or dump", async () => {
     const { replica, attach } = await bootReplica(10);
     const a = attach();

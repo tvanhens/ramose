@@ -159,17 +159,13 @@ d("ramose e2e", () => {
     const ts = acks.map((a) => a.t).sort((a, b) => a - b);
     for (let i = 1; i < ts.length; i++) expect(ts[i]).toBe(ts[i - 1] + 1);
     const lastT = ts[ts.length - 1]!;
-    // The transactor acked consecutive t; the replica can lag a beat under
-    // a loaded local workerd. Wait for a basis that covers the last write.
-    let envelope = await db.queryEnvelope(
+    // Read-your-writes: the transactor ack is the fence. A concurrent burst
+    // can stall the replica WS; min-t pulls the missing log over HTTP.
+    const envelope = await db.queryEnvelope(
       `[:find (count ?e) . :where [?e :user/email]]`,
+      [],
+      { minT: lastT },
     );
-    for (let i = 0; i < 40 && (envelope.t < lastT || envelope.result !== 42); i++) {
-      await Bun.sleep(50);
-      envelope = await db.queryEnvelope(
-        `[:find (count ?e) . :where [?e :user/email]]`,
-      );
-    }
     expect(envelope.t).toBeGreaterThanOrEqual(lastT);
     expect(envelope.result).toBe(42);
   });
@@ -177,15 +173,11 @@ d("ramose e2e", () => {
   test("M5: replica reconnect resumes with no missed datoms; root flips drop novelty", async () => {
     // writes land while the replica is (re)connecting: nothing may be missed
     const info0 = await db.info();
-    let beforeEnv = await db.queryEnvelope(
+    const beforeEnv = await db.queryEnvelope(
       `[:find (count ?e) . :where [?e :user/email]]`,
+      [],
+      { minT: info0.transactor.t },
     );
-    for (let i = 0; i < 40 && beforeEnv.t < info0.transactor.t; i++) {
-      await Bun.sleep(50);
-      beforeEnv = await db.queryEnvelope(
-        `[:find (count ?e) . :where [?e :user/email]]`,
-      );
-    }
     const before = beforeEnv.result as number;
     const [rc, ...acks] = await Promise.all([
       db.reconnectReplica(),
@@ -195,12 +187,11 @@ d("ramose e2e", () => {
     ]);
     expect(rc.ok).toBe(true);
     const lastT = Math.max(...acks.map((a) => a.t));
-    // read-your-writes: wait until the replica basis covers the last ack
-    let q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
-    for (let i = 0; i < 40 && q.t < lastT; i++) {
-      await Bun.sleep(50);
-      q = await db.queryEnvelope(`[:find (count ?e) . :where [?e :user/email]]`);
-    }
+    const q = await db.queryEnvelope(
+      `[:find (count ?e) . :where [?e :user/email]]`,
+      [],
+      { minT: lastT },
+    );
     expect(q.t).toBeGreaterThanOrEqual(lastT);
     expect(q.result).toBe(before + 25);
     const info1 = await db.info();

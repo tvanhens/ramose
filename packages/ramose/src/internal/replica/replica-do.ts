@@ -3,7 +3,8 @@
  *
  * - Holds a WebSocket to the Transactor (resume-from-watermark on reconnect,
  *   gap detection via `t` continuity, catch-up from the transactor's /log or
- *   from R2 `log/` chunks).
+ *   from R2 `log/` chunks). A read with `x-ramose-min-t` also pulls `/log`
+ *   when the subscription is open but behind the fence.
  * - Keeps novelty since the current root sorted in memory and spilled to
  *   SQLite (survives eviction/restart without a full resync).
  * - Caches hot segments in SQLite (`segcache`) in front of R2.
@@ -50,6 +51,13 @@ import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
 
+/** Client read fence (`x-ramose-min-t` or `?minT=`). */
+function requestedMinT(raw: string | null | undefined): number | undefined {
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 /** SQLite-backed byte tier for segment bodies (bounded by row count, LRU-ish by insertion). */
 class SqliteTier implements ByteTier {
   constructor(private readonly sql: SqlStorage, private readonly maxRows = 2000) {
@@ -78,6 +86,8 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   private ws: WebSocket | undefined;
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
+  /** In-order apply of upstream frames; `sync` drains this before serving a basis. */
+  private applyChain: Promise<void> = Promise.resolve();
   readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
   private readonly log = componentLogger("replica");
   /** Live session protocol objects (rebuilt from hibernation attachments). */
@@ -245,26 +255,56 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.ws = ws;
     this.stats.reconnects++;
     this.log.info("replica.connect", { db: this.dbName, from: this.basisT, reconnects: this.stats.reconnects, novelty: this.entries.length });
-    let chain: Promise<void> = Promise.resolve();
-    ws.addEventListener("message", (ev) => {
-      // frames are applied strictly in order
-      chain = chain.then(async () => {
-        try {
-          const frame = JSON.parse(String(ev.data)) as WireFrame;
-          await this.handleFrame(frame);
-        } catch (err) {
-          console.error("replica: bad frame", err);
-        }
-      });
-    });
+    ws.addEventListener("message", (ev) => this.enqueueFrame(ev));
     const drop = () => {
       if (this.ws === ws) this.ws = undefined;
+      // Live sessions stall until the next inbound request if we only
+      // reconnect from `sync()`. Resume from the watermark on drop.
+      void this.ensureConnected().catch((err) => {
+        this.log.warn("replica.reconnect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
+      });
     };
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
     // give the hello + catch-up a moment so the first basis is fresh
     await new Promise((r) => setTimeout(r, 20));
-    await chain;
+    await this.drainFrames();
+  }
+
+  private enqueueFrame(ev: MessageEvent): void {
+    this.applyChain = this.applyChain.then(async () => {
+      try {
+        const frame = JSON.parse(String(ev.data)) as WireFrame;
+        await this.handleFrame(frame);
+      } catch (err) {
+        console.error("replica: bad frame", err);
+      }
+    });
+  }
+
+  /** Wait until every queued upstream frame has been applied. */
+  private async drainFrames(): Promise<void> {
+    let tip = this.applyChain;
+    await tip;
+    while (this.applyChain !== tip) {
+      tip = this.applyChain;
+      await tip;
+    }
+  }
+
+  /**
+   * Pull `(basisT, minT]` from the transactor SQL log when the WS
+   * subscription is open-but-stale (broadcasts dropped under load).
+   * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
+   */
+  private async catchUpTo(minT: number | undefined): Promise<void> {
+    if (minT === undefined || this.basisT >= minT) return;
+    const target = minT;
+    this.applyChain = this.applyChain.then(async () => {
+      if (this.basisT >= target) return;
+      await this.fillGap(this.basisT, target);
+    });
+    await this.drainFrames();
   }
 
   /** Make sure we are connected and caught up (bounded wait). */
@@ -273,6 +313,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.syncing = (async () => {
       try {
         await this.ensureConnected();
+        await this.drainFrames();
       } catch (err) {
         // transactor unreachable: serve from R2 (root + log chunks) — stale but consistent
         this.log.warn("replica.connect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
@@ -409,6 +450,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     writes?: WritesMode,
   ): Promise<Response> {
     await this.sync();
+    await this.catchUpTo(requestedMinT(init.headers["x-ramose-min-t"]));
     const dbName = this.dbName as string;
     if (!this.root) return json({ error: "database has no root yet" }, 503);
     if (rest === "/op" && init.method === "POST") {
@@ -560,6 +602,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     switch (url.pathname) {
       case "/basis": {
         await this.sync();
+        await this.catchUpTo(requestedMinT(url.searchParams.get("minT") ?? request.headers.get("x-ramose-min-t")));
         if (!this.root) return json({ error: "database has no root yet" }, 503);
         this.stats.basisServed++;
         if (this.stats.basisServed % 100 === 1) this.log.debug("replica.basis", { db: this.dbName, t: this.basisT, rootT: this.root.t, novelty: this.entries.length, served: this.stats.basisServed });
@@ -571,6 +614,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
         // is exactly what the Worker used to build itself.
         await this.sync();
+        await this.catchUpTo(requestedMinT(url.searchParams.get("minT") ?? request.headers.get("x-ramose-min-t")));
         if (!this.root) return json({ error: "database has no root yet" }, 503);
         const body = fromJson(await request.json()) as {
           query?: unknown;

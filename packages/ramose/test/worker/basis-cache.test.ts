@@ -20,8 +20,13 @@ function fakeEnv(basisT: () => number, extra: Record<string, string> = {}) {
     REPLICA: {
       idFromName: (name: string) => ({ name, toString: () => name }),
       get: (id: { name: string }, opts?: { locationHint?: string }) => ({
-        fetch: async (url: string) => {
-          calls.push({ id: id.name, url, hint: opts?.locationHint });
+        fetch: async (url: string, init?: RequestInit) => {
+          calls.push({
+            id: id.name,
+            url,
+            hint: opts?.locationHint,
+            minT: new Headers(init?.headers).get("x-ramose-min-t") ?? undefined,
+          });
           const t = basisT();
           return new Response(JSON.stringify({ t, root: { t: 1 }, novelty: [], replica: "r" }), { headers: { "content-type": "application/json" } });
         },
@@ -175,6 +180,7 @@ describe("basis cache knobs", () => {
     expect(b.basis.t).toBe(8);
     expect(b.calls).toBe(1);
     expect(calls.length).toBe(2);
+    expect(calls[1]?.minT).toBe("8");
     // subsequent read with the same fence hits the refreshed entry
     expect((await fetchBasisWithStats(env, "demo", req({ ...peer, "x-ramose-min-t": "8" }))).hit).toBe(true);
     // replica lags the transactor by a couple of polls → we wait for it
