@@ -116,23 +116,39 @@ function drawAperture(cx, cy, scale, t, open) {
     x: cx,
     y: cy,
     scale,
-    rot: Math.sin(t * 0.12) * 0.015,
+    rot: Math.sin(t * 0.12) * 0.012,
     draw: 1,
     glow,
-    alpha: 0.95,
+    alpha: 0.96,
   });
   ctx.save();
   ctx.translate(cx, cy);
   const r = 38 * scale;
   const g = ctx.createRadialGradient(0, 0, 4, 0, 0, r * 2.4);
-  g.addColorStop(0, `rgba(66,211,122,${0.18 * glow})`);
-  g.addColorStop(0.45, `rgba(66,211,122,${0.05 * glow})`);
+  g.addColorStop(0, `rgba(66,211,122,${0.22 * glow})`);
+  g.addColorStop(0.45, `rgba(66,211,122,${0.06 * glow})`);
   g.addColorStop(1, "rgba(66,211,122,0)");
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+
+  // A bead of light riding the stroke — the machine is running.
+  withMark(
+    () => {
+      const u = (t * 0.08) % 1;
+      const p = markPoint(u);
+      ctx.fillStyle = GREEN_BRIGHT;
+      ctx.shadowColor = GREEN;
+      ctx.shadowBlur = 16;
+      ctx.globalAlpha = 0.55 + 0.45 * open;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+    },
+    { x: cx, y: cy, scale, rot: Math.sin(t * 0.12) * 0.012 },
+  );
 }
 
 function rounded(x, y, w, h, r) {
@@ -481,28 +497,23 @@ function shatterParticles(cx, cy, seed, age) {
   ctx.restore();
 }
 
-function conveyorY() {
-  return H * 0.5;
-}
+const RAIL_Y = 548;
+const GATE_X = 960;
+const PRESS_X = 1080;
+const PRESS_Y = 500;
+const PILE_X = 268;
 
 function pilePos(i) {
-  const col = i % 2;
-  const row = Math.floor(i / 2);
-  return {
-    x: 250 + col * 40,
-    y: 430 + row * 78,
-  };
+  return { x: PILE_X, y: 300 + i * 92 };
 }
 
 function stampSchedule() {
-  // Each fact is pressed, then slides to the pile.
   return [
-    { fact: FACTS[0], start: 3.15, press: 1.7, slide: 0.7 },
-    { fact: FACTS[1], start: 5.2, press: 1.55, slide: 0.7 },
-    { fact: FACTS[2], start: 7.15, press: 1.55, slide: 0.7 },
-    { fact: FACTS[3], start: 10.55, press: 1.45, slide: 0.65 },
-    { fact: FACTS[4], start: 12.15, press: 1.2, slide: 0.55 },
-    { fact: FACTS[5], start: 13.15, press: 1.1, slide: 0.5 },
+    { fact: FACTS[0], start: 3.15, press: 1.7, slide: 0.7, rail: 0 },
+    { fact: FACTS[1], start: 5.2, press: 1.55, slide: 0.7, rail: null },
+    { fact: FACTS[2], start: 7.15, press: 1.55, slide: 0.7, rail: 1 },
+    { fact: FACTS[3], start: 10.55, press: 1.45, slide: 0.65, rail: 2 },
+    { fact: FACTS[4], start: 12.2, press: 1.15, slide: 0.55, rail: 3 },
   ];
 }
 
@@ -515,19 +526,73 @@ function factState(entry, t) {
   return { local, pressP, slideP, done, after };
 }
 
-function sorterProgress(i, t) {
-  // Facts enter the line after the query is posed.
-  const start = 18.35 + i * 1.05;
-  const travel = 3.35;
+function sorterProgress(order, t) {
+  const start = 19.15 + order * 1.55;
+  const travel = 3.8;
   const u = clamp((t - start) / travel, 0, 1);
-  return { start, u, active: t >= start };
+  return { start, u, active: t >= start, travel };
+}
+
+function drawRail(t, a) {
+  if (a <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  const y = RAIL_Y + 58;
+  const grad = ctx.createLinearGradient(180, y, 1740, y);
+  grad.addColorStop(0, "rgba(66,211,122,0)");
+  grad.addColorStop(0.22, "rgba(66,211,122,0.18)");
+  grad.addColorStop(0.5, "rgba(66,211,122,0.55)");
+  grad.addColorStop(0.78, "rgba(66,211,122,0.18)");
+  grad.addColorStop(1, "rgba(66,211,122,0)");
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(200, y);
+  ctx.lineTo(1720, y);
+  ctx.stroke();
+
+  // Moving ticks — a belt.
+  ctx.setLineDash([10, 18]);
+  ctx.lineDashOffset = -t * 46;
+  ctx.globalAlpha = a * 0.45;
+  ctx.strokeStyle = "rgba(166,166,166,0.55)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(220, y + 10);
+  ctx.lineTo(1700, y + 10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGate(t, a) {
+  if (a <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  const pulseA = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 3.2));
+  const h = 210;
+  const g = ctx.createLinearGradient(GATE_X, RAIL_Y - h / 2, GATE_X, RAIL_Y + h / 2);
+  g.addColorStop(0, "rgba(66,211,122,0)");
+  g.addColorStop(0.5, `rgba(66,211,122,${0.55 * pulseA})`);
+  g.addColorStop(1, "rgba(66,211,122,0)");
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(GATE_X, RAIL_Y - h / 2);
+  ctx.lineTo(GATE_X, RAIL_Y + h / 2);
+  ctx.stroke();
+  ctx.fillStyle = GREEN;
+  ctx.font = `600 12px ${SANS}`;
+  ctx.letterSpacing = "0.28em";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("POLICY", GATE_X, RAIL_Y - h / 2 - 16);
+  ctx.restore();
 }
 
 function draw(t) {
   ctx.fillStyle = BLACK;
   ctx.fillRect(0, 0, W, H);
 
-  // Slow forest wash that breathes.
   const wash = ctx.createRadialGradient(
     W * 0.5 + Math.sin(t * 0.2) * 40,
     H * 0.42,
@@ -544,16 +609,16 @@ function draw(t) {
   drawFloor();
   drawDust(t);
 
-  const titleIn = smooth(0.15, 1.1, t) * (1 - smooth(2.7, 3.5, t));
-  const markDraw = easeInOut(smooth(0.2, 2.15, t));
-  if (titleIn > 0.01 || t < 4) {
+  const titleIn = smooth(0.04, 0.65, t) * (1 - smooth(2.9, 3.55, t));
+  const markDraw = easeInOut(smooth(0.0, 1.25, t));
+  if (titleIn > 0.01) {
     drawMark({
       x: W / 2,
       y: H * 0.4,
-      scale: lerp(2.15, 2.35, Math.sin(t * 0.35) * 0.5 + 0.5),
+      scale: lerp(2.2, 2.32, Math.sin(t * 0.35) * 0.5 + 0.5),
       draw: markDraw,
-      glow: 0.6,
-      alpha: titleIn * 0.95 + (t < 3.4 ? 0 : 0),
+      glow: 0.75,
+      alpha: titleIn,
     });
     ctx.save();
     ctx.globalAlpha = titleIn;
@@ -574,153 +639,143 @@ function draw(t) {
     ctx.restore();
   }
 
-  // Residual watermark mark during later scenes.
-  const wm = smooth(3.4, 4.2, t) * (1 - smooth(33.2, 35.2, t));
-  if (wm > 0.01 && t > 3.2) {
-    const sorter = smooth(17.6, 19.2, t);
-    const cx = lerp(W * 0.58, W * 0.5, sorter);
-    const cy = lerp(H * 0.42, H * 0.46, sorter);
-    const sc = lerp(1.15, 2.05, sorter);
-    const open = 0.4 + 0.6 * Math.sin(clamp((t - 19) / 8, 0, 1) * Math.PI);
-    if (sorter > 0.15) drawAperture(cx, cy, sc, t, open);
-    else
-      drawMark({
-        x: cx,
-        y: cy,
-        scale: sc,
-        draw: 1,
-        glow: 0.15,
-        alpha: 0.18 * wm,
-      });
+  const factory = smooth(17.8, 19.1, t) * (1 - smooth(31.8, 33.4, t));
+  if (factory > 0.01) {
+    drawAperture(GATE_X, RAIL_Y - 8, 2.15, t, 0.55 + 0.45 * Math.sin((t - 19) * 0.35 + 0.4));
+    drawRail(t, factory);
+    drawGate(t, factory);
   }
 
-  // Press + pile
   const sched = stampSchedule();
-  const pressAlpha = smooth(3.05, 3.6, t) * (1 - smooth(16.6, 18.1, t));
+  const pressAlpha = smooth(3.05, 3.55, t) * (1 - smooth(15.1, 16.5, t));
   if (pressAlpha > 0.01) {
     ctx.save();
     ctx.globalAlpha = pressAlpha;
-    // Press housing
-    const px = 1180;
-    const py = 470;
-    ctx.fillStyle = "rgba(16,24,18,0.45)";
-    rounded(px - 270, py - 210, 540, 40, 8);
+    ctx.fillStyle = "rgba(16,24,18,0.5)";
+    rounded(PRESS_X - 270, PRESS_Y - 248, 540, 36, 8);
     ctx.fill();
     ctx.fillStyle = MUTED;
     ctx.font = `600 12px ${SANS}`;
     ctx.letterSpacing = "0.2em";
     ctx.textAlign = "center";
-    ctx.fillText("FACT  PRESS  ·  E  A  V  T", px, py - 188);
+    ctx.textBaseline = "middle";
+    ctx.fillText("FACT  PRESS  ·  E  A  V  T", PRESS_X, PRESS_Y - 230);
     ctx.restore();
 
     for (const entry of sched) {
       const st = factState(entry, t);
-      if (st.local < 0) continue;
-      if (st.pressP < 1) {
-        ctx.save();
-        ctx.globalAlpha = pressAlpha;
-        drawStampParts(1180, 500, entry.fact, st.pressP);
-        ctx.restore();
-      }
+      if (st.local < 0 || st.pressP >= 1) continue;
+      ctx.save();
+      ctx.globalAlpha = pressAlpha;
+      drawStampParts(PRESS_X, PRESS_Y, entry.fact, st.pressP);
+      ctx.restore();
     }
   }
 
-  // Chips in the pile / traveling / rejected
+  let maskedLabel = 0;
   for (let i = 0; i < sched.length; i++) {
     const entry = sched[i];
     const st = factState(entry, t);
     if (st.local < 0) continue;
     const pile = pilePos(i);
-    let x = 1180;
-    let y = 500;
-    let scale = 1;
+    let x = PRESS_X;
+    let y = PRESS_Y;
+    let scale = 0.78;
     let alpha = pressAlpha;
     let glow = 0;
     let strike = 0;
     let shatter = 0;
 
     if (st.pressP < 1) {
-      // still on the press as a compact chip only at the very end of the press
       if (st.pressP < 0.86) continue;
       alpha = pressAlpha * smooth(0.86, 1, st.pressP);
-      scale = lerp(0.55, 0.82, smooth(0.86, 1, st.pressP));
+      scale = lerp(0.52, 0.78, smooth(0.86, 1, st.pressP));
     } else if (!st.done) {
       const e = easeInOut(st.slideP);
-      x = lerp(1180, pile.x, e);
-      y = lerp(500, pile.y, e);
-      scale = lerp(0.82, 0.78, e);
+      x = lerp(PRESS_X, pile.x, e);
+      y = lerp(PRESS_Y, pile.y, e);
+      scale = 0.78;
       alpha = pressAlpha;
     } else {
-      // resting in the pile, then lifting onto the sorter
-      const sort = sorterProgress(i, t);
-      const lift = smooth(16.8, 18.3, t);
+      const pileFade = 1 - smooth(17.6, 19.0, t);
       x = pile.x;
       y = pile.y;
       scale = 0.78;
-      alpha = lerp(pressAlpha, 1, lift);
-      if (entry.fact.retired) {
-        strike = smooth(11.9, 13.0, t);
-      }
-      if (sort.active) {
-        const u = easeInOut(sort.u);
-        const gateX = W * 0.5;
-        const startX = pile.x + 80;
-        const endX = 1580;
-        x = lerp(startX, endX, u);
-        y = lerp(pile.y, conveyorY() + Math.sin(u * Math.PI) * -16, u);
-        scale = lerp(0.78, 0.72, u);
-        glow = pulse(u, 0.42, 0.62) * (entry.fact.secret ? 0.35 : 1);
-        if (entry.fact.secret && u > 0.52) {
-          const rej = clamp((u - 0.52) / 0.25, 0, 1);
-          shatter = easeOut(rej);
-          alpha = 1 - easeIn(clamp((u - 0.55) / 0.22, 0, 1));
-          y += rej * 70;
-          x = gateX + (x - gateX) * (1 - rej * 0.7);
-          shatterParticles(gateX + 10, conveyorY(), 900 + i, (t - sort.start - 3.35 * 0.52));
-        } else if (u > 0.78) {
-          // survivors fade as they become the result
-          alpha *= 1 - smooth(0.82, 1, u) * 0.85;
+      alpha = lerp(pressAlpha, 1, smooth(14.8, 16.2, t)) * (entry.rail === null ? pileFade : 1);
+      if (entry.fact.retired) strike = smooth(11.85, 12.9, t);
+
+      if (entry.rail !== null) {
+        const sort = sorterProgress(entry.rail, t);
+        if (sort.active) {
+          const u = easeInOut(sort.u);
+          x = lerp(PILE_X + 40, 1680, u);
+          y = lerp(pile.y, RAIL_Y, smooth(0, 0.18, u));
+          scale = 0.7;
+          alpha = 1;
+          glow = pulse(u, 0.4, 0.58);
+          if (entry.fact.secret && u > 0.46) {
+            const rej = clamp((u - 0.46) / 0.22, 0, 1);
+            shatter = easeOut(rej);
+            alpha = 1 - easeIn(clamp((u - 0.5) / 0.2, 0, 1));
+            y = RAIL_Y + easeIn(rej) * 110;
+            x = GATE_X + (x - GATE_X) * (1 - rej * 0.85);
+            glow = 0;
+            shatterParticles(GATE_X, RAIL_Y, 904, t - sort.start - sort.travel * 0.46);
+            maskedLabel = pulse(t, sort.start + sort.travel * 0.48, sort.start + sort.travel * 0.48 + 2.4);
+          } else if (!entry.fact.secret && u > 0.8) {
+            alpha *= 1 - smooth(0.82, 1, u);
+          }
+        } else {
+          alpha *= pileFade;
         }
       }
     }
 
-    if (t > 29.2 && !entry.fact.secret) alpha *= 1 - smooth(29.2, 31.2, t);
+    if (t > 29.4) alpha *= 1 - smooth(29.4, 31.4, t);
     drawChip(x, y, entry.fact, { scale, alpha, glow, strike, shatter });
   }
 
-  // Query browser
-  const qIn = smooth(15.5, 16.8, t) * (1 - smooth(28.6, 30.2, t));
+  if (maskedLabel > 0.01) {
+    ctx.save();
+    ctx.globalAlpha = maskedLabel;
+    ctx.fillStyle = GREY;
+    ctx.font = `600 18px ${SANS}`;
+    ctx.letterSpacing = "0.32em";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("MASKED", GATE_X, RAIL_Y + 148);
+    ctx.restore();
+  }
+
+  const qIn = smooth(15.35, 16.7, t) * (1 - smooth(28.4, 30.0, t));
   if (qIn > 0.01) {
-    const qx = lerp(2100, 1580, easeOut(smooth(15.5, 17.1, t)));
-    drawBrowser(qx, 250, qIn, t);
-    // query beam toward the pile / gate
-    if (t > 16.8 && t < 20.5) {
-      const ba = pulse(t, 16.8, 20.4);
+    const qx = lerp(2080, 1568, easeOut(smooth(15.35, 16.9, t)));
+    drawBrowser(qx, 214, qIn, t);
+    if (t > 16.7 && t < 20.2) {
+      const ba = pulse(t, 16.7, 20.1);
       ctx.save();
-      ctx.globalAlpha = ba * 0.7;
-      const grad = ctx.createLinearGradient(1400, 280, 420, 460);
+      ctx.globalAlpha = ba * 0.65;
+      const grad = ctx.createLinearGradient(1400, 250, 300, RAIL_Y);
       grad.addColorStop(0, GREEN);
       grad.addColorStop(1, "rgba(66,211,122,0)");
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 10]);
       ctx.lineDashOffset = -t * 40;
       ctx.beginPath();
-      ctx.moveTo(1400, 300);
-      ctx.bezierCurveTo(1100, 330, 700, 400, 420, 460);
+      ctx.moveTo(1388, 270);
+      ctx.bezierCurveTo(1100, 340, 620, 480, 300, RAIL_Y);
       ctx.stroke();
       ctx.restore();
     }
   }
 
-  // Result card
-  const resIn = smooth(27.4, 29.0, t) * (1 - smooth(32.6, 34.2, t));
+  const resIn = smooth(27.6, 29.1, t) * (1 - smooth(32.5, 34.0, t));
   if (resIn > 0.01) {
-    drawResult(1580, 520, resIn, smooth(27.6, 30.4, t));
+    drawResult(1568, 560, resIn, smooth(27.8, 30.6, t));
   }
 
-  // End card
-  const end = smooth(32.4, 33.8, t);
+  const end = smooth(32.3, 33.7, t);
   if (end > 0.01) {
     drawMark({
       x: W / 2,
@@ -749,17 +804,15 @@ function draw(t) {
     ctx.restore();
   }
 
-  // Scene captions
-  caption("A FACT IS FOUR THINGS", "entity  ·  attribute  ·  value  ·  time", pulse(t, 3.3, 6.6));
-  caption("NOTHING IS OVERWRITTEN", "a new fact lands. the old one stays, marked gone.", pulse(t, 10.4, 13.6));
-  caption("THE CLIENT ASKS FROM THE FRONTEND", "signed in as a member  ·  Query.from(Issue)", pulse(t, 15.7, 18.4));
-  caption("THE POLICY LIVES IN THE DATABASE", "reads are per-fact masks. deny by default.", pulse(t, 18.6, 22.4));
-  caption("READS SHRINK. THEY NEVER LEAK.", "a field you may not read is absent — not an error.", pulse(t, 22.6, 26.6));
-  caption("SO THE QUERY IS ALREADY SAFE", "the browser never held the private note.", pulse(t, 27.6, 31.6));
+  caption("A FACT IS FOUR THINGS", "entity  ·  attribute  ·  value  ·  time", pulse(t, 3.25, 6.5));
+  caption("NOTHING IS OVERWRITTEN", "a new fact lands. the old one stays, marked gone.", pulse(t, 10.35, 13.7));
+  caption("THE CLIENT ASKS FROM THE FRONTEND", "signed in as a member  ·  Query.from(Issue)", pulse(t, 15.5, 18.5));
+  caption("THE POLICY LIVES IN THE DATABASE", "reads are per-fact masks. deny by default.", pulse(t, 18.7, 22.2));
+  caption("READS SHRINK. THEY NEVER LEAK.", "a field you may not read is absent — not an error.", pulse(t, 22.3, 26.5));
+  caption("SO THE QUERY IS ALREADY SAFE", "the browser never held the private note.", pulse(t, 27.7, 31.6));
 
   drawVignette();
 
-  // Fine grain
   const rng = mulberry32((t * 1000) | 0);
   ctx.save();
   ctx.globalAlpha = 0.035;
