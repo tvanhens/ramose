@@ -7,6 +7,9 @@ dist/
 .env.*
 FABLE_TASK.md
 
+# Rendered brand film frames and mp4 (see website/scripts/film/).
+website/scripts/film/out/
+
 # Generated publish artifacts (see scripts/build-packages.ts): LICENSE and
 # NOTICE are copied from the repo root on every build, so the root copies stay
 # the single source of truth. The package README is hand-written — it is the
