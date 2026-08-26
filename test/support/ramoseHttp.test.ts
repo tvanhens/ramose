@@ -38,6 +38,25 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(connectionHeaders).toEqual([undefined, "close", "close"]);
   });
 
+  test("retries Durable Object storage timeout reset then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          return json(500, {
+            error:
+              "Durable Object storage operation exceeded timeout which caused object to be reset.",
+          });
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
   test("retries error 1104 then succeeds", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
