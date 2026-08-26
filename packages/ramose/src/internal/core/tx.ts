@@ -820,14 +820,16 @@ export async function expandTx(
     if (!isMembershipIdent(op.attr.ident)) continue;
     if (op.fromRetractEntity) continue;
     // Typed put stamps `:ramose/type` so inferType can see the composer
-    // when the attr map has no own-namespace keys. Permit that one form
-    // on a newly allocated entity; `:ramose/trait` and all other
-    // membership writes stay engine-owned.
+    // when the attr map has no own-namespace keys, and so an
+    // attribute-free create still allocates (flattenTxData drops a lone
+    // `:db/id`). Permit that one form on a newly allocated entity;
+    // `:ramose/trait` and all other membership writes stay engine-owned.
+    // Entity-only catalogs do not install `:ramose.kind/entity`, so the
+    // value need not be a registered composer ident.
     if (
       op.kind === "add" &&
       op.attr.ident === RAMOSE_TYPE_IDENT &&
       typeof op.datom.v === "string" &&
-      db.schema.isEntityIdent(op.datom.v) &&
       newEntities.has(op.e)
     ) {
       continue;

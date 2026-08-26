@@ -71,6 +71,7 @@ const Issue = Entity(
 const Doc = Entity("doc", { body: string() }, { traits: [Taggable] });
 const User = Entity("user", { name: string() });
 const App = DbSchema({ issue: Issue, doc: Doc, user: User });
+const Lonely = DbSchema({ user: User });
 
 type _addTagName = Expect<
   Equal<(typeof Taggable.operations.addTag)["name"], "taggable/addTag">
@@ -93,6 +94,7 @@ type _addTagOn = Expect<
 >;
 
 declare const db: Db<typeof App>;
+declare const lonely: Db<typeof Lonely>;
 declare const issueId: Eid<typeof Issue>;
 declare const docId: Eid<typeof Doc>;
 declare const userId: Eid<typeof User>;
@@ -120,6 +122,10 @@ db.run(Issue.operations.create, issueId, { title: "x" });
 db.run(Taggable.operations.addTag, userId, { tag: "x" });
 // @ts-expect-error a doc is not an issue
 db.run(Issue.operations.rename, docId, { title: "x" });
+
+// @ts-expect-error this catalog has no Taggable composer
+lonely.run(Taggable.operations.addTag, userId, { tag: "x" });
+lonely.run(Taggable.operations.addTag, 1001, { tag: "x" });
 
 {
   const create = Issue.operations.create;

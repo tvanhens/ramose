@@ -417,24 +417,28 @@ const fieldIdent = (entity: unknown, key: string): string => {
   return ns.length > 0 ? `:${ns}/${key}` : key;
 };
 
+const entityNs = (entity: unknown): string =>
+  typeof entity === "object" &&
+  entity !== null &&
+  "ns" in entity &&
+  typeof (entity as { ns: unknown }).ns === "string"
+    ? (entity as { ns: string }).ns
+    : "";
+
+const stampOwnerType = (
+  map: Record<string, unknown>,
+  entity: unknown,
+): void => {
+  const ns = entityNs(entity);
+  if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
+};
+
 const lowerPut = (
   entity: unknown,
   eid: unknown,
   attrs: Record<string, unknown>,
 ): { readonly map: TxMap; readonly extras: TxOp[] } => {
   const map: Record<string, unknown> = { ":db/id": eid };
-  // Composed creates can carry only trait attrs. Thread the composer so
-  // processTx does not treat a typed put as a raw trait-only write.
-  if (traitsOf(entity).length > 0) {
-    const ns =
-      typeof entity === "object" &&
-      entity !== null &&
-      "ns" in entity &&
-      typeof (entity as { ns: unknown }).ns === "string"
-        ? (entity as { ns: string }).ns
-        : "";
-    if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
-  }
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;
@@ -450,6 +454,16 @@ const lowerPut = (
     const lowered = lowerWriteValue(value);
     if (lowered === undefined) continue;
     map[ident] = lowered;
+  }
+  // Composed creates can carry only trait attrs. Thread the composer so
+  // processTx does not treat a typed put as a raw trait-only write.
+  // An attribute-free create is the same: flattenTxData drops a lone
+  // `:db/id`, so stamp the owner or no entity is allocated.
+  if (
+    traitsOf(entity).length > 0 ||
+    (Object.keys(map).length === 1 && extras.length === 0)
+  ) {
+    stampOwnerType(map, entity);
   }
   return { map, extras };
 };

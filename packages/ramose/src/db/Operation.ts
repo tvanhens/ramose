@@ -178,7 +178,7 @@ export type RunEntity<
 > = N extends { readonly _tag: "Trait"; readonly ns: string }
   ? EntityRef<
       C,
-      [ComposersOf<C, N>] extends [never] ? AnyEntity : ComposersOf<C, N>,
+      [ConcreteCatalog<C>] extends [true] ? ComposersOf<C, N> : AnyEntity,
       TxHandle<C> | AnyOpHandle<C>
     >
   : EntityRef<C, N & AnyEntity, TxHandle<C> | AnyOpHandle<C>>;
@@ -1068,6 +1068,10 @@ export const defineOperations = <
     const existing = byName.get(op.name);
     if (existing === op) continue;
     if (existing !== undefined) throw duplicateOperationIdentity(op.name);
+    const bound = out[op.name];
+    if (bound !== undefined && bound !== op) {
+      throw duplicateOperationIdentity(op.name);
+    }
     byName.set(op.name, op);
     out[op.name] = op;
   }

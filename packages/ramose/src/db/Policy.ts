@@ -783,9 +783,25 @@ export function policy<
 
   const ns: Record<string, NsRules> = {};
   const compiledOps: Record<string, readonly CompiledArm[]> = {};
+  const armedWhere = new Map<string, string>();
   const maskedReads = new Set<string>();
   const body = arms as Record<string, unknown>;
   const operationSpec = body.operations as Record<string, unknown> | undefined;
+
+  const armOperation = (
+    wireName: string,
+    arms: readonly CompiledArm[],
+    where: string,
+  ): void => {
+    const existing = armedWhere.get(wireName);
+    if (existing !== undefined) {
+      fail(
+        `${where}: ${JSON.stringify(wireName)} is already armed at ${existing}`,
+      );
+    }
+    armedWhere.set(wireName, where);
+    compiledOps[wireName] = arms;
+  };
 
   const compileOperationArms = (
     operation: AnyOperation,
@@ -880,9 +896,13 @@ export function policy<
         if (typeof wireName !== "string" || wireName.length === 0) {
           fail(`ns.${nsKey}.operations.${key}: operation has no name`);
         }
-        compiledOps[wireName] = compileOperationArms(
-          operation,
-          raw,
+        armOperation(
+          wireName,
+          compileOperationArms(
+            operation,
+            raw,
+            `ns.${nsKey}.operations.${key}`,
+          ),
           `ns.${nsKey}.operations.${key}`,
         );
       }
@@ -918,9 +938,17 @@ export function policy<
             `traits.${nsKey}.operations.${key}: ${JSON.stringify(key)} is not an operation of ${nsKey}`,
           );
         }
-        compiledOps[operation.name] = compileOperationArms(
-          operation,
-          raw,
+        const wireName = operation.name;
+        if (typeof wireName !== "string" || wireName.length === 0) {
+          fail(`traits.${nsKey}.operations.${key}: operation has no name`);
+        }
+        armOperation(
+          wireName,
+          compileOperationArms(
+            operation,
+            raw,
+            `traits.${nsKey}.operations.${key}`,
+          ),
           `traits.${nsKey}.operations.${key}`,
         );
       }
@@ -942,7 +970,11 @@ export function policy<
       if (typeof wireName !== "string" || wireName.length === 0) {
         fail(`operations.${key}: operation has no name`);
       }
-      compiledOps[wireName] = compileOperationArms(operation, raw, `operations.${key}`);
+      armOperation(
+        wireName,
+        compileOperationArms(operation, raw, `operations.${key}`),
+        `operations.${key}`,
+      );
     }
   }
 

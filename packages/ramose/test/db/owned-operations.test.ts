@@ -178,6 +178,17 @@ describe("harvest and cards", () => {
     expect(Object.keys(once).sort()).toEqual(Object.keys(twice).sort());
     expect(twice["taggable/addTag"]).toBe(Taggable.operations.addTag);
   });
+
+  test("a harvested wire name does not overwrite a different extra at that key", () => {
+    const ping = Operation(
+      "misc/ping",
+      { input: Schema.Struct({}), output: Schema.Struct({}) },
+      () => ({}),
+    );
+    expect(() => defineOperations(App, { "issue/create": ping })).toThrow(
+      /duplicate operation identity "issue\/create"/,
+    );
+  });
 });
 
 describe("runtime target check", () => {
@@ -274,6 +285,49 @@ describe("op.create and self", () => {
     );
   });
 
+  test("op.create({}) stamps the owner when the entity has no attributes", async () => {
+    const Note = Entity(
+      "note",
+      { tags: Field.many(string()) },
+      {
+        operations: {
+          create: Operation({
+            self: false,
+            input: Schema.Struct({}),
+            output: Schema.Struct({ id: EntityId }),
+            run(op) {
+              return { id: op.create({}) };
+            },
+          }),
+        },
+      },
+    );
+    const Notes = DbSchema({ note: Note });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Notes) as unknown[]);
+    const built = buildOp({
+      schema: Notes,
+      db: "app",
+      principal,
+      createEntity: Note,
+      effects: "halt",
+      q: () => Effect.succeed([]),
+      pull: () => Effect.succeed(null),
+    });
+    const result = await Effect.runPromise(
+      runBody(Note.operations.create, built.op, {}),
+    );
+    expect(result.halted).toBe(false);
+    expect(built.ops()).toEqual([
+      { ":db/id": "tmp-1", ":ramose/type": ":note" },
+    ]);
+    const report = await conn.transact(built.ops() as unknown[]);
+    const eid = report.tempids["tmp-1"];
+    expect(typeof eid).toBe("number");
+    const row = await conn.db().entity(eid!);
+    expect(row?.[":ramose/type"]).toBe(":note");
+  });
+
   test("instance operations expose self and do not expose create", () => {
     const built = buildOp({
       schema: App,
@@ -353,6 +407,35 @@ describe("owned operation policy keys", () => {
         },
       ),
     ).toThrow(/targetless operation takes a class gate only/);
+  });
+
+  test("duplicate policy arms for an owned operation are rejected", () => {
+    const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
+    const Board = DbSchema({ user: User, issue: Issue, doc: Doc });
+    const ops = defineOperations(Board);
+    expect(() =>
+      P.policy(
+        {
+          schema: Board,
+          principal: User.sub,
+          classes: ["member"],
+          schemaClasses: ["member"],
+          operations: ops,
+        },
+        {
+          issue: {
+            operations: {
+              rename: P.class("member"),
+            },
+          },
+          operations: {
+            "issue/rename": P.class("member"),
+          },
+        },
+      ),
+    ).toThrow(
+      /operations\.issue\/rename: "issue\/rename" is already armed at ns\.issue\.operations\.rename/,
+    );
   });
 });
 
