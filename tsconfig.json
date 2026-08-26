@@ -45,7 +45,33 @@
     },
     "plugins": [
       {
-        "name": "@effect/language-service"
+        "name": "@effect/language-service",
+        // Every rule the language service ships at `warning` is raised to
+        // `error` so it fails `bun run typecheck` instead of scrolling past in
+        // CI. Only `multipleEffectProvide` and `unknownInEffectCatch` had live
+        // findings when this was turned on; the rest are standing guards.
+        // `duplicatePackage` earns its place — it is what caught two copies of
+        // `alchemy` resolving at once, which for an Effect-based package means
+        // two distinct service identities and a Layer that silently does not
+        // satisfy the requirement it looks like it satisfies.
+        // Suggestion-level rules are deliberately left as suggestions.
+        "diagnosticSeverity": {
+          "duplicatePackage": "error",
+          "effectFnIife": "error",
+          "effectGenUsesAdapter": "error",
+          "effectInFailure": "error",
+          "effectInVoidSuccess": "error",
+          "genericEffectServices": "error",
+          "globalErrorInEffectCatch": "error",
+          "globalErrorInEffectFailure": "error",
+          "layerMergeAllWithDependencies": "error",
+          "lazyPromiseInEffectSync": "error",
+          "multipleEffectProvide": "error",
+          "outdatedApi": "error",
+          "promiseInEffectSuccess": "error",
+          "scopeInLayerEffect": "error",
+          "unknownInEffectCatch": "error"
+        }
       }
     ]
   },

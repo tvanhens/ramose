@@ -114,11 +114,14 @@ describe("Databases over a service binding", () => {
         expect(calls).toEqual([]);
         return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(
-        Effect.provide(layer),
         Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(WorkerEnvironment, env as never),
-            runtimeLayer(),
+          layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                Layer.succeed(WorkerEnvironment, env as never),
+                runtimeLayer(),
+              ),
+            ),
           ),
         ),
       ),
@@ -142,12 +145,15 @@ describe("Databases over a service binding", () => {
         const ramose = yield* Databases(server());
         return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(
-        Effect.provide(layer),
         Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(WorkerEnvironment, {} as never),
-            Layer.succeed(Self, host as never),
-            runtimeLayer(),
+          layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                Layer.succeed(WorkerEnvironment, {} as never),
+                Layer.succeed(Self, host as never),
+                runtimeLayer(),
+              ),
+            ),
           ),
         ),
         Effect.catchCause((cause) =>
@@ -174,7 +180,7 @@ describe("Databases over HTTPS", () => {
       Effect.gen(function* () {
         const ramose = yield* Databases(server("s3cret"));
         return yield* ramose.db("movies", Movies).effect.run(addAda, {});
-      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(runtimeLayer())))),
     );
 
     expect(report.t).toBe(7);
@@ -193,7 +199,7 @@ describe("server-side handles have no live / livePull", () => {
       Effect.gen(function* () {
         const ramose = yield* Databases(server());
         return ramose.db("movies", Movies);
-      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(runtimeLayer())))),
     );
 
     expect(typeof db.query).toBe("function");
@@ -214,7 +220,7 @@ describe("server-side handles have no live / livePull", () => {
       Effect.gen(function* () {
         const ramose = yield* Databases(server());
         return ramose.db("movies", Movies);
-      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(runtimeLayer())))),
     );
     const read = asRead(db);
     expect(read).toBe(db);
@@ -244,7 +250,7 @@ describe("server-side handles have no live / livePull", () => {
         return yield* ramose
           .db("movies", Movies)
           .effect.query(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
-      }).pipe(Effect.provide(layer), Effect.provide(runtimeLayer())),
+      }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(runtimeLayer())))),
     );
 
     expect(rows).toEqual([{ name: "Ada" }]);

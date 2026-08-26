@@ -254,6 +254,14 @@ export const runBody = (
   op: RuntimeOp,
   input: unknown,
 ): Effect.Effect<{ output: unknown; halted: boolean }, unknown> =>
+  // `operation.body` is user code and may throw anything, so `unknown` is the
+  // honest error type here — it is the declared error channel above, not an
+  // oversight. The value is deliberately passed through untouched: both
+  // callers classify the original throw, and wrapping it would break them.
+  // `overlay.ts` tests `isDatabaseError(e)` before falling back to
+  // `classifyTx(e)`, and `worker/operations.ts` reads `tagOf(err)` to
+  // re-raise an existing `OperationRejected` rather than nest one.
+  // @effect-diagnostics-next-line unknownInEffectCatch:off
   Effect.tryPromise({
     try: () => Promise.resolve(operation.body(asPromiseOp(op), input)),
     catch: (cause) => cause,
