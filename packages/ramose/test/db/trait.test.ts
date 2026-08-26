@@ -6,16 +6,20 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { Connection } from "../../src/internal/core/conn.ts";
+import { pipe } from "effect/Function";
 import {
   Entity,
   Field,
+  Query,
   Schema,
   Trait,
   string,
+  lowerQueryObject,
   schemaTx,
   txBuilder,
   txOps,
 } from "../../src/db/internal.ts";
+import { query as coreQuery } from "../../src/internal/core/index.ts";
 
 const Taggable = Trait("taggable", {
   tag: string(),
@@ -164,7 +168,7 @@ describe("schemaTx composition metadata", () => {
 });
 
 describe("typed create", () => {
-  test("put stamps type and each transitive trait exactly once", () => {
+  test("put writes composer attrs and leaves membership to the engine", () => {
     const tx = txBuilder(Board);
     Effect.runSync(
       tx.put(Issue, { title: "Fix login", tag: "urgent" }),
@@ -181,19 +185,13 @@ describe("typed create", () => {
         ":db/id": "tmp-1",
         ":issue/title": "Fix login",
         ":taggable/tag": "urgent",
-        ":ramose/type": ":issue",
       },
-      [":db/add", "tmp-1", ":ramose/trait", ":taggable"],
       {
         ":db/id": "tmp-2",
         ":diamond/title": "D",
         ":taggable/tag": "t",
         ":timestamped/createdAt": "now",
-        ":ramose/type": ":diamond",
       },
-      [":db/add", "tmp-2", ":ramose/trait", ":taggable"],
-      [":db/add", "tmp-2", ":ramose/trait", ":timestamped"],
-      [":db/add", "tmp-2", ":ramose/trait", ":annotated"],
     ]);
   });
 
@@ -204,9 +202,7 @@ describe("typed create", () => {
       {
         ":db/id": "tmp-1",
         ":note/title": "n",
-        ":ramose/type": ":note",
       },
-      [":db/add", "tmp-1", ":ramose/trait", ":soft"],
     ]);
   });
 });
@@ -224,6 +220,9 @@ describe("processTx membership and required trait fields", () => {
     Effect.runSync(tx.put(Issue, { title: "Fix login" } as never));
     await expect(conn.transact([...txOps(tx)])).rejects.toMatchObject({
       code: "tx/required",
+      message: expect.stringContaining(
+        "entity issue is missing required fields: :taggable/tag",
+      ),
     });
   });
 
@@ -286,6 +285,65 @@ describe("processTx membership and required trait fields", () => {
     await expect(
       conn.transact([[":db/add", e, ":ramose/type", ":note"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
+  });
+
+  test("forged membership facts are rejected without a prior type", async () => {
+    const Todo = Entity("todo", { title: string() });
+    const Mixed = Schema({
+      issue: Issue,
+      note: Note,
+      diamond: Diamond,
+      todo: Todo,
+    });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Mixed) as unknown[]);
+
+    await expect(
+      conn.transact([[":db/add", "tmp-x", ":ramose/trait", ":taggable"]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+
+    const created = txBuilder(Mixed);
+    Effect.runSync(created.put(Todo, { title: "x" }));
+    const { tempids } = await conn.transact([...txOps(created)]);
+    const todo = tempids["tmp-1"]!;
+    await expect(
+      conn.transact([[":db/add", todo, ":ramose/trait", ":taggable"]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([[":db/add", todo, ":ramose/type", ":todo"]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+  });
+
+  test("Query.entities membership is the type fact, not a shared trait field", async () => {
+    const Task = Entity("task", { title: string() }, { traits: [Taggable] });
+    const Mixed = Schema({
+      issue: Issue,
+      note: Note,
+      diamond: Diamond,
+      task: Task,
+    });
+    const listing = Query.q(() =>
+      pipe(Query.entities(Issue), Query.select({ id: Issue.id })),
+    );
+    const { query } = lowerQueryObject(listing);
+    expect(query.where).toEqual([["isIssue", "?q0"]]);
+    expect(query.rules).toEqual([
+      [["isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]],
+    ]);
+
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Mixed) as unknown[]);
+    const tx = txBuilder(Mixed);
+    Effect.runSync(tx.put(Issue, { title: "an issue", tag: "urgent" }));
+    Effect.runSync(tx.put(Task, { title: "a task", tag: "urgent" }));
+    await conn.transact([...txOps(tx)]);
+    const tuples = (await coreQuery(conn.db(), query)) as readonly [
+      { readonly id: number },
+    ][];
+    expect(tuples).toHaveLength(1);
+    const issueRow = await conn.db().entity(tuples[0]![0]!.id);
+    expect(issueRow?.[":issue/title"]).toBe("an issue");
+    expect(issueRow?.[":task/title"]).toBeUndefined();
   });
 
   test("existing entity-only schemas still create without membership facts", async () => {

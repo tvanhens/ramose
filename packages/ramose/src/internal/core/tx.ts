@@ -642,16 +642,6 @@ export async function expandTx(
     return typeof first?.v === "string" ? first.v : undefined;
   };
 
-  const readTraits = async (e: number): Promise<Set<string>> => {
-    const attr = traitAttr();
-    const out = new Set<string>();
-    if (attr === undefined) return out;
-    for (const d of (await current(e, attr.id)).values()) {
-      if (typeof d.v === "string") out.add(d.v);
-    }
-    return out;
-  };
-
   /**
    * `preTx`: only namespaces that existed before this tx. Add/set use that so
    * a same-tx bag can still take a second namespace; put onto a pre-existing
@@ -819,10 +809,11 @@ export async function expandTx(
 
   for (const op of expanded) {
     if (!isMembershipIdent(op.attr.ident)) continue;
-    if (op.kind !== "retract") continue;
     if (op.fromRetractEntity) continue;
     throw new TxError(
-      `cannot retract system fact ${op.attr.ident}`,
+      op.kind === "retract"
+        ? `cannot retract system fact ${op.attr.ident}`
+        : `cannot write system fact ${op.attr.ident}`,
       "tx/system",
     );
   }
@@ -848,15 +839,6 @@ export async function expandTx(
       if (typeAfter !== undefined && typeAfter !== typeBefore) {
         throw new TxError(`cannot change system fact ${RAMOSE_TYPE_IDENT}`, "tx/system");
       }
-      for (const op of expanded) {
-        if (op.e !== e || op.kind !== "add" || !isMembershipIdent(op.attr.ident)) {
-          continue;
-        }
-        throw new TxError(
-          `cannot write system fact ${op.attr.ident}`,
-          "tx/system",
-        );
-      }
     } else if (type !== undefined && db.schema.isEntityIdent(type)) {
       const ta = typeAttr();
       const tr = traitAttr();
@@ -866,15 +848,6 @@ export async function expandTx(
       if (tr !== undefined) {
         for (const trait of composed) {
           await emitAdd(e, tr, { vt: ValueTag.Str, v: trait });
-        }
-      }
-      const have = await readTraits(e);
-      for (const trait of have) {
-        if (!composed.includes(trait)) {
-          throw new TxError(
-            `cannot write system fact ${RAMOSE_TRAIT_IDENT}`,
-            "tx/system",
-          );
         }
       }
     }
@@ -890,7 +863,7 @@ export async function expandTx(
       const missing = await missingRequiredAttrs(e, requiredOfType(type));
       if (missing.length > 0) {
         throw new TxError(
-          `entity ${nsOfIdent(type)} is missing required fields: ${missing.join(", ")}`,
+          `entity ${nsOfComposer(type)} is missing required fields: ${missing.join(", ")}`,
           "tx/required",
         );
       }

@@ -2,7 +2,6 @@
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
-import { transitiveTraitIdents } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
@@ -399,28 +398,6 @@ const isCardManyWrite = (entity: unknown, key: string, value: unknown): boolean 
 
 const resolveEntity = (e: unknown): unknown => lowerEntityArg(e);
 
-const isCreatePut = (id: unknown): boolean => {
-  if (id === undefined) return true;
-  if (typeof id === "string") return true;
-  if (isTxHandle(id)) return typeof id.eid === "string";
-  return false;
-};
-
-const membershipFacts = (
-  entity: unknown,
-): { readonly type: string; readonly traits: readonly string[] } | undefined => {
-  if (typeof entity !== "object" || entity === null || !("ns" in entity)) {
-    return undefined;
-  }
-  const ns = (entity as { ns: unknown }).ns;
-  if (typeof ns !== "string" || ns.length === 0) return undefined;
-  const traits = transitiveTraitIdents(
-    entity as { ns: string; fields: Record<string, { ident?: unknown }>; traits?: readonly { ns: string; fields: Record<string, { ident?: unknown }> }[] },
-  );
-  if (traits.length === 0) return undefined;
-  return { type: `:${ns}`, traits };
-};
-
 const fieldIdent = (entity: unknown, key: string): string => {
   if (typeof entity === "object" && entity !== null && "fields" in entity) {
     const fields = (entity as { fields?: Record<string, { ident?: unknown }> })
@@ -592,18 +569,8 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
             ? (`tmp-${++next}` as Tempid)
             : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         const { map, extras } = lowerPut(entity, eid, attrs ?? {});
-        const extraOps: TxOp[] = [...extras];
-        if (isCreatePut(id)) {
-          const membership = membershipFacts(entity);
-          if (membership !== undefined) {
-            (map as Record<string, unknown>)[":ramose/type"] = membership.type;
-            for (const trait of membership.traits) {
-              extraOps.push([":db/add", eid, ":ramose/trait", trait]);
-            }
-          }
-        }
         ops.push(map);
-        ops.push(...extraOps);
+        ops.push(...extras);
         return makeHandle(eid, ops);
       })) as Tx<C>["put"],
     update: ((entity: unknown, a: unknown, b?: unknown) =>
