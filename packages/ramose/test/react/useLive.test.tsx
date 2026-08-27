@@ -58,7 +58,7 @@ const todoWorld = async (n: number) => {
   const eids: number[] = [];
   for (let i = 0; i < n; i++) {
     const r = await conn.transact([
-      { ":db/id": `t${i}`, ":todo/title": `t${i}` },
+      { ":db/id": `t${i}`, ":ramose/type": ":todo", ":todo/title": `t${i}` },
     ]);
     eids.push(r.tempids[`t${i}`]!);
   }

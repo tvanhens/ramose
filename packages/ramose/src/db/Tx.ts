@@ -434,7 +434,9 @@ const lowerPut = (
     typeof (entity as { ns: unknown }).ns === "string"
       ? (entity as { ns: string }).ns
       : "";
-  if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
+  if (ns.length > 0 && isTempidSubject(eid)) {
+    map[":ramose/type"] = composerIdent(ns);
+  }
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;
@@ -507,7 +509,10 @@ const lowerUpdate = (
   return ops;
 };
 
+const isTempidSubject = (eid: unknown): boolean => typeof eid === "string";
+
 const declareType = (ops: TxOp[], eid: unknown, fieldIdent: string): void => {
+  if (!isTempidSubject(eid)) return;
   const owner = fieldOwnerIdent(fieldIdent);
   if (owner === undefined) return;
   if (

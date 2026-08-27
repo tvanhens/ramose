@@ -775,7 +775,7 @@ describe("ref tempid create-and-link", () => {
     const other = op.entity();
     other.set(User.name, "Bea");
     other.set(User.bestFriend, op.self);
-    expect((built.ops()[1] as unknown[])[3]).toBe(adaEid);
+    expect((built.ops()[2] as unknown[])[3]).toBe(adaEid);
 
     const expansion = await conn.transact([...built.ops()]);
     const beaEid = expansion.tempids["tmp-1"];
@@ -838,7 +838,7 @@ describe("put", () => {
         ":user/name": "Ada",
         ":user/friends": ["tmp-1"],
       },
-      { ":db/id": 1001, ":ramose/type": ":user", ":user/age": 36 },
+      { ":db/id": 1001, ":user/age": 36 },
     ]);
   });
 

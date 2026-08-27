@@ -38,6 +38,21 @@ const Note = Entity("note", {
 const WithSlug = DbSchema({ user: User, movie: Movie, meta: Meta, doc: Doc });
 const WithSecret = DbSchema({ user: User, movie: Movie, meta: Meta, secret: Secret });
 const WithNotes = DbSchema({ user: User, movie: Movie, meta: Meta, note: Note });
+const typeDatom = (
+  schema: { requireAttr: (ident: string) => { id: number } },
+  e: number,
+  type: string,
+  t: number,
+) =>
+  toWireDatom({
+    e,
+    a: schema.requireAttr(":ramose/type").id,
+    vt: ValueTag.Str,
+    v: type,
+    t,
+    op: true,
+  });
+
 const secretNotes = Query.q(() => pipe(Query.entities(Secret), Query.select({ note: Secret.note })));
 const noteTitles = Query.q(() => pipe(Query.entities(Note), Query.select({ title: Note.title })));
 const noteAudits = Query.q(() => pipe(Query.entities(Note), Query.select({ audit: Note.audit })));
@@ -979,6 +994,7 @@ describe("two-writer races", () => {
     const id = peer.calls.filter((call) => call.url.endsWith("/transact")).at(-1)!.body.clientTxId as string;
     const titleA = server.db().schema.requireAttr(":note/title").id;
     const sieved = [
+      typeDatom(server.db().schema, 3001, ":note", server.t + 1),
       toWireDatom({
         e: 3001,
         a: titleA,
@@ -1038,6 +1054,7 @@ describe("two-writer races", () => {
       op: "tx",
       t: server.t + 1,
       datoms: [
+        typeDatom(server.db().schema, 4001, ":user", server.t + 1),
         toWireDatom({
           e: 4001,
           a: nameA,
@@ -1100,6 +1117,7 @@ describe("two-writer races", () => {
       op: "tx",
       t: report.t,
       datoms: [
+        typeDatom(server.db().schema, 5001, ":secret", report.t),
         toWireDatom({
           e: 5001,
           a: noteA,
@@ -1154,6 +1172,7 @@ describe("two-writer races", () => {
       op: "tx",
       t: report.t,
       datoms: [
+        typeDatom(server.db().schema, 5002, ":secret", report.t),
         toWireDatom({
           e: 5002,
           a: noteA,

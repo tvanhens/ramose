@@ -292,10 +292,9 @@ const inboxGen = (me: number) =>
   });
 
 describe("lowering", () => {
-  test("the inbox pipe: entailment skips membership, cursor lowers, literals substitute", () => {
+  test("the inbox pipe: membership is the type fact, cursor lowers, literals substitute", () => {
     const { query } = lowerQueryObject(inboxPipe(42));
-    // membership is entailed by [?e :issue/done false] — no rules section
-    expect(query.rules).toBeUndefined();
+    expect(query.rules).toEqual([[["isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]]]);
     const where = query.where as unknown[];
     expect(where).toContainEqual(["?q0", ":issue/done", false]);
     // the quantifier is a not-join on the focus, with the param substituted
@@ -1170,7 +1169,7 @@ describe("post-group filters (:having)", () => {
   test("lowering: an aggregate comparison routes to :having, named by (as …)", () => {
     const { query } = lowerQueryObject(busyOwners);
     expect(query.find).toEqual(["?q0", ["as", ["count", "?q1"], "?qh0"]]);
-    expect(query.where).toEqual([["?q1", ":issue/owner", "?q0"]]);
+    expect(query.where).toEqual([["isIssue", "?q1"], ["?q1", ":issue/owner", "?q0"]]);
     expect(query.having).toEqual([[[">", "?qh0", 1]]]);
 
     // one fn over one var is one cell — the compared spec need not be the

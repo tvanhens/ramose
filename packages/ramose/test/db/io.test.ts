@@ -28,7 +28,7 @@ import { pipe } from "effect/Function";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Databases, Query, layer, seedWrite } from "../../src/db/internal.ts";
 
-import { Meta, Movie, Movies, User } from "./fixture.ts";
+import { Movie, Movies, User } from "./fixture.ts";
 
 /** The one query most of these tests run; only the transport is under test. */
 const names = Query.q(() =>
@@ -218,7 +218,6 @@ describe("install → transact → q → pull", () => {
         const ada = yield* tx.entity();
         yield* ada.set(User.name, "Ada");
         yield* ada.set(User.age, 36);
-        yield* ada.set(Meta.source, "import");
 
         const alonzo = yield* tx.entity();
         yield* alonzo.set(User.name, "Alonzo");
@@ -245,7 +244,6 @@ describe("install → transact → q → pull", () => {
       report.dbAfter.pull(ada.id, {
         name: User.name,
         age: User.age.optional,
-        source: Meta.source,
         bestFriend: User.bestFriend.optional.select({
           name: User.name,
           age: User.age.optional,
@@ -256,7 +254,6 @@ describe("install → transact → q → pull", () => {
     expect(pulled).not.toBeNull();
     expect(pulled!.name).toBe("Ada");
     expect(pulled!.age).toBe(36);
-    expect(pulled!.source).toBe("import");
     expect(pulled!.bestFriend?.name).toBe("Alonzo");
     expect(pulled!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 

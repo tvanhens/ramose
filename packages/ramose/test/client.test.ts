@@ -505,7 +505,7 @@ describe("the JSON transport", () => {
           root: 1,
           // echo the where-clause constants back as the relation
           result: [
-            [(frame.query as { where: unknown[][] }).where[0][2]],
+            [(frame.query as { where: unknown[][] }).where[1][2]],
             [{ $uuid: "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" }],
           ],
         },
@@ -523,7 +523,11 @@ describe("the JSON transport", () => {
     // on the wire: tagged, JSON-safe (pinned views still ride the socket)
     expect(peer.frameOps("q")[0].query).toEqual({
       find: ["?q0"],
-      where: [["?q0", ":movie/released", { $inst: when.getTime() }]],
+      rules: [[["isMovie", "?qm0"], ["?qm0", ":ramose/type", ":movie"]]],
+      where: [
+        ["isMovie", "?q0"],
+        ["?q0", ":movie/released", { $inst: when.getTime() }],
+      ],
     });
     // back off the wire: the original types
     expect(rows[0]).toBeInstanceOf(Date);

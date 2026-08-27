@@ -96,10 +96,8 @@ describe("transaction builder", () => {
       [":db/add", "tmp-1", ":ramose/type", ":meta"],
       [":db/add", "tmp-1", ":meta/source", "import"],
       [":db/retract", "tmp-1", ":user/age", 35],
-      [":db/add", 1001, ":ramose/type", ":user"],
       [":db/add", 1001, ":user/friends", 1002],
       [":db/retractEntity", 1001],
-      [":db/add", [":user/name", "Ada"], ":ramose/type", ":meta"],
       [":db/add", [":user/name", "Ada"], ":meta/source", "lookup"],
     ]);
     expect(txSchema(tx)).toBe(Movies);
@@ -165,7 +163,7 @@ describe("transaction builder", () => {
       { ":db/id": "tmp-1", ":ramose/type": ":user", ":user/name": "Ada", ":user/bestFriend": 1002 },
       { ":db/id": "tmp-2", ":ramose/type": ":user", ":user/name": "Bea", ":user/bestFriend": 1003 },
       { ":db/id": "tmp-3", ":ramose/type": ":user", ":user/name": "Cam" },
-      { ":db/id": 1001, ":ramose/type": ":user", ":user/age": 36 },
+      { ":db/id": 1001, ":user/age": 36 },
     ]);
   });
 });

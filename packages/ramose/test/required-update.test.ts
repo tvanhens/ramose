@@ -148,11 +148,11 @@ describe("required-at-transact", () => {
     const viaPut = txBuilder(People);
     Effect.runSync(viaPut.put(Person, 10, { title: "no handle" }));
     await expect(conn.transact([...txOps(viaPut)])).rejects.toMatchObject({
-      code: "tx/required",
+      code: "tx/wrong-entity",
     });
     await expect(
-      conn.transact([[":db/add", 10, ":ramose/type", ":person"], [":db/add", 10, ":person/title", "no handle"]]),
-    ).rejects.toMatchObject({ code: "tx/required" });
+      conn.transact([[":db/add", 10, ":person/title", "no handle"]]),
+    ).rejects.toMatchObject({ code: "tx/wrong-entity" });
   });
 
   test("processTx: H1 — a numeric eid below FIRST_USER_EID that does not exist is tx/missing-entity", async () => {
@@ -727,7 +727,7 @@ describe("both write paths reject identically", () => {
     await c.dispose();
   });
 
-  test("overlay: H1 put on bootstrap eid is TxRejected tx/required", async () => {
+  test("overlay: H1 put on bootstrap eid is TxRejected tx/wrong-entity", async () => {
     const { c, db, peer, server } = await overlayOf(People, "people");
     await db.query(Query.from(Person).select({ handle: Person.handle }));
     peer.socket.push({ op: "resync", t: server.t, datoms: [] });
@@ -737,7 +737,7 @@ describe("both write paths reject identically", () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(TxRejected);
-    expect((err as TxRejected).code).toBe("tx/required");
+    expect((err as TxRejected).code).toBe("tx/wrong-entity");
     await c.dispose();
   });
 

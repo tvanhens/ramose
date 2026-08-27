@@ -640,7 +640,7 @@ describe("install() against a live engine", () => {
     expect(report.t).toBeGreaterThan(0);
     const after = (await catalog()).find((a) => a.ident === ":note/body");
     expect(after?.optional).toBeUndefined();
-    const err = await runFail(submitRaw(db, [{ ":note/title": "other" }]));
+    const err = await runFail(submitRaw(db, [{ ":ramose/type": ":note", ":note/title": "other" }]));
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
     await p.dispose();

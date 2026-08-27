@@ -314,8 +314,11 @@ describe("processTx membership and required trait fields", () => {
       conn.transact([[":db/add", todo, ":ramose/trait", ":taggable"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
     await expect(
-      conn.transact([[":db/add", todo, ":ramose/type", ":todo"]]),
+      conn.transact([[":db/add", todo, ":ramose/type", ":note"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([[":db/add", todo, ":ramose/type", ":todo"]]),
+    ).resolves.toBeDefined();
   });
 
   test("Query.entities membership is the type fact, not a shared trait field", async () => {

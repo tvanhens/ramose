@@ -298,6 +298,7 @@ describe("the app's writes move the app's live stream", () => {
 
     // straight at the peer, then the tick the Worker's basis poller would send
     const other = await peer.conn.transact([
+      [":db/add", "tmp", ":ramose/type", ":todo"],
       [":db/add", "tmp", ":todo/title", "from another tab"],
       [":db/add", "tmp", ":todo/done", false],
       [":db/add", "tmp", ":todo/createdAt", new Date()],
