@@ -64,17 +64,49 @@ describe("transact", () => {
     const conn = await setup();
     const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
     const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
     const r2 = await conn.transact([[":db/add", u, ":user/age", 31]]);
-    const ops = r2.txData.filter((d) => d.a === conn.db().attr(":user/age")!.id).map((d) => [d.v, d.op]);
+    const ops = r2.txData.filter((d) => d.a === age).map((d) => [d.v, d.op]);
     expect(ops).toEqual([[30, false], [31, true]]);
     const r3 = await conn.transact([[":db/add", u, ":user/age", 31]]);
     expect(r3.txData.length).toBe(1); // only txInstant
     expect((await conn.db().entity(u))![":user/age"]).toBe(31);
     // history shows both values
-    const hist = await conn.db().history().datomsArray(Index.EAVT, { e: u, a: conn.db().attr(":user/age")!.id });
+    const hist = await conn.db().history().datomsArray(Index.EAVT, { e: u, a: age });
     expect(hist.map((d) => [d.v, d.op])).toEqual([[30, true], [30, false], [31, true]]);
     // as-of sees the old value
     expect((await conn.db().asOf(r1.t).entity(u))![":user/age"]).toBe(30);
+  });
+
+  test("cardinality-one same-tx two adds cancel superseded datoms", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
+    const r2 = await conn.transact([
+      [":db/add", u, ":user/age", 31],
+      [":db/add", u, ":user/age", 32],
+    ]);
+    expect(r2.txData.filter((d) => d.a === age).map((d) => [d.v, d.op])).toEqual([
+      [30, false],
+      [32, true],
+    ]);
+    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
+    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
+    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
+  });
+
+  test("cardinality-one same-tx add then retract cancels the assert", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
+    const r2 = await conn.transact([
+      [":db/add", u, ":user/age", 31],
+      [":db/retract", u, ":user/age", 31],
+    ]);
+    expect(r2.txData.filter((d) => d.a === age).map((d) => [d.v, d.op])).toEqual([[30, false]]);
+    expect(await conn.db().entity(u)).toBeUndefined();
   });
 
   test("unique identity upserts; unique value conflicts throw", async () => {

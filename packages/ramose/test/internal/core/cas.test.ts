@@ -155,11 +155,65 @@ describe("db/cas", () => {
     const conn = await setup();
     const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
     const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
+    const r2 = await conn.transact([
+      [":db/cas", u, ":user/age", 30, 31],
+      [":db/cas", u, ":user/age", 30, 32],
+    ]);
+    expect(ageOps(conn, r2.txData)).toEqual([[30, false], [32, true]]);
+    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
+    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
+    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
+    const hist = await conn.db().history().datomsArray(Index.EAVT, { e: u, a: age });
+    expect(hist.map((d) => [d.v, d.op])).toEqual([
+      [30, true],
+      [30, false],
+      [32, true],
+    ]);
+    expect((await conn.db().asOf(r1.t).entity(u))![":user/age"]).toBe(30);
+    expect((await conn.db().asOf(r2.t).entity(u))![":user/age"]).toBe(32);
+  });
+
+  test("same-tx two matching CAS: query and subsequent CAS see one value", async () => {
+    const conn = await setup();
+    const { query } = await import("../../../src/internal/core/query/engine.ts");
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
     await conn.transact([
       [":db/cas", u, ":user/age", 30, 31],
       [":db/cas", u, ":user/age", 30, 32],
     ]);
+    expect(await query(conn.db(), `[:find ?a . :where [${u} :user/age ?a]]`)).toBe(32);
+    await conn.transact([[":db/cas", u, ":user/age", 32, 33]]);
+    expect((await conn.db().entity(u))![":user/age"]).toBe(33);
+  });
+
+  test("same-tx CAS then ordinary add: last wins without contradictory datoms", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
+    await conn.transact([
+      [":db/cas", u, ":user/age", 30, 31],
+      [":db/add", u, ":user/age", 32],
+    ]);
     expect((await conn.db().entity(u))![":user/age"]).toBe(32);
+    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
+    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
+  });
+
+  test("same-tx ordinary add then CAS: last wins without contradictory datoms", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    const age = conn.db().attr(":user/age")!.id;
+    await conn.transact([
+      [":db/add", u, ":user/age", 31],
+      [":db/cas", u, ":user/age", 30, 32],
+    ]);
+    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
+    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
+    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
   });
 
   test("same-tx two CAS with different expecteds: tx/cas-conflict", async () => {

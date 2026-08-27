@@ -23,14 +23,18 @@
  *   - redundant asserts / retracts of absent facts are elided
  *   - :db.unique/value conflicts throw
  *   - :db/cas compares expected against db-before only (not the within-tx overlay);
- *     a match is an ordinary emitAdd (last matching CAS on (e,a) wins)
+ *     a match is an ordinary emitAdd (last matching CAS on (e,a) wins). Superseded
+ *     same-tx card-one datoms are cancelled before commit so indexes never carry
+ *     contradictory same-t add/retract pairs.
  */
 
 import {
   type Datom,
+  type DatomValue,
   type TaggedValue,
   Index,
   ValueTag,
+  valueEquals,
   valueKey,
 } from "./datom.ts";
 import { Db } from "./db.ts";
@@ -422,6 +426,35 @@ export async function expandTx(
     return m;
   };
 
+  /** Drop same-t datoms for one (e,a,v) from the pending commit (not yet durable). */
+  const cancelSameTxFact = (
+    e: number,
+    a: number,
+    vt: ValueTag,
+    v: DatomValue,
+    op?: boolean,
+  ): void => {
+    for (let i = out.length - 1; i >= 0; i--) {
+      const d = out[i]!;
+      if (d.t !== t || d.e !== e || d.a !== a || !valueEquals(d.vt, d.v, vt, v)) continue;
+      if (op !== undefined && d.op !== op) continue;
+      out.splice(i, 1);
+    }
+    for (let i = expanded.length - 1; i >= 0; i--) {
+      const x = expanded[i]!;
+      const d = x.datom;
+      if (d.t !== t || x.e !== e || x.a !== a || !valueEquals(d.vt, d.v, vt, v)) continue;
+      if (op !== undefined && d.op !== op) continue;
+      expanded.splice(i, 1);
+    }
+  };
+
+  const releaseUnique = (attr: Attribute, e: number, vt: ValueTag, v: DatomValue): void => {
+    if (!attr.unique) return;
+    const uk = attr.id + "|" + valueKey(vt, v);
+    if (uniqueSeen.get(uk) === e) uniqueSeen.delete(uk);
+  };
+
   const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
@@ -444,9 +477,14 @@ export async function expandTx(
     }
     if (attr.cardinality === "one" && vals.size > 0) {
       for (const [ok, od] of vals) {
-        const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
-        out.push(r);
-        record("retract", e, attr, r, true);
+        if (od.t === t) {
+          cancelSameTxFact(e, attr.id, od.vt, od.v, true);
+          releaseUnique(attr, e, od.vt, od.v);
+        } else {
+          const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
+          out.push(r);
+          record("retract", e, attr, r, true);
+        }
         vals.delete(ok);
       }
     }
@@ -460,9 +498,14 @@ export async function expandTx(
     const vals = await current(e, attr.id);
     if (tv === undefined) {
       for (const [k, d] of vals) {
-        const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
-        out.push(r);
-        record("retract", e, attr, r);
+        if (d.t === t) {
+          cancelSameTxFact(e, attr.id, d.vt, d.v, true);
+          releaseUnique(attr, e, d.vt, d.v);
+        } else {
+          const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+          out.push(r);
+          record("retract", e, attr, r);
+        }
         vals.delete(k);
       }
       return;
@@ -470,9 +513,14 @@ export async function expandTx(
     const vk = valueKey(tv.vt, tv.v);
     const d = vals.get(vk);
     if (!d) return; // absent → elide
-    const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
-    out.push(r);
-    record("retract", e, attr, r);
+    if (d.t === t) {
+      cancelSameTxFact(e, attr.id, d.vt, d.v, true);
+      releaseUnique(attr, e, d.vt, d.v);
+    } else {
+      const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+      out.push(r);
+      record("retract", e, attr, r);
+    }
     vals.delete(vk);
   };
 
@@ -499,9 +547,8 @@ export async function expandTx(
       if (attr && attr.valueType === ValueTag.Ref) {
         for (const [vk, d] of m) {
           if (d.v === e && d.t === t) {
-            const r: Datom = { e: ee, a: aa, vt: d.vt, v: d.v, t, op: false };
-            out.push(r);
-            record("retract", ee, attr, r);
+            cancelSameTxFact(ee, aa, d.vt, d.v, true);
+            releaseUnique(attr, ee, d.vt, d.v);
             m.delete(vk);
           }
         }
