@@ -3,7 +3,7 @@
  *
  * Everything on `ramose/db` (asserted name-by-name in
  * `db-portable.test.ts`) plus the deploy-time half: two resources, one
- * capability, one transport layer, the provider collection, typed policy
+ * capability, one transport layer, the provider collection, claims,
  * and the peer constants. Nothing else is public.
  */
 
@@ -24,9 +24,6 @@ const ADDS = [
   // the stack
   "providers",
   "Providers",
-  // deploy-time policy
-  "Policy",
-  "policy",
   "DEFAULT_JWT_MAX_TTL",
   // the verifier/minter contract
   "claims",
@@ -57,6 +54,8 @@ const KILLED = [
   "ReadDatabases",
   "ServerBinding",
   "ServerHttp",
+  "Policy",
+  "policy",
   "authEnv",
   "internalSecret",
   "AUTH_ENV_KEYS",
