@@ -31,7 +31,7 @@ export interface MembershipCatalogService {
   readonly closure: (
     typeIdent: string,
   ) => Effect.Effect<LocalMembership, MembershipFailure>;
-  readonly view: () => Effect.Effect<MembershipCatalogView, MembershipFailure>;
+  readonly view: Effect.Effect<MembershipCatalogView, MembershipFailure>;
 }
 
 export class MembershipCatalog extends Context.Service<
@@ -58,10 +58,10 @@ export const validateMembershipWrite = (
 ): Effect.Effect<LocalMembership, MembershipFailure, MembershipCatalog> =>
   Effect.gen(function* () {
     const catalog = yield* MembershipCatalog;
-    const view = yield* catalog.view();
+    const view = yield* catalog.view;
     const decision = decideMembership(view, write);
     if (decision._tag !== "ok") {
-      return yield* Effect.fail(membershipFailureOf(decision, undefined, write.observed));
+      return yield* membershipFailureOf(decision, undefined, write.observed);
     }
     return decision.expected;
   });
@@ -90,7 +90,7 @@ export const rejectOccupiedComposition = (
     const transactor = yield* MembershipTransactor;
     const occupied = yield* transactor.occupied(typeIdent);
     if (!occupied) return;
-    return yield* Effect.fail(occupiedCompositionFailure(typeIdent, before, after));
+    return yield* occupiedCompositionFailure(typeIdent, before, after);
   });
 
 /** Uniform external denial — does not name the inner membership check (FC-1). */
@@ -102,7 +102,7 @@ export const membershipCatalogLayer = (
   view: MembershipCatalogView,
 ): Layer.Layer<MembershipCatalog> =>
   Layer.succeed(MembershipCatalog, {
-    view: () => Effect.succeed(view),
+    view: Effect.succeed(view),
     closure: (typeIdent) => {
       const derived = deriveLocalMembership(view, typeIdent);
       return Result.isFailure(derived)

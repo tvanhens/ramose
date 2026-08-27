@@ -853,21 +853,23 @@ export async function expandTx(
     if (decision._tag !== "ok") {
       throwMembership(decision, e, observed);
     }
+    if (decision._tag !== "ok") continue;
+    const expected = decision.expected;
     const ta = typeAttr();
     const tr = traitAttr();
     if (ta !== undefined) {
-      await emitAdd(e, ta, { vt: ValueTag.Str, v: decision.expected.type });
+      await emitAdd(e, ta, { vt: ValueTag.Str, v: expected.type });
     }
     if (tr !== undefined) {
-      for (const trait of decision.expected.traits) {
+      for (const trait of expected.traits) {
         await emitAdd(e, tr, { vt: ValueTag.Str, v: trait });
       }
     }
     if (typeBefore === undefined) {
-      const missing = await missingRequiredAttrs(e, requiredOfType(decision.expected.type));
+      const missing = await missingRequiredAttrs(e, requiredOfType(expected.type));
       if (missing.length > 0) {
         throw new TxError(
-          `entity ${decision.expected.type.slice(1)} is missing required fields: ${missing.join(", ")}`,
+          `entity ${expected.type.slice(1)} is missing required fields: ${missing.join(", ")}`,
           "tx/required",
         );
       }

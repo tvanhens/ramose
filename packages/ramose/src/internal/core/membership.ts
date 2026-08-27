@@ -200,17 +200,20 @@ export const membershipFailureOf = (
 ): MembershipFailure => {
   switch (decision._tag) {
     case "missing":
-      return new MembershipMissing({ entity });
+      return new MembershipMissing(entity === undefined ? {} : { entity });
     case "forged":
-      return new MembershipForged({ entity });
+      return new MembershipForged(entity === undefined ? {} : { entity });
     case "contradictory":
       return new MembershipContradictory({
-        entity,
+        ...(entity === undefined ? {} : { entity }),
         ...(decision.expected !== undefined && { expected: decision.expected }),
         ...(actual !== undefined && { actual }),
       });
     case "stale":
-      return new MembershipStale({ entity, type: decision.type });
+      return new MembershipStale({
+        ...(entity === undefined ? {} : { entity }),
+        ...(decision.type === undefined ? {} : { type: decision.type }),
+      });
   }
 };
 

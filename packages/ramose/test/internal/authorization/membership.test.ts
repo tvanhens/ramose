@@ -4,6 +4,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import {
   CatalogId,
@@ -261,8 +262,12 @@ describe("Effect orchestration", () => {
       clientWroteType: true,
       clientWroteTraits: false,
     }).pipe(
-      Effect.provide(membershipCatalogLayer(Board)),
-      Effect.provide(memoryMembershipTransactorLayer({ applied })),
+      Effect.provide(
+        Layer.mergeAll(
+          membershipCatalogLayer(Board),
+          memoryMembershipTransactorLayer({ applied }),
+        ),
+      ),
     );
     const membership = await Effect.runPromise(program);
     expect(membership.traits).toEqual([":taggable"]);
