@@ -27,6 +27,7 @@ import {
   decodeInstalledCatalogUnitResult,
   encodeInstalledCatalogUnit,
   hashCanonicalRule,
+  hashCatalogSchemaFingerprint,
   hashInstalledAuthorization,
   hashInstalledCatalogUnit,
 } from "./decode.ts";
@@ -41,6 +42,7 @@ import {
 import {
   BOUND_AUTHORIZATION_IR_VERSION,
   CanonicalAuthorizationRule,
+  INSTALLED_AUTHORIZATION_IR_VERSION,
   InstalledAuthorizationIR,
   InstalledIdentityTable,
   type BoundAuthorizationIR,
@@ -50,14 +52,17 @@ import {
 } from "./ir.ts";
 import {
   normalizeAccessPlans,
+  normalizeEntities,
+  normalizeFields,
   normalizeIdentities,
   normalizeOperations,
   normalizeTraitComposition,
+  normalizeTraits,
 } from "./install/normalize.ts";
 import { deriveRuleAccessPlan } from "./install/plan.ts";
 import { validateBoundAuthorizationResult } from "./validate.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
-import { invalid, mismatch, type ValidateFailure } from "./validation/common.ts";
+import { invalid, mismatch, requireNonBlank, type ValidateFailure } from "./validation/common.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION, AuthorizationLanguageVersion } from "./version.ts";
 import type { JsonValue } from "./json.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
@@ -212,37 +217,47 @@ type CatalogIdentity = {
 const requireMatchingIdentityFields = (
   expected: CatalogIdentity,
   actual: CatalogIdentity,
-): Result.Result<void, ValidateFailure> => {
-  if (expected.catalog !== actual.catalog) {
-    return mismatch({
-      message: "catalog does not match installed policy",
-      expected: expected.catalog,
-      actual: actual.catalog,
-    });
-  }
-  if (expected.database !== actual.database) {
-    return mismatch({
-      message: "database does not match installed policy",
-      expectedDatabase: expected.database,
-      actualDatabase: actual.database,
-    });
-  }
-  if (expected.catalogVersion !== actual.catalogVersion) {
-    return mismatch({
-      message: "catalog version does not match installed policy",
-      expectedVersion: expected.catalogVersion,
-      actualVersion: actual.catalogVersion,
-    });
-  }
-  if (expected.schemaFingerprint !== actual.schemaFingerprint) {
-    return mismatch({
-      message: "schema fingerprint does not match installed policy",
-      expectedFingerprint: expected.schemaFingerprint,
-      actualFingerprint: actual.schemaFingerprint,
-    });
-  }
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* Result.all([
+      requireNonBlank(expected.database, "database"),
+      requireNonBlank(expected.catalog, "catalog id"),
+      requireNonBlank(expected.catalogVersion, "catalog version"),
+      requireNonBlank(expected.schemaFingerprint, "schema fingerprint"),
+      requireNonBlank(actual.database, "installed policy database"),
+      requireNonBlank(actual.catalog, "installed policy catalog id"),
+      requireNonBlank(actual.catalogVersion, "installed policy catalog version"),
+      requireNonBlank(actual.schemaFingerprint, "installed policy schema fingerprint"),
+    ]);
+    if (expected.catalog !== actual.catalog) {
+      return yield* mismatch({
+        message: "catalog does not match installed policy",
+        expected: expected.catalog,
+        actual: actual.catalog,
+      });
+    }
+    if (expected.database !== actual.database) {
+      return yield* mismatch({
+        message: "database does not match installed policy",
+        expectedDatabase: expected.database,
+        actualDatabase: actual.database,
+      });
+    }
+    if (expected.catalogVersion !== actual.catalogVersion) {
+      return yield* mismatch({
+        message: "catalog version does not match installed policy",
+        expectedVersion: expected.catalogVersion,
+        actualVersion: actual.catalogVersion,
+      });
+    }
+    if (expected.schemaFingerprint !== actual.schemaFingerprint) {
+      return yield* mismatch({
+        message: "schema fingerprint does not match installed policy",
+        expectedFingerprint: expected.schemaFingerprint,
+        actualFingerprint: actual.schemaFingerprint,
+      });
+    }
+  });
 
 const requireMatchingIdentity = (
   descriptor: CatalogDescriptor,
@@ -265,6 +280,18 @@ const requireMatchingIdentity = (
 
 const encodeIdentities = (table: InstalledIdentityTableType): unknown =>
   Schema.encodeUnknownSync(InstalledIdentityTable)(table);
+
+const encodeEntities = (
+  entities: ReadonlyArray<EntityDescriptor>,
+): unknown => entities.map((entity) => Schema.encodeUnknownSync(EntityDescriptor)(entity));
+
+const encodeTraits = (
+  traits: ReadonlyArray<TraitDescriptor>,
+): unknown => traits.map((trait) => Schema.encodeUnknownSync(TraitDescriptor)(trait));
+
+const encodeFields = (
+  fields: ReadonlyArray<FieldDescriptor>,
+): unknown => fields.map((field) => Schema.encodeUnknownSync(FieldDescriptor)(field));
 
 const encodeOperations = (
   operations: ReadonlyArray<CatalogDescriptor["operations"][number]>,
@@ -352,10 +379,33 @@ const schemaDescriptorFromUnit = (document: InstalledCatalogUnit): CatalogDescri
 });
 
 /**
+ * Bind `schemaFingerprint` to the digest of the unit's schema tables.
+ * Coherence already requires policy.schemaFingerprint to equal this
+ * field; verify cannot take a live catalog, so the claimed fingerprint
+ * must be recomputed from the stored tables.
+ */
+const requireBoundSchemaFingerprint = Effect.fn("Authorization.requireBoundSchemaFingerprint")(
+  function* (
+    document: InstalledCatalogUnit,
+  ): Effect.fn.Return<void, AssembleCatalogUnitFailure> {
+    const digest = yield* hashCatalogSchemaFingerprint(schemaDescriptorFromUnit(document));
+    if (digest !== document.schemaFingerprint) {
+      return yield* new CatalogMismatch({
+        message: "schema fingerprint does not match catalog tables",
+        expectedFingerprint: digest,
+        actualFingerprint: document.schemaFingerprint,
+      });
+    }
+  },
+);
+
+/**
  * Fail-closed document kernel shared by assemble and verify. Top-level
- * identity, language versions, required tables, and schema-derived
- * identities/operations/traitComposition/accessPlans must agree with
- * both the unit tables and the embedded policy.
+ * identity, shape and language versions, required tables, and
+ * schema-derived identities/entities/traits/fields/operations/
+ * traitComposition/accessPlans must agree with both the unit tables
+ * and the embedded policy. Stored descriptor tables must already be
+ * in canonical order.
  */
 export const requireUnitCoherence = (
   document: InstalledCatalogUnit,
@@ -386,6 +436,12 @@ export const requireUnitCoherence = (
     );
     yield* requireLanguageVersion(document.languageVersion, "catalog unit");
     yield* requireLanguageVersion(document.policy.languageVersion, "embedded policy");
+    if (document.version !== INSTALLED_CATALOG_UNIT_VERSION) {
+      return yield* invalid("unsupported catalog unit version");
+    }
+    if (document.policy.version !== INSTALLED_AUTHORIZATION_IR_VERSION) {
+      return yield* invalid("unsupported installed policy version");
+    }
     yield* requireMatchingIdentityFields(
       {
         database: document.database,
@@ -401,12 +457,18 @@ export const requireUnitCoherence = (
       },
     );
 
-    const [identities, operations, traitComposition] = yield* Result.all([
+    const [identities, operations, traitComposition, entities, traits, fields] = yield* Result.all([
       normalizeIdentities(schemaDescriptorFromUnit(document)),
       normalizeOperations(document.operations),
       normalizeTraitComposition(document.traitComposition),
+      normalizeEntities(document.entities),
+      normalizeTraits(document.traits),
+      normalizeFields(document.fields),
     ]);
 
+    yield* canonicalEqual(encodeEntities(entities), encodeEntities(document.entities), "entities");
+    yield* canonicalEqual(encodeTraits(traits), encodeTraits(document.traits), "traits");
+    yield* canonicalEqual(encodeFields(fields), encodeFields(document.fields), "fields");
     yield* canonicalEqual(encodeIdentities(identities), encodeIdentities(document.identities), "identities");
     yield* canonicalEqual(
       encodeIdentities(identities),
@@ -461,10 +523,13 @@ export const assembleInstalledCatalogUnit = (
     yield* requireLanguageVersion(AUTHORIZATION_LANGUAGE_VERSION, "catalog unit");
     yield* requireMatchingIdentity(descriptorSnapshot, policySnapshot);
 
-    const [identities, operations, traitComposition] = yield* Result.all([
+    const [identities, operations, traitComposition, entities, traits, fields] = yield* Result.all([
       normalizeIdentities(descriptorSnapshot),
       normalizeOperations(descriptorSnapshot.operations),
       normalizeTraitComposition(descriptorSnapshot.traitComposition),
+      normalizeEntities(descriptorSnapshot.entities),
+      normalizeTraits(descriptorSnapshot.traits),
+      normalizeFields(descriptorSnapshot.fields),
     ]);
 
     yield* canonicalEqual(
@@ -490,9 +555,9 @@ export const assembleInstalledCatalogUnit = (
       catalog: descriptorSnapshot.id,
       catalogVersion: descriptorSnapshot.version,
       schemaFingerprint: descriptorSnapshot.fingerprint,
-      entities: descriptorSnapshot.entities,
-      traits: descriptorSnapshot.traits,
-      fields: descriptorSnapshot.fields,
+      entities,
+      traits,
+      fields,
       traitComposition,
       identities,
       operations,
@@ -503,7 +568,7 @@ export const assembleInstalledCatalogUnit = (
       ...tables,
       unitHash: PLACEHOLDER_UNIT_HASH,
     });
-    return tables;
+    return freezePlain(tables);
   });
 
 /**
@@ -523,6 +588,7 @@ export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCa
       ...snapshot,
       unitHash: PLACEHOLDER_UNIT_HASH,
     };
+    yield* requireBoundSchemaFingerprint(hashingDocument);
     yield* requireEmbeddedPolicyHashes(snapshot.policy);
     const unitHash = yield* hashInstalledCatalogUnit(hashingDocument);
     const assembled: InstalledCatalogUnit = {
@@ -548,6 +614,7 @@ export const verifyInstalledCatalogUnit = Effect.fn("Authorization.verifyInstall
   ): Effect.fn.Return<InstalledCatalogUnitV1, InvalidIR | CatalogMismatch | CatalogUnitCorrupt> {
     const snapshot = freezePlain(clonePlain(document));
     yield* Effect.fromResult(requireUnitCoherence(snapshot));
+    yield* requireBoundSchemaFingerprint(snapshot);
     yield* requireEmbeddedPolicyHashes(snapshot.policy);
     const digest = yield* hashInstalledCatalogUnit(snapshot);
     if (digest !== snapshot.unitHash) {

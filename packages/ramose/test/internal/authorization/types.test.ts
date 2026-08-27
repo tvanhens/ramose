@@ -134,6 +134,9 @@ export type _noPublicAuthorization = Expect<
       | "requireUnitCoherence"
       | "CatalogUnitCorrupt"
       | "CatalogUnitHash"
+      | "hashInstalledCatalogUnit"
+      | "hashCatalogSchemaFingerprint"
+      | "catalogUnitCanonicalBytes"
     >,
     never
   >
@@ -1053,6 +1056,7 @@ describe("legacy authorization names cannot be imported", () => {
     const db = await import("../../../src/db/index.ts");
     expect("InstalledCatalogUnit" in ir).toBe(true);
     expect("sealInstalledCatalogUnit" in ir).toBe(true);
+    expect("hashCatalogSchemaFingerprint" in ir).toBe(true);
     expect("CatalogUnitCorrupt" in ir).toBe(true);
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
@@ -1060,6 +1064,9 @@ describe("legacy authorization names cannot be imported", () => {
     expect("InstalledCatalogUnit" in root).toBe(false);
     expect("sealInstalledCatalogUnit" in root).toBe(false);
     expect("requireUnitCoherence" in root).toBe(false);
+    expect("catalogUnitCanonicalBytes" in root).toBe(false);
+    expect("hashInstalledCatalogUnit" in root).toBe(false);
+    expect("hashCatalogSchemaFingerprint" in root).toBe(false);
     expect("CatalogUnitCorrupt" in root).toBe(false);
     expect("InstalledCatalogUnit" in db).toBe(false);
     expect("sealInstalledCatalogUnit" in db).toBe(false);

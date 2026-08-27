@@ -10,8 +10,11 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { compareCanonicalKeys, canonicalizeJson } from "../canonical-json.ts";
 import {
+  EntityDescriptor,
+  FieldDescriptor,
   OperationDescriptor,
   TraitComposition,
+  TraitDescriptor,
   type CatalogDescriptor,
   type OperationInputShape,
   type RuleAccessPlan,
@@ -91,6 +94,11 @@ const encodeOperation = (operation: CatalogDescriptor["operations"][number]): un
 const encodeComposition = (row: TraitComposition): unknown =>
   Schema.encodeUnknownSync(TraitComposition)(row);
 
+const canonicalizeComposedTraits = (
+  traits: ReadonlyArray<TraitId>,
+): Result.Result<ReadonlyArray<TraitId>, ValidateFailure> =>
+  uniqueSorted(traits, encodeTrait, "composed trait");
+
 const sortRuleIds = (ids: ReadonlyArray<RuleId>): ReadonlyArray<RuleId> =>
   [...ids].sort((left, right) => compareCanonical(left, right));
 
@@ -147,6 +155,35 @@ export const normalizeIdentities = (
     );
     return { entities, traits, fields, operations };
   });
+
+export const normalizeEntities = (
+  entities: ReadonlyArray<EntityDescriptor>,
+): Result.Result<ReadonlyArray<EntityDescriptor>, ValidateFailure> =>
+  Result.gen(function* () {
+    const closed: EntityDescriptor[] = [];
+    for (const entity of entities) {
+      const traits = yield* canonicalizeComposedTraits(entity.traits);
+      closed.push({ id: entity.id, traits });
+    }
+    return yield* uniqueSorted(closed, (entity) => encodeEntity(entity.id), "entity identity");
+  });
+
+export const normalizeTraits = (
+  traits: ReadonlyArray<TraitDescriptor>,
+): Result.Result<ReadonlyArray<TraitDescriptor>, ValidateFailure> =>
+  Result.gen(function* () {
+    const closed: TraitDescriptor[] = [];
+    for (const trait of traits) {
+      const nested = yield* canonicalizeComposedTraits(trait.traits);
+      closed.push({ id: trait.id, traits: nested });
+    }
+    return yield* uniqueSorted(closed, (trait) => encodeTrait(trait.id), "trait identity");
+  });
+
+export const normalizeFields = (
+  fields: ReadonlyArray<FieldDescriptor>,
+): Result.Result<ReadonlyArray<FieldDescriptor>, ValidateFailure> =>
+  uniqueSorted(fields, (field) => encodeField(field.id), "field identity");
 
 export const normalizeTraitComposition = (
   rows: ReadonlyArray<TraitComposition>,

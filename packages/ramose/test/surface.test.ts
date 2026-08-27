@@ -92,6 +92,8 @@ const KILLED = [
   "CatalogUnitCorrupt",
   "CatalogUnitHash",
   "hashInstalledCatalogUnit",
+  "hashCatalogSchemaFingerprint",
+  "catalogUnitCanonicalBytes",
 ];
 
 describe("the `ramose` barrel", () => {

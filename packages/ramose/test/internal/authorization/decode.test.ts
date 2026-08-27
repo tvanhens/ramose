@@ -4,9 +4,11 @@ import * as Result from "effect/Result";
 import { sha256Hex } from "../../../src/internal/core/bytes.ts";
 import {
   AUTHORIZATION_CANONICAL_JSON_VERSION,
+  AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
   INSTALLED_AUTHORIZATION_IR_VERSION,
+  INSTALLED_CATALOG_UNIT_VERSION,
   InvalidIR,
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
@@ -20,17 +22,21 @@ import {
   compareCanonicalKeys,
   decodeInstalledAuthorization,
   decodeInstalledAuthorizationResult,
+  decodeInstalledCatalogUnit,
+  decodeInstalledCatalogUnitResult,
   decodePolicyTemplate,
   decodePolicyTemplateResult,
   encodeInstalledAuthorization,
   encodePolicyTemplate,
   hashCanonicalJson,
   hashCanonicalRule,
+  hashCatalogSchemaFingerprint,
   hashDomainSeparatedCanonicalJson,
   hashInstalledAuthorization,
   hashPolicyTemplate,
   hashRelativeRule,
   type InstalledAuthorizationIR,
+  type InstalledCatalogUnit,
   type JsonValue,
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
@@ -41,6 +47,7 @@ import {
   RULE_LIT,
   RULE_OWNS_ISSUE,
   RULE_SAME,
+  catalogUnitEncoded,
   emptyTemplateEncoded,
   installedEncoded,
   templateEncoded,
@@ -108,6 +115,18 @@ describe("structural decoding", () => {
     expect(result.success.version).toBe(INSTALLED_AUTHORIZATION_IR_VERSION);
     expect(String(result.success.catalog)).toBe("app");
     expectPlainFrozen(result.success);
+  });
+
+  test("decodes a hand-written catalog unit into plain frozen data", () => {
+    const result = decodeInstalledCatalogUnitResult(clone(catalogUnitEncoded));
+    expect(Result.isSuccess(result)).toBe(true);
+    if (!Result.isSuccess(result)) return;
+    expect(result.success._tag).toBe("InstalledCatalogUnit");
+    expect(result.success.version).toBe(INSTALLED_CATALOG_UNIT_VERSION);
+    expectPlainFrozen(result.success);
+    expect(Object.isFrozen(result.success.entities)).toBe(true);
+    expect(Object.isFrozen(result.success.traits)).toBe(true);
+    expect(Object.isFrozen(result.success.fields)).toBe(true);
   });
 
   test("Effect wrappers convert failures at the outer boundary", () => {
@@ -870,6 +889,51 @@ describe("rule identity collisions", () => {
       /operation identity collision/,
     );
   });
+
+  test("fails closed when one catalog-unit entity id maps to different traits", () => {
+    const base = clone(catalogUnitEncoded);
+    expectInvalid(
+      decodeInstalledCatalogUnitResult({
+        ...base,
+        entities: [
+          base.entities[0],
+          { ...clone(base.entities[0]), traits: [] },
+        ],
+      }),
+      /entity identity collision/,
+    );
+  });
+
+  test("fails closed when one catalog-unit trait id maps to different nested traits", () => {
+    const base = clone(catalogUnitEncoded);
+    expectInvalid(
+      decodeInstalledCatalogUnitResult({
+        ...base,
+        traits: [
+          base.traits[0],
+          {
+            ...clone(base.traits[0]),
+            traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
+          },
+        ],
+      }),
+      /trait identity collision/,
+    );
+  });
+
+  test("fails closed when one catalog-unit field id maps to different optionality", () => {
+    const base = clone(catalogUnitEncoded);
+    expectInvalid(
+      decodeInstalledCatalogUnitResult({
+        ...base,
+        fields: [
+          base.fields[0],
+          { ...clone(base.fields[0]), optional: true },
+        ],
+      }),
+      /field identity collision/,
+    );
+  });
 });
 
 describe("canonical serialization", () => {
@@ -1066,6 +1130,42 @@ describe("canonical serialization", () => {
     expect(await hashOf(hashInstalledAuthorization(withOther))).toBe(digest);
     expect(String(digest)).not.toBe(POLICY_HASH_PLACEHOLDER);
   });
+
+  test("catalog schema fingerprint hashes normalized tables and ignores identity fields", async () => {
+    const unit = Effect.runSync(decodeInstalledCatalogUnit(clone(catalogUnitEncoded)));
+    const tables = {
+      entities: unit.entities,
+      traits: unit.traits,
+      fields: unit.fields,
+      operations: unit.operations,
+      traitComposition: unit.traitComposition,
+    };
+    const digest = await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        id: unit.catalog,
+        database: unit.database,
+        version: unit.catalogVersion,
+        fingerprint: unit.schemaFingerprint,
+      }),
+    );
+    const ignoredIdentity = await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        fingerprint: "other-fingerprint" as typeof unit.schemaFingerprint,
+      }),
+    );
+    expect(ignoredIdentity).toBe(digest);
+    const flipped = await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        fields: tables.fields.map((field) => ({ ...field, optional: !field.optional })),
+      }),
+    );
+    expect(flipped).not.toBe(digest);
+    expect(AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1.endsWith("\0")).toBe(true);
+    expect(String(digest)).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
 
 describe("plain immutable data", () => {
@@ -1080,5 +1180,9 @@ describe("plain immutable data", () => {
     expect(typeof (installed as InstalledAuthorizationIR & { encode?: unknown }).encode).toBe(
       "undefined",
     );
+    const unit = Effect.runSync(decodeInstalledCatalogUnit(clone(catalogUnitEncoded)));
+    expect(unit.constructor).toBe(Object);
+    expect(typeof (unit as InstalledCatalogUnit & { encode?: unknown }).encode).toBe("undefined");
+    expectPlainFrozen(unit);
   });
 });

@@ -71,3 +71,11 @@ export const invalid = (message: string): Result.Result<never, ValidateFailure> 
 export const mismatch = (
   fields: ConstructorParameters<typeof CatalogMismatch>[0],
 ): Result.Result<never, ValidateFailure> => Result.fail(new CatalogMismatch(fields));
+
+export const isBlank = (value: string): boolean => value.length === 0;
+
+export const requireNonBlank = (
+  value: string,
+  label: string,
+): Result.Result<string, ValidateFailure> =>
+  isBlank(value) ? mismatch({ message: `blank ${label}` }) : Result.succeed(value);

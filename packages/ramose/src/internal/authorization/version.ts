@@ -23,3 +23,6 @@ export const AUTHORIZATION_POLICY_HASH_DOMAIN_V1 = "ramose.authorization.policy/
 
 /** Domain prefix for v1 installed catalog-unit SHA-256. Includes a trailing NUL. */
 export const AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1 = "ramose.catalog.unit/v1\0";
+
+/** Domain prefix for v1 catalog-schema-table SHA-256. Includes a trailing NUL. */
+export const AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1 = "ramose.catalog.schema/v1\0";

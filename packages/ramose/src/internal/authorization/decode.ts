@@ -23,13 +23,36 @@ import {
   MAX_STRING_LENGTH,
 } from "./bounds.ts";
 import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
-import { OperationDescriptor, TraitComposition } from "./catalog.ts";
+import {
+  EntityDescriptor,
+  FieldDescriptor,
+  OperationDescriptor,
+  TraitComposition,
+  TraitDescriptor,
+  type CatalogDescriptor,
+} from "./catalog.ts";
 import {
   InstalledCatalogUnit,
   type InstalledCatalogUnit as InstalledCatalogUnitType,
 } from "./catalog-unit.ts";
 import { InvalidIR } from "./failures.ts";
-import { CatalogUnitHash, OperationId, PolicyHash, RuleId } from "./identities.ts";
+import {
+  CatalogUnitHash,
+  EntityId,
+  FieldId,
+  OperationId,
+  PolicyHash,
+  RuleId,
+  SchemaFingerprint,
+  TraitId,
+} from "./identities.ts";
+import {
+  normalizeEntities,
+  normalizeFields,
+  normalizeOperations,
+  normalizeTraitComposition,
+  normalizeTraits,
+} from "./install/normalize.ts";
 import {
   CanonicalAuthorizationRule,
   InstalledAuthorizationIR,
@@ -42,6 +65,7 @@ import {
 } from "./ir.ts";
 import type { JsonValue } from "./json.ts";
 import {
+  AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
   AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
@@ -224,6 +248,46 @@ export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCa
   },
 );
 
+/**
+ * SHA-256 of the normalized catalog schema tables. Material is RFC 8785
+ * JCS of `entities` / `traits` / `fields` / `operations` /
+ * `traitComposition` after the same normalize pass assemble uses.
+ * Identity fields (`id`, `database`, `version`, `fingerprint`) and
+ * policy / `unitHash` are excluded so unused field flags participate
+ * in {@link SchemaFingerprint} without a live catalog.
+ */
+export const hashCatalogSchemaFingerprint = Effect.fn(
+  "Authorization.hashCatalogSchemaFingerprint",
+)(function* (
+  tables: Pick<CatalogDescriptor, "entities" | "traits" | "fields" | "operations" | "traitComposition"> &
+    Partial<Pick<CatalogDescriptor, "id" | "database" | "version" | "fingerprint">>,
+) {
+  const [entities, traits, fields, operations, traitComposition] = yield* Effect.fromResult(
+    Result.all([
+      normalizeEntities(tables.entities),
+      normalizeTraits(tables.traits),
+      normalizeFields(tables.fields),
+      normalizeOperations(tables.operations),
+      normalizeTraitComposition(tables.traitComposition),
+    ]),
+  );
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
+    encodedJson({
+      entities: entities.map((entity) => Schema.encodeUnknownSync(EntityDescriptor)(entity)),
+      traits: traits.map((trait) => Schema.encodeUnknownSync(TraitDescriptor)(trait)),
+      fields: fields.map((field) => Schema.encodeUnknownSync(FieldDescriptor)(field)),
+      operations: operations.map((operation) =>
+        Schema.encodeUnknownSync(OperationDescriptor)(operation),
+      ),
+      traitComposition: traitComposition.map((row) =>
+        Schema.encodeUnknownSync(TraitComposition)(row),
+      ),
+    }),
+  );
+  return SchemaFingerprint.make(digest);
+});
+
 export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(function* (
   rule: RelativeAuthorizationRuleType,
 ) {
@@ -299,6 +363,9 @@ const identityCollision = (
   if (isCatalogUnit(document)) {
     return (
       identityTableCollisions(document.identities) ??
+      entityDescriptorCollisions(document.entities) ??
+      traitDescriptorCollisions(document.traits) ??
+      fieldDescriptorCollisions(document.fields) ??
       operationDescriptorCollisions(document.operations) ??
       traitCompositionCollisions(document.traitComposition) ??
       identityCollision(document.policy, encodeRule)
@@ -361,6 +428,57 @@ const identityTableCollisions = (
   uniqueEncoded(identities.traits, "trait identity") ??
   uniqueEncoded(identities.fields, "field identity") ??
   uniqueEncoded(identities.operations, "operation identity");
+
+const entityDescriptorCollisions = (
+  entities: InstalledCatalogUnitType["entities"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    entities.map((entity) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(EntityDescriptor)(entity));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(EntityId)(entity.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `entity identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate entity identity: ${id}`,
+    },
+  );
+
+const traitDescriptorCollisions = (
+  traits: InstalledCatalogUnitType["traits"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    traits.map((trait) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(TraitDescriptor)(trait));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(TraitId)(trait.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `trait identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate trait identity: ${id}`,
+    },
+  );
+
+const fieldDescriptorCollisions = (
+  fields: InstalledCatalogUnitType["fields"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    fields.map((field) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(FieldDescriptor)(field));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(FieldId)(field.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `field identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate field identity: ${id}`,
+    },
+  );
 
 const operationDescriptorCollisions = (
   operations: InstalledAuthorizationIRType["operations"],

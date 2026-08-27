@@ -232,6 +232,39 @@ export const installedEncoded = {
   ],
 } as const;
 
+const catalogUnitFieldOwner = {
+  id: { _tag: "FieldId", catalog: "app", owner: issueOwner, localName: "owner" },
+  valueType: "ref",
+  refTarget: { _tag: "entity", entity: { _tag: "EntityId", catalog: "app", name: "user" } },
+  cardinality: "one",
+  index: false,
+  optional: false,
+  owned: false,
+} as const;
+
+export const catalogUnitEncoded = {
+  _tag: "InstalledCatalogUnit",
+  version: 1,
+  languageVersion: "v1",
+  database: "todos",
+  catalog: "app",
+  catalogVersion: "1",
+  schemaFingerprint: "schema",
+  unitHash: digestHex(0x88),
+  entities: [
+    {
+      id: { _tag: "EntityId", catalog: "app", name: "issue" },
+      traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
+    },
+  ],
+  traits: [{ id: { _tag: "TraitId", catalog: "app", name: "taggable" }, traits: [] }],
+  fields: [catalogUnitFieldOwner],
+  traitComposition: installedEncoded.traitComposition,
+  identities: installedEncoded.identities,
+  operations: installedEncoded.operations,
+  policy: installedEncoded,
+} as const;
+
 export const emptyTemplateEncoded = {
   _tag: "PolicyTemplateIR",
   version: 1,

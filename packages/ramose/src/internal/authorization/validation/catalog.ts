@@ -23,8 +23,10 @@ import type { CatalogBindingTarget } from "../ir.ts";
 import {
   fieldKey,
   invalid,
+  isBlank,
   mismatch,
   operationKey,
+  requireNonBlank,
   SEPARATOR,
   type ValidateFailure,
 } from "./common.ts";
@@ -61,41 +63,52 @@ const catalogOfIdentity = (
 const validateTarget = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
-): Result.Result<void, ValidateFailure> => {
-  if (target.database !== descriptor.database) {
-    return mismatch({
-      message: "cross-database catalog",
-      expectedDatabase: target.database,
-      actualDatabase: descriptor.database,
-    });
-  }
-  if (target.catalog !== descriptor.id) {
-    return mismatch({
-      message: "cross-catalog descriptor",
-      expected: target.catalog,
-      actual: descriptor.id,
-    });
-  }
-  if (target.catalogVersion !== descriptor.version) {
-    return mismatch({
-      message: "stale catalog version",
-      expected: target.catalog,
-      actual: descriptor.id,
-      expectedVersion: target.catalogVersion,
-      actualVersion: descriptor.version,
-    });
-  }
-  if (target.schemaFingerprint !== descriptor.fingerprint) {
-    return mismatch({
-      message: "schema fingerprint mismatch",
-      expected: target.catalog,
-      actual: descriptor.id,
-      expectedFingerprint: target.schemaFingerprint,
-      actualFingerprint: descriptor.fingerprint,
-    });
-  }
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* Result.all([
+      requireNonBlank(target.database, "database"),
+      requireNonBlank(target.catalog, "catalog id"),
+      requireNonBlank(target.catalogVersion, "catalog version"),
+      requireNonBlank(target.schemaFingerprint, "schema fingerprint"),
+      requireNonBlank(descriptor.database, "descriptor database"),
+      requireNonBlank(descriptor.id, "descriptor catalog id"),
+      requireNonBlank(descriptor.version, "descriptor catalog version"),
+      requireNonBlank(descriptor.fingerprint, "descriptor schema fingerprint"),
+    ]);
+
+    if (target.database !== descriptor.database) {
+      return yield* mismatch({
+        message: "cross-database catalog",
+        expectedDatabase: target.database,
+        actualDatabase: descriptor.database,
+      });
+    }
+    if (target.catalog !== descriptor.id) {
+      return yield* mismatch({
+        message: "cross-catalog descriptor",
+        expected: target.catalog,
+        actual: descriptor.id,
+      });
+    }
+    if (target.catalogVersion !== descriptor.version) {
+      return yield* mismatch({
+        message: "stale catalog version",
+        expected: target.catalog,
+        actual: descriptor.id,
+        expectedVersion: target.catalogVersion,
+        actualVersion: descriptor.version,
+      });
+    }
+    if (target.schemaFingerprint !== descriptor.fingerprint) {
+      return yield* mismatch({
+        message: "schema fingerprint mismatch",
+        expected: target.catalog,
+        actual: descriptor.id,
+        expectedFingerprint: target.schemaFingerprint,
+        actualFingerprint: descriptor.fingerprint,
+      });
+    }
+  });
 
 const closeTraits = (
   edges: Map<string, Set<string>>,
@@ -171,6 +184,7 @@ export const prepareAuthorizationCatalog = (
 
     for (const entity of descriptor.entities) {
       yield* catalogOfIdentity(entity.id, target, "entity");
+      if (isBlank(entity.id.name)) return yield* invalid("blank entity name");
       if (entities.has(entity.id.name)) {
         return yield* invalid(`ambiguous entity '${entity.id.name}'`);
       }
@@ -178,6 +192,7 @@ export const prepareAuthorizationCatalog = (
       const composed = new Set<string>();
       for (const trait of entity.traits) {
         yield* catalogOfIdentity(trait, target, "entity trait");
+        if (isBlank(trait.name)) return yield* invalid("blank trait name");
         composed.add(trait.name);
       }
       entityTraitEdges.set(entity.id.name, composed);
@@ -185,6 +200,7 @@ export const prepareAuthorizationCatalog = (
 
     for (const trait of descriptor.traits) {
       yield* catalogOfIdentity(trait.id, target, "trait");
+      if (isBlank(trait.id.name)) return yield* invalid("blank trait name");
       if (traits.has(trait.id.name)) {
         return yield* invalid(`ambiguous trait '${trait.id.name}'`);
       }
@@ -192,6 +208,7 @@ export const prepareAuthorizationCatalog = (
       const composed = new Set<string>();
       for (const nested of trait.traits) {
         yield* catalogOfIdentity(nested, target, "trait composition");
+        if (isBlank(nested.name)) return yield* invalid("blank trait name");
         composed.add(nested.name);
       }
       traitTraitEdges.set(trait.id.name, composed);
@@ -199,6 +216,8 @@ export const prepareAuthorizationCatalog = (
 
     for (const field of descriptor.fields) {
       yield* catalogOfIdentity(field.id, target, "field");
+      if (isBlank(field.id.localName)) return yield* invalid("blank field local name");
+      if (isBlank(field.id.owner.name)) return yield* invalid("blank field owner name");
       const key = fieldKey(field.id);
       if (fields.has(key)) return yield* invalid(`ambiguous field '${key}'`);
       const owner = field.id.owner;
@@ -221,6 +240,8 @@ export const prepareAuthorizationCatalog = (
 
     for (const operation of descriptor.operations) {
       yield* catalogOfIdentity(operation.id, target, "operation");
+      if (isBlank(operation.id.localName)) return yield* invalid("blank operation local name");
+      if (isBlank(operation.id.owner.name)) return yield* invalid("blank operation owner name");
       const key = operationKey(operation.id);
       if (operations.has(key)) return yield* invalid(`ambiguous operation '${key}'`);
       const owner = operation.id.owner;
