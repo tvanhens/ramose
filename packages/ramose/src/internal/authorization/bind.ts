@@ -30,7 +30,6 @@ import type {
   OwnerRef,
   RelativeEntityId,
   RelativeFieldId,
-  RelativeOperationId,
   RelativeTraitId,
   RuleId,
   TraitId,
@@ -48,6 +47,7 @@ import {
   type RelativeAuthorizationRule,
   type RelativeRuleFocus,
 } from "./ir.ts";
+import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
 import type {
   CanonicalAuthorizationExpr,
   CanonicalRefTerm,
@@ -56,7 +56,7 @@ import type {
   RelativeRefTerm,
   RelativeValueTerm,
 } from "./expr.ts";
-import { hashCanonicalRuleResult } from "./decode.ts";
+import { canonicalAuthorizationRuleMaterial, hashCanonicalRule } from "./decode.ts";
 import type { InstalledPrincipalResolution, PrincipalResolutionConfig } from "./principal.ts";
 
 export type BindFailure = InvalidIR | CatalogMismatch;
@@ -74,9 +74,6 @@ const operationKey = (owner: OwnerRef, localName: string, target: OperationTarge
 const ownerNameLocalKey = (name: string, localName: string): string =>
   `${name}${SEPARATOR}${localName}`;
 
-const ownerLocalKey = (owner: OwnerRef, localName: string): string =>
-  `${owner.kind}${SEPARATOR}${owner.name}${SEPARATOR}${localName}`;
-
 const otherOwnerKind = (kind: OwnerKind): OwnerKind => (kind === "entity" ? "trait" : "entity");
 
 type CatalogIndex = {
@@ -84,10 +81,8 @@ type CatalogIndex = {
   readonly entities: ReadonlyMap<string, EntityId>;
   readonly traits: ReadonlyMap<string, TraitId>;
   readonly fields: ReadonlyMap<string, FieldId>;
-  readonly operations: ReadonlyMap<string, OperationId>;
   readonly owners: ReadonlyMap<string, OwnerRef>;
   readonly fieldsByOwnerName: ReadonlyMap<string, ReadonlyArray<FieldId>>;
-  readonly operationsByOwnerLocal: ReadonlyMap<string, ReadonlyArray<OperationId>>;
 };
 
 const invalid = (message: string): Result.Result<never, BindFailure> =>
@@ -214,7 +209,6 @@ const indexCatalog = (
   const operations = new Map<string, OperationId>();
   const owners = new Map<string, OwnerRef>();
   const fieldsByOwnerName = new Map<string, FieldId[]>();
-  const operationsByOwnerLocal = new Map<string, OperationId[]>();
 
   for (const entity of descriptor.entities) {
     const scoped = catalogOfIdentity(entity.id, target, "entity");
@@ -279,11 +273,6 @@ const indexCatalog = (
       `operation identity '${operation.id.owner.kind}:${operation.id.owner.name}.${operation.id.localName}:${operation.id.target}'`,
     );
     if (Result.isFailure(added)) return Result.fail(added.failure);
-    pushIndex(
-      operationsByOwnerLocal,
-      ownerLocalKey(operation.id.owner, operation.id.localName),
-      operation.id,
-    );
     const refs = validateInputShape(operation.input, target, entities, traits);
     if (Result.isFailure(refs)) return Result.fail(refs.failure);
   }
@@ -331,10 +320,8 @@ const indexCatalog = (
     entities,
     traits,
     fields,
-    operations,
     owners,
     fieldsByOwnerName,
-    operationsByOwnerLocal,
   });
 };
 
@@ -450,49 +437,6 @@ const bindField = (
   );
 };
 
-const bindOperation = (
-  index: CatalogIndex,
-  relative: RelativeOperationId,
-): Result.Result<OperationId, BindFailure> => {
-  if (isBlank(relative.localName)) return invalid("blank operation local name");
-  if (isBlank(relative.owner.name)) return invalid("blank operation owner name");
-  const exact = index.operations.get(operationKey(relative.owner, relative.localName, relative.target));
-  if (exact !== undefined) return Result.succeed(exact);
-
-  const sameOwnerLocal = index.operationsByOwnerLocal.get(ownerLocalKey(relative.owner, relative.localName));
-  if (sameOwnerLocal !== undefined) {
-    return invalid(
-      `wrong target semantics for operation '${relative.owner.kind}:${relative.owner.name}.${relative.localName}': expected '${relative.target}'`,
-    );
-  }
-
-  const swapped: OwnerRef = { kind: otherOwnerKind(relative.owner.kind), name: relative.owner.name };
-  const swappedExact = index.operations.get(
-    operationKey(swapped, relative.localName, relative.target),
-  );
-  const swappedLocal = index.operationsByOwnerLocal.get(ownerLocalKey(swapped, relative.localName));
-  if (swappedExact !== undefined || swappedLocal !== undefined) {
-    return invalid(
-      `wrong owner kind for operation '${relative.owner.name}.${relative.localName}': expected ${relative.owner.kind}`,
-    );
-  }
-
-  if (!index.owners.has(ownerKey(relative.owner))) {
-    if (index.owners.has(ownerKey(swapped))) {
-      return invalid(
-        `wrong owner kind for operation '${relative.owner.name}.${relative.localName}': expected ${relative.owner.kind}`,
-      );
-    }
-    return invalid(
-      `missing owner ${relative.owner.kind} '${relative.owner.name}' for operation '${relative.localName}'`,
-    );
-  }
-
-  return invalid(
-    `wrong local name for operation '${relative.owner.kind}:${relative.owner.name}.${relative.localName}'`,
-  );
-};
-
 const bindFocus = (
   index: CatalogIndex,
   focus: RelativeRuleFocus,
@@ -512,11 +456,6 @@ const bindFocus = (
       const field = bindField(index, focus.field);
       if (Result.isFailure(field)) return Result.fail(field.failure);
       return Result.succeed({ _tag: "field", field: field.success });
-    }
-    case "operation": {
-      const operation = bindOperation(index, focus.operation);
-      if (Result.isFailure(operation)) return Result.fail(operation.failure);
-      return Result.succeed({ _tag: "operation", operation: operation.success });
     }
   }
 };
@@ -545,8 +484,6 @@ const bindValueTerm = (
     case "subject":
     case "me":
     case "claim":
-    case "input":
-    case "bind":
       return Result.succeed(term);
   }
 };
@@ -593,44 +530,13 @@ const bindExpr = (
         collection: collection.success,
       });
     }
-    case "some": {
-      const collection = bindRefTerm(index, expr.collection);
-      if (Result.isFailure(collection)) return Result.fail(collection.failure);
-      const pred = bindExpr(index, expr.pred);
-      if (Result.isFailure(pred)) return Result.fail(pred.failure);
-      return Result.succeed({
-        _tag: "some",
-        collection: collection.success,
-        bind: expr.bind,
-        pred: pred.success,
-      });
-    }
-    case "overlaps": {
-      const left = bindRefTerm(index, expr.left);
-      if (Result.isFailure(left)) return Result.fail(left.failure);
-      const right = bindRefTerm(index, expr.right);
-      if (Result.isFailure(right)) return Result.fail(right.failure);
-      return Result.succeed({ _tag: "overlaps", left: left.success, right: right.success });
-    }
-    case "exists": {
-      const entity = bindEntity(index, expr.entity);
-      if (Result.isFailure(entity)) return Result.fail(entity.failure);
-      const pred = bindExpr(index, expr.pred);
-      if (Result.isFailure(pred)) return Result.fail(pred.failure);
-      return Result.succeed({
-        _tag: "exists",
-        entity: entity.success,
-        bind: expr.bind,
-        pred: pred.success,
-      });
-    }
   }
 };
 
 const bindRule = (
   index: CatalogIndex,
   rule: RelativeAuthorizationRule,
-): Result.Result<CanonicalAuthorizationRule, BindFailure> => {
+): Result.Result<{ readonly rule: CanonicalAuthorizationRule; readonly material: string }, BindFailure> => {
   const focus = bindFocus(index, rule.focus);
   if (Result.isFailure(focus)) return Result.fail(focus.failure);
   const expr = bindExpr(index, rule.expr);
@@ -640,16 +546,13 @@ const bindRule = (
     focus: focus.success,
     expr: expr.success,
     usesResource: rule.usesResource,
-    usesInput: rule.usesInput,
     usesMe: rule.usesMe,
     usesSubject: rule.usesSubject,
     traversalDepth: rule.traversalDepth,
-    existsDepth: rule.existsDepth,
-    dependencies: rule.dependencies,
   };
-  const id = hashCanonicalRuleResult(bound);
-  if (Result.isFailure(id)) return Result.fail(id.failure);
-  return Result.succeed({ ...bound, id: id.success });
+  const material = canonicalAuthorizationRuleMaterial(bound);
+  if (Result.isFailure(material)) return Result.fail(material.failure);
+  return Result.succeed({ rule: bound, material: material.success });
 };
 
 const remapRuleIds = (
@@ -702,15 +605,10 @@ const bindDecisions = (
   if (Result.isFailure(traits)) return Result.fail(traits.failure);
   const fields = bindDecisionEntries(decisions.fields, (target) => bindField(index, target));
   if (Result.isFailure(fields)) return Result.fail(fields.failure);
-  const operations = bindDecisionEntries(decisions.operations, (target) =>
-    bindOperation(index, target),
-  );
-  if (Result.isFailure(operations)) return Result.fail(operations.failure);
   return Result.succeed({
     entities: entities.success,
     traits: traits.success,
     fields: fields.success,
-    operations: operations.success,
   });
 };
 
@@ -760,10 +658,10 @@ const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
 
 /**
  * Pure catalog-binding kernel. Resolves every relative identity in the
- * template against `input.descriptor`, then re-keys each rule ID from the
- * catalog-qualified body and remaps decision references. Does not
- * recompute derived flags or assemble
- * {@link import("./ir.ts").InstalledAuthorizationIR}.
+ * template against `input.descriptor` and produces canonical rule
+ * material. Does not hash, remap rule IDs, recompute derived flags, or
+ * assemble {@link import("./ir.ts").InstalledAuthorizationIR}. The Effect
+ * shell hashes that material and remaps decision references.
  */
 export const bindPolicyTemplateResult = (
   input: CatalogBindingInput,
@@ -774,22 +672,24 @@ export const bindPolicyTemplateResult = (
   const principal = bindPrincipal(index.success, input.template.principal);
   if (Result.isFailure(principal)) return Result.fail(principal.failure);
 
-  const rules = firstError(input.template.rules.map((rule) => bindRule(index.success, rule)));
-  if (Result.isFailure(rules)) return Result.fail(rules.failure);
+  const boundRules = firstError(input.template.rules.map((rule) => bindRule(index.success, rule)));
+  if (Result.isFailure(boundRules)) return Result.fail(boundRules.failure);
 
-  const idMap = new Map<RuleId, RuleId>();
+  const seen = new Map<RuleId, string>();
+  const rules: CanonicalAuthorizationRule[] = [];
   for (let i = 0; i < input.template.rules.length; i++) {
     const source = input.template.rules[i]!.id;
-    const canonical = rules.success[i]!.id;
-    const existing = idMap.get(source);
+    const { rule, material } = boundRules.success[i]!;
+    const existing = seen.get(source);
     if (existing !== undefined) {
       return invalid(
-        existing === canonical
+        existing === material
           ? `duplicate source rule id '${source}'`
           : `colliding source rule id '${source}'`,
       );
     }
-    idMap.set(source, canonical);
+    seen.set(source, material);
+    rules.push(rule);
   }
 
   const decisions = bindDecisions(index.success, input.template.decisions);
@@ -798,6 +698,7 @@ export const bindPolicyTemplateResult = (
   const bound: BoundAuthorizationIRType = {
     _tag: "BoundAuthorizationIR",
     version: BOUND_AUTHORIZATION_IR_VERSION,
+    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
     database: input.target.database,
     catalog: input.target.catalog,
     catalogVersion: input.target.catalogVersion,
@@ -805,21 +706,38 @@ export const bindPolicyTemplateResult = (
     classes: input.template.classes,
     claims: input.template.claims,
     principal: principal.success,
-    rules: rules.success,
-    decisions: {
-      entities: remapDecisionEntries(decisions.success.entities, idMap),
-      traits: remapDecisionEntries(decisions.success.traits, idMap),
-      fields: remapDecisionEntries(decisions.success.fields, idMap),
-      operations: remapDecisionEntries(decisions.success.operations, idMap),
-    },
+    rules,
+    decisions: decisions.success,
   };
   return Result.succeed(freezeBound(bound));
 };
 
+const restampBoundRuleIds = Effect.fn("Authorization.restampBoundRuleIds")(function* (
+  bound: BoundAuthorizationIRType,
+): Effect.fn.Return<BoundAuthorizationIRType, BindFailure> {
+  const idMap = new Map<RuleId, RuleId>();
+  const rules: CanonicalAuthorizationRule[] = [];
+  for (const rule of bound.rules) {
+    const id = yield* hashCanonicalRule(rule);
+    idMap.set(rule.id, id);
+    rules.push({ ...rule, id });
+  }
+  return freezeBound({
+    ...bound,
+    rules,
+    decisions: {
+      entities: remapDecisionEntries(bound.decisions.entities, idMap),
+      traits: remapDecisionEntries(bound.decisions.traits, idMap),
+      fields: remapDecisionEntries(bound.decisions.fields, idMap),
+    },
+  });
+});
+
 export const bindPolicyTemplate = Effect.fn("Authorization.bindPolicyTemplate")(function* (
   input: CatalogBindingInput,
 ): Effect.fn.Return<BoundAuthorizationIRType, BindFailure> {
-  return yield* Effect.fromResult(bindPolicyTemplateResult(input));
+  const bound = yield* Effect.fromResult(bindPolicyTemplateResult(input));
+  return yield* restampBoundRuleIds(bound);
 });
 
 export interface AuthoritativeCatalogService {
@@ -847,5 +765,5 @@ export const bindAgainstAuthoritativeCatalog = Effect.fn(
 )(function* (target: CatalogBindingTarget, template: CatalogBindingInput["template"]) {
   const catalogs = yield* AuthoritativeCatalog;
   const descriptor = yield* catalogs.resolve(target);
-  return yield* Effect.fromResult(bindPolicyTemplateResult({ target, descriptor, template }));
+  return yield* bindPolicyTemplate({ target, descriptor, template });
 });

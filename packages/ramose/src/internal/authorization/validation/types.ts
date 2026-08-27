@@ -6,13 +6,8 @@
  */
 
 import * as Result from "effect/Result";
-import type {
-  FieldCardinality,
-  FieldRefTarget,
-  OperationInputShape,
-  ScalarValueType,
-} from "../catalog.ts";
-import type { EntityId, OwnerRef, RuleId } from "../identities.ts";
+import type { FieldCardinality, FieldRefTarget, ScalarValueType } from "../catalog.ts";
+import type { EntityId, OwnerRef } from "../identities.ts";
 import type { ClaimShape } from "../principal.ts";
 import { invalid, type ValidateFailure } from "./common.ts";
 import {
@@ -26,13 +21,7 @@ import {
 
 export type { RowFocus };
 
-export type Binding = {
-  readonly focus: RowFocus;
-  readonly traversalDepth: number;
-};
-
 export type TermShape =
-  | { readonly _tag: "boolean" }
   | { readonly _tag: "subject" }
   | { readonly _tag: "scalar"; readonly valueType: ScalarValueType | "null" | "number" }
   | { readonly _tag: "row"; readonly focus: RowFocus }
@@ -43,39 +32,29 @@ export type TermShape =
       readonly cardinality: FieldCardinality;
     }
   | { readonly _tag: "claim"; readonly shape: ClaimShape }
-  | { readonly _tag: "input"; readonly shape: OperationInputShape; readonly owner: OwnerRef }
-  | { readonly _tag: "opaque" };
+  | { readonly _tag: "collection"; readonly element: TermShape };
 
 export type Derived = {
   usesResource: boolean;
-  usesInput: boolean;
   usesMe: boolean;
   usesSubject: boolean;
   traversalDepth: number;
-  existsDepth: number;
-  dependencies: RuleId[];
   staticWork: number;
 };
 
 export const emptyDerived = (): Derived => ({
   usesResource: false,
-  usesInput: false,
   usesMe: false,
   usesSubject: false,
   traversalDepth: 0,
-  existsDepth: 0,
-  dependencies: [],
   staticWork: 0,
 });
 
 export const mergeDerived = (into: Derived, part: Derived): void => {
   into.usesResource ||= part.usesResource;
-  into.usesInput ||= part.usesInput;
   into.usesMe ||= part.usesMe;
   into.usesSubject ||= part.usesSubject;
   if (part.traversalDepth > into.traversalDepth) into.traversalDepth = part.traversalDepth;
-  if (part.existsDepth > into.existsDepth) into.existsDepth = part.existsDepth;
-  for (const dep of part.dependencies) into.dependencies.push(dep);
   into.staticWork += part.staticWork;
 };
 
@@ -184,9 +163,6 @@ export const sameRefTarget = (
 export const claimScalar = (shape: ClaimShape): ScalarValueType | undefined =>
   shape._tag === "scalar" ? shape.valueType : undefined;
 
-export const inputScalar = (shape: OperationInputShape): ScalarValueType | undefined =>
-  shape._tag === "scalar" ? shape.valueType : undefined;
-
 export const litScalar = (value: string | number | boolean | null): TermShape => {
   if (value === null) return { _tag: "scalar", valueType: "null" };
   if (typeof value === "boolean") return { _tag: "scalar", valueType: "boolean" };
@@ -223,14 +199,6 @@ export const meCompatibleWith = (
       focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus))
     );
   }
-  if (other._tag === "input" && other.shape._tag === "ref") {
-    const resolved = resolveRefTarget(index, other.shape.refTarget, other.owner);
-    if (Result.isFailure(resolved)) return false;
-    const focus = refTargetAsFocus(resolved.success);
-    return (
-      focus !== undefined && (me === undefined || sameRow(index, { _tag: "entity", entity: me }, focus))
-    );
-  }
   return false;
 };
 
@@ -240,8 +208,7 @@ export const eqCompatible = (
   right: TermShape,
 ): boolean => {
   const pair = (a: TermShape, b: TermShape): boolean => {
-    if (a._tag === "opaque" || b._tag === "opaque") return false;
-    if (a._tag === "boolean" || b._tag === "boolean") return false;
+    if (a._tag === "collection" || b._tag === "collection") return false;
     if (a._tag === "ref" && a.cardinality === "many") return false;
     if (b._tag === "ref" && b.cardinality === "many") return false;
     if (a._tag === "me") return meCompatibleWith(index, a.entity, b);
@@ -254,41 +221,21 @@ export const eqCompatible = (
           scalar !== undefined && scalarAssignable("string", { _tag: "scalar", valueType: scalar })
         );
       }
-      if (b._tag === "input") {
-        const scalar = inputScalar(b.shape);
-        return (
-          scalar !== undefined && scalarAssignable("string", { _tag: "scalar", valueType: scalar })
-        );
-      }
       return false;
     }
     if (a._tag === "row") {
       if (b._tag === "row") return sameRow(index, a.focus, b.focus);
       if (b._tag === "ref") return refCompatibleWithRow(index, b.target, a.focus);
-      if (b._tag === "input" && b.shape._tag === "ref") {
-        const target = resolveRefTarget(index, b.shape.refTarget, b.owner);
-        return Result.isSuccess(target) && refCompatibleWithRow(index, target.success, a.focus);
-      }
       return false;
     }
     if (a._tag === "ref") {
       if (b._tag === "ref") return sameRefTarget(index, a.target, b.target);
-      if (b._tag === "input" && b.shape._tag === "ref") {
-        const target = resolveRefTarget(index, b.shape.refTarget, b.owner);
-        return Result.isSuccess(target) && sameRefTarget(index, a.target, target.success);
-      }
       return false;
     }
     if (a._tag === "scalar") {
       if (b._tag === "scalar") return scalarAssignable(a.valueType, b);
       if (b._tag === "claim") {
         const scalar = claimScalar(b.shape);
-        return (
-          scalar !== undefined && scalarAssignable(a.valueType, { _tag: "scalar", valueType: scalar })
-        );
-      }
-      if (b._tag === "input") {
-        const scalar = inputScalar(b.shape);
         return (
           scalar !== undefined && scalarAssignable(a.valueType, { _tag: "scalar", valueType: scalar })
         );
@@ -300,46 +247,18 @@ export const eqCompatible = (
       if (scalar === undefined) return false;
       return eqCompatible(index, { _tag: "scalar", valueType: scalar }, b);
     }
-    if (a._tag === "input") {
-      if (a.shape._tag === "scalar") {
-        return eqCompatible(index, { _tag: "scalar", valueType: a.shape.valueType }, b);
-      }
-      if (a.shape._tag === "ref" && b._tag === "input" && b.shape._tag === "ref") {
-        const leftTarget = resolveRefTarget(index, a.shape.refTarget, a.owner);
-        const rightTarget = resolveRefTarget(index, b.shape.refTarget, b.owner);
-        return (
-          Result.isSuccess(leftTarget) &&
-          Result.isSuccess(rightTarget) &&
-          sameRefTarget(index, leftTarget.success, rightTarget.success)
-        );
-      }
-      return false;
-    }
     return false;
   };
   return pair(left, right) || pair(right, left);
 };
 
 export const collectionElement = (
-  index: PreparedAuthorizationCatalog,
   shape: TermShape,
 ): Result.Result<TermShape | undefined, ValidateFailure> => {
   if (shape._tag === "ref" && shape.cardinality === "many") {
     return Result.succeed({ _tag: "ref", target: shape.target, cardinality: "one" });
   }
-  if (shape._tag === "input" && shape.shape._tag === "array") {
-    const items = shape.shape.items;
-    if (items._tag === "scalar") {
-      return Result.succeed({ _tag: "scalar", valueType: items.valueType });
-    }
-    if (items._tag === "ref") {
-      const target = resolveRefTarget(index, items.refTarget, shape.owner);
-      if (Result.isFailure(target)) return Result.fail(target.failure);
-      return Result.succeed({ _tag: "ref", target: target.success, cardinality: "one" });
-    }
-    if (items._tag === "opaque") return Result.succeed({ _tag: "opaque" });
-    return Result.succeed({ _tag: "input", shape: items, owner: shape.owner });
-  }
+  if (shape._tag === "collection") return Result.succeed(shape.element);
   if (shape._tag === "claim" && shape.shape._tag === "array") {
     return Result.succeed({ _tag: "claim", shape: shape.shape.items });
   }

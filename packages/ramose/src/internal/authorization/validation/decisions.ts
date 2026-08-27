@@ -3,7 +3,7 @@
  */
 
 import * as Result from "effect/Result";
-import type { FieldDescriptor, OperationDescriptor } from "../catalog.ts";
+import type { FieldDescriptor } from "../catalog.ts";
 import type { EntityId, RuleId, TraitId } from "../identities.ts";
 import type {
   CanonicalAuthorizationDecisions,
@@ -12,16 +12,13 @@ import type {
 } from "../ir.ts";
 import {
   entityComposes,
-  ownerHasTrait,
   requireEntity,
   requireField,
-  requireOperation,
-  requireTargetlessTraitReachable,
   requireTrait,
   traitComposes,
   type PreparedAuthorizationCatalog,
 } from "./catalog.ts";
-import { entityKey, fieldKey, invalid, operationKey, traitKey, type ValidateFailure } from "./common.ts";
+import { entityKey, fieldKey, invalid, traitKey, type ValidateFailure } from "./common.ts";
 
 const uniqueDecisionIds = (
   ids: ReadonlyArray<RuleId>,
@@ -70,35 +67,6 @@ const ruleFitsField = (
   return owner !== undefined && ruleFitsTrait(index, rule, owner);
 };
 
-const ruleFitsOperation = (
-  index: PreparedAuthorizationCatalog,
-  rule: CanonicalAuthorizationRule,
-  operation: OperationDescriptor,
-): Result.Result<void, ValidateFailure> => {
-  if (operation.id.target === "none" && rule.usesResource) {
-    return invalid("resource-dependent rule cannot authorize a targetless operation");
-  }
-  if (rule.focus._tag === "operation") {
-    return operationKey(rule.focus.operation) === operationKey(operation.id)
-      ? Result.succeed(undefined)
-      : invalid("rule focus is incompatible with operation decision");
-  }
-  if (rule.focus._tag === "entity") {
-    const owner = operation.id.owner;
-    if (owner.kind === "entity" && owner.name === rule.focus.entity.name) {
-      return Result.succeed(undefined);
-    }
-    return invalid("rule focus is incompatible with operation decision");
-  }
-  if (rule.focus._tag === "trait") {
-    if (ownerHasTrait(index, operation.id.owner, rule.focus.trait.name)) {
-      return Result.succeed(undefined);
-    }
-    return invalid("rule focus is incompatible with operation decision");
-  }
-  return invalid("rule focus is incompatible with operation decision");
-};
-
 const lookupRule = (
   rules: ReadonlyMap<RuleId, CanonicalAuthorizationRule>,
   id: RuleId,
@@ -109,7 +77,6 @@ const lookupRule = (
 };
 
 const validateDecisionRules = (
-  index: PreparedAuthorizationCatalog,
   decision: Decision,
   rules: ReadonlyMap<RuleId, CanonicalAuthorizationRule>,
   compatible: (rule: CanonicalAuthorizationRule) => Result.Result<void, ValidateFailure>,
@@ -148,7 +115,7 @@ export const validateDecisions = (
     const key = entityKey(target.success);
     if (seenEntities.has(key)) return invalid("duplicate entity decision target");
     seenEntities.add(key);
-    const ok = validateDecisionRules(index, entry.decision, rules, (rule) =>
+    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
       ruleFitsEntity(index, rule, target.success)
         ? Result.succeed(undefined)
         : invalid("rule focus is incompatible with entity decision"),
@@ -163,7 +130,7 @@ export const validateDecisions = (
     const key = traitKey(target.success);
     if (seenTraits.has(key)) return invalid("duplicate trait decision target");
     seenTraits.add(key);
-    const ok = validateDecisionRules(index, entry.decision, rules, (rule) =>
+    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
       ruleFitsTrait(index, rule, target.success)
         ? Result.succeed(undefined)
         : invalid("rule focus is incompatible with trait decision"),
@@ -178,25 +145,10 @@ export const validateDecisions = (
     const key = fieldKey(target.success.id);
     if (seenFields.has(key)) return invalid("duplicate field decision target");
     seenFields.add(key);
-    const ok = validateDecisionRules(index, entry.decision, rules, (rule) =>
+    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
       ruleFitsField(index, rule, target.success)
         ? Result.succeed(undefined)
         : invalid("rule focus is incompatible with field decision"),
-    );
-    if (Result.isFailure(ok)) return Result.fail(ok.failure);
-  }
-
-  const seenOperations = new Set<string>();
-  for (const entry of decisions.operations) {
-    const target = requireOperation(index, entry.target, "operation decision target");
-    if (Result.isFailure(target)) return Result.fail(target.failure);
-    const key = operationKey(target.success.id);
-    if (seenOperations.has(key)) return invalid("duplicate operation decision target");
-    seenOperations.add(key);
-    const reachable = requireTargetlessTraitReachable(index, target.success);
-    if (Result.isFailure(reachable)) return Result.fail(reachable.failure);
-    const ok = validateDecisionRules(index, entry.decision, rules, (rule) =>
-      ruleFitsOperation(index, rule, target.success),
     );
     if (Result.isFailure(ok)) return Result.fail(ok.failure);
   }

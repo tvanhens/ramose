@@ -40,6 +40,7 @@ import {
   InstalledPrincipalResolution,
   PrincipalResolutionConfig,
 } from "./principal.ts";
+import { AuthorizationLanguageVersion } from "./version.ts";
 
 export const POLICY_TEMPLATE_IR_VERSION = 1 as const;
 export const BOUND_AUTHORIZATION_IR_VERSION = 1 as const;
@@ -70,12 +71,13 @@ export const RuleFocus = <
     Schema.TaggedStruct("entity", { entity: ids.entity }),
     Schema.TaggedStruct("trait", { trait: ids.trait }),
     Schema.TaggedStruct("field", { field: ids.field }),
-    Schema.TaggedStruct("operation", { operation: ids.operation }),
   ]);
 
 /**
  * Derived flags are part of the document shape. The semantic validator
- * (#358) recomputes them; parsers must not trust author-supplied values.
+ * recomputes them; parsers must not trust author-supplied values.
+ * V1 omits metadata that can only be constant or empty (`usesInput`,
+ * `existsDepth`, named-rule `dependencies`).
  */
 export const AuthorizationRule = <
   Entity extends Schema.Top,
@@ -92,12 +94,9 @@ export const AuthorizationRule = <
     focus: RuleFocus(ids),
     expr,
     usesResource: Schema.Boolean,
-    usesInput: Schema.Boolean,
     usesMe: Schema.Boolean,
     usesSubject: Schema.Boolean,
     traversalDepth: Schema.Natural,
-    existsDepth: Schema.Natural,
-    dependencies: Schema.Array(RuleId),
   });
 
 /**
@@ -128,7 +127,6 @@ export const AuthorizationDecisions = <
     entities: Schema.Array(DecisionEntry(ids.entity)),
     traits: Schema.Array(DecisionEntry(ids.trait)),
     fields: Schema.Array(DecisionEntry(ids.field)),
-    operations: Schema.Array(DecisionEntry(ids.operation)),
   });
 
 export const InstalledIdentityTable = Schema.Struct({
@@ -146,6 +144,7 @@ export type InstalledIdentityTable = typeof InstalledIdentityTable.Type;
  */
 export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
   version: PolicyTemplateIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
   classes: ClassVocabulary,
   claims: ClaimVocabulary,
   principal: PrincipalResolutionConfig,
@@ -162,6 +161,7 @@ export type PolicyTemplateIR = typeof PolicyTemplateIR.Type;
  */
 export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", {
   version: BoundAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
   database: DatabaseId,
   catalog: CatalogId,
   catalogVersion: CatalogVersion,
@@ -175,14 +175,15 @@ export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", 
 export type BoundAuthorizationIR = typeof BoundAuthorizationIR.Type;
 
 /**
- * Semantically validated bound document for #386. Rule IDs, usage flags,
- * depths, and dependencies are recomputed from the expression and catalog
+ * Semantically validated bound document for #386. Usage flags and
+ * traversal depth are recomputed from the expression and catalog
  * metadata — never taken from the template or bound input. Still
  * non-executable: no policy hash, identity table, operation table,
  * trait-composition table, or access plans.
  */
 export const ValidatedAuthorizationIR = Schema.TaggedStruct("ValidatedAuthorizationIR", {
   version: ValidatedAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
   database: DatabaseId,
   catalog: CatalogId,
   catalogVersion: CatalogVersion,
@@ -209,6 +210,7 @@ export type AuthorizationValidationInput = typeof AuthorizationValidationInput.T
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
   database: DatabaseId,
   catalog: CatalogId,
   catalogVersion: CatalogVersion,

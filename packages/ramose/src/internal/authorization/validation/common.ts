@@ -3,11 +3,7 @@
  */
 
 import * as Result from "effect/Result";
-import {
-  DEFAULT_AUTHORIZATION_BUDGET,
-  MAX_EXISTS_DEPTH,
-  MAX_TRAVERSAL_DEPTH,
-} from "../bounds.ts";
+import { DEFAULT_AUTHORIZATION_BUDGET, MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
 import { CatalogMismatch, InvalidIR } from "../failures.ts";
 import type { EntityId, FieldId, OperationId, TraitId } from "../identities.ts";
 
@@ -15,19 +11,12 @@ export type ValidateFailure = InvalidIR | CatalogMismatch;
 
 export type ValidationLimits = {
   readonly maxTraversalDepth: number;
-  readonly maxExistsDepth: number;
-  readonly maxDependencies: number;
   readonly maxStaticWork: number;
 };
 
-/**
- * Hard production ceilings. Callers cannot widen these. The current
- * language has no named-rule invocation, so {@link maxDependencies} is 0.
- */
+/** Hard production ceilings. Callers cannot widen these. */
 export const defaultValidationLimits: ValidationLimits = {
   maxTraversalDepth: MAX_TRAVERSAL_DEPTH,
-  maxExistsDepth: MAX_EXISTS_DEPTH,
-  maxDependencies: 0,
   maxStaticWork: DEFAULT_AUTHORIZATION_BUDGET,
 };
 
@@ -37,7 +26,7 @@ const isFiniteNatural = (value: number): boolean =>
 /**
  * Test-only tightening. Each override must be a finite natural number and
  * is clamped at the corresponding hard constant so Infinity/NaN cannot
- * disable traversal, exists, or work restrictions.
+ * disable traversal or work restrictions.
  */
 export const tightenValidationLimits = (
   overrides: Partial<ValidationLimits> | undefined,
@@ -56,16 +45,10 @@ export const tightenValidationLimits = (
   };
   const maxTraversalDepth = clamp("maxTraversalDepth", defaultValidationLimits.maxTraversalDepth);
   if (Result.isFailure(maxTraversalDepth)) return Result.fail(maxTraversalDepth.failure);
-  const maxExistsDepth = clamp("maxExistsDepth", defaultValidationLimits.maxExistsDepth);
-  if (Result.isFailure(maxExistsDepth)) return Result.fail(maxExistsDepth.failure);
-  const maxDependencies = clamp("maxDependencies", defaultValidationLimits.maxDependencies);
-  if (Result.isFailure(maxDependencies)) return Result.fail(maxDependencies.failure);
   const maxStaticWork = clamp("maxStaticWork", defaultValidationLimits.maxStaticWork);
   if (Result.isFailure(maxStaticWork)) return Result.fail(maxStaticWork.failure);
   return Result.succeed({
     maxTraversalDepth: maxTraversalDepth.success,
-    maxExistsDepth: maxExistsDepth.success,
-    maxDependencies: maxDependencies.success,
     maxStaticWork: maxStaticWork.success,
   });
 };

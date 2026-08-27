@@ -4,6 +4,8 @@ import * as Result from "effect/Result";
 import { sha256Hex } from "../../../src/internal/core/bytes.ts";
 import {
   AUTHORIZATION_CANONICAL_JSON_VERSION,
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_RULE_HASH_DOMAIN_V1,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   MAX_COLLECTION_SIZE,
@@ -24,6 +26,7 @@ import {
   encodePolicyTemplate,
   hashCanonicalJson,
   hashCanonicalRule,
+  hashDomainSeparatedCanonicalJson,
   hashInstalledAuthorization,
   hashPolicyTemplate,
   hashRelativeRule,
@@ -209,12 +212,9 @@ describe("JSON-only rejections", () => {
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "and", exprs },
             usesResource: false,
-            usesInput: false,
             usesMe: false,
             usesSubject: false,
             traversalDepth: 0,
-            existsDepth: 0,
-            dependencies: [],
           },
         ],
       }),
@@ -435,7 +435,7 @@ describe("schema shape rejections", () => {
     );
   });
 
-  test("rejects a nested duplicate claim key", () => {
+  test("rejects a struct claim shape at Schema decode", () => {
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
@@ -447,13 +447,31 @@ describe("schema shape rejections", () => {
               _tag: "struct",
               fields: [
                 { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
-                { key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } },
               ],
             },
           },
         ],
       }),
-      /duplicate claim key 'org'/,
+      /struct|_tag|ClaimShape|Union/i,
+    );
+  });
+
+  test("rejects a nested-array claim shape at Schema decode", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        claims: [
+          {
+            key: "matrix",
+            optional: false,
+            shape: {
+              _tag: "array",
+              items: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
+            },
+          },
+        ],
+      }),
+      /excess|array|_tag|ClaimShape|Union/i,
     );
   });
 
@@ -486,7 +504,7 @@ describe("schema shape rejections", () => {
     expectInvalid(decodePolicyTemplateResult(untagged), /_tag|PolicyTemplateIR/);
   });
 
-  test("rejects an ownerless operation identity", () => {
+  test("rejects an operation decision as an excess property", () => {
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
@@ -494,15 +512,130 @@ describe("schema shape rejections", () => {
           entities: [],
           traits: [],
           fields: [],
-          operations: [
-            {
-              target: { _tag: "RelativeOperationId", localName: "create", target: "none" },
-              decision: { allow: [], deny: [] },
-            },
-          ],
+          operations: [],
         },
       }),
-      /owner|RelativeOperationId/i,
+      /extra|unexpected|excess|Key|operations/i,
+    );
+  });
+
+  test("rejects an unknown language version", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, languageVersion: "v2" }),
+      /v2|Literal|languageVersion/i,
+    );
+  });
+
+  test("rejects a missing language version", () => {
+    const { languageVersion: _, ...missing } = emptyTemplateEncoded;
+    expectInvalid(decodePolicyTemplateResult(missing), /languageVersion/);
+  });
+
+  test("rejects deferred expression tags at Schema decode", () => {
+    const baseRule = {
+      id: RULE_LIT,
+      focus: { _tag: "entity" as const, entity: { _tag: "RelativeEntityId" as const, name: "issue" } },
+      usesResource: false,
+      usesMe: false,
+      usesSubject: false,
+      traversalDepth: 0,
+    };
+    const cases: ReadonlyArray<{ readonly expr: unknown; readonly label: string }> = [
+      { label: "input", expr: { _tag: "has", term: { _tag: "input", path: ["title"] } } },
+      { label: "bind term", expr: { _tag: "has", term: { _tag: "bind", name: "tag" } } },
+      {
+        label: "bind root",
+        expr: {
+          _tag: "has",
+          term: { _tag: "ref", root: { _tag: "bind", name: "tag" }, steps: [] },
+        },
+      },
+      {
+        label: "some",
+        expr: {
+          _tag: "some",
+          collection: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+          bind: "tag",
+          pred: { _tag: "const", value: true },
+        },
+      },
+      {
+        label: "overlaps",
+        expr: {
+          _tag: "overlaps",
+          left: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+          right: { _tag: "ref", root: { _tag: "me" }, steps: [] },
+        },
+      },
+      {
+        label: "exists",
+        expr: {
+          _tag: "exists",
+          entity: { _tag: "RelativeEntityId", name: "issue" },
+          bind: "row",
+          pred: { _tag: "const", value: true },
+        },
+      },
+    ];
+    for (const entry of cases) {
+      expectInvalid(
+        decodePolicyTemplateResult({
+          ...emptyTemplateEncoded,
+          rules: [{ ...baseRule, expr: entry.expr }],
+        }),
+        /_tag|Union|some|exists|overlaps|input|bind|ref/i,
+      );
+    }
+  });
+
+  test("rejects an operation-focused rule at Schema decode", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        rules: [
+          {
+            id: RULE_LIT,
+            focus: {
+              _tag: "operation",
+              operation: {
+                _tag: "RelativeOperationId",
+                owner: { kind: "entity", name: "issue" },
+                localName: "rename",
+                target: "required",
+              },
+            },
+            expr: { _tag: "const", value: true },
+            usesResource: false,
+            usesMe: false,
+            usesSubject: false,
+            traversalDepth: 0,
+          },
+        ],
+      }),
+      /operation|_tag|Union|focus/i,
+    );
+  });
+
+  test("rejects deferred rule metadata at Schema decode", () => {
+    expectInvalid(
+      decodePolicyTemplateResult({
+        ...emptyTemplateEncoded,
+        rules: [
+          {
+            id: RULE_LIT,
+            focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+            expr: { _tag: "const", value: true },
+            usesResource: false,
+            usesInput: false,
+            usesMe: false,
+            usesSubject: false,
+            traversalDepth: 0,
+            existsDepth: 0,
+            dependencies: [],
+          },
+        ],
+      }),
+      /extra|unexpected|excess|Key|usesInput|existsDepth|dependencies/i,
     );
   });
 
@@ -516,12 +649,9 @@ describe("schema shape rejections", () => {
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "eq", left: { _tag: "lit", value: Number.NaN }, right: { _tag: "lit", value: 1 } },
             usesResource: false,
-            usesInput: false,
             usesMe: false,
             usesSubject: false,
             traversalDepth: 0,
-            existsDepth: 0,
-            dependencies: [],
           },
         ],
       }),
@@ -539,12 +669,9 @@ describe("schema shape rejections", () => {
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "const", value: true },
             usesResource: false,
-            usesInput: false,
             usesMe: false,
             usesSubject: false,
             traversalDepth: -1,
-            existsDepth: 0,
-            dependencies: [],
           },
         ],
       }),
@@ -572,12 +699,9 @@ describe("schema shape rejections", () => {
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: { _tag: "const", value: true },
             usesResource: false,
-            usesInput: false,
             usesMe: false,
             usesSubject: false,
             traversalDepth: 0,
-            existsDepth: 0,
-            dependencies: [],
           },
         ],
       }),
@@ -603,24 +727,18 @@ describe("rule identity collisions", () => {
         focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
         expr: { _tag: "const", value: true },
         usesResource: false,
-        usesInput: false,
         usesMe: false,
         usesSubject: false,
         traversalDepth: 0,
-        existsDepth: 0,
-        dependencies: [],
       },
       {
         id: RULE_SAME,
         focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
         expr: { _tag: "const", value: false },
         usesResource: false,
-        usesInput: false,
         usesMe: false,
         usesSubject: false,
         traversalDepth: 0,
-        existsDepth: 0,
-        dependencies: [],
       },
       ],
     };
@@ -633,12 +751,9 @@ describe("rule identity collisions", () => {
       focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: { _tag: "const", value: true },
       usesResource: false,
-      usesInput: false,
       usesMe: false,
       usesSubject: false,
       traversalDepth: 0,
-      existsDepth: 0,
-      dependencies: [],
     };
     expectInvalid(
       decodePolicyTemplateResult({ ...emptyTemplateEncoded, rules: [rule, clone(rule)] }),
@@ -658,7 +773,6 @@ describe("rule identity collisions", () => {
           ],
           traits: [],
           fields: [],
-          operations: [],
         },
       }),
       /duplicate entity decision target/,
@@ -797,8 +911,9 @@ describe("canonical serialization", () => {
   test("key order does not change the canonical document", async () => {
     const a = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const reordered = {
+      languageVersion: "v1",
       version: 1,
-      decisions: { operations: [], fields: [], traits: [], entities: [] },
+      decisions: { fields: [], traits: [], entities: [] },
       rules: [],
       principal: { subjectClaim: "sub" },
       claims: [],
@@ -847,33 +962,52 @@ describe("canonical serialization", () => {
     const decoded = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const canonical = canonicalizePolicyTemplate(decoded);
     expect(canonical).toBe(
-      '{"_tag":"PolicyTemplateIR","claims":[],"classes":[],"decisions":{"entities":[],"fields":[],"operations":[],"traits":[]},"principal":{"subjectClaim":"sub"},"rules":[],"version":1}',
+      '{"_tag":"PolicyTemplateIR","claims":[],"classes":[],"decisions":{"entities":[],"fields":[],"traits":[]},"languageVersion":"v1","principal":{"subjectClaim":"sub"},"rules":[],"version":1}',
     );
     const digest = String(await hashOf(hashPolicyTemplate(decoded)));
-    expect(digest).toBe("32ac5c7ad4ccc9acc9a03f3c7cc3ff0f7ba90b701db9a9eab5b5e360b140d01b");
-    expect(await hashOf(hashCanonicalJson(JSON.parse(canonical) as JsonValue))).toBe(digest);
+    expect(digest).toBe("8f8b6971eff4b40f8e2629cd45dfe37d0f46ca10c54e1e80c32be8fdac0a51ff");
+    expect(
+      await hashOf(
+        hashDomainSeparatedCanonicalJson(
+          AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+          JSON.parse(canonical) as JsonValue,
+        ),
+      ),
+    ).toBe(digest);
+    expect(await hashOf(hashCanonicalJson(JSON.parse(canonical) as JsonValue))).not.toBe(digest);
   });
 
   test("golden template and installed hashes are deterministic", async () => {
     const template = Effect.runSync(decodePolicyTemplate(clone(templateEncoded)));
     const installed = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
     expect(String(await hashOf(hashPolicyTemplate(template)))).toBe(
-      "ba3627858d639dc167115db4c66e8a1e3d112e56e7f8848bce4682ae85a121df",
+      "9db5ae3c8a479f5b05a236de08214fa270cd5bbf4240a5c0fd6333a8604fc102",
     );
     expect(String(await hashOf(hashInstalledAuthorization(installed)))).toBe(
-      "b58680da318ac5ffe27d603ac8174967718745da7724bb46e918339fd9ec258e",
+      "a4dfb12a0413744ab5740a91a4f3c941d038b08004cfa14a4e1587b028fadcc5",
     );
     expect(String(await hashOf(hashRelativeRule(template.rules[0])))).toBe(
-      "706cf08602db9b325fad3bec8806bcc936a2b6471b61e09c5309444f1c6de666",
+      "8bd1556841dbd587924d0341f9bf428bf3e776fbcc0d6422fe2103795b5ddb6d",
     );
     expect(String(await hashOf(hashRelativeRule(template.rules[1])))).toBe(
-      "e389c245d4cdd49cb220f7c602d3c127f4bb9083c93378795afa3bafc40d4093",
+      "59a3764a978e3aee4fe95df50bb9087da56969f75463d1e9d4d9b2af0495a405",
     );
     expect(String(await hashOf(hashRelativeRule(template.rules[2])))).toBe(
-      "38c66b8a272af0fbbe5bf2007cefb8aa91aa8da2ab52b1f6b0b724bf63b42d5e",
+      "c02753520c3de09e456f5254e17f289bfa3e8781df4a776720a0165a6709d804",
     );
     expect(String(await hashOf(hashCanonicalRule(installed.rules[0])))).toBe(
-      "13fd64ba860771677735d3edf65497cef91393039bd51a8164524436802ea57b",
+      "9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46",
+    );
+    expect(
+      await hashOf(
+        hashDomainSeparatedCanonicalJson(AUTHORIZATION_RULE_HASH_DOMAIN_V1, {
+          _tag: "probe",
+        }),
+      ),
+    ).not.toBe(
+      await hashOf(
+        hashDomainSeparatedCanonicalJson("ramose.authorization.rule/v2\0", { _tag: "probe" }),
+      ),
     );
   });
 

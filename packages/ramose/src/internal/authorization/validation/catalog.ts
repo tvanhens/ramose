@@ -18,7 +18,7 @@ import type {
   FieldRefTarget,
   OperationDescriptor,
 } from "../catalog.ts";
-import type { EntityId, FieldId, OperationId, OwnerRef, TraitId } from "../identities.ts";
+import type { EntityId, FieldId, OwnerRef, TraitId } from "../identities.ts";
 import type { CatalogBindingTarget } from "../ir.ts";
 import {
   fieldKey,
@@ -39,7 +39,6 @@ export type PreparedAuthorizationCatalog = {
   readonly entities: ReadonlyMap<string, EntityId>;
   readonly traits: ReadonlyMap<string, TraitId>;
   readonly fields: ReadonlyMap<string, FieldDescriptor>;
-  readonly operations: ReadonlyMap<string, OperationDescriptor>;
   readonly entityTraits: ReadonlyMap<string, ReadonlySet<string>>;
   readonly traitTraits: ReadonlyMap<string, ReadonlySet<string>>;
 };
@@ -320,7 +319,6 @@ export const prepareAuthorizationCatalog = (
     entities,
     traits,
     fields,
-    operations,
     entityTraits,
     traitTraits,
   });
@@ -366,22 +364,6 @@ export const requireField = (
   return Result.succeed(found);
 };
 
-export const requireOperation = (
-  index: PreparedAuthorizationCatalog,
-  id: OperationId,
-  label: string,
-): Result.Result<OperationDescriptor, ValidateFailure> => {
-  const scoped = catalogOfIdentity(id, index.target, label);
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  const found = index.operations.get(operationKey(id));
-  if (found === undefined) {
-    return invalid(
-      `stale identity: missing ${label} '${id.owner.kind}:${id.owner.name}.${id.localName}:${id.target}'`,
-    );
-  }
-  return Result.succeed(found);
-};
-
 export const entityComposes = (
   index: PreparedAuthorizationCatalog,
   entity: EntityId,
@@ -393,41 +375,6 @@ export const traitComposes = (
   trait: TraitId,
   otherName: string,
 ): boolean => trait.name === otherName || index.traitTraits.get(trait.name)?.has(otherName) === true;
-
-export const traitReachable = (index: PreparedAuthorizationCatalog, trait: TraitId): boolean => {
-  for (const composed of index.entityTraits.values()) {
-    if (composed.has(trait.name)) return true;
-  }
-  return false;
-};
-
-export const requireTargetlessTraitReachable = (
-  index: PreparedAuthorizationCatalog,
-  operation: OperationDescriptor,
-): Result.Result<void, ValidateFailure> => {
-  if (operation.id.target !== "none" || operation.id.owner.kind !== "trait") {
-    return Result.succeed(undefined);
-  }
-  const trait = index.traits.get(operation.id.owner.name);
-  if (trait === undefined || !traitReachable(index, trait)) {
-    return invalid(`targetless trait operation '${operation.id.localName}' is not reachable`);
-  }
-  return Result.succeed(undefined);
-};
-
-export const ownerHasTrait = (
-  index: PreparedAuthorizationCatalog,
-  owner: OwnerRef,
-  traitName: string,
-): boolean => {
-  if (owner.kind === "trait") {
-    if (owner.name === traitName) return true;
-    const id = index.traits.get(owner.name);
-    return id !== undefined && traitComposes(index, id, traitName);
-  }
-  const id = index.entities.get(owner.name);
-  return id !== undefined && entityComposes(index, id, traitName);
-};
 
 export const fieldAccessibleFrom = (
   index: PreparedAuthorizationCatalog,

@@ -9,6 +9,7 @@
 
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import { hashCanonicalRule } from "../decode.ts";
 import {
   VALIDATED_AUTHORIZATION_IR_VERSION,
   type AuthorizationValidationInput,
@@ -17,6 +18,8 @@ import {
   type ValidatedAuthorizationIR as ValidatedAuthorizationIRType,
 } from "../ir.ts";
 import type { RuleId } from "../identities.ts";
+import { AUTHORIZATION_LANGUAGE_VERSION } from "../version.ts";
+import { invalid as invalidResult } from "./common.ts";
 import { prepareAuthorizationCatalog } from "./catalog.ts";
 import {
   defaultValidationLimits,
@@ -107,6 +110,7 @@ const validateBoundAuthorizationWithLimits = (
   const validated: ValidatedAuthorizationIRType = {
     _tag: "ValidatedAuthorizationIR",
     version: VALIDATED_AUTHORIZATION_IR_VERSION,
+    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
     database: input.bound.database,
     catalog: input.bound.catalog,
     catalogVersion: input.bound.catalogVersion,
@@ -121,9 +125,10 @@ const validateBoundAuthorizationWithLimits = (
 };
 
 /**
- * Pure semantic kernel. Recomputes rule hashes and derived flags. Does not
- * derive access plans or assemble {@link import("../ir.ts").InstalledAuthorizationIR}.
- * Production entry: hard validation limits only.
+ * Pure semantic kernel. Recomputes derived flags. Does not hash, derive
+ * access plans, or assemble {@link import("../ir.ts").InstalledAuthorizationIR}.
+ * Production entry: hard validation limits only. The Effect shell compares
+ * rule IDs to domain-separated hashes of the canonical rule material.
  */
 export const validateBoundAuthorizationResult = (
   input: AuthorizationValidationInput,
@@ -143,10 +148,23 @@ export const validateBoundAuthorizationResultForTest = (
   return validateBoundAuthorizationWithLimits(input, tightened.success);
 };
 
+const verifyRuleHashes = Effect.fn("Authorization.verifyRuleHashes")(function* (
+  validated: ValidatedAuthorizationIRType,
+): Effect.fn.Return<ValidatedAuthorizationIRType, ValidateFailure> {
+  for (const rule of validated.rules) {
+    const expected = yield* hashCanonicalRule(rule);
+    if (rule.id !== expected) {
+      return yield* Effect.fromResult(invalidResult("tampered rule id"));
+    }
+  }
+  return validated;
+});
+
 export const validateBoundAuthorization = Effect.fn("Authorization.validateBoundAuthorization")(
   function* (
     input: AuthorizationValidationInput,
   ): Effect.fn.Return<ValidatedAuthorizationIRType, ValidateFailure> {
-    return yield* Effect.fromResult(validateBoundAuthorizationResult(input));
+    const validated = yield* Effect.fromResult(validateBoundAuthorizationResult(input));
+    return yield* verifyRuleHashes(validated);
   },
 );

@@ -22,6 +22,7 @@ import {
   CatalogMismatch,
   CatalogVersion,
   DatabaseId,
+  AUTHORIZATION_LANGUAGE_VERSION,
   DEFAULT_AUTHORIZATION_BUDGET,
   EntityAbsent,
   EntityId,
@@ -39,7 +40,6 @@ import {
   AUTHORIZATION_CANONICAL_JSON_VERSION,
   DigestHex,
   MAX_COLLECTION_SIZE,
-  MAX_EXISTS_DEPTH,
   MAX_JSON_DEPTH,
   MAX_JSON_ENCODED_BYTES,
   MAX_JSON_NODES,
@@ -71,13 +71,14 @@ import {
   type CompleteProjected,
   FieldDescriptor,
   type IncompleteProjected,
-  InputTerm,
   JsonScalar,
   InstalledAuthorizationIR,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
   OperationInputShape,
   PolicyTemplateIR,
+  type RelativeAuthorizationExpr,
+  type RelativeValueTerm,
   ValidatedAuthorizationIR,
   type Present as PresentType,
   type Projected,
@@ -87,9 +88,9 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 import {
   POLICY_HASH_PLACEHOLDER,
+  RULE_HAS_TAG,
   RULE_OWNS_ISSUE,
-  RULE_RENAME_INPUT,
-  RULE_TAG_GRANT,
+  RULE_TENANT,
 } from "./fixtures.ts";
 
 // @ts-expect-error — not a public package export yet
@@ -150,7 +151,6 @@ export type _bindingTargetFromSchema = Expect<
 export type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
 export type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
 export type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
-export type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
 export type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
 
 type TemplateEncoded = typeof PolicyTemplateIR.Encoded;
@@ -360,12 +360,37 @@ export type _topLevelArrayOk = Expect<
 >;
 export type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
 
-type InputRootTerm = { readonly _tag: "input"; readonly path: readonly [] };
-export type _inputRootOk = Expect<Extends<InputRootTerm, InputTerm>>;
-type InputFieldTerm = { readonly _tag: "input"; readonly path: readonly ["title"] };
-export type _inputFieldOk = Expect<Extends<InputFieldTerm, InputTerm>>;
-type InputKeyOnly = { readonly _tag: "input"; readonly key: "title" };
-export type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
+type DeferredInputTerm = { readonly _tag: "input"; readonly path: readonly ["title"] };
+export type _inputTermRejected = Expect<Equal<Extends<DeferredInputTerm, RelativeValueTerm>, false>>;
+type DeferredBindTerm = { readonly _tag: "bind"; readonly name: "tag" };
+export type _bindTermRejected = Expect<Equal<Extends<DeferredBindTerm, RelativeValueTerm>, false>>;
+type DeferredSome = {
+  readonly _tag: "some";
+  readonly collection: never;
+  readonly bind: "tag";
+  readonly pred: RelativeAuthorizationExpr;
+};
+export type _someRejected = Expect<Equal<Extends<DeferredSome, RelativeAuthorizationExpr>, false>>;
+type DeferredExists = {
+  readonly _tag: "exists";
+  readonly entity: { readonly _tag: "RelativeEntityId"; readonly name: "issue" };
+  readonly bind: "row";
+  readonly pred: RelativeAuthorizationExpr;
+};
+export type _existsRejected = Expect<Equal<Extends<DeferredExists, RelativeAuthorizationExpr>, false>>;
+type DeferredOverlaps = {
+  readonly _tag: "overlaps";
+  readonly left: never;
+  readonly right: never;
+};
+export type _overlapsRejected = Expect<Equal<Extends<DeferredOverlaps, RelativeAuthorizationExpr>, false>>;
+type OperationFocus = {
+  readonly _tag: "operation";
+  readonly operation: RelativeOperationIdType;
+};
+export type _operationFocusRejected = Expect<
+  Equal<Extends<OperationFocus, PolicyTemplateIR["rules"][number]["focus"]>, false>
+>;
 
 type BindingWithoutDatabase = {
   readonly descriptor: CatalogDescriptor;
@@ -429,6 +454,7 @@ export type _allFailures = Expect<
 const templateFixture: PolicyTemplateIR = {
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,
+  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
   classes: [],
   claims: [
     {
@@ -463,114 +489,64 @@ const templateFixture: PolicyTemplateIR = {
         right: { _tag: "me" },
       },
       usesResource: true,
-      usesInput: false,
       usesMe: true,
       usesSubject: false,
       traversalDepth: 1,
-      existsDepth: 0,
-      dependencies: [],
     },
     {
-      id: RuleId.make(RULE_RENAME_INPUT),
-      focus: {
-        _tag: "operation",
-        operation: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
-      },
+      id: RuleId.make(RULE_TENANT),
+      focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: {
         _tag: "and",
         exprs: [
           { _tag: "hasClass", class: "member" },
-          { _tag: "has", term: { _tag: "input", path: ["title"] } },
           { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
         ],
       },
       usesResource: false,
-      usesInput: true,
       usesMe: false,
       usesSubject: true,
       traversalDepth: 0,
-      existsDepth: 0,
-      dependencies: [],
     },
     {
-      id: RuleId.make(RULE_TAG_GRANT),
+      id: RuleId.make(RULE_HAS_TAG),
       focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
       expr: {
-        _tag: "some",
+        _tag: "in",
+        value: { _tag: "me" },
         collection: {
           _tag: "ref",
           root: { _tag: "resource" },
           steps: [{ field: RelativeFieldId.make({ owner: taggableOwner, localName: "tags" }) }],
         },
-        bind: "tag",
-        pred: {
-          _tag: "exists",
-          entity: { _tag: "RelativeEntityId", name: "tag-grant" },
-          bind: "grant",
-          pred: {
-            _tag: "and",
-            exprs: [
-              {
-                _tag: "eq",
-                left: {
-                  _tag: "ref",
-                  root: { _tag: "bind", name: "grant" },
-                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "user" }) }],
-                },
-                right: { _tag: "me" },
-              },
-              {
-                _tag: "eq",
-                left: {
-                  _tag: "ref",
-                  root: { _tag: "bind", name: "grant" },
-                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "tag" }) }],
-                },
-                right: { _tag: "bind", name: "tag" },
-              },
-            ],
-          },
-        },
       },
       usesResource: true,
-      usesInput: false,
       usesMe: true,
       usesSubject: false,
       traversalDepth: 1,
-      existsDepth: 1,
-      dependencies: [],
     },
   ],
   decisions: {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: [RuleId.make(RULE_OWNS_ISSUE)], deny: [] },
+        decision: { allow: [RuleId.make(RULE_OWNS_ISSUE), RuleId.make(RULE_TENANT)], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: [RuleId.make(RULE_TAG_GRANT)], deny: [] },
+        decision: { allow: [RuleId.make(RULE_HAS_TAG)], deny: [] },
       },
     ],
     fields: [],
-    operations: [
-      {
-        target: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
-        decision: { allow: [RuleId.make(RULE_RENAME_INPUT)], deny: [] },
-      },
-      {
-        target: RelativeOperationId.make({ owner: issueOwner, localName: "create", target: "none" }),
-        decision: { allow: [RuleId.make(RULE_RENAME_INPUT)], deny: [] },
-      },
-    ],
   },
 };
 
 const installedFixture: InstalledAuthorizationIR = {
   _tag: "InstalledAuthorizationIR",
   version: INSTALLED_AUTHORIZATION_IR_VERSION,
+  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
   database: DatabaseId.make("todos"),
   catalog,
   catalogVersion: CatalogVersion.make("1"),
@@ -650,7 +626,7 @@ const installedFixture: InstalledAuthorizationIR = {
     },
   ],
   rules: [],
-  decisions: { entities: [], traits: [], fields: [], operations: [] },
+  decisions: { entities: [], traits: [], fields: [] },
   accessPlans: [],
 };
 
@@ -733,8 +709,9 @@ const _operationFixtures = () => {
     classes: [] as const,
     claims: [] as const,
     principal: { subjectClaim: "sub" },
+    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
     rules: [] as const,
-    decisions: { entities: [], traits: [], fields: [], operations: [] },
+    decisions: { entities: [], traits: [], fields: [] },
   } satisfies BoundAuthorizationIR;
 
   const validatedFixture = {
@@ -757,7 +734,7 @@ const _operationFixtures = () => {
 
   const partialBound: Pick<BoundAuthorizationIR, "rules" | "decisions"> = {
     rules: [],
-    decisions: { entities: [], traits: [], fields: [], operations: [] },
+    decisions: { entities: [], traits: [], fields: [] },
   };
   // @ts-expect-error — a partial bound result is not installed IR
   const partialAsInstalled: InstalledAuthorizationIR = partialBound;
@@ -836,11 +813,6 @@ const _operationFixtures = () => {
   // @ts-expect-error — top-level input is a shape, not a bare field map
   const asTopLevel: OperationInputShape = fieldsOnlyInput;
 
-  const inputRoot: InputTerm = { _tag: "input", path: [] };
-  const inputField: InputTerm = { _tag: "input", path: ["title"] };
-  // @ts-expect-error — whole-input and nested fields use path, not key
-  const inputByKey: InputTerm = { _tag: "input", key: "title" };
-
   const claimKeys = ["teams"] as const;
   // @ts-expect-error — claim vocabulary stores shapes, not bare keys
   const asClaims: ClaimVocabulary = claimKeys;
@@ -876,9 +848,6 @@ const _operationFixtures = () => {
     presentMany,
     topLevelArray,
     asTopLevel,
-    inputRoot,
-    inputField,
-    inputByKey,
     asClaims,
     asBind,
   };
@@ -901,7 +870,7 @@ test("authorization type fixtures compile", () => {
   expect(InvalidTraversal._tag).toBe("InvalidTraversal");
   expect(BudgetExhausted._tag).toBe("BudgetExhausted");
   expect(MAX_TRAVERSAL_DEPTH).toBe(3);
-  expect(MAX_EXISTS_DEPTH).toBe(3);
+  expect(AUTHORIZATION_LANGUAGE_VERSION).toBe("v1");
   expect(MAX_READ_LEASE_MS).toBe(5_000);
   expect(MAX_JSON_DEPTH).toBeGreaterThan(0);
   expect(MAX_COLLECTION_SIZE).toBeGreaterThan(0);

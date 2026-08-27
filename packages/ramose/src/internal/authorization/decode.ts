@@ -23,7 +23,6 @@ import {
 } from "./bounds.ts";
 import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
 import { OperationDescriptor, TraitComposition } from "./catalog.ts";
-import { sha256HexSync } from "./digest.ts";
 import { InvalidIR } from "./failures.ts";
 import { OperationId, PolicyHash, RuleId } from "./identities.ts";
 import {
@@ -37,6 +36,10 @@ import {
   type RelativeAuthorizationRule as RelativeAuthorizationRuleType,
 } from "./ir.ts";
 import type { JsonValue } from "./json.ts";
+import {
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_RULE_HASH_DOMAIN_V1,
+} from "./version.ts";
 import { sha256Hex } from "../core/bytes.ts";
 
 const STRICT = { onExcessProperty: "error" as const };
@@ -103,32 +106,67 @@ export const canonicalizeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): string => canonicalizeJson(encodedJson(encodeInstalledAuthorization(document)));
 
+const concatUtf8 = (prefix: string, text: string): Uint8Array => {
+  const left = UTF8.encode(prefix);
+  const right = UTF8.encode(text);
+  const out = new Uint8Array(left.length + right.length);
+  out.set(left);
+  out.set(right, left.length);
+  return out;
+};
+
+const digestFailure = (cause: unknown): InvalidIR =>
+  new InvalidIR({
+    message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+  });
+
 /**
  * SHA-256 of RFC 8785 JCS text via Web Crypto. Consumes only
- * schema-encoded JSON — not arbitrary `unknown`.
+ * schema-encoded JSON — not arbitrary `unknown`. Unprefixed; rule and
+ * policy identities use {@link hashDomainSeparatedCanonicalJson}.
  */
 export const hashCanonicalJson = Effect.fn("Authorization.hashCanonicalJson")(function* (
   json: JsonValue,
 ) {
   return yield* Effect.tryPromise({
     try: () => sha256Hex(UTF8.encode(canonicalizeJson(json))),
-    catch: (cause) =>
-      new InvalidIR({
-        message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      }),
+    catch: digestFailure,
   });
+});
+
+/**
+ * SHA-256 of `domain || RFC 8785 JCS` via Web Crypto. The domain prefix
+ * separates rule/policy identities by authorization language version.
+ */
+export const hashDomainSeparatedCanonicalText = Effect.fn(
+  "Authorization.hashDomainSeparatedCanonicalText",
+)(function* (domain: string, canonicalText: string) {
+  return yield* Effect.tryPromise({
+    try: () => sha256Hex(concatUtf8(domain, canonicalText)),
+    catch: digestFailure,
+  });
+});
+
+export const hashDomainSeparatedCanonicalJson = Effect.fn(
+  "Authorization.hashDomainSeparatedCanonicalJson",
+)(function* (domain: string, json: JsonValue) {
+  return yield* hashDomainSeparatedCanonicalText(domain, canonicalizeJson(json));
 });
 
 export const hashPolicyTemplate = Effect.fn("Authorization.hashPolicyTemplate")(function* (
   document: PolicyTemplateIRType,
 ) {
-  const digest = yield* hashCanonicalJson(encodedJson(encodePolicyTemplate(document)));
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+    encodedJson(encodePolicyTemplate(document)),
+  );
   return PolicyHash.make(digest);
 });
 
 export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalledAuthorization")(
   function* (document: InstalledAuthorizationIRType) {
-    const digest = yield* hashCanonicalJson(
+    const digest = yield* hashDomainSeparatedCanonicalJson(
+      AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
       omitKey(encodedJson(encodeInstalledAuthorization(document)), "policyHash"),
     );
     return PolicyHash.make(digest);
@@ -138,7 +176,8 @@ export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalled
 export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(function* (
   rule: RelativeAuthorizationRuleType,
 ) {
-  const digest = yield* hashCanonicalJson(
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_RULE_HASH_DOMAIN_V1,
     omitKey(encodedJson(encodeRelativeRule(rule)), "id"),
   );
   return RuleId.make(digest);
@@ -147,40 +186,34 @@ export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(func
 export const hashCanonicalRule = Effect.fn("Authorization.hashCanonicalRule")(function* (
   rule: CanonicalAuthorizationRuleType,
 ) {
-  const digest = yield* hashCanonicalJson(canonicalAuthorizationRuleJson(rule));
+  const material = canonicalAuthorizationRuleMaterial(rule);
+  if (Result.isFailure(material)) return yield* material.failure;
+  const digest = yield* hashDomainSeparatedCanonicalText(
+    AUTHORIZATION_RULE_HASH_DOMAIN_V1,
+    material.success,
+  );
   return RuleId.make(digest);
 });
 
 /**
- * Canonical rule body for {@link RuleId}: schema-encoded JSON minus `id`,
- * RFC 8785 JCS. Shared by the Effect hash shell and the sync validator.
+ * Canonical rule body for {@link RuleId}: schema-encoded JSON minus `id`.
+ * The semantic kernel produces this material; the Effect shell hashes it.
  */
 export const canonicalAuthorizationRuleJson = (
   rule: CanonicalAuthorizationRuleType,
 ): JsonValue => omitKey(encodedJson(encodeCanonicalRule(rule)), "id");
 
 /**
- * Pure SHA-256 of the #357 canonical rule body. Same digest as
- * {@link hashCanonicalRule}; no Effect, Web Crypto, or service lookup.
+ * RFC 8785 JCS of the canonical rule body. JCS-invalid strings (lone
+ * surrogates) become {@link InvalidIR} instead of throwing.
  */
-export const hashCanonicalRuleSync = (rule: CanonicalAuthorizationRuleType): RuleId =>
-  RuleId.make(sha256HexSync(UTF8.encode(canonicalizeJson(canonicalAuthorizationRuleJson(rule)))));
-
-/**
- * Same digest as {@link hashCanonicalRuleSync}, as `Result`. JCS-invalid
- * strings (lone surrogates) become {@link InvalidIR} instead of throwing.
- */
-export const hashCanonicalRuleResult = (
+export const canonicalAuthorizationRuleMaterial = (
   rule: CanonicalAuthorizationRuleType,
-): Result.Result<RuleId, InvalidIR> => {
+): Result.Result<string, InvalidIR> => {
   try {
-    return Result.succeed(hashCanonicalRuleSync(rule));
+    return Result.succeed(canonicalizeJson(canonicalAuthorizationRuleJson(rule)));
   } catch (cause) {
-    return Result.fail(
-      new InvalidIR({
-        message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      }),
-    );
+    return Result.fail(digestFailure(cause));
   }
 };
 
@@ -258,12 +291,10 @@ const decisionCollisions = (decisions: {
   readonly entities: ReadonlyArray<{ readonly target: unknown }>;
   readonly traits: ReadonlyArray<{ readonly target: unknown }>;
   readonly fields: ReadonlyArray<{ readonly target: unknown }>;
-  readonly operations: ReadonlyArray<{ readonly target: unknown }>;
 }): InvalidIR | undefined =>
   uniqueEncoded(decisions.entities.map((entry) => entry.target), "entity decision target") ??
   uniqueEncoded(decisions.traits.map((entry) => entry.target), "trait decision target") ??
-  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target") ??
-  uniqueEncoded(decisions.operations.map((entry) => entry.target), "operation decision target");
+  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target");
 
 const identityTableCollisions = (
   identities: InstalledAuthorizationIRType["identities"],

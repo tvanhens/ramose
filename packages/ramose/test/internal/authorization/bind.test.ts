@@ -20,10 +20,10 @@ import {
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   OperationId,
+  AUTHORIZATION_LANGUAGE_VERSION,
   POLICY_TEMPLATE_IR_VERSION,
   PolicyTemplateIR,
   RelativeFieldId,
-  RelativeOperationId,
   RuleId,
   SchemaFingerprint,
   TraitId,
@@ -42,16 +42,13 @@ import {
   type RelativeAuthorizationExpr,
 } from "../../../src/internal/authorization/index.ts";
 import {
+  RULE_HAS_TAG,
   RULE_OWNS_ISSUE,
-  RULE_RENAME_INPUT,
-  RULE_TAG_GRANT,
+  RULE_TENANT,
   digestHex,
 } from "./fixtures.ts";
 
 const RULE_FIELD = digestHex(0xaa);
-const RULE_CREATE = digestHex(0xbb);
-const RULE_ADD_TAG = digestHex(0xcc);
-const RULE_REINDEX = digestHex(0xdd);
 
 const catalog = CatalogId.make("app");
 const database = DatabaseId.make("todos");
@@ -179,12 +176,6 @@ const catalogDescriptor = (): CatalogDescriptor => ({
 const relativeField = (owner: OwnerRef, localName: string) =>
   RelativeFieldId.make({ owner, localName });
 
-const relativeOperation = (
-  owner: OwnerRef,
-  localName: string,
-  operationTarget: "required" | "none",
-) => RelativeOperationId.make({ owner, localName, target: operationTarget });
-
 const rule = (
   id: string,
   focus: PolicyTemplateIR["rules"][number]["focus"],
@@ -194,17 +185,15 @@ const rule = (
   focus,
   expr,
   usesResource: true,
-  usesInput: false,
   usesMe: true,
   usesSubject: false,
   traversalDepth: 1,
-  existsDepth: 0,
-  dependencies: [],
 });
 
 const fullTemplate = (): PolicyTemplateIR => ({
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,
+  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
   classes: ["member"],
   claims: [
     {
@@ -229,145 +218,63 @@ const fullTemplate = (): PolicyTemplateIR => ({
     }),
     {
       ...rule(
-        RULE_RENAME_INPUT,
-        { _tag: "operation", operation: relativeOperation(issueOwner, "rename", "required") },
+        RULE_TENANT,
+        { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
         {
           _tag: "and",
           exprs: [
             { _tag: "hasClass", class: "member" },
-            { _tag: "has", term: { _tag: "input", path: ["title"] } },
             { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
-            {
-              _tag: "in",
-              value: { _tag: "lit", value: "x" },
-              collection: {
-                _tag: "ref",
-                root: { _tag: "resource" },
-                steps: [{ field: relativeField(issueOwner, "title") }],
-              },
-            },
           ],
         },
       ),
       usesResource: false,
-      usesInput: true,
       usesMe: false,
       usesSubject: true,
       traversalDepth: 0,
     },
+    rule(
+      RULE_HAS_TAG,
+      { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
+      {
+        _tag: "in",
+        value: { _tag: "me" },
+        collection: {
+          _tag: "ref",
+          root: { _tag: "resource" },
+          steps: [{ field: relativeField(taggableOwner, "tags") }],
+        },
+      },
+    ),
     {
       ...rule(
-        RULE_TAG_GRANT,
-        { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
-        {
-          _tag: "some",
-          collection: {
-            _tag: "ref",
-            root: { _tag: "resource" },
-            steps: [{ field: relativeField(taggableOwner, "tags") }],
-          },
-          bind: "tag",
-          pred: {
-            _tag: "exists",
-            entity: { _tag: "RelativeEntityId", name: "tag-grant" },
-            bind: "grant",
-            pred: {
-              _tag: "and",
-              exprs: [
-                {
-                  _tag: "eq",
-                  left: {
-                    _tag: "ref",
-                    root: { _tag: "bind", name: "grant" },
-                    steps: [{ field: relativeField(grantOwner, "user") }],
-                  },
-                  right: { _tag: "me" },
-                },
-                {
-                  _tag: "eq",
-                  left: {
-                    _tag: "ref",
-                    root: { _tag: "bind", name: "grant" },
-                    steps: [{ field: relativeField(grantOwner, "tag") }],
-                  },
-                  right: { _tag: "bind", name: "tag" },
-                },
-                {
-                  _tag: "overlaps",
-                  left: {
-                    _tag: "ref",
-                    root: { _tag: "resource" },
-                    steps: [{ field: relativeField(taggableOwner, "tags") }],
-                  },
-                  right: {
-                    _tag: "ref",
-                    root: { _tag: "bind", name: "grant" },
-                    steps: [{ field: relativeField(grantOwner, "tag") }],
-                  },
-                },
-              ],
-            },
-          },
-        },
+        RULE_FIELD,
+        { _tag: "field", field: relativeField(issueOwner, "internalNotes") },
+        { _tag: "const", value: true },
       ),
-      existsDepth: 1,
+      usesResource: false,
+      usesMe: false,
+      usesSubject: false,
+      traversalDepth: 0,
     },
-    rule(
-      RULE_FIELD,
-      { _tag: "field", field: relativeField(issueOwner, "internalNotes") },
-      { _tag: "const", value: true },
-    ),
-    rule(
-      RULE_CREATE,
-      { _tag: "operation", operation: relativeOperation(issueOwner, "create", "none") },
-      { _tag: "has", term: { _tag: "input", path: [] } },
-    ),
-    rule(
-      RULE_ADD_TAG,
-      { _tag: "operation", operation: relativeOperation(taggableOwner, "addTag", "required") },
-      { _tag: "has", term: { _tag: "input", path: [] } },
-    ),
-    rule(
-      RULE_REINDEX,
-      { _tag: "operation", operation: relativeOperation(taggableOwner, "reindex", "none") },
-      { _tag: "const", value: true },
-    ),
   ],
   decisions: {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: [RuleId.make(RULE_OWNS_ISSUE)], deny: [] },
+        decision: { allow: [RuleId.make(RULE_OWNS_ISSUE), RuleId.make(RULE_TENANT)], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: [RuleId.make(RULE_TAG_GRANT)], deny: [] },
+        decision: { allow: [RuleId.make(RULE_HAS_TAG)], deny: [] },
       },
     ],
     fields: [
       {
         target: relativeField(issueOwner, "internalNotes"),
         decision: { allow: [RuleId.make(RULE_FIELD)], deny: [] },
-      },
-    ],
-    operations: [
-      {
-        target: relativeOperation(issueOwner, "rename", "required"),
-        decision: { allow: [RuleId.make(RULE_RENAME_INPUT)], deny: [] },
-      },
-      {
-        target: relativeOperation(issueOwner, "create", "none"),
-        decision: { allow: [RuleId.make(RULE_CREATE)], deny: [] },
-      },
-      {
-        target: relativeOperation(taggableOwner, "addTag", "required"),
-        decision: { allow: [RuleId.make(RULE_ADD_TAG)], deny: [] },
-      },
-      {
-        target: relativeOperation(taggableOwner, "reindex", "none"),
-        decision: { allow: [RuleId.make(RULE_REINDEX)], deny: [] },
       },
     ],
   },
@@ -412,21 +319,6 @@ const fieldRule = (bound: BoundAuthorizationIRType, owner: OwnerRef, localName: 
       focus.field.localName === localName,
   );
 
-const operationRule = (
-  bound: BoundAuthorizationIRType,
-  owner: OwnerRef,
-  localName: string,
-  operationTarget: "required" | "none",
-) =>
-  findRule(
-    bound,
-    (focus) =>
-      focus._tag === "operation" &&
-      focus.operation.owner.name === owner.name &&
-      focus.operation.localName === localName &&
-      focus.operation.target === operationTarget,
-  );
-
 const expectFailure = (
   result: Result.Result<unknown, InvalidIR | CatalogMismatch>,
   tag: "InvalidIR" | "CatalogMismatch",
@@ -447,6 +339,7 @@ describe("successful binding", () => {
 
     expect(bound._tag).toBe("BoundAuthorizationIR");
     expect(bound.version).toBe(BOUND_AUTHORIZATION_IR_VERSION);
+    expect(bound.languageVersion).toBe(AUTHORIZATION_LANGUAGE_VERSION);
     expect(bound.database).toBe(database);
     expect(bound.catalog).toBe(catalog);
     expect(bound.catalogVersion).toBe(version);
@@ -467,22 +360,6 @@ describe("successful binding", () => {
       _tag: "field",
       field: field(issueOwner, "internalNotes"),
     });
-    expect(operationRule(bound, issueOwner, "rename", "required").focus).toEqual({
-      _tag: "operation",
-      operation: operation(issueOwner, "rename", "required"),
-    });
-    expect(operationRule(bound, issueOwner, "create", "none").focus).toEqual({
-      _tag: "operation",
-      operation: operation(issueOwner, "create", "none"),
-    });
-    expect(operationRule(bound, taggableOwner, "addTag", "required").focus).toEqual({
-      _tag: "operation",
-      operation: operation(taggableOwner, "addTag", "required"),
-    });
-    expect(operationRule(bound, taggableOwner, "reindex", "none").focus).toEqual({
-      _tag: "operation",
-      operation: operation(taggableOwner, "reindex", "none"),
-    });
 
     const owns = entityRule(bound, "issue");
     expect(owns.expr).toEqual({
@@ -495,30 +372,34 @@ describe("successful binding", () => {
       right: { _tag: "me" },
     });
 
-    const tagGrant = traitRule(bound, "taggable");
-    expect(tagGrant.expr._tag).toBe("some");
-    if (tagGrant.expr._tag === "some") {
-      expect(tagGrant.expr.collection.steps[0]?.field).toEqual(field(taggableOwner, "tags"));
-      expect(tagGrant.expr.pred._tag).toBe("exists");
-      if (tagGrant.expr.pred._tag === "exists") {
-        expect(tagGrant.expr.pred.entity).toEqual(entity("tag-grant"));
-      }
-    }
+    const membership = traitRule(bound, "taggable");
+    expect(membership.expr).toEqual({
+      _tag: "in",
+      value: { _tag: "me" },
+      collection: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: field(taggableOwner, "tags") }],
+      },
+    });
 
     expect(bound.decisions.entities[0]?.target).toEqual(entity("issue"));
     expect(bound.decisions.traits[0]?.target).toEqual(trait("taggable"));
     expect(bound.decisions.fields[0]?.target).toEqual(field(issueOwner, "internalNotes"));
-    expect(bound.decisions.operations.map((entry) => entry.target)).toEqual([
-      operation(issueOwner, "rename", "required"),
-      operation(issueOwner, "create", "none"),
-      operation(taggableOwner, "addTag", "required"),
-      operation(taggableOwner, "reindex", "none"),
-    ]);
+    expect("operations" in bound.decisions).toBe(false);
 
-    expect(operationRule(bound, issueOwner, "rename", "required").usesInput).toBe(true);
     expect(entityRule(bound, "issue").usesMe).toBe(true);
-    expect(entityRule(bound, "issue").id).not.toBe(RULE_OWNS_ISSUE);
-    expect(bound.decisions.entities[0]?.decision.allow).toEqual([entityRule(bound, "issue").id]);
+    expect(entityRule(bound, "issue").id).toBe(RuleId.make(RULE_OWNS_ISSUE));
+    expect(bound.decisions.entities[0]?.decision.allow).toEqual([
+      RuleId.make(RULE_OWNS_ISSUE),
+      RuleId.make(RULE_TENANT),
+    ]);
+  });
+
+  test("Effect bind remaps rule IDs through the domain-separated hash shell", async () => {
+    const bound = await Effect.runPromise(bindPolicyTemplate(bindingInput()));
+    expect(bound.rules[0]?.id).not.toBe(RULE_OWNS_ISSUE);
+    expect(bound.decisions.entities[0]?.decision.allow[0]).toBe(bound.rules[0]?.id);
   });
 
   test("rejects duplicate source rule IDs before remapping", () => {
@@ -539,7 +420,6 @@ describe("successful binding", () => {
               ],
               traits: [],
               fields: [],
-              operations: [],
             },
           },
         }),
@@ -569,7 +449,6 @@ describe("successful binding", () => {
               ],
               traits: [],
               fields: [],
-              operations: [],
             },
           },
         }),
@@ -593,7 +472,7 @@ describe("successful binding", () => {
                 { _tag: "hasClass", class: "member\uD800" },
               ),
             ],
-            decisions: { entities: [], traits: [], fields: [], operations: [] },
+            decisions: { entities: [], traits: [], fields: [] },
           },
         }),
       ),
@@ -602,38 +481,17 @@ describe("successful binding", () => {
     );
   });
 
-  test("entity-owned and trait-owned targeted operations bind", () => {
+  test("catalog descriptors still describe operations without making them executable policy", () => {
+    const descriptor = catalogDescriptor();
+    expect(descriptor.operations.length).toBeGreaterThan(0);
+    expect(descriptor.operations[0]?.id.localName).toBe("rename");
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    expect(operationRule(bound, issueOwner, "rename", "required").focus).toEqual({
-      _tag: "operation",
-      operation: operation(issueOwner, "rename", "required"),
-    });
-    expect(operationRule(bound, taggableOwner, "addTag", "required").focus).toEqual({
-      _tag: "operation",
-      operation: operation(taggableOwner, "addTag", "required"),
-    });
-  });
-
-  test("entity-owned and trait-owned targetless operations remain owned and bind only with target none", () => {
-    const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    const create = operationRule(bound, issueOwner, "create", "none").focus;
-    const reindex = operationRule(bound, taggableOwner, "reindex", "none").focus;
-    expect(create).toEqual({
-      _tag: "operation",
-      operation: operation(issueOwner, "create", "none"),
-    });
-    expect(reindex).toEqual({
-      _tag: "operation",
-      operation: operation(taggableOwner, "reindex", "none"),
-    });
-    if (create?._tag === "operation") {
-      expect(create.operation.owner).toEqual(issueOwner);
-      expect(create.operation.target).toBe("none");
-    }
-    if (reindex?._tag === "operation") {
-      expect(reindex.operation.owner).toEqual(taggableOwner);
-      expect(reindex.operation.target).toBe("none");
-    }
+    expect(
+      bound.rules.every(
+        (entry) =>
+          entry.focus._tag === "entity" || entry.focus._tag === "trait" || entry.focus._tag === "field",
+      ),
+    ).toBe(true);
   });
 
   test("principal entity-field binding", () => {
@@ -657,19 +515,13 @@ describe("successful binding", () => {
     expect("entity" in bound.principal).toBe(false);
   });
 
-  test("traversal-step and existential-entity binding", () => {
+  test("traversal-step field binding", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
     const owns = entityRule(bound, "issue");
     if (owns.expr._tag === "eq" && owns.expr.left._tag === "ref") {
       expect(owns.expr.left.steps.map((step) => step.field)).toEqual([field(issueOwner, "owner")]);
     } else {
       throw new Error("expected traversal eq");
-    }
-    const tagGrant = traitRule(bound, "taggable");
-    if (tagGrant.expr._tag === "some" && tagGrant.expr.pred._tag === "exists") {
-      expect(tagGrant.expr.pred.entity).toEqual(entity("tag-grant"));
-    } else {
-      throw new Error("expected exists");
     }
   });
 
@@ -696,22 +548,16 @@ describe("successful binding", () => {
     }).toThrow();
   });
 
-  test("claim and input terms have no identities and pass through", () => {
+  test("claim terms have no identities and pass through", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    const rename = operationRule(bound, issueOwner, "rename", "required");
-    expect(rename.expr._tag).toBe("and");
-    if (rename.expr._tag === "and") {
-      expect(rename.expr.exprs).toContainEqual({ _tag: "hasClass", class: "member" });
-      expect(rename.expr.exprs).toContainEqual({
-        _tag: "has",
-        term: { _tag: "input", path: ["title"] },
-      });
-      expect(rename.expr.exprs).toContainEqual({
-        _tag: "eq",
-        left: { _tag: "subject" },
-        right: { _tag: "claim", key: "org" },
-      });
-    }
+    const tenant = bound.rules.find((entry) => entry.id === RULE_TENANT);
+    expect(tenant?.expr).toEqual({
+      _tag: "and",
+      exprs: [
+        { _tag: "hasClass", class: "member" },
+        { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
+      ],
+    });
   });
 });
 
@@ -722,7 +568,7 @@ describe("identity resolution failures", () => {
       template: {
         ...template,
         rules: [rule(RULE_OWNS_ISSUE, focus, { _tag: "const", value: true })],
-        decisions: { entities: [], traits: [], fields: [], operations: [] },
+        decisions: { entities: [], traits: [], fields: [] },
       },
     });
   };
@@ -751,16 +597,6 @@ describe("identity resolution failures", () => {
       "InvalidIR",
       /wrong owner kind/,
     );
-    expectFailure(
-      bindPolicyTemplateResult(
-        withFocus({
-          _tag: "operation",
-          operation: relativeOperation({ kind: "trait", name: "issue" }, "rename", "required"),
-        }),
-      ),
-      "InvalidIR",
-      /wrong owner kind/,
-    );
   });
 
   test("wrong local name", () => {
@@ -773,29 +609,6 @@ describe("identity resolution failures", () => {
       ),
       "InvalidIR",
       /wrong local name/,
-    );
-  });
-
-  test("wrong target semantics", () => {
-    expectFailure(
-      bindPolicyTemplateResult(
-        withFocus({
-          _tag: "operation",
-          operation: relativeOperation(issueOwner, "create", "required"),
-        }),
-      ),
-      "InvalidIR",
-      /wrong target semantics/,
-    );
-    expectFailure(
-      bindPolicyTemplateResult(
-        withFocus({
-          _tag: "operation",
-          operation: relativeOperation(issueOwner, "rename", "none"),
-        }),
-      ),
-      "InvalidIR",
-      /wrong target semantics/,
     );
   });
 
@@ -829,33 +642,6 @@ describe("identity resolution failures", () => {
       ),
       "InvalidIR",
       /ambiguous entity identity/,
-    );
-  });
-
-  test("missing existential entity", () => {
-    const template = fullTemplate();
-    expectFailure(
-      bindPolicyTemplateResult(
-        bindingInput({
-          template: {
-            ...template,
-            rules: [
-              rule(
-                RULE_OWNS_ISSUE,
-                { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-                {
-                  _tag: "exists",
-                  entity: { _tag: "RelativeEntityId", name: "missing-grant" },
-                  bind: "row",
-                  pred: { _tag: "const", value: true },
-                },
-              ),
-            ],
-          },
-        }),
-      ),
-      "InvalidIR",
-      /missing entity 'missing-grant'/,
     );
   });
 
@@ -1029,7 +815,7 @@ describe("Effect orchestration and catalog capability", () => {
                 { _tag: "const", value: true },
               ),
             ],
-            decisions: { entities: [], traits: [], fields: [], operations: [] },
+            decisions: { entities: [], traits: [], fields: [] },
           },
         }),
       ),
@@ -1048,7 +834,7 @@ describe("Effect orchestration and catalog capability", () => {
                   { _tag: "const", value: true },
                 ),
               ],
-              decisions: { entities: [], traits: [], fields: [], operations: [] },
+              decisions: { entities: [], traits: [], fields: [] },
             },
           }),
         ),

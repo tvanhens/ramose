@@ -10,8 +10,8 @@
 export const digestHex = (byte: number): string => byte.toString(16).padStart(2, "0").repeat(32);
 
 export const RULE_OWNS_ISSUE = digestHex(0x11);
-export const RULE_RENAME_INPUT = digestHex(0x22);
-export const RULE_TAG_GRANT = digestHex(0x33);
+export const RULE_TENANT = digestHex(0x22);
+export const RULE_HAS_TAG = digestHex(0x33);
 export const POLICY_HASH_PLACEHOLDER = digestHex(0x44);
 export const POLICY_HASH_OTHER = digestHex(0x45);
 export const RULE_SAME = digestHex(0x55);
@@ -21,17 +21,29 @@ export const RULE_DEPTH = digestHex(0x77);
 const issueOwner = { kind: "entity", name: "issue" } as const;
 const taggableOwner = { kind: "trait", name: "taggable" } as const;
 const userOwner = { kind: "entity", name: "user" } as const;
-const grantOwner = { kind: "entity", name: "tag-grant" } as const;
+
+const v1Flags = {
+  usesResource: false,
+  usesMe: false,
+  usesSubject: false,
+  traversalDepth: 0,
+} as const;
 
 export const templateEncoded = {
   _tag: "PolicyTemplateIR",
   version: 1,
+  languageVersion: "v1",
   classes: ["member"],
   claims: [
     {
       key: "org",
       optional: false,
       shape: { _tag: "scalar", valueType: "string" },
+    },
+    {
+      key: "teams",
+      optional: true,
+      shape: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
     },
   ],
   principal: {
@@ -52,133 +64,62 @@ export const templateEncoded = {
         right: { _tag: "me" },
       },
       usesResource: true,
-      usesInput: false,
       usesMe: true,
       usesSubject: false,
       traversalDepth: 1,
-      existsDepth: 0,
-      dependencies: [],
     },
     {
-      id: RULE_RENAME_INPUT,
-      focus: {
-        _tag: "operation",
-        operation: {
-          _tag: "RelativeOperationId",
-          owner: issueOwner,
-          localName: "rename",
-          target: "required",
-        },
-      },
+      id: RULE_TENANT,
+      focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
       expr: {
         _tag: "and",
         exprs: [
           { _tag: "hasClass", class: "member" },
-          { _tag: "has", term: { _tag: "input", path: ["title"] } },
           { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
         ],
       },
-      usesResource: false,
-      usesInput: true,
-      usesMe: false,
+      ...v1Flags,
       usesSubject: true,
-      traversalDepth: 0,
-      existsDepth: 0,
-      dependencies: [],
     },
     {
-      id: RULE_TAG_GRANT,
+      id: RULE_HAS_TAG,
       focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
       expr: {
-        _tag: "some",
+        _tag: "in",
+        value: { _tag: "me" },
         collection: {
           _tag: "ref",
           root: { _tag: "resource" },
           steps: [{ field: { _tag: "RelativeFieldId", owner: taggableOwner, localName: "tags" } }],
         },
-        bind: "tag",
-        pred: {
-          _tag: "exists",
-          entity: { _tag: "RelativeEntityId", name: "tag-grant" },
-          bind: "grant",
-          pred: {
-            _tag: "and",
-            exprs: [
-              {
-                _tag: "eq",
-                left: {
-                  _tag: "ref",
-                  root: { _tag: "bind", name: "grant" },
-                  steps: [
-                    { field: { _tag: "RelativeFieldId", owner: grantOwner, localName: "user" } },
-                  ],
-                },
-                right: { _tag: "me" },
-              },
-              {
-                _tag: "eq",
-                left: {
-                  _tag: "ref",
-                  root: { _tag: "bind", name: "grant" },
-                  steps: [
-                    { field: { _tag: "RelativeFieldId", owner: grantOwner, localName: "tag" } },
-                  ],
-                },
-                right: { _tag: "bind", name: "tag" },
-              },
-            ],
-          },
-        },
       },
       usesResource: true,
-      usesInput: false,
       usesMe: true,
       usesSubject: false,
       traversalDepth: 1,
-      existsDepth: 1,
-      dependencies: [],
     },
   ],
   decisions: {
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
-        decision: { allow: [RULE_OWNS_ISSUE], deny: [] },
+        decision: { allow: [RULE_OWNS_ISSUE, RULE_TENANT], deny: [] },
       },
     ],
     traits: [
       {
         target: { _tag: "RelativeTraitId", name: "taggable" },
-        decision: { allow: [RULE_TAG_GRANT], deny: [] },
+        decision: { allow: [RULE_HAS_TAG], deny: [] },
       },
     ],
     fields: [],
-    operations: [
-      {
-        target: {
-          _tag: "RelativeOperationId",
-          owner: issueOwner,
-          localName: "rename",
-          target: "required",
-        },
-        decision: { allow: [RULE_RENAME_INPUT], deny: [] },
-      },
-      {
-        target: {
-          _tag: "RelativeOperationId",
-          owner: issueOwner,
-          localName: "create",
-          target: "none",
-        },
-        decision: { allow: [RULE_RENAME_INPUT], deny: [] },
-      },
-    ],
   },
 } as const;
 
 export const installedEncoded = {
   _tag: "InstalledAuthorizationIR",
   version: 1,
+  languageVersion: "v1",
   database: "todos",
   catalog: "app",
   catalogVersion: "1",
@@ -263,12 +204,9 @@ export const installedEncoded = {
         right: { _tag: "me" },
       },
       usesResource: true,
-      usesInput: false,
       usesMe: true,
       usesSubject: false,
       traversalDepth: 1,
-      existsDepth: 0,
-      dependencies: [],
     },
   ],
   decisions: {
@@ -280,7 +218,6 @@ export const installedEncoded = {
     ],
     traits: [],
     fields: [],
-    operations: [],
   },
   accessPlans: [
     {
@@ -298,9 +235,10 @@ export const installedEncoded = {
 export const emptyTemplateEncoded = {
   _tag: "PolicyTemplateIR",
   version: 1,
+  languageVersion: "v1",
   classes: [],
   claims: [],
   principal: { subjectClaim: "sub" },
   rules: [],
-  decisions: { entities: [], traits: [], fields: [], operations: [] },
+  decisions: { entities: [], traits: [], fields: [] },
 } as const;

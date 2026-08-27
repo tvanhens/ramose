@@ -5,6 +5,9 @@
  * entity resolved through an optional catalog-configured unique field.
  * Claims and classes are explicit. Empty class vocabularies are allowed.
  *
+ * Core v1 claims are scalars or one-dimensional arrays of scalars.
+ * Recursive struct / nested-array claim shapes fail Schema decoding.
+ *
  * No API key, shared secret, anonymous principal, configured-admin bypass,
  * or `RAMOSE_TOKEN` exists in this model (AUTH-1).
  */
@@ -20,27 +23,12 @@ export type ClaimScalarType = typeof ClaimScalarType.Type;
 export const ClaimScalarShape = Schema.TaggedStruct("scalar", { valueType: ClaimScalarType });
 export type ClaimScalarShape = typeof ClaimScalarShape.Type;
 
-export const ClaimOpaqueShape = Schema.TaggedStruct("opaque", {});
-export type ClaimOpaqueShape = typeof ClaimOpaqueShape.Type;
+/** One-dimensional array of scalar claims. Nested arrays are not v1. */
+export const ClaimArrayShape = Schema.TaggedStruct("array", { items: ClaimScalarShape });
+export type ClaimArrayShape = typeof ClaimArrayShape.Type;
 
-/**
- * Authoritative shape of one declared claim. Nested arrays/structs stay
- * intact so the binder can check `teams: Schema.Array(Schema.String)`.
- *
- * Recursive types exist only to break the inference cycle.
- * `Schema.Codec` preserves the encoded representation for #357.
- */
-export type ClaimDescriptor = {
-  readonly key: string;
-  readonly optional: boolean;
-  readonly shape: ClaimShape;
-};
-
-export type ClaimShape =
-  | ClaimScalarShape
-  | ClaimOpaqueShape
-  | { readonly _tag: "struct"; readonly fields: ReadonlyArray<ClaimDescriptor> }
-  | { readonly _tag: "array"; readonly items: ClaimShape };
+export const ClaimShape = Schema.Union([ClaimScalarShape, ClaimArrayShape]);
+export type ClaimShape = typeof ClaimShape.Type;
 
 const uniqueKeys = (kind: string) =>
   Schema.makeFilter((fields: ReadonlyArray<{ readonly key: string }>) => {
@@ -56,20 +44,12 @@ const ClaimKey = Schema.String.check(
   Schema.makeFilter((key) => (key.length === 0 ? "blank claim key" : undefined)),
 );
 
-export const ClaimDescriptor: Schema.Codec<ClaimDescriptor> = Schema.Struct({
+export const ClaimDescriptor = Schema.Struct({
   key: ClaimKey,
   optional: Schema.Boolean,
-  shape: Schema.suspend(() => ClaimShape),
+  shape: ClaimShape,
 });
-
-export const ClaimShape: Schema.Codec<ClaimShape> = Schema.Union([
-  ClaimScalarShape,
-  Schema.TaggedStruct("struct", {
-    fields: Schema.Array(ClaimDescriptor).check(uniqueKeys("claim")),
-  }),
-  Schema.TaggedStruct("array", { items: Schema.suspend(() => ClaimShape) }),
-  ClaimOpaqueShape,
-]);
+export type ClaimDescriptor = typeof ClaimDescriptor.Type;
 
 /** JWT subject claim name. The verified subject always exists. */
 export const SubjectClaim = Schema.String.check(
