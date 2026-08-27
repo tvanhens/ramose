@@ -128,8 +128,8 @@ export type { InstallOptions, SchemaChange } from "./Errors.ts";
 export type { SchemaEid, Eid } from "./Eid.ts";
 export type { EntityRef, LookupRef } from "./idents.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
-// the pattern-side types too, so `ramose/react`'s `usePull` can accept
-// exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)
+// the pattern-side types too, so pull helpers can accept exactly what
+// `db.pull` accepts (type-only: the runtime surface is unchanged)
 export type {
   Again,
   AllRow,

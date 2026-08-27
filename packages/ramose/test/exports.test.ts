@@ -27,9 +27,7 @@ const PUBLIC = [
   "ramose/db",
   "ramose/db/effect",
   "ramose/worker",
-  "ramose/react",
   "ramose/better-auth",
-  "ramose/better-auth/client",
   "ramose/effect",
 ] as const;
 

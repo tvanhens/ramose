@@ -6,11 +6,10 @@ value; queries are values too, and a live query re-runs itself when the
 database changes.
 
 ```sh
-bun add ramose react react-dom
+bun add ramose
 ```
 
-`npm install` and `pnpm add` work the same. React is optional — a server-only
-app needs neither it nor `react-dom`. `effect` comes with this package.
+`npm install` and `pnpm add` work the same. `effect` comes with this package.
 `alchemy` is owned and pinned to the 2.x beta this release tests
 (`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is bumped per release. Apps
 using `ramose/better-auth` also need the optional peers `better-auth` and
@@ -27,8 +26,7 @@ Ramose is pre-release: expect the API to change between minor versions.
 | `ramose/db/effect` | Effect hatch (`layer`, `Databases`) for the portable client. |
 | `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, capabilities, transports, typed policy. Client bundlers honoring `browser` resolve this specifier to `ramose/db` plus alchemy-free `policy` / `Policy` / `claims` — not `Server` / Alchemy. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
-| `ramose/react` | `RamoseProvider`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `usePrincipal`, `useRamoseClaims`, `useOperation`. Hooks only. |
-| `ramose/better-auth` (+ `/client`) | The Better Auth plugin pair that mints and carries the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
+| `ramose/better-auth` | The Better Auth plugin that mints the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
 | `ramose/effect` | Opt-in Effect escape hatch — re-exports `Effect`, `Function`, `pipe`, `Redacted`, `Schema`, `Layer`, `Stream`, `Cause`, `Exit`. Not the app path. |
 
 App schemas use `Ramose.string()` / `boolean()` / `Enum([...])` and do not
@@ -50,20 +48,14 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-```tsx
-// App.tsx
-import { useLiveQuery } from "ramose/react";
-import { db } from "./db.ts";
-import { todoQuery } from "./todos.ts";
+```ts
+import * as Ramose from "ramose/db";
+import { Todo, Todos } from "./schema.ts";
 
-const TodoList = () => {
-  const { data } = useLiveQuery(db, todoQuery);
-  return <ul>{data?.map((row) => <li key={row.id}>{row.title}</li>)}</ul>;
-};
+const ramose = Ramose.connect({ url });
+const db = ramose.db("todos", Todos);
+const todos = await db.query(Ramose.Query.from(Todo));
 ```
-
-Nothing refetches after a write and nothing invalidates a cache; the list
-updates itself, in every open tab.
 
 ## Docs
 

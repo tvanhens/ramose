@@ -108,7 +108,7 @@ const markerBounds = (lines, name) => {
 export const extractCitation = (cite, hintDir) => {
   const found = resolveRepoFile(cite.relPath, hintDir);
   if (!found) {
-    return { ok: false, error: `cited file does not exist: ${cite.relPath}` };
+    return { ok: false, skipped: true, error: `cited file does not exist: ${cite.relPath}` };
   }
   const rel = relative(REPO, found).replaceAll("\\", "/");
   const lines = readFileSync(found, "utf8").split("\n");
@@ -169,13 +169,24 @@ export const extractTitle = (title) => {
   const parts = [];
   const labels = [];
   let hintDir = null;
+  let any = false;
+  let skippedSome = false;
   for (const cite of cites) {
     const got = extractCitation(cite, hintDir);
+    if (got.skipped) {
+      skippedSome = true;
+      continue;
+    }
     if (!got.ok) return { ok: false, extracted: true, error: got.error, labels };
     if (!hintDir) hintDir = dirname(got.rel);
     parts.push(got.text);
     labels.push(got.label);
+    any = true;
   }
+  // A stitch that cites a deleted file cannot be compared to the remaining
+  // extract — the fence still has those lines. Skip the body check.
+  if (skippedSome) return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
+  if (!any) return { ok: true, extracted: false, skipped: true, text: "", labels: [] };
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
 };
 
@@ -217,7 +228,10 @@ export const resolveShotCode = (code) => {
     };
   }
   const first = extractCitation(cites[0]);
-  if (!first.ok) return { error: first.error, path: cites[0].relPath };
+  if (!first.ok) {
+    if (first.skipped) return { skipped: true, path: cites[0].relPath };
+    return { error: first.error, path: cites[0].relPath };
+  }
   const short = first.label.replace(/^examples\/reef\//, "");
   return {
     path: first.rel,

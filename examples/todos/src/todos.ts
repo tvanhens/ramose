@@ -1,4 +1,4 @@
-/** The app's queries and writes, in one place so the test can drive them. */
+/** Queries and writes used by the peer and local-stack fixtures. */
 
 import { Schema } from "ramose/effect";
 import * as Ramose from "ramose/db";

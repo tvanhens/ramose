@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Fail if the published client `.d.ts` for `ramose/db` (connect / Db /
- * token) or `ramose/react` imports `effect`. Schema, errors, and the
- * `ramose/db/effect` hatch may still mention Effect.
+ * token) imports `effect`. Schema, errors, and the `ramose/db/effect`
+ * hatch may still mention Effect.
  *
  * `connect.d.ts` is on the scanned list with **no** allowlist exemption —
  * a leak into `connect` / `ClientOptions` themselves fails the gate.
@@ -21,7 +21,7 @@
  * Run after `bun run build`.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 const ROOT = "packages/ramose/dist";
@@ -78,18 +78,6 @@ const files: string[] = [
   join(ROOT, "db/query/fluent.d.ts"),
   join(ROOT, "db/query/query.d.ts"),
 ];
-
-const reactDir = join(ROOT, "react");
-if (existsSync(reactDir)) {
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".d.ts")) files.push(path);
-    }
-  };
-  walk(reactDir);
-}
 
 export const hopsOf = (file: string): string[] => {
   const src = withoutComments(readFileSync(file, "utf8"));
@@ -169,14 +157,14 @@ const run = (): void => {
 
   if (leaks.length > 0) {
     console.error(
-      "check-client-dts: these client/react declarations import `effect`:",
+      "check-client-dts: these client declarations import `effect`:",
     );
     for (const file of leaks) console.error(`  ${file}`);
     process.exit(1);
   }
 
   console.log(
-    `check-client-dts: ${files.length} files, no effect imports on ramose/db client or ramose/react`,
+    `check-client-dts: ${files.length} files, no effect imports on ramose/db client`,
   );
 };
 

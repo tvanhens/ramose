@@ -21,52 +21,31 @@ themselves in every open tab.
 
 ---
 
-A schema, a live query, and a typed write — that is the whole app:
+A schema, a query, and a typed write:
 
-```tsx
+```ts
 import * as Ramose from "ramose/db";
-import { useLiveQuery, useOperation } from "ramose/react";
 
 const Todo = Ramose.Entity("todo", {
   title: Ramose.string(),
   done: Ramose.boolean(),
 });
 
-const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL });
-const TodoSchema = Ramose.Schema({ todo: Todo });
-const db = ramose.db("todos", TodoSchema);
-const setDoneOp = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
+const ramose = Ramose.connect({ url: process.env.RAMOSE_URL });
+const db = ramose.db("todos", Ramose.Schema({ todo: Todo }));
 
-// A query is a value: declare it once, then run it live.
 const todos = Ramose.Query.from(Todo);
+const rows = await db.query(todos);
 
-const Todos = () => {
-  const { data } = useLiveQuery(db, todos);   // re-runs itself whenever the data changes
-  const { run } = useOperation(db, setDoneOp);
-
-  const toggle = (todo: Ramose.Row<typeof todos>) =>
-    run(todo.id, { done: !todo.done });
-
-  return (
-    <ul>
-      {data?.map((todo) => (
-        <li key={todo.id} onClick={() => void toggle(todo)}>
-          {todo.title}
-        </li>
-      ))}
-    </ul>
-  );
-};
+const setDone = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
+await db.run(setDone, rows[0]!.id, { done: true });
 ```
-
-Nothing refetches after that write, and nothing invalidates a cache: `useLiveQuery`
-is a query the server keeps up to date, in every tab that is watching it.
 
 ---
 
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Live queries.** `useLiveQuery(db, query)` re-runs itself when the data changes.
+- **Live queries.** `db.live(query)` re-runs itself when the data changes.
   No refetch code, no invalidation, no WebSocket server to write.
 - **Permissions in the database.** Who may read or write each field is checked
   on the server, deny by default — not middleware you remember to add.
@@ -79,14 +58,13 @@ is a query the server keeps up to date, in every tab that is watching it.
   managed service.
 
 ```sh
-bun add ramose react react-dom
+bun add ramose
 ```
 
 One package. `effect` comes with it. `alchemy` is owned and pinned to the
 2.x beta this release tests (`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is
-bumped per release. React is an optional peer — a server-only app installs
-`ramose` alone. Apps using `ramose/better-auth` also need `better-auth` and
-`zod` (naming hygiene — `better-auth` already depends on zod).
+bumped per release. Apps using `ramose/better-auth` also need `better-auth`
+and `zod` (naming hygiene — `better-auth` already depends on zod).
 
 ## Learn more
 

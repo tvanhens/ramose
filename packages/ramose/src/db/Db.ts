@@ -322,16 +322,15 @@ interface View {
 // ── the hook seam ──────────────────────────────────────────────────────────
 
 /**
- * @internal What `ramose/react`'s hooks need that the public surface
+ * @internal What a client adapter needs that the public surface
  * deliberately does not say: a **structural** identity for a view (so
- * `db.asOf(t)` built inline in a render compares equal across renders
- * instead of re-subscribing — or looping — on every one), the pinned
- * coordinate (so `useBasis` answers an `asOf` view with no request), and the
- * session's wake (so `useBasis` re-reads the basis on every paint).
+ * `db.asOf(t)` built inline compares equal across reads instead of
+ * re-subscribing — or looping — on every one), the pinned coordinate
+ * (so an `asOf` view can be answered with no request), and the session's
+ * wake (so the basis can be re-read on every paint).
  *
  * It rides a registry symbol rather than an export so the public barrel
- * stays exactly what `db-portable.test.ts` asserts. The reader lives in
- * `packages/ramose/src/react/seam.ts` and must stay shape-compatible with this.
+ * stays exactly what `db-portable.test.ts` asserts.
  */
 export interface DbSeam {
   /**

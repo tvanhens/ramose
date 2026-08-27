@@ -22,7 +22,7 @@
     "release:version": "bun run scripts/set-version.ts",
     "release:check": "bun run scripts/check-release.ts --built",
     "test:doubles": "bun run scripts/check-test-doubles.ts",
-    "test:unit": "bun test --parallel=3 packages/ramose examples/todos/test test/support website/scripts scripts/check-test-doubles.test.ts",
+    "test:unit": "bun test --parallel=3 packages/ramose test/support website/scripts scripts/check-test-doubles.test.ts",
     "test:local": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun test --parallel=1 test/local",
     "test": "bun run test:unit && bun run test:local",
     "test:all": "bun run test && bun run test:e2e",
@@ -50,16 +50,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
     "@effect/tsgo": "0.37.0",
-    "@stylexjs/stylex": "^0.19.0",
-    "@stylexjs/unplugin": "^0.19.0",
     "@types/bun": "latest",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "typescript": "^7.0.2",
-    "vite": "^7.0.0"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@alchemy.run/better-auth": "^2.0.0-beta.74",

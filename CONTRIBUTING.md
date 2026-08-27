@@ -222,8 +222,8 @@ cache miss). Manual republish: **Actions → Docs publish → Run workflow**.
 
 One package publishes to npm: `ramose`, from `packages/ramose`. The
 enumerated subpath set is `ramose`, `ramose/db`, `ramose/db/effect`,
-`ramose/worker`, `ramose/react`, `ramose/better-auth`,
-`ramose/better-auth/client`, and `ramose/effect` (the Effect escape hatch).
+`ramose/worker`, `ramose/better-auth`, and `ramose/effect` (the Effect
+escape hatch).
 The engine (`core`, `storage`, `transactor`, `replica`) lives under
 `src/internal/` and is not a public import. The published tarball is `dist`
 (with declaration maps); `src` does not ship.

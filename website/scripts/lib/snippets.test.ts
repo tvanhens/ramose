@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bodyMatchesExtract,
@@ -12,7 +12,6 @@ import {
 import {
   dbErrorTags,
   listedFromFrontmatter,
-  ramoseReactRuntime,
   runtimeExports,
   statedRequestErrorCounts,
 } from "./facts.mjs";
@@ -154,15 +153,4 @@ describe("facts", () => {
     expect(listedFromFrontmatter("title: x\n")).toEqual([]);
   });
 
-  test("listedFromFrontmatter on the real react page is a non-empty subset of the barrel", () => {
-    const src = readFileSync(
-      join(REPO, "website/src/content/docs/reference/react.mdx"),
-      "utf8",
-    );
-    const fm = src.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
-    const listed = listedFromFrontmatter(fm);
-    const runtime = ramoseReactRuntime();
-    expect(listed.length).toBeGreaterThan(0);
-    for (const name of listed) expect(runtime.has(name)).toBe(true);
-  });
 });

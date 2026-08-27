@@ -2,7 +2,7 @@
  * `ramose/effect` — the Effect modules Ramose's own API hands you, under one
  * import.
  *
- * App code on `ramose/db` and `ramose/react` is promise-first. This subpath
+ * App code on `ramose/db` is promise-first. This subpath
  * re-exports Effect's own modules for deploy files and for callers of
  * `db.effect.*` / `ramose/db/effect`. Naming them the ecosystem way —
  * `import * as Effect from "effect/Effect"` — is correct: `effect` is a
@@ -19,8 +19,7 @@
  * identity are `effect`'s own, so the two spellings are interchangeable in the
  * same file and across a package boundary. Anything not re-exported here is
  * still reachable as `effect/<Module>`. This subpath is the Effect escape
- * hatch, not the app path — `ramose/db` and `ramose/react` stay
- * promise-first.
+ * hatch, not the app path — `ramose/db` stays promise-first.
  *
  * @module
  */

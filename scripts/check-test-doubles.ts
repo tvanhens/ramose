@@ -123,7 +123,6 @@ export const PATTERNS: readonly Pattern[] = [
 
 const SCAN_ROOTS = [
   "packages/ramose/test",
-  "examples/todos/test",
   "test",
   "scripts",
 ] as const;

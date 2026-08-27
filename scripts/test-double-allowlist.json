@@ -1,18 +1,11 @@
 {
   "comment": "Existing #390 test-double violations. Shrink to empty as migrations merge. Do not add new entries.",
   "files": {
-    "examples/todos/test/todos.test.ts": [
-      "WebSocketImpl",
-      "inProcessPeer"
-    ],
     "packages/ramose/test/auth-session.test.ts": [
       "scriptedPeer"
     ],
     "packages/ramose/test/basis.test.ts": [
       "scriptedPeer"
-    ],
-    "packages/ramose/test/better-auth/client.test.ts": [
-      "memoryAdapter"
     ],
     "packages/ramose/test/better-auth/ramoseToken.test.ts": [
       "memoryAdapter"
@@ -85,44 +78,6 @@
       "scriptedPeer"
     ],
     "packages/ramose/test/principal.test.ts": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/harness.tsx": [
-      "happy-dom"
-    ],
-    "packages/ramose/test/react/hydrate.test.tsx": [
-      "happy-dom",
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/peer.ts": [
-      "FakeSocket",
-      "WebSocketImpl",
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/provider.test.tsx": [
-      "happy-dom",
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/useBasis.test.tsx": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/useConnectionStatus.test.tsx": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/useLive.test.tsx": [
-      "happy-dom",
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/usePrincipal.test.tsx": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/usePull.test.tsx": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/useQuery.test.tsx": [
-      "scriptedPeer"
-    ],
-    "packages/ramose/test/react/useRamoseClaims.test.tsx": [
       "scriptedPeer"
     ],
     "packages/ramose/test/required-update.test.ts": [

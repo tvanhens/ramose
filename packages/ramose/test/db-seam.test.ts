@@ -1,6 +1,5 @@
 /**
- * The `DB_SEAM` contract `ramose/react` rides (`DbSeam` in `Db.ts`,
- * `packages/ramose/src/react/seam.ts` the reader): a structural view key, the
+ * The `DB_SEAM` contract (`DbSeam` in `Db.ts`): a structural view key, the
  * pinned `asOf` coordinate, and the session's wake. Not public API, but a
  * contract all the same.
  */

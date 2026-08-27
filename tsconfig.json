@@ -38,9 +38,7 @@
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
       "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
       "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
-      "ramose/react": ["./packages/ramose/src/react/index.ts"],
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
-      "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
       "ramose/effect": ["./packages/ramose/src/effect.ts"]
     },
     "plugins": [
@@ -113,15 +111,12 @@
     "e2e-peer.ts",
     "website/alchemy.run.ts",
     "packages/ramose/src/**/*.ts",
-    "packages/ramose/src/**/*.tsx",
     "packages/ramose/test/**/*.ts",
-    "packages/ramose/test/**/*.tsx",
     "bench/**/*.ts",
     "test/**/*.ts",
     "scripts/check-test-doubles.ts",
     "scripts/check-test-doubles.test.ts",
-    "examples/**/*.ts",
-    "examples/**/*.tsx"
+    "examples/**/*.ts"
   ],
   "exclude": [
     "node_modules",
