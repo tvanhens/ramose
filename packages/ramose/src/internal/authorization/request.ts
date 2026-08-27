@@ -49,7 +49,7 @@ export type AuthorizedRequestInput<R = never> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly catalogs: DeployedCatalogs;
   readonly catalogRef: CatalogBoundRef;
-  readonly currentDb: Effect.Effect<Db, unknown, R>;
+  readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, unknown, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
 };
@@ -219,9 +219,10 @@ const constructFilteredDb = <R>(
     if (caller.database !== deployed.unit.catalog.database) {
       return yield* deny();
     }
+    const database = deployed.unit.catalog.database;
     const subject = yield* Effect.fromResult(selectSubject(caller, deployed.unit));
     yield* Effect.fromResult(validateCallerClaims(caller.claims, deployed.unit.policy.claims));
-    const current = yield* input.currentDb.pipe(Effect.mapError(() => deny()));
+    const current = yield* input.currentDb(database).pipe(Effect.mapError(() => deny()));
     const resolved = yield* Effect.tryPromise({
       try: () => resolveMe(deployed.unit, subject, caller, current),
       catch: () => deny(),

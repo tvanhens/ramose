@@ -247,10 +247,12 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => {
-          acquired += 1;
-          return conn.db();
-        }),
+        currentDb: (db) =>
+          Effect.sync(() => {
+            acquired += 1;
+            expect(db).toBe(database);
+            return conn.db();
+          }),
       },
       (filteredDb) =>
         Effect.promise(async () => ({
@@ -282,7 +284,10 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
-          currentDb: Effect.sync(() => conn.db()),
+          currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
           view,
         },
         (filteredDb) =>
@@ -326,10 +331,10 @@ describe("executeAuthorizedRequest", () => {
           catalogKey: missing,
           unitHash: CatalogUnitHash.make(digestHex(0xab)),
         },
-        currentDb: Effect.sync(() => {
+        currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
-        }),
+        },
       },
       () =>
         Effect.sync(() => {
@@ -352,10 +357,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: { catalogKey: catalog, unitHash: wrong },
-        currentDb: Effect.sync(() => {
+        currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
-        }),
+        },
       },
       () =>
         Effect.sync(() => {
@@ -376,10 +381,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken("not-a-jwt"),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => {
+        currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
-        }),
+        },
       },
       () =>
         Effect.sync(() => {
@@ -425,10 +430,10 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs: fixture,
           catalogRef: { catalogKey: catalog, unitHash: real.unitHash },
-          currentDb: Effect.sync(() => {
+          currentDb: () => {
             acquired = true;
-            return conn.db();
-          }),
+            return Effect.sync(() => conn.db());
+          },
         },
         () =>
           Effect.sync(() => {
@@ -450,7 +455,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.fail({ _tag: "AcquisitionFailed" as const }),
+        currentDb: () => Effect.fail({ _tag: "AcquisitionFailed" as const }),
       },
       () =>
         Effect.sync(() => {
@@ -470,7 +475,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.never,
+        currentDb: () => Effect.never,
         interruptAfter: 20,
       },
       () =>
@@ -491,7 +496,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
         interruptAfter: 20,
       },
       () => Effect.never,
@@ -509,7 +517,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       (filteredDb) =>
         Effect.promise(async () => ({
@@ -538,7 +549,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.succeed(latest),
+        currentDb: () => Effect.succeed(latest),
       },
       (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
     );
@@ -557,7 +568,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       (filteredDb) =>
         Effect.promise(async () => ({
@@ -606,7 +620,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       (filteredDb) =>
         Effect.promise(async () => ({
@@ -640,7 +657,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       () =>
         Effect.sync(() => {
@@ -661,10 +681,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => {
+        currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
-        }),
+        },
       },
       () =>
         Effect.sync(() => {
@@ -674,6 +694,27 @@ describe("executeAuthorizedRequest", () => {
     expect(acquired).toBe(false);
     expect(executed).toBe(false);
     expectOpaque(error, ["todos", "otherdb"]);
+  });
+
+  test("currentDb is acquired with the agreed catalog/JWT database", async () => {
+    const { conn } = await seedApp();
+    const catalogs = await deployOwnerPolicy();
+    const token = await sign();
+    const seen: Array<typeof database> = [];
+    await run(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: (db) => {
+          seen.push(db);
+          return Effect.sync(() => conn.db());
+        },
+      },
+      () => Effect.void,
+    );
+    expect(seen).toEqual([database]);
+    expect(seen).not.toContain("otherdb");
   });
 
   test("asOf and history compose as a product (bounded history)", async () => {
@@ -688,7 +729,10 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
-          currentDb: Effect.sync(() => conn.db()),
+          currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
           view,
         },
         (filteredDb) =>
@@ -722,10 +766,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => {
+        currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
-        }),
+        },
       },
       () =>
         Effect.sync(() => {
@@ -757,10 +801,10 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
-          currentDb: Effect.sync(() => {
+          currentDb: () => {
             acquired = true;
             throw new Error("currentDb must not run");
-          }),
+          },
         },
         () =>
           Effect.sync(() => {
@@ -780,7 +824,10 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(await signRamose({ attrs: { org: "acme", suspended: true } })),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
     );
@@ -793,7 +840,10 @@ describe("executeAuthorizedRequest", () => {
         ),
         catalogs,
         catalogRef: refOf(catalogs),
-        currentDb: Effect.sync(() => conn.db()),
+        currentDb: (db) => {
+            expect(db).toBe(database);
+            return Effect.sync(() => conn.db());
+          },
       },
       (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
     );
