@@ -613,6 +613,39 @@ describe("InvalidIR failures", () => {
       /incompatible membership/,
     );
     expectInvalid(compile([read(Issue).when(contains(me, Issue.owner))]), /membership requires a collection/);
+    expectInvalid(compile([read(Workspace).when(contains(Workspace.members, "x"))]), /incompatible membership/);
+    expectInvalid(compile([read(Issue).when(contains(claim("org"), "x"))]), /membership requires a collection/);
+    expectInvalid(
+      compileReadAuthorizationResult({
+        schema: App,
+        rules: [read(Issue).when(contains(claim("teams"), me))],
+        claims: [
+          orgClaim,
+          {
+            key: "teams",
+            optional: true,
+            shape: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
+          },
+        ],
+        principal: { entity: User.authId },
+      }),
+      /incompatible membership/,
+    );
+    expectOk(
+      compileReadAuthorizationResult({
+        schema: App,
+        rules: [read(Issue).when(contains(claim("teams"), "admin"))],
+        claims: [
+          orgClaim,
+          {
+            key: "teams",
+            optional: true,
+            shape: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
+          },
+        ],
+        principal: { entity: User.authId },
+      }),
+    );
     expectOk(compile([read(Workspace).when(contains(Workspace.members, me))]));
     expectOk(compile([read(Issue).when(contains(path(Issue.workspace, Workspace.members), me))]));
     expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
