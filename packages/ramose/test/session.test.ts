@@ -37,7 +37,7 @@ const eids = Query.q(() => Query.entities(User));
 
 /** Membership is the engine-owned `:ramose/type` fact (ID-1, ID-3). */
 const userRules = [
-  [["isUser", "?qm0"], ["?qm0", ":ramose/type", ":user"]],
+  [["ramose$isUser", "?qm0"], ["?qm0", ":ramose/type", ":user"]],
 ];
 
 describe("the handshake", () => {
@@ -102,7 +102,7 @@ describe("reads become frames", () => {
       {
         id: 1,
         op: "q",
-        query: { find: ["?q0"], where: [["isUser", "?q0"]], rules: userRules },
+        query: { find: ["?q0"], where: [["ramose$isUser", "?q0"]], rules: userRules },
         inputs: [],
         asOf: 2,
       },
@@ -128,7 +128,7 @@ describe("reads become frames", () => {
             ],
           ],
           // `name` is not `.optional`, so it is a where clause too
-          where: [["isUser", "?q0"], ["?q0", ":user/name", "_"]],
+          where: [["ramose$isUser", "?q0"], ["?q0", ":user/name", "_"]],
           rules: userRules,
         },
         inputs: [],

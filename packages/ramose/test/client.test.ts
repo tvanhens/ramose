@@ -523,9 +523,9 @@ describe("the JSON transport", () => {
     // on the wire: tagged, JSON-safe (pinned views still ride the socket)
     expect(peer.frameOps("q")[0].query).toEqual({
       find: ["?q0"],
-      rules: [[["isMovie", "?qm0"], ["?qm0", ":ramose/type", ":movie"]]],
+      rules: [[["ramose$isMovie", "?qm0"], ["?qm0", ":ramose/type", ":movie"]]],
       where: [
-        ["isMovie", "?q0"],
+        ["ramose$isMovie", "?q0"],
         ["?q0", ":movie/released", { $inst: when.getTime() }],
       ],
     });
