@@ -77,19 +77,27 @@ export const fromCanonicalMembership = (
 export const deriveCanonicalMembership = (
   catalog: PreparedAuthorizationCatalog,
   entity: EntityId,
-): Result.Result<CanonicalMembership, MembershipStale> => {
-  const found = requireEntity(catalog, entity, "membership entity");
-  if (Result.isFailure(found)) {
-    return Result.fail(new MembershipStale({ type: composerIdent(entity.name) }));
-  }
-  const traits = [...(catalog.entityTraits.get(entity.name) ?? [])]
-    .filter((name) => entityComposes(catalog, found.success, name))
-    .sort();
-  return Result.succeed({
-    type: found.success,
-    traits: traits.map((name) => TraitId.make({ catalog: found.success.catalog, name })),
+): Result.Result<CanonicalMembership, MembershipStale> =>
+  Result.gen(function* () {
+    const found = yield* requireEntity(
+      catalog,
+      entity,
+      "membership entity",
+    ).pipe(
+      Result.mapError(
+        () => new MembershipStale({ type: composerIdent(entity.name) }),
+      ),
+    );
+    const traits = [...(catalog.entityTraits.get(entity.name) ?? [])]
+      .filter((name) => entityComposes(catalog, found, name))
+      .sort();
+    return {
+      type: found,
+      traits: traits.map((name) =>
+        TraitId.make({ catalog: found.catalog, name }),
+      ),
+    };
   });
-};
 
 export const deriveDescriptorMembership = (
   descriptor: CatalogDescriptor,
@@ -104,7 +112,7 @@ export const deriveDescriptorMembership = (
   if (row === undefined) {
     return Result.fail(new MembershipStale({ type: composerIdent(entity.name) }));
   }
-  const local = deriveLocalMembership(
+  return deriveLocalMembership(
     {
       isEntityIdent: (ident) =>
         descriptor.entities.some((item) => composerIdent(item.id.name) === ident),
@@ -138,7 +146,5 @@ export const deriveDescriptorMembership = (
       },
     },
     composerIdent(entity.name),
-  );
-  if (Result.isFailure(local)) return Result.fail(local.failure);
-  return Result.succeed(toCanonicalMembership(descriptor.id, local.success));
+  ).pipe(Result.map((local) => toCanonicalMembership(descriptor.id, local)));
 };

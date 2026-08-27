@@ -12,7 +12,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import {
   decideMembership,
   deriveLocalMembership,
@@ -103,12 +102,8 @@ export const membershipCatalogLayer = (
 ): Layer.Layer<MembershipCatalog> =>
   Layer.succeed(MembershipCatalog, {
     view: Effect.succeed(view),
-    closure: (typeIdent) => {
-      const derived = deriveLocalMembership(view, typeIdent);
-      return Result.isFailure(derived)
-        ? Effect.fail(derived.failure)
-        : Effect.succeed(derived.success);
-    },
+    closure: (typeIdent) =>
+      Effect.fromResult(deriveLocalMembership(view, typeIdent)),
   });
 
 export const memoryMembershipTransactorLayer = (options?: {
