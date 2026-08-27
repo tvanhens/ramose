@@ -24,6 +24,9 @@ export default function remarkExtractSnippets() {
       const title = titleOf(node);
       if (!title) return;
       const got = extractTitle(title);
+      // Known-deleted client files (shrink-only allowlist). Leave the
+      // fence as written; do not fail the site build.
+      if (got.skipped) return;
       if (!got.extracted) return;
       if (!got.ok) {
         errors.push(`${page}: ${got.error}`);

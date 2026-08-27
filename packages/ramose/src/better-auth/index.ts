@@ -25,8 +25,8 @@
  * ```
  *
  * The route is `POST {basePath}/ramose/token { db } → { token, class, exp }`
- * — the shape `Ramose.token.jwt` accepts unchanged. The paired browser
- * plugin lives on `ramose/better-auth/client`.
+ * — the shape `Ramose.token.jwt` accepts unchanged.
+ *
  *
  * This entry needs the optional peers `better-auth` and `zod`.
  */

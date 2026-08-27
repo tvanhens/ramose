@@ -78,9 +78,6 @@ export const ramoseRootRuntime = () => {
   return { all: new Set([...db, ...root]), added, db };
 };
 
-export const ramoseReactRuntime = () =>
-  runtimeExports(read("packages/ramose/src/react/index.ts"));
-
 /** Backticked identifiers in a table cell / prose list. */
 export const tickNames = (text) =>
   [...text.matchAll(/`([A-Za-z_][A-Za-z0-9]*)`/g)].map((m) => m[1]);

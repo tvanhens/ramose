@@ -6,7 +6,7 @@
  * need the old default.
  */
 import { createServer } from "ramose/worker";
-import { operations } from "../app/mutations.ts";
+import { operations } from "../domain/operations.ts";
 
 export default createServer({ operations });
 export { QueryReplicaDO, TransactorDO } from "ramose/worker";

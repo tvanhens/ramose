@@ -3,8 +3,7 @@
  *
  * The resource owns the peer: it declares the Worker, both Durable Object
  * classes, the pinned compat date, and the fixed binding names. The user
- * names storage and options. `databases:` seeds catalogs at deploy (it is
- * not the directory — that is #215).
+ * names storage and options.
  *
  * The explicit `worker:` form is the escape hatch (extra bindings, a
  * user-owned entry). It is validated at deploy: binding names, DO classes,
@@ -17,21 +16,11 @@
  * @example The owned form
  * ```typescript
  * export const Server = Ramose.Server("Ramose", {
- *   databases: { todos: Todos },
  *   operations,
  *   auth: { jwt: AUTH },
  * });
  * ```
  *
- * @section Using it from a Worker
- * @example Open a database
- * ```typescript
- * const ramose = yield* Ramose.Databases(Server);
- * const movies = ramose.db("movies", Movies);
- * ```
- *
- * Provide `Ramose.layer` in the Worker's runtime. `db()` hands back a
- * {@link import("./server-db.ts").ServerDb} — no `live` / `livePull`.
  */
 
 import type { Worker } from "alchemy/Cloudflare/Workers";
@@ -49,8 +38,6 @@ import {
   type AnyOperations,
   checkOperationsCoverage,
 } from "./db/Operation.ts";
-import { trimSlashes } from "./db/http.ts";
-import type { Schema } from "./db/index.ts";
 import {
   declareOwnedPeer,
   ownedPeerDurableObjects,
@@ -79,29 +66,7 @@ export type ServerWorker =
     }
   | string;
 
-/**
- * A catalog to install at deploy, or a schema plus `doc` destined for the
- * directory (#215). Server seeds the catalog; it does not own the metadata.
- */
-export type DatabaseSeed =
-  | Schema.Any
-  | {
-      readonly schema: Schema.Any;
-      readonly doc?: string | undefined;
-      readonly description?: string | undefined;
-    };
-
-export const isSchemaSeed = (value: DatabaseSeed): value is Schema.Any =>
-  typeof value === "object" && value !== null && "_tag" in value && value._tag === "Schema";
-
-export const schemaOf = (seed: DatabaseSeed): Schema.Any =>
-  isSchemaSeed(seed) ? seed : seed.schema;
-
-export const docOf = (seed: DatabaseSeed): string | undefined => {
-  if (isSchemaSeed(seed)) return undefined;
-  const doc = seed.doc ?? seed.description;
-  return doc === undefined || doc === "" ? undefined : doc;
-};
+const trimSlashes = (value: string): string => value.replace(/\/+$/, "");
 
 /**
  * @internal Deploy-time liveness probe of the server.
@@ -202,11 +167,6 @@ export type ServerProps = {
   peer?: string;
   /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
   routes?: PeerRoute[];
-  /**
-   * Catalogs to install at deploy. A schema, or `{ schema, doc }` — `doc` is
-   * data destined for the directory, not a resource-side authority.
-   */
-  databases?: Record<string, DatabaseSeed>;
   /**
    * The operations registry this deploy ships — the same value the app
    * imports and the peer entry `createServer({ operations })`s. After
@@ -494,15 +454,6 @@ export type Server = Resource<
     url: string;
     /** The server Worker's script name, or `""` when it was given as a URL. */
     workerName: string;
-    /**
-     * Catalogs this deploy seeded. Install results, not directory state —
-     * `doc` is passed through for #215 and is not authoritative here.
-     */
-    seeded: readonly {
-      readonly name: string;
-      readonly t: number;
-      readonly doc?: string | undefined;
-    }[];
   },
   never,
   Providers
@@ -640,12 +591,6 @@ export const probeHealth = (
   );
 };
 
-const seedDatabases = (
-  _url: string,
-  _databases: Record<string, DatabaseSeed> | undefined,
-) =>
-  Effect.succeed([] as Server["Attributes"]["seeded"]);
-
 const attributes = Effect.fn(function* (
   props: ServerProps,
   defaults: Required<ServerProbe>,
@@ -685,11 +630,9 @@ const attributes = Effect.fn(function* (
       return yield* badOps;
     }
   }
-  const seeded = yield* seedDatabases(url, props.databases);
   return {
     url,
     workerName: worker.workerName,
-    seeded,
   };
 });
 

@@ -1,15 +1,10 @@
 /**
  * `ramose` — the Alchemy 2 + Effect interface to Ramose.
  *
- * Everything on `ramose/db` (schema, `connect`, `Db<C>`, the tagged
- * errors), plus the deploy-time half: the `Server` and `Database`
- * resources, one `Databases` capability, one auto-transport layer.
+ * Everything on `ramose/db` (portable authoring and tagged errors), plus
+ * the deploy-time `Server` and `Database` resources.
  *
- * Client bundlers that honor the `browser` export condition resolve this
- * specifier to `dist/browser.js` — `ramose/db` plus the alchemy-free
- * shared names (`claims`) — so they do not pull
- * Alchemy. App code should import `ramose/db` directly. Types stay on
- * this file so `import type { AuthConfig } from "ramose"` still works.
+ * Browser code imports `ramose/db` directly; the root entry is deploy-only.
  *
  * ```typescript
  * import * as Alchemy from "alchemy";
@@ -39,14 +34,19 @@
 export * from "./db/index.ts";
 
 // ── the verifier/minter contract ─────────────────────────────────────────
-export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";
+export {
+  type AuthConfig,
+  type Claims,
+  claims,
+  type ClaimsInput,
+  type ClaimsPolicy,
+} from "./Auth.ts";
 
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
 export {
   DEFAULT_JWT_MAX_TTL,
   type AuthEnvValue,
-  type DatabaseSeed,
   type ServerAuth,
   Server,
 } from "./Server.ts";
@@ -55,16 +55,6 @@ export {
 export { PEER_COMPAT, PEER_BINDINGS, PEER_DO_CLASSES } from "./peer.ts";
 export type { RamoseEnv } from "./RamoseEnv.ts";
 
-// ── one capability, one transport ──────────────────────────────────────────
-export {
-  asRead,
-  Databases,
-  layer,
-  type ReadDatabasesShape,
-  type ServerDatabasesShape,
-  type ServerDb,
-  type ServerReadDb,
-} from "./Databases.ts";
 export { providers, Providers } from "./Providers.ts";
 
 // ── error → HTTP (app Workers; not on `ramose/db`) ─────────────────────────

@@ -15,13 +15,10 @@
  *                       `ramose: { db, class }` comes from the caller's org
  *                       membership (role → class via `orgClassOf`), signed
  *                       with the same managed JWKS key.
- *   /*                  The built SPA (examples/reef/dist), assets-first with
- *                       single-page-app fallback. `bunx vite build` fills it;
- *                       during local dev the Vite dev server is used instead.
  *
- * This Worker never talks to the Ramose peer — the browser is the only data
- * plane client. That keeps the resource graph acyclic: the peer's env needs
- * this Worker's URL (JWKS), and this Worker needs nothing back.
+ * This Worker never talks to the Ramose peer. That keeps the resource graph
+ * acyclic: the peer's env needs this Worker's URL (JWKS), and this Worker
+ * needs nothing back.
  *
  * Module layout note: `main: import.meta.url` makes this the Worker bundle
  * entry, so `Alchemy.Stack` must live elsewhere (../../alchemy.run.ts).
@@ -73,24 +70,14 @@ export const Api = Cloudflare.Worker(
     // pick up the public origin with no further wiring.
     ...pinned("api"),
     ...(REEF_DOMAIN ? { domain: REEF_DOMAIN } : {}),
-    // The built SPA. Assets are served first for everything that is not
-    // /api/*; unknown paths fall back to index.html (SPA routing). The
-    // committed dist/ placeholder keeps first-run `alchemy dev` working
-    // before any `vite build`.
-    assets: {
-      directory: "./examples/reef/dist",
-      notFoundHandling: "single-page-application",
-      runWorkerFirst: ["/api/*"],
-    },
   },
   Effect.gen(function* () {
     const auth = yield* BetterAuth({
       basePath: AUTH_BASE_PATH,
       emailAndPassword: { enabled: true },
-      // Vite proxies /api in dev (cookies stay on :5173). Deployed, the
-      // Worker serves the SPA on REEF_ORIGIN. Better Auth also trusts its
-      // derived baseURL; the explicit list is so a Host-less or
-      // workers.dev request cannot lock the demo origin out.
+      // Better Auth also trusts its derived baseURL; the explicit list is
+      // so a Host-less or workers.dev request cannot lock the demo origin
+      // out.
       trustedOrigins: [DEV_UI_ORIGIN, ...(REEF_ORIGIN ? [REEF_ORIGIN] : [])],
       // The demo ships no mailer, so accounts are auto-verified at creation —
       // otherwise the organization plugin's listUserInvitations 403s every

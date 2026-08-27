@@ -20,10 +20,22 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import deletedCitationAllowlist from "./deleted-citation-allowlist.json" with { type: "json" };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SITE = resolve(HERE, "../..");
 export const REPO = resolve(SITE, "..");
+
+// Exact paths of known-deleted client files still cited from MDX. Missing
+// citations are errors by default; only these paths may skip the body/Shot
+// check. Shrink-only — do not glob, and do not add a general missing-file
+// escape. Removal of entries is owned by #416 / #442.
+// Imported (not readFileSync) so the Astro/Vite build of Shot.astro
+// embeds the list instead of looking for a sibling JSON in dist/.
+const DELETED_CITATION_ALLOWLIST = new Set(deletedCitationAllowlist);
+
+const isAllowlistedDeleted = (relPath) =>
+  DELETED_CITATION_ALLOWLIST.has(relPath);
 
 const CITE_RE =
   /([\w./-]+\.(?:ts|tsx|mjs|json|css))(?:#([\w-]+)|:(\d+)(?:-(\d+))?)/g;
@@ -44,7 +56,15 @@ let repoFilesCache = null;
 
 const walkRepo = () => {
   if (repoFilesCache) return repoFilesCache;
-  const skip = new Set(["node_modules", ".git", "dist", ".alchemy", ".astro"]);
+  const skip = new Set([
+    "node_modules",
+    ".git",
+    ".claude",
+    ".cursor",
+    "dist",
+    ".alchemy",
+    ".astro",
+  ]);
   const collect = (dir) => {
     let out = [];
     for (const f of readdirSync(dir)) {
@@ -108,7 +128,11 @@ const markerBounds = (lines, name) => {
 export const extractCitation = (cite, hintDir) => {
   const found = resolveRepoFile(cite.relPath, hintDir);
   if (!found) {
-    return { ok: false, error: `cited file does not exist: ${cite.relPath}` };
+    const error = `cited file does not exist: ${cite.relPath}`;
+    if (isAllowlistedDeleted(cite.relPath)) {
+      return { ok: false, skipped: true, error };
+    }
+    return { ok: false, error };
   }
   const rel = relative(REPO, found).replaceAll("\\", "/");
   const lines = readFileSync(found, "utf8").split("\n");
@@ -118,6 +142,14 @@ export const extractCitation = (cite, hintDir) => {
   if (cite.marker) {
     const bounds = markerBounds(lines, cite.marker);
     if (!bounds) {
+      if (isAllowlistedDeleted(`${cite.relPath}#${cite.marker}`)) {
+        return {
+          ok: false,
+          skipped: true,
+          error: `marker #${cite.marker} does not exist anymore in ${rel}`,
+          rel,
+        };
+      }
       return {
         ok: false,
         error: `marker #${cite.marker} not found in ${rel}`,
@@ -169,13 +201,28 @@ export const extractTitle = (title) => {
   const parts = [];
   const labels = [];
   let hintDir = null;
+  let any = false;
+  let skippedSome = false;
   for (const cite of cites) {
     const got = extractCitation(cite, hintDir);
+    if (got.skipped) {
+      skippedSome = true;
+      continue;
+    }
     if (!got.ok) return { ok: false, extracted: true, error: got.error, labels };
     if (!hintDir) hintDir = dirname(got.rel);
     parts.push(got.text);
     labels.push(got.label);
+    any = true;
   }
+  // Allowlisted-deleted citations are not errors. The fence stays as
+  // written (`extracted: false`) so docs-check and the Astro remark
+  // plugin skip replacement instead of failing the build. A
+  // non-allowlisted missing path already returned as an error above.
+  if (skippedSome) {
+    return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
+  }
+  if (!any) return { ok: true, extracted: false, text: "", labels: [] };
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
 };
 
@@ -217,7 +264,10 @@ export const resolveShotCode = (code) => {
     };
   }
   const first = extractCitation(cites[0]);
-  if (!first.ok) return { error: first.error, path: cites[0].relPath };
+  if (!first.ok) {
+    if (first.skipped) return { skipped: true, path: cites[0].relPath };
+    return { error: first.error, path: cites[0].relPath };
+  }
   const short = first.label.replace(/^examples\/reef\//, "");
   return {
     path: first.rel,

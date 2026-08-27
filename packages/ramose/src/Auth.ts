@@ -15,8 +15,19 @@
 
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./db/DatabaseName.ts";
 import { InvalidRequest } from "./db/Errors.ts";
-import type { Claims } from "./db/token.ts";
-export type { Claims } from "./db/token.ts";
+export interface Claims {
+  readonly iss?: string;
+  readonly aud?: string | readonly string[];
+  readonly sub?: string;
+  readonly iat?: number;
+  readonly exp?: number;
+  readonly ramose?: {
+    readonly db?: string;
+    readonly class?: string;
+    readonly attrs?: Readonly<Record<string, unknown>>;
+  };
+  readonly [claim: string]: unknown;
+}
 
 /** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;

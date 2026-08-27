@@ -58,7 +58,8 @@ let gh: string | undefined;
 let short: string | undefined;
 if (code) {
   const resolved = resolveShotCode(code);
-  if (resolved && !resolved.error) {
+  // Allowlisted-deleted client files have no blob URL; omit the link.
+  if (resolved && !resolved.error && !resolved.skipped && resolved.gh) {
     gh = resolved.gh;
     short = resolved.short;
   }
@@ -77,10 +78,10 @@ if (code) {
     style={`max-width:min(100%,${width}px)`}
   />
   {
-    (caption || code) && (
+    (caption || (gh && short)) && (
       <figcaption>
         {caption}
-        {code && (
+        {gh && short && (
           <>
             {caption && " · "}
             <a href={gh}>

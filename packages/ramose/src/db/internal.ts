@@ -4,30 +4,15 @@
  * Not a package `exports` entry: the public surface is `./index.ts`
  * (`ramose/db`). This module exists so sibling modules and the tests
  * can reach the inferred / internal names — `AnySchema`, `EntityMap`,
- * `lowerQueryObject`, `makeDatabases`, `Expect`/`Equal` — without each of them
+ * `lowerQueryObject`, `Expect`/`Equal` — without each of them
  * naming a dozen files.
  */
 
 export * from "./Field.ts";
 export * from "./Schema.ts";
-export * from "./connect.ts";
-export * from "./factory.ts";
-export * from "./Db.ts";
-export {
-  Databases,
-  layer,
-  type EffectClientOptions,
-  type EffectDb,
-  type EffectReadDb,
-  type EffectToken,
-} from "./effect.ts";
-export type { Subscription } from "./subscription.ts";
 export * from "./ensure.ts";
-export * from "./evolution.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";
-export * from "./SchemaErrors.ts";
-export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Entity.ts";
 export * from "./Trait.ts";
@@ -38,17 +23,6 @@ export {
   traitCycle,
 } from "./compose.ts";
 export * from "./shapes.ts";
-export {
-  assertLoweringPurity,
-  canonicalAstKey,
-  computeAstKey,
-  computePullPatternKey,
-  liveSubscriptionKey,
-  pullPatternKey,
-  queryAstKey,
-  queryStructureKey,
-} from "./astKey.ts";
-export { shareEqualDeep } from "./shareEqualDeep.ts";
 export * from "./Eid.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
 export {
@@ -99,10 +73,7 @@ export {
   type Rows,
   type RuleValue,
 } from "./query/index.ts";
-export * from "./session.ts";
-export * from "./token.ts";
 export * from "./Tx.ts";
-export { seedWrite, submitRaw } from "./seed.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
 // Field-returning `Ref` (eager entity / thunk / self) wins over the

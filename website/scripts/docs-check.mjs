@@ -25,9 +25,7 @@ import {
   dbErrorTags,
   errorTableTags,
   ramoseDbRuntime,
-  ramoseReactRuntime,
   ramoseRootRuntime,
-  listedFromFrontmatter,
   statedRequestErrorCounts,
   tickNames,
 } from "./lib/facts.mjs";
@@ -381,6 +379,7 @@ for (const page of pages) {
       if (!title) continue;
       const got = extractTitle(title);
       if (!got.extracted) continue;
+      if (got.skipped) continue;
       if (!got.ok) {
         add("ERROR", "code", page.slug, got.error);
         continue;
@@ -396,6 +395,7 @@ for (const page of pages) {
       const code = m[1].match(/\bcode=["']([^"']+)["']/)?.[1];
       if (!code) continue;
       const resolved = resolveShotCode(code);
+      if (resolved?.skipped) continue;
       if (resolved?.error)
         add("ERROR", "code", page.slug, `Shot code= ${resolved.error}`);
     }
@@ -409,10 +409,9 @@ if (run("facts") && !onlyPage) {
   const tags = dbErrorTags();
   const dbNames = ramoseDbRuntime();
   const root = ramoseRootRuntime();
-  const reactNames = ramoseReactRuntime();
 
   for (const page of pages) {
-    const { fm, body } = splitFrontmatter(page.src);
+    const { body } = splitFrontmatter(page.src);
     for (const hit of statedRequestErrorCounts(body)) {
       if (hit.n !== tags.length) {
         add("ERROR", "facts", page.slug,
@@ -428,9 +427,19 @@ if (run("facts") && !onlyPage) {
       }
     }
     if (page.slug === "reference/client-api") {
-      // Authorization rebuild docs are frozen. Do not rewrite the inventory
-      // table for retired `Policy` / `PolicyError` names — skip those only.
-      const frozenInventory = new Set(["Policy", "PolicyError"]);
+      // Authorization/client rebuild docs are frozen. Do not rewrite the
+      // inventory table for retired names; #416 / #442 own removing them.
+      const frozenInventory = new Set([
+        "Policy",
+        "PolicyError",
+        "PrefixHalt",
+        "connect",
+        "token",
+        "IncompatibleSchema",
+        "Databases",
+        "layer",
+        "asRead",
+      ]);
       const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
       if (dbRow) {
         for (const name of tickNames(dbRow[1])) {
@@ -448,24 +457,6 @@ if (run("facts") && !onlyPage) {
             add("ERROR", "facts", page.slug,
               `ramose (adds) table lists ${name}, which is not a ramose export`);
         }
-      }
-    }
-    if (page.slug === "reference/react") {
-      const listed = listedFromFrontmatter(fm);
-      if (!listed.length)
-        add("ERROR", "facts", page.slug,
-          "react description lists no backticked export names");
-      const ignore = new Set(["ramose"]);
-      for (const name of listed) {
-        if (ignore.has(name)) continue;
-        if (!reactNames.has(name))
-          add("ERROR", "facts", page.slug,
-            `react page names ${name}, which is not a ramose/react runtime export`);
-      }
-      for (const name of reactNames) {
-        if (!body.includes(name))
-          add("ERROR", "facts", page.slug,
-            `ramose/react exports ${name} but the page never mentions it`);
       }
     }
     if (/select-less `Query\.from`.{0,80}Ramose\.all\(/s.test(body) &&

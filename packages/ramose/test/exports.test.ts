@@ -25,12 +25,8 @@ const manifest = JSON.parse(
 const PUBLIC = [
   "ramose",
   "ramose/db",
-  "ramose/db/effect",
   "ramose/worker",
-  "ramose/react",
   "ramose/better-auth",
-  "ramose/better-auth/client",
-  "ramose/effect",
 ] as const;
 
 const CUT = [
@@ -67,10 +63,10 @@ describe("the `ramose` exports map", () => {
     expect(failed).toEqual([]);
   });
 
-  test("root browser condition is the portable module, not the deploy barrel", () => {
+  test("root has no production browser-client condition", () => {
     const root = manifest.exports["."];
     expect(root).toBeDefined();
-    expect(root!.browser).toBe("./dist/browser.js");
+    expect(root!.browser).toBeUndefined();
     expect(root!.bun).toBeUndefined();
     expect(root!.default).toBe("./dist/index.js");
     for (const spec of PUBLIC) {

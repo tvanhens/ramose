@@ -138,18 +138,7 @@ if (checkBuilt) {
     }
   }
 
-  // The `browser` condition is the claim: `import "ramose"` in a client
-  // bundle must land on the portable module, not the deploy barrel. Node's
-  // resolver is the one that honors `--conditions=browser`; Bun's checkout
-  // `paths` map would hide a broken exports target.
-  const browserResolved = resolveRamose(["--conditions=browser"]);
   const defaultResolved = resolveRamose([]);
-  if (browserResolved !== undefined && !browserResolved.endsWith("/dist/browser.js")) {
-    errors.push(
-      `node --conditions=browser import.meta.resolve("ramose") landed on ` +
-        `${browserResolved}, expected …/dist/browser.js`,
-    );
-  }
   if (defaultResolved !== undefined && !defaultResolved.endsWith("/dist/index.js")) {
     errors.push(
       `node import.meta.resolve("ramose") landed on ${defaultResolved}, ` +

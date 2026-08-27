@@ -18,10 +18,7 @@ import {
   Unauthorized,
   OperationRejected,
 } from "../src/db/Errors.ts";
-import {
-  IncompatibleSchema,
-  isDatabaseError as isDatabaseErrorFromBarrel,
-} from "../src/db/index.ts";
+import { isDatabaseError as isDatabaseErrorFromBarrel } from "../src/db/index.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
@@ -241,12 +238,4 @@ describe("isDatabaseError", () => {
     expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
   });
 
-  test("IncompatibleSchema is on the barrel and is not a DbError", () => {
-    const e = new IncompatibleSchema({
-      message: "flip",
-      changes: [{ ident: ":note/title", kind: "valueType" }],
-    });
-    expect(e._tag).toBe("IncompatibleSchema");
-    expect(isDatabaseError(e)).toBe(false);
-  });
 });

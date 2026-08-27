@@ -123,11 +123,10 @@ describe("Ramose.Server", () => {
 
       expect(server.url).toBe(peerUrl);
       expect(server.workerName).toBe("");
-      expect(server.seeded).toEqual([]);
       // a server is the peer, not a database: no name, no /db/:name prefix
       const attributes = Object.keys(server);
       expect(attributes).toContain("url");
-      expect(attributes).toContain("seeded");
+      expect(attributes).not.toContain("seeded");
       expect(attributes).not.toContain("name");
       expect(attributes).not.toContain("databaseUrl");
       expect(attributes).not.toContain("token");
@@ -377,23 +376,6 @@ describe("under `alchemy dev`", () => {
     Effect.gen(function* () {
       const server = yield* stack.deploy(Server("Ramose", { worker: peerUrl }));
       expect(server.url).toBe(peerUrl);
-      yield* stack.destroy();
-    }),
-  );
-});
-
-describe("Ramose.Server databases: seeder", () => {
-  test.provider("does not install catalogs until authorized publication is wired", (stack) =>
-    Effect.gen(function* () {
-      const server = yield* stack.deploy(
-        Server("Ramose", {
-          worker: peerUrl,
-          probe: false,
-          databases: { movies: Movies, extras: { schema: Movies, doc: "the extras list" } },
-        }),
-      );
-      expect(server.seeded).toEqual([]);
-      expect(transactions).toEqual([]);
       yield* stack.destroy();
     }),
   );

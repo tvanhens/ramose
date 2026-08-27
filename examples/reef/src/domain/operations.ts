@@ -1,14 +1,10 @@
 /**
- * Every write the app makes. Each is a named operation — the session overlay
- * applies the optimistic prefix locally, then the peer commits it or the
- * policy rejects it with `Unauthorized` / `OperationRejected`. A denial drops
- * the pending layer; the UI surfaces the error as a toast (enforcement
- * is server-side; the buttons are merely polite).
+ * Portable named operation declarations shared with authoritative execution.
  */
 
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
-import { rankAfter } from "../domain/rank.ts";
+import { rankAfter } from "./rank.ts";
 import {
   Comment,
   Issue,
@@ -16,7 +12,7 @@ import {
   Reef,
   type Priority,
   type Status,
-} from "../domain/schema.ts";
+} from "./schema.ts";
 
 const Op = Ramose.Operation.for(Reef);
 const { Query } = Ramose;
@@ -45,23 +41,20 @@ const authFetch = (
 };
 
 /**
- * Workspace provisioning as an operation: install + optional org registration
- * as effects, then seed labels. The peer upserts the creator's `user` row
+ * Workspace provisioning as an operation: optional org registration as an
+ * effect, then seed labels. Authoritative catalog publication happens before
+ * this operation is admitted. The peer upserts the creator's `user` row
  * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
- * must not write that row. Effects come first, so there is no optimistic
- * prefix; the creating tab has no session yet.
+ * must not write that row.
  */
 export const provisionWorkspaceOp = Op(
   "workspace/provision",
   {
     input: Schema.Struct({}),
     output: Schema.Struct({ ready: Schema.Boolean }),
-    doc: "Install a workspace catalog and seed its starting labels",
+    doc: "Register a workspace and seed its starting labels",
   },
   async (op) => {
-    await op.effect("db/install", ({ databases }) =>
-      databases.install(Reef, op.db),
-    );
     await op.effect("org/register", async ({ env, principal }) => {
       const register = authFetch(env);
       if (register === undefined) return;

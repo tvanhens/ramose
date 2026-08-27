@@ -3,8 +3,7 @@
  *
  * Everything on `ramose/db` (asserted name-by-name in
  * `db-portable.test.ts`) plus the deploy-time half: two resources, one
- * capability, one transport layer, the provider collection, claims,
- * and the peer constants. Nothing else is public.
+ * provider collection, claims, and peer constants. Nothing else is public.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -13,10 +12,6 @@ const ADDS = [
   // resources
   "Server",
   "Database",
-  // one capability, one transport
-  "Databases",
-  "layer",
-  "asRead",
   // peer
   "PEER_COMPAT",
   "PEER_BINDINGS",
@@ -72,6 +67,10 @@ const KILLED = [
   "SystemSource",
   "SystemEndpoint",
   "Client",
+  "Databases",
+  "connect",
+  "layer",
+  "asRead",
   "Session",
   "openSession",
   "transact",
