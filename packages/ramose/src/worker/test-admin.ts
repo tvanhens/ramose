@@ -117,6 +117,12 @@ const handleCheckpointLocal = (body: {
 const transactorUrl = (db: string, path: string): string =>
   `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
 
+/** Replica catch-up fence. Only forwarded when the caller set it. */
+const minTHeader = (request: Request): Record<string, string> => {
+  const minT = request.headers.get("x-ramose-min-t");
+  return minT === null || minT.length === 0 ? {} : { "x-ramose-min-t": minT };
+};
+
 const forward = async (
   request: Request,
   env: RamoseEnv,
@@ -124,11 +130,13 @@ const forward = async (
   scope: CheckpointScope,
   path: string,
   body: string,
+  opts: { readonly passThrough?: boolean } = {},
 ): Promise<Response> => {
   const headers = {
     "content-type": "application/json",
     ...coloHeader(request),
     ...internalHeaders(env),
+    ...minTHeader(request),
   };
   try {
     const res =
@@ -143,14 +151,19 @@ const forward = async (
             headers,
             body,
           });
-    if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
+    // transact/query must surface the real DO status (409 cas-conflict, 400
+    // tx/invalid, 503 TransactorDead). checkpoint/abort stay fail-closed.
+    if (!res.ok && opts.passThrough !== true) {
+      throw new UpstreamError({ status: res.status, body: await res.text() });
+    }
     return new Response(res.body, {
       status: res.status,
       headers: { "content-type": "application/json" },
     });
   } catch (err) {
     // `ctx.abort` discards the isolate; the stub fetch rejects instead of
-    // returning the ack. The instance is gone — that is the success path.
+    // returning the ack. The instance is gone — that is the success path
+    // for abort only. transact/query after `die()` must not invent 200.
     if (path === "/admin/test/abort") {
       return json({ ok: true, aborted: true });
     }
@@ -184,6 +197,16 @@ export const handleTestAdmin = async (
     const body = (await request.json()) as { target?: unknown };
     const target = body.target === "replica" ? "replica" : "transactor";
     return forward(request, env, db, target, "/admin/test/abort", "{}");
+  }
+  if (rest === "/transact") {
+    return forward(request, env, db, "transactor", "/transact", await request.text(), {
+      passThrough: true,
+    });
+  }
+  if (rest === "/query") {
+    return forward(request, env, db, "replica", "/query", await request.text(), {
+      passThrough: true,
+    });
   }
   throw new NotFound({ message: "unknown test admin path" });
 };

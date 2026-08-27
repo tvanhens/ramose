@@ -12,6 +12,7 @@ import { registerExamples } from "./examples.ts";
 import { localUrls } from "./fixtures.ts";
 import { registerMultiClient } from "./multi-client.ts";
 import { registerQuery } from "./query.ts";
+import { registerCas } from "./cas.ts";
 import { registerInstrumentation } from "./instrumentation.ts";
 import { registerCatalogSeed, registerServiceBinding } from "./service-binding.ts";
 
@@ -29,3 +30,4 @@ registerServiceBinding({ urls: localUrls });
 registerCatalogSeed({ urls: localUrls });
 registerQuery({ urls: localUrls });
 registerInstrumentation({ urls: localUrls });
+registerCas({ urls: localUrls });

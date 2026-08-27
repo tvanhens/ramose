@@ -120,10 +120,17 @@ export const AUTH_SCHEMA = [
 export const testAdmin = async (
   base: string,
   db: string,
-  rest: "/r2" | "/checkpoint" | "/abort",
+  rest: "/r2" | "/checkpoint" | "/abort" | "/transact" | "/query",
   body: unknown,
-): Promise<{ status: number; body: any; res: Response }> =>
-  json(base, `/__test__/db/${encodeURIComponent(db)}${rest}`, post(body));
+  headers?: Record<string, string>,
+): Promise<{ status: number; body: any; res: Response }> => {
+  const init = post(body);
+  return json(base, `/__test__/db/${encodeURIComponent(db)}${rest}`, {
+    ...init,
+    headers:
+      headers === undefined ? init.headers : { ...init.headers, ...headers },
+  });
+};
 
 export const seedTx = async (
   base: string,
