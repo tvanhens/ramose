@@ -32,7 +32,7 @@ export const physicalStorageIdent = (id: {
   readonly catalog: CatalogId;
   readonly owner: { readonly kind: string; readonly name: string };
   readonly localName: string;
-}): string => `:${id.catalog}/${id.owner.kind}/${id.owner.name}/${id.localName}`;
+}): string => `:${id.catalog}.${id.owner.kind}.${id.owner.name}/${id.localName}`;
 
 export const fieldStorageIndex = (
   fields: readonly FieldDescriptor[],

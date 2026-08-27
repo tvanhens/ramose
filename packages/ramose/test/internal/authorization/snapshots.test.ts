@@ -235,13 +235,13 @@ const admit = (
   });
 
 const SCHEMA = [
-  { ":db/ident": ":app/entity/user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-  { ":db/ident": ":app/entity/issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":app/entity/issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":app/entity/issue/parent", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-  { ":db/ident": ":app/entity/issue/link", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-  { ":db/ident": ":app/entity/issue/labels", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":app/trait/taggable/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app.entity.user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+  { ":db/ident": ":app.entity.issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":app.entity.issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":app.entity.issue/parent", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app.entity.issue/link", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app.entity.issue/labels", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
+  { ":db/ident": ":app.trait.taggable/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 const setup = async () => {
@@ -249,8 +249,8 @@ const setup = async () => {
   const conn = await Connection.create({ now: () => 1_700_000_000_000 });
   await conn.transact(SCHEMA);
   const report = await conn.transact([
-    { ":db/id": "ada", ":app/entity/user/authId": "ada" },
-    { ":db/id": "issue", ":app/entity/issue/title": "Secret", ":app/entity/issue/owner": "ada" },
+    { ":db/id": "ada", ":app.entity.user/authId": "ada" },
+    { ":db/id": "issue", ":app.entity.issue/title": "Secret", ":app.entity.issue/owner": "ada" },
   ]);
   const db = conn.db();
   return {
@@ -290,26 +290,26 @@ describe("pure projection cells", () => {
   });
 
   test("physical storage idents include catalog and owner kind", () => {
-    expect(physicalStorageIdent(field(issueOwner, "title"))).toBe(":app/entity/issue/title");
+    expect(physicalStorageIdent(field(issueOwner, "title"))).toBe(":app.entity.issue/title");
     const unique = fieldStorageIndex([scalarField(issueOwner, "title")]);
-    expect(unique.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app/entity/issue/title");
+    expect(unique.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app.entity.issue/title");
     const entityAndTrait = fieldStorageIndex([
       scalarField(issueOwner, "title"),
       scalarField({ kind: "trait", name: "issue" }, "title"),
     ]);
     expect(entityAndTrait.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(
-      ":app/entity/issue/title",
+      ":app.entity.issue/title",
     );
     expect(entityAndTrait.get(fieldDescriptorKey(field({ kind: "trait", name: "issue" }, "title")))).toBe(
-      ":app/trait/issue/title",
+      ":app.trait.issue/title",
     );
     const otherTitle = {
       ...scalarField(issueOwner, "title"),
       id: FieldId.make({ catalog: CatalogId.make("other"), owner: issueOwner, localName: "title" }),
     };
     const crossCatalog = fieldStorageIndex([scalarField(issueOwner, "title"), otherTitle]);
-    expect(crossCatalog.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app/entity/issue/title");
-    expect(crossCatalog.get(fieldDescriptorKey(otherTitle.id))).toBe(":other/entity/issue/title");
+    expect(crossCatalog.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app.entity.issue/title");
+    expect(crossCatalog.get(fieldDescriptorKey(otherTitle.id))).toBe(":other.entity.issue/title");
   });
 });
 
@@ -840,7 +840,7 @@ describe("snapshot construction", () => {
   test("traversal hops must belong to the prior ref target", async () => {
     const { conn, installed, ada, issue, descriptor } = await setup();
     const childReport = await conn.transact([
-      { ":db/id": "child", ":app/entity/issue/title": "Child", ":app/entity/issue/owner": ada, ":app/entity/issue/parent": issue },
+      { ":db/id": "child", ":app.entity.issue/title": "Child", ":app.entity.issue/owner": ada, ":app.entity.issue/parent": issue },
     ]);
     const child = childReport.tempids.child as number;
     const later = conn.db();
@@ -889,7 +889,7 @@ describe("snapshot construction", () => {
 
   test("projection charges the budget for existence and each field datom", async () => {
     const { conn, installed, issue, descriptor } = await setup();
-    await conn.transact([{ ":db/id": issue, ":app/entity/issue/labels": ["a", "b", "c"] }]);
+    await conn.transact([{ ":db/id": issue, ":app.entity.issue/labels": ["a", "b", "c"] }]);
     const later = conn.db();
     const program = Effect.gen(function* () {
       const rawSvc = yield* RawStorageAccess;
