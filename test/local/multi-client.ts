@@ -19,7 +19,7 @@ const ReefBoard = Ramose.Schema({ user: ReefUser, issue: ReefIssue });
 
 export function registerMultiClient(target: { urls: () => LocalUrls }): void {
   describe("two-writer live", () => {
-    test("install is unauthorized until authorized snapshots land", async () => {
+    test("install is unauthorized until verified JWT and filtered Db land", async () => {
       const ramose = Ramose.connect({ url: target.urls().openUrl });
       try {
         const db = ramose.db(uniqueDb("reef"), ReefBoard);

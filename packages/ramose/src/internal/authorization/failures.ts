@@ -1,9 +1,7 @@
 /**
  * Typed authorization failures and incompleteness reasons.
  *
- * Effect classes for the orchestration shell. The pure evaluator (#337 later)
- * returns {@link import("./truth.ts").Truth}; these failures surface at the
- * one fail-closed boundary (FC-1, FC-2). Do not scatter deny-catching.
+ * Effect classes for orchestration; one fail-closed boundary.
  */
 
 import * as Data from "effect/Data";
@@ -47,12 +45,6 @@ export class CatalogMismatch extends Data.TaggedError("CatalogMismatch")<{
   readonly actualDatabase?: DatabaseId;
 }> {}
 
-/** A required rule projection could not be completed. */
-export class IncompleteRuleSnapshot extends Data.TaggedError("IncompleteRuleSnapshot")<{
-  readonly message: string;
-  readonly reason: IncompleteReason;
-}> {}
-
 /** Evaluation or projection exceeded the explicit work budget. */
 export class AuthorizationBudgetExceeded extends Data.TaggedError(
   "AuthorizationBudgetExceeded",
@@ -60,11 +52,6 @@ export class AuthorizationBudgetExceeded extends Data.TaggedError(
   readonly message: string;
   readonly spent: number;
   readonly limit: number;
-}> {}
-
-/** REV-5: no result may be emitted under an expired lease. */
-export class LeaseExpired extends Data.TaggedError("LeaseExpired")<{
-  readonly message: string;
 }> {}
 
 /**
@@ -79,7 +66,5 @@ export class AuthorizationDenied extends Data.TaggedError(
 export type AuthorizationFailure =
   | InvalidIR
   | CatalogMismatch
-  | IncompleteRuleSnapshot
   | AuthorizationBudgetExceeded
-  | LeaseExpired
   | AuthorizationDenied;

@@ -370,7 +370,7 @@ export class Transactor {
     });
   }
 
-  /** Principal-row provisioning is closed until #344. */
+  /** Principal-row provisioning is closed until verified JWT (#412). */
   async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
     await this.init();
     if (!principal) return { eid: null, class: "" };
@@ -552,12 +552,12 @@ export class Transactor {
     return;
   }
 
-  /** Writes are raw storage. Operation authorization is #345. */
+  /** Writes are raw storage. Operation authorization is #417. */
   private async authorize(p: Pending): Promise<TxData> {
     return p.tx;
   }
 
-  /** Application acks are not filtered here. Authorized cursors land in #343. */
+  /** Application acks are not filtered here. Filtered `Db` lands in #421/#423. */
   private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
     return datoms.map(toWireDatom);
   }

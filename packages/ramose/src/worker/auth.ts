@@ -1,6 +1,6 @@
 /**
  * Request-scoped caller metadata on the session/transactor wire.
- * Not an authorization decision. JWT admission lands in #344.
+ * Not an authorization decision. JWT admission lands in #412.
  */
 
 export interface Principal {

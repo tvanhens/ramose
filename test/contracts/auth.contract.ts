@@ -1,8 +1,8 @@
 /**
  * Public auth behavior against a real local (or remote) peer.
  *
- * External `/db/*` is fail-closed until verified JWT admission and
- * authorized snapshots land. `/health` stays open.
+ * External `/db/*` is fail-closed until verified JWT admission, an
+ * installed catalog, and a filtered `Db`. `/health` stays open.
  */
 
 import { describe, expect, test } from "bun:test";

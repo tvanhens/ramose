@@ -2,7 +2,7 @@
  * Post-deploy wait used by `scripts/e2e-cloudflare.sh`.
  *
  * `/health` is the Worker fetch handler. External `/db/*` is fail-closed
- * until authorized snapshots land — a 401 on that surface means the Worker
+ * until verified JWT + catalog + filtered `Db` land — a 401 on that surface means the Worker
  * is serving the data-plane close, not that Durable Objects are ready.
  *
  * Bun `fetch` and curl can land on different colos; a fresh workers.dev
