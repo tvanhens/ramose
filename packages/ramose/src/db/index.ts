@@ -111,8 +111,10 @@ export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
 // entity / field name rule — definition-time, like DATABASE_NAME_RE
 export {
   IDENT_NAME_RE,
+  RESERVED_ENTITY_NAMES,
   RESERVED_FIELD_KEYS,
   isIdentName,
+  isReservedEntityName,
   isReservedFieldKey,
 } from "./IdentName.ts";
 

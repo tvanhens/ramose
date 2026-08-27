@@ -9,6 +9,7 @@
 import {
   Entity,
   Schema,
+  Trait,
   string,
   type AnySchema,
   type Equal,
@@ -41,6 +42,13 @@ Entity("post", { fields: string() });
 Entity("post", { _tag: string() });
 // @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
 Entity("post", { traits: string() });
+
+// @ts-expect-error reserved entity name — db and ramose are system namespaces
+Entity("db", { name: string() });
+// @ts-expect-error reserved entity name — db and ramose are system namespaces
+Entity("ramose", { name: string() });
+// @ts-expect-error reserved entity name — db and ramose are system namespaces
+Trait("db", { name: string() });
 
 // @ts-expect-error invalid name — must match IDENT_NAME_RE
 Entity("my ns/x", { title: string() });

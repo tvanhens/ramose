@@ -294,7 +294,7 @@ const inboxGen = (me: number) =>
 describe("lowering", () => {
   test("the inbox pipe: membership is the type fact, cursor lowers, literals substitute", () => {
     const { query } = lowerQueryObject(inboxPipe(42));
-    expect(query.rules).toEqual([[["isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]]]);
+    expect(query.rules).toEqual([[["ramose$isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]]]);
     const where = query.where as unknown[];
     expect(where).toContainEqual(["?q0", ":issue/done", false]);
     // the quantifier is a not-join on the focus, with the param substituted
@@ -339,11 +339,36 @@ describe("lowering", () => {
   test("the unfiltered listing carries the membership rule", () => {
     const listing = Query.q(() => pipe(Query.entities(Issue), Query.select({ id: Issue.id })));
     const { query } = lowerQueryObject(listing);
-    expect(query.where).toEqual([["isIssue", "?q0"]]);
+    expect(query.where).toEqual([["ramose$isIssue", "?q0"]]);
     const rules = query.rules as unknown[][];
     expect(rules).toHaveLength(1);
-    expect(rules[0]![0]).toEqual(["isIssue", "?qm0"]);
+    expect(rules[0]![0]).toEqual(["ramose$isIssue", "?qm0"]);
     expect(rules[0]![1]).toEqual(["?qm0", ":ramose/type", ":issue"]);
+  });
+
+  test("generated membership names never collide with Query.rule names", () => {
+    const isIssue = Query.rule("isIssue", function* (e) {
+      yield* Q.fact(e, Issue.title);
+    });
+    const membershipFirst = Query.q(function* () {
+      const issue = yield* Query.entities(Issue);
+      yield* isIssue(issue);
+      return issue;
+    });
+    const ruleFirst = Query.q(function* () {
+      const titled = yield* Q.fact(Q._, Issue.title);
+      yield* isIssue(titled.e);
+      const issue = yield* Query.entities(Issue);
+      return issue;
+    });
+    const heads = (query: { rules?: unknown }) =>
+      ((query.rules as unknown[][]) ?? []).map((rule) => (rule[0] as unknown[])[0]);
+    const a = heads(lowerQueryObject(membershipFirst).query);
+    const b = heads(lowerQueryObject(ruleFirst).query);
+    expect(new Set(a).size).toBe(2);
+    expect(new Set(b).size).toBe(2);
+    expect(a).toEqual(expect.arrayContaining(["ramose$isIssue", "isIssue"]));
+    expect(b).toEqual(expect.arrayContaining(["ramose$isIssue", "isIssue"]));
   });
 
   test("membership rule names stay unique when namespaces sanitize together", () => {
@@ -1190,7 +1215,7 @@ describe("post-group filters (:having)", () => {
   test("lowering: an aggregate comparison routes to :having, named by (as …)", () => {
     const { query } = lowerQueryObject(busyOwners);
     expect(query.find).toEqual(["?q0", ["as", ["count", "?q1"], "?qh0"]]);
-    expect(query.where).toEqual([["isIssue", "?q1"], ["?q1", ":issue/owner", "?q0"]]);
+    expect(query.where).toEqual([["ramose$isIssue", "?q1"], ["?q1", ":issue/owner", "?q0"]]);
     expect(query.having).toEqual([[[">", "?qh0", 1]]]);
 
     // one fn over one var is one cell — the compared spec need not be the

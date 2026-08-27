@@ -103,48 +103,78 @@ export const deriveDescriptorMembership = (
   descriptor: CatalogDescriptor,
   entity: EntityId,
 ): Result.Result<CanonicalMembership, MembershipStale> => {
-  if (entity.catalog !== descriptor.id) {
-    return Result.fail(new MembershipStale({ type: composerIdent(entity.name) }));
-  }
-  const row = descriptor.entities.find(
-    (item) => item.id.catalog === entity.catalog && item.id.name === entity.name,
-  );
-  if (row === undefined) {
-    return Result.fail(new MembershipStale({ type: composerIdent(entity.name) }));
-  }
+  const stale = (): Result.Result<CanonicalMembership, MembershipStale> =>
+    Result.fail(new MembershipStale({ type: composerIdent(entity.name) }));
+  if (entity.catalog !== descriptor.id) return stale();
+  const entities = descriptor.entities.filter((item) => item.id.catalog === descriptor.id);
+  const traits = descriptor.traits.filter((item) => item.id.catalog === descriptor.id);
+  const row = entities.find((item) => item.id.name === entity.name);
+  if (row === undefined) return stale();
+
+  let foreign = false;
+  const mark = (id: { readonly catalog: CatalogId }): boolean => {
+    if (id.catalog === descriptor.id) return false;
+    foreign = true;
+    return true;
+  };
+  const byName = new Map(traits.map((trait) => [trait.id.name, trait]));
+  const visit = (traitId: TraitId): void => {
+    if (mark(traitId)) return;
+    const nested = byName.get(traitId.name);
+    if (nested === undefined) return;
+    for (const child of nested.traits) visit(child);
+  };
+  for (const trait of row.traits) visit(trait);
+  if (foreign) return stale();
+
   return deriveLocalMembership(
     {
       isEntityIdent: (ident) =>
-        descriptor.entities.some((item) => composerIdent(item.id.name) === ident),
+        entities.some((item) => composerIdent(item.id.name) === ident),
       isTraitIdent: (ident) =>
-        descriptor.traits.some((item) => composerIdent(item.id.name) === ident),
+        traits.some((item) => composerIdent(item.id.name) === ident),
       transitiveTraits: (ident) => {
         const name = localEntityName(ident);
-        const traits = new Set<string>();
-        const byName = new Map(descriptor.traits.map((trait) => [trait.id.name, trait]));
-        const visit = (traitName: string): void => {
-          if (traits.has(traitName)) return;
-          traits.add(traitName);
+        const seen = new Set<string>();
+        const walk = (traitName: string): void => {
+          if (seen.has(traitName)) return;
+          seen.add(traitName);
           const nested = byName.get(traitName);
           if (nested === undefined) return;
-          for (const child of nested.traits) visit(child.name);
+          for (const child of nested.traits) {
+            if (mark(child)) continue;
+            walk(child.name);
+          }
         };
-        const entityRow = descriptor.entities.find((item) => item.id.name === name);
+        const entityRow = entities.find((item) => item.id.name === name);
         if (entityRow !== undefined) {
-          for (const trait of entityRow.traits) visit(trait.name);
+          for (const trait of entityRow.traits) {
+            if (mark(trait)) continue;
+            walk(trait.name);
+          }
         }
-        return sortIdents([...traits].map((traitName) => composerIdent(traitName)));
+        return sortIdents([...seen].map((traitName) => composerIdent(traitName)));
       },
       composesOf: (ident) => {
         const name = localEntityName(ident);
-        const entityRow = descriptor.entities.find((item) => item.id.name === name);
+        const entityRow = entities.find((item) => item.id.name === name);
         if (entityRow !== undefined) {
-          return entityRow.traits.map((trait) => composerIdent(trait.name));
+          return entityRow.traits.flatMap((trait) =>
+            trait.catalog === descriptor.id ? [composerIdent(trait.name)] : [],
+          );
         }
-        const traitRow = descriptor.traits.find((item) => item.id.name === name);
-        return traitRow?.traits.map((trait) => composerIdent(trait.name)) ?? [];
+        const traitRow = traits.find((item) => item.id.name === name);
+        return (
+          traitRow?.traits.flatMap((trait) =>
+            trait.catalog === descriptor.id ? [composerIdent(trait.name)] : [],
+          ) ?? []
+        );
       },
     },
     composerIdent(entity.name),
-  ).pipe(Result.map((local) => toCanonicalMembership(descriptor.id, local)));
+  ).pipe(
+    Result.flatMap((local) =>
+      foreign ? stale() : Result.succeed(toCanonicalMembership(descriptor.id, local)),
+    ),
+  );
 };

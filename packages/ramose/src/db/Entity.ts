@@ -10,11 +10,13 @@ import type { AnyField, Cardinality } from "./Field.ts";
 import {
   invalidIdentName,
   isIdentName,
+  isReservedEntityName,
   isReservedFieldKey,
+  reservedEntityName,
   reservedFieldName,
   type FlattenedTraitFields,
+  type ValidEntityName,
   type ValidFieldMap,
-  type ValidIdentName,
   type ValidTraitCompose,
 } from "./IdentName.ts";
 import {
@@ -250,6 +252,7 @@ export const stamp = <Name extends string, Fields extends FieldMap>(
 
 const assertEntityName = (name: string): void => {
   if (!isIdentName(name)) throw invalidIdentName("entity", name);
+  if (isReservedEntityName(name)) throw reservedEntityName("entity", name);
 };
 
 const assertFieldKeys = (fields: FieldMap): void => {
@@ -271,7 +274,7 @@ type EntityWithTraits<
 
 /** Group fields under one ident prefix. */
 export function Entity<const Name extends string, Fields extends FieldMap>(
-  name: ValidIdentName<Name>,
+  name: ValidEntityName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
 ): Entity<Name, Fields>;
 export function Entity<
@@ -279,7 +282,7 @@ export function Entity<
   Fields extends FieldMap,
   const Traits extends readonly AnyTrait[],
 >(
-  name: ValidIdentName<Name>,
+  name: ValidEntityName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
   options: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
 ): EntityWithTraits<Name, Fields, Traits>;
@@ -288,7 +291,7 @@ export function Entity<
   Fields extends FieldMap,
   const Traits extends readonly AnyTrait[],
 >(
-  name: ValidIdentName<Name>,
+  name: ValidEntityName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
   options?: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
 ): Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits> {

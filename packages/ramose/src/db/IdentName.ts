@@ -37,14 +37,29 @@ export const RESERVED_FIELD_KEYS = [
   "traits",
 ] as const;
 
+/**
+ * Entity / trait namespaces that collide with bootstrap idents (`:db/*`,
+ * `:ramose/*`). A catalog named `db` would treat `:db/ident` as a required
+ * field of that type.
+ */
+export const RESERVED_ENTITY_NAMES = ["db", "ramose"] as const;
+
+/** A catalog name that collides with a system namespace. */
+export type ReservedEntityName = (typeof RESERVED_ENTITY_NAMES)[number];
+
 /** A field key that collides with {@link Entity} metadata. */
 export type ReservedFieldKey = (typeof RESERVED_FIELD_KEYS)[number];
 
 const RESERVED = new Set<string>(RESERVED_FIELD_KEYS);
+const RESERVED_ENTITIES = new Set<string>(RESERVED_ENTITY_NAMES);
 
 /** Whether `name` is {@link Entity} metadata and cannot be a field key. */
 export const isReservedFieldKey = (name: string): name is ReservedFieldKey =>
   RESERVED.has(name);
+
+/** Whether `name` is a reserved system namespace (`db`, `ramose`). */
+export const isReservedEntityName = (name: string): name is ReservedEntityName =>
+  RESERVED_ENTITIES.has(name);
 
 // ── type-level mirrors (string literals only; wide `string` defers) ────────
 
@@ -127,6 +142,8 @@ const IDENT_NAME_MSG =
   "invalid name — must match IDENT_NAME_RE" as const;
 const RESERVED_FIELD_MSG =
   "reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata" as const;
+const RESERVED_ENTITY_MSG =
+  "reserved entity name — db and ramose are system namespaces" as const;
 const TRAIT_COLLISION_MSG = "conflicting flattened field names" as const;
 const SCHEMA_KEY_MSG =
   "Schema key must equal the Entity name" as const;
@@ -135,6 +152,14 @@ const DUPLICATE_ENTITY_MSG = "duplicate entity name" as const;
 /** Entity / field name: the literal if valid, else a brand that fails assignability. */
 export type ValidIdentName<S extends string> =
   IsIdentName<S> extends true ? S : NameError<S, typeof IDENT_NAME_MSG>;
+
+/** Entity / trait namespace: a valid ident that is not `db` or `ramose`. */
+export type ValidEntityName<S extends string> =
+  IsIdentName<S> extends true
+    ? S extends ReservedEntityName
+      ? NameError<S, typeof RESERVED_ENTITY_MSG>
+      : S
+    : NameError<S, typeof IDENT_NAME_MSG>;
 
 type ReservedIn<F> = Extract<keyof F, ReservedFieldKey>;
 type BadNamedIn<F> = {
@@ -241,6 +266,11 @@ export const invalidIdentName = (
 export const reservedFieldName = (name: string): Error =>
   new Error(
     `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, and traits are Entity / Trait metadata`,
+  );
+
+export const reservedEntityName = (kind: "entity" | "trait", name: string): Error =>
+  new Error(
+    `ramose/schema: ${kind} name ${JSON.stringify(name)} is reserved — db and ramose are system namespaces`,
   );
 
 // ── trait composition (type-level) ─────────────────────────────────────────

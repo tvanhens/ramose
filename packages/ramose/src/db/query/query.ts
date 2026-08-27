@@ -1163,8 +1163,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const registerMembership = (ns: AnyEntity): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
-    const base = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(
-      /[^A-Za-z0-9_]/g,
+    // `ramose$` is not a Query.rule name (`$` is rejected), so generated
+    // membership never collides with user rules regardless of clause order.
+    const base = `ramose$is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(
+      /[^A-Za-z0-9_$]/g,
       "_",
     );
     let wireName = base;

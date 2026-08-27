@@ -17,6 +17,7 @@ import {
 import {
   decideMembership,
   deriveCanonicalMembership,
+  deriveDescriptorMembership,
   deriveLocalMembership,
   fieldAllowedOn,
   fieldOwnerIdent,
@@ -241,6 +242,54 @@ describe("canonical identities", () => {
       type: ":issue",
       traits: [":taggable"],
     });
+  });
+
+  test("descriptor membership rejects a cross-catalog trait", () => {
+    const catalog = CatalogId.make("app");
+    const other = CatalogId.make("other");
+    const issue = EntityId.make({ catalog, name: "issue" });
+    const foreign = TraitId.make({ catalog: other, name: "taggable" });
+    const local = TraitId.make({ catalog, name: "taggable" });
+    const descriptor: CatalogDescriptor = {
+      id: catalog,
+      database: DatabaseId.make("db"),
+      version: CatalogVersion.make("1"),
+      fingerprint: SchemaFingerprint.make("fp"),
+      entities: [{ id: issue, traits: [foreign] }],
+      traits: [
+        { id: local, traits: [] },
+        { id: foreign, traits: [] },
+      ],
+      fields: [],
+      operations: [],
+      traitComposition: [],
+    };
+    const membership = deriveDescriptorMembership(descriptor, issue);
+    expect(Result.isFailure(membership)).toBe(true);
+    if (Result.isSuccess(membership)) return;
+    expect(membership.failure._tag).toBe("MembershipStale");
+  });
+
+  test("descriptor membership keeps same-catalog traits", () => {
+    const catalog = CatalogId.make("app");
+    const issue = EntityId.make({ catalog, name: "issue" });
+    const taggable = TraitId.make({ catalog, name: "taggable" });
+    const descriptor: CatalogDescriptor = {
+      id: catalog,
+      database: DatabaseId.make("db"),
+      version: CatalogVersion.make("1"),
+      fingerprint: SchemaFingerprint.make("fp"),
+      entities: [{ id: issue, traits: [taggable] }],
+      traits: [{ id: taggable, traits: [] }],
+      fields: [],
+      operations: [],
+      traitComposition: [],
+    };
+    const membership = deriveDescriptorMembership(descriptor, issue);
+    expect(Result.isSuccess(membership)).toBe(true);
+    if (Result.isFailure(membership)) return;
+    expect(membership.success.traits).toEqual([taggable]);
+    expect(membership.success.type.catalog).toBe(catalog);
   });
 });
 

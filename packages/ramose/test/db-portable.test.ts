@@ -235,7 +235,9 @@ describe("the `/db` barrel's public names", () => {
         // entity / field name rule (issue #184)
         "IDENT_NAME_RE",
         "isIdentName",
+        "RESERVED_ENTITY_NAMES",
         "RESERVED_FIELD_KEYS",
+        "isReservedEntityName",
         "isReservedFieldKey",
         // operations (issue #160 / #172)
         "EntityId",

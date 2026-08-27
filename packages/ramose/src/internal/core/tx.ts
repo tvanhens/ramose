@@ -661,6 +661,10 @@ export async function expandTx(
     declaredTypes.set(e, tv.v);
   }
 
+  if (clientTraitSubjects.size > 0) {
+    throw new TxError("cannot write system fact :ramose/trait", "tx/system");
+  }
+
   const typeOf = async (e: number): Promise<string | undefined> =>
     declaredTypes.get(e) ?? (await readType(e));
 
@@ -770,9 +774,8 @@ export async function expandTx(
     const out: Attribute[] = [];
     const seen = new Set<string>();
     for (const owner of owners) {
-      const prefix = `${owner}/`;
       for (const attr of db.schema.attributes()) {
-        if (!attr.ident.startsWith(prefix)) continue;
+        if (fieldOwnerIdent(attr.ident) !== owner) continue;
         if (attr.cardinality !== "one" || attr.optional) continue;
         if (seen.has(attr.ident)) continue;
         seen.add(attr.ident);
@@ -897,14 +900,22 @@ export async function expandTx(
   };
 
   const afterSchema = db.schema.clone().apply(out);
-  for (const ident of db.schema.entityIdents()) {
+  const occupiedIdents = new Set([
+    ...db.schema.entityIdents(),
+    ...afterSchema.entityIdents(),
+  ]);
+  for (const ident of occupiedIdents) {
     const before = sortIdents(db.schema.transitiveTraits(ident));
     const after = sortIdents(afterSchema.transitiveTraits(ident));
-    if (identListsEqual(before, after)) continue;
+    const kindBefore = db.schema.kindOf(ident);
+    const kindAfter = afterSchema.kindOf(ident);
+    if (kindBefore === kindAfter && identListsEqual(before, after)) continue;
     if (await typeOccupied(ident)) {
       const failure = occupiedCompositionFailure(ident, before, after);
       throw new TxError(
-        `cannot change trait composition of occupied type ${failure.type}`,
+        kindBefore === kindAfter
+          ? `cannot change trait composition of occupied type ${failure.type}`
+          : `cannot change kind of occupied type ${failure.type}`,
         "tx/occupied",
       );
     }

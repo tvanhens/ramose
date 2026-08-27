@@ -10,9 +10,12 @@ import { describe, expect, test } from "bun:test";
 import {
   Entity,
   IDENT_NAME_RE,
+  RESERVED_ENTITY_NAMES,
   RESERVED_FIELD_KEYS,
   Schema,
+  Trait,
   isIdentName,
+  isReservedEntityName,
   isReservedFieldKey,
   string,
   type AnyEntity,
@@ -58,6 +61,15 @@ describe("ident names", () => {
     expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
   });
+
+  test("db and ramose are reserved entity / trait namespaces", () => {
+    expect([...RESERVED_ENTITY_NAMES]).toEqual(["db", "ramose"]);
+    for (const name of RESERVED_ENTITY_NAMES) {
+      expect(isReservedEntityName(name)).toBe(true);
+      expect(isIdentName(name)).toBe(true);
+    }
+    expect(isReservedEntityName("todo")).toBe(false);
+  });
 });
 
 describe("Entity()", () => {
@@ -86,6 +98,23 @@ describe("Entity()", () => {
     const name: string = "my ns/x";
     expect(() => Entity(name, { title: string() })).toThrow(
       /invalid entity name "my ns\/x"/,
+    );
+  });
+
+  test("rejects system namespaces as entity or trait names", () => {
+    const db: string = "db";
+    const ramose: string = "ramose";
+    expect(() => Entity(db, { name: string() })).toThrow(
+      /entity name "db" is reserved/,
+    );
+    expect(() => Entity(ramose, { name: string() })).toThrow(
+      /entity name "ramose" is reserved/,
+    );
+    expect(() => Trait(db, { name: string() })).toThrow(
+      /trait name "db" is reserved/,
+    );
+    expect(() => Trait(ramose, { name: string() })).toThrow(
+      /trait name "ramose" is reserved/,
     );
   });
 

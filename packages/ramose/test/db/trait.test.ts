@@ -322,6 +322,9 @@ describe("processTx membership and required trait fields", () => {
       conn.transact([[":db/add", e, ":ramose/trait", ":soft"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
     await expect(
+      conn.transact([[":db/add", e, ":ramose/trait", ":taggable"]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
       conn.transact([[":db/retract", e, ":ramose/type", ":issue"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
     await expect(
@@ -371,9 +374,9 @@ describe("processTx membership and required trait fields", () => {
       pipe(Query.entities(Issue), Query.select({ id: Issue.id })),
     );
     const { query } = lowerQueryObject(listing);
-    expect(query.where).toEqual([["isIssue", "?q0"]]);
+    expect(query.where).toEqual([["ramose$isIssue", "?q0"]]);
     expect(query.rules).toEqual([
-      [["isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]],
+      [["ramose$isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]],
     ]);
 
     const conn = await Connection.create();
@@ -592,6 +595,21 @@ describe("processTx membership and required trait fields", () => {
     ).rejects.toMatchObject({
       code: "tx/occupied",
       message: expect.stringContaining("cannot change trait composition of occupied type :issue"),
+    });
+  });
+
+  test("occupied type kind cannot change", async () => {
+    const conn = await setup();
+    const created = txBuilder(Board);
+    Effect.runSync(created.put(Issue, { title: "Fix", tag: "a" }));
+    await conn.transact([...txOps(created)]);
+    await expect(
+      conn.transact([
+        { ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/trait" },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/occupied",
+      message: expect.stringContaining("cannot change kind of occupied type :issue"),
     });
   });
 
