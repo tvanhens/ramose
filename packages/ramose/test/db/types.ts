@@ -472,11 +472,11 @@ movies.pull([User.age, 30], { name: User.name });
 // @ts-expect-error same, spelled as the ident
 movies.pull([":user/age", 30], { name: User.name });
 
-/** `TxHandle<C>` — the handle `tx.entity()` returns: `eid`, `set`, `remove`. */
+/** `TxHandle<C>` — the handle `tx.entity()` returns: `eid`, `set`, `cas`, `remove`. */
 export type _entityKeys = Expect<
   Equal<
     Exclude<keyof TxHandle<typeof Movies>, "_tag">,
-    "eid" | "set" | "remove" | "delete"
+    "eid" | "set" | "cas" | "remove" | "delete"
   >
 >;
 export type _entityEid = Expect<Extends<TxHandle<typeof Movies>["eid"], EntityRef<typeof Movies>>>;

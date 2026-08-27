@@ -10,6 +10,7 @@ import type { AnySchema } from "./Schema.ts";
 import { TxRejected } from "./Errors.ts";
 import type {
   AttrAtIdent,
+  CardAtIdent,
   CatalogIdent,
   EntityRef,
   FieldTargetEntity,
@@ -30,6 +31,14 @@ import type {
 export type TxField<C extends AnySchema> =
   | { readonly ident: CatalogIdent<C> }
   | CatalogIdent<C>;
+
+/**
+ * Field slot for {@link Tx.cas} / {@link TxHandle.cas}: only cardinality-one
+ * idents. Card-many is a type error on a concrete catalog.
+ */
+export type TxCasField<C extends AnySchema> = {
+  [I in CatalogIdent<C>]: CardAtIdent<C, I> extends "one" ? { readonly ident: I } | I : never;
+}[CatalogIdent<C>];
 
 type IdentOfTxField<C extends AnySchema, A> = A extends {
   readonly ident: infer I extends string;
@@ -208,6 +217,7 @@ export type TxOp =
   | readonly [":db/retract", unknown, string]
   | readonly [":db/retract", unknown, string, unknown]
   | readonly [":db/retractEntity", unknown]
+  | readonly [":db/cas", unknown, string, unknown, unknown]
   | TxMap;
 
 export interface TxSpec {
@@ -259,6 +269,12 @@ export interface TxHandle<C extends AnySchema = AnySchema> {
     value: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
+  cas<const A extends TxCasField<C>>(
+    field: A,
+    expected: TxValue<C, A, TxHandle<C>> | null,
+    replacement: TxValue<C, A, TxHandle<C>>,
+  ): Effect.Effect<void>;
+
   remove<const A extends TxField<C>>(
     field: A,
     value?: TxValue<C, A, TxHandle<C>>,
@@ -291,6 +307,13 @@ export interface Tx<C extends AnySchema = AnySchema> {
     e: TxEntity<C>,
     field: A,
     value: TxValue<C, A, TxHandle<C>>,
+  ): Effect.Effect<void>;
+
+  cas<const A extends TxCasField<C>>(
+    e: TxEntity<C>,
+    field: A,
+    expected: TxValue<C, A, TxHandle<C>> | null,
+    replacement: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   remove<const A extends TxField<C>>(
@@ -517,6 +540,16 @@ const makeHandle = <C extends AnySchema>(
     Effect.sync(() => {
       ops.push([":db/add", eid, lowerAttr(field), lowerWriteValue(value)]);
     }),
+  cas: (field: unknown, expected: unknown, replacement: unknown) =>
+    Effect.sync(() => {
+      ops.push([
+        ":db/cas",
+        eid,
+        lowerAttr(field),
+        expected == null ? null : lowerWriteValue(expected),
+        lowerWriteValue(replacement),
+      ]);
+    }),
   remove: (field: unknown, value?: unknown) =>
     Effect.sync(() => {
       if (value === undefined) {
@@ -554,6 +587,16 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
           resolveEntity(e),
           lowerAttr(field),
           lowerWriteValue(value),
+        ]);
+      }),
+    cas: (e: unknown, field: unknown, expected: unknown, replacement: unknown) =>
+      Effect.sync(() => {
+        ops.push([
+          ":db/cas",
+          resolveEntity(e),
+          lowerAttr(field),
+          expected == null ? null : lowerWriteValue(expected),
+          lowerWriteValue(replacement),
         ]);
       }),
     remove: (e: unknown, field: unknown, value?: unknown) =>

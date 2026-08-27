@@ -58,6 +58,9 @@ const writes = (async () => {
   const e = op.entity();
   e.set(User.name, "Ada");
   e.set(User.age, 36);
+  op.cas(e, User.age, 36, 37);
+  e.cas(User.age, null, 36);
+  op.self.cas(User.age, null, 36);
   e.set(Meta.source, "import");
   // bag: Movie.title on a user handle is legal — do not close the world
   e.set(Movie.title, "not a movie but types allow any ns");
@@ -104,6 +107,18 @@ export type _writesHandle = Expect<
   e.set(User.friends, true);
   // @ts-expect-error name is string, not number
   op.self.set(User.name, 42);
+  // @ts-expect-error cas is cardinality-one only
+  e.cas(User.friends, null, userId);
+  // @ts-expect-error cas is cardinality-one only
+  op.cas(e, User.friends, null, userId);
+  // @ts-expect-error cas is cardinality-one only
+  op.self.cas(User.friends, null, userId);
+  // @ts-expect-error age is long, not string
+  e.cas(User.age, "nope", 37);
+  // @ts-expect-error replacement type
+  op.self.cas(User.age, 36, "nope");
+  // @ts-expect-error unknown attr
+  e.cas(User.nope, 1, 2);
 }
 
 // ── ref values name a not-yet-existing entity ──────────────────────────────

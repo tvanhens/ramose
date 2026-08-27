@@ -10,6 +10,7 @@
  *   [":db/update", e]                    (existence ping; no write)
  *   [":db/retract", e, a, v?]            (v omitted → retract all values)
  *   [":db/retractEntity", e]             (also retracts refs to e; components recursively)
+ *   [":db/cas", e, a, expected, replacement]  (card-one; compare vs db-before)
  *   { ":db/id": e?, ":user/name": "Bob", ":user/friends": [ref, ...], ":user/_friends": [ref] }
  *
  * Entity forms: eid (number) | ident (":..." string) | tempid (other string)
@@ -21,6 +22,8 @@
  *   - cardinality-one asserts retract the previous value implicitly
  *   - redundant asserts / retracts of absent facts are elided
  *   - :db.unique/value conflicts throw
+ *   - :db/cas compares expected against db-before only (not the within-tx overlay);
+ *     a match is an ordinary emitAdd (last matching CAS on (e,a) wins)
  */
 
 import {
@@ -66,10 +69,12 @@ type EForm = number | string | unknown[];
 
 /** A tx item after map/reverse-ref expansion, before entity/value resolution. */
 export interface TxOp {
-  kind: "add" | "update" | "retract" | "retractEntity";
+  kind: "add" | "update" | "retract" | "retractEntity" | "cas";
   e: EForm;
   a?: string | number;
   v?: unknown;
+  /** CAS expected; `null` / `undefined` means “assert only when absent”. */
+  expected?: unknown;
   hasV?: boolean;
 }
 
@@ -175,6 +180,21 @@ export function flattenTxData(txData: TxData): TxOp[] {
         case ":db/retractEntity":
         case ":db.fn/retractEntity":
           ops.push({ kind: "retractEntity", e: e as EForm });
+          break;
+        case ":db/cas":
+          if (item.length !== 5) throw new TxError(":db/cas needs [op e a expected replacement]");
+          {
+            const expected = item[3];
+            const replacement = item[4];
+            ops.push({
+              kind: "cas",
+              e: e as EForm,
+              a: a as string | number,
+              v: isPlainObject(replacement) ? expandMap(replacement as Record<string, unknown>) : replacement,
+              expected: isPlainObject(expected) ? expandMap(expected as Record<string, unknown>) : expected,
+              hasV: true,
+            });
+          }
           break;
         default:
           throw new TxError(`unknown tx op ${String(op)}`);
@@ -489,11 +509,11 @@ export async function expandTx(
     }
   };
 
-  // Tempid subjects of add/update — a ref may resolve these. A tempid that
+  // Tempid subjects of add/update/cas — a ref may resolve these. A tempid that
   // appears only as a ref value is a dangling mint and is rejected.
   const subjectTempids = new Set<string>();
   for (const op of ops) {
-    if (op.kind !== "add" && op.kind !== "update") continue;
+    if (op.kind !== "add" && op.kind !== "update" && op.kind !== "cas") continue;
     if (isTempid(op.e) && !TX_TEMPID.has(op.e)) {
       subjectTempids.add(aliasOf(op.e));
       subjectTempids.add(op.e);
@@ -722,6 +742,47 @@ export async function expandTx(
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
       await emitAdd(e, attr, tv);
+      continue;
+    }
+    if (op.kind === "cas") {
+      const attr = attrOf(op.a);
+      if (attr.cardinality !== "one") {
+        throw new TxError(`:db/cas is cardinality-one only (${attr.ident})`, "tx/invalid");
+      }
+      const e = await resolveEntity(op.e, true);
+      if (e === undefined) continue;
+      await assertWriteTarget(e, attr, true);
+      const replacementTv = await valueFor(attr, op.v, true);
+      validateSchemaValue(attr, replacementTv);
+      // Compare against db-before only — same-tx adds/retracts/CAS do not
+      // change later CAS expecteds. Matching replacements last-win via emitAdd.
+      const before = new Map<string, Datom>();
+      for (const d of await db.datomsArray(Index.EAVT, { e, a: attr.id })) {
+        before.set(valueKey(d.vt, d.v), d);
+      }
+      const expectedAbsent = op.expected === null || op.expected === undefined;
+      let expectedLabel = "absent";
+      let match = false;
+      if (expectedAbsent) {
+        match = before.size === 0;
+      } else {
+        const expectedTv = await valueFor(attr, op.expected, true);
+        expectedLabel = String(expectedTv.v);
+        match = before.size === 1 && before.has(valueKey(expectedTv.vt, expectedTv.v));
+      }
+      if (!match) {
+        const found =
+          before.size === 0
+            ? "absent"
+            : before.size > 1
+              ? "multiple values"
+              : String(before.values().next().value!.v);
+        throw new TxError(
+          `CAS conflict on ${attr.ident}: expected ${expectedLabel}, found ${found}`,
+          "tx/cas-conflict",
+        );
+      }
+      await emitAdd(e, attr, replacementTv);
       continue;
     }
     const attr = attrOf(op.a);

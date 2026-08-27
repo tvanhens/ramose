@@ -161,6 +161,7 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     effect,
     entity: tx.entity,
     set: tx.set,
+    cas: tx.cas,
     remove: tx.remove,
     delete: tx.delete,
     put: tx.put,
@@ -178,6 +179,9 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
   eid: entity.eid as OpHandle["eid"],
   set: (field, value) => {
     runSync(entity.set(field, value));
+  },
+  cas: (field, expected, replacement) => {
+    runSync(entity.cas(field, expected, replacement));
   },
   remove: (field, value) => {
     runSync(entity.remove(field, value));
@@ -204,6 +208,9 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
     tempid,
     set: (e, field, value) => {
       runSync(op.set(e, field, value));
+    },
+    cas: (e, field, expected, replacement) => {
+      runSync(op.cas(e, field, expected, replacement));
     },
     remove: (e, field, value) => {
       runSync(op.remove(e, field, value));
