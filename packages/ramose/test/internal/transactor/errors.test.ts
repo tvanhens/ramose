@@ -30,6 +30,15 @@ describe("transactor errors: classification", () => {
     expect(e.message).toBe("unknown attribute :k/nope");
   });
 
+  test("tx/occupied-type → TxRejected 409", () => {
+    const e = toHttpError(
+      new TxError("cannot change trait composition of occupied type :issue", "tx/occupied-type"),
+    );
+    expect(e._tag).toBe("TxRejected");
+    expect((e as TxRejected).code).toBe("tx/occupied-type");
+    expect(statusOf(e as TxRejected)).toBe(409);
+  });
+
   test("TransactorDeadError → TransactorDead with retryAfterMs", () => {
     const e = toHttpError(new TransactorDeadError("log write failed"));
     expect(e._tag).toBe("TransactorDead");

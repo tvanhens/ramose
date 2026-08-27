@@ -193,6 +193,28 @@ export const sealUnit = async (
   template: PolicyTemplateIR = templateOf(),
 ): Promise<InstalledCatalogUnitV1> => seal(descriptor, await install(descriptor, template));
 
+/** Second-generation catalog: issue drops `taggable` (unoccupied-type retract). */
+export const reducedCatalogDescriptor = async (): Promise<CatalogDescriptor> => {
+  const tables: Omit<CatalogDescriptor, "fingerprint"> = {
+    ...catalogSchemaTables(),
+    version: CatalogVersion.make("2"),
+    entities: [
+      { id: entity("user"), traits: [] },
+      { id: entity("issue"), traits: [] },
+    ],
+    traitComposition: [],
+  };
+  const digest = SchemaFingerprint.make(
+    await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        fingerprint: SchemaFingerprint.make("placeholder"),
+      }),
+    ),
+  );
+  return { ...tables, fingerprint: digest };
+};
+
 /** Second-generation catalog: issue also composes `named`. */
 export const evolvedCatalogDescriptor = async (): Promise<CatalogDescriptor> => {
   const named = trait("named");

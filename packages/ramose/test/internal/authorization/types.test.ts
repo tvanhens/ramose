@@ -144,6 +144,7 @@ export type _noPublicAuthorization = Expect<
       | "schemaTxFromCatalog"
       | "catalogPublicationOf"
       | "catalogPublicationFromUnit"
+      | "catalogCompositionRetracts"
     >,
     never
   >
@@ -344,6 +345,9 @@ export type _noPureAssembleExport = Expect<
 export type _catalogUnitOnBarrel = Expect<Extends<"InstalledCatalogUnit", keyof AuthExports>>;
 export type _sealCatalogUnitOnBarrel = Expect<Extends<"sealInstalledCatalogUnit", keyof AuthExports>>;
 export type _publishCatalogUnitOnBarrel = Expect<Extends<"publishCatalogUnit", keyof AuthExports>>;
+export type _catalogCompositionRetractsOnBarrel = Expect<
+  Extends<"catalogCompositionRetracts", keyof AuthExports>
+>;
 export type _assemblePublicationOnBarrel = Expect<
   Extends<"assembleCatalogPublicationTx", keyof AuthExports>
 >;
@@ -1052,6 +1056,7 @@ describe("legacy authorization names cannot be imported", () => {
     expect("resolveCatalogHead" in ir).toBe(true);
     expect("resolveInstalledCatalogUnit" in ir).toBe(true);
     expect("schemaTxFromCatalog" in ir).toBe(true);
+    expect("catalogCompositionRetracts" in ir).toBe(true);
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
     expect("CatalogCasConflict" in ir).toBe(false);

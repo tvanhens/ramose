@@ -101,6 +101,7 @@ const KILLED = [
   "schemaTxFromCatalog",
   "catalogPublicationOf",
   "catalogPublicationFromUnit",
+  "catalogCompositionRetracts",
 ];
 
 describe("the `ramose` barrel", () => {

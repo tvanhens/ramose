@@ -273,3 +273,99 @@ describe("transactor: TxAck datoms + clientTxId", () => {
     expect(next.t).toBe(first.t + 1);
   });
 });
+
+describe("transactor: /publish-catalog", () => {
+  const publishBody = async (unit: unknown, expectedHead: number | null = null) => {
+    const { encodeInstalledCatalogUnit } = await import("../../../src/internal/authorization/index.ts");
+    const encoded =
+      unit !== null && typeof unit === "object" && "_tag" in (unit as object)
+        ? encodeInstalledCatalogUnit(unit as Parameters<typeof encodeInstalledCatalogUnit>[0])
+        : unit;
+    return JSON.stringify({ unit: encoded, expectedHead });
+  };
+
+  test("first publish installs schema and catalog head", async () => {
+    const { sealUnit } = await import("../authorization/catalog-unit-fixtures.ts");
+    const { RAMOSE_CATALOG_HEAD_IDENT, RAMOSE_CATALOG } = await import("../../../src/internal/core/schema.ts");
+    const h = new Harness();
+    await h.transactor.init();
+    const unit = await sealUnit();
+    const r = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(unit) }),
+    );
+    expect(r.status).toBe(200);
+    const ack = (await r.json()) as { t: number };
+    expect(ack.t).toBe(2);
+    const db = h.transactor.connection.db();
+    expect(db.schema.entid(":issue/title")).toBeDefined();
+    const catalog = await db.entity(RAMOSE_CATALOG);
+    expect(typeof catalog?.[RAMOSE_CATALOG_HEAD_IDENT]).toBe("number");
+  });
+
+  test("decode / verify failures are 400, not 500", async () => {
+    const { sealUnit } = await import("../authorization/catalog-unit-fixtures.ts");
+    const h = new Harness();
+    await h.transactor.init();
+    const missing = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: JSON.stringify({ nope: 1 }) }),
+    );
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { tag: string }).tag).toBe("BadRequest");
+    const malformed = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: JSON.stringify({ unit: { _tag: "nope" } }) }),
+    );
+    expect(malformed.status).toBe(400);
+    const unit = await sealUnit();
+    const { encodeInstalledCatalogUnit } = await import("../../../src/internal/authorization/index.ts");
+    const forged = { ...encodeInstalledCatalogUnit(unit), unitHash: "0".repeat(64) };
+    const badHash = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: JSON.stringify({ unit: forged }) }),
+    );
+    expect(badHash.status).toBe(400);
+    expect(((await badHash.json()) as { tag: string }).tag).toBe("BadRequest");
+    expect(h.transactor.t).toBe(1);
+  });
+
+  test("ordinary /transact cannot write catalog head", async () => {
+    const { RAMOSE_CATALOG_HEAD_IDENT, RAMOSE_CATALOG_IDENT } = await import(
+      "../../../src/internal/core/schema.ts"
+    );
+    const h = new Harness();
+    await h.transactor.init();
+    const r = await h.transactor.handleRequest(
+      new Request("https://t/transact", {
+        method: "POST",
+        body: JSON.stringify({
+          tx: [[":db/cas", [":db/ident", RAMOSE_CATALOG_IDENT], RAMOSE_CATALOG_HEAD_IDENT, null, 1000]],
+        }),
+      }),
+    );
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { code: string }).code).toBe("tx/system");
+  });
+
+  test("occupied type + changed closure is 409 tx/occupied-type", async () => {
+    const { sealUnit, evolvedCatalogDescriptor } = await import(
+      "../authorization/catalog-unit-fixtures.ts"
+    );
+    const h = new Harness();
+    await h.transactor.init();
+    const v1 = await sealUnit();
+    const first = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(v1) }),
+    );
+    expect(first.status).toBe(200);
+    await h.transactor.transact([
+      { ":db/id": "u", ":user/authId": "ada" },
+      { ":db/id": "i", ":issue/title": "Bug", ":issue/owner": "u" },
+    ]);
+    const t = h.transactor.t;
+    const v2 = await sealUnit(await evolvedCatalogDescriptor());
+    const occupied = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(v2) }),
+    );
+    expect(occupied.status).toBe(409);
+    expect(((await occupied.json()) as { tag: string; code: string }).code).toBe("tx/occupied-type");
+    expect(h.transactor.t).toBe(t);
+  });
+});

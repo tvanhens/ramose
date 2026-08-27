@@ -151,8 +151,9 @@ const forward = async (
             headers,
             body,
           });
-    // transact/query must surface the real DO status (409 cas-conflict, 400
-    // tx/invalid, 503 TransactorDead). checkpoint/abort stay fail-closed.
+    // transact/query/publish-catalog must surface the real DO status (409
+    // cas-conflict / occupied-type, 400 decode, 503 TransactorDead).
+    // checkpoint/abort stay fail-closed.
     if (!res.ok && opts.passThrough !== true) {
       throw new UpstreamError({ status: res.status, body: await res.text() });
     }
@@ -200,6 +201,11 @@ export const handleTestAdmin = async (
   }
   if (rest === "/transact") {
     return forward(request, env, db, "transactor", "/transact", await request.text(), {
+      passThrough: true,
+    });
+  }
+  if (rest === "/publish-catalog") {
+    return forward(request, env, db, "transactor", "/publish-catalog", await request.text(), {
       passThrough: true,
     });
   }

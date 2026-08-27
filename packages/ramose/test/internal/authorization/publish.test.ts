@@ -35,6 +35,7 @@ import {
 import {
   catalogDescriptor,
   evolvedCatalogDescriptor,
+  reducedCatalogDescriptor,
   sealUnit,
 } from "./catalog-unit-fixtures.ts";
 
@@ -238,19 +239,28 @@ describe("fail closed", () => {
     expect(corrupt.message).toMatch(/JSON|UTF-8|hash|unit|decode|Expected|Struct/i);
   });
 
-  test("unverified document is rejected before assemble", async () => {
+  test("structurally decoded sealed unit is re-verified and publishes", async () => {
     const conn = await Connection.create();
     const unit = await sealUnit();
     const structural = decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(unit));
     expect(structural._tag).toBe("Success");
     if (structural._tag !== "Success") return;
-    const unverified: InstalledCatalogUnit = structural.success;
-    await expect(publish(conn, unverified)).resolves.toMatchObject({ t: 2 });
+    const decoded: InstalledCatalogUnit = structural.success;
+    await expect(publish(conn, decoded)).resolves.toMatchObject({ t: 2 });
+    expect(await resolveCatalogHead(conn.db())).toBeTypeOf("number");
+  });
 
-    const forged = { ...unverified, unitHash: "0".repeat(64) } as InstalledCatalogUnit;
+  test("forged unit hash is rejected before assemble", async () => {
+    const conn = await Connection.create();
+    const unit = await sealUnit();
+    const structural = decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(unit));
+    expect(structural._tag).toBe("Success");
+    if (structural._tag !== "Success") return;
+    const forged = { ...structural.success, unitHash: "0".repeat(64) } as InstalledCatalogUnit;
     const t = conn.t;
     await expect(publish(conn, forged, null)).rejects.toBeInstanceOf(CatalogUnitCorrupt);
     expect(conn.t).toBe(t);
+    expect(await resolveCatalogHead(conn.db())).toBeNull();
   });
 
   test("unit/head disagreement: stored hash does not match bytes", async () => {
@@ -367,6 +377,22 @@ describe("occupied trait-closure", () => {
     expect(conn.db().schema.transitiveTraits(":issue")).toEqual([":named", ":taggable"]);
     expect(conn.db().schema.kindOf(":named")).toBe(RAMOSE_KIND_TRAIT);
   });
+
+  test("unoccupied type can drop a trait; transitiveTraits and new creates match", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    await conn.transact([{ ":db/id": "u", ":user/authId": "ada" }]);
+    const v2 = await sealUnit(await reducedCatalogDescriptor());
+    await publish(conn, v2);
+    expect(conn.db().schema.composesOf(":issue")).toEqual([]);
+    expect(conn.db().schema.transitiveTraits(":issue")).toEqual([]);
+    const created = await conn.transact([
+      { ":db/id": "i", ":issue/title": "Bug", ":issue/owner": [":user/authId", "ada"] },
+    ]);
+    const issue = await conn.db().entity(created.tempids.i);
+    expect(issue?.[":ramose/type"]).toBe(":issue");
+    expect(issue?.[":ramose/trait"]).toBeUndefined();
+  });
 });
 
 describe("public barrels", () => {
@@ -382,6 +408,7 @@ describe("public barrels", () => {
       "resolveCatalogHead",
       "resolveInstalledCatalogUnit",
       "schemaTxFromCatalog",
+      "catalogCompositionRetracts",
       "compareAndSwapCatalogUnit",
       "installT",
     ] as const) {

@@ -17,8 +17,9 @@
  *
  * HTTP surface (the DO shell forwards `fetch` here; `/subscribe` upgrades are
  * done by the shell, which then calls `onSubscribe`):
- *   POST /transact   { tx: TxData, clientTxId? }   → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
- *   POST /provision  { principal }                 → { eid, class }  (peer-owned upsert)
+ *   POST /transact         { tx: TxData, clientTxId? }   → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
+ *   POST /publish-catalog  { unit, expectedHead?, clientTxId? }  (internal; reconstructs the publication tx)
+ *   POST /provision        { principal }                 → { eid, class }  (peer-owned upsert)
  *   GET  /info                        → { t, root, novelty, logWatermark, ... }
  *   GET  /log?from=&to=               → { entries: NoveltyFrameV1[] }
  *   POST /admin/index                 → run the indexer now
@@ -27,12 +28,14 @@
 
 import {
   Connection,
+  type CatalogPublication,
   type Datom,
   type LogEntry,
   type NoveltyFrameV1,
   type RootRecord,
   type Roots,
   type TxData,
+  TxError,
   bootstrapDatoms,
   decodeLogChunk,
   emptyRoots,
@@ -50,8 +53,18 @@ import {
   toWireDatom,
 } from "../core/index.ts";
 import type { Principal } from "../../worker/auth.ts";
+import {
+  assembleCatalogPublicationTx,
+  catalogCompositionRetracts,
+  catalogPublicationFromUnit,
+  decodeInstalledCatalogUnitResult,
+  verifyInstalledCatalogUnit,
+  type InstalledCatalogUnitV1,
+} from "../authorization/index.ts";
+import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "../authorization/failures.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
@@ -133,6 +146,15 @@ interface Pending {
    * raw-transact data deny (schema / superuser only).
    */
   fromOperation?: boolean | undefined;
+  /**
+   * Privileged catalog publication. Commit uses `conn.publishCatalog`
+   * (`{ catalogPublication }`) and never `{ fromOperation: true }`.
+   * When `catalogUnit` is set the commit loop reconstructs the tx from
+   * the verified unit against db-before (retracts + schema + CAS).
+   */
+  catalogPublication?: CatalogPublication | undefined;
+  catalogUnit?: InstalledCatalogUnitV1 | undefined;
+  expectedHead?: number | null | undefined;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
 }
@@ -345,7 +367,14 @@ export class Transactor {
     tx: TxData,
     principal?: Principal,
     clientTxId?: string,
-    extras?: { readonly opOutput?: unknown; readonly system?: boolean; readonly fromOperation?: boolean },
+    extras?: {
+      readonly opOutput?: unknown;
+      readonly system?: boolean;
+      readonly fromOperation?: boolean;
+      readonly catalogPublication?: CatalogPublication;
+      readonly catalogUnit?: InstalledCatalogUnitV1;
+      readonly expectedHead?: number | null;
+    },
   ): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
@@ -361,6 +390,9 @@ export class Transactor {
         opOutput: extras?.opOutput,
         system: extras?.system || undefined,
         fromOperation: extras?.fromOperation || undefined,
+        catalogPublication: extras?.catalogPublication,
+        catalogUnit: extras?.catalogUnit,
+        expectedHead: extras?.expectedHead,
         resolve,
         reject,
       });
@@ -368,6 +400,23 @@ export class Transactor {
         this.committing = true;
         void this.commitLoop();
       }
+    });
+  }
+
+  /**
+   * Privileged catalog publication. The commit loop reconstructs the tx
+   * from the verified unit so retracts see db-before.
+   */
+  publishCatalog(
+    unit: InstalledCatalogUnitV1,
+    expectedHead: number | null,
+    principal?: Principal,
+    clientTxId?: string,
+  ): Promise<TxAck> {
+    return this.transact([], principal, clientTxId, {
+      catalogPublication: catalogPublicationFromUnit(unit),
+      catalogUnit: unit,
+      expectedHead,
     });
   }
 
@@ -451,10 +500,25 @@ export class Transactor {
           try {
             if (!p.system) await this.applyProvision(p, entries);
             const tx = await this.authorize(p);
-            const rep = await this.conn.transact(
-              tx,
-              p.fromOperation === true ? { fromOperation: true } : {},
-            );
+            const publication = p.catalogPublication;
+            const unit = p.catalogUnit;
+            if (publication !== undefined && unit === undefined) {
+              throw new TxError("catalog publication requires a verified unit", "tx/invalid");
+            }
+            const rep =
+              publication !== undefined && unit !== undefined
+                ? await this.conn.publishCatalog(
+                    assembleCatalogPublicationTx(
+                      unit,
+                      p.expectedHead ?? null,
+                      await catalogCompositionRetracts(this.conn.db(), unit.catalog),
+                    ),
+                    publication,
+                  )
+                : await this.conn.transact(
+                    tx,
+                    p.fromOperation === true ? { fromOperation: true } : {},
+                  );
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
             const ack: TxAck = {
@@ -740,6 +804,37 @@ export class Transactor {
         opOutput: body.opOutput,
         fromOperation: body.fromOperation === true,
       });
+      return json(ack);
+    }
+    if (path === "/publish-catalog" && request.method === "POST") {
+      const body = fromJson(await request.json()) as {
+        unit?: unknown;
+        expectedHead?: unknown;
+        clientTxId?: unknown;
+        principal?: unknown;
+      };
+      if (body === null || typeof body !== "object" || body.unit === undefined || body.unit === null) {
+        throw new BadRequest({ message: "body must be { unit }" });
+      }
+      const decoded = decodeInstalledCatalogUnitResult(body.unit);
+      if (Result.isFailure(decoded)) {
+        throw new BadRequest({ message: decoded.failure.message });
+      }
+      let verified: InstalledCatalogUnitV1;
+      try {
+        verified = await Effect.runPromise(verifyInstalledCatalogUnit(decoded.success));
+      } catch (err) {
+        if (err instanceof InvalidIR || err instanceof CatalogMismatch || err instanceof CatalogUnitCorrupt) {
+          throw new BadRequest({ message: err.message });
+        }
+        throw err;
+      }
+      const expectedHead = body.expectedHead === undefined || body.expectedHead === null ? null : body.expectedHead;
+      if (expectedHead !== null && typeof expectedHead !== "number") {
+        throw new BadRequest({ message: "expectedHead must be a number or null" });
+      }
+      const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
+      const ack = await this.publishCatalog(verified, expectedHead, asPrincipal(body.principal), clientTxId);
       return json(ack);
     }
     if (path === "/provision" && request.method === "POST") {
