@@ -478,7 +478,7 @@ describe("BodyFailed carries the body's throw", () => {
       (e: unknown) => e,
     );
 
-  // `worker/operations.ts` unwraps with `err instanceof BodyFailed`, so the
+  // Callers unwrap with `err instanceof BodyFailed`, so the
   // class identity has to survive the rejection, not just the shape.
   test("runPromise rejects with the BodyFailed instance", async () => {
     const thrown = new OperationRejected({ message: "no", operation: "x" });

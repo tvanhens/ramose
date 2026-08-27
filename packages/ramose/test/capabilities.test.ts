@@ -14,7 +14,6 @@ import { Self } from "alchemy/Self";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
 import { Operation, Query } from "../src/db/index.ts";
 import * as Schema from "effect/Schema";
@@ -25,14 +24,13 @@ import { Movies, User } from "./db/fixture.ts";
 const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1, output: {} };
 
 /** A server whose attributes are literal Outputs, as after a deploy. */
-const server = (token?: string): Server =>
+const server = (): Server =>
   ({
     LogicalId: "Ramose",
     FQN: "app/Ramose",
     Type: "Ramose.Server",
     url: Output.literal("https://peer.example.com"),
     workerName: Output.literal("ramose-peer"),
-    token: Output.literal(token === undefined ? undefined : Redacted.make(token)),
   }) as unknown as Server;
 
 const evaluate = (expr: unknown): unknown => {
@@ -110,7 +108,7 @@ describe("Databases over a service binding", () => {
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* Databases(server("s3cret"));
+        const ramose = yield* Databases(server());
         expect(calls).toEqual([]);
         return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(
@@ -131,7 +129,7 @@ describe("Databases over a service binding", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${SERVICE_ORIGIN}/db/movies/op`);
     expect(calls[0].method).toBe("POST");
-    expect(calls[0].headers.authorization).toBe("Bearer s3cret");
+    expect(calls[0].headers.authorization).toBeUndefined();
   });
 
   test("a missing service binding is a defect, not a DbError", async () => {
@@ -178,7 +176,7 @@ describe("Databases over HTTPS", () => {
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ramose = yield* Databases(server("s3cret"));
+        const ramose = yield* Databases(server());
         return yield* ramose.db("movies", Movies).effect.run(addAda, {});
       }).pipe(Effect.provide(layer.pipe(Layer.provideMerge(runtimeLayer())))),
     );
@@ -186,7 +184,7 @@ describe("Databases over HTTPS", () => {
     expect(report.t).toBe(7);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("https://peer.example.com/db/movies/op");
-    expect(calls[0].headers.authorization).toBe("Bearer s3cret");
+    expect(calls[0].headers.authorization).toBeUndefined();
   });
 });
 

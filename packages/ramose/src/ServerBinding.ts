@@ -7,20 +7,19 @@
 import type * as runtime from "@cloudflare/workers-types";
 import * as Effect from "effect/Effect";
 import type { Server } from "./Server.ts";
-import { bindToken, envKeys } from "./ServerRuntime.ts";
+import { envKeys } from "./ServerRuntime.ts";
 import type { ServerSource } from "./Source.ts";
 
 /** The origin the server never looks at — service-binding dispatch ignores the host. */
 export const SERVICE_ORIGIN = "https://ramose.internal";
 
-/** The service-binding {@link ServerSource}: `env[LogicalId].fetch`, token from env. */
+/** The service-binding {@link ServerSource}: `env[LogicalId].fetch`. */
 export const makeBindingSource = (
   env: Record<string, any>,
   server: Server,
 ): Effect.Effect<ServerSource> =>
   Effect.gen(function* () {
     const keys = envKeys(server);
-    const token = yield* bindToken(server);
     const missing = () =>
       new Error(
         `ramose: no service binding "${keys.service}" on this Worker — the server's worker must be a Cloudflare.Worker`,
@@ -29,10 +28,9 @@ export const makeBindingSource = (
       endpoint: Effect.suspend(() =>
         env[keys.service] === undefined
           ? Effect.die(missing())
-          : Effect.map(token, (value) => ({
+          : Effect.succeed({
               url: SERVICE_ORIGIN,
-              token: value,
-            })),
+            }),
       ),
       fetch: (url, init) => {
         const peer = (env as Record<string, runtime.Fetcher | undefined>)[

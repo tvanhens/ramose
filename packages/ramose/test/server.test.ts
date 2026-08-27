@@ -19,28 +19,13 @@ import {
   checkAuth,
   compareAuthToWorker,
   compareOperationsToHealth,
-  compareOperationsToPolicy,
-  compareWritesToWorker,
   coverageTimeoutMs,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
   isServer,
-  ownedAuthEnv,
-  ownedPeerEnv,
   PROBE_DEFAULTS,
   resolveWorker,
-  resolveWrites,
   Server,
-  TOKEN_ENV_KEY,
-  tokenEnv,
-  WRITES_ALL_POLICY_WARNING,
-  WRITES_ENV_KEY,
-  unrecognizedWritesWarning,
-  unrecognizedWritesWarningMessage,
-  warnUnrecognizedWrites,
-  warnWritesAllPolicy,
-  writesAllPolicyWarning,
-  writesEnv,
   type ServerProps,
 } from "../src/Server.ts";
 import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
@@ -90,14 +75,13 @@ describe("a server has no database name", () => {
     expect(workerName).toBeUndefined();
   });
 
-  test("the attributes are url / workerName / token / seeded — no name, no databaseUrl", () => {
+  test("the attributes are url / workerName / seeded — no name, no databaseUrl, no token", () => {
     const attributes: Server["Attributes"] = {
       url: "https://peer.example.com",
       workerName: "ramose-peer",
-      token: undefined,
       seeded: [],
     };
-    expect(Object.keys(attributes).sort()).toEqual(["seeded", "token", "url", "workerName"]);
+    expect(Object.keys(attributes).sort()).toEqual(["seeded", "url", "workerName"]);
 
     type Attr = keyof Server["Attributes"];
     const hasName: "name" extends Attr ? true : false = false;
@@ -140,7 +124,6 @@ describe("env keys", () => {
     expect(keys).toEqual({
       service: "Ramose",
       url: "Ramose_URL",
-      token: "Ramose_TOKEN",
     });
     expect(Object.values(keys)).not.toContain("Ramose_DB");
   });
@@ -320,8 +303,10 @@ describe("the server's auth env", () => {
     type HasOperations = "operations" extends keyof ServerProps ? true : false;
     const hasOperations: HasOperations = true;
     type HasWrites = "writes" extends keyof ServerProps ? true : false;
-    const hasWrites: HasWrites = true;
-    expect([hasOperations, hasWrites]).toEqual([true, true]);
+    const hasWrites: HasWrites = false;
+    type HasToken = "token" extends keyof ServerProps ? true : false;
+    const hasToken: HasToken = false;
+    expect([hasOperations, hasWrites, hasToken]).toEqual([true, false, false]);
   });
 
   test("Output / Effect-valued JWKS and origins pass through un-normalised", () => {
@@ -347,17 +332,16 @@ describe("owned form binds auth onto the Worker", () => {
     internalSecret: "sh4red",
   };
 
-  test("ownedAuthEnv binds verifier keys and no RAMOSE_TOKEN", () => {
-    const bindings = ownedAuthEnv(auth, "s3cret");
+  test("authEnv binds verifier keys and no seed token", () => {
+    const bindings = authEnv(auth);
     expect(bindings[AUTH_ENV_KEYS.jwksUrl]).toBe(auth.jwksUrl);
     expect(bindings[AUTH_ENV_KEYS.issuers]).toBe(auth.issuers);
     expect(bindings[AUTH_ENV_KEYS.aud]).toBe(auth.aud);
-    expect(bindings[TOKEN_ENV_KEY]).toBeUndefined();
+    expect(bindings.RAMOSE_TOKEN).toBeUndefined();
     expect(Redacted.value(bindings[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
       "sh4red",
     );
-    expect(ownedAuthEnv(auth, undefined)[TOKEN_ENV_KEY]).toBeUndefined();
-    expect(tokenEnv("s3cret")).toEqual({});
+    expect(authEnv(undefined).RAMOSE_TOKEN).toBeUndefined();
   });
 
   test("checkAuth only rejects a non-positive maxTtl", () => {
@@ -403,7 +387,7 @@ describe("owned form binds auth onto the Worker", () => {
   });
 });
 
-describe("hatch form compares auth / token against the Worker env", () => {
+describe("hatch form compares auth against the Worker env", () => {
   const dos = {
     STORE: { Type: "Cloudflare.R2.Bucket" },
     TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
@@ -425,39 +409,35 @@ describe("hatch form compares auth / token against the Worker env", () => {
   });
 
   test("a URL worker has no env to compare", () => {
-    expect(compareAuthToWorker(auth, undefined, "https://peer.example.com")).toBeUndefined();
-    expect(compareAuthToWorker(auth, undefined, { url: "https://peer.example.com" })).toBeUndefined();
+    expect(compareAuthToWorker(auth, "https://peer.example.com")).toBeUndefined();
+    expect(compareAuthToWorker(auth, { url: "https://peer.example.com" })).toBeUndefined();
   });
 
   test("auth on Server without matching Worker verifier keys is a deploy error", () => {
-    expect(compareAuthToWorker(auth, undefined, hatch({}))).toMatch(/diverge on/);
+    expect(compareAuthToWorker(auth, hatch({}))).toMatch(/diverge on/);
   });
 
   test("Worker verifier keys without Server auth is a deploy error", () => {
-    expect(compareAuthToWorker(undefined, undefined, hatch(matching))).toMatch(/diverge on/);
+    expect(compareAuthToWorker(undefined, hatch(matching))).toMatch(/diverge on/);
   });
 
   test("divergence on iss / aud / jwks fails", () => {
-    expect(compareAuthToWorker(auth, undefined, hatch({ ...matching, RAMOSE_JWT_AUD: "other" }))).toMatch(
+    expect(compareAuthToWorker(auth, hatch({ ...matching, RAMOSE_JWT_AUD: "other" }))).toMatch(
       /diverge on RAMOSE_JWT_AUD/,
     );
     expect(
       compareAuthToWorker(
         { ...auth, jwksUrl: "https://other.example/jwks" },
-        undefined,
         hatch(matching),
       ),
     ).toMatch(/diverge on RAMOSE_JWKS_URL/);
-    expect(compareAuthToWorker(auth, "s3cret", hatch(matching))).toBeUndefined();
+    expect(compareAuthToWorker(auth, hatch(matching))).toBeUndefined();
   });
 
-  test("a correctly-wired hatch still deploys; token is ignored", () => {
-    expect(compareAuthToWorker(auth, undefined, hatch(matching))).toBeUndefined();
+  test("a correctly-wired hatch still deploys without a seed token", () => {
+    expect(compareAuthToWorker(auth, hatch(matching))).toBeUndefined();
     expect(
-      compareAuthToWorker(auth, "s3cret", hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
-    ).toBeUndefined();
-    expect(
-      compareAuthToWorker(auth, Redacted.make("s3cret"), hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
+      compareAuthToWorker(auth, hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
     ).toBeUndefined();
   });
 
@@ -473,124 +453,34 @@ describe("hatch form compares auth / token against the Worker env", () => {
       RAMOSE_JWT_ISS: jsonAuth.issuers,
       RAMOSE_JWT_AUD: jsonAuth.aud,
     };
-    expect(compareAuthToWorker(jsonAuth, undefined, hatch(jsonHatch))).toBeUndefined();
+    expect(compareAuthToWorker(jsonAuth, hatch(jsonHatch))).toBeUndefined();
     expect(
-      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_JSON: jwksJson })),
+      compareAuthToWorker(undefined, hatch({ RAMOSE_JWKS_JSON: jwksJson })),
     ).toMatch(/diverge on RAMOSE_JWKS_JSON/);
     expect(
-      compareAuthToWorker({ ...jsonAuth, jwksJson: '{"keys":[{"kid":"other"}]}' }, undefined, hatch(jsonHatch)),
+      compareAuthToWorker({ ...jsonAuth, jwksJson: '{"keys":[{"kid":"other"}]}' }, hatch(jsonHatch)),
     ).toMatch(/diverge on RAMOSE_JWKS_JSON/);
     expect(
-      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWKS_URL: "https://auth.example/jwks" })),
+      compareAuthToWorker(undefined, hatch({ RAMOSE_JWKS_URL: "https://auth.example/jwks" })),
     ).toMatch(/diverge on RAMOSE_JWKS_URL/);
     expect(
-      compareAuthToWorker(undefined, undefined, hatch({ RAMOSE_JWT_ISS: "https://auth.example" })),
+      compareAuthToWorker(undefined, hatch({ RAMOSE_JWT_ISS: "https://auth.example" })),
     ).toMatch(/diverge on RAMOSE_JWT_ISS/);
-    expect(compareAuthToWorker(undefined, undefined, hatch({}))).toBeUndefined();
+    expect(compareAuthToWorker(undefined, hatch({}))).toBeUndefined();
   });
 
   test("the same Output instance on both sides matches; a different instance does not", () => {
     const jwksUrl = { interpolate: "https://auth.example/jwks" };
     const deferred = { ...auth, jwksUrl };
     expect(
-      compareAuthToWorker(deferred, undefined, hatch({ ...matching, RAMOSE_JWKS_URL: jwksUrl })),
+      compareAuthToWorker(deferred, hatch({ ...matching, RAMOSE_JWKS_URL: jwksUrl })),
     ).toBeUndefined();
     expect(
       compareAuthToWorker(
         deferred,
-        undefined,
         hatch({ ...matching, RAMOSE_JWKS_URL: { interpolate: "https://auth.example/jwks" } }),
       ),
     ).toMatch(/diverge on RAMOSE_JWKS_URL/);
-  });
-});
-
-describe("writes lowers onto RAMOSE_WRITES", () => {
-  const dos = {
-    STORE: { Type: "Cloudflare.R2.Bucket" },
-    TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
-    REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
-  };
-  const hatch = (env: Record<string, unknown>) => ({
-    Type: "Cloudflare.Worker",
-    Props: { main: workerEntry(), env: { ...dos, ...env } },
-  });
-
-  test("unset writes binds nothing; the Worker default is operations", () => {
-    expect(writesEnv(undefined)).toEqual({});
-    expect(resolveWrites(undefined, undefined)).toBe("operations");
-    expect(resolveWrites(undefined, "operations")).toBe("operations");
-    expect(resolveWrites(undefined, "other")).toBe("operations");
-    expect(resolveWrites("all", "operations")).toBe("all");
-    expect(resolveWrites("operations", "all")).toBe("operations");
-  });
-
-  test("owned form: Server({ writes }) puts RAMOSE_WRITES on the Worker env", () => {
-    expect(writesEnv("operations")).toEqual({ [WRITES_ENV_KEY]: "operations" });
-    expect(writesEnv("all")).toEqual({ [WRITES_ENV_KEY]: "all" });
-    expect(ownedPeerEnv(undefined, undefined, "operations")[WRITES_ENV_KEY]).toBe("operations");
-    expect(ownedPeerEnv(undefined, undefined, "all")[WRITES_ENV_KEY]).toBe("all");
-    expect(ownedPeerEnv(undefined, undefined, undefined)[WRITES_ENV_KEY]).toBeUndefined();
-    expect(ownedAuthEnv(undefined, undefined)[WRITES_ENV_KEY]).toBeUndefined();
-  });
-
-  test("hatch form: Server({ writes }) that disagrees with the Worker is a deploy error", () => {
-    expect(compareWritesToWorker("all", hatch({}))).toMatch(
-      /Server writes is "all" but the Worker has no RAMOSE_WRITES/,
-    );
-    expect(compareWritesToWorker("all", hatch({ RAMOSE_WRITES: "operations" }))).toMatch(
-      /diverge on RAMOSE_WRITES/,
-    );
-    expect(compareWritesToWorker("operations", hatch({ RAMOSE_WRITES: "all" }))).toMatch(
-      /diverge on RAMOSE_WRITES/,
-    );
-    expect(compareWritesToWorker(undefined, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
-    // fail-closed: ALL is not "all", so it matches writes: "operations"
-    expect(compareWritesToWorker("operations", hatch({ RAMOSE_WRITES: "ALL" }))).toBeUndefined();
-  });
-
-  test("unrecognized RAMOSE_WRITES warns at deploy and names the value", () => {
-    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "ALL" }))).toBe(
-      unrecognizedWritesWarningMessage("ALL"),
-    );
-    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "ALL" }))).toMatch(
-      /RAMOSE_WRITES="ALL" is not "all" or "operations"/,
-    );
-    const warned: string[] = [];
-    const warn = console.warn;
-    console.warn = (message: unknown) => {
-      if (typeof message === "string") warned.push(message);
-    };
-    try {
-      expect(warnUnrecognizedWrites(hatch({ RAMOSE_WRITES: "ALL" }))).toBe(
-        unrecognizedWritesWarningMessage("ALL"),
-      );
-    } finally {
-      console.warn = warn;
-    }
-    expect(warned).toEqual([unrecognizedWritesWarningMessage("ALL")]);
-    expect(unrecognizedWritesWarning(hatch({}))).toBeUndefined();
-    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
-    expect(unrecognizedWritesWarning(hatch({ RAMOSE_WRITES: "operations" }))).toBeUndefined();
-    expect(unrecognizedWritesWarning("https://peer.example.com")).toBeUndefined();
-  });
-
-  test("hatch form: a matching writes still deploys", () => {
-    expect(compareWritesToWorker("operations", hatch({}))).toBeUndefined();
-    expect(compareWritesToWorker("operations", hatch({ RAMOSE_WRITES: "operations" }))).toBeUndefined();
-    expect(compareWritesToWorker("all", hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
-    expect(compareWritesToWorker("operations", "https://peer.example.com")).toBeUndefined();
-  });
-
-  test("writes: all no longer pairs with a policy warning", () => {
-    const auth = {
-      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-      issuers: "https://auth.acme.example",
-      aud: "ramose:peer:prod",
-    };
-    expect(writesAllPolicyWarning("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
-    expect(warnWritesAllPolicy("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
-    expect(WRITES_ALL_POLICY_WARNING).toContain("writes is \"all\"");
   });
 });
 
@@ -634,14 +524,6 @@ describe("operations coverage vs /health", () => {
     const error = compareOperationsToHealth(client, { ok: true });
     expect(error).toBeInstanceOf(OperationsCoverageError);
     expect(error?.missing).toEqual(["user/create", "user/set-name"]);
-  });
-
-  test("legacy policy-operations coverage is gone", () => {
-    expect(compareOperationsToPolicy(undefined, "{}")).toBeUndefined();
-    expect(compareOperationsToPolicy(client, undefined)).toBeUndefined();
-    expect(
-      compareOperationsToPolicy(client, JSON.stringify({ operations: { "user/ghost": [] } })),
-    ).toBeUndefined();
   });
 
   test("coverage fetch uses the caller's probe.timeoutMs", () => {

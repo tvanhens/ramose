@@ -25,7 +25,6 @@
 
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
-import type * as Redacted from "effect/Redacted";
 import type { Server } from "./Server.ts";
 
 /**
@@ -39,7 +38,6 @@ export const envKeys = (server: Pick<Server, "LogicalId">) => ({
   /** The service binding (and the `env` key the Fetcher arrives under). */
   service: server.LogicalId,
   url: `${server.LogicalId}_URL`,
-  token: `${server.LogicalId}_TOKEN`,
 });
 
 /**
@@ -57,22 +55,6 @@ export const bindOutput = <A>(
   output: Output.Output<A>,
 ): Effect.Effect<Effect.Effect<A>> =>
   output.bind(key) as Effect.Effect<Effect.Effect<A>>;
-
-/**
- * The token, as a value that survives an env binding.
- *
- * `undefined` does not: it would classify as a `json` binding holding
- * nothing. The empty string does, and the client treats it as "no token".
- */
-export const bindToken = (
-  server: Server,
-): Effect.Effect<Effect.Effect<Redacted.Redacted<string> | string>> =>
-  bindOutput(
-    envKeys(server).token,
-    server.token.pipe(Output.map((token) => token ?? "")) as Output.Output<
-      Redacted.Redacted<string> | string
-    >,
-  );
 
 /**
  * Read a bound value that must be there. A missing key means the binding was

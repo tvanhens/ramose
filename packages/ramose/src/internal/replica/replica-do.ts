@@ -39,7 +39,7 @@ import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, re
 import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
 import type { Principal } from "../../worker/auth.ts";
-import { principalForToken } from "../../worker/auth.ts";
+import { Unauthorized } from "../../db/Errors.ts";
 import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, WRITES_HEADER } from "../../worker/session.ts";
 import { type WritesMode, parseWritesHeader } from "../../writes.ts";
 import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
@@ -471,13 +471,14 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   private createSession(ws: WebSocket, seed: SessionState): Session {
-    const dbName = this.dbName as string;
     return openSession(ws as unknown as SocketLike, {
       listen: false,
       seed,
       ...(seed.principal !== undefined && { principal: seed.principal }),
       dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
-      authenticate: (token) => principalForToken(this.env, token.length === 0 ? undefined : token, dbName),
+      authenticate: async () => {
+        throw new Unauthorized({});
+      },
       provision: (p) => this.provisionPrincipal(p),
       describe: async (p) => ({ eid: p.eid ?? null, class: p.class }),
       readLog: async () => {

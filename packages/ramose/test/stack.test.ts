@@ -12,7 +12,6 @@ import { afterAll, beforeEach, describe, expect } from "bun:test";
 import * as Alchemy from "alchemy";
 import * as Test from "alchemy/Test/Bun";
 import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import * as net from "node:net";
 import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database } from "../src/Database.ts";
@@ -115,16 +114,15 @@ const { test } = Test.make({
 });
 
 describe("Ramose.Server", () => {
-  test.provider("resolves the url and token — and pins no database name", (stack) =>
+  test.provider("resolves the url — and pins no database name", (stack) =>
     Effect.gen(function* () {
       const before = probes;
       const server = yield* stack.deploy(
-        Server("Ramose", { worker: peerUrl, token: Redacted.make("s3cret") }),
+        Server("Ramose", { worker: peerUrl }),
       );
 
       expect(server.url).toBe(peerUrl);
       expect(server.workerName).toBe("");
-      expect(Redacted.value(server.token!)).toBe("s3cret");
       expect(server.seeded).toEqual([]);
       // a server is the peer, not a database: no name, no /db/:name prefix
       const attributes = Object.keys(server);
@@ -132,6 +130,7 @@ describe("Ramose.Server", () => {
       expect(attributes).toContain("seeded");
       expect(attributes).not.toContain("name");
       expect(attributes).not.toContain("databaseUrl");
+      expect(attributes).not.toContain("token");
       // the live provider proved the peer was up before anything bound to it
       expect(probes).toBeGreaterThan(before);
 
@@ -146,7 +145,6 @@ describe("Ramose.Server", () => {
       );
       expect(server.url).toBe(peerUrl);
       expect(server.workerName).toBe("ramose-peer");
-      expect(server.token).toBeUndefined();
       yield* stack.destroy();
     }),
   );
@@ -297,78 +295,6 @@ describe("Ramose.Server", () => {
     }),
   );
 
-  test.provider("hatch writes must match the Worker; policy + all warns and still deploys", (stack) =>
-    Effect.gen(function* () {
-      const hatch = (env: Record<string, unknown>) => ({
-        Type: "Cloudflare.Worker",
-        url: peerUrl,
-        workerName: "ramose-peer",
-        Props: {
-          main: workerEntry(),
-          env: {
-            STORE: { Type: "Cloudflare.R2.Bucket" },
-            TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
-            REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
-            ...env,
-          },
-        },
-      });
-      const matchedUnset = yield* stack.deploy(
-        Server("Ramose", { worker: hatch({}), probe: false, writes: "operations" }),
-      );
-      expect(matchedUnset.url).toBe(peerUrl);
-      yield* stack.destroy();
-
-      const missingAll = yield* Effect.result(
-        stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, writes: "all" })),
-      );
-      expect(missingAll._tag).toBe("Failure");
-      expect(String(missingAll)).toMatch(/unset means "operations"/);
-
-      const diverged = yield* Effect.result(
-        stack.deploy(
-          Server("Ramose", {
-            worker: hatch({ RAMOSE_WRITES: "operations" }),
-            probe: false,
-            writes: "all",
-          }),
-        ),
-      );
-      expect(diverged._tag).toBe("Failure");
-      expect(String(diverged)).toMatch(/diverge on RAMOSE_WRITES/);
-
-      const matched = yield* stack.deploy(
-        Server("Ramose", {
-          worker: hatch({ RAMOSE_WRITES: "operations" }),
-          probe: false,
-          writes: "operations",
-        }),
-      );
-      expect(matched.url).toBe(peerUrl);
-      yield* stack.destroy();
-
-      const open = yield* stack.deploy(
-        Server("Ramose", {
-          worker: hatch({
-            RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
-            RAMOSE_JWT_ISS: "https://auth.acme.example",
-            RAMOSE_JWT_AUD: "ramose:peer:test",
-            RAMOSE_WRITES: "all",
-          }),
-          probe: false,
-          writes: "all",
-          auth: {
-            jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-            issuers: "https://auth.acme.example",
-            aud: "ramose:peer:test",
-          },
-        }),
-      );
-      expect(open.url).toBe(peerUrl);
-      yield* stack.destroy();
-    }),
-  );
-
   test.provider("a peer that is down fails the deploy", (stack) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(
@@ -501,7 +427,7 @@ describe("Ramose.Database", () => {
     }),
   );
 
-  test.provider("a server token does not reopen catalog install", (stack) =>
+  test.provider("catalog install stays closed without a seed credential", (stack) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(
         stack.deploy(
@@ -509,7 +435,6 @@ describe("Ramose.Database", () => {
             server: Server("Ramose", {
               worker: peerUrl,
               probe: false,
-              token: Redacted.make("s3cret"),
             }),
             schema: Movies,
           }),

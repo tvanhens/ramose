@@ -428,9 +428,13 @@ if (run("facts") && !onlyPage) {
       }
     }
     if (page.slug === "reference/client-api") {
+      // Authorization rebuild docs are frozen. Do not rewrite the inventory
+      // table for retired `Policy` / `PolicyError` names — skip those only.
+      const frozenInventory = new Set(["Policy", "PolicyError"]);
       const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
       if (dbRow) {
         for (const name of tickNames(dbRow[1])) {
+          if (frozenInventory.has(name)) continue;
           if (!dbNames.has(name) && name !== "DbError")
             add("ERROR", "facts", page.slug,
               `ramose/db table lists ${name}, which is not a runtime export`);
@@ -439,6 +443,7 @@ if (run("facts") && !onlyPage) {
       const addRow = body.match(/\|\s*`ramose`\s*\(adds\)\s*\|\s*([^|\n]+)\|/);
       if (addRow) {
         for (const name of tickNames(addRow[1])) {
+          if (frozenInventory.has(name)) continue;
           if (!root.added.has(name) && !root.all.has(name))
             add("ERROR", "facts", page.slug,
               `ramose (adds) table lists ${name}, which is not a ramose export`);

@@ -38,8 +38,3 @@ export async function decideSessionTx(_opts: {
 }): Promise<SessionTxDecision> {
   return { kind: "skip" };
 }
-
-/** Application snapshot dump — empty until #339/#343. */
-export async function currentViewDatoms(_db: Db): Promise<WireDatom[]> {
-  return [];
-}

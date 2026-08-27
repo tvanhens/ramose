@@ -18,7 +18,6 @@ import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Redacted from "effect/Redacted";
 import type { Server } from "../src/Server.ts";
 import { Self } from "alchemy/Self";
 import { WorkerEnvironment } from "alchemy/Cloudflare/Workers";
@@ -29,7 +28,6 @@ import { makeHttpSource } from "../src/ServerHttp.ts";
 /** A server whose attributes are literal Outputs, as after a deploy. */
 const server = (attrs: {
   url: string;
-  token?: Redacted.Redacted<string> | undefined;
 }): Server =>
   ({
     LogicalId: "Ramose",
@@ -37,7 +35,6 @@ const server = (attrs: {
     Type: "Ramose.Server",
     url: Output.literal(attrs.url),
     workerName: Output.literal("ramose-peer"),
-    token: Output.literal(attrs.token),
   }) as unknown as Server;
 
 /**
@@ -118,18 +115,18 @@ describe("the service-binding source", () => {
     ).rejects.toThrow(/no service binding "Ramose"/);
   });
 
-  test("only the token is bound — a server pins no database name", async () => {
+  test("a server pins no database name and no seed token", async () => {
     const srv = server({
       url: "https://peer.example.com",
-      token: Redacted.make("s3cret"),
     });
     const { bound, layer } = runtime();
     const source = await resolve(makeBindingSource({ Ramose: {} }, srv), layer);
 
-    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN"]);
+    expect(Object.keys(bound)).toEqual([]);
     expect(Object.keys(bound)).not.toContain("Ramose_DB");
+    expect(Object.keys(bound)).not.toContain("Ramose_TOKEN");
     const endpoint = await resolve(source.endpoint, layer);
-    expect(Redacted.value(endpoint.token as Redacted.Redacted<string>)).toBe("s3cret");
+    expect(endpoint.token).toBeUndefined();
   });
 });
 
@@ -142,10 +139,10 @@ describe("the HTTP source", () => {
     const endpoint = await resolve(source.endpoint, layer);
 
     expect(endpoint.url).toBe("https://peer.example.com");
-    // no token configured → the empty string, which the client reads as "none"
-    expect(endpoint.token).toBe("");
-    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
+    expect(endpoint.token).toBeUndefined();
+    expect(Object.keys(bound).sort()).toEqual(["Ramose_URL"]);
     expect(Object.keys(bound)).not.toContain("Ramose_DB");
+    expect(Object.keys(bound)).not.toContain("Ramose_TOKEN");
   });
 });
 
@@ -169,7 +166,7 @@ describe("registration happens at bind time", () => {
       layer,
     );
 
-    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
+    expect(Object.keys(bound).sort()).toEqual(["Ramose_URL"]);
   });
 
   test("an Action captures the outputs during init and reads them at apply", async () => {
@@ -182,7 +179,7 @@ describe("registration happens at bind time", () => {
         Effect.provide(Layer.succeed(RuntimeContext, makeCaptureContext(captures) as never)),
       ),
     );
-    expect(Object.keys(captures).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
+    expect(Object.keys(captures).sort()).toEqual(["Ramose_URL"]);
 
     // apply: the engine resolves what was captured; the accessors read it back.
     const resolved = Object.fromEntries(

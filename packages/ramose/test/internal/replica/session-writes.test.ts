@@ -8,7 +8,7 @@ import type { RootRecord } from "../../../src/internal/core/index.ts";
 import type { RamoseEnv } from "../../../src/internal/transactor/index.ts";
 import { MemoryBucket } from "../../../src/internal/storage/memory.ts";
 import { sqliteLike } from "../transactor/harness.ts";
-import { allowsRawTransact, type Principal } from "../../../src/worker/auth.ts";
+import type { Principal } from "../../../src/worker/auth.ts";
 import { openSession, type SocketLike } from "../../../src/worker/session.ts";
 import type { WritesMode } from "../../../src/writes.ts";
 
@@ -123,18 +123,6 @@ const transactInit = (tx: unknown) => ({
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ tx }),
-});
-
-describe("allowsRawTransact", () => {
-  test("every caller is denied until authorized application access lands", () => {
-    expect(allowsRawTransact("operations", member, dataTx)).toBe(false);
-    expect(allowsRawTransact("all", member, dataTx)).toBe(false);
-    expect(
-      allowsRawTransact("operations", member, [
-        { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string" },
-      ]),
-    ).toBe(false);
-  });
 });
 
 describe("session { op: transact } is fail-closed", () => {

@@ -6,9 +6,8 @@
  * {@link TxReport} is the same db (a min-`t` floor on HTTPS; the local
  * confirmed overlay on a session client). Nothing here names a transport:
  * a session client reads the overlay and writes through `POST /op`
- * (`db.run`); raw `POST /transact` is admin / seed / `writes: "all"`.
- * HTTPS-only clients POST reads and writes, and neither path is
- * reachable from the public surface.
+ * (`db.run`). HTTPS-only clients POST reads and writes, and neither
+ * path is reachable from the public surface.
  */
 
 import * as Cause from "effect/Cause";
@@ -103,7 +102,7 @@ export interface Wire {
     body: Record<string, unknown>,
     minT: number | undefined,
   ): EffectOf<unknown, DbError>;
-  /** `POST /db/:name/transact`. Raw writer — admin / seed / `writes: "all"`. */
+  /** `POST /db/:name/transact`. Raw writer — fail-closed for external callers. */
   transact(
     name: string,
     tx: readonly unknown[],

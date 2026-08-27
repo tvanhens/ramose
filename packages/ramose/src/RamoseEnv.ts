@@ -1,11 +1,10 @@
 /**
  * The peer Worker's env — one type for deploy and runtime.
  *
- * The resource applies {@link import("./Server.ts").ServerAuth} and
- * `token` onto these keys when it owns the Worker. The Worker and both
- * Durable Object classes read the same type at runtime. Adding a key here
- * is what makes it real on both sides; there is no second name list to
- * keep in sync.
+ * The resource applies {@link import("./Server.ts").ServerAuth} onto
+ * these keys when it owns the Worker. The Worker and both Durable Object
+ * classes read the same type at runtime. Adding a key here is what makes
+ * it real on both sides; there is no second name list to keep in sync.
  */
 
 import type { AnalyticsEngineDatasetLike } from "./internal/transactor/observability.ts";
@@ -36,7 +35,7 @@ export interface RamoseEnv {
   RAMOSE_JWT_AUD?: string;
   /** cap on `exp - iat` in seconds (default 900) */
   RAMOSE_JWT_MAX_TTL?: string;
-  /** origins CORS is narrowed to once a policy is configured, comma-separated */
+  /** origins CORS is narrowed to, comma-separated */
   RAMOSE_ALLOWED_ORIGINS?: string;
   /** Worker→DO shared secret; every internal fetch must carry it. Unset = no gate. */
   RAMOSE_INTERNAL_SECRET?: string;
@@ -56,11 +55,8 @@ export interface RamoseEnv {
   /** structured log level for all components: debug | info | warn | error (default info) */
   RAMOSE_LOG_LEVEL?: string;
   /**
-   * Who may POST raw `/transact` (HTTPS and the session frame).
-   * `"operations"` (the default, including unset) closes it for app-class
-   * data writes; admin, the seed token, and schema-only txs keep it.
-   * `"all"` is the explicit opt-out. Unrecognized values fail closed and
-   * log `writes.unrecognized`.
+   * Leftover write-mode env. Unrecognized values fail closed and log
+   * `writes.unrecognized`. Raw external writes are not admitted.
    */
   RAMOSE_WRITES?: string;
   /** default replica location hint: wnam|enam|…|auto (auto = colo→hint); unset = continent default */

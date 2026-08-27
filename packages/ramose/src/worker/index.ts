@@ -15,8 +15,8 @@ import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin } from "./auth.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
+import { type AnyOperations, operationNames } from "../db/Operation.ts";
 import {
   BadRequest,
   type Internal,
@@ -28,11 +28,12 @@ import {
   type UpstreamError,
   toHttp,
 } from "./errors.ts";
-import { operationNames } from "../db/Operation.ts";
-import { type ServerOptions } from "./operations.ts";
-export type { ServerOptions } from "./operations.ts";
 import { isUnrecognizedWrites } from "../writes.ts";
 export { resolveWrites } from "../writes.ts";
+
+export interface ServerOptions {
+  readonly operations?: AnyOperations;
+}
 
 export { TransactorDO, QueryReplicaDO };
 export type { RamoseEnv } from "../RamoseEnv.ts";
@@ -73,15 +74,6 @@ const CORS = {
   "access-control-expose-headers":
     "x-ramose-ms,x-ramose-r2-gets,x-ramose-cache-hits,x-ramose-basis-t,x-ramose-basis-hit,x-ramose-basis-reason,x-ramose-basis-calls,x-ramose-basis-behind,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-colo",
 };
-
-function withCors(env: RamoseEnv, request: Request, res: Response): Response {
-  const origin = allowedOrigin(env, request);
-  if (origin === undefined || res.status === 101) return res;
-  const headers = new Headers(res.headers);
-  if (origin === null) headers.delete("access-control-allow-origin");
-  else headers.set("access-control-allow-origin", origin);
-  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
-}
 
 interface RequestInfo {
   db: string;
@@ -195,7 +187,6 @@ const runFetch = (request: Request, env: RamoseEnv, peer: ServerOptions): Promis
   return Effect.runPromise(
     handle(request, env, t0, info, peer).pipe(
       Effect.catchTags(recover(info, t0)),
-      Effect.map((res) => withCors(env, request, res)),
       Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),
       Effect.provideService(Analytics, fromBinding(bindingOf(env))),
     ),

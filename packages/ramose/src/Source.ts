@@ -22,7 +22,7 @@ export { asRead, withoutLive } from "./server-db.ts";
 export interface ServerEndpoint {
   /** Base URL, no trailing slash (e.g. `https://ramose.example.workers.dev`). */
   readonly url: string;
-  /** The server's one bearer token, used for every database name. */
+  /** Optional client JWT bearer. Server-side hops do not carry a seed token. */
   readonly token?: Redacted.Redacted<string> | string | undefined;
   /** Extra headers on every request (e.g. `x-ramose-replica-hint`). */
   readonly headers?: Record<string, string> | undefined;

@@ -8,7 +8,7 @@
 
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
-import { AUD, ISS, JWKS, SHARED_TOKEN } from "./auth-keys.ts";
+import { AUD, ISS, JWKS } from "./auth-keys.ts";
 import { Open } from "./open.ts";
 import { Movies, operations } from "./ops.ts";
 
@@ -31,12 +31,11 @@ export const Empty = Ramose.Server("Empty", {
   main: empty,
 });
 
-/** Extra peer — token is no longer a data-plane credential. */
+/** Extra peer — no seed-token credential. */
 export const Token = Ramose.Server("Token", {
   peer: "TokenPeer",
   storage: "TokenStore",
   main: empty,
-  token: SHARED_TOKEN,
 });
 
 /** JWT verifier bindings reserved for #344. Data plane is still 401. */
@@ -45,7 +44,6 @@ export const Policy = Ramose.Server("Policy", {
   storage: "PolicyStore",
   main: worker,
   operations,
-  token: SHARED_TOKEN,
   auth: {
     ...jwtAuth(),
     allowedOrigins: ["https://app.acme.test"],

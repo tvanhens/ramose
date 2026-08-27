@@ -8,7 +8,7 @@
  *
  * The explicit `worker:` form is the escape hatch (extra bindings, a
  * user-owned entry). It is validated at deploy: binding names, DO classes,
- * `main` resolution, and `auth` / `token` / `writes` against the Worker env.
+ * `main` resolution, and `auth` against the Worker env.
  *
  * @resource
  * @product Ramose
@@ -19,7 +19,7 @@
  * export const Server = Ramose.Server("Ramose", {
  *   databases: { todos: Todos },
  *   operations,
- *   auth: { policy, jwt: AUTH },
+ *   auth: { jwt: AUTH },
  * });
  * ```
  *
@@ -61,9 +61,6 @@ import {
 } from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
-import { type WritesMode, WRITES_ENV_KEY, isUnrecognizedWrites, resolveWrites } from "./writes.ts";
-export type { WritesMode } from "./writes.ts";
-export { resolveWrites, WRITES_ENV_KEY } from "./writes.ts";
 
 /** @internal */
 export const isServer = (value: unknown): value is Server =>
@@ -142,7 +139,7 @@ export const PROBE_DEFAULTS = {
 export type AuthEnvValue = string | object;
 
 /**
- * What the server Worker needs to verify JWTs and enforce a policy.
+ * What the server Worker needs to verify JWTs.
  *
  * When Server owns the Worker, these are applied onto {@link RamoseEnv}.
  * On the escape hatch they are compared against the Worker's env and
@@ -181,7 +178,7 @@ export interface ServerAuth {
    * `maxTtl`.
    */
   readonly jwt?: AuthConfig | undefined;
-  /** Origins the server answers CORS for once a policy narrows it. */
+  /** Origins the server answers CORS for. */
   readonly allowedOrigins?: readonly string[] | AuthEnvValue | undefined;
   /** Worker→DO shared secret. See {@link internalSecret}. */
   readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
@@ -226,26 +223,10 @@ export type ServerProps = {
   /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
   /**
-   * Bearer token for this server. Owned form binds it as `RAMOSE_TOKEN`;
-   * hatch form requires the Worker env to match. Also the catalog-seed
-   * credential.
-   */
-  token?: Redacted.Redacted<string> | string;
-  /**
    * Source of truth for Worker auth env. Owned form applies it; hatch
    * form compares it and fails the deploy on divergence.
    */
   auth?: ServerAuth;
-  /**
-   * Who may POST raw `/transact`. `"operations"` (the peer default) rejects
-   * it for app-class tokens; admin, the seed token, and schema-only txs
-   * keep it. `"all"` is the explicit opt-out. Owned form binds
-   * `RAMOSE_WRITES`; hatch form compares the effective mode (unset Worker
-   * key means `"operations"`) and fails the deploy on a real mismatch.
-   * Pass {@link ServerProps.operations} and point `main` at a
-   * `createServer({ operations })` module that imports the same registry.
-   */
-  writes?: WritesMode;
   /**
    * Liveness probe before anything binds to the URL; `false` skips it.
    */
@@ -268,9 +249,6 @@ export const AUTH_ENV_KEYS = {
   Exclude<keyof ServerAuth, "jwt">,
   keyof RamoseEnv
 >;
-
-/** @internal Removed seed-token env key (AUTH-1). Kept as a name so tests can assert it is gone. */
-export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const;
 
 const AUTH_COMPARE_KEYS = [
   AUTH_ENV_KEYS.jwksUrl,
@@ -360,44 +338,6 @@ export const authEnv = (
 ): Record<string, unknown> => bindAuthFields(peerAuth);
 
 /**
- * @internal `RAMOSE_TOKEN` from `Server({ token })`. Owned form binds it;
- * hatch form compares it.
- */
-export const tokenEnv = (
-  _token: Redacted.Redacted<string> | string | undefined,
-): Record<string, never> => ({});
-
-/**
- * @internal What the owned Worker receives: `authEnv` plus `RAMOSE_TOKEN`.
- */
-export const ownedAuthEnv = (
-  peerAuth: ServerAuth | undefined,
-  _token?: Redacted.Redacted<string> | string | undefined,
-): Record<string, unknown> => ({
-  ...authEnv(peerAuth),
-});
-
-/**
- * @internal `RAMOSE_WRITES` from `Server({ writes })`. Owned form binds
- * it; hatch form compares it. Unset emits no key — the Worker default is
- * `"operations"`.
- */
-export const writesEnv = (writes: WritesMode | undefined): Record<string, WritesMode> =>
-  writes === undefined ? {} : { [WRITES_ENV_KEY]: writes };
-
-/**
- * @internal What the owned Worker receives: auth, token, and writes.
- */
-export const ownedPeerEnv = (
-  peerAuth: ServerAuth | undefined,
-  token: Redacted.Redacted<string> | string | undefined,
-  writes: WritesMode | undefined,
-): Record<string, unknown> => ({
-  ...ownedAuthEnv(peerAuth, token),
-  ...writesEnv(writes),
-});
-
-/**
  * @internal Completeness: `maxTtl` must be a positive number of seconds.
  */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
@@ -443,12 +383,11 @@ const sameBinding = (expected: unknown, actual: unknown): boolean => {
 };
 
 /**
- * @internal Hatch form: `auth` / `token` must match the Worker env.
+ * @internal Hatch form: `auth` must match the Worker env.
  * URL workers have no env and are skipped.
  */
 export const compareAuthToWorker = (
   peerAuth: ServerAuth | undefined,
-  token: Redacted.Redacted<string> | string | undefined,
   worker: unknown,
 ): string | undefined => {
   if (typeof worker === "string") return undefined;
@@ -470,76 +409,6 @@ export const compareAuthToWorker = (
   }
   if (diverged.length === 0) return undefined;
   return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth }) is the source of truth`;
-};
-
-/**
- * @internal Hatch form: if `writes` is passed, the Worker must carry the
- * same effective mode. Unset `RAMOSE_WRITES` means `"operations"` — the
- * peer default — so `Server({ writes: "operations" })` against a Worker
- * with no key matches. `writes: "all"` against an unset/mismatched key
- * fails: that opt-out would not take effect. URL workers have no env
- * and are skipped.
- */
-export const compareWritesToWorker = (
-  writes: WritesMode | undefined,
-  worker: unknown,
-): string | undefined => {
-  if (writes === undefined) return undefined;
-  if (typeof worker === "string") return undefined;
-  const env = workerEnvOf(worker);
-  if (env === undefined) return undefined;
-  const got = env[WRITES_ENV_KEY];
-  const workerMode = resolveWrites(undefined, isBound(got) ? got : undefined);
-  if (resolveWrites(writes, undefined) === workerMode) return undefined;
-  if (!isBound(got)) {
-    return `ramose: Server writes is "all" but the Worker has no RAMOSE_WRITES — unset means "operations", so raw /transact would stay closed`;
-  }
-  return `ramose: Server writes and the Worker env diverge on RAMOSE_WRITES — Server({ writes }) is ${JSON.stringify(writes)}, the Worker has ${JSON.stringify(got)}`;
-};
-
-/** @internal The pairing the issue asks to warn on, not fail the deploy. */
-export const WRITES_ALL_POLICY_WARNING =
-  'ramose: writes is "all" while a policy is installed — "all" only opens raw /transact when no policy is configured. Data tx stays superuser-only; schema stays schemaClasses-gated.';
-
-/** @internal Match the Worker's `writes.unrecognized` startup log. */
-export const unrecognizedWritesWarningMessage = (value: unknown): string =>
-  `ramose: RAMOSE_WRITES=${JSON.stringify(value)} is not "all" or "operations"; using "operations"`;
-
-const workerWritesOf = (worker: unknown): unknown => {
-  if (typeof worker === "string") return undefined;
-  return workerEnvOf(worker)?.[WRITES_ENV_KEY];
-};
-
-/**
- * @internal Legacy pairing. Policy env is gone; this never warns.
- */
-export const writesAllPolicyWarning = (
-  _writes: WritesMode | undefined,
-  _peerAuth: ServerAuth | undefined,
-  _worker: unknown,
-): string | undefined => undefined;
-
-/** @internal Emit {@link writesAllPolicyWarning} at deploy. */
-export const warnWritesAllPolicy = (
-  writes: WritesMode | undefined,
-  peerAuth: ServerAuth | undefined,
-  worker: unknown,
-): string | undefined => {
-  const message = writesAllPolicyWarning(writes, peerAuth, worker);
-  if (message !== undefined) console.warn(message);
-  return message;
-};
-
-/**
- * @internal Warning (not a deploy error) when `RAMOSE_WRITES` is set to
- * something other than `"all"` or `"operations"`. Fail-closed is already
- * correct (`resolveWrites` treats it as `"operations"`); name the value
- * so an operator who typed `ALL` sees why raw writes stayed closed.
- */
-export const unrecognizedWritesWarning = (worker: unknown): string | undefined => {
-  const got = workerWritesOf(worker);
-  if (!isUnrecognizedWrites(got)) return undefined;
-  return unrecognizedWritesWarningMessage(got);
 };
 
 const healthOperationsOf = (health: unknown): string[] => {
@@ -567,19 +436,6 @@ export const compareOperationsToHealth = (
     throw error;
   }
 };
-
-/**
- * @internal `Server({ operations })` vs compiled `auth.policy` `operations:`.
- * An armed name that is not registered fails the deploy. A named-rule or
- * db-dependent v1 arm on a registry-bare (no-`on`) op fails the deploy —
- * those arms need a resolved target and must not be ignored. Unarmed
- * registered ops are allowed (superuser-only). Unset policy or operations
- * skips.
- */
-export const compareOperationsToPolicy = (
-  _operations: AnyOperations | undefined,
-  _policyJson: string | undefined,
-): undefined => undefined;
 
 /**
  * @internal One attempt's budget for the coverage `GET /health`.
@@ -634,13 +490,6 @@ const fetchHealthJson = (url: string, timeoutMs: number) =>
     }),
   );
 
-/** @internal Emit {@link unrecognizedWritesWarning} at deploy. */
-export const warnUnrecognizedWrites = (worker: unknown): string | undefined => {
-  const message = unrecognizedWritesWarning(worker);
-  if (message !== undefined) console.warn(message);
-  return message;
-};
-
 export type Server = Resource<
   "Ramose.Server",
   ServerProps,
@@ -649,8 +498,6 @@ export type Server = Resource<
     url: string;
     /** The server Worker's script name, or `""` when it was given as a URL. */
     workerName: string;
-    /** The bearer token, when one was configured. */
-    token: Redacted.Redacted<string> | undefined;
     /**
      * Catalogs this deploy seeded. Install results, not directory state —
      * `doc` is passed through for #215 and is not authoritative here.
@@ -672,9 +519,9 @@ const ServerResource = Resource<Server>("Ramose.Server");
  *
  * Without `worker`, Server declares the peer (R2, both DO classes, the
  * Worker, {@link import("./peer.ts").PEER_COMPAT}, fixed bindings) and
- * applies `auth` / `token` / `writes` onto its env. With `worker`, that
- * form is validated — bindings, DO classes, `main`, and `auth` / `token`
- * / `writes` against the Worker env — and kept as the escape hatch.
+ * applies `auth` onto its env. With `worker`, that
+ * form is validated — bindings, DO classes, `main`, and `auth`
+ * against the Worker env — and kept as the escape hatch.
  */
 const ownedPeers = new WeakSet<object>();
 
@@ -706,11 +553,7 @@ export const Server = Object.assign(
           dev: props.dev as { readonly port?: number } | undefined,
           peer: props.peer as string | undefined,
           routes: props.routes as PeerRoute[] | undefined,
-          authEnv: ownedPeerEnv(
-            props.auth as ServerAuth | undefined,
-            props.token as Redacted.Redacted<string> | string | undefined,
-            props.writes as WritesMode | undefined,
-          ),
+          authEnv: authEnv(props.auth as ServerAuth | undefined),
           durableObjects,
         });
         if (typeof worker === "object" && worker !== null) ownedPeers.add(worker);
@@ -732,15 +575,6 @@ export const resolveWorker = (
   };
   return { url: resolved?.url, workerName: resolved?.workerName ?? "" };
 };
-
-const redact = (
-  token: Redacted.Redacted<string> | string | undefined,
-): Redacted.Redacted<string> | undefined =>
-  token === undefined
-    ? undefined
-    : typeof token === "string"
-      ? Redacted.make(token)
-      : token;
 
 /**
  * @internal One `GET {url}/health`; a non-2xx is a failure so the retry policy
@@ -812,7 +646,6 @@ export const probeHealth = (
 
 const seedDatabases = (
   _url: string,
-  _token: Redacted.Redacted<string> | undefined,
   _databases: Record<string, DatabaseSeed> | undefined,
 ) =>
   Effect.succeed([] as Server["Attributes"]["seeded"]);
@@ -833,17 +666,11 @@ const attributes = Effect.fn(function* (
       props.worker === null ||
       !ownedPeers.has(props.worker);
     if (hatch) {
-      const badMatch = compareAuthToWorker(props.auth, props.token, props.worker);
+      const badMatch = compareAuthToWorker(props.auth, props.worker);
       if (badMatch !== undefined) {
         return yield* new InvalidRequest({ message: badMatch });
       }
-      const badWrites = compareWritesToWorker(props.writes, props.worker);
-      if (badWrites !== undefined) {
-        return yield* new InvalidRequest({ message: badWrites });
-      }
     }
-    warnWritesAllPolicy(props.writes, props.auth, props.worker);
-    warnUnrecognizedWrites(props.worker);
   }
   const worker = resolveWorker(props.worker as ServerWorker);
   const chosen = props.url ?? worker.url;
@@ -862,12 +689,10 @@ const attributes = Effect.fn(function* (
       return yield* badOps;
     }
   }
-  const token = redact(props.token);
-  const seeded = yield* seedDatabases(url, token, props.databases);
+  const seeded = yield* seedDatabases(url, props.databases);
   return {
     url,
     workerName: worker.workerName,
-    token,
     seeded,
   };
 });

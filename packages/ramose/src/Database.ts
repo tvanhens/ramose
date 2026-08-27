@@ -10,7 +10,7 @@
  * does nothing at all, because forgetting the resource must not erase a log.
  *
  * It replaces the `Alchemy.Action` + local-transport idiom: the provider talks
- * plain HTTPS to the server's resolved `url` with its `token`, which under
+ * plain HTTPS to the server's resolved `url`, which under
  * `alchemy dev` is the local dev server's URL for free.
  *
  * @resource
@@ -34,7 +34,6 @@ import type { InputProps } from "alchemy/Input";
 import * as Provider from "alchemy/Provider";
 import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import type { Schema } from "./db/index.ts";
 import { InvalidRequest } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
@@ -107,7 +106,7 @@ export const Database = Object.assign(
 ) as typeof DatabaseResource;
 
 /**
- * @internal `{ url, token }` off the server's attributes.
+ * @internal `{ url }` off the server's attributes.
  *
  * At reconcile the engine has replaced the Outputs with their values, which
  * the `Server` type still spells as Outputs (the same cast `resolveWorker`
@@ -115,20 +114,12 @@ export const Database = Object.assign(
  */
 const resolveServer = (
   server: Server,
-): { url: string | undefined; token: Redacted.Redacted<string> | undefined } => {
+): { url: string | undefined } => {
   const resolved = server as unknown as {
     url?: string | undefined;
-    token?: Redacted.Redacted<string> | string | undefined;
   };
-  const token = resolved?.token;
   return {
     url: resolved?.url,
-    token:
-      token === undefined || token === ""
-        ? undefined
-        : typeof token === "string"
-          ? Redacted.make(token)
-          : token,
   };
 };
 
@@ -149,7 +140,6 @@ const resolveServer = (
 export const installCatalog = Effect.fn(function* (args: {
   readonly name: string;
   readonly url: string;
-  readonly token: Redacted.Redacted<string> | undefined;
   readonly schema: Schema.Any;
   readonly timeoutMs?: number | undefined;
 }) {
@@ -166,11 +156,10 @@ export const installCatalog = Effect.fn(function* (args: {
 
 const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   const name = props.name ?? id;
-  const { url, token } = resolveServer(props.server);
+  const { url } = resolveServer(props.server);
   return yield* installCatalog({
     name,
     url: url ?? "",
-    token,
     schema: props.schema,
     timeoutMs: props.timeoutMs,
   });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Connection } from "../../src/internal/core/conn.ts";
 import type { Principal } from "../../src/worker/auth.ts";
 import { META_HEADERS, PRINCIPAL_HEADER, type SessionDispatch, type SocketLike, openSession, parsePrincipalHeader, planOf, pushApplied } from "../../src/worker/session.ts";
-import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionTxDecision } from "../../src/worker/session-sync.ts";
+import { decideSessionTx, type SessionLog, type SessionTxDecision } from "../../src/worker/session-sync.ts";
 import type { WireDatom } from "../../src/internal/core/index.ts";
 
 /**
@@ -809,6 +809,5 @@ describe("decideSessionTx is fail-closed", () => {
       ruleDbBefore: conn.db(),
     });
     expect(decision).toEqual({ kind: "skip" });
-    expect(await currentViewDatoms(conn.db())).toEqual([]);
   });
 });

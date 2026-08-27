@@ -57,7 +57,7 @@ export type OwnedPeerOptions = {
   readonly main?: string | undefined;
   /**
    * Extra env bindings (AUTH, ANALYTICS, tuning). Merged after the fixed
-   * peer bindings and before auth — `Server({ auth, token })` wins.
+   * peer bindings and before auth — `Server({ auth })` wins.
    */
   readonly env?: Record<string, unknown> | undefined;
   /** Physical Worker name override (Alchemy's `name`). */
