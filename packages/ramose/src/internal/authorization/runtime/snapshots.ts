@@ -33,10 +33,6 @@ import {
 } from "./lease.ts";
 import * as Result from "effect/Result";
 
-declare const RawSnapshotBrand: unique symbol;
-declare const RuleSnapshotBrand: unique symbol;
-declare const AuthorizedSnapshotBrand: unique symbol;
-
 export type AuthorizationBudgetState = {
   readonly limit: number;
   spent: number;
@@ -85,7 +81,7 @@ let constructAuthorized: (state: AuthorizedState) => AuthorizedSnapshot;
 
 /** Privileged facts at a named basis. Storage, transactor, indexer only. */
 export class RawSnapshot {
-  readonly [RawSnapshotBrand]!: never;
+  readonly kind = "raw" as const;
   readonly database: DatabaseId;
   readonly basisT: number;
   readonly asOfT: number | undefined;
@@ -110,7 +106,7 @@ export class RawSnapshot {
 
 /** Trusted current rule basis for grant and traversal lookup. */
 export class RuleSnapshot {
-  readonly [RuleSnapshotBrand]!: never;
+  readonly kind = "rule" as const;
   readonly database: DatabaseId;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
@@ -139,7 +135,7 @@ export class RuleSnapshot {
  * the cursor yields no application datoms (FC-2).
  */
 export class AuthorizedSnapshot {
-  readonly [AuthorizedSnapshotBrand]!: never;
+  readonly kind = "authorized" as const;
   readonly database: DatabaseId;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
