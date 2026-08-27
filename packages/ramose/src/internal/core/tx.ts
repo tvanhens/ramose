@@ -133,11 +133,10 @@ export interface CatalogPublication {
   readonly traitClosures: Readonly<Record<string, readonly string[]>>;
   /**
    * Attribute + composition maps from `schemaTxFromCatalog`. Evolution
-   * is checked against db-before when this is set.
+   * always runs against db-before when publication is set: this payload
+   * if present, otherwise schema ops extracted from the flattened tx.
    */
   readonly schemaTx?: readonly SchemaTxOp[];
-  /** Field + composer idents projected from the incoming unit. */
-  readonly projectedIdents?: readonly string[];
 }
 
 export interface ExpandOptions {
@@ -340,47 +339,87 @@ const resolveCatalogHeadEid = async (db: Db): Promise<number | null> => {
   return typeof head === "number" ? head : null;
 };
 
-const extractProjectedIdents = (bytes: Uint8Array): Set<string> => {
-  const out = new Set<string>();
-  try {
-    const doc = JSON.parse(new TextDecoder().decode(bytes)) as {
-      catalog?: {
-        fields?: { id?: { owner?: { name?: unknown }; localName?: unknown } }[];
-        entities?: { id?: { name?: unknown } }[];
-        traits?: { id?: { name?: unknown } }[];
-      };
-    };
-    for (const field of doc.catalog?.fields ?? []) {
-      const owner = field.id?.owner?.name;
-      const local = field.id?.localName;
-      if (typeof owner === "string" && typeof local === "string") out.add(`:${owner}/${local}`);
+/**
+ * Engine-owned schema-projection attributes. After a catalog head exists,
+ * ordinary txs may not write these on any subject — that would mint or
+ * mutate attrs/composers outside the sealed unit.
+ */
+const SCHEMA_PROJECTION_IDENTS = new Set<string>([
+  ":db/valueType",
+  ":db/cardinality",
+  ":db/unique",
+  ":db/index",
+  ":db/optional",
+  ":db/isComponent",
+  ":db/doc",
+  RAMOSE_KIND_IDENT,
+  RAMOSE_COMPOSES_IDENT,
+]);
+
+const isSchemaProjectionIdent = (ident: string): boolean => SCHEMA_PROJECTION_IDENTS.has(ident);
+
+const isSchemaProjectionEntity = (db: Db, e: number): boolean => {
+  if (db.schema.attr(e) !== undefined) return true;
+  const ident = db.schema.ident(e);
+  return ident !== undefined && db.schema.kindOf(ident) !== undefined;
+};
+
+/** Rebuild schemaTx-shaped maps from flattened ops when publication.schemaTx is omitted. */
+const extractSchemaOpsFromTx = (ops: readonly TxOp[]): SchemaTxOp[] => {
+  type Acc = {
+    ident?: string;
+    valueType?: string;
+    cardinality?: string;
+    unique?: string;
+    optional?: true;
+    index?: true;
+    isComponent?: true;
+    kind?: string;
+    composes: string[];
+  };
+  const bySubject = new Map<string, Acc>();
+  const subjectKey = (e: EForm): string =>
+    typeof e === "number" ? `#${e}` : typeof e === "string" ? e : JSON.stringify(e);
+  for (const op of ops) {
+    if (op.kind !== "add" && op.kind !== "cas") continue;
+    const a = typeof op.a === "string" ? op.a : undefined;
+    if (a === undefined) continue;
+    const key = subjectKey(op.e);
+    const rec = bySubject.get(key) ?? { composes: [] };
+    if (a === ":db/ident" && typeof op.v === "string") rec.ident = op.v;
+    if (a === ":db/valueType" && typeof op.v === "string") rec.valueType = op.v;
+    if (a === ":db/cardinality" && typeof op.v === "string") rec.cardinality = op.v;
+    if (a === ":db/unique" && typeof op.v === "string") rec.unique = op.v;
+    if (a === ":db/optional" && op.v === true) rec.optional = true;
+    if (a === ":db/index" && op.v === true) rec.index = true;
+    if (a === ":db/isComponent" && op.v === true) rec.isComponent = true;
+    if (a === RAMOSE_KIND_IDENT && typeof op.v === "string") rec.kind = op.v;
+    if (a === RAMOSE_COMPOSES_IDENT && typeof op.v === "string") rec.composes.push(op.v);
+    bySubject.set(key, rec);
+  }
+  const out: SchemaTxOp[] = [];
+  for (const rec of bySubject.values()) {
+    if (rec.ident === undefined) continue;
+    if (rec.valueType !== undefined) {
+      out.push({
+        ":db/ident": rec.ident,
+        ":db/valueType": rec.valueType,
+        ":db/cardinality": rec.cardinality ?? ":db.cardinality/one",
+        ...(rec.unique !== undefined ? { ":db/unique": rec.unique } : {}),
+        ...(rec.index === true ? { ":db/index": true } : {}),
+        ...(rec.isComponent === true ? { ":db/isComponent": true } : {}),
+        ...(rec.optional === true ? { ":db/optional": true } : {}),
+      });
     }
-    for (const entity of doc.catalog?.entities ?? []) {
-      const name = entity.id?.name;
-      if (typeof name === "string") out.add(`:${name}`);
+    if (rec.kind !== undefined) {
+      out.push({ ":db/ident": rec.ident, ":ramose/kind": rec.kind });
     }
-    for (const trait of doc.catalog?.traits ?? []) {
-      const name = trait.id?.name;
-      if (typeof name === "string") out.add(`:${name}`);
+    for (const inner of rec.composes) {
+      out.push({ ":db/ident": rec.ident, ":ramose/composes": inner });
     }
-  } catch {
-    return out;
   }
   return out;
 };
-
-/** `null` when no catalog is published (pre-publish schemaTx still works). */
-const loadProjectedCatalogIdents = async (db: Db): Promise<Set<string> | null> => {
-  const head = await resolveCatalogHeadEid(db);
-  if (head === null) return null;
-  const row = await db.entity(head);
-  const bytes = row?.[RAMOSE_CATALOG_UNIT_BYTES_IDENT];
-  if (!(bytes instanceof Uint8Array)) return null;
-  return extractProjectedIdents(bytes);
-};
-
-const isProjectedSchemaIdent = (ident: string): boolean =>
-  ident.startsWith(":db/") || ident === RAMOSE_KIND_IDENT || ident === RAMOSE_COMPOSES_IDENT;
 
 const isCatalogUnitEntity = async (db: Db, e: number, catalogHead: number | null): Promise<boolean> => {
   if (e === catalogHead) return true;
@@ -469,12 +508,16 @@ export async function expandTx(
     options.catalogPublication !== undefined && options.fromOperation !== true;
   if (options.catalogPublication !== undefined && options.fromOperation !== true) {
     await rejectOccupiedTraitClosureChanges(db, options.catalogPublication);
+    const extracted = extractSchemaOpsFromTx(ops);
     if (options.catalogPublication.schemaTx !== undefined) {
       await rejectIncompatibleCatalogSchema(db, options.catalogPublication.schemaTx);
     }
+    if (extracted.length > 0) {
+      await rejectIncompatibleCatalogSchema(db, extracted);
+    }
   }
-  const projectedIdents = catalogPrivilege ? null : await loadProjectedCatalogIdents(db);
   const catalogHead = await resolveCatalogHeadEid(db);
+  const schemaSealed = catalogHead !== null && !catalogPrivilege;
   const txe = txEid(t);
   const tempids = new Map<string, number>();
   const claims = new Map<string, string>(); // "attr|valueKey" → tempid
@@ -650,11 +693,28 @@ export async function expandTx(
     }
   }
 
-  const isProjectedSubject = (e: number): boolean => {
-    if (projectedIdents === null || projectedIdents.size === 0) return false;
-    const ident = db.schema.ident(e);
-    return ident !== undefined && projectedIdents.has(ident);
+  const formKey = (form: unknown): string => {
+    if (typeof form === "number") return `n:${form}`;
+    if (typeof form === "string") {
+      if (TX_TEMPID.has(form)) return "tx";
+      if (form[0] === ":") {
+        const id = db.schema.entid(form);
+        return id !== undefined ? `n:${id}` : `i:${form}`;
+      }
+      return `t:${aliasOf(form)}`;
+    }
+    if (isLookupRef(form)) return `l:${form[0]}=${String(form[1])}`;
+    return `x:${String(form)}`;
   };
+
+  const schemaSubjectKeys = new Set<string>();
+  if (schemaSealed) {
+    for (const op of ops) {
+      if (op.kind === "retractEntity") continue;
+      const ident = catalogAttrIdent(op.a, db);
+      if (ident !== undefined && isSchemaProjectionIdent(ident)) schemaSubjectKeys.add(formKey(op.e));
+    }
+  }
 
   const rejectResolvedCatalogWrite = (
     e: number | undefined,
@@ -667,13 +727,16 @@ export async function expandTx(
       if (catalogPrivilege && control) return;
       throw new TxError(`cannot write system fact ${ident ?? RAMOSE_CATALOG_IDENT}`, "tx/system");
     }
-    if (
-      e !== undefined &&
-      isProjectedSubject(e) &&
-      ident !== undefined &&
-      isProjectedSchemaIdent(ident)
-    ) {
+    if (!schemaSealed || ident === undefined) return;
+    if (isSchemaProjectionIdent(ident)) {
       throw new TxError(`cannot write system fact ${ident}`, "tx/system");
+    }
+    if (ident === ":db/ident") {
+      const sameTxSchema = schemaSubjectKeys.has(formKey(subject));
+      const before = e !== undefined && isSchemaProjectionEntity(db, e);
+      if (sameTxSchema || before) {
+        throw new TxError(`cannot write system fact ${ident}`, "tx/system");
+      }
     }
   };
 
@@ -685,7 +748,7 @@ export async function expandTx(
       if (catalogPrivilege) return;
       throw new TxError(`cannot write system fact ${RAMOSE_CATALOG_IDENT}`, "tx/system");
     }
-    if (isProjectedSubject(e) && !catalogPrivilege) {
+    if (schemaSealed && isSchemaProjectionEntity(db, e)) {
       throw new TxError(
         `cannot write system fact ${db.schema.ident(e) ?? RAMOSE_CATALOG_IDENT}`,
         "tx/system",

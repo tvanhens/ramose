@@ -539,12 +539,15 @@ export class Transactor {
             const rep =
               publication !== undefined && unit !== undefined
                 ? await this.conn.publishCatalog(
-                    assembleCatalogPublicationTx(
+                    assembleCatalogPublicationTx({
                       unit,
-                      p.expectedHead ?? null,
-                      await catalogCompositionRetracts(this.conn.db(), unit.catalog),
-                      installedAttrsFromSchema(this.conn.db().schema),
-                    ),
+                      expectedHead: p.expectedHead ?? null,
+                      installed: installedAttrsFromSchema(this.conn.db().schema),
+                      compositionRetracts: await catalogCompositionRetracts(
+                        this.conn.db(),
+                        unit.catalog,
+                      ),
+                    }),
                     publication,
                   )
                 : await this.conn.transact(

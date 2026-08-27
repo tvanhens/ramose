@@ -115,12 +115,9 @@ export const catalogPublicationOf = (catalog: CatalogDescriptor): CatalogPublica
     for (const trait of row.transitive) set.add(composerIdentFromName(trait.name));
     traitClosures[ident] = [...set].sort();
   }
-  const schemaTx = schemaTxFromCatalog(catalog);
-  const projectedIdents = [...new Set(schemaTx.map((op) => op[":db/ident"]))];
   return {
     entityNames: catalog.entities.map((entity) => entity.id.name),
     traitClosures,
-    schemaTx,
-    projectedIdents,
+    schemaTx: schemaTxFromCatalog(catalog),
   };
 };

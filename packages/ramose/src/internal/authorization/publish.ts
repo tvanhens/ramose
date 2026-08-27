@@ -104,15 +104,21 @@ const installedAttrsFromSchema = (schema: Schema): InstalledAttr[] => {
 
 /**
  * Pure assembly. Caller must pass a verified unit — never an unverified
- * structural document. `compositionRetracts` are computed from db-before.
- * `installed` supplies `installTx` optional→required retracts.
+ * structural document. `installed` is required (read from db-before) so
+ * optional→required retracts are never silently skipped. `compositionRetracts`
+ * are also computed from db-before.
  */
-export const assembleCatalogPublicationTx = (
-  unit: InstalledCatalogUnitV1,
-  expectedHead: number | null,
-  compositionRetracts: CatalogPublicationTx = [],
-  installed: readonly InstalledAttr[] = [],
-): CatalogPublicationTx => [
+export const assembleCatalogPublicationTx = ({
+  unit,
+  expectedHead,
+  installed,
+  compositionRetracts = [],
+}: {
+  readonly unit: InstalledCatalogUnitV1;
+  readonly expectedHead: number | null;
+  readonly installed: readonly InstalledAttr[];
+  readonly compositionRetracts?: CatalogPublicationTx;
+}): CatalogPublicationTx => [
   ...compositionRetracts,
   ...installTx(schemaTxFromCatalog(unit.catalog), installed),
   [":db/add", CATALOG_UNIT_TEMPID, RAMOSE_CATALOG_UNIT_HASH_IDENT, unit.unitHash],
@@ -220,7 +226,12 @@ export const publishCatalogUnit = Effect.fn("Authorization.publishCatalogUnit")(
         ? expectedHead
         : yield* Effect.promise(() => resolveCatalogHead(db));
     const retracts = yield* Effect.promise(() => catalogCompositionRetracts(db, unit.catalog));
-    const tx = assembleCatalogPublicationTx(unit, head, retracts, installedAttrsFromSchema(db.schema));
+    const tx = assembleCatalogPublicationTx({
+      unit,
+      expectedHead: head,
+      installed: installedAttrsFromSchema(db.schema),
+      compositionRetracts: retracts,
+    });
     return yield* Effect.tryPromise({
       try: () => conn.publishCatalog(tx, catalogPublicationFromUnit(unit)),
       catch: (cause) => {

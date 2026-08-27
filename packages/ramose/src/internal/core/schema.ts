@@ -54,8 +54,9 @@ export const RAMOSE_CATALOG_HEAD_IDENT = ":ramose.catalog/head";
 export const RAMOSE_CATALOG_UNIT_HASH_IDENT = ":ramose.catalog/unitHash";
 export const RAMOSE_CATALOG_UNIT_BYTES_IDENT = ":ramose.catalog/unitBytes";
 
-/** Engine-owned catalog-head / unit-document attributes. */
+/** Engine-owned catalog singleton, head, and unit-document attributes. */
 export const isCatalogControlIdent = (ident: string): boolean =>
+  ident === RAMOSE_CATALOG_IDENT ||
   ident === RAMOSE_CATALOG_HEAD_IDENT ||
   ident === RAMOSE_CATALOG_UNIT_HASH_IDENT ||
   ident === RAMOSE_CATALOG_UNIT_BYTES_IDENT ||

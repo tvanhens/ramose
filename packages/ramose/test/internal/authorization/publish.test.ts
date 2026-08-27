@@ -358,6 +358,27 @@ describe("field evolution at publish", () => {
     expect(conn.db().schema.attr(":issue/priority")).toBeUndefined();
   });
 
+  test("publishCatalog without schemaTx still checks evolution from the tx", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const t = conn.t;
+    const { schemaTx: _schemaTx, ...publication } = catalogPublicationFromUnit(await sealUnit());
+    await expect(
+      conn.publishCatalog(
+        [
+          {
+            ":db/ident": ":issue/title",
+            ":db/valueType": ":db.type/long",
+            ":db/cardinality": ":db.cardinality/one",
+          },
+        ],
+        publication,
+      ),
+    ).rejects.toMatchObject({ code: "tx/incompatible-schema" });
+    expect(conn.t).toBe(t);
+    expect(conn.db().schema.attr(":issue/title")?.valueType).toBe(ValueTag.Str);
+  });
+
   test("valueType flip is tx/incompatible-schema and leaves head null on first publish", async () => {
     const conn = await Connection.create();
     await conn.transact([
@@ -503,6 +524,69 @@ describe("post-publish schema projection is engine-owned", () => {
     expect(conn.db().schema.kindOf(":issue")).toBe(RAMOSE_KIND_ENTITY);
   });
 
+  test("ordinary tx cannot mint a net-new attribute after publish", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const t = conn.t;
+    await expect(
+      conn.transact([
+        {
+          ":db/ident": ":evil/spy",
+          ":db/valueType": ":db.type/string",
+          ":db/cardinality": ":db.cardinality/one",
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact(
+        [
+          {
+            ":db/ident": ":evil/spy",
+            ":db/valueType": ":db.type/string",
+            ":db/cardinality": ":db.cardinality/one",
+          },
+        ],
+        { fromOperation: true },
+      ),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    expect(conn.t).toBe(t);
+    expect(conn.db().schema.attr(":evil/spy")).toBeUndefined();
+  });
+
+  test("ordinary tx cannot mint a net-new composer after publish", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const t = conn.t;
+    await expect(
+      conn.transact([{ ":db/ident": ":backdoor", ":ramose/kind": ":ramose.kind/entity" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":backdoor", ":ramose/composes": ":taggable" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":backdoor", ":ramose/kind": ":ramose.kind/entity" }], {
+        fromOperation: true,
+      }),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    expect(conn.t).toBe(t);
+    expect(conn.db().schema.kindOf(":backdoor")).toBeUndefined();
+  });
+
+  test("retractEntity of a projected field or composer is tx/system", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const t = conn.t;
+    await expect(conn.transact([[":db/retractEntity", ":issue/title"]])).rejects.toMatchObject({
+      code: "tx/system",
+    });
+    await expect(conn.transact([[":db/retractEntity", ":issue"]])).rejects.toMatchObject({
+      code: "tx/system",
+    });
+    expect(conn.t).toBe(t);
+    expect(conn.db().schema.attr(":issue/title")).toBeDefined();
+    expect(conn.db().schema.kindOf(":issue")).toBe(RAMOSE_KIND_ENTITY);
+  });
+
   test("user data writes and typed create still work after publish", async () => {
     const conn = await Connection.create();
     await publish(conn, await sealUnit());
@@ -542,6 +626,9 @@ describe("privilege", () => {
     });
     await expect(
       conn.transact([{ ":db/id": RAMOSE_CATALOG, ":db/doc": "nope" }] as unknown[]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([[":db/add", FIRST_USER_EID, RAMOSE_CATALOG_IDENT, "nope"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
     expect(conn.t).toBe(t);
     expect(await resolveCatalogHead(conn.db())).toBeNull();
@@ -688,7 +775,11 @@ describe("schemaTxFromCatalog", () => {
         { ":db/ident": ":user", ":ramose/kind": RAMOSE_KIND_ENTITY },
       ]),
     );
-    const assembled = assembleCatalogPublicationTx(unit, null);
+    const assembled = assembleCatalogPublicationTx({
+      unit,
+      expectedHead: null,
+      installed: [],
+    });
     expect(assembled.at(-1)).toEqual([
       ":db/cas",
       [":db/ident", RAMOSE_CATALOG_IDENT],
