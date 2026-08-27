@@ -10,8 +10,13 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { TestClock } from "effect/testing";
+import { createLocalJWKSet, type JWTVerifyGetKey } from "jose";
 import { AUD, ISS, JWKS, PUBLIC_JWK } from "../../../../../test/local/auth-keys.ts";
-import { AuthenticationAdmission } from "../../../src/internal/authorization/runtime/authentication.ts";
+import {
+  AuthenticationAdmission,
+  createAuthentication,
+} from "../../../src/internal/authorization/runtime/authentication.ts";
+import type { JwksService } from "../../../src/internal/authorization/runtime/jwks.ts";
 import { authenticationLayer, localAuthenticationLayer } from "../../../src/internal/authorization/runtime/layer.ts";
 import { toAuthorizationPrincipal } from "../../../src/internal/authorization/runtime/verified-principal.ts";
 import { toWirePrincipal } from "../../../src/worker/auth.ts";
@@ -332,6 +337,78 @@ describe("AuthenticationAdmission", () => {
         )
       ).message,
     ).toBe("aud");
+  });
+
+  test("invalid JWK verify codes are refreshable; claim failures are not", async () => {
+    const goodKeys = createLocalJWKSet({ keys: [PUBLIC_JWK] });
+    const throwing =
+      (code: string): JWTVerifyGetKey =>
+      async () => {
+        throw Object.assign(new Error(code), { code });
+      };
+
+    const admitWith = (jwks: JwksService, token: string) => {
+      const admission = createAuthentication({ RAMOSE_JWT_ISS: ISS, RAMOSE_JWT_AUD: AUD }, jwks);
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(Date.now());
+        return yield* admission.admit({
+          database: "acme",
+          token: Redacted.make(token),
+          route: "http",
+        });
+      }).pipe(Effect.provide(TestClock.layer()));
+    };
+
+    const token = await signToken("acme", "member");
+    for (const code of ["ERR_JWK_INVALID", "ERR_JWKS_INVALID"]) {
+      let refreshes = 0;
+      const jwks: JwksService = {
+        keySet: Effect.succeed(throwing(code)),
+        invalidate: Effect.void,
+        refresh: Effect.sync(() => {
+          refreshes += 1;
+          return goodKeys;
+        }),
+      };
+      const admitted = await Effect.runPromise(admitWith(jwks, token));
+      expect(admitted.principal.subject).toBe("user_ada");
+      expect(refreshes).toBe(1);
+    }
+
+    let claimRefreshes = 0;
+    const claimsJwks: JwksService = {
+      keySet: Effect.succeed(goodKeys),
+      invalidate: Effect.void,
+      refresh: Effect.sync(() => {
+        claimRefreshes += 1;
+        return goodKeys;
+      }),
+    };
+    const badIss = await signToken("acme", "member", "user_ada", undefined, { iss: "https://other.test" });
+    const expired = await signToken("acme", "member", "user_ada", undefined, { iat: 0, exp: 1 });
+    const hs = await signToken("acme", "member", "user_ada", undefined, { alg: "HS256" });
+    const issFail = await Effect.runPromise(Effect.flip(admitWith(claimsJwks, badIss)));
+    const expFail = await Effect.runPromise(
+      Effect.flip(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(2_000);
+          const admission = createAuthentication(
+            { RAMOSE_JWT_ISS: ISS, RAMOSE_JWT_AUD: AUD },
+            claimsJwks,
+          );
+          return yield* admission.admit({
+            database: "acme",
+            token: Redacted.make(expired),
+            route: "http",
+          });
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+    );
+    const algFail = await Effect.runPromise(Effect.flip(admitWith(claimsJwks, hs)));
+    expect(issFail.message).toBe("iss");
+    expect(expFail.message).toBe("expired");
+    expect(algFail.message).toBe("alg");
+    expect(claimRefreshes).toBe(0);
   });
 
   test("Clock.currentTimeMillis drives jwtVerify currentDate", async () => {

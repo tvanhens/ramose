@@ -575,46 +575,44 @@ describe("Jwks", () => {
       const tokenB = await tok("b");
       const tokenC = await tok("c");
 
-      kid = "a";
-      await Effect.runPromise(admit(env, "acme", tokenA));
-      kid = "b";
       await Effect.runPromise(
         Effect.gen(function* () {
           yield* TestClock.setTime(Date.now());
           const jwks = yield* Jwks;
-          yield* jwks.invalidate;
           const admission = yield* AuthenticationAdmission;
-          return yield* admission.admit({
-            database: "acme",
-            token: Redacted.make(tokenB),
-            route: "http",
-          });
-        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
-      );
-      kid = "c";
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          yield* TestClock.setTime(Date.now());
-          const jwks = yield* Jwks;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          kid = "a";
+          yield* tryAdmit(tokenA);
+          expect(fetches).toBe(1);
+
+          kid = "b";
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
           yield* jwks.invalidate;
-          const admission = yield* AuthenticationAdmission;
-          return yield* admission.admit({
-            database: "acme",
-            token: Redacted.make(tokenC),
-            route: "http",
-          });
+          yield* tryAdmit(tokenB);
+          expect(fetches).toBe(2);
+
+          kid = "c";
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          yield* jwks.invalidate;
+          yield* tryAdmit(tokenC);
+          expect(fetches).toBe(3);
+
+          const prev = yield* tryAdmit(tokenB);
+          const current = yield* tryAdmit(tokenC);
+          expect(prev.principal.subject).toBe("user_ada");
+          expect(current.principal.subject).toBe("user_ada");
+
+          const dropped = yield* Effect.flip(tryAdmit(tokenA));
+          expect(dropped._tag === "AuthenticationRejected" || dropped._tag === "JwksUnavailable").toBe(
+            true,
+          );
         }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
-      );
-      expect(fetches).toBe(3);
-
-      const prev = await Effect.runPromise(admit(env, "acme", tokenB));
-      const current = await Effect.runPromise(admit(env, "acme", tokenC));
-      expect(prev.principal.subject).toBe("user_ada");
-      expect(current.principal.subject).toBe("user_ada");
-
-      const dropped = await Effect.runPromise(Effect.flip(admit(env, "acme", tokenA)));
-      expect(dropped._tag === "AuthenticationRejected" || dropped._tag === "JwksUnavailable").toBe(
-        true,
       );
     } finally {
       server.stop(true);
@@ -658,6 +656,185 @@ describe("Jwks", () => {
     expect(missing.message).toBe("jwks");
   });
 
+  test("failed refresh keeps last generation and does not hammer until cooldown", async () => {
+    let keys: object[] = [jwk("test")];
+    let status = 200;
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        if (status !== 200) return new Response("nope", { status });
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const good = await signToken("acme", "member", "user_ada", undefined, { kid: "test" });
+      const unknown = await signToken("acme", "member", "user_ada", undefined, { kid: "rand-fail" });
+      const nextTok = await signToken("acme", "member", "user_ada", undefined, { kid: "next" });
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          yield* tryAdmit(good);
+          expect(fetches).toBe(1);
+
+          status = 500;
+          yield* TestClock.adjust(1);
+          const failed = yield* Effect.flip(tryAdmit(unknown));
+          expect(failed._tag === "AuthenticationRejected" || failed._tag === "JwksUnavailable").toBe(
+            true,
+          );
+          expect(fetches).toBe(2);
+
+          const stillGood = yield* tryAdmit(good);
+          expect(stillGood.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          const secondMiss = yield* Effect.flip(tryAdmit(unknown));
+          expect(secondMiss.message).toBe("jwks");
+          expect(fetches).toBe(2);
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          status = 200;
+          keys = [jwk("test"), jwk("next")];
+          const recovered = yield* tryAdmit(nextTok);
+          expect(recovered.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(3);
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("failed TTL reload serves last generation and cools remote attempts", async () => {
+    let fetches = 0;
+    let status = 200;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        if (status !== 200) return new Response("nope", { status });
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    try {
+      const env = { RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks` };
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const jwks = yield* Jwks;
+          yield* jwks.keySet;
+          expect(fetches).toBe(1);
+
+          status = 500;
+          yield* TestClock.adjust("5 minutes");
+          const failed = yield* Effect.flip(jwks.keySet);
+          expect(failed).toBeInstanceOf(JwksUnavailable);
+          expect(fetches).toBe(2);
+
+          yield* jwks.keySet;
+          expect(fetches).toBe(2);
+
+          status = 200;
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          yield* jwks.keySet;
+          expect(fetches).toBe(3);
+        }).pipe(Effect.provide(withClock(jwksLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("malformed remote JWKS is not cached; cooldown then recovery", async () => {
+    let fetches = 0;
+    let keys: object[] = [{ kty: "EC", kid: "test", crv: "P-256" }];
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const token = await signToken("acme", "member", "user_ada", undefined, { kid: "test" });
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          const first = yield* Effect.flip(tryAdmit(token));
+          expect(first).toBeInstanceOf(JwksUnavailable);
+          expect(fetches).toBe(1);
+
+          const retry = yield* Effect.flip(tryAdmit(token));
+          expect(retry).toBeInstanceOf(JwksUnavailable);
+          expect(fetches).toBe(1);
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          keys = [PUBLIC_JWK];
+          const recovered = yield* tryAdmit(token);
+          expect(recovered.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("mixed JWKS drops unimportable keys and caches the rest", async () => {
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({
+          keys: [{ kty: "EC", kid: "bad", crv: "P-256" }, PUBLIC_JWK],
+        });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const token = await signToken("acme", "member");
+      const admitted = await Effect.runPromise(admit(env, "acme", token));
+      expect(admitted.principal.subject).toBe("user_ada");
+      expect(fetches).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("localAuthenticationLayer is isolated from the env WeakMap", async () => {
     const token = await signToken("acme", "member");
     const a = localAuthenticationLayer({ jwksJson: JWKS, issuers: ISS, aud: AUD });
@@ -665,7 +842,7 @@ describe("Jwks", () => {
     const ok = await Effect.runPromise(admitOfLayer(a, token));
     expect(ok.principal.subject).toBe("user_ada");
     const empty = await Effect.runPromise(Effect.flip(admitOfLayer(b, token)));
-    expect(empty._tag).toBe("AuthenticationRejected");
+    expect(empty._tag).toBe("JwksUnavailable");
   });
 });
 

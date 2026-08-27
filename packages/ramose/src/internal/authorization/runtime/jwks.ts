@@ -49,11 +49,32 @@ const isAbort = (cause: unknown): boolean =>
   ((cause as { name?: string }).name === "AbortError" ||
     (cause as { _tag?: string })._tag === "AbortError");
 
+const nonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
+const isImportableJwk = (key: unknown): key is JSONWebKeySet["keys"][number] => {
+  if (typeof key !== "object" || key === null || Array.isArray(key)) return false;
+  const jwk = key as Record<string, unknown>;
+  if (!nonEmptyString(jwk.kty)) return false;
+  switch (jwk.kty) {
+    case "EC":
+      return nonEmptyString(jwk.crv) && nonEmptyString(jwk.x) && nonEmptyString(jwk.y);
+    case "RSA":
+      return nonEmptyString(jwk.n) && nonEmptyString(jwk.e);
+    case "OKP":
+      return nonEmptyString(jwk.crv) && nonEmptyString(jwk.x);
+    default:
+      return false;
+  }
+};
+
 const parseJwks = (value: unknown): JSONWebKeySet | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const keys = (value as { keys?: unknown }).keys;
   if (!Array.isArray(keys)) return undefined;
-  return value as JSONWebKeySet;
+  const importable = keys.filter(isImportableJwk);
+  if (importable.length === 0) return undefined;
+  return { keys: importable };
 };
 
 const unavailable = (message: string) => new JwksUnavailable({ message });
@@ -149,6 +170,7 @@ export const createJwks = (env: AuthBindings): JwksService => {
   const generations: Generation[] = [];
   let stale = false;
   let lastKidRefreshAt = 0;
+  let lastRemoteAttemptAt = 0;
   let pending: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable> | undefined;
   const loadedByFiber = new WeakSet<object>();
   let fetchImpl: Fetcher["fetch"] | undefined;
@@ -207,6 +229,7 @@ export const createJwks = (env: AuthBindings): JwksService => {
     Effect.gen(function* () {
       const url = env.RAMOSE_JWKS_URL;
       if (url) {
+        lastRemoteAttemptAt = now;
         const parsed = yield* loadRemote(url, fetchImpl as Fetcher["fetch"]);
         return push(now, parsed);
       }
@@ -224,7 +247,10 @@ export const createJwks = (env: AuthBindings): JwksService => {
       pending = d;
       yield* doLoad(now).pipe(
         Effect.matchEffect({
-          onFailure: (e) => Deferred.fail(d, e),
+          onFailure: (e) => {
+            if (generations[0] !== undefined) stale = false;
+            return Deferred.fail(d, e);
+          },
           onSuccess: (a) => Deferred.succeed(d, a),
         }),
         Effect.ensuring(
@@ -242,6 +268,11 @@ export const createJwks = (env: AuthBindings): JwksService => {
     if (fetchError !== undefined) return yield* fetchError;
     const now = yield* Clock.currentTimeMillis;
     const current = generations[0];
+    if (lastRemoteAttemptAt !== 0 && now - lastRemoteAttemptAt < JWKS_REFRESH_COOLDOWN_MS) {
+      if (current === undefined) return yield* unavailable("jwks");
+      yield* unmarkLoaded;
+      return combine(generations);
+    }
     if (!stale && current !== undefined && now - current.at < JWKS_CACHE_TTL_MS) {
       yield* unmarkLoaded;
       return combine(generations);
@@ -254,6 +285,7 @@ export const createJwks = (env: AuthBindings): JwksService => {
   });
 
   const refresh = Effect.gen(function* () {
+    if (fetchError !== undefined) return yield* fetchError;
     const now = yield* Clock.currentTimeMillis;
     if (pending !== undefined) return yield* Deferred.await(pending);
 
@@ -275,7 +307,10 @@ export const createJwks = (env: AuthBindings): JwksService => {
     }
     lastKidRefreshAt = now;
     stale = true;
-    return yield* keySet;
+    // Kid-miss refresh is gated by lastKidRefreshAt. Load directly so a
+    // rotation fetch can proceed while lastRemoteAttemptAt still cools
+    // keySet (TTL / stale / failed-parse retries).
+    return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.refresh"));
 
   return { keySet, invalidate, refresh };

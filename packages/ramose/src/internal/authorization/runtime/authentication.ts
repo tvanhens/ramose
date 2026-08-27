@@ -55,10 +55,17 @@ const csv = (value: string | undefined): string[] =>
 
 const rejected = (message: string) => new AuthenticationRejected({ message });
 
-const isNoMatchingKey = (cause: unknown): boolean =>
-  typeof cause === "object" &&
-  cause !== null &&
-  (cause as { code?: string }).code === "ERR_JWKS_NO_MATCHING_KEY";
+const REFRESHABLE_KEY_CODES = new Set([
+  "ERR_JWKS_NO_MATCHING_KEY",
+  "ERR_JWK_INVALID",
+  "ERR_JWKS_INVALID",
+]);
+
+const isRefreshableKeyFailure = (cause: unknown): boolean => {
+  if (typeof cause !== "object" || cause === null) return false;
+  const code = (cause as { code?: string }).code;
+  return typeof code === "string" && REFRESHABLE_KEY_CODES.has(code);
+};
 
 const joseReason = (cause: unknown): string => {
   if (typeof cause !== "object" || cause === null) return "claims";
@@ -66,9 +73,7 @@ const joseReason = (cause: unknown): string => {
   const claim = (cause as { claim?: string }).claim;
   if (code === "ERR_JWT_EXPIRED") return "expired";
   if (code === "ERR_JOSE_ALG_NOT_ALLOWED" || code === "ERR_JOSE_NOT_SUPPORTED") return "alg";
-  if (code === "ERR_JWKS_NO_MATCHING_KEY" || code === "ERR_JWKS_TIMEOUT" || code === "ERR_JWKS_INVALID") {
-    return "jwks";
-  }
+  if (code === "ERR_JWKS_TIMEOUT") return "jwks";
   if (claim === "nbf") return "nbf";
   if (claim === "iss") return "iss";
   if (claim === "aud") return "aud";
@@ -146,7 +151,7 @@ const verifyOnce = (
         currentDate: new Date(now),
       }).then((verified) => verified.payload),
     catch: (cause) =>
-      rejected(isNoMatchingKey(cause) ? "kid" : joseReason(cause)),
+      rejected(isRefreshableKeyFailure(cause) ? "kid" : joseReason(cause)),
   });
 
 export const createAuthentication = (
