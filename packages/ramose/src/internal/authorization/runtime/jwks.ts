@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { createLocalJWKSet, type JWTVerifyGetKey } from "jose";
 import type { JSONWebKeySet } from "jose";
 import { JwksUnavailable } from "./failures.ts";
@@ -95,11 +96,18 @@ const publicField = (key: JSONWebKeySet["keys"][number], field: (typeof PUBLIC_J
   return typeof value === "string" ? value : null;
 };
 
+const keyOpsField = (key: JSONWebKeySet["keys"][number]): readonly string[] | null => {
+  const value = (key as Record<string, unknown>).key_ops;
+  if (!Array.isArray(value)) return null;
+  return value.filter((op): op is string => typeof op === "string").slice().sort();
+};
+
 const fingerprintKey = (key: JSONWebKeySet["keys"][number]): string => {
-  const publicFields: Record<string, string | null> = {};
+  const publicFields: Record<string, string | null | readonly string[]> = {};
   for (const field of PUBLIC_JWK_FIELDS) {
     publicFields[field] = publicField(key, field);
   }
+  publicFields.key_ops = keyOpsField(key);
   return JSON.stringify(publicFields);
 };
 
@@ -191,6 +199,8 @@ export const createJwks = (env: AuthBindings): JwksService => {
   let lastKidRefreshAt = 0;
   let lastRemoteAttemptAt = 0;
   let pending: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable> | undefined;
+  let loadFiber: Fiber.Fiber<void, never> | undefined;
+  let waiters = 0;
   const loadedByFiber = new WeakSet<object>();
   let fetchImpl: Fetcher["fetch"] | undefined;
   let fetchError: JwksUnavailable | undefined;
@@ -240,12 +250,33 @@ export const createJwks = (env: AuthBindings): JwksService => {
 
   const loadedByThisFiber = Effect.withFiber((fiber) => Effect.succeed(loadedByFiber.has(fiber)));
 
+  const releaseWaiter = (d: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable>) =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        waiters -= 1;
+        if (waiters !== 0) return;
+        const fiber = loadFiber;
+        if (fiber !== undefined && pending === d) {
+          pending = undefined;
+          loadFiber = undefined;
+          yield* Fiber.interrupt(fiber);
+        }
+      }),
+    );
+
+  const joinPending = (d: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable>) =>
+    Deferred.await(d).pipe(
+      Effect.ensuring(releaseWaiter(d)),
+      Effect.tap(() => markLoaded),
+    );
+
   const awaitPending = (d: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable>) =>
-    Effect.gen(function* () {
-      const keys = yield* Deferred.await(d);
-      yield* markLoaded;
-      return keys;
-    });
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        waiters += 1;
+        return yield* restore(joinPending(d));
+      }),
+    );
 
   const doLoad = (now: number): Effect.Effect<JWTVerifyGetKey, JwksUnavailable> =>
     Effect.gen(function* () {
@@ -260,34 +291,55 @@ export const createJwks = (env: AuthBindings): JwksService => {
       return push(now, parsed);
     });
 
-  // Isolate-wide: at most one in-flight JWKS load. Joiners await the same Deferred.
+  // Isolate-wide single-flight: doLoad runs in a detached fiber so the winner's
+  // interrupt does not abort the fetch. Waiters are refcounted; interrupting the
+  // last waiter interrupts the load fiber (solo cancel still aborts the signal).
   const loadOnce = (now: number): Effect.Effect<JWTVerifyGetKey, JwksUnavailable> =>
-    Effect.gen(function* () {
-      if (pending !== undefined) return yield* awaitPending(pending);
-      const d = yield* Deferred.make<JWTVerifyGetKey, JwksUnavailable>();
-      if (pending !== undefined) return yield* awaitPending(pending);
-      pending = d;
-      yield* doLoad(now).pipe(
-        Effect.matchEffect({
-          onFailure: (e) => {
-            if (generations[0] !== undefined) stale = false;
-            return Deferred.fail(d, e);
-          },
-          onSuccess: (a) => Deferred.succeed(d, a),
-        }),
-        Effect.ensuring(
-          Effect.gen(function* () {
-            pending = undefined;
-            yield* Deferred.fail(d, unavailable("jwks"));
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        if (pending !== undefined) {
+          waiters += 1;
+          return yield* restore(joinPending(pending));
+        }
+        const d = yield* Deferred.make<JWTVerifyGetKey, JwksUnavailable>();
+        if (pending !== undefined) {
+          waiters += 1;
+          return yield* restore(joinPending(pending));
+        }
+        pending = d;
+        waiters += 1;
+        loadFiber = yield* doLoad(now).pipe(
+          Effect.matchEffect({
+            onFailure: (e) =>
+              Effect.gen(function* () {
+                if (generations[0] !== undefined) stale = false;
+                pending = undefined;
+                loadFiber = undefined;
+                yield* Deferred.fail(d, e);
+              }),
+            onSuccess: (a) =>
+              Effect.gen(function* () {
+                pending = undefined;
+                loadFiber = undefined;
+                yield* Deferred.succeed(d, a);
+              }),
           }),
-        ),
-      );
-      yield* markLoaded;
-      return yield* Deferred.await(d);
-    });
+          Effect.ensuring(
+            Effect.gen(function* () {
+              pending = undefined;
+              loadFiber = undefined;
+              yield* Deferred.fail(d, unavailable("jwks"));
+            }),
+          ),
+          Effect.forkDetach({ startImmediately: true }),
+        );
+        return yield* restore(joinPending(d));
+      }),
+    );
 
   const keySet = Effect.gen(function* () {
     if (fetchError !== undefined) return yield* fetchError;
+    if (pending !== undefined) return yield* awaitPending(pending);
     const now = yield* Clock.currentTimeMillis;
     const current = generations[0];
     if (lastRemoteAttemptAt !== 0 && now - lastRemoteAttemptAt < JWKS_REFRESH_COOLDOWN_MS) {
@@ -302,10 +354,12 @@ export const createJwks = (env: AuthBindings): JwksService => {
     return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.keySet"));
 
-  const candidates = keySet.pipe(
-    Effect.map(() => generations.map((generation) => generation.getKey)),
-    Effect.withSpan("Jwks.candidates"),
-  );
+  const candidates = Effect.gen(function* () {
+    yield* keySet;
+    const now = yield* Clock.currentTimeMillis;
+    pruneExpiredRetired(now, generations);
+    return generations.map((generation) => generation.getKey);
+  }).pipe(Effect.withSpan("Jwks.candidates"));
 
   const invalidate = Effect.sync(() => {
     stale = true;
@@ -314,7 +368,7 @@ export const createJwks = (env: AuthBindings): JwksService => {
   const refresh = Effect.gen(function* () {
     if (fetchError !== undefined) return yield* fetchError;
     const now = yield* Clock.currentTimeMillis;
-    if (pending !== undefined) return yield* Deferred.await(pending);
+    if (pending !== undefined) return yield* awaitPending(pending);
 
     const current = generations[0];
     const alreadyLoaded = yield* loadedByThisFiber;
