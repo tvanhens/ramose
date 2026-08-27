@@ -327,14 +327,32 @@ const lookupIdentity = (lookup: RuleAccessLookup): string => {
   }
 };
 
+const existsCovers = (actual: RuleAccessLookup, required: RuleAccessLookup): boolean => {
+  if (actual._tag !== "exists" || required._tag !== "exists") return false;
+  if (entityKey(actual.entity) !== entityKey(required.entity)) return false;
+  const have = new Set(actual.fields.map(fieldKey));
+  return required.fields.every((field) => have.has(fieldKey(field)));
+};
+
+const lookupCovered = (
+  actual: ReadonlyArray<RuleAccessLookup>,
+  required: RuleAccessLookup,
+  identities: ReadonlySet<string>,
+): boolean => {
+  if (required._tag === "exists") {
+    return actual.some((lookup) => existsCovers(lookup, required));
+  }
+  return identities.has(lookupIdentity(required));
+};
+
 /** True when `actual` contains every required lookup. Extra actual lookups are allowed. */
 export const accessPlanCovers = (
   actual: ReadonlyArray<RuleAccessLookup>,
   required: ReadonlyArray<RuleAccessLookup>,
 ): boolean => {
-  const have = new Set(actual.map(lookupIdentity));
+  const have = new Set(actual.filter((lookup) => lookup._tag !== "exists").map(lookupIdentity));
   for (const lookup of required) {
-    if (!have.has(lookupIdentity(lookup))) return false;
+    if (!lookupCovered(actual, lookup, have)) return false;
   }
   return true;
 };
@@ -343,8 +361,8 @@ export const missingAccessLookups = (
   actual: ReadonlyArray<RuleAccessLookup>,
   required: ReadonlyArray<RuleAccessLookup>,
 ): RuleAccessLookup[] => {
-  const have = new Set(actual.map(lookupIdentity));
-  return required.filter((lookup) => !have.has(lookupIdentity(lookup)));
+  const have = new Set(actual.filter((lookup) => lookup._tag !== "exists").map(lookupIdentity));
+  return required.filter((lookup) => !lookupCovered(actual, lookup, have));
 };
 
 export const requireCompleteAccessPlan = (

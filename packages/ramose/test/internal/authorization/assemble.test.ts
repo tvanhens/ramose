@@ -174,6 +174,58 @@ const catalogDescriptor = (): CatalogDescriptor => ({
 
 const descriptor = catalogDescriptor();
 
+const nestedCompositionDescriptor = (): CatalogDescriptor => ({
+  id: catalog,
+  database,
+  version,
+  fingerprint,
+  entities: [
+    { id: entity("user"), traits: [] },
+    { id: entity("issue"), traits: [trait("tagged")] },
+  ],
+  traits: [
+    { id: trait("tagged"), traits: [trait("named")] },
+    { id: trait("named"), traits: [] },
+  ],
+  fields: [scalarField(userOwner, "authId", "upsert"), scalarField(issueOwner, "title")],
+  operations: [],
+  traitComposition: [
+    {
+      composer: entity("issue"),
+      trait: trait("tagged"),
+      transitive: [trait("tagged"), trait("named")],
+    },
+  ],
+});
+
+const twoTraitDescriptor = (): CatalogDescriptor => ({
+  id: catalog,
+  database,
+  version,
+  fingerprint,
+  entities: [
+    { id: entity("user"), traits: [] },
+    { id: entity("issue"), traits: [trait("alpha"), trait("beta")] },
+  ],
+  traits: [
+    { id: trait("alpha"), traits: [] },
+    { id: trait("beta"), traits: [] },
+  ],
+  fields: [scalarField(userOwner, "authId", "upsert")],
+  operations: [],
+  traitComposition: [
+    { composer: entity("issue"), trait: trait("alpha"), transitive: [trait("alpha")] },
+    { composer: entity("issue"), trait: trait("beta"), transitive: [trait("beta")] },
+  ],
+});
+
+const renameWithInput = (fields: CatalogDescriptor["operations"][number]["input"]): CatalogDescriptor => ({
+  ...descriptor,
+  operations: descriptor.operations.map((item) =>
+    item.id.localName === "rename" ? { ...item, input: fields } : item,
+  ),
+});
+
 const step = (owner: OwnerRef, localName: string) => ({ field: field(owner, localName) });
 const resourceRef = (...steps: ReadonlyArray<{ field: FieldId }>) =>
   ({ _tag: "ref" as const, root: { _tag: "resource" as const }, steps });
@@ -750,6 +802,33 @@ describe("access plans", () => {
     expectFailure(requireCompleteAccessPlan(omitted, plan.lookups), "InvalidIR", /omitted/);
   });
 
+  test("exists lookups cover by field-set inclusion and ignore field order", () => {
+    const grant = entity("tag-grant");
+    const userField = field(grantOwner, "user");
+    const tagField = field(grantOwner, "tag");
+    const requiredSubset: ReadonlyArray<RuleAccessLookup> = [
+      { _tag: "exists", entity: grant, fields: [userField] },
+    ];
+    const requiredBoth: ReadonlyArray<RuleAccessLookup> = [
+      { _tag: "exists", entity: grant, fields: [tagField, userField] },
+    ];
+    const actualSuperset: ReadonlyArray<RuleAccessLookup> = [
+      { _tag: "exists", entity: grant, fields: [tagField, userField] },
+    ];
+    const actualReordered: ReadonlyArray<RuleAccessLookup> = [
+      { _tag: "exists", entity: grant, fields: [userField, tagField] },
+    ];
+    expect(accessPlanCovers(actualSuperset, requiredSubset)).toBe(true);
+    expect(accessPlanCovers(actualReordered, requiredBoth)).toBe(true);
+    expect(accessPlanCovers(requiredSubset, actualSuperset)).toBe(false);
+    expect(missingAccessLookups(actualSuperset, requiredSubset)).toEqual([]);
+    expect(missingAccessLookups(actualReordered, requiredBoth)).toEqual([]);
+    expect(missingAccessLookups(requiredSubset, actualSuperset)).toEqual(actualSuperset);
+    expect(Result.isSuccess(requireCompleteAccessPlan({ rule: RuleId.make(digestHex(1)), lookups: actualSuperset }, requiredSubset))).toBe(
+      true,
+    );
+  });
+
   test("required principal index that cannot be represented fails", () => {
     const desc: CatalogDescriptor = {
       ...descriptor,
@@ -871,6 +950,81 @@ describe("normalization and collisions", () => {
       [...installed.accessPlans.map((plan) => plan.rule)].sort(),
     );
   });
+
+  test("nested trait composition does not require a transitive entity row", () => {
+    const desc = nestedCompositionDescriptor();
+    const rule = classOnly({ _tag: "entity", entity: entity("issue") });
+    const installed = expectOk(
+      assembleFromBound(
+        boundDocument(
+          [rule],
+          {
+            entities: [{ target: entity("issue"), decision: { allow: [rule.id], deny: [] } }],
+            traits: [],
+            fields: [],
+            operations: [],
+          },
+        ),
+        desc,
+      ),
+    );
+    expect(installed.traitComposition).toHaveLength(1);
+    expect(installed.traitComposition[0]?.composer.name).toBe("issue");
+    expect(installed.traitComposition[0]?.trait.name).toBe("tagged");
+    expect(installed.traitComposition[0]?.transitive.map((item) => item.name)).toEqual(["named", "tagged"]);
+    expect(installed.identities.traits.map((item) => item.name)).toEqual(["named", "tagged"]);
+  });
+
+  test("trait-owned field and class-only trait operation include composer rows", () => {
+    const tags = classOnly({ _tag: "field", field: field(taggableOwner, "tags") });
+    const reindex = classOnly({
+      _tag: "operation",
+      operation: operation(taggableOwner, "reindex", "none"),
+    });
+    const fieldInstalled = expectOk(
+      assembleFromBound(
+        boundDocument(
+          [tags],
+          {
+            entities: [],
+            traits: [],
+            fields: [{ target: field(taggableOwner, "tags"), decision: { allow: [tags.id], deny: [] } }],
+            operations: [],
+          },
+        ),
+      ),
+    );
+    expect(fieldInstalled.identities.traits.some((item) => item.name === "taggable")).toBe(true);
+    expect(
+      fieldInstalled.traitComposition.some(
+        (row) => row.composer.name === "issue" && row.trait.name === "taggable",
+      ),
+    ).toBe(true);
+    const operationInstalled = expectOk(
+      assembleFromBound(
+        boundDocument(
+          [reindex],
+          {
+            entities: [],
+            traits: [],
+            fields: [],
+            operations: [
+              {
+                target: operation(taggableOwner, "reindex", "none"),
+                decision: { allow: [reindex.id], deny: [] },
+              },
+            ],
+          },
+        ),
+      ),
+    );
+    expect(operationInstalled.identities.traits.some((item) => item.name === "taggable")).toBe(true);
+    expect(
+      operationInstalled.traitComposition.some(
+        (row) => row.composer.name === "issue" && row.trait.name === "taggable",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("determinism, hash, and catalog identity", () => {
@@ -899,6 +1053,84 @@ describe("determinism, hash, and catalog identity", () => {
     );
     expect(canonicalizeInstalledAuthorization(left)).toBe(canonicalizeInstalledAuthorization(right));
     expect(left.policyHash).toBe(right.policyHash);
+  });
+
+  test("shuffled two-trait composition order does not change installed IR", () => {
+    const desc = twoTraitDescriptor();
+    const rule = classOnly({ _tag: "trait", trait: trait("alpha") });
+    const document = boundDocument(
+      [rule],
+      {
+        entities: [],
+        traits: [{ target: trait("alpha"), decision: { allow: [rule.id], deny: [] } }],
+        fields: [],
+        operations: [],
+      },
+    );
+    const left = expectOk(assembleFromBound(document, desc));
+    const right = expectOk(
+      assembleFromBound(document, {
+        ...desc,
+        traitComposition: [...desc.traitComposition].reverse(),
+      }),
+    );
+    expect(left.traitComposition.map((row) => `${row.composer.name}/${row.trait.name}`)).toEqual([
+      "issue/alpha",
+      "issue/beta",
+    ]);
+    expect(canonicalizeInstalledAuthorization(left)).toBe(canonicalizeInstalledAuthorization(right));
+    expect(left.policyHash).toBe(right.policyHash);
+  });
+
+  test("shuffled operation input struct fields do not change policy hash", () => {
+    const nested = (keys: ReadonlyArray<string>) =>
+      keys.map((key) => ({
+        key,
+        optional: false,
+        shape: { _tag: "scalar" as const, valueType: "string" as const },
+      }));
+    const title = {
+      key: "title",
+      optional: false,
+      shape: { _tag: "scalar" as const, valueType: "string" as const },
+    };
+    const meta = (keys: ReadonlyArray<string>) => ({
+      key: "meta",
+      optional: false,
+      shape: { _tag: "struct" as const, fields: nested(keys) },
+    });
+    const left = expectOk(
+      assembleFromBound(boundDocument([renameInput()]), renameWithInput({
+        _tag: "struct",
+        fields: [meta(["z", "a"]), title],
+      })),
+    );
+    const right = expectOk(
+      assembleFromBound(boundDocument([renameInput()]), renameWithInput({
+        _tag: "struct",
+        fields: [title, meta(["a", "z"])],
+      })),
+    );
+    const input = left.operations.find((item) => item.id.localName === "rename")?.input;
+    expect(input).toEqual({
+      _tag: "struct",
+      fields: [
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct",
+            fields: [
+              { key: "a", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              { key: "z", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+            ],
+          },
+        },
+        title,
+      ],
+    });
+    expect(left.policyHash).toBe(right.policyHash);
+    expect(canonicalizeInstalledAuthorization(left)).toBe(canonicalizeInstalledAuthorization(right));
   });
 
   test("golden installed IR serialization and policy hash", () => {

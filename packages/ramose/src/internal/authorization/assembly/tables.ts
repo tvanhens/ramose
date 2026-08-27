@@ -9,6 +9,7 @@ import * as Result from "effect/Result";
 import type {
   CatalogDescriptor,
   OperationDescriptor,
+  OperationInputShape,
   RuleAccessPlan,
   TraitComposition,
 } from "../catalog.ts";
@@ -278,18 +279,39 @@ const collectPrincipal = (
   return collectOwner(index, field.owner, entities, traits);
 };
 
+const selectedComposers = (
+  index: PreparedAuthorizationCatalog,
+  entities: ReadonlyMap<string, EntityId>,
+  traits: ReadonlyMap<string, TraitId>,
+): Set<string> => {
+  const selected = new Set<string>(entities.keys());
+  for (const [entityName, composed] of index.entityTraits) {
+    let matches = false;
+    for (const traitName of composed) {
+      const trait = index.traits.get(traitName);
+      if (trait !== undefined && traits.has(traitKey(trait))) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches) continue;
+    const entity = index.entities.get(entityName);
+    if (entity !== undefined) selected.add(entityKey(entity));
+  }
+  return selected;
+};
+
 const compositionRows = (
   index: PreparedAuthorizationCatalog,
   descriptor: CatalogDescriptor,
   entities: Map<string, EntityId>,
   traits: Map<string, TraitId>,
 ): Result.Result<ReadonlyArray<TraitComposition>, AssembleFailure> => {
+  const composers = selectedComposers(index, entities, traits);
   const rows: TraitComposition[] = [];
   const seen = new Set<string>();
   for (const row of descriptor.traitComposition) {
-    if (!entities.has(entityKey(row.composer)) && !traits.has(traitKey(row.trait))) {
-      continue;
-    }
+    if (!composers.has(entityKey(row.composer))) continue;
     const composer = index.entities.get(row.composer.name);
     const trait = index.traits.get(row.trait.name);
     if (composer === undefined) return invalid(`missing composer entity '${row.composer.name}'`);
@@ -337,18 +359,36 @@ const compositionRows = (
     });
   }
 
-  for (const [entityName, direct] of index.entityTraits) {
-    const entity = index.entities.get(entityName);
-    if (entity === undefined || !entities.has(entityKey(entity))) continue;
-    for (const traitName of direct) {
-      const trait = index.traits.get(traitName);
-      if (trait === undefined) return invalid(`missing composed trait '${traitName}'`);
-      if (!seen.has(`${entityKey(entity)}\0${traitKey(trait)}`)) {
-        return invalid(`incomplete composition closure for '${entityName}'/'${traitName}'`);
+  for (const entity of descriptor.entities) {
+    const id = index.entities.get(entity.id.name);
+    if (id === undefined || !entities.has(entityKey(id))) continue;
+    for (const trait of entity.traits) {
+      const composed = index.traits.get(trait.name);
+      if (composed === undefined) return invalid(`missing composed trait '${trait.name}'`);
+      if (!seen.has(`${entityKey(id)}\0${traitKey(composed)}`)) {
+        return invalid(`incomplete composition closure for '${entity.id.name}'/'${trait.name}'`);
       }
     }
   }
   return Result.succeed(sorted(rows, (row) => `${entityKey(row.composer)}\0${traitKey(row.trait)}`));
+};
+
+const canonicalizeInputShape = (shape: OperationInputShape): OperationInputShape => {
+  switch (shape._tag) {
+    case "struct":
+      return {
+        _tag: "struct",
+        fields: sorted(shape.fields, (field) => field.key).map((field) => ({
+          key: field.key,
+          optional: field.optional,
+          shape: canonicalizeInputShape(field.shape),
+        })),
+      };
+    case "array":
+      return { _tag: "array", items: canonicalizeInputShape(shape.items) };
+    default:
+      return shape;
+  }
 };
 
 const operationDescriptors = (
@@ -370,7 +410,10 @@ const operationDescriptors = (
     if (!sameOperation(descriptor.id, id)) {
       return invalid("conflicting installed operation identity");
     }
-    rows.push(descriptor);
+    rows.push({
+      id: descriptor.id,
+      input: canonicalizeInputShape(descriptor.input),
+    });
   }
   return Result.succeed(sorted(rows, (row) => operationKey(row.id)));
 };
@@ -488,12 +531,6 @@ export const normalizeInstalledTables = (
   const planOk = collectPlanIdentities(index, normalizedPlans.success, entities, fields, traits);
   if (Result.isFailure(planOk)) return Result.fail(planOk.failure);
 
-  const composition = compositionRows(index, descriptor, entities, traits);
-  if (Result.isFailure(composition)) return Result.fail(composition.failure);
-
-  const descriptors = operationDescriptors(index, operations);
-  if (Result.isFailure(descriptors)) return Result.fail(descriptors.failure);
-
   for (const field of fields.values()) {
     const ownerOk = collectOwner(index, field.owner, entities, traits);
     if (Result.isFailure(ownerOk)) return Result.fail(ownerOk.failure);
@@ -502,6 +539,12 @@ export const normalizeInstalledTables = (
     const ownerOk = collectOwner(index, operation.owner, entities, traits);
     if (Result.isFailure(ownerOk)) return Result.fail(ownerOk.failure);
   }
+
+  const composition = compositionRows(index, descriptor, entities, traits);
+  if (Result.isFailure(composition)) return Result.fail(composition.failure);
+
+  const descriptors = operationDescriptors(index, operations);
+  if (Result.isFailure(descriptors)) return Result.fail(descriptors.failure);
 
   return Result.succeed({
     identities: {
