@@ -315,6 +315,9 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
     basisT,
     schema: confirmed.schema,
     nextEid: confirmed.nextEid,
+    asOfT: confirmed.asOfT,
+    history: confirmed.isHistory,
+    filters: confirmed.filters,
   });
 };
 

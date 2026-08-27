@@ -36,7 +36,7 @@ export type ProjectedAtom = string | number | boolean | Date | Uint8Array;
 export type ProjectedValue = ProjectedAtom | readonly ProjectedAtom[];
 
 /**
- * A value that exists on the rule snapshot.
+ * A value that exists on the projection.
  * Distinct from authoritative absence and from not-loaded data.
  * `T` must not include `undefined` — absence is {@link FieldAbsent} /
  * {@link EntityAbsent} / {@link MissingMeProjection}, never JS `undefined`.

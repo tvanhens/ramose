@@ -1,5 +1,5 @@
 /**
- * Session log walk. Application streaming is fail-closed until #347.
+ * Session log walk. Application streaming is fail-closed until #413/#415.
  *
  * The replica stays unfiltered internally. Nothing is emitted to a
  * client: silence does not leak `t` (LIVE-3, NI-1).
@@ -28,7 +28,7 @@ export interface SessionLog {
 
 /**
  * One committed entry, judged for an application consumer.
- * Until the authorized cursor lands, every entry is silence.
+ * Until live filtering lands (#413/#415), every entry is silence.
  */
 export async function decideSessionTx(_opts: {
   datoms: readonly Datom[];

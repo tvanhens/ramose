@@ -488,17 +488,17 @@ class Executor {
 
   private async resolveEntityConst(v: unknown): Promise<number | undefined> {
     if (typeof v === "number") return v;
-    if (typeof v === "string") return this.db.schema.entid(v);
+    if (typeof v === "string") return this.db.entid(v);
     if (Array.isArray(v) && v.length === 2 && typeof v[0] === "string") return this.db.entid(v as [string, unknown]);
     if (v && typeof v === "object" && (v as any).vt === ValueTag.Ref) return (v as any).v as number;
     throw new QueryError(`bad entity constant ${JSON.stringify(v)}`);
   }
-  private resolveAttrConst(v: unknown): number {
+  private async resolveAttrConst(v: unknown): Promise<number> {
     if (typeof v === "number") return v;
     if (typeof v === "string") {
       const a = this.db.attr(v);
       if (a) return a.id;
-      const e = this.db.schema.entid(v);
+      const e = await this.db.entid(v);
       if (e !== undefined) return e;
       throw new QueryError(`unknown attribute ${v}`);
     }
@@ -539,7 +539,7 @@ class Executor {
           if (c.a.kind !== "const") return vB ? 16 : 1000; // attribute bound at runtime only
           let aid: number;
           try {
-            aid = this.resolveAttrConst(c.a.value);
+            aid = await this.resolveAttrConst(c.a.value);
           } catch {
             return 0; // unknown attribute → empty
           }
@@ -818,7 +818,7 @@ class Executor {
       const rows: unknown[][] = [];
       for (const r of rel.rows) {
         const [e, a] = get(r);
-        const aid = this.resolveAttrConst(a);
+        const aid = await this.resolveAttrConst(a);
         const d = await db.first(Index.EAVT, { e: e as number, a: aid });
         if (!d) rows.push(r);
       }
@@ -842,7 +842,7 @@ class Executor {
       const get = this.argGetter(rel, [eT, aT, dT] as Term[]);
       compute = async (r) => {
         const [e, a, dflt] = get(r);
-        const aid = this.resolveAttrConst(a);
+        const aid = await this.resolveAttrConst(a);
         const d = await db.first(Index.EAVT, { e: e as number, a: aid });
         return d ? datomJsValue(d) : dflt;
       };
@@ -852,7 +852,7 @@ class Executor {
       compute = async (r) => {
         const [e, ...as] = get(r);
         for (const a of as) {
-          const aid = this.resolveAttrConst(a);
+          const aid = await this.resolveAttrConst(a);
           const d = await db.first(Index.EAVT, { e: e as number, a: aid });
           if (d) return [aid, datomJsValue(d)];
         }
@@ -1026,7 +1026,7 @@ class Executor {
       eConst = await this.resolveEntityConst(E.value);
       if (eConst === undefined) return finish({ vars, rows: [] });
     }
-    if (A.kind === "const") aConst = this.resolveAttrConst(A.value);
+    if (A.kind === "const") aConst = await this.resolveAttrConst(A.value);
     if (TX.kind === "const") {
       const x = TX.value as number;
       txConst = typeof x === "number" ? (x < TX_BASE ? txEid(x) : x) : undefined;

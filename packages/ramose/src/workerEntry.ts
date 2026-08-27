@@ -25,7 +25,7 @@
  * @module
  *
  * Deliberately **not** on the `ramose` barrel. That barrel is imported by
- * Worker and browser code (`Databases`, `layer`, `Policy`), and
+ * Worker and browser code (`Databases`, `layer`), and
  * `import.meta.resolve` is a host API with no meaning in either.
  */
 

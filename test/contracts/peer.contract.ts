@@ -1,6 +1,6 @@
 /**
  * Peer behavioral contract — health stays open; `/db/*` is fail-closed
- * until verified JWT admission and authorized snapshots land.
+ * until verified JWT admission, an installed catalog, and a filtered `Db`.
  *
  * The same suite runs against Alchemy local mode and a deployed `RAMOSE_URL`.
  */

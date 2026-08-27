@@ -11,7 +11,7 @@
 // `typeof X.Type` to `X` as the rule suggests would collapse each of
 // these to `Equal<X, X>` — vacuously true, and testing nothing.
 
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
 import {
@@ -30,13 +30,11 @@ import {
   FieldAbsent,
   FieldId,
   Incomplete,
-  IncompleteRuleSnapshot,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   BOUND_AUTHORIZATION_IR_VERSION,
   VALIDATED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
   InvalidTraversal,
-  LeaseExpired,
   AUTHORIZATION_CANONICAL_JSON_VERSION,
   DigestHex,
   MAX_COLLECTION_SIZE,
@@ -472,9 +470,7 @@ export type _allFailures = Expect<
     FailureTags,
     | "InvalidIR"
     | "CatalogMismatch"
-    | "IncompleteRuleSnapshot"
     | "AuthorizationBudgetExceeded"
-    | "LeaseExpired"
     | "AuthorizationDenied"
   >
 >;
@@ -944,12 +940,8 @@ test("authorization type fixtures compile", () => {
   expect(new InvalidIR({ message: "bad" })._tag).toBe("InvalidIR");
   expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");
   expect(
-    new IncompleteRuleSnapshot({ message: "gap", reason: NotLoaded })._tag,
-  ).toBe("IncompleteRuleSnapshot");
-  expect(
     new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,
   ).toBe("AuthorizationBudgetExceeded");
-  expect(new LeaseExpired({ message: "lease" })._tag).toBe("LeaseExpired");
   expect(new AuthorizationDenied()._tag).toBe("AuthorizationDenied");
   // @ts-expect-error — denial carries no diagnostic payload
   new AuthorizationDenied({ message: "exists" });
@@ -959,4 +951,30 @@ test("authorization type fixtures compile", () => {
   expect(Schema.is(JsonScalar)(Number.NaN)).toBe(false);
   expect(Schema.is(JsonScalar)(Number.POSITIVE_INFINITY)).toBe(false);
   expect(Schema.is(JsonScalar)(Number.NEGATIVE_INFINITY)).toBe(false);
+});
+
+describe("legacy authorization names cannot be imported", () => {
+  test("public barrels do not export Policy or the old wire helpers", async () => {
+    const root = await import("../../../src/index.ts");
+    const db = await import("../../../src/db/index.ts");
+    expect("policy" in root).toBe(false);
+    expect("Policy" in root).toBe(false);
+    expect("PolicyError" in db).toBe(false);
+    expect("filterDb" in root).toBe(false);
+    expect("parsePolicy" in root).toBe(false);
+  });
+
+  test("the IR barrel does not re-export runtime capability tags", async () => {
+    const ir = await import("../../../src/internal/authorization/index.ts");
+    expect("RawStorageAccess" in ir).toBe(false);
+    expect("RuleSnapshotAccess" in ir).toBe(false);
+    expect("AuthorizedApplicationAccess" in ir).toBe(false);
+    expect("CatalogLocalOperations" in ir).toBe(false);
+    expect("AuthenticationAdmission" in ir).toBe(false);
+    expect("denyAllCapabilityLayer" in ir).toBe(false);
+    expect("RawSnapshot" in ir).toBe(false);
+    expect("RuleSnapshot" in ir).toBe(false);
+    expect("ApplicationSnapshot" in ir).toBe(false);
+    expect("AuthorizedSnapshot" in ir).toBe(false);
+  });
 });

@@ -3,11 +3,11 @@
  *
  *   GET  /health              { ok, service, stage, time, operations: string[] }
  *   POST /__test__/db/:name/* test-only (RAMOSE_TEST_HOOKS=1; 404 otherwise)
- *   *    /db/:name/*          fail-closed until #344 / #339 / #343
+ *   *    /db/:name/*          fail-closed until verified JWT (#412) + catalog + filtered Db (#421/#423)
  *
- * External `/db/*` access is deny until verified JWT admission and
- * authorized snapshots land. `/health` is the only unauthenticated route
- * (AUTH-1, AUTH-6).
+ * External `/db/*` access is deny until verified JWT admission, an
+ * installed catalog, and a filtered `Db`. `/health` is the only
+ * unauthenticated route (AUTH-1, AUTH-6).
  */
 
 import { Histogram, RateMeter, componentLogger, setTelemetryLevel, toJson } from "../internal/core/index.ts";

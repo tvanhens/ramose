@@ -9,12 +9,15 @@
  * Semantic validation recomputes rule metadata from the bound expression.
  * Install assembles {@link InstalledAuthorizationIRV1} from that verified
  * path. Structural decode of {@link InstalledAuthorizationIR} is not
- * that brand. Runtime enforcement (#343) will import installed types from here
- * without importing authoring. Executable policy is authorization language v1.
+ * that brand. The read authoring language (#406) lowers to
+ * {@link PolicyTemplateIR}; it is not a public `ramose` / `ramose/db`
+ * export. Fail-closed until verified JWT (#412), an installed catalog,
+ * and a filtered `Db` (#421/#423). Executable policy is authorization language v1.
  *
  * Contract: `src/internal/design/authorization.md`.
  */
 
+export * from "./authoring/index.ts";
 export * from "./bind.ts";
 export * from "./bounds.ts";
 export * from "./canonical-json.ts";
