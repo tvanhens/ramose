@@ -423,6 +423,18 @@ describe("catalog unit CAS", () => {
     expect(failure._tag).toBe("CatalogUnitCorrupt");
   });
 
+  test("noncanonical stored bytes fail load closed even when the document hash matches", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    await cas(h, unit, null);
+    const json = readUnitJson(h);
+    writeUnitBytes(h, `${JSON.stringify(json, null, 2)}\n`);
+    const failure = await loadFail(h, 1);
+    expect(failure._tag).toBe("CatalogUnitCorrupt");
+    expect(failure.message).toMatch(/not canonical/);
+    expect(h.transactor.catalogHead(catalog)?.unitHash).toBe(unit.unitHash);
+  });
+
   test("hash/version mismatch fails closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));

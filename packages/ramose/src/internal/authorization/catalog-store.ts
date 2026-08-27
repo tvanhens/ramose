@@ -376,8 +376,9 @@ const corrupt = (catalog: CatalogId, message: string): CatalogUnitCorrupt =>
   new CatalogUnitCorrupt({ message, catalog });
 
 /**
- * Decode stored bytes, match database/catalog and the stored hash, then
- * brand only through {@link verifyInstalledCatalogUnit}.
+ * Decode stored bytes, match database/catalog, stored hash, and the
+ * exact canonical blob written by CAS, then brand only through
+ * {@link verifyInstalledCatalogUnit}.
  */
 export const verifyStoredCatalogUnit = Effect.fn("CatalogStore.verifyStoredCatalogUnit")(
   function* (
@@ -419,6 +420,9 @@ export const verifyStoredCatalogUnit = Effect.fn("CatalogStore.verifyStoredCatal
     }
     if (document.unitHash !== row.unitHash) {
       return yield* corrupt(input.catalog, "catalog unit hash mismatch");
+    }
+    if (!bytesEqual(row.bytes, catalogUnitCanonicalBytes(document))) {
+      return yield* corrupt(input.catalog, "stored catalog unit bytes are not canonical");
     }
     return yield* verifyInstalledCatalogUnit(document);
   },
