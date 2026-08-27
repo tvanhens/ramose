@@ -56,8 +56,10 @@ import {
   type SnapshotLeaseState,
 } from "./lease.ts";
 import {
+  encodeIdentPart,
   fieldDescriptorKey,
   fieldStorageIndex,
+  physicalComposerIdent,
   physicalStorageIdent,
   traversalCompositionsOf,
 } from "./field-index.ts";
@@ -375,7 +377,7 @@ const requireLiveRuleState = (
   const state = ruleStates.get(snapshot);
   if (state === undefined) return Result.fail(notLive());
   const lease = checkLease(state.lease, now);
-  if (Result.isFailure(lease)) return lease;
+  if (Result.isFailure(lease)) return Result.fail(lease.failure);
   return Result.succeed(state);
 };
 
@@ -389,10 +391,10 @@ const runLiveRuleProjection = async (
   project: (state: RuleProjectionState) => Promise<Projected>,
 ): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> => {
   const before = requireLiveRuleState(snapshot);
-  if (Result.isFailure(before)) return before;
+  if (Result.isFailure(before)) return Result.fail(before.failure);
   const projected = await project(before.success);
   const after = requireLiveRuleState(snapshot);
-  if (Result.isFailure(after)) return after;
+  if (Result.isFailure(after)) return Result.fail(after.failure);
   return Result.succeed({ projected, budget: ruleProjectionBudget(after.success) });
 };
 
