@@ -1163,7 +1163,15 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const registerMembership = (ns: AnyEntity): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
-    const wireName = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(/[^A-Za-z0-9_]/g, "_");
+    const base = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(
+      /[^A-Za-z0-9_]/g,
+      "_",
+    );
+    let wireName = base;
+    let n = 2;
+    while (takenNames.has(wireName) && takenNames.get(wireName) !== ns) {
+      wireName = `${base}_${n++}`;
+    }
     claimName(wireName, ns);
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);

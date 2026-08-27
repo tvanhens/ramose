@@ -594,4 +594,22 @@ describe("processTx membership and required trait fields", () => {
       message: expect.stringContaining("cannot change trait composition of occupied type :issue"),
     });
   });
+
+  test("a same-transaction create occupies the type for composition changes", async () => {
+    const conn = await setup();
+    await expect(
+      conn.transact([
+        { ":db/ident": ":issue", ":ramose/composes": ":soft" },
+        {
+          ":db/id": "tmp-1",
+          ":ramose/type": ":issue",
+          ":issue/title": "Fix",
+          ":taggable/tag": "a",
+        },
+      ]),
+    ).rejects.toMatchObject({
+      code: "tx/occupied",
+      message: expect.stringContaining("cannot change trait composition of occupied type :issue"),
+    });
+  });
 });

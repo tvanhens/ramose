@@ -346,6 +346,27 @@ describe("lowering", () => {
     expect(rules[0]![1]).toEqual(["?qm0", ":ramose/type", ":issue"]);
   });
 
+  test("membership rule names stay unique when namespaces sanitize together", () => {
+    const FooBar = Entity("foo-bar", { title: Field(Schema.String) });
+    const Foo_bar = Entity("foo_bar", { title: Field(Schema.String) });
+    const listing = Query.q(function* () {
+      const dashed = yield* Query.entities(FooBar);
+      const underscored = yield* Query.entities(Foo_bar);
+      return { dashed, underscored };
+    });
+    const { query } = lowerQueryObject(listing);
+    const rules = query.rules as unknown[][];
+    const heads = rules.map((rule) => (rule[0] as unknown[])[0]);
+    expect(new Set(heads).size).toBe(2);
+    const bodies = rules.map((rule) => rule[1] as unknown[]);
+    expect(bodies).toEqual(
+      expect.arrayContaining([
+        ["?qm0", ":ramose/type", ":foo-bar"],
+        ["?qm1", ":ramose/type", ":foo_bar"],
+      ]),
+    );
+  });
+
   test("open refuses a cursor; logic() strips it", () => {
     const outer = Query.q(function* () {
       const { focus } = yield* inboxPipe(1).open();

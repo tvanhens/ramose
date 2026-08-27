@@ -879,6 +879,17 @@ export async function expandTx(
   const typeOccupied = async (ident: string): Promise<boolean> => {
     const attr = typeAttr();
     if (attr === undefined) return false;
+    if (
+      out.some(
+        (d) =>
+          d.op &&
+          d.a === attr.id &&
+          d.vt === ValueTag.Str &&
+          d.v === ident,
+      )
+    ) {
+      return true;
+    }
     return (
       (await db.first(Index.AVET, { a: attr.id, vt: ValueTag.Str, v: ident })) !==
       undefined
