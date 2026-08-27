@@ -11,8 +11,9 @@
  * path. Structural decode of {@link InstalledAuthorizationIR} is not
  * that brand. The read authoring language (#406) lowers to
  * {@link PolicyTemplateIR}; it is not a public `ramose` / `ramose/db`
- * export. Fail-closed until verified JWT (#412), an installed catalog,
- * and a filtered `Db` (#421/#423). Executable policy is authorization language v1.
+ * export. Fail-closed until verified JWT (#412) and a deployed catalog.
+ * #421 constructs the filtered `Db`; #423 will run query/pull through it.
+ * Executable policy is authorization language v1.
  *
  * Contract: `src/internal/design/authorization.md`.
  */
@@ -33,6 +34,7 @@ export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./principal.ts";
 export * from "./read-filter.ts";
+export * from "./request.ts";
 export * from "./truth.ts";
 export * from "./validate.ts";
 export * from "./version.ts";
