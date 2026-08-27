@@ -4,6 +4,10 @@
  * `/health` is the Worker fetch handler. External `/db/*` is fail-closed
  * until authorized snapshots land — a 401 on that surface means the Worker
  * is serving the data-plane close, not that Durable Objects are ready.
+ *
+ * Bun `fetch` and curl can land on different colos; a fresh workers.dev
+ * host often 404s on one edge while another already answers. Retry until
+ * both surfaces agree.
  */
 const url = process.env.RAMOSE_URL;
 if (url === undefined || url === "") {
@@ -12,15 +16,29 @@ if (url === undefined || url === "") {
 }
 
 const base = url.replace(/\/+$/, "");
+const attempts = 30;
+const delayMs = 2_000;
 
-const health = await fetch(`${base}/health`);
-if (!health.ok) {
-  throw new Error(`warmup /health ${health.status}`);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let last = "no attempt";
+for (let i = 0; i < attempts; i++) {
+  try {
+    const health = await fetch(`${base}/health`);
+    if (!health.ok) {
+      last = `warmup /health ${health.status}`;
+    } else {
+      const closed = await fetch(`${base}/db/e2e-warmup/info`);
+      if (closed.status === 401) {
+        console.log(">> warmup fail-closed 401 ok");
+        process.exit(0);
+      }
+      last = `warmup expected /db/*/info 401, got ${closed.status}`;
+    }
+  } catch (error) {
+    last = error instanceof Error ? error.message : String(error);
+  }
+  await sleep(delayMs);
 }
 
-const closed = await fetch(`${base}/db/e2e-warmup/info`);
-if (closed.status !== 401) {
-  throw new Error(`warmup expected /db/*/info 401, got ${closed.status}`);
-}
-
-console.log(">> warmup fail-closed 401 ok");
+throw new Error(`${last} after ${attempts} attempts`);
