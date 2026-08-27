@@ -824,9 +824,14 @@ describe("access plans", () => {
     expect(missingAccessLookups(actualSuperset, requiredSubset)).toEqual([]);
     expect(missingAccessLookups(actualReordered, requiredBoth)).toEqual([]);
     expect(missingAccessLookups(requiredSubset, actualSuperset)).toEqual(actualSuperset);
-    expect(Result.isSuccess(requireCompleteAccessPlan({ rule: RuleId.make(digestHex(1)), lookups: actualSuperset }, requiredSubset))).toBe(
-      true,
-    );
+    expect(
+      Result.isSuccess(
+        requireCompleteAccessPlan(
+          { rule: RuleId.make(digestHex(1)), lookups: [...actualSuperset] },
+          [...requiredSubset],
+        ),
+      ),
+    ).toBe(true);
   });
 
   test("required principal index that cannot be represented fails", () => {
