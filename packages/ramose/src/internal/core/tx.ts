@@ -290,6 +290,20 @@ export async function expandTx(
     if (op.kind === "add" && op.a === ":db/ident" && typeof op.v === "string") newIdents.set(op.v, op.e);
   }
 
+  /** `db.entid` for a lookup ref — wrap unknown/non-unique/uncoercible as TxError (409), never a raw Error (500). */
+  const lookupEntid = async (form: readonly [string, unknown]): Promise<number | undefined> => {
+    try {
+      return await db.entid(form);
+    } catch (err) {
+      if (err instanceof TxError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = /unknown attribute|is not unique|bad entity reference/i.test(msg)
+        ? "tx/lookup-ref"
+        : "tx/invalid";
+      throw new TxError(msg.includes("lookup") ? msg : `lookup ref ${JSON.stringify(form)}: ${msg}`, code);
+    }
+  };
+
   // --- Entity form → eid ----------------------------------------------------
   const resolveEntity = async (form: unknown, allocate: boolean): Promise<number | undefined> => {
     if (typeof form === "number") {
@@ -322,7 +336,7 @@ export async function expandTx(
       return id;
     }
     if (isLookupRef(form)) {
-      const id = await db.entid(form);
+      const id = await lookupEntid(form);
       if (id !== undefined) return id;
       const sameTx = resolveLookupInTx(form);
       if (sameTx !== undefined) return sameTx;
@@ -332,6 +346,12 @@ export async function expandTx(
       return (form as TaggedValue).v as number;
     }
     throw new TxError(`bad entity form ${JSON.stringify(form)}`);
+  };
+
+  /** Preflight / CAS-pair checks: db-before only. Same-tx lookups do not throw `tx/lookup-ref`. */
+  const resolveEntityPreflight = async (form: unknown): Promise<number | undefined> => {
+    if (isLookupRef(form)) return lookupEntid(form);
+    return resolveEntity(form, false);
   };
 
   // --- Tempid aliases: two tempids asserting the same unique-identity value are one entity
@@ -460,10 +480,21 @@ export async function expandTx(
     vals.set(vk, d);
   };
 
+  // Same-t facts asserted by :db/cas — retracting them is tx/invalid, not last-wins.
+  const casFacts = new Set<string>();
+  const casFactKey = (e: number, a: number, vt: ValueTag, v: unknown): string =>
+    e + ":" + a + ":" + valueKey(vt, v);
+  const rejectIfCasFact = (e: number, a: number, vt: ValueTag, v: unknown): void => {
+    if (casFacts.has(casFactKey(e, a, vt, v))) {
+      throw new TxError("cannot retract a :db/cas assertion in the same transaction");
+    }
+  };
+
   const emitRetract = async (e: number, attr: Attribute, tv: TaggedValue | undefined): Promise<void> => {
     const vals = await current(e, attr.id);
     if (tv === undefined) {
       for (const [k, d] of vals) {
+        rejectIfCasFact(e, attr.id, d.vt, d.v);
         const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
         out.push(r);
         record("retract", e, attr, r);
@@ -474,15 +505,29 @@ export async function expandTx(
     const vk = valueKey(tv.vt, tv.v);
     const d = vals.get(vk);
     if (!d) return; // absent → elide
+    rejectIfCasFact(e, attr.id, tv.vt, tv.v);
     const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
     out.push(r);
     record("retract", e, attr, r);
     vals.delete(vk);
   };
 
+  const casReplacementEids = new Set<number>();
+  const casReplacementTempids = new Set<string>();
+  const isCasReplacementEid = (e: number): boolean => {
+    if (casReplacementEids.has(e)) return true;
+    for (const tid of casReplacementTempids) {
+      if (tempids.get(aliasOf(tid)) === e) return true;
+    }
+    return false;
+  };
+
   const retracted = new Set<number>();
   const retractEntity = async (e: number): Promise<void> => {
     if (retracted.has(e)) return;
+    if (isCasReplacementEid(e)) {
+      throw new TxError("cannot :db/retractEntity a :db/cas replacement in the same transaction");
+    }
     retracted.add(e);
     const own = await db.datomsArray(Index.EAVT, { e });
     for (const d of own) {
@@ -496,17 +541,14 @@ export async function expandTx(
       const attr = db.attr(d.a);
       if (attr) await emitRetract(d.e, attr, { vt: d.vt, v: d.v });
     }
-    // refs asserted earlier in this tx pointing at e (overlay) are dropped too
+    // Same-tx overlay refs to e: retract through emitRetract so a CAS assertion cannot be cancelled.
     for (const [k, m] of cur) {
       const [ee, aa] = k.split(":").map(Number);
       const attr = db.attr(aa);
       if (attr && attr.valueType === ValueTag.Ref) {
-        for (const [vk, d] of m) {
+        for (const [, d] of [...m]) {
           if (d.v === e && d.t === t) {
-            const r: Datom = { e: ee, a: aa, vt: d.vt, v: d.v, t, op: false };
-            out.push(r);
-            record("retract", ee, attr, r);
-            m.delete(vk);
+            await emitRetract(ee, attr, { vt: d.vt, v: d.v });
           }
         }
       }
@@ -707,13 +749,15 @@ export async function expandTx(
   // At most one mutation of a CAS (e, a) pair in this tx. Structural —
   // tx/invalid, not tx/cas-conflict. retractEntity of a *different*
   // entity (e.g. an old component) is allowed even if it retracts a
-  // CAS pair as an incoming-ref side effect.
+  // CAS pair as an incoming-ref side effect. retractEntity of the
+  // CAS *replacement* is not — that would emit a same-t retract of
+  // the assertion.
   const resolveCasSubject = async (form: unknown): Promise<number> => {
     if (typeof form === "string" && (TX_TEMPID.has(form) || isTempid(form))) {
       throw new TxError(":db/cas subject must be an existing eid or lookup ref");
     }
     if (isLookupRef(form)) {
-      const id = await db.entid(form);
+      const id = await lookupEntid(form);
       if (id === undefined) {
         throw new TxError(
           `lookup ref ${JSON.stringify(form)} does not resolve`,
@@ -726,7 +770,39 @@ export async function expandTx(
     if (e === undefined) {
       throw new TxError(":db/cas subject must be an existing eid or lookup ref");
     }
+    if (!(await db.exists(e))) {
+      throw new TxError(`entity ${e} does not exist`, "tx/missing-entity");
+    }
     return e;
+  };
+
+  const rememberCasReplacement = async (v: unknown): Promise<void> => {
+    if (v === undefined || v === null) return;
+    if (isTempid(v) && !TX_TEMPID.has(v)) {
+      casReplacementTempids.add(v);
+      casReplacementTempids.add(aliasOf(v));
+      const known = tempids.get(aliasOf(v));
+      if (known !== undefined) casReplacementEids.add(known);
+      return;
+    }
+    if (typeof v === "number") {
+      if (!Number.isSafeInteger(v) || v < 0) throw new TxError(`bad entity id ${v}`);
+      casReplacementEids.add(v);
+      return;
+    }
+    if (typeof v === "string" && v[0] === ":") {
+      const id = db.schema.entid(v);
+      if (id !== undefined) casReplacementEids.add(id);
+      return;
+    }
+    if (isLookupRef(v)) {
+      const id = await lookupEntid(v);
+      if (id !== undefined) casReplacementEids.add(id);
+      return;
+    }
+    if (v !== null && typeof v === "object" && "vt" in (v as any) && (v as any).vt === ValueTag.Ref) {
+      casReplacementEids.add((v as TaggedValue).v as number);
+    }
   };
 
   const casPairs = new Set<string>();
@@ -742,20 +818,27 @@ export async function expandTx(
     }
     casPairs.add(k);
     casSubjects.add(e);
+    if (attr.valueType === ValueTag.Ref) await rememberCasReplacement(op.v);
   }
   if (casPairs.size > 0) {
     for (const op of ops) {
       if (op.kind === "cas") continue;
       if (op.kind === "retractEntity") {
-        const e = await resolveEntity(op.e, false);
+        if (isTempid(op.e) && !TX_TEMPID.has(op.e) && casReplacementTempids.has(aliasOf(op.e))) {
+          throw new TxError("cannot :db/retractEntity a :db/cas replacement in the same transaction");
+        }
+        const e = await resolveEntityPreflight(op.e);
         if (e !== undefined && casSubjects.has(e)) {
           throw new TxError("cannot :db/retractEntity a :db/cas subject in the same transaction");
+        }
+        if (e !== undefined && casReplacementEids.has(e)) {
+          throw new TxError("cannot :db/retractEntity a :db/cas replacement in the same transaction");
         }
         continue;
       }
       if (op.a === undefined) continue;
       const attr = attrOf(op.a);
-      const e = await resolveEntity(op.e, false);
+      const e = await resolveEntityPreflight(op.e);
       if (e === undefined) continue;
       if (casPairs.has(pairKey(e, attr.id))) {
         throw new TxError(
@@ -850,6 +933,10 @@ export async function expandTx(
         );
       }
       await emitAdd(e, attr, replacementTv);
+      casFacts.add(casFactKey(e, attr.id, replacementTv.vt, replacementTv.v));
+      if (attr.valueType === ValueTag.Ref) {
+        casReplacementEids.add(replacementTv.v as number);
+      }
       continue;
     }
     const attr = attrOf(op.a);
