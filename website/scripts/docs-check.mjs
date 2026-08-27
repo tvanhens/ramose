@@ -427,9 +427,19 @@ if (run("facts") && !onlyPage) {
       }
     }
     if (page.slug === "reference/client-api") {
-      // Authorization rebuild docs are frozen. Do not rewrite the inventory
-      // table for retired `Policy` / `PolicyError` names — skip those only.
-      const frozenInventory = new Set(["Policy", "PolicyError"]);
+      // Authorization/client rebuild docs are frozen. Do not rewrite the
+      // inventory table for retired names; #416 / #442 own removing them.
+      const frozenInventory = new Set([
+        "Policy",
+        "PolicyError",
+        "PrefixHalt",
+        "connect",
+        "token",
+        "IncompatibleSchema",
+        "Databases",
+        "layer",
+        "asRead",
+      ]);
       const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
       if (dbRow) {
         for (const name of tickNames(dbRow[1])) {

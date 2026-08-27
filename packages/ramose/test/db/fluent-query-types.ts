@@ -7,7 +7,6 @@
  */
 
 import type {
-  Db,
   Eid,
   EntityRow,
   Equal,
@@ -19,7 +18,7 @@ import type { Var } from "../../src/db/query/kernel.ts";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
 
-import { Movies, User } from "./fixture.ts";
+import { User } from "./fixture.ts";
 
 const Issue = Entity("issue", {
   title: Field(Schema.String),
@@ -33,19 +32,12 @@ const Comment = Entity("comment", {
   issue: Ref(Issue),
 });
 
-declare const db: Db<typeof Movies>;
-
 // ── header example (inline values) ─────────────────────────────────────────
 
 declare const issueId: Eid<typeof Issue>;
 const commentsQuery = Query.from(Comment)
   .where({ issue: issueId })
   .orderBy(Comment.at, "asc");
-const _inlineRun = db.query(commentsQuery);
-export type _inlineOk = Expect<
-  Equal<typeof _inlineRun, Promise<readonly EntityRow<typeof Comment>[]>>
->;
-
 type HeaderRow = Row<typeof commentsQuery>;
 export type _headerEntity = Expect<Equal<HeaderRow, EntityRow<typeof Comment>>>;
 export type _headerId = Expect<Equal<HeaderRow["id"], Eid<typeof Comment>>>;
@@ -183,10 +175,6 @@ const topByDone = Query.q(function* () {
 export type _topByDone = Expect<
   Equal<Row<typeof topByDone>, { readonly done: boolean; readonly n: number }>
 >;
-const _topRun = db.query(topByDone);
-export type _topOut = Expect<
-  Equal<typeof _topRun, Promise<readonly { readonly done: boolean; readonly n: number }[]>>
->;
 
 const openCount = Query.q(function* () {
   const issue = yield* Query.entities(Issue);
@@ -202,12 +190,6 @@ const uniqueTitles = Query.q(function* () {
 export type _distinctRow = Expect<
   Equal<Row<typeof uniqueTitles>, { readonly title: string }>
 >;
-const _distinctRun = db.query(uniqueTitles);
-export type _distinctOut = Expect<
-  Equal<typeof _distinctRun, Promise<readonly { readonly title: string }[]>>
->;
-const _openRun = db.query(openCount);
-export type _openVal = Expect<Equal<typeof _openRun, Promise<number>>>;
 export type _openRow = Expect<Equal<Row<typeof openCount>, number>>;
 
 const fluentAgg = Query.from(Issue).select(
@@ -235,17 +217,10 @@ const paged = Query.from(Issue)
   .select({ title: Issue.title })
   .orderBy("title")
   .after(null);
-const _logicPage = db.query(paged.logic());
-export type _logicPageOut = Expect<
-  Equal<typeof _logicPage, Promise<readonly { readonly title: string }[]>>
->;
 const taken = Query.from(Issue).select({ title: Issue.title }).one();
-const _logicOne = db.query(taken.logic());
-export type _logicOneOut = Expect<
-  Equal<typeof _logicOne, Promise<readonly { readonly title: string }[]>>
->;
-const _logicVal = db.query(openCount.logic());
-export type _logicValOut = Expect<Equal<typeof _logicVal, Promise<number>>>;
+void paged.logic();
+void taken.logic();
+void openCount.logic();
 
 declare const issueVar: Var<Eid<typeof Issue>>;
 Q.pull(issueVar, { title: Issue.title });

@@ -1,7 +1,7 @@
 /**
  * `ramose/db` — the portable half of Ramose.
  *
- * Schema, connecting, the database and the tagged errors, in one flat
+ * Schema, query, operation, and transaction authoring in one flat
  * namespace: `import * as Ramose from "ramose/db"`. It runs in a
  * browser, in a Worker, in Node/Bun and in a test.
  *
@@ -22,10 +22,7 @@
  * });
  * export const Todos = Ramose.Schema({ todo: Todo });
  *
- * const ramose = Ramose.connect({ url, token });
- * export const db = ramose.db("todos", Todos);
- * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
- * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema;
+ * // Advanced schemas: `Ramose.Field(schema)` accepts a raw Effect Schema;
  * // wrap with `stored(schema, vt)` when inference cannot name `:db.type/*`.
  * ```
  */
@@ -90,21 +87,6 @@ export type {
 } from "./query/index.ts";
 export type { EidLike, Shape } from "./shapes.ts";
 
-// ── connecting ─────────────────────────────────────────────────────────────
-export {
-  type Client,
-  type ClientOptions,
-  type ConnectionStatus,
-  connect,
-} from "./connect.ts";
-export type { DatabasesShape } from "./client-shape.ts";
-export {
-  type Claims,
-  token,
-  type TokenInput,
-  type TokenSource,
-} from "./token.ts";
-export type { Subscription } from "./subscription.ts";
 // the peer's database-name rule, so an app can validate a user-minted name
 // (multi-tenant "create workspace") before the peer does — not a slugify
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
@@ -117,14 +99,6 @@ export {
 } from "./IdentName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
-export type {
-  Db,
-  DbPrincipal,
-  QueryError,
-  ReadDb,
-  TxReport,
-} from "./Db.ts";
-export type { InstallOptions, SchemaChange } from "./Errors.ts";
 export type { SchemaEid, Eid } from "./Eid.ts";
 export type { EntityRef, LookupRef } from "./idents.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
@@ -146,7 +120,6 @@ export {
   EntityId,
   Operation,
   Operations,
-  PrefixHalt,
   checkOperationsCoverage,
   defineOperations,
   operationCards,
@@ -156,10 +129,8 @@ export {
   type DefinedOperations,
   type Op,
   type OpPrincipal,
-  type OpReport,
   type OperationCard,
   type OperationEffectContext,
-  type OperationInvocation,
 } from "./Operation.ts";
 
 // ── errors ─────────────────────────────────────────────────────────────────
@@ -169,11 +140,9 @@ export {
   InternalError,
   InvalidRequest,
   isDatabaseError,
-  NetworkError,
   NotOne,
   OperationRejected,
   OperationsCoverageError,
-  IncompatibleSchema,
   QueryBudgetExceeded,
   TxRejected,
   Unauthorized,

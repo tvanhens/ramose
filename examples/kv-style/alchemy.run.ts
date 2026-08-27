@@ -15,7 +15,6 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { App } from "./app.ts";
 import { Server } from "./resources.ts";
 
 export default Alchemy.Stack(
@@ -26,9 +25,7 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const server = yield* Server;
-    const app = yield* App;
     return {
-      url: app.url,
       peerUrl: server.url,
     };
   }),

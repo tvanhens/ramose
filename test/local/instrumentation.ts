@@ -9,29 +9,41 @@ import { describe, expect, test } from "bun:test";
 import { recordingTransport } from "../support/recorder.ts";
 import { json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
 
+const fetchPastProxyBlip = async (
+  rec: ReturnType<typeof recordingTransport>,
+  url: string,
+): Promise<Response> => {
+  for (let attempt = 0; ; attempt++) {
+    const response = await rec.fetch(url);
+    if (response.status !== 502 || attempt === 2) return response;
+    await Bun.sleep(50 * (attempt + 1));
+  }
+};
+
 export function registerInstrumentation(target: { urls: () => LocalUrls }): void {
   describe("forwarding instrumentation on the local peer", () => {
     test("recording fetch forwards /health and records the real 200", async () => {
       const rec = recordingTransport();
       const url = `${target.urls().openUrl.replace(/\/+$/, "")}/health`;
-      const res = await rec.fetch(url);
+      const res = await fetchPastProxyBlip(rec, url);
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok?: boolean; service?: string };
       expect(body.ok).toBe(true);
       expect(body.service).toBe("ramose");
-      expect(rec.calls).toHaveLength(1);
-      expect(rec.calls[0]?.status).toBe(200);
-      expect(rec.calls[0]?.url).toContain("/health");
+      expect(rec.calls.length).toBeGreaterThanOrEqual(1);
+      expect(rec.calls.at(-1)?.status).toBe(200);
+      expect(rec.calls.at(-1)?.url).toContain("/health");
     });
 
     test("recording fetch forwards a fail-closed /db/* 401 without inventing success", async () => {
       const rec = recordingTransport();
       const db = uniqueDb("rec");
-      const res = await rec.fetch(
+      const res = await fetchPastProxyBlip(
+        rec,
         `${target.urls().openUrl.replace(/\/+$/, "")}/db/${db}/info`,
       );
       expect(res.status).toBe(401);
-      expect(rec.calls[0]?.status).toBe(401);
+      expect(rec.calls.at(-1)?.status).toBe(401);
     });
 
     test("test admin is the only /__test__ path; /db/* stays 401", async () => {

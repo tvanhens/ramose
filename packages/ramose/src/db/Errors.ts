@@ -7,11 +7,8 @@
  * `UpstreamError`) and the transactor-internal `TransactorDead` stay at
  * those boundaries and map onto this union on the way out.
  *
- * App-path calls (`db.run`, `db.query`, `db.pull`) reject with the class
- * itself: `_tag` intact, `instanceof` works, `.name` / `.message` stable.
- * Match in `try/catch` with `instanceof` or `_tag`. `isDatabaseError` is
- * the type guard for the union. Effect matching (`catchTags`) is hatch-only
- * (`db.effect.*` / `ramose/effect`).
+ * Boundaries preserve the class itself: `_tag` intact, `instanceof` works,
+ * and `.name` / `.message` remain stable. `isDatabaseError` guards the union.
  *
  * ## `DbError` — nine request errors
  *
@@ -50,12 +47,6 @@
  */
 
 import * as Data from "effect/Data";
-export {
-  IncompatibleSchema,
-  type IncompatibleKind,
-  type InstallOptions,
-  type SchemaChange,
-} from "./SchemaErrors.ts";
 
 /** A transaction was rejected by validation / tempid / unique / policy (409). */
 export class TxRejected extends Data.TaggedError("TxRejected")<{
@@ -116,11 +107,12 @@ export class InternalError extends Data.TaggedError("InternalError")<{
   readonly message: string;
 }> {}
 
-/** The request never produced a response (transport, DNS, service binding, aborted body). */
+/** The request never produced a response during deploy-time server setup. */
 export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
 
 /**
  * `.oneOrFail()` promised exactly one row and the peer answered zero or two

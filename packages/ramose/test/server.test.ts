@@ -12,7 +12,6 @@ import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
 import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database, isDatabase } from "../src/Database.ts";
-import { Databases } from "../src/Databases.ts";
 import {
   AUTH_ENV_KEYS,
   authEnv,
@@ -28,7 +27,6 @@ import {
   Server,
   type ServerProps,
 } from "../src/Server.ts";
-import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
 import { envKeys } from "../src/ServerRuntime.ts";
 import {
   PEER_COMPAT,
@@ -60,28 +58,24 @@ describe("identity", () => {
     expect(isServer("Ramose.Server")).toBe(false);
   });
 
-  test("the capability is keyed under a stable id", () => {
-    expect(Databases.key).toBe("Ramose.Databases");
-  });
 });
 
 describe("a server has no database name", () => {
-  test("`databases` is the seeder; `name` is an optional Worker name", () => {
+  test("there is no deploy-time database seeder; `name` is an optional Worker name", () => {
     type HasDatabases = "databases" extends keyof ServerProps ? true : false;
-    const hasDatabases: HasDatabases = true;
-    expect(hasDatabases).toBe(true);
+    const hasDatabases: HasDatabases = false;
+    expect(hasDatabases).toBe(false);
 
     const workerName: ServerProps["name"] = undefined;
     expect(workerName).toBeUndefined();
   });
 
-  test("the attributes are url / workerName / seeded — no name, no databaseUrl, no token", () => {
+  test("the attributes are url / workerName — no client or seed state", () => {
     const attributes: Server["Attributes"] = {
       url: "https://peer.example.com",
       workerName: "ramose-peer",
-      seeded: [],
     };
-    expect(Object.keys(attributes).sort()).toEqual(["seeded", "url", "workerName"]);
+    expect(Object.keys(attributes).sort()).toEqual(["url", "workerName"]);
 
     type Attr = keyof Server["Attributes"];
     const hasName: "name" extends Attr ? true : false = false;
@@ -128,9 +122,6 @@ describe("env keys", () => {
     expect(Object.values(keys)).not.toContain("Ramose_DB");
   });
 
-  test("service-binding dispatch uses a synthetic origin", () => {
-    expect(SERVICE_ORIGIN).toBe("https://ramose.internal");
-  });
 });
 
 describe("PEER_COMPAT", () => {

@@ -4,8 +4,7 @@
  * Effect-native client.
  *
  * The resource is the *server* (a Ramose peer Worker). A database is a *name*
- * on it — nothing is provisioned. Known catalogs land on `databases:`; names
- * invented at runtime call `db.install()` at tenant-creation.
+ * on it — nothing is provisioned. Catalog publication is authoritative.
  *
  * This directory is a *type-checked* example, not part of the deployed stack —
  * it is compiled by `bun run typecheck` so the public API can never drift from
@@ -30,15 +29,12 @@
 
 import * as Ramose from "ramose";
 import { operations } from "./operations.ts";
-import { Movies } from "./schema.ts";
 
 /**
  * The owned peer. Server declares the Worker, both Durable Object classes,
- * PEER_COMPAT, and the fixed bindings. `movies` is seeded at deploy; tenant
- * names created by `PUT /t/:tenant` call `db.install()` instead.
+ * PEER_COMPAT, and the fixed bindings.
  */
 export const Server = Ramose.Server("Ramose", {
   main: import.meta.resolve("./peer.ts"),
-  databases: { movies: Movies },
   operations,
 });

@@ -10,7 +10,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
 import { AUD, ISS, JWKS } from "./auth-keys.ts";
 import { Open } from "./open.ts";
-import { Movies, operations } from "./ops.ts";
+import { operations } from "./ops.ts";
 import { TEST_HOOKS_ENV } from "./test-hooks-env.ts";
 
 export { Open };
@@ -77,7 +77,6 @@ export const Seeded = Ramose.Server("Seeded", {
   peer: "SeededPeer",
   storage: "SeededStore",
   main: empty,
-  databases: { movies: Movies },
   env: TEST_HOOKS_ENV,
 });
 

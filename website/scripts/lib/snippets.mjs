@@ -56,7 +56,15 @@ let repoFilesCache = null;
 
 const walkRepo = () => {
   if (repoFilesCache) return repoFilesCache;
-  const skip = new Set(["node_modules", ".git", "dist", ".alchemy", ".astro"]);
+  const skip = new Set([
+    "node_modules",
+    ".git",
+    ".claude",
+    ".cursor",
+    "dist",
+    ".alchemy",
+    ".astro",
+  ]);
   const collect = (dir) => {
     let out = [];
     for (const f of readdirSync(dir)) {
@@ -134,6 +142,14 @@ export const extractCitation = (cite, hintDir) => {
   if (cite.marker) {
     const bounds = markerBounds(lines, cite.marker);
     if (!bounds) {
+      if (isAllowlistedDeleted(`${cite.relPath}#${cite.marker}`)) {
+        return {
+          ok: false,
+          skipped: true,
+          error: `marker #${cite.marker} does not exist anymore in ${rel}`,
+          rel,
+        };
+      }
       return {
         ok: false,
         error: `marker #${cite.marker} not found in ${rel}`,

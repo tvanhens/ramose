@@ -11,9 +11,9 @@
 [![license](https://img.shields.io/badge/license-Apache%202.0-42D37A?style=flat-square)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-ramose.ai-42D37A?style=flat-square)](https://ramose.ai)
 
-**The typed, realtime database for apps on Cloudflare** — describe your data in
-TypeScript, write it through a typed API, and read it with queries that update
-themselves in every open tab.
+**The typed database foundation for apps on Cloudflare** — describe schemas,
+queries, operations, and authorization in TypeScript, then deploy the
+authoritative Worker and storage topology into your account.
 
 [Docs](https://ramose.ai) · [Getting started](https://ramose.ai/getting-started/quickstart/) · [Tour of Reef](https://ramose.ai/getting-started/tour-of-reef/) · [Examples](./examples)
 
@@ -23,12 +23,12 @@ themselves in every open tab.
 
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Live queries.** They re-run themselves when the data changes.
-  No refetch code, no invalidation, no WebSocket server to write.
+- **Portable authoring.** Schemas, queries, pulls, and operation declarations
+  are ordinary values shared by application and server code.
 - **Permissions in the database.** Who may read or write each field is checked
   on the server, deny by default — not middleware you remember to add.
-- **A database per customer.** `ramose.db("acme", schema)` is a function call,
-  not a provisioning step.
+- **A database per customer.** One deployed peer owns many isolated database
+  names without provisioning another Worker for each customer.
 - **Nothing overwritten.** Every version is kept; read the database as it was
   at any earlier point in time.
 - **Your Cloudflare account.** One Worker, Durable Objects, and R2, deployed
@@ -36,18 +36,17 @@ themselves in every open tab.
   managed service.
 
 ```sh
-bun add ramose
+bun add ramose effect@rc
 ```
 
-One package. `effect` comes with it. `alchemy` is owned and pinned to the
-2.x beta this release tests (`>=2.0.0-beta.72 <2.0.0-beta.73`); the pin is
-bumped per release. Apps using `ramose/better-auth` also need `better-auth`
-and `zod` (naming hygiene — `better-auth` already depends on zod).
+`effect` is a required peer because operation input and output codecs are
+Effect Schemas. `alchemy` comes with Ramose for deploys. Apps using
+`ramose/better-auth` also need `better-auth` and `zod`.
 
 ## Learn more
 
 - [What is Ramose?](https://ramose.ai/getting-started/introduction/) — the one-minute version
-- [Getting started](https://ramose.ai/getting-started/quickstart/) — a realtime todo app from an empty folder, in 15 minutes
+- [Getting started](https://ramose.ai/getting-started/quickstart/) — define and deploy a typed database
 - [Tour of Reef](https://ramose.ai/getting-started/tour-of-reef/) — a multi-tenant issue tracker whose whole backend is 680 lines
 - [How it compares](https://ramose.ai/getting-started/compare/) — against Convex, Supabase, Instant, Firebase, and D1
 - [Examples](./examples) — runnable apps in this repository

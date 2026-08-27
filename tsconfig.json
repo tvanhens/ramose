@@ -36,10 +36,8 @@
     "paths": {
       "ramose": ["./packages/ramose/src/index.ts"],
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
-      "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
       "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
-      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
-      "ramose/effect": ["./packages/ramose/src/effect.ts"]
+      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"]
     },
     "plugins": [
       {

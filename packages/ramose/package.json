@@ -2,7 +2,7 @@
   "name": "ramose",
   "version": "0.3.0",
   "type": "module",
-  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: the schema and client (`ramose/db`), the Alchemy resources (`ramose`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
+  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
   "license": "Apache-2.0",
   "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
   "homepage": "https://ramose.ai",
@@ -32,21 +32,9 @@
     "Ramose owns its whole runtime graph on purpose: `bun add ramose` has to be",
     "enough for the portable and deploy paths.",
     "",
-    "`effect` — a bare `effect` in a consumer's manifest installs 3.x, which is",
-    "the wrong major. Owning the dependency with a prerelease floor makes the",
-    "Effect 4 line resolve without the consumer typing `effect@rc`. The floor",
-    "carries a prerelease tag so semver admits the other 4.0.0 prereleases;",
-    "`<5.0.0` keeps the next major out.",
-    "",
-    "App `Db` methods are promises and subscriptions. Effect types live only on",
-    "`db.effect.*`, `ramose/db/effect`, and `ramose/effect` (the opt-in hatch).",
-    "Two copies of `effect` in one tree produce two mutually unassignable sets",
-    "of types — that failure is confined to the hatch and the deploy surface,",
-    "not the promise-first app path. A consumer never has to name `effect`:",
-    "it arrives under `ramose`, and `ramose/effect` re-exports the same module",
-    "instances for resolvers that do not hoist (pnpm's default, Yarn PnP). A",
-    "consumer who *does* add `effect` should use a range compatible with this",
-    "one; anything else is the one way back to two copies.",
+    "`effect` is a required peer because operation declarations accept public",
+    "Effect Schema values. That makes the import legal under pnpm and Yarn PnP",
+    "and guarantees one version supplies both Ramose and application codecs.",
     "",
     "`alchemy` is a real dependency, not a peer: it carries the `alchemy` CLI",
     "the quickstart runs. Its types sit in the public deploy signatures, and",
@@ -84,16 +72,11 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "browser": "./dist/browser.js",
       "default": "./dist/index.js"
     },
     "./db": {
       "types": "./dist/db/index.d.ts",
       "default": "./dist/db/index.js"
-    },
-    "./db/effect": {
-      "types": "./dist/db/effect.d.ts",
-      "default": "./dist/db/effect.js"
     },
     "./worker": {
       "types": "./dist/worker/index.d.ts",
@@ -102,10 +85,6 @@
     "./better-auth": {
       "types": "./dist/better-auth/index.d.ts",
       "default": "./dist/better-auth/index.js"
-    },
-    "./effect": {
-      "types": "./dist/effect.d.ts",
-      "default": "./dist/effect.js"
     },
     "./package.json": "./package.json"
   },
@@ -124,11 +103,11 @@
   "dependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
     "alchemy": ">=2.0.0-beta.74 <2.0.0-beta.75",
-    "effect": ">=4.0.0-rc.110 <5.0.0",
     "jose": "^6.0.0"
   },
   "peerDependencies": {
     "better-auth": ">=1.6.0",
+    "effect": ">=4.0.0-rc.110 <5.0.0",
     "zod": "^4.3.6"
   },
   "peerDependenciesMeta": {
@@ -141,6 +120,7 @@
   },
   "devDependencies": {
     "better-auth": "^1.6.30",
+    "effect": ">=4.0.0-rc.110 <5.0.0",
     "zod": "^4.3.6"
   }
 }

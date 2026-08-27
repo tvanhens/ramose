@@ -1,6 +1,5 @@
 /**
- * Typed writes the peer registers. The compiled policy accepts or rejects
- * each operation with `Unauthorized` / `OperationRejected`.
+ * Portable named operation declarations shared with authoritative execution.
  */
 
 import * as Schema from "effect/Schema";
@@ -42,22 +41,20 @@ const authFetch = (
 };
 
 /**
- * Workspace provisioning as an operation: install + optional org registration
- * as effects, then seed labels. The peer upserts the creator's `user` row
+ * Workspace provisioning as an operation: optional org registration as an
+ * effect, then seed labels. Authoritative catalog publication happens before
+ * this operation is admitted. The peer upserts the creator's `user` row
  * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
- * must not write that row. Effects come first; there is no session yet.
+ * must not write that row.
  */
 export const provisionWorkspaceOp = Op(
   "workspace/provision",
   {
     input: Schema.Struct({}),
     output: Schema.Struct({ ready: Schema.Boolean }),
-    doc: "Install a workspace catalog and seed its starting labels",
+    doc: "Register a workspace and seed its starting labels",
   },
   async (op) => {
-    await op.effect("db/install", ({ databases }) =>
-      databases.install(Reef, op.db),
-    );
     await op.effect("org/register", async ({ env, principal }) => {
       const register = authFetch(env);
       if (register === undefined) return;

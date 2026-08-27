@@ -5,7 +5,7 @@
  * the peer does is `Db.ts` — `ramose.db(name, catalog)` checks it when the
  * db is built, so a bad name fails the first operation with `InvalidRequest`
  * rather than reaching the peer. Any app that lets users *name* a database
- * (multi-tenant "create workspace") needs the same rule client-side, so
+ * (multi-tenant "create workspace") needs the same portable rule, so
  * `DATABASE_NAME_RE` and `isDatabaseName` are exported from the portable
  * barrel. There is deliberately no `slugify` here: how an app turns
  * "Coral Team" into `coral-team` is the app's business.

@@ -14,7 +14,6 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
-import { makeApp } from "./app.ts";
 import {
   Empty,
   Jwks,
@@ -40,7 +39,6 @@ export const Stack = Alchemy.Stack(
     const open = yield* Open;
     // workerName is an Output; Worker env classification unwraps it
     // when the App resource applies (RuntimeContext is ambient there).
-    const app = yield* makeApp(open.workerName as unknown as string);
     const empty = yield* Empty;
     const token = yield* Token;
     const policy = yield* Policy;
@@ -61,7 +59,6 @@ export const Stack = Alchemy.Stack(
       jwksUrl: jwks.url,
       jwksBoundUrl: jwksBound.url,
       jwksUrlOnlyUrl: jwksUrlOnly.url,
-      appUrl: app.url,
     };
   }),
 );
