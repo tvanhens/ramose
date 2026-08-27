@@ -3,6 +3,10 @@
  * + basis-t + schema. Reads merge tree segments with novelty and collapse
  * history into the current view (or an as-of view, or raw history).
  *
+ * Optional composed datom predicates (`filter`) run after collapse and
+ * before any consumer. Query and pull inherit them because they only read
+ * through `datoms` / `seekMany`.
+ *
  * Snapshot isolation is by `t`: a Db never sees datoms with t > basisT, so a
  * shared, append-only novelty structure is safe to hand to many Db values.
  */
@@ -48,6 +52,15 @@ export function rootFor(roots: Roots, index: IndexId): NodeRef {
 /** Anything that names an entity: eid, ident, or lookup ref [attr, value]. */
 export type EntityRef = number | string | [string, unknown];
 
+/**
+ * Per-datom visibility predicate for {@link Db.filter}. `unfiltered` is the
+ * same temporal database value with no filters (#411).
+ */
+export type DatomPredicate = (
+  unfiltered: Db,
+  datom: Datom,
+) => boolean | Promise<boolean>;
+
 export interface DbOptions {
   store: NodeSource;
   roots: Roots;
@@ -57,6 +70,7 @@ export interface DbOptions {
   nextEid: number;
   asOfT?: number | undefined;
   history?: boolean;
+  filters?: readonly DatomPredicate[];
 }
 
 export class Db {
@@ -68,6 +82,7 @@ export class Db {
   readonly nextEid: number;
   readonly asOfT: number | undefined;
   readonly isHistory: boolean;
+  readonly filters: readonly DatomPredicate[];
 
   constructor(o: DbOptions) {
     this.store = o.store;
@@ -78,6 +93,7 @@ export class Db {
     this.nextEid = o.nextEid;
     this.asOfT = o.asOfT;
     this.isHistory = !!o.history;
+    this.filters = o.filters ?? [];
   }
 
   /** Effective upper bound on visible t. */
@@ -91,6 +107,13 @@ export class Db {
   history(): Db {
     return new Db({ ...this.opts(), history: true });
   }
+  /**
+   * Immutable read-enforcement: a new Db that yields only datoms for which
+   * every composed predicate returns true. Query and pull stay unaware.
+   */
+  filter(predicate: DatomPredicate): Db {
+    return new Db({ ...this.opts(), filters: Object.freeze([...this.filters, predicate]) });
+  }
   private opts(): DbOptions {
     return {
       store: this.store,
@@ -101,7 +124,39 @@ export class Db {
       nextEid: this.nextEid,
       asOfT: this.asOfT,
       history: this.isHistory,
+      filters: this.filters,
     };
+  }
+
+  /** Same temporal coordinates, no filters. Used only as the predicate argument. */
+  private unfilteredView(): Db {
+    return new Db({ ...this.opts(), filters: [] });
+  }
+
+  private async applyFilters(arr: Datom[]): Promise<Datom[]> {
+    if (this.filters.length === 0) return arr;
+    const unfiltered = this.unfilteredView();
+    const kept: Datom[] = [];
+    for (const d of arr) {
+      let ok = true;
+      for (const pred of this.filters) {
+        if (!(await pred(unfiltered, d))) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) kept.push(d);
+    }
+    return kept;
+  }
+
+  private async *filterChunks(
+    chunks: AsyncIterable<Datom[]>,
+  ): AsyncGenerator<Datom[], void, undefined> {
+    for await (const arr of chunks) {
+      const kept = await this.applyFilters(arr);
+      if (kept.length > 0) yield kept;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -117,12 +172,13 @@ export class Db {
     const tree = scan(this.store, index, rootFor(this.roots, index), prefix);
     const nov = this.novelty.byIndex[index].range(prefix);
     const merged = mergeChunks(COMPARATORS[index], tree, nov);
-    if (this.isHistory) {
-      return this.effectiveT >= this.novelty.maxT && this.effectiveT >= this.roots.t && this.asOfT === undefined
+    const collapsed = this.isHistory
+      ? this.effectiveT >= this.novelty.maxT && this.effectiveT >= this.roots.t && this.asOfT === undefined
         ? rawView(merged)
-        : filterAsOf(merged, this.effectiveT);
-    }
-    return currentView(merged, this.effectiveT);
+        : filterAsOf(merged, this.effectiveT)
+      : currentView(merged, this.effectiveT);
+    if (this.filters.length === 0) return collapsed;
+    return this.filterChunks(collapsed);
   }
 
   /**
@@ -152,7 +208,7 @@ export class Db {
       } else if (ds.length > 0) {
         ds = collapseCurrent(ds, asOf);
       }
-      results[i] = ds;
+      results[i] = this.filters.length === 0 ? ds : await this.applyFilters(ds);
     }
     return results;
   }
@@ -169,8 +225,13 @@ export class Db {
     return undefined;
   }
 
-  /** Cheap cardinality estimate (history datoms, tree + novelty). */
+  /**
+   * Cardinality estimate. Unfiltered: cheap tree + novelty (history datoms).
+   * With filters: count visible `datomsArray` so the oracle cannot report
+   * unfiltered size (authorization.md DISC-3 / CUR-3).
+   */
   async estimate(index: IndexId, prefix: Prefix): Promise<number> {
+    if (this.filters.length > 0) return (await this.datomsArray(index, prefix)).length;
     const t = await estimateCount(this.store, index, rootFor(this.roots, index), prefix);
     const n = this.novelty.byIndex[index].range(prefix);
     return t + (n ? n.end - n.start : 0);
