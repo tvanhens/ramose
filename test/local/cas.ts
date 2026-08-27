@@ -138,6 +138,45 @@ const assertDurableV = async (
   );
 };
 
+/**
+ * Prove a sibling `:k/n` add did not land. Replica 200 with `:k/n` set fails
+ * immediately. If the replica never answers, a transactor CAS expected=1 on
+ * `:k/n` is the fallback: 200 means the sibling landed; 409 `tx/cas-conflict`
+ * means absent. Anything else cannot prove absence.
+ */
+const assertSiblingNAbsent = async (
+  url: string,
+  db: string,
+  eid: number,
+  minT?: number,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try {
+      const q = await queryEntity(url, db, eid, minT);
+      if (q.status === 200 && q.body?.entity !== undefined) {
+        if (q.body.entity[":k/n"] !== undefined) {
+          throw new Error(`sibling :k/n landed on replica: ${JSON.stringify(q.body.entity)}`);
+        }
+        return;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("sibling :k/n landed")) throw err;
+      // replica isolate may still be reconnecting after transactor abort
+    }
+    await Bun.sleep(50 * (attempt + 1));
+  }
+  const probe = await testAdmin(url, db, "/transact", {
+    tx: [[":db/cas", eid, ":k/n", 1, 1]],
+  });
+  if (probe.status === 200) {
+    throw new Error("sibling :k/n landed: transactor CAS [:k/n 1 → 1] acknowledged");
+  }
+  if (probe.status === 409 && probe.body?.code === "tx/cas-conflict") return;
+  throw new Error(
+    `could not prove sibling :k/n is absent: ${probe.status} ${JSON.stringify(probe.body)}`,
+  );
+};
+
 const assertIdAbsent = async (
   url: string,
   db: string,
@@ -263,14 +302,7 @@ export function registerCas(target: { urls: () => LocalUrls }): void {
       expect(r.body.tag).toBe("TxRejected");
       expect(r.body.code).toBe("tx/cas-conflict");
       await assertDurableV(url, db, eid, "old", t);
-      for (let attempt = 0; attempt < 12; attempt++) {
-        const q = await queryEntity(url, db, eid, t);
-        if (q.status === 200 && q.body?.entity !== undefined) {
-          expect(q.body.entity[":k/n"]).toBeUndefined();
-          return;
-        }
-        await Bun.sleep(50 * (attempt + 1));
-      }
+      await assertSiblingNAbsent(url, db, eid, t);
     });
   });
 }
