@@ -284,12 +284,17 @@ describe("transactor: /publish-catalog", () => {
     return JSON.stringify({ unit: encoded, expectedHead });
   };
 
+  const sealFor = async (h: Harness, descriptor?: import("../../../src/internal/authorization/catalog.ts").CatalogDescriptor) => {
+    const { sealUnit, catalogDescriptor } = await import("../authorization/catalog-unit-fixtures.ts");
+    const { DatabaseId } = await import("../../../src/internal/authorization/identities.ts");
+    return sealUnit(descriptor ?? catalogDescriptor({ database: DatabaseId.make(h.dbName) }));
+  };
+
   test("first publish installs schema and catalog head", async () => {
-    const { sealUnit } = await import("../authorization/catalog-unit-fixtures.ts");
     const { RAMOSE_CATALOG_HEAD_IDENT, RAMOSE_CATALOG } = await import("../../../src/internal/core/schema.ts");
     const h = new Harness();
     await h.transactor.init();
-    const unit = await sealUnit();
+    const unit = await sealFor(h);
     const r = await h.transactor.handleRequest(
       new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(unit) }),
     );
@@ -303,7 +308,6 @@ describe("transactor: /publish-catalog", () => {
   });
 
   test("decode / verify failures are 400, not 500", async () => {
-    const { sealUnit } = await import("../authorization/catalog-unit-fixtures.ts");
     const h = new Harness();
     await h.transactor.init();
     const missing = await h.transactor.handleRequest(
@@ -315,7 +319,7 @@ describe("transactor: /publish-catalog", () => {
       new Request("https://t/publish-catalog", { method: "POST", body: JSON.stringify({ unit: { _tag: "nope" } }) }),
     );
     expect(malformed.status).toBe(400);
-    const unit = await sealUnit();
+    const unit = await sealFor(h);
     const { encodeInstalledCatalogUnit } = await import("../../../src/internal/authorization/index.ts");
     const forged = { ...encodeInstalledCatalogUnit(unit), unitHash: "0".repeat(64) };
     const badHash = await h.transactor.handleRequest(
@@ -345,12 +349,11 @@ describe("transactor: /publish-catalog", () => {
   });
 
   test("occupied type + changed closure is 409 tx/occupied-type", async () => {
-    const { sealUnit, evolvedCatalogDescriptor } = await import(
-      "../authorization/catalog-unit-fixtures.ts"
-    );
+    const { evolvedCatalogDescriptor } = await import("../authorization/catalog-unit-fixtures.ts");
+    const { DatabaseId } = await import("../../../src/internal/authorization/identities.ts");
     const h = new Harness();
     await h.transactor.init();
-    const v1 = await sealUnit();
+    const v1 = await sealFor(h);
     const first = await h.transactor.handleRequest(
       new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(v1) }),
     );
@@ -360,12 +363,87 @@ describe("transactor: /publish-catalog", () => {
       { ":db/id": "i", ":issue/title": "Bug", ":issue/owner": "u" },
     ]);
     const t = h.transactor.t;
-    const v2 = await sealUnit(await evolvedCatalogDescriptor());
+    const v2 = await sealFor(h, await evolvedCatalogDescriptor(DatabaseId.make(h.dbName)));
     const occupied = await h.transactor.handleRequest(
       new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(v2) }),
     );
     expect(occupied.status).toBe(409);
     expect(((await occupied.json()) as { tag: string; code: string }).code).toBe("tx/occupied-type");
     expect(h.transactor.t).toBe(t);
+  });
+
+  test("unit sealed for another database is 400", async () => {
+    const { catalogDescriptor } = await import("../authorization/catalog-unit-fixtures.ts");
+    const { DatabaseId } = await import("../../../src/internal/authorization/identities.ts");
+    const h = new Harness();
+    await h.transactor.init();
+    const unit = await sealFor(h, catalogDescriptor({ database: DatabaseId.make("other") }));
+    const r = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(unit) }),
+    );
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { tag: string }).tag).toBe("BadRequest");
+    expect(h.transactor.t).toBe(1);
+    expect(await h.transactor.connection.db().entid([":db/ident", ":ramose.catalog"])).toBeDefined();
+  });
+
+  test("boot migrates a pre-catalog log so first publish CAS succeeds", async () => {
+    const {
+      RAMOSE_CATALOG,
+      RAMOSE_CATALOG_HEAD,
+      RAMOSE_CATALOG_IDENT,
+      RAMOSE_CATALOG_UNIT_BYTES,
+      RAMOSE_CATALOG_UNIT_HASH,
+      Schema,
+      bootstrapDatoms,
+      FIRST_USER_EID,
+    } = await import("../../../src/internal/core/schema.ts");
+    const { buildRoots, encodeLogChunk, gzipCodec } = await import("../../../src/internal/core/index.ts");
+    const { R2NodeStore, rootsToRecord } = await import("../../../src/internal/storage/index.ts");
+    const h = new Harness();
+    h.sql.exec(`CREATE TABLE IF NOT EXISTS log (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
+    h.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+    const old = bootstrapDatoms().filter(
+      (d) =>
+        d.e !== RAMOSE_CATALOG &&
+        d.e !== RAMOSE_CATALOG_HEAD &&
+        d.e !== RAMOSE_CATALOG_UNIT_HASH &&
+        d.e !== RAMOSE_CATALOG_UNIT_BYTES,
+    );
+    const store = new R2NodeStore(h.bucket, { codec: gzipCodec, maxNodes: 4096 });
+    const roots = await buildRoots(store, new Schema().apply(old), old);
+    const rec = rootsToRecord(roots, { log_watermark: 0, next_eid: FIRST_USER_EID, codec: gzipCodec.name });
+    const chunk = encodeLogChunk([{ t: 1, txInstant: 0, datoms: old }]);
+    const buf = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer;
+    h.sql.exec(`INSERT INTO log (t, tx_instant, datoms) VALUES (?, ?, ?)`, 1, 0, buf);
+    h.sql.exec(`INSERT INTO meta (k, v) VALUES (?, ?)`, "root", JSON.stringify(rec));
+    h.sql.exec(`INSERT INTO meta (k, v) VALUES (?, ?)`, "next_eid", JSON.stringify(FIRST_USER_EID));
+    await h.transactor.init();
+    expect(await h.transactor.connection.db().entid(RAMOSE_CATALOG_IDENT)).toBe(RAMOSE_CATALOG);
+    const identDatoms = await h.transactor.connection.db().datomsArray(
+      (await import("../../../src/internal/core/datom.ts")).Index.AVET,
+      {
+        a: (await import("../../../src/internal/core/schema.ts")).DB_IDENT,
+        vt: (await import("../../../src/internal/core/datom.ts")).ValueTag.Str,
+        v: RAMOSE_CATALOG_IDENT,
+      },
+    );
+    expect(identDatoms).toHaveLength(1);
+    const unit = await sealFor(h);
+    const published = await h.transactor.handleRequest(
+      new Request("https://t/publish-catalog", { method: "POST", body: await publishBody(unit) }),
+    );
+    expect(published.status).toBe(200);
+    const h2 = h.restart();
+    await h2.transactor.init();
+    const again = await h2.transactor.connection.db().datomsArray(
+      (await import("../../../src/internal/core/datom.ts")).Index.AVET,
+      {
+        a: (await import("../../../src/internal/core/schema.ts")).DB_IDENT,
+        vt: (await import("../../../src/internal/core/datom.ts")).ValueTag.Str,
+        v: RAMOSE_CATALOG_IDENT,
+      },
+    );
+    expect(again.filter((d) => d.op)).toHaveLength(1);
   });
 });

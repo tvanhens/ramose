@@ -30,6 +30,27 @@ describe("transactor errors: classification", () => {
     expect(e.message).toBe("unknown attribute :k/nope");
   });
 
+  test("CatalogMismatch → BadRequest 400", async () => {
+    const { CatalogMismatch } = await import("../../../src/internal/authorization/failures.ts");
+    const { DatabaseId } = await import("../../../src/internal/authorization/identities.ts");
+    const e = toHttpError(
+      new CatalogMismatch({
+        message: "cross-database catalog",
+        expectedDatabase: DatabaseId.make("test"),
+        actualDatabase: DatabaseId.make("other"),
+      }),
+    );
+    expect(e._tag).toBe("BadRequest");
+    expect(statusOf(e as BadRequest)).toBe(400);
+  });
+
+  test("tx/incompatible-schema → TxRejected 409", () => {
+    const e = toHttpError(new TxError("incompatible schema", "tx/incompatible-schema"));
+    expect(e._tag).toBe("TxRejected");
+    expect((e as TxRejected).code).toBe("tx/incompatible-schema");
+    expect(statusOf(e as TxRejected)).toBe(409);
+  });
+
   test("tx/occupied-type → TxRejected 409", () => {
     const e = toHttpError(
       new TxError("cannot change trait composition of occupied type :issue", "tx/occupied-type"),

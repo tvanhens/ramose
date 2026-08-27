@@ -37,6 +37,7 @@ import {
   type TxData,
   TxError,
   bootstrapDatoms,
+  missingBootstrapDatoms,
   decodeLogChunk,
   emptyRoots,
   encodeLogChunk,
@@ -45,6 +46,7 @@ import {
   toJson,
   txFrame,
   FIRST_USER_EID,
+  VALUE_TYPE_NAMES,
   Histogram,
   type Logger,
   type WireDatom,
@@ -62,6 +64,8 @@ import {
   type InstalledCatalogUnitV1,
 } from "../authorization/index.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "../authorization/failures.ts";
+import { DatabaseId } from "../authorization/identities.ts";
+import type { InstalledAttr } from "../../db/evolution.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -187,6 +191,24 @@ const safeName = (host: TransactorHost): string | undefined => {
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...headers } });
 
+const installedAttrsFromSchema = (schema: { attributes(): { id: number; ident: string; valueType: number; cardinality: string; unique?: string | undefined; optional?: boolean | undefined }[] }): InstalledAttr[] => {
+  const out: InstalledAttr[] = [];
+  for (const a of schema.attributes()) {
+    if (a.ident.startsWith(":db/")) continue;
+    const valueType = VALUE_TYPE_NAMES[a.valueType];
+    if (valueType === undefined) continue;
+    out.push({
+      e: a.id,
+      ident: a.ident,
+      valueType,
+      cardinality: `:db.cardinality/${a.cardinality}`,
+      ...(a.unique !== undefined ? { unique: `:db.unique/${a.unique}` } : {}),
+      ...(a.optional ? { optional: true } : {}),
+    });
+  }
+  return out;
+};
+
 export class Transactor {
   private ready: Promise<void> | undefined;
   private conn!: Connection;
@@ -256,6 +278,15 @@ export class Transactor {
     const nextEid = this.getMeta<number>("next_eid") ?? rec.next_eid;
     const logDatoms = this.readLogDatoms(roots.t);
     this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, { now: () => this.host.now() });
+    const migrateInstant = this.host.now();
+    const migrateT = this.conn.t + 1;
+    const missing = await missingBootstrapDatoms(this.conn.db(), migrateT, migrateInstant);
+    if (missing.length > 0) {
+      this.host.transactionSync(() => {
+        this.appendLogRow({ t: migrateT, txInstant: migrateInstant, datoms: missing });
+      });
+      this.conn.applyDatoms(missing);
+    }
     for (const row of this.getMeta<StoredOpAck[]>("op_acks") ?? []) {
       this.recentOpAcks.set(row.k, row.ack);
       this.recentAcks.set(row.k, row.ack);
@@ -512,6 +543,7 @@ export class Transactor {
                       unit,
                       p.expectedHead ?? null,
                       await catalogCompositionRetracts(this.conn.db(), unit.catalog),
+                      installedAttrsFromSchema(this.conn.db().schema),
                     ),
                     publication,
                   )
@@ -828,6 +860,14 @@ export class Transactor {
           throw new BadRequest({ message: err.message });
         }
         throw err;
+      }
+      const writerDb = DatabaseId.make(this.host.dbName);
+      if (verified.catalog.database !== writerDb) {
+        throw new CatalogMismatch({
+          message: "cross-database catalog",
+          expectedDatabase: writerDb,
+          actualDatabase: verified.catalog.database,
+        });
       }
       const expectedHead = body.expectedHead === undefined || body.expectedHead === null ? null : body.expectedHead;
       if (expectedHead !== null && typeof expectedHead !== "number") {

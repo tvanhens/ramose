@@ -7,13 +7,21 @@ import * as Effect from "effect/Effect";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index, ValueTag } from "../../../src/internal/core/datom.ts";
 import {
+  DB_IDENT,
+  FIRST_USER_EID,
   RAMOSE_CATALOG,
+  RAMOSE_CATALOG_HEAD,
   RAMOSE_CATALOG_HEAD_IDENT,
   RAMOSE_CATALOG_IDENT,
+  RAMOSE_CATALOG_UNIT_BYTES,
   RAMOSE_CATALOG_UNIT_BYTES_IDENT,
+  RAMOSE_CATALOG_UNIT_HASH,
   RAMOSE_CATALOG_UNIT_HASH_IDENT,
   RAMOSE_KIND_ENTITY,
   RAMOSE_KIND_TRAIT,
+  Schema,
+  bootstrapDatoms,
+  missingBootstrapDatoms,
 } from "../../../src/internal/core/schema.ts";
 import { TxError } from "../../../src/internal/core/tx.ts";
 import {
@@ -34,10 +42,17 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 import {
   catalogDescriptor,
+  database,
   evolvedCatalogDescriptor,
+  extraRequiredFieldCatalogDescriptor,
+  optionalTitleCatalogDescriptor,
   reducedCatalogDescriptor,
   sealUnit,
+  titleValueTypeLongCatalogDescriptor,
 } from "./catalog-unit-fixtures.ts";
+import { DatabaseId } from "../../../src/internal/authorization/identities.ts";
+import { buildRoots } from "../../../src/internal/core/conn.ts";
+import { MemStore } from "../../../src/internal/core/store.ts";
 
 const publish = (conn: Connection, unit: InstalledCatalogUnit, expectedHead?: number | null) =>
   Effect.runPromise(publishCatalogUnit(conn, unit, expectedHead));
@@ -282,6 +297,225 @@ describe("fail closed", () => {
     const failure = await resolveFail(conn.db());
     expect(failure).toBeInstanceOf(CatalogUnitCorrupt);
     expect(failure.message).toMatch(/hash does not match|hash mismatch/);
+  });
+});
+
+describe("catalog-unit retractEntity", () => {
+  test("numeric eid, lookup, and historical unit retracts are tx/system", async () => {
+    const conn = await Connection.create();
+    const v1 = await sealUnit();
+    await publish(conn, v1);
+    const head1 = await resolveCatalogHead(conn.db());
+    if (head1 === null) throw new Error("expected head");
+    await conn.transact([{ ":db/id": "u", ":user/authId": "ada" }]);
+    const v2 = await sealUnit(await evolvedCatalogDescriptor());
+    await publish(conn, v2);
+    const head2 = await resolveCatalogHead(conn.db());
+    if (head2 === null) throw new Error("expected head after v2");
+    const t = conn.t;
+    const hash1 = v1.unitHash;
+    const bytes1 = (await conn.db().entity(head1))?.[RAMOSE_CATALOG_UNIT_BYTES_IDENT];
+
+    await expect(conn.transact([[":db/retractEntity", head1]])).rejects.toMatchObject({
+      code: "tx/system",
+    });
+    await expect(conn.transact([[":db/retractEntity", head2]])).rejects.toMatchObject({
+      code: "tx/system",
+    });
+    await expect(
+      conn.transact([[":db/retractEntity", [RAMOSE_CATALOG_UNIT_HASH_IDENT, hash1]]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    expect(conn.t).toBe(t);
+    expect(await resolveCatalogHead(conn.db())).toBe(head2);
+    const historical = await conn.db().entity(head1);
+    expect(historical?.[RAMOSE_CATALOG_UNIT_HASH_IDENT]).toBe(hash1);
+    expect(historical?.[RAMOSE_CATALOG_UNIT_BYTES_IDENT]).toEqual(bytes1);
+  });
+
+  test("ordinary retractEntity of a user entity still works", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const created = await conn.transact([{ ":db/id": "u", ":user/authId": "ada" }]);
+    const eid = created.tempids.u;
+    await conn.transact([[":db/retractEntity", eid]]);
+    expect(await conn.db().entity(eid)).toBeUndefined();
+  });
+});
+
+describe("field evolution at publish", () => {
+  test("occupied namespace + new required field is tx/incompatible-schema", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    await conn.transact([
+      { ":db/id": "u", ":user/authId": "ada" },
+      { ":db/id": "i", ":issue/title": "Bug", ":issue/owner": "u" },
+    ]);
+    const t = conn.t;
+    const v2 = await sealUnit(await extraRequiredFieldCatalogDescriptor());
+    await expect(publish(conn, v2)).rejects.toMatchObject({ code: "tx/incompatible-schema" });
+    expect(conn.t).toBe(t);
+    expect(await resolveCatalogHead(conn.db())).toBeTypeOf("number");
+    expect(conn.db().schema.attr(":issue/priority")).toBeUndefined();
+  });
+
+  test("valueType flip is tx/incompatible-schema and leaves head null on first publish", async () => {
+    const conn = await Connection.create();
+    await conn.transact([
+      {
+        ":db/ident": ":issue/title",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
+      },
+    ]);
+    const t = conn.t;
+    const unit = await sealUnit(await titleValueTypeLongCatalogDescriptor());
+    await expect(publish(conn, unit)).rejects.toMatchObject({ code: "tx/incompatible-schema" });
+    expect(conn.t).toBe(t);
+    expect(await resolveCatalogHead(conn.db())).toBeNull();
+    expect(conn.db().schema.attr(":issue/title")?.valueType).toBe(ValueTag.Str);
+  });
+
+  test("first publish on an empty DB still succeeds", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    expect(await resolveCatalogHead(conn.db())).toBeTypeOf("number");
+  });
+});
+
+describe("optional → required retracts :db/optional", () => {
+  test("publish making a seeded optional field required retracts the flag", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit(await optionalTitleCatalogDescriptor()));
+    expect(conn.db().schema.attr(":issue/title")?.optional).toBe(true);
+    await publish(conn, await sealUnit());
+    expect(conn.db().schema.attr(":issue/title")?.optional).toBe(false);
+    const titleEid = conn.db().schema.entid(":issue/title")!;
+    const optionalAttr = conn.db().attr(":db/optional")!;
+    expect(await conn.db().first(Index.EAVT, { e: titleEid, a: optionalAttr.id })).toBeUndefined();
+    await conn.transact([{ ":db/id": "u", ":user/authId": "ada" }]);
+    await expect(
+      conn.transact([{ ":db/id": "i", ":issue/owner": [":user/authId", "ada"] }]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+  });
+});
+
+describe("writer database identity", () => {
+  test("publishCatalogUnit rejects a writerDatabase that does not match the unit", async () => {
+    const conn = await Connection.create();
+    const unit = await sealUnit();
+    expect(unit.catalog.database).toBe(database);
+    const t = conn.t;
+    await expect(
+      Effect.runPromise(publishCatalogUnit(conn, unit, null, DatabaseId.make("other"))),
+    ).rejects.toBeInstanceOf(CatalogMismatch);
+    expect(conn.t).toBe(t);
+    expect(await resolveCatalogHead(conn.db())).toBeNull();
+  });
+
+  test("matching writerDatabase still publishes", async () => {
+    const conn = await Connection.create();
+    const unit = await sealUnit();
+    await expect(
+      Effect.runPromise(publishCatalogUnit(conn, unit, null, database)),
+    ).resolves.toMatchObject({ t: 2 });
+  });
+});
+
+describe("tempid alias onto the catalog singleton", () => {
+  test("map that unique-upserts onto entity 21 is tx/system", async () => {
+    const conn = await Connection.create();
+    await expect(
+      conn.transact([{ ":db/id": "c", ":db/ident": RAMOSE_CATALOG_IDENT, ":db/doc": "x" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([
+        { ":db/id": "c", ":db/ident": RAMOSE_CATALOG_IDENT },
+        [":db/retractEntity", "c"],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+  });
+
+  test("legitimate unique upserts on non-catalog attrs still work", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const first = await conn.transact([{ ":db/id": "a", ":user/authId": "ada" }]);
+    const second = await conn.transact([{ ":db/id": "b", ":user/authId": "ada" }]);
+    expect(second.tempids.b).toBe(first.tempids.a);
+  });
+});
+
+describe("durable catalog bootstrap migration", () => {
+  const oldBootstrap = () =>
+    bootstrapDatoms().filter(
+      (d) =>
+        d.e !== RAMOSE_CATALOG &&
+        d.e !== RAMOSE_CATALOG_HEAD &&
+        d.e !== RAMOSE_CATALOG_UNIT_HASH &&
+        d.e !== RAMOSE_CATALOG_UNIT_BYTES,
+    );
+
+  test("restore of a pre-catalog log gets entity 21; second migrate is empty", async () => {
+    const store = new MemStore();
+    const old = oldBootstrap();
+    const schema = new Schema().apply(old);
+    const roots = await buildRoots(store, schema, old);
+    const conn = await Connection.restore(store, roots, [], FIRST_USER_EID);
+    expect(await conn.db().entid(RAMOSE_CATALOG_IDENT)).toBeUndefined();
+    const missing = await missingBootstrapDatoms(conn.db(), conn.t + 1);
+    expect(missing.some((d) => d.e === RAMOSE_CATALOG && d.a === DB_IDENT)).toBe(true);
+    conn.applyDatoms(missing);
+    expect(await conn.db().entid(RAMOSE_CATALOG_IDENT)).toBe(RAMOSE_CATALOG);
+    expect(await conn.db().exists(RAMOSE_CATALOG)).toBe(true);
+    const again = await missingBootstrapDatoms(conn.db(), conn.t + 1);
+    expect(again).toEqual([]);
+    await publish(conn, await sealUnit());
+    expect(await resolveCatalogHead(conn.db())).toBeTypeOf("number");
+  });
+});
+
+describe("post-publish schema projection is engine-owned", () => {
+  test("ordinary and fromOperation writes of catalog-projected metadata are tx/system", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const t = conn.t;
+    await expect(
+      conn.transact([{ ":db/ident": ":issue/title", ":db/valueType": ":db.type/long" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":issue", ":ramose/composes": ":named" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/trait" }]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":issue/title", ":db/valueType": ":db.type/long" }], {
+        fromOperation: true,
+      }),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([{ ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/trait" }], {
+        fromOperation: true,
+      }),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    expect(conn.t).toBe(t);
+    expect(conn.db().schema.attr(":issue/title")?.valueType).toBe(ValueTag.Str);
+    expect(conn.db().schema.kindOf(":issue")).toBe(RAMOSE_KIND_ENTITY);
+  });
+
+  test("user data writes and typed create still work after publish", async () => {
+    const conn = await Connection.create();
+    await publish(conn, await sealUnit());
+    const created = await conn.transact([
+      { ":db/id": "u", ":user/authId": "ada" },
+      { ":db/id": "i", ":issue/title": "Bug", ":issue/owner": "u" },
+    ]);
+    const issue = await conn.db().entity(created.tempids.i);
+    expect(issue?.[":issue/title"]).toBe("Bug");
+    expect(issue?.[":ramose/type"]).toBe(":issue");
+    expect(issue?.[":ramose/trait"]).toEqual([":taggable"]);
+    await conn.transact([[":db/add", created.tempids.i, ":issue/title", "Fixed"]]);
+    expect((await conn.db().entity(created.tempids.i))?.[":issue/title"]).toBe("Fixed");
   });
 });
 

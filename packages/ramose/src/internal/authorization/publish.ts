@@ -18,8 +18,9 @@ import {
 } from "./catalog-unit.ts";
 import { decodeInstalledCatalogUnitResult } from "./decode.ts";
 import { CatalogMismatch, CatalogUnitCorrupt } from "./failures.ts";
-import { CatalogId } from "./identities.ts";
+import { CatalogId, type DatabaseId } from "./identities.ts";
 import { catalogPublicationOf, composerIdentFromName, schemaTxFromCatalog } from "./schema-tx.ts";
+import { installTx, type InstalledAttr } from "../../db/evolution.ts";
 import type { Connection, TxReport } from "../core/conn.ts";
 import type { Db } from "../core/db.ts";
 import { Index } from "../core/datom.ts";
@@ -29,6 +30,8 @@ import {
   RAMOSE_CATALOG_UNIT_BYTES_IDENT,
   RAMOSE_CATALOG_UNIT_HASH_IDENT,
   RAMOSE_COMPOSES_IDENT,
+  VALUE_TYPE_NAMES,
+  type Schema,
 } from "../core/schema.ts";
 import { type CatalogPublication, type TxData, TxError } from "../core/tx.ts";
 
@@ -81,17 +84,37 @@ export const catalogCompositionRetracts = async (
   return retracts;
 };
 
+const installedAttrsFromSchema = (schema: Schema): InstalledAttr[] => {
+  const out: InstalledAttr[] = [];
+  for (const a of schema.attributes()) {
+    if (a.ident.startsWith(":db/")) continue;
+    const valueType = VALUE_TYPE_NAMES[a.valueType];
+    if (valueType === undefined) continue;
+    out.push({
+      e: a.id,
+      ident: a.ident,
+      valueType,
+      cardinality: `:db.cardinality/${a.cardinality}`,
+      ...(a.unique !== undefined ? { unique: `:db.unique/${a.unique}` } : {}),
+      ...(a.optional ? { optional: true } : {}),
+    });
+  }
+  return out;
+};
+
 /**
  * Pure assembly. Caller must pass a verified unit — never an unverified
  * structural document. `compositionRetracts` are computed from db-before.
+ * `installed` supplies `installTx` optional→required retracts.
  */
 export const assembleCatalogPublicationTx = (
   unit: InstalledCatalogUnitV1,
   expectedHead: number | null,
   compositionRetracts: CatalogPublicationTx = [],
+  installed: readonly InstalledAttr[] = [],
 ): CatalogPublicationTx => [
   ...compositionRetracts,
-  ...schemaTxFromCatalog(unit.catalog),
+  ...installTx(schemaTxFromCatalog(unit.catalog), installed),
   [":db/add", CATALOG_UNIT_TEMPID, RAMOSE_CATALOG_UNIT_HASH_IDENT, unit.unitHash],
   [":db/add", CATALOG_UNIT_TEMPID, RAMOSE_CATALOG_UNIT_BYTES_IDENT, catalogUnitCanonicalBytes(unit)],
   [
@@ -181,15 +204,23 @@ export const publishCatalogUnit = Effect.fn("Authorization.publishCatalogUnit")(
     conn: Connection,
     document: InstalledCatalogUnit,
     expectedHead?: number | null,
+    writerDatabase?: DatabaseId,
   ): Effect.fn.Return<TxReport, PublishCatalogFailure> {
     const unit = yield* verifyInstalledCatalogUnit(document);
+    if (writerDatabase !== undefined && unit.catalog.database !== writerDatabase) {
+      return yield* new CatalogMismatch({
+        message: "cross-database catalog",
+        expectedDatabase: writerDatabase,
+        actualDatabase: unit.catalog.database,
+      });
+    }
     const db = conn.db();
     const head =
       expectedHead !== undefined
         ? expectedHead
         : yield* Effect.promise(() => resolveCatalogHead(db));
     const retracts = yield* Effect.promise(() => catalogCompositionRetracts(db, unit.catalog));
-    const tx = assembleCatalogPublicationTx(unit, head, retracts);
+    const tx = assembleCatalogPublicationTx(unit, head, retracts, installedAttrsFromSchema(db.schema));
     return yield* Effect.tryPromise({
       try: () => conn.publishCatalog(tx, catalogPublicationFromUnit(unit)),
       catch: (cause) => {

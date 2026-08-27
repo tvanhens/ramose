@@ -12,7 +12,9 @@ import {
   encodeInstalledCatalogUnit,
   type InstalledCatalogUnitV1,
 } from "../../packages/ramose/src/internal/authorization/index.ts";
+import { DatabaseId } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import {
+  catalogDescriptor,
   evolvedCatalogDescriptor,
   sealUnit,
 } from "../../packages/ramose/test/internal/authorization/catalog-unit-fixtures.ts";
@@ -37,6 +39,11 @@ const requireOk = (
 };
 
 const unitJson = (unit: InstalledCatalogUnitV1) => encodeInstalledCatalogUnit(unit);
+
+const sealForDb = (db: string) => sealUnit(catalogDescriptor({ database: DatabaseId.make(db) }));
+
+const sealEvolvedForDb = async (db: string) =>
+  sealUnit(await evolvedCatalogDescriptor(DatabaseId.make(db)));
 
 const publishCatalog = (
   url: string,
@@ -235,7 +242,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("first publish is visible on replica as schema + catalog head", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat1");
-      const unit = await sealUnit();
+      const unit = await sealForDb(db);
       const ack = requireOk("publish", await publishCatalog(url, db, unit, null));
       await assertIdentPresent(url, db, ":issue/title", ack.t);
       await assertIdentPresent(url, db, ":user/authId", ack.t);
@@ -247,8 +254,8 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("concurrent first publishes: exactly one 200, one 409 tx/cas-conflict", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat2");
-      const first = await sealUnit();
-      const second = await sealUnit(await evolvedCatalogDescriptor());
+      const first = await sealForDb(db);
+      const second = await sealEvolvedForDb(db);
       const [a, b] = await Promise.all([
         publishCatalog(url, db, first, null),
         publishCatalog(url, db, second, null),
@@ -273,7 +280,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("wrong expectedHead is 409 and installs no schema", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat3");
-      const unit = await sealUnit();
+      const unit = await sealForDb(db);
       const r = await publishCatalog(url, db, unit, 99_999);
       expect(r.status).toBe(409);
       expect(r.body.tag).toBe("TxRejected");
@@ -288,7 +295,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("occupied type + changed trait closure is 409 tx/occupied-type", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat4");
-      const v1 = await sealUnit();
+      const v1 = await sealForDb(db);
       const first = requireOk("publish v1", await publishCatalog(url, db, v1, null));
       requireOk(
         "occupy :issue",
@@ -299,7 +306,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
           ],
         }),
       );
-      const v2 = await sealUnit(await evolvedCatalogDescriptor());
+      const v2 = await sealEvolvedForDb(db);
       const occupied = await publishCatalog(url, db, v2);
       expect(occupied.status).toBe(409);
       expect(occupied.body.tag).toBe("TxRejected");
@@ -327,7 +334,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("successful publish survives transactor abort/restart", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat6");
-      const unit = await sealUnit();
+      const unit = await sealForDb(db);
       const ack = requireOk("publish", await publishCatalog(url, db, unit, null));
       await abortTransactor(url, db);
       const resolved = await resolveHeadAndUnit(url, db, ack.t);
@@ -338,7 +345,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("storage-fault at transactor.commit.write commits nothing", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat7");
-      const unit = await sealUnit();
+      const unit = await sealForDb(db);
       await armWriteThrow(url, db, "induced-catalog-write");
       const failed = await tryPublish(url, db, unit, null);
       expect(isFailedWrite(failed)).toBe(true);
@@ -353,7 +360,7 @@ export function registerCatalogPublish(target: { urls: () => LocalUrls }): void 
     test("public /db/* publish-catalog stays 401", async () => {
       const url = target.urls().openUrl;
       const db = uniqueDb("cat8");
-      const unit = await sealUnit();
+      const unit = await sealForDb(db);
       const r = await json(url, `/db/${encodeURIComponent(db)}/publish-catalog`, {
         method: "POST",
         headers: { "content-type": "application/json" },

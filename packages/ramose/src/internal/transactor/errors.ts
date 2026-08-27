@@ -16,6 +16,7 @@
 import * as Data from "effect/Data";
 import { TxRejected } from "../../db/Errors.ts";
 import { TxError } from "../core/index.ts";
+import { CatalogMismatch } from "../authorization/failures.ts";
 
 export { TxRejected };
 
@@ -44,6 +45,7 @@ export function toHttpError(err: unknown): TransactorHttpError {
   if (err instanceof TxRejected || err instanceof TransactorDead || err instanceof BadRequest || err instanceof NotFound || err instanceof Internal) return err;
   // Every core TxError is a 409 TxRejected, including tx/cas-conflict and tx/occupied-type.
   if (err instanceof TxError) return new TxRejected({ message: err.message, code: err.code });
+  if (err instanceof CatalogMismatch) return new BadRequest({ message: err.message });
   if (err instanceof TransactorDeadError) return new TransactorDead({ message: err.message, retryAfterMs: 0 });
   return new Internal({ message: err instanceof Error ? err.message : String(err) });
 }

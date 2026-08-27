@@ -80,9 +80,11 @@ export const refField = (
   owned: false,
 });
 
-export const catalogSchemaTables = (): Omit<CatalogDescriptor, "fingerprint"> => ({
+export const catalogSchemaTables = (
+  databaseId: DatabaseId = database,
+): Omit<CatalogDescriptor, "fingerprint"> => ({
   id: catalog,
-  database,
+  database: databaseId,
   version,
   entities: [
     { id: entity("user"), traits: [] },
@@ -122,9 +124,30 @@ const fingerprint = SchemaFingerprint.make(
   ),
 );
 
-export const catalogDescriptor = (): CatalogDescriptor => ({
-  ...catalogSchemaTables(),
+export const catalogDescriptor = (
+  options: { readonly database?: DatabaseId } = {},
+): CatalogDescriptor => ({
+  ...catalogSchemaTables(options.database ?? database),
   fingerprint,
+});
+
+const fingerprintOf = async (
+  tables: Omit<CatalogDescriptor, "fingerprint">,
+): Promise<CatalogDescriptor["fingerprint"]> =>
+  SchemaFingerprint.make(
+    await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        fingerprint: SchemaFingerprint.make("placeholder"),
+      }),
+    ),
+  );
+
+export const descriptorFromTables = async (
+  tables: Omit<CatalogDescriptor, "fingerprint">,
+): Promise<CatalogDescriptor> => ({
+  ...tables,
+  fingerprint: await fingerprintOf(tables),
 });
 
 export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
@@ -194,9 +217,11 @@ export const sealUnit = async (
 ): Promise<InstalledCatalogUnitV1> => seal(descriptor, await install(descriptor, template));
 
 /** Second-generation catalog: issue drops `taggable` (unoccupied-type retract). */
-export const reducedCatalogDescriptor = async (): Promise<CatalogDescriptor> => {
+export const reducedCatalogDescriptor = async (
+  databaseId: DatabaseId = database,
+): Promise<CatalogDescriptor> => {
   const tables: Omit<CatalogDescriptor, "fingerprint"> = {
-    ...catalogSchemaTables(),
+    ...catalogSchemaTables(databaseId),
     version: CatalogVersion.make("2"),
     entities: [
       { id: entity("user"), traits: [] },
@@ -216,10 +241,12 @@ export const reducedCatalogDescriptor = async (): Promise<CatalogDescriptor> => 
 };
 
 /** Second-generation catalog: issue also composes `named`. */
-export const evolvedCatalogDescriptor = async (): Promise<CatalogDescriptor> => {
+export const evolvedCatalogDescriptor = async (
+  databaseId: DatabaseId = database,
+): Promise<CatalogDescriptor> => {
   const named = trait("named");
   const tables: Omit<CatalogDescriptor, "fingerprint"> = {
-    ...catalogSchemaTables(),
+    ...catalogSchemaTables(databaseId),
     version: CatalogVersion.make("2"),
     traits: [{ id: trait("taggable"), traits: [] }, { id: named, traits: [] }],
     entities: [
@@ -248,4 +275,44 @@ export const evolvedCatalogDescriptor = async (): Promise<CatalogDescriptor> => 
     ),
   );
   return { ...tables, fingerprint: digest };
+};
+
+/** Same schema as v1 but `:issue/title` is optional. */
+export const optionalTitleCatalogDescriptor = async (
+  databaseId: DatabaseId = database,
+): Promise<CatalogDescriptor> => {
+  const tables = catalogSchemaTables(databaseId);
+  return descriptorFromTables({
+    ...tables,
+    version: CatalogVersion.make("optional-title"),
+    fields: tables.fields.map((field) =>
+      field.id.localName === "title" ? { ...field, optional: true } : field,
+    ),
+  });
+};
+
+/** Occupied-namespace evolution: new required `:issue/priority`. */
+export const extraRequiredFieldCatalogDescriptor = async (
+  databaseId: DatabaseId = database,
+): Promise<CatalogDescriptor> => {
+  const tables = catalogSchemaTables(databaseId);
+  return descriptorFromTables({
+    ...tables,
+    version: CatalogVersion.make("2"),
+    fields: [...tables.fields, scalarField(issueOwner, "priority")],
+  });
+};
+
+/** Incompatible `:issue/title` valueType flip. */
+export const titleValueTypeLongCatalogDescriptor = async (
+  databaseId: DatabaseId = database,
+): Promise<CatalogDescriptor> => {
+  const tables = catalogSchemaTables(databaseId);
+  return descriptorFromTables({
+    ...tables,
+    version: CatalogVersion.make("2"),
+    fields: tables.fields.map((field) =>
+      field.id.localName === "title" ? { ...field, valueType: "long" as const } : field,
+    ),
+  });
 };

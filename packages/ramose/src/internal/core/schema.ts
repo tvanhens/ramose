@@ -13,7 +13,7 @@
  * unique attrs, VAET for refs — never index everything).
  */
 
-import { type Datom, ValueTag, type ValueTag as VT } from "./datom.ts";
+import { type Datom, Index, ValueTag, type ValueTag as VT, valueKey } from "./datom.ts";
 
 // ---------------------------------------------------------------------------
 // Bootstrap attribute ids (stable forever)
@@ -153,14 +153,49 @@ export function attributeDatoms(e: number, spec: AttributeSpec, t: number): Dato
   return out;
 }
 
-/** The bootstrap transaction (t = 1): system attributes describing themselves. */
-export function bootstrapDatoms(): Datom[] {
-  const t = 1;
+/** Bootstrap attribute + catalog-singleton facts at `t` (no tx-instant). */
+export function bootstrapFacts(t: number): Datom[] {
   const out: Datom[] = [];
   for (const s of BOOTSTRAP_SPECS) out.push(...attributeDatoms(s.id, s, t));
   out.push({ e: RAMOSE_CATALOG, a: DB_IDENT, vt: ValueTag.Str, v: RAMOSE_CATALOG_IDENT, t, op: true });
+  return out;
+}
+
+/** The bootstrap transaction (t = 1): system attributes describing themselves. */
+export function bootstrapDatoms(): Datom[] {
+  const t = 1;
+  const out = bootstrapFacts(t);
   out.push({ e: txEid(t), a: DB_TX_INSTANT, vt: ValueTag.Inst, v: 0, t, op: true });
   return out;
+}
+
+/**
+ * Persisted bootstrap facts that this db is missing. `Schema.bootstrap()`
+ * synthesizes attrs in memory; AVET / `db.exists` still need the durable
+ * datoms (fixed eids 21, 51–53, and any other `BOOTSTRAP_SPECS` gap).
+ * Empty when the log already has them — second boot is a no-op.
+ */
+export async function missingBootstrapDatoms(
+  db: {
+    first(
+      index: number,
+      prefix: { e?: number; a?: number; vt?: number; v?: unknown },
+    ): Promise<Datom | undefined>;
+  },
+  t: number,
+  txInstant = 0,
+): Promise<Datom[]> {
+  const missing: Datom[] = [];
+  for (const d of bootstrapFacts(t)) {
+    const found = await db.first(Index.EAVT, { e: d.e, a: d.a });
+    if (found !== undefined && found.op && valueKey(found.vt, found.v) === valueKey(d.vt, d.v)) {
+      continue;
+    }
+    missing.push(d);
+  }
+  if (missing.length === 0) return [];
+  missing.unshift({ e: txEid(t), a: DB_TX_INSTANT, vt: ValueTag.Inst, v: txInstant, t, op: true });
+  return missing;
 }
 
 // ---------------------------------------------------------------------------
