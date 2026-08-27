@@ -120,10 +120,6 @@ export const installedEncoded = {
   _tag: "InstalledAuthorizationIR",
   version: 1,
   languageVersion: "v1",
-  database: "todos",
-  catalog: "app",
-  catalogVersion: "1",
-  schemaFingerprint: "schema",
   policyHash: POLICY_HASH_PLACEHOLDER,
   classes: ["member"],
   claims: [
@@ -137,55 +133,6 @@ export const installedEncoded = {
     subjectClaim: "sub",
     entity: { _tag: "FieldId", catalog: "app", owner: userOwner, localName: "authId" },
   },
-  identities: {
-    entities: [{ _tag: "EntityId", catalog: "app", name: "issue" }],
-    traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
-    fields: [{ _tag: "FieldId", catalog: "app", owner: issueOwner, localName: "owner" }],
-    operations: [
-      {
-        _tag: "OperationId",
-        catalog: "app",
-        owner: issueOwner,
-        localName: "rename",
-        target: "required",
-      },
-      {
-        _tag: "OperationId",
-        catalog: "app",
-        owner: issueOwner,
-        localName: "create",
-        target: "none",
-      },
-    ],
-  },
-  traitComposition: [
-    {
-      composer: { _tag: "EntityId", catalog: "app", name: "issue" },
-      trait: { _tag: "TraitId", catalog: "app", name: "taggable" },
-      transitive: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
-    },
-  ],
-  operations: [
-    {
-      id: {
-        _tag: "OperationId",
-        catalog: "app",
-        owner: issueOwner,
-        localName: "rename",
-        target: "required",
-      },
-      input: {
-        _tag: "struct",
-        fields: [
-          {
-            key: "title",
-            optional: false,
-            shape: { _tag: "scalar", valueType: "string" },
-          },
-        ],
-      },
-    },
-  ],
   rules: [
     {
       id: RULE_OWNS_ISSUE,
@@ -242,27 +189,55 @@ const catalogUnitFieldOwner = {
   owned: false,
 } as const;
 
+const catalogUnitOperation = {
+  id: {
+    _tag: "OperationId",
+    catalog: "app",
+    owner: issueOwner,
+    localName: "rename",
+    target: "required",
+  },
+  input: {
+    _tag: "struct",
+    fields: [
+      {
+        key: "title",
+        optional: false,
+        shape: { _tag: "scalar", valueType: "string" },
+      },
+    ],
+  },
+} as const;
+
+const catalogUnitComposition = [
+  {
+    composer: { _tag: "EntityId", catalog: "app", name: "issue" },
+    trait: { _tag: "TraitId", catalog: "app", name: "taggable" },
+    transitive: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
+  },
+] as const;
+
 export const catalogUnitEncoded = {
   _tag: "InstalledCatalogUnit",
   version: 1,
-  languageVersion: "v1",
-  database: "todos",
-  catalog: "app",
-  catalogVersion: "1",
-  schemaFingerprint: "schema",
-  unitHash: digestHex(0x88),
-  entities: [
-    {
-      id: { _tag: "EntityId", catalog: "app", name: "issue" },
-      traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
-    },
-  ],
-  traits: [{ id: { _tag: "TraitId", catalog: "app", name: "taggable" }, traits: [] }],
-  fields: [catalogUnitFieldOwner],
-  traitComposition: installedEncoded.traitComposition,
-  identities: installedEncoded.identities,
-  operations: installedEncoded.operations,
+  catalog: {
+    id: "app",
+    database: "todos",
+    version: "1",
+    fingerprint: "schema",
+    entities: [
+      {
+        id: { _tag: "EntityId", catalog: "app", name: "issue" },
+        traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
+      },
+    ],
+    traits: [{ id: { _tag: "TraitId", catalog: "app", name: "taggable" }, traits: [] }],
+    fields: [catalogUnitFieldOwner],
+    operations: [catalogUnitOperation],
+    traitComposition: catalogUnitComposition,
+  },
   policy: installedEncoded,
+  unitHash: digestHex(0x88),
 } as const;
 
 export const emptyTemplateEncoded = {

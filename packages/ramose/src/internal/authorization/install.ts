@@ -114,20 +114,13 @@ const assembleUnhashedTables = (
       plans.push(plan);
     }
 
-    const tables = yield* normalizeValidatedTables(validated, descriptor, plans);
+    const tables = yield* normalizeValidatedTables(validated, plans);
     return {
       version: INSTALLED_AUTHORIZATION_IR_VERSION,
       languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-      database: validated.database,
-      catalog: validated.catalog,
-      catalogVersion: validated.catalogVersion,
-      schemaFingerprint: validated.schemaFingerprint,
       classes: tables.classes,
       claims: tables.claims,
       principal: validated.principal,
-      identities: tables.identities,
-      traitComposition: tables.traitComposition,
-      operations: tables.operations,
       rules: tables.rules,
       decisions: tables.decisions,
       accessPlans: tables.accessPlans,

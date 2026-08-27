@@ -113,7 +113,7 @@ describe("structural decoding", () => {
     if (!Result.isSuccess(result)) return;
     expect(result.success._tag).toBe("InstalledAuthorizationIR");
     expect(result.success.version).toBe(INSTALLED_AUTHORIZATION_IR_VERSION);
-    expect(String(result.success.catalog)).toBe("app");
+    expect(result.success.languageVersion).toBe("v1");
     expectPlainFrozen(result.success);
   });
 
@@ -124,9 +124,10 @@ describe("structural decoding", () => {
     expect(result.success._tag).toBe("InstalledCatalogUnit");
     expect(result.success.version).toBe(INSTALLED_CATALOG_UNIT_VERSION);
     expectPlainFrozen(result.success);
-    expect(Object.isFrozen(result.success.entities)).toBe(true);
-    expect(Object.isFrozen(result.success.traits)).toBe(true);
-    expect(Object.isFrozen(result.success.fields)).toBe(true);
+    expect(Object.isFrozen(result.success.catalog)).toBe(true);
+    expect(Object.isFrozen(result.success.catalog.entities)).toBe(true);
+    expect(Object.isFrozen(result.success.catalog.traits)).toBe(true);
+    expect(Object.isFrozen(result.success.catalog.fields)).toBe(true);
   });
 
   test("Effect wrappers convert failures at the outer boundary", () => {
@@ -723,10 +724,16 @@ describe("schema shape rejections", () => {
     expectInvalid(decodeInstalledAuthorizationResult(clone(templateEncoded)), /InstalledAuthorizationIR|_tag/);
   });
 
-  test("rejects an installed document missing catalog identity", () => {
+  test("rejects an installed document missing policyHash", () => {
     const rest = clone(installedEncoded) as Record<string, unknown>;
+    delete rest.policyHash;
+    expectInvalid(decodeInstalledAuthorizationResult(rest), /policyHash/i);
+  });
+
+  test("rejects a catalog unit missing the nested catalog descriptor", () => {
+    const rest = clone(catalogUnitEncoded) as Record<string, unknown>;
     delete rest.catalog;
-    expectInvalid(decodeInstalledAuthorizationResult(rest), /catalog/i);
+    expectInvalid(decodeInstalledCatalogUnitResult(rest), /catalog/i);
   });
 
   test("rejects a non-digest rule id", () => {
@@ -834,14 +841,14 @@ describe("rule identity collisions", () => {
     expectInvalid(decodeInstalledAuthorizationResult(colliding), /rule identity collision/);
   });
 
-  test("fails closed on a duplicate installed identity", () => {
-    const base = clone(installedEncoded);
+  test("fails closed on a duplicate catalog-unit entity identity", () => {
+    const base = clone(catalogUnitEncoded);
     expectInvalid(
-      decodeInstalledAuthorizationResult({
+      decodeInstalledCatalogUnitResult({
         ...base,
-        identities: {
-          ...base.identities,
-          entities: [base.identities.entities[0], clone(base.identities.entities[0])],
+        catalog: {
+          ...base.catalog,
+          entities: [base.catalog.entities[0], clone(base.catalog.entities[0])],
         },
       }),
       /duplicate entity identity/,
@@ -862,29 +869,35 @@ describe("rule identity collisions", () => {
     );
   });
 
-  test("fails closed on duplicate-identical operation descriptors", () => {
-    const base = clone(installedEncoded);
+  test("fails closed on duplicate-identical catalog operation descriptors", () => {
+    const base = clone(catalogUnitEncoded);
     expectInvalid(
-      decodeInstalledAuthorizationResult({
+      decodeInstalledCatalogUnitResult({
         ...base,
-        operations: [base.operations[0], clone(base.operations[0])],
+        catalog: {
+          ...base.catalog,
+          operations: [base.catalog.operations[0], clone(base.catalog.operations[0])],
+        },
       }),
       /duplicate operation identity/,
     );
   });
 
-  test("fails closed when one operation id maps to different input shapes", () => {
-    const base = clone(installedEncoded);
+  test("fails closed when one catalog operation id maps to different input shapes", () => {
+    const base = clone(catalogUnitEncoded);
     expectInvalid(
-      decodeInstalledAuthorizationResult({
+      decodeInstalledCatalogUnitResult({
         ...base,
-        operations: [
-          base.operations[0],
-          {
-            ...clone(base.operations[0]),
-            input: { _tag: "opaque" },
-          },
-        ],
+        catalog: {
+          ...base.catalog,
+          operations: [
+            base.catalog.operations[0],
+            {
+              ...clone(base.catalog.operations[0]),
+              input: { _tag: "opaque" },
+            },
+          ],
+        },
       }),
       /operation identity collision/,
     );
@@ -895,10 +908,13 @@ describe("rule identity collisions", () => {
     expectInvalid(
       decodeInstalledCatalogUnitResult({
         ...base,
-        entities: [
-          base.entities[0],
-          { ...clone(base.entities[0]), traits: [] },
-        ],
+        catalog: {
+          ...base.catalog,
+          entities: [
+            base.catalog.entities[0],
+            { ...clone(base.catalog.entities[0]), traits: [] },
+          ],
+        },
       }),
       /entity identity collision/,
     );
@@ -909,13 +925,16 @@ describe("rule identity collisions", () => {
     expectInvalid(
       decodeInstalledCatalogUnitResult({
         ...base,
-        traits: [
-          base.traits[0],
-          {
-            ...clone(base.traits[0]),
-            traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
-          },
-        ],
+        catalog: {
+          ...base.catalog,
+          traits: [
+            base.catalog.traits[0],
+            {
+              ...clone(base.catalog.traits[0]),
+              traits: [{ _tag: "TraitId", catalog: "app", name: "taggable" }],
+            },
+          ],
+        },
       }),
       /trait identity collision/,
     );
@@ -926,10 +945,13 @@ describe("rule identity collisions", () => {
     expectInvalid(
       decodeInstalledCatalogUnitResult({
         ...base,
-        fields: [
-          base.fields[0],
-          { ...clone(base.fields[0]), optional: true },
-        ],
+        catalog: {
+          ...base.catalog,
+          fields: [
+            base.catalog.fields[0],
+            { ...clone(base.catalog.fields[0]), optional: true },
+          ],
+        },
       }),
       /field identity collision/,
     );
@@ -1089,7 +1111,7 @@ describe("canonical serialization", () => {
       "9db5ae3c8a479f5b05a236de08214fa270cd5bbf4240a5c0fd6333a8604fc102",
     );
     expect(String(await hashOf(hashInstalledAuthorization(installed)))).toBe(
-      "a4dfb12a0413744ab5740a91a4f3c941d038b08004cfa14a4e1587b028fadcc5",
+      "89de81cbb8f8f40925643717eb25a638ad377ccdf383300d2b7cce3fa9808720",
     );
     expect(String(await hashOf(hashRelativeRule(template.rules[0])))).toBe(
       "8bd1556841dbd587924d0341f9bf428bf3e776fbcc0d6422fe2103795b5ddb6d",
@@ -1134,25 +1156,25 @@ describe("canonical serialization", () => {
   test("catalog schema fingerprint hashes normalized tables and ignores identity fields", async () => {
     const unit = Effect.runSync(decodeInstalledCatalogUnit(clone(catalogUnitEncoded)));
     const tables = {
-      entities: unit.entities,
-      traits: unit.traits,
-      fields: unit.fields,
-      operations: unit.operations,
-      traitComposition: unit.traitComposition,
+      entities: unit.catalog.entities,
+      traits: unit.catalog.traits,
+      fields: unit.catalog.fields,
+      operations: unit.catalog.operations,
+      traitComposition: unit.catalog.traitComposition,
     };
     const digest = await Effect.runPromise(
       hashCatalogSchemaFingerprint({
         ...tables,
-        id: unit.catalog,
-        database: unit.database,
-        version: unit.catalogVersion,
-        fingerprint: unit.schemaFingerprint,
+        id: unit.catalog.id,
+        database: unit.catalog.database,
+        version: unit.catalog.version,
+        fingerprint: unit.catalog.fingerprint,
       }),
     );
     const ignoredIdentity = await Effect.runPromise(
       hashCatalogSchemaFingerprint({
         ...tables,
-        fingerprint: "other-fingerprint" as typeof unit.schemaFingerprint,
+        fingerprint: "other-fingerprint" as typeof unit.catalog.fingerprint,
       }),
     );
     expect(ignoredIdentity).toBe(digest);

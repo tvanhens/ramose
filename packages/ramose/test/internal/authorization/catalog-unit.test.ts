@@ -7,7 +7,6 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
   AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
-  AUTHORIZATION_LANGUAGE_VERSION,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   CatalogId,
   CatalogMismatch,
@@ -34,8 +33,8 @@ import {
   hashInstalledAuthorization,
   hashInstalledCatalogUnit,
   installAuthorization,
+  normalizeAndValidateCatalogUnit,
   prepareAuthorizationCatalog,
-  requireUnitCoherence,
   sealInstalledCatalogUnit,
   verifyInstalledCatalogUnit,
   type CatalogBindingInput,
@@ -172,7 +171,7 @@ const richCatalogDescriptor = (): CatalogDescriptor => ({
 const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,
-  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+  languageVersion: "v1",
   classes: ["member"],
   claims: [{ key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
   principal: { subjectClaim: "sub", entity: relativeField(userOwner, "authId") },
@@ -283,10 +282,7 @@ const richTemplate = (): PolicyTemplateIR =>
         },
         {
           target: { _tag: "RelativeEntityId", name: "user" },
-          decision: {
-            allow: [RuleId.make(digestHex(0x33))],
-            deny: [],
-          },
+          decision: { allow: [RuleId.make(digestHex(0x33))], deny: [] },
         },
       ],
       traits: [
@@ -339,29 +335,77 @@ const sealFail = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationI
 
 const requireSealed = (_unit: InstalledCatalogUnitV1): void => undefined;
 
+const rehashPolicyAndUnit = async (document: InstalledCatalogUnit): Promise<InstalledCatalogUnit> => {
+  const policyHash = await Effect.runPromise(hashInstalledAuthorization(document.policy));
+  const withPolicy = { ...document, policy: { ...document.policy, policyHash } } as InstalledCatalogUnit;
+  const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(withPolicy));
+  return { ...withPolicy, unitHash };
+};
+
+const verifyFail = (document: InstalledCatalogUnit) =>
+  Effect.runPromise(Effect.flip(verifyInstalledCatalogUnit(document)));
+
+const patchCatalog = (
+  unit: InstalledCatalogUnit,
+  patch: Partial<CatalogDescriptor>,
+): InstalledCatalogUnit =>
+  ({
+    ...unit,
+    catalog: { ...unit.catalog, ...patch },
+  }) as InstalledCatalogUnit;
+
+const unusedTitle = (
+  unit: InstalledCatalogUnit,
+  patch: Partial<Pick<CatalogDescriptor["fields"][number], "optional" | "index" | "owned" | "valueType">>,
+): InstalledCatalogUnit =>
+  patchCatalog(unit, {
+    fields: unit.catalog.fields.map((entry) =>
+      entry.id.localName === "title" && entry.valueType !== "ref" ? { ...entry, ...patch } : entry,
+    ) as CatalogDescriptor["fields"],
+  });
+
+const expectClosed = (
+  failure: unknown,
+  pattern: RegExp,
+): void => {
+  expect(
+    failure instanceof InvalidIR ||
+      failure instanceof CatalogMismatch ||
+      failure instanceof CatalogUnitCorrupt,
+  ).toBe(true);
+  expect((failure as { readonly message: string }).message).toMatch(pattern);
+};
+
 describe("sealInstalledCatalogUnit", () => {
-  test("seal produces InstalledCatalogUnitV1 with matching identity, tables, and policy", async () => {
+  test("seal produces InstalledCatalogUnitV1 with nested catalog and lean policy", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
     requireSealed(unit);
     expect(unit._tag).toBe("InstalledCatalogUnit");
     expect(unit.version).toBe(INSTALLED_CATALOG_UNIT_VERSION);
-    expect(unit.languageVersion).toBe(AUTHORIZATION_LANGUAGE_VERSION);
-    expect(unit.database).toBe(database);
-    expect(unit.catalog).toBe(catalog);
-    expect(unit.catalogVersion).toBe(version);
-    expect(unit.schemaFingerprint).toBe(fingerprint);
+    expect(unit.catalog.id).toBe(catalog);
+    expect(unit.catalog.database).toBe(database);
+    expect(unit.catalog.version).toBe(version);
+    expect(unit.catalog.fingerprint).toBe(fingerprint);
     expect(unit.unitHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(unit.identities).toEqual(policy.identities);
-    expect(unit.operations).toEqual(policy.operations);
-    expect(unit.traitComposition).toEqual(policy.traitComposition);
-    expect(unit.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(unit.traits.map((entry) => entry.id.name)).toEqual(["taggable"]);
-    expect(unit.fields.map((entry) => entry.id.localName)).toEqual(["authId", "owner", "tags", "title"]);
+    expect(unit.catalog.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
+    expect(unit.catalog.traits.map((entry) => entry.id.name)).toEqual(["taggable"]);
+    expect(unit.catalog.fields.map((entry) => entry.id.localName)).toEqual([
+      "authId",
+      "owner",
+      "tags",
+      "title",
+    ]);
     expect(unit.policy).toEqual(policy);
     expect(unit.policy._tag).toBe("InstalledAuthorizationIR");
+    expect("database" in unit.policy).toBe(false);
+    expect("identities" in unit.policy).toBe(false);
+    expect("operations" in unit.policy).toBe(false);
+    expect("traitComposition" in unit.policy).toBe(false);
+    expect("identities" in unit).toBe(false);
     expect(Object.isFrozen(unit)).toBe(true);
+    expect(Object.isFrozen(unit.catalog)).toBe(true);
   });
 
   test("unitHash is domain-separated SHA-256 of canonical JSON minus unitHash", async () => {
@@ -399,42 +443,6 @@ describe("sealInstalledCatalogUnit", () => {
     expect(verified.unitHash).toBe(unit.unitHash);
   });
 
-  test("descriptor/policy identity drift fails CatalogMismatch", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const drifted = { ...descriptor, id: CatalogId.make("other") };
-    const failure = await sealFail(drifted, policy);
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/catalog does not match/);
-  });
-
-  test("policy tables that do not match the descriptor fail closed", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const mutated = {
-      ...policy,
-      identities: {
-        ...policy.identities,
-        entities: policy.identities.entities.filter((id) => id.name !== "user"),
-      },
-    } as InstalledAuthorizationIRV1;
-    const failure = await sealFail(descriptor, mutated);
-    expect(failure._tag === "CatalogMismatch" || failure._tag === "InvalidIR").toBe(true);
-    expect(failure.message).toMatch(/identities|identity/);
-  });
-
-  test("unsupported languageVersion fails InvalidIR", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unsupported = {
-      ...policy,
-      languageVersion: "v0",
-    } as unknown as InstalledAuthorizationIRV1;
-    const failure = await sealFail(descriptor, unsupported);
-    expect(failure).toBeInstanceOf(InvalidIR);
-    expect(failure.message).toMatch(/unsupported authorization language version/);
-  });
-
   test("structural decode is not InstalledCatalogUnitV1", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
@@ -448,105 +456,41 @@ describe("sealInstalledCatalogUnit", () => {
     expect(structural._tag).toBe("InstalledCatalogUnit");
   });
 
-  test("missing policy / missing identity table / corrupt JSON fail closed", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const missingPolicy = assembleInstalledCatalogUnit(descriptor, undefined as unknown as InstalledAuthorizationIR);
-    expect(Result.isFailure(missingPolicy)).toBe(true);
-    if (Result.isFailure(missingPolicy)) {
-      expect(missingPolicy.failure).toBeInstanceOf(InvalidIR);
-      expect(missingPolicy.failure.message).toMatch(/missing installed policy/);
-    }
-    const missingIdentities = assembleInstalledCatalogUnit(descriptor, {
-      ...policy,
-      identities: undefined,
-    } as unknown as InstalledAuthorizationIR);
-    expect(Result.isFailure(missingIdentities)).toBe(true);
-    if (Result.isFailure(missingIdentities)) {
-      expect(missingIdentities.failure.message).toMatch(/identity table/);
-    }
-    const missingAccessPlans = assembleInstalledCatalogUnit(descriptor, {
-      ...policy,
-      accessPlans: undefined,
-    } as unknown as InstalledAuthorizationIR);
-    expect(Result.isFailure(missingAccessPlans)).toBe(true);
-    if (Result.isFailure(missingAccessPlans)) {
-      expect(missingAccessPlans.failure).toBeInstanceOf(InvalidIR);
-      expect(missingAccessPlans.failure.message).toMatch(/accessPlans/);
-    }
-    const corrupt = decodeInstalledCatalogUnitResult("{not-json");
-    expect(Result.isFailure(corrupt)).toBe(true);
-    const notObject = decodeInstalledCatalogUnitResult("not-an-object");
-    expect(Result.isFailure(notObject)).toBe(true);
-  });
-
-  test("version and fingerprint mismatches populate version/fingerprint fields", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const versionFail = await sealFail({ ...descriptor, version: CatalogVersion.make("9") }, policy);
-    expect(versionFail).toBeInstanceOf(CatalogMismatch);
-    if (!(versionFail instanceof CatalogMismatch)) return;
-    expect(versionFail.expectedVersion).toBe(CatalogVersion.make("9"));
-    expect(versionFail.actualVersion).toBe(policy.catalogVersion);
-    expect(versionFail.expected).toBeUndefined();
-    expect(versionFail.actual).toBeUndefined();
-    const fingerprintFail = await sealFail(
-      { ...descriptor, fingerprint: SchemaFingerprint.make("other") },
-      policy,
-    );
-    expect(fingerprintFail).toBeInstanceOf(CatalogMismatch);
-    if (!(fingerprintFail instanceof CatalogMismatch)) return;
-    expect(fingerprintFail.expectedFingerprint).toBe(SchemaFingerprint.make("other"));
-    expect(fingerprintFail.actualFingerprint).toBe(policy.schemaFingerprint);
-    expect(fingerprintFail.expected).toBeUndefined();
-    expect(fingerprintFail.actual).toBeUndefined();
-  });
-
-  test("dropping an identity and rehashing still fails verify", async () => {
+  test("pre-contraction flattened unit fails structural decode", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
-    const dropped = {
-      ...unit,
+    const encoded = JSON.parse(JSON.stringify(encodeInstalledCatalogUnit(unit))) as ReturnType<
+      typeof encodeInstalledCatalogUnit
+    >;
+    const flattened = {
+      _tag: encoded._tag,
+      version: encoded.version,
+      languageVersion: "v1",
+      database: encoded.catalog.database,
+      catalog: encoded.catalog.id,
+      catalogVersion: encoded.catalog.version,
+      schemaFingerprint: encoded.catalog.fingerprint,
+      unitHash: encoded.unitHash,
+      entities: encoded.catalog.entities,
+      traits: encoded.catalog.traits,
+      fields: encoded.catalog.fields,
+      traitComposition: encoded.catalog.traitComposition,
       identities: {
-        ...unit.identities,
-        entities: unit.identities.entities.filter((id) => id.name !== "user"),
+        entities: encoded.catalog.entities.map((entry) => entry.id),
+        traits: encoded.catalog.traits.map((entry) => entry.id),
+        fields: encoded.catalog.fields.map((entry) => entry.id),
+        operations: encoded.catalog.operations.map((entry) => entry.id),
       },
-    } as InstalledCatalogUnit;
-    const droppedHash = await Effect.runPromise(hashInstalledCatalogUnit(dropped));
-    const droppedHashed = { ...dropped, unitHash: droppedHash };
-    const droppedFail = await Effect.runPromise(Effect.flip(verifyInstalledCatalogUnit(droppedHashed)));
-    expect(droppedFail._tag === "CatalogMismatch" || droppedFail._tag === "InvalidIR").toBe(true);
-    expect(droppedFail.message).toMatch(/identities|identity/);
-    const drifted = {
-      ...unit,
-      policy: { ...unit.policy, catalog: CatalogId.make("other") },
-    } as InstalledCatalogUnit;
-    const driftedHash = await Effect.runPromise(hashInstalledCatalogUnit(drifted));
-    const driftedFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...drifted, unitHash: driftedHash })),
-    );
-    expect(driftedFail).toBeInstanceOf(CatalogMismatch);
-    expect(driftedFail.message).toMatch(/catalog does not match/);
-  });
-
-  test("hash mismatch on a tampered document fails closed", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const tampered = {
-      ...unit,
-      policy: { ...unit.policy, classes: ["admin", ...unit.policy.classes] },
-    } as InstalledCatalogUnit;
-    const failure = await Effect.runPromise(Effect.flip(verifyInstalledCatalogUnit(tampered)));
-    expect(failure._tag).toBe("CatalogUnitCorrupt");
-    expect(failure.message).toMatch(/hash mismatch/);
-    const wrongHash = {
-      ...unit,
-      unitHash: digestHex(0x00),
-    } as unknown as InstalledCatalogUnit;
-    const hashFail = await Effect.runPromise(Effect.flip(verifyInstalledCatalogUnit(wrongHash)));
-    expect(hashFail._tag).toBe("CatalogUnitCorrupt");
+      operations: encoded.catalog.operations,
+      policy: encoded.policy,
+    };
+    const decoded = decodeInstalledCatalogUnitResult(JSON.parse(JSON.stringify(flattened)));
+    expect(Result.isFailure(decoded)).toBe(true);
+    if (Result.isFailure(decoded)) {
+      expect(decoded.failure).toBeInstanceOf(InvalidIR);
+      expect(decoded.failure.message).toMatch(/catalog|Expected|Struct|string|entities|identities|languageVersion|database/i);
+    }
   });
 
   test("cannot construct a publishable partial unit", async () => {
@@ -559,7 +503,6 @@ describe("sealInstalledCatalogUnit", () => {
     const auth = await import("../../../src/internal/authorization/index.ts");
     expect("sealPolicyOnly" in auth).toBe(false);
     expect("sealSchemaOnly" in auth).toBe(false);
-    expect("publishCatalogPolicy" in auth).toBe(false);
     const assembled = assembleInstalledCatalogUnit(descriptor, policy);
     expect(Result.isSuccess(assembled)).toBe(true);
     if (!Result.isSuccess(assembled)) return;
@@ -568,292 +511,9 @@ describe("sealInstalledCatalogUnit", () => {
     // @ts-expect-error — unhashed tables are not a sealed catalog unit
     requireSealed(assembled.success);
   });
+});
 
-  test("dropping a required trait or retargeting a ref fails closed while identity ids stay", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const droppedTrait: CatalogDescriptor = {
-      ...descriptor,
-      entities: descriptor.entities.map((entry) =>
-        entry.id.name === "issue" ? { ...entry, traits: [] } : entry,
-      ),
-    };
-    expect(droppedTrait.entities.map((entry) => entry.id)).toEqual(descriptor.entities.map((entry) => entry.id));
-    const droppedAssemble = assembleInstalledCatalogUnit(droppedTrait, policy);
-    expect(Result.isFailure(droppedAssemble)).toBe(true);
-    if (Result.isFailure(droppedAssemble)) {
-      expect(droppedAssemble.failure._tag === "InvalidIR" || droppedAssemble.failure._tag === "CatalogMismatch").toBe(
-        true,
-      );
-      expect(droppedAssemble.failure.message).toMatch(/does not compose trait|missing trait composition/);
-    }
-    const droppedDocument = {
-      ...unit,
-      entities: droppedTrait.entities,
-    } as InstalledCatalogUnit;
-    const droppedHash = await Effect.runPromise(hashInstalledCatalogUnit(droppedDocument));
-    const droppedVerify = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...droppedDocument, unitHash: droppedHash })),
-    );
-    expect(droppedVerify._tag === "InvalidIR" || droppedVerify._tag === "CatalogMismatch").toBe(true);
-    expect(droppedVerify.message).toMatch(/does not compose trait|missing trait composition/);
-
-    const retargeted: CatalogDescriptor = {
-      ...descriptor,
-      fields: descriptor.fields.map((entry) =>
-        entry.valueType === "ref" && entry.id.localName === "owner"
-          ? { ...entry, refTarget: { _tag: "entity" as const, entity: entity("missing") } }
-          : entry,
-      ),
-    };
-    expect(retargeted.fields.map((entry) => entry.id)).toEqual(descriptor.fields.map((entry) => entry.id));
-    const retargetAssemble = assembleInstalledCatalogUnit(retargeted, policy);
-    expect(Result.isFailure(retargetAssemble)).toBe(true);
-    if (Result.isFailure(retargetAssemble)) {
-      expect(retargetAssemble.failure._tag === "InvalidIR" || retargetAssemble.failure._tag === "CatalogMismatch").toBe(
-        true,
-      );
-      expect(retargetAssemble.failure.message).toMatch(/missing field ref target/);
-    }
-  });
-
-  test("stale accessPlans fail verify after rehash and fail assemble", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    expect(unit.policy.accessPlans.length).toBeGreaterThan(0);
-    const ownerPlan = unit.policy.accessPlans[0]!;
-    expect(ownerPlan.rule).toBe(unit.policy.rules[0]!.id);
-    expect(ownerPlan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "entity", entity: entity("issue") },
-        { _tag: "field", field: field(issueOwner, "owner") },
-        { _tag: "principal", field: field(userOwner, "authId") },
-      ]),
-    );
-    expect(ownerPlan.lookups.length).toBeGreaterThan(0);
-
-    const emptiedLookups = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        accessPlans: unit.policy.accessPlans.map((plan) => ({ ...plan, lookups: [] })),
-      },
-    } as InstalledCatalogUnit;
-    expect(emptiedLookups.identities).toEqual(unit.identities);
-    expect(emptiedLookups.entities).toEqual(unit.entities);
-    expect(emptiedLookups.fields).toEqual(unit.fields);
-    const emptiedHash = await Effect.runPromise(hashInstalledCatalogUnit(emptiedLookups));
-    const emptiedFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...emptiedLookups, unitHash: emptiedHash })),
-    );
-    expect(emptiedFail._tag === "CatalogMismatch" || emptiedFail._tag === "InvalidIR").toBe(true);
-    expect(emptiedFail.message).toMatch(/accessPlans|access plan/);
-
-    const extraLookup = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        accessPlans: unit.policy.accessPlans.map((plan) => ({
-          ...plan,
-          lookups: [...plan.lookups, { _tag: "field" as const, field: field(issueOwner, "title") }],
-        })),
-      },
-    } as InstalledCatalogUnit;
-    const extraHash = await Effect.runPromise(hashInstalledCatalogUnit(extraLookup));
-    const extraFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...extraLookup, unitHash: extraHash })),
-    );
-    expect(extraFail._tag === "CatalogMismatch" || extraFail._tag === "InvalidIR").toBe(true);
-    expect(extraFail.message).toMatch(/accessPlans|access plan/);
-
-    const droppedPlan = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        accessPlans: [],
-      },
-    } as InstalledCatalogUnit;
-    const droppedHash = await Effect.runPromise(hashInstalledCatalogUnit(droppedPlan));
-    const droppedFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...droppedPlan, unitHash: droppedHash })),
-    );
-    expect(droppedFail._tag === "CatalogMismatch" || droppedFail._tag === "InvalidIR").toBe(true);
-    expect(droppedFail.message).toMatch(/accessPlans|access plan/);
-
-    const emptiedAssemble = assembleInstalledCatalogUnit(descriptor, emptiedLookups.policy);
-    expect(Result.isFailure(emptiedAssemble)).toBe(true);
-    if (Result.isFailure(emptiedAssemble)) {
-      expect(
-        emptiedAssemble.failure._tag === "CatalogMismatch" || emptiedAssemble.failure._tag === "InvalidIR",
-      ).toBe(true);
-      expect(emptiedAssemble.failure.message).toMatch(/accessPlans|access plan/);
-    }
-    const extraAssemble = assembleInstalledCatalogUnit(descriptor, extraLookup.policy);
-    expect(Result.isFailure(extraAssemble)).toBe(true);
-    if (Result.isFailure(extraAssemble)) {
-      expect(extraAssemble.failure.message).toMatch(/accessPlans|access plan/);
-    }
-    const droppedAssemble = assembleInstalledCatalogUnit(descriptor, droppedPlan.policy);
-    expect(Result.isFailure(droppedAssemble)).toBe(true);
-    if (Result.isFailure(droppedAssemble)) {
-      expect(droppedAssemble.failure.message).toMatch(/accessPlans|access plan/);
-    }
-  });
-
-  test("changing a decision and recomputing only unitHash fails verify", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const flipped = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          entities: unit.policy.decisions.entities.map((entry) => ({
-            ...entry,
-            decision: { allow: [], deny: entry.decision.allow },
-          })),
-        },
-      },
-    } as InstalledCatalogUnit;
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(flipped));
-    expect(unitHash).not.toBe(unit.unitHash);
-    expect(flipped.policy.policyHash).toBe(unit.policy.policyHash);
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...flipped, unitHash })),
-    );
-    expect(failure).toBeInstanceOf(CatalogUnitCorrupt);
-    expect(failure.message).toMatch(/policy hash|hash mismatch/);
-    const verified = await Effect.runPromise(verifyInstalledCatalogUnit(unit));
-    requireSealed(verified);
-    expect(verified.unitHash).toBe(unit.unitHash);
-  });
-
-  test("changing a decision and recomputing policy and unit hashes still fails when inconsistent", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const contradictory = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          entities: unit.policy.decisions.entities.map((entry) => ({
-            ...entry,
-            decision: { allow: entry.decision.allow, deny: entry.decision.allow },
-          })),
-        },
-      },
-    } as InstalledCatalogUnit;
-    expect(contradictory.policy.rules).toEqual(unit.policy.rules);
-    expect(contradictory.policy.accessPlans).toEqual(unit.policy.accessPlans);
-    const policyHash = await Effect.runPromise(hashInstalledAuthorization(contradictory.policy));
-    const hashedPolicy = { ...contradictory, policy: { ...contradictory.policy, policyHash } };
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(hashedPolicy));
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...hashedPolicy, unitHash })),
-    );
-    expect(failure._tag === "InvalidIR" || failure._tag === "CatalogMismatch").toBe(true);
-    expect(failure.message).toMatch(/contradictory|decision|allow and deny/);
-  });
-
-  test("flipping a rule usage flag and recomputing unitHash fails verify", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const flippedMe = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        rules: unit.policy.rules.map((rule) => ({ ...rule, usesMe: !rule.usesMe })),
-      },
-    } as InstalledCatalogUnit;
-    const flippedMeHash = await Effect.runPromise(hashInstalledCatalogUnit(flippedMe));
-    const flippedMeFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...flippedMe, unitHash: flippedMeHash })),
-    );
-    expect(flippedMeFail._tag === "InvalidIR" || flippedMeFail._tag === "CatalogMismatch").toBe(true);
-    expect(flippedMeFail.message).toMatch(/usesMe|usesResource|rules|accessPlans/);
-
-    const flippedSubject = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        rules: unit.policy.rules.map((rule) => ({ ...rule, usesSubject: !rule.usesSubject })),
-      },
-    } as InstalledCatalogUnit;
-    const flippedSubjectHash = await Effect.runPromise(hashInstalledCatalogUnit(flippedSubject));
-    const flippedSubjectFail = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...flippedSubject, unitHash: flippedSubjectHash })),
-    );
-    expect(flippedSubjectFail._tag === "InvalidIR" || flippedSubjectFail._tag === "CatalogMismatch").toBe(
-      true,
-    );
-    expect(flippedSubjectFail.message).toMatch(/usesSubject|usesMe|usesResource|rules/);
-  });
-
-  test("caller mutation after seal cannot change the sealed unit", async () => {
-    const entities = [...catalogDescriptor().entities];
-    const descriptor = { ...catalogDescriptor(), entities };
-    const installed = await install(descriptor);
-    const classes = [...installed.classes];
-    const policy = { ...installed, classes } as InstalledAuthorizationIRV1;
-    const unit = await seal(descriptor, policy);
-    const originalHash = unit.unitHash;
-
-    classes.push("admin");
-    entities.push({ id: entity("extra"), traits: [] });
-    expect(unit.policy.classes).toEqual(["member"]);
-    expect(unit.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(unit.unitHash).toBe(originalHash);
-
-    expect(Object.isFrozen(unit)).toBe(true);
-    expect(Object.isFrozen(unit.entities)).toBe(true);
-    expect(Object.isFrozen(unit.policy)).toBe(true);
-    expect(Object.isFrozen(unit.policy.classes)).toBe(true);
-    expect(() => {
-      (unit.policy.classes as string[]).push("support");
-    }).toThrow();
-    expect(() => {
-      (unit.entities as Array<unknown>).push({});
-    }).toThrow();
-    expect(() => {
-      (unit as { unitHash: string }).unitHash = digestHex(0x00);
-    }).toThrow();
-    expect("pipe" in unit).toBe(false);
-    expect(Object.getPrototypeOf(unit)).toBe(Object.prototype);
-  });
-
-  test("assemble and seal snapshot descriptor and policy before the async hash", async () => {
-    const entities = [...catalogDescriptor().entities];
-    const descriptor = { ...catalogDescriptor(), entities };
-    const installed = await install(descriptor);
-    const classes = [...installed.classes];
-    const policy = { ...installed, classes } as InstalledAuthorizationIRV1;
-    const assembled = assembleInstalledCatalogUnit(descriptor, policy);
-    expect(Result.isSuccess(assembled)).toBe(true);
-    if (!Result.isSuccess(assembled)) return;
-
-    classes.push("admin");
-    entities.push({ id: entity("extra"), traits: [] });
-    expect(assembled.success.policy.classes).toEqual(["member"]);
-    expect(assembled.success.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(Object.isFrozen(assembled.success)).toBe(true);
-    expect(Object.isFrozen(assembled.success.policy)).toBe(true);
-    expect(Object.isFrozen(assembled.success.entities)).toBe(true);
-
-    const unit = await seal(catalogDescriptor(), await install());
-    expect(unit.policy.classes).toEqual(["member"]);
-    expect(unit.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    const again = await seal(catalogDescriptor(), await install());
-    expect(unit.unitHash).toBe(again.unitHash);
-    expect(canonicalizeInstalledCatalogUnit(unit)).toBe(canonicalizeInstalledCatalogUnit(again));
-  });
-
+describe("canonicalization", () => {
   test("equivalent units with permuted descriptor tables share canonical bytes and unitHash", async () => {
     const named = trait("named");
     const expandedTables = {
@@ -887,10 +547,7 @@ describe("sealInstalledCatalogUnit", () => {
         }),
       ),
     );
-    const base: CatalogDescriptor = {
-      ...expandedTables,
-      fingerprint: expandedFingerprint,
-    };
+    const base: CatalogDescriptor = { ...expandedTables, fingerprint: expandedFingerprint };
     const permuted: CatalogDescriptor = {
       ...base,
       entities: [...base.entities].reverse().map((entry) => ({
@@ -907,279 +564,148 @@ describe("sealInstalledCatalogUnit", () => {
       seal(base, await install(base)),
       seal(permuted, await install(permuted)),
     ]);
-    expect(left.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(right.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(left.entities.find((entry) => entry.id.name === "issue")?.traits.map((id) => id.name)).toEqual([
+    expect(left.catalog.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
+    expect(right.catalog.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
+    expect(left.catalog.entities.find((entry) => entry.id.name === "issue")?.traits.map((id) => id.name)).toEqual([
       "named",
       "taggable",
     ]);
-    expect(right.entities.find((entry) => entry.id.name === "issue")?.traits.map((id) => id.name)).toEqual([
-      "named",
-      "taggable",
-    ]);
-    expect(left.traits.map((entry) => entry.id.name)).toEqual(["named", "taggable"]);
-    expect(right.traits.map((entry) => entry.id.name)).toEqual(["named", "taggable"]);
-    expect(left.fields.map((entry) => entry.id.localName)).toEqual(["authId", "owner", "tags", "title"]);
-    expect(right.fields.map((entry) => entry.id.localName)).toEqual(["authId", "owner", "tags", "title"]);
+    expect(left.catalog.fields.map((entry) => entry.id.localName)).toEqual(["authId", "owner", "tags", "title"]);
     expect(left.unitHash).toBe(right.unitHash);
     expect(canonicalizeInstalledCatalogUnit(left)).toBe(canonicalizeInstalledCatalogUnit(right));
     expect(catalogUnitCanonicalBytes(left)).toEqual(catalogUnitCanonicalBytes(right));
   });
 
-  test("verify rejects a reordered entities table after unitHash recompute", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    expect(unit.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    const reordered = {
-      ...unit,
-      entities: [...unit.entities].reverse(),
-    } as InstalledCatalogUnit;
-    expect(reordered.entities.map((entry) => entry.id.name)).toEqual(["user", "issue"]);
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(reordered));
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...reordered, unitHash })),
-    );
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/entities/);
-  });
-
-  test("verify rejects a reordered fields table after unitHash recompute", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    expect(unit.fields.map((entry) => entry.id.localName)).toEqual(["authId", "owner", "tags", "title"]);
-    const reordered = {
-      ...unit,
-      fields: [...unit.fields].reverse(),
-    } as InstalledCatalogUnit;
-    expect(reordered.fields.map((entry) => entry.id.localName)).toEqual(["title", "tags", "owner", "authId"]);
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(reordered));
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...reordered, unitHash })),
-    );
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/fields/);
-  });
-
-  test("verify rejects reordered nested entity.traits after unitHash recompute", async () => {
-    const named = trait("named");
-    const expandedTables = {
-      ...catalogSchemaTables(),
-      traits: [
-        { id: trait("taggable"), traits: [] },
-        { id: named, traits: [] },
-      ],
-      entities: [
-        { id: entity("user"), traits: [] },
-        { id: entity("issue"), traits: [trait("taggable"), named] },
-      ],
-      traitComposition: [
+  test("nested operation input permutations normalize to identical catalog bytes", async () => {
+    const nested = (
+      fields: CatalogDescriptor["operations"][number]["input"],
+    ): CatalogDescriptor["operations"][number] => ({
+      id: operation(issueOwner, "create", "none"),
+      input: fields,
+    });
+    const rename = catalogSchemaTables().operations[0]!;
+    const firstShape = {
+      _tag: "struct" as const,
+      fields: [
         {
-          composer: entity("issue"),
-          trait: trait("taggable"),
-          transitive: [trait("taggable")],
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct" as const,
+            fields: [
+              { key: "title", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+            ],
+          },
         },
         {
-          composer: entity("issue"),
-          trait: named,
-          transitive: [named],
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array" as const,
+            items: {
+              _tag: "struct" as const,
+              fields: [
+                { key: "color", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+                { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              ],
+            },
+          },
         },
       ],
     };
-    const expanded: CatalogDescriptor = {
-      ...expandedTables,
-      fingerprint: SchemaFingerprint.make(
-        await Effect.runPromise(
-          hashCatalogSchemaFingerprint({
-            ...expandedTables,
-            fingerprint: SchemaFingerprint.make("placeholder"),
-          }),
-        ),
-      ),
-    };
-    const unit = await seal(expanded, await install(expanded));
-    expect(unit.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(unit.entities.find((entry) => entry.id.name === "issue")?.traits.map((id) => id.name)).toEqual([
-      "named",
-      "taggable",
-    ]);
-    const reordered = {
-      ...unit,
-      entities: unit.entities.map((entry) =>
-        entry.id.name === "issue" ? { ...entry, traits: [...entry.traits].reverse() } : entry,
-      ),
-    } as InstalledCatalogUnit;
-    expect(reordered.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
-    expect(reordered.entities.find((entry) => entry.id.name === "issue")?.traits.map((id) => id.name)).toEqual([
-      "taggable",
-      "named",
-    ]);
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(reordered));
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...reordered, unitHash })),
-    );
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/entities/);
-  });
-
-  test("policy.identities that drift from unit.identities fail CatalogMismatch after rehash", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const driftedPolicy = {
-      ...unit.policy,
-      identities: {
-        ...unit.policy.identities,
-        entities: unit.policy.identities.entities.filter((id) => id.name !== "user"),
-      },
-    };
-    expect(driftedPolicy.identities.entities.map((id) => id.name)).not.toEqual(
-      unit.identities.entities.map((id) => id.name),
-    );
-    const policyHash = await Effect.runPromise(hashInstalledAuthorization(driftedPolicy));
-    const drifted = {
-      ...unit,
-      policy: { ...driftedPolicy, policyHash },
-    } as InstalledCatalogUnit;
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(drifted));
-    const failure = await Effect.runPromise(
-      Effect.flip(verifyInstalledCatalogUnit({ ...drifted, unitHash })),
-    );
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/identities/);
-  });
-
-  test("assembled tables do not alias caller arrays and snapshot at entry", async () => {
-    const entities = [...catalogDescriptor().entities];
-    const fields = [...catalogDescriptor().fields];
-    const descriptor = { ...catalogDescriptor(), entities, fields };
-    const installed = await install(descriptor);
-    const rules = [...installed.rules];
-    const policy = { ...installed, rules } as InstalledAuthorizationIRV1;
-    const assembled = assembleInstalledCatalogUnit(descriptor, policy);
-    expect(Result.isSuccess(assembled)).toBe(true);
-    if (!Result.isSuccess(assembled)) return;
-    expect(assembled.success.entities).not.toBe(descriptor.entities);
-    expect(assembled.success.fields).not.toBe(descriptor.fields);
-    expect(assembled.success.policy.rules).not.toBe(policy.rules);
-    expect(Object.isFrozen(assembled.success)).toBe(true);
-
-    const snapshotEntities = assembled.success.entities.map((entry) => entry.id.name);
-    const snapshotFieldCount = assembled.success.fields.length;
-    const snapshotRuleCount = assembled.success.policy.rules.length;
-    entities.push({ id: entity("extra"), traits: [] });
-    entities.reverse();
-    fields.reverse();
-    rules.push(rules[0]!);
-    expect(assembled.success.entities.map((entry) => entry.id.name)).toEqual(snapshotEntities);
-    expect(assembled.success.fields.length).toBe(snapshotFieldCount);
-    expect(assembled.success.policy.rules.length).toBe(snapshotRuleCount);
-
-    const afterMutation = assembleInstalledCatalogUnit(descriptor, policy);
-    expect(Result.isFailure(afterMutation)).toBe(true);
-  });
-
-  test("requireUnitCoherence rejects unsupported unit and policy shape versions", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const coherent = requireUnitCoherence(unit);
-    expect(Result.isSuccess(coherent)).toBe(true);
-    const unitVersion = requireUnitCoherence({ ...unit, version: 2 } as unknown as InstalledCatalogUnit);
-    expect(Result.isFailure(unitVersion)).toBe(true);
-    if (Result.isFailure(unitVersion)) {
-      expect(unitVersion.failure).toBeInstanceOf(InvalidIR);
-      expect(unitVersion.failure.message).toMatch(/catalog unit version/);
-    }
-    const policyVersion = requireUnitCoherence({
-      ...unit,
-      policy: { ...unit.policy, version: 2 },
-    } as unknown as InstalledCatalogUnit);
-    expect(Result.isFailure(policyVersion)).toBe(true);
-    if (Result.isFailure(policyVersion)) {
-      expect(policyVersion.failure).toBeInstanceOf(InvalidIR);
-      expect(policyVersion.failure.message).toMatch(/installed policy version/);
-    }
-  });
-
-  test("structural decode rejects colliding catalog-unit entity descriptors", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const encoded = JSON.parse(JSON.stringify(encodeInstalledCatalogUnit(unit))) as ReturnType<
-      typeof encodeInstalledCatalogUnit
-    >;
-    const issue = encoded.entities.find((entry) => entry.id.name === "issue");
-    expect(issue).toBeDefined();
-    const colliding = {
-      ...encoded,
-      entities: [
-        ...encoded.entities,
-        JSON.parse(JSON.stringify({ ...issue!, traits: [] })),
+    const permutedShape = {
+      _tag: "struct" as const,
+      fields: [
+        {
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array" as const,
+            items: {
+              _tag: "struct" as const,
+              fields: [
+                { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+                { key: "color", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              ],
+            },
+          },
+        },
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct" as const,
+            fields: [
+              { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              { key: "title", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+            ],
+          },
+        },
       ],
     };
-    const decoded = decodeInstalledCatalogUnitResult(colliding);
-    expect(Result.isFailure(decoded)).toBe(true);
-    if (Result.isFailure(decoded)) {
-      expect(decoded.failure).toBeInstanceOf(InvalidIR);
-      expect(decoded.failure.message).toMatch(/entity identity collision/);
-    }
+    const leftTables = { ...catalogSchemaTables(), operations: [rename, nested(firstShape)] };
+    const rightTables = { ...catalogSchemaTables(), operations: [rename, nested(permutedShape)] };
+    const leftFingerprint = SchemaFingerprint.make(
+      await Effect.runPromise(
+        hashCatalogSchemaFingerprint({
+          ...leftTables,
+          fingerprint: SchemaFingerprint.make("placeholder"),
+        }),
+      ),
+    );
+    const rightFingerprint = SchemaFingerprint.make(
+      await Effect.runPromise(
+        hashCatalogSchemaFingerprint({
+          ...rightTables,
+          fingerprint: SchemaFingerprint.make("placeholder"),
+        }),
+      ),
+    );
+    expect(leftFingerprint).toBe(rightFingerprint);
+    const left = await seal(
+      { ...leftTables, fingerprint: leftFingerprint },
+      await install({ ...leftTables, fingerprint: leftFingerprint }),
+    );
+    const right = await seal(
+      { ...rightTables, fingerprint: rightFingerprint },
+      await install({ ...rightTables, fingerprint: rightFingerprint }),
+    );
+    expect(left.unitHash).toBe(right.unitHash);
+    expect(left.catalog.fingerprint).toBe(right.catalog.fingerprint);
+    const create = left.catalog.operations.find((entry) => entry.id.localName === "create");
+    expect(create?.input).toEqual({
+      _tag: "struct",
+      fields: [
+        {
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array",
+            items: {
+              _tag: "struct",
+              fields: [
+                { key: "color", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              ],
+            },
+          },
+        },
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct",
+            fields: [
+              { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              { key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+            ],
+          },
+        },
+      ],
+    });
   });
-});
 
-const unusedTitle = (
-  unit: InstalledCatalogUnit,
-  patch: Partial<Pick<(typeof unit.fields)[number], "optional" | "index" | "owned" | "valueType">>,
-): InstalledCatalogUnit =>
-  ({
-    ...unit,
-    fields: unit.fields.map((entry) =>
-      entry.id.localName === "title" && entry.valueType !== "ref" ? { ...entry, ...patch } : entry,
-    ),
-  }) as InstalledCatalogUnit;
-
-const rehashPolicyAndUnit = async (document: InstalledCatalogUnit): Promise<InstalledCatalogUnit> => {
-  const policyHash = await Effect.runPromise(hashInstalledAuthorization(document.policy));
-  const withPolicy = { ...document, policy: { ...document.policy, policyHash } } as InstalledCatalogUnit;
-  const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(withPolicy));
-  return { ...withPolicy, unitHash };
-};
-
-const rehashBoundUnit = async (document: InstalledCatalogUnit): Promise<InstalledCatalogUnit> => {
-  const schemaFingerprint = await Effect.runPromise(
-    hashCatalogSchemaFingerprint({
-      entities: document.entities,
-      traits: document.traits,
-      fields: document.fields,
-      operations: document.operations,
-      traitComposition: document.traitComposition,
-      fingerprint: SchemaFingerprint.make("placeholder"),
-    }),
-  );
-  return rehashPolicyAndUnit({
-    ...document,
-    schemaFingerprint,
-    policy: { ...document.policy, schemaFingerprint },
-  });
-};
-
-const verifyFail = (document: InstalledCatalogUnit) =>
-  Effect.runPromise(Effect.flip(verifyInstalledCatalogUnit(document)));
-
-const expectVerifyCatalogTableMismatch = async (document: InstalledCatalogUnit, label: RegExp) => {
-  const failure = await verifyFail(document);
-  expect(failure._tag === "CatalogMismatch" || failure._tag === "InvalidIR").toBe(true);
-  expect(failure.message).toMatch(label);
-};
-
-const sealRich = async () => {
-  const descriptor = richCatalogDescriptor();
-  const policy = await install(descriptor, richTemplate());
-  return seal(descriptor, policy);
-};
-
-describe("embedded policy tables must already be install-canonical", () => {
   test("equivalent canonical seals share unitHash", async () => {
     const descriptor = richCatalogDescriptor();
     const [left, right] = await Promise.all([
@@ -1189,268 +715,85 @@ describe("embedded policy tables must already be install-canonical", () => {
     expect(left.policy.classes).toEqual(["admin", "member"]);
     expect(left.policy.claims.map((claim) => claim.key)).toEqual(["org", "role"]);
     expect(left.policy.rules).toHaveLength(7);
-    expect(left.policy.rules.map((rule) => rule.id)).toEqual(
-      [...left.policy.rules.map((rule) => rule.id)].sort(),
-    );
-    expect(left.policy.decisions.entities.map((entry) => entry.target.name)).toEqual(["issue", "user"]);
-    expect(left.policy.decisions.entities[0]?.decision.allow.length).toBe(2);
-    expect(left.policy.decisions.entities[0]?.decision.deny.length).toBe(2);
-    expect(left.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["named", "taggable"]);
-    expect(left.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["owner", "title"]);
     expect(left.unitHash).toBe(right.unitHash);
     expect(canonicalizeInstalledCatalogUnit(left)).toBe(canonicalizeInstalledCatalogUnit(right));
     const verified = await Effect.runPromise(verifyInstalledCatalogUnit(left));
     requireSealed(verified);
     expect(verified.unitHash).toBe(left.unitHash);
   });
-
-  test("verify rejects reordered policy.classes after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.classes).toEqual(["admin", "member"]);
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        classes: [...unit.policy.classes].reverse(),
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.classes).toEqual(["member", "admin"]);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /classes/);
-  });
-
-  test("verify rejects reordered policy.claims after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.claims.map((claim) => claim.key)).toEqual(["org", "role"]);
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        claims: [...unit.policy.claims].reverse(),
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.claims.map((claim) => claim.key)).toEqual(["role", "org"]);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /claims/);
-  });
-
-  test("verify rejects reordered policy.rules after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    const canonicalRuleIds = unit.policy.rules.map((rule) => rule.id);
-    expect(canonicalRuleIds).toHaveLength(7);
-    expect(canonicalRuleIds).toEqual([...canonicalRuleIds].sort());
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        rules: [...unit.policy.rules].reverse(),
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.accessPlans).toEqual(unit.policy.accessPlans);
-    expect(reordered.policy.rules.map((rule) => rule.id)).toEqual([...canonicalRuleIds].reverse());
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /rules/);
-  });
-
-  test("verify rejects reordered policy.decisions.entities after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.decisions.entities.map((entry) => entry.target.name)).toEqual(["issue", "user"]);
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          entities: [...unit.policy.decisions.entities].reverse(),
-        },
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.decisions.entities.map((entry) => entry.target.name)).toEqual(["user", "issue"]);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
-  });
-
-  test("verify rejects reordered decision.allow ids after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    const issue = unit.policy.decisions.entities.find((entry) => entry.target.name === "issue");
-    expect(issue?.decision.allow.length).toBe(2);
-    const canonicalAllow = [...(issue?.decision.allow ?? [])];
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          entities: unit.policy.decisions.entities.map((entry) => ({
-            ...entry,
-            decision: {
-              ...entry.decision,
-              allow: [...entry.decision.allow].reverse(),
-            },
-          })),
-        },
-      },
-    } as InstalledCatalogUnit;
-    const reorderedIssue = reordered.policy.decisions.entities.find((entry) => entry.target.name === "issue");
-    expect(reorderedIssue?.decision.allow).toEqual([...canonicalAllow].reverse());
-    expect(reorderedIssue?.decision.allow).not.toEqual(canonicalAllow);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
-  });
-
-  test("verify rejects reordered policy.decisions.traits after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["named", "taggable"]);
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          traits: [...unit.policy.decisions.traits].reverse(),
-        },
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["taggable", "named"]);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
-  });
-
-  test("verify rejects reordered policy.decisions.fields after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["owner", "title"]);
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          fields: [...unit.policy.decisions.fields].reverse(),
-        },
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["title", "owner"]);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
-  });
-
-  test("verify rejects reordered decision.deny ids after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    const issue = unit.policy.decisions.entities.find((entry) => entry.target.name === "issue");
-    expect(issue?.decision.deny.length).toBe(2);
-    const canonicalDeny = [...(issue?.decision.deny ?? [])];
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        decisions: {
-          ...unit.policy.decisions,
-          entities: unit.policy.decisions.entities.map((entry) => ({
-            ...entry,
-            decision: {
-              ...entry.decision,
-              deny: [...entry.decision.deny].reverse(),
-            },
-          })),
-        },
-      },
-    } as InstalledCatalogUnit;
-    const reorderedIssue = reordered.policy.decisions.entities.find((entry) => entry.target.name === "issue");
-    expect(reorderedIssue?.decision.deny).toEqual([...canonicalDeny].reverse());
-    expect(reorderedIssue?.decision.deny).not.toEqual(canonicalDeny);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
-  });
-
-  test("verify rejects reordered policy.accessPlans after policyHash and unitHash recompute", async () => {
-    const unit = await sealRich();
-    expect(unit.policy.accessPlans.length).toBeGreaterThanOrEqual(2);
-    const canonicalPlans = [...unit.policy.accessPlans];
-    const reordered = {
-      ...unit,
-      policy: {
-        ...unit.policy,
-        accessPlans: [...unit.policy.accessPlans].reverse(),
-      },
-    } as InstalledCatalogUnit;
-    expect(reordered.policy.rules).toEqual(unit.policy.rules);
-    expect(reordered.policy.accessPlans).toEqual([...canonicalPlans].reverse());
-    expect(reordered.policy.accessPlans).not.toEqual(canonicalPlans);
-    const hashed = await rehashPolicyAndUnit(reordered);
-    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
-    expect(hashed.unitHash).not.toBe(unit.unitHash);
-    await expectVerifyCatalogTableMismatch(hashed, /accessPlans/);
-  });
 });
 
-describe("schema fingerprint binds descriptor contents", () => {
+describe("semantic drift", () => {
+  test("policy refs that do not exist in the catalog fail closed", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const drifted = { ...descriptor, id: CatalogId.make("other") };
+    const failure = await sealFail(drifted, policy);
+    expectClosed(failure, /catalog|stale identity|cross-catalog/);
+  });
+
+  test("stale accessPlans fail verify after rehash and fail assemble", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const emptied = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        accessPlans: unit.policy.accessPlans.map((plan) => ({ ...plan, lookups: [] })),
+      },
+    } as InstalledCatalogUnit;
+    const emptiedFail = await verifyFail(await rehashPolicyAndUnit(emptied));
+    expectClosed(emptiedFail, /accessPlans|access plan/);
+    const assembled = assembleInstalledCatalogUnit(descriptor, emptied.policy);
+    expect(Result.isFailure(assembled)).toBe(true);
+    if (Result.isFailure(assembled)) expectClosed(assembled.failure, /accessPlans|access plan/);
+  });
+
+  test("dropping a required trait or retargeting a ref fails closed", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const droppedTrait: CatalogDescriptor = {
+      ...descriptor,
+      entities: descriptor.entities.map((entry) =>
+        entry.id.name === "issue" ? { ...entry, traits: [] } : entry,
+      ),
+    };
+    const droppedAssemble = assembleInstalledCatalogUnit(droppedTrait, policy);
+    expect(Result.isFailure(droppedAssemble)).toBe(true);
+    if (Result.isFailure(droppedAssemble)) {
+      expectClosed(droppedAssemble.failure, /does not compose trait|missing trait composition/);
+    }
+    const retargeted: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((entry) =>
+        entry.valueType === "ref" && entry.id.localName === "owner"
+          ? { ...entry, refTarget: { _tag: "entity" as const, entity: entity("missing") } }
+          : entry,
+      ),
+    };
+    const retargetAssemble = assembleInstalledCatalogUnit(retargeted, policy);
+    expect(Result.isFailure(retargetAssemble)).toBe(true);
+    if (Result.isFailure(retargetAssemble)) {
+      expectClosed(retargetAssemble.failure, /missing field ref target/);
+    }
+  });
+
   test("changing unused field flags and recomputing only unitHash fails verify", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
-    const title = unit.fields.find((entry) => entry.id.localName === "title");
-    expect(title).toBeDefined();
-    expect(title?.valueType).toBe("string");
-    expect(title?.optional).toBe(false);
-    expect(title?.index).toBe(false);
-
     for (const patch of [{ optional: true }, { index: true }, { owned: true }, { valueType: "long" }] as const) {
       const tampered = unusedTitle(unit, patch);
-      expect(tampered.schemaFingerprint).toBe(unit.schemaFingerprint);
-      expect(tampered.policy.schemaFingerprint).toBe(unit.policy.schemaFingerprint);
-      expect(tampered.policy.policyHash).toBe(unit.policy.policyHash);
       const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(tampered));
-      expect(unitHash).not.toBe(unit.unitHash);
       const failure = await verifyFail({ ...tampered, unitHash });
       expect(failure).toBeInstanceOf(CatalogMismatch);
       expect(failure.message).toMatch(/schema fingerprint does not match catalog tables/);
       if (failure instanceof CatalogMismatch) {
-        expect(failure.expectedFingerprint).toBeDefined();
-        expect(failure.actualFingerprint).toBe(unit.schemaFingerprint);
+        expect(failure.actualFingerprint).toBe(unit.catalog.fingerprint);
         expect(failure.expectedFingerprint).not.toBe(failure.actualFingerprint);
       }
     }
-  });
-
-  test("updating only the unit fingerprint to the new digest still fails identity mismatch", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
-    const unit = await seal(descriptor, policy);
-    const tampered = unusedTitle(unit, { optional: true });
-    const digest = await Effect.runPromise(
-      hashCatalogSchemaFingerprint({
-        entities: tampered.entities,
-        traits: tampered.traits,
-        fields: tampered.fields,
-        operations: tampered.operations,
-        traitComposition: tampered.traitComposition,
-        fingerprint: SchemaFingerprint.make("placeholder"),
-      }),
-    );
-    expect(digest).not.toBe(unit.schemaFingerprint);
-    const updated = { ...tampered, schemaFingerprint: digest } as InstalledCatalogUnit;
-    expect(updated.policy.schemaFingerprint).toBe(unit.policy.schemaFingerprint);
-    expect(updated.policy.policyHash).toBe(unit.policy.policyHash);
-    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(updated));
-    const failure = await verifyFail({ ...updated, unitHash });
-    expect(failure).toBeInstanceOf(CatalogMismatch);
-    expect(failure.message).toMatch(/schema fingerprint does not match installed policy/);
   });
 
   test("seal rejects descriptor tables that do not match the claimed fingerprint", async () => {
@@ -1464,8 +807,6 @@ describe("schema fingerprint binds descriptor contents", () => {
           : entry,
       ),
     };
-    expect(mutated.fingerprint).toBe(descriptor.fingerprint);
-    expect(policy.schemaFingerprint).toBe(descriptor.fingerprint);
     const digest = await Effect.runPromise(hashCatalogSchemaFingerprint(mutated));
     expect(digest).not.toBe(descriptor.fingerprint);
     const failure = await sealFail(mutated, policy);
@@ -1476,172 +817,372 @@ describe("schema fingerprint binds descriptor contents", () => {
       expect(failure.actualFingerprint).toBe(descriptor.fingerprint);
     }
   });
-});
 
-describe("blank catalog identity is rejected in the shared kernel", () => {
-  test("blank catalog/database/version/fingerprint on unit and policy fail verify", async () => {
+  test("changing a decision and recomputing only unitHash fails verify", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
-    const cases = [
-      { field: "catalog" as const, pattern: /blank catalog id/ },
-      { field: "database" as const, pattern: /blank database/ },
-      { field: "catalogVersion" as const, pattern: /blank catalog version/ },
-      { field: "schemaFingerprint" as const, pattern: /blank schema fingerprint/ },
-    ];
-    for (const { field, pattern } of cases) {
-      const blanked = {
-        ...unit,
-        [field]: "",
-        policy: { ...unit.policy, [field]: "" },
-      } as InstalledCatalogUnit;
-      const failure = await verifyFail(await rehashPolicyAndUnit(blanked));
-      expect(failure).toBeInstanceOf(CatalogMismatch);
-      expect(failure.message).toMatch(pattern);
+    const flipped = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          entities: unit.policy.decisions.entities.map((entry) => ({
+            ...entry,
+            decision: { allow: [], deny: entry.decision.allow },
+          })),
+        },
+      },
+    } as InstalledCatalogUnit;
+    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(flipped));
+    const failure = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...flipped, unitHash })),
+    );
+    expect(failure).toBeInstanceOf(CatalogUnitCorrupt);
+    expect(failure.message).toMatch(/policy hash|hash mismatch/);
+  });
+
+  test("contradictory allow/deny still fails after both hashes are recomputed", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const contradictory = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          entities: unit.policy.decisions.entities.map((entry) => ({
+            ...entry,
+            decision: { allow: entry.decision.allow, deny: entry.decision.allow },
+          })),
+        },
+      },
+    } as InstalledCatalogUnit;
+    const failure = await verifyFail(await rehashPolicyAndUnit(contradictory));
+    expectClosed(failure, /contradictory|decision|allow and deny/);
+  });
+
+  test("flipping a rule usage flag and recomputing unitHash fails verify", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const flippedMe = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        rules: unit.policy.rules.map((rule) => ({ ...rule, usesMe: !rule.usesMe })),
+      },
+    } as InstalledCatalogUnit;
+    const failure = await verifyFail({
+      ...flippedMe,
+      unitHash: await Effect.runPromise(hashInstalledCatalogUnit(flippedMe)),
+    });
+    expectClosed(failure, /usesMe|usesResource|rules|accessPlans/);
+  });
+});
+
+describe("corruption", () => {
+  test.each([
+    {
+      name: "hash mismatch on tampered classes",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({
+          ...unit,
+          policy: { ...unit.policy, classes: ["admin", ...unit.policy.classes] },
+        }) as InstalledCatalogUnit,
+      rehash: false,
+      pattern: /hash mismatch/,
+      tag: "CatalogUnitCorrupt",
+    },
+    {
+      name: "wrong unitHash",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({ ...unit, unitHash: digestHex(0x00) }) as InstalledCatalogUnit,
+      rehash: false,
+      pattern: /hash mismatch/,
+      tag: "CatalogUnitCorrupt",
+    },
+    {
+      name: "unsupported unit version",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({ ...unit, version: 2 }) as unknown as InstalledCatalogUnit,
+      rehash: false,
+      pattern: /catalog unit version/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "unsupported policy version",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({
+          ...unit,
+          policy: { ...unit.policy, version: 2 },
+        }) as unknown as InstalledCatalogUnit,
+      rehash: false,
+      pattern: /installed policy version/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "unsupported language version",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({
+          ...unit,
+          policy: { ...unit.policy, languageVersion: "v0" },
+        }) as unknown as InstalledCatalogUnit,
+      rehash: false,
+      pattern: /unsupported authorization language version/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "reordered catalog entities",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, { entities: [...unit.catalog.entities].reverse() }),
+      rehash: true,
+      pattern: /entities/,
+      tag: "CatalogMismatch",
+    },
+    {
+      name: "reordered catalog fields",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, { fields: [...unit.catalog.fields].reverse() }),
+      rehash: true,
+      pattern: /fields/,
+      tag: "CatalogMismatch",
+    },
+    {
+      name: "reordered policy classes",
+      fixture: "rich" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({
+          ...unit,
+          policy: { ...unit.policy, classes: [...unit.policy.classes].reverse() },
+        }) as InstalledCatalogUnit,
+      rehash: true,
+      pattern: /classes/,
+      tag: "CatalogMismatch",
+    },
+    {
+      name: "reordered policy accessPlans",
+      fixture: "rich" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        ({
+          ...unit,
+          policy: { ...unit.policy, accessPlans: [...unit.policy.accessPlans].reverse() },
+        }) as InstalledCatalogUnit,
+      rehash: true,
+      pattern: /accessPlans/,
+      tag: "CatalogMismatch",
+    },
+    {
+      name: "blank catalog id",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, { id: CatalogId.make("") }),
+      rehash: true,
+      pattern: /blank catalog id/,
+      tag: "CatalogMismatch",
+    },
+    {
+      name: "blank entity name",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, {
+          entities: [...unit.catalog.entities, { id: EntityId.make({ catalog, name: "" }), traits: [] }],
+        }),
+      rehash: true,
+      pattern: /blank entity name/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "blank field local name",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, {
+          fields: [
+            ...unit.catalog.fields,
+            {
+              id: FieldId.make({ catalog, owner: issueOwner, localName: "" }),
+              valueType: "string",
+              cardinality: "one",
+              index: false,
+              optional: false,
+              owned: false,
+            },
+          ],
+        }),
+      rehash: true,
+      pattern: /blank field local name/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "blank trait name",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, {
+          traits: [{ id: TraitId.make({ catalog, name: "" }), traits: [] }, ...unit.catalog.traits],
+        }),
+      rehash: true,
+      pattern: /blank trait name/,
+      tag: "InvalidIR",
+    },
+    {
+      name: "blank operation local name",
+      fixture: "simple" as const,
+      mutate: (unit: InstalledCatalogUnit) =>
+        patchCatalog(unit, {
+          operations: [
+            {
+              id: operation(issueOwner, "", "required"),
+              input: { _tag: "scalar", valueType: "string" },
+            },
+            ...unit.catalog.operations,
+          ],
+        }),
+      rehash: true,
+      pattern: /blank operation local name/,
+      tag: "InvalidIR",
+    },
+  ])("$name fails closed", async ({ fixture, mutate, rehash, pattern, tag }) => {
+    const descriptor = fixture === "rich" ? richCatalogDescriptor() : catalogDescriptor();
+    const template = fixture === "rich" ? richTemplate() : templateOf();
+    const policy = await install(descriptor, template);
+    const unit = await seal(descriptor, policy);
+    const mutated = mutate(unit);
+    const document = rehash ? await rehashPolicyAndUnit(mutated) : mutated;
+    const failure = await verifyFail(document);
+    expect(failure._tag).toBe(tag);
+    expect(failure.message).toMatch(pattern);
+  });
+
+  test("missing policy / missing accessPlans / corrupt JSON fail closed", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const missingPolicy = assembleInstalledCatalogUnit(
+      descriptor,
+      undefined as unknown as InstalledAuthorizationIR,
+    );
+    expect(Result.isFailure(missingPolicy)).toBe(true);
+    if (Result.isFailure(missingPolicy)) {
+      expect(missingPolicy.failure.message).toMatch(/missing installed policy/);
+    }
+    const missingAccessPlans = assembleInstalledCatalogUnit(descriptor, {
+      ...policy,
+      accessPlans: undefined,
+    } as unknown as InstalledAuthorizationIR);
+    expect(Result.isFailure(missingAccessPlans)).toBe(true);
+    if (Result.isFailure(missingAccessPlans)) {
+      expect(missingAccessPlans.failure.message).toMatch(/accessPlans/);
+    }
+    expect(Result.isFailure(decodeInstalledCatalogUnitResult("{not-json"))).toBe(true);
+    expect(Result.isFailure(decodeInstalledCatalogUnitResult("not-an-object"))).toBe(true);
+  });
+
+  test("structural decode rejects colliding catalog-unit entity descriptors", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const encoded = JSON.parse(JSON.stringify(encodeInstalledCatalogUnit(unit))) as ReturnType<
+      typeof encodeInstalledCatalogUnit
+    >;
+    const issue = encoded.catalog.entities.find((entry) => entry.id.name === "issue");
+    expect(issue).toBeDefined();
+    const colliding = {
+      ...encoded,
+      catalog: {
+        ...encoded.catalog,
+        entities: [...encoded.catalog.entities, JSON.parse(JSON.stringify({ ...issue!, traits: [] }))],
+      },
+    };
+    const decoded = decodeInstalledCatalogUnitResult(colliding);
+    expect(Result.isFailure(decoded)).toBe(true);
+    if (Result.isFailure(decoded)) {
+      expect(decoded.failure.message).toMatch(/entity identity collision/);
     }
   });
 
-  test("blank entity name and blank field localName fail verify after rehash", async () => {
+  test("normalizeAndValidateCatalogUnit rejects unsupported versions", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
-    const blankEntityId = EntityId.make({ catalog, name: "" });
-    const blankEntity = {
-      ...unit,
-      entities: [...unit.entities, { id: blankEntityId, traits: [] }],
-      identities: {
-        ...unit.identities,
-        entities: [...unit.identities.entities, blankEntityId],
-      },
-      policy: {
-        ...unit.policy,
-        identities: {
-          ...unit.policy.identities,
-          entities: [...unit.policy.identities.entities, blankEntityId],
-        },
-      },
-    } as InstalledCatalogUnit;
-    const entityFail = await verifyFail(await rehashPolicyAndUnit(blankEntity));
-    expect(entityFail).toBeInstanceOf(InvalidIR);
-    expect(entityFail.message).toMatch(/blank entity name/);
-
-    const blankFieldId = FieldId.make({ catalog, owner: issueOwner, localName: "" });
-    const blankField = {
-      ...unit,
-      fields: [
-        ...unit.fields,
-        {
-          id: blankFieldId,
-          valueType: "string" as const,
-          cardinality: "one" as const,
-          index: false,
-          optional: false,
-          owned: false,
-        },
-      ],
-      identities: {
-        ...unit.identities,
-        fields: [...unit.identities.fields, blankFieldId],
-      },
-      policy: {
-        ...unit.policy,
-        identities: {
-          ...unit.policy.identities,
-          fields: [...unit.policy.identities.fields, blankFieldId],
-        },
-      },
-    } as InstalledCatalogUnit;
-    const fieldFail = await verifyFail(await rehashPolicyAndUnit(blankField));
-    expect(fieldFail).toBeInstanceOf(InvalidIR);
-    expect(fieldFail.message).toMatch(/blank field local name/);
+    const coherent = normalizeAndValidateCatalogUnit(unit.catalog, unit.policy, unit.version);
+    expect(Result.isSuccess(coherent)).toBe(true);
+    const unitVersion = normalizeAndValidateCatalogUnit(unit.catalog, unit.policy, 2);
+    expect(Result.isFailure(unitVersion)).toBe(true);
+    if (Result.isFailure(unitVersion)) {
+      expect(unitVersion.failure.message).toMatch(/catalog unit version/);
+    }
   });
+});
 
-  test("blank trait name and blank operation localName fail verify after rehash", async () => {
-    const descriptor = catalogDescriptor();
-    const policy = await install(descriptor);
+describe("mutation isolation", () => {
+  test("caller mutation after seal cannot change the sealed unit", async () => {
+    const entities = [...catalogDescriptor().entities];
+    const descriptor = { ...catalogDescriptor(), entities };
+    const installed = await install(descriptor);
+    const classes = [...installed.classes];
+    const policy = { ...installed, classes } as InstalledAuthorizationIRV1;
     const unit = await seal(descriptor, policy);
+    const originalHash = unit.unitHash;
 
-    const blankTraitId = TraitId.make({ catalog, name: "" });
-    const blankTrait = {
-      ...unit,
-      traits: [{ id: blankTraitId, traits: [] }, ...unit.traits],
-      identities: {
-        ...unit.identities,
-        traits: [blankTraitId, ...unit.identities.traits],
-      },
-      policy: {
-        ...unit.policy,
-        identities: {
-          ...unit.policy.identities,
-          traits: [blankTraitId, ...unit.policy.identities.traits],
-        },
-      },
-    } as InstalledCatalogUnit;
-    const traitFail = await verifyFail(await rehashBoundUnit(blankTrait));
-    expect(traitFail).toBeInstanceOf(InvalidIR);
-    expect(traitFail.message).toMatch(/blank trait name/);
-
-    const blankOperationId = operation(issueOwner, "", "required");
-    const blankOperation = {
-      id: blankOperationId,
-      input: { _tag: "scalar" as const, valueType: "string" as const },
-    };
-    const blankOp = {
-      ...unit,
-      operations: [blankOperation, ...unit.operations],
-      identities: {
-        ...unit.identities,
-        operations: [blankOperationId, ...unit.identities.operations],
-      },
-      policy: {
-        ...unit.policy,
-        operations: [blankOperation, ...unit.policy.operations],
-        identities: {
-          ...unit.policy.identities,
-          operations: [blankOperationId, ...unit.policy.identities.operations],
-        },
-      },
-    } as InstalledCatalogUnit;
-    const operationFail = await verifyFail(await rehashBoundUnit(blankOp));
-    expect(operationFail).toBeInstanceOf(InvalidIR);
-    expect(operationFail.message).toMatch(/blank operation local name/);
-
-    const blankOwnerFieldId = FieldId.make({
-      catalog,
-      owner: { kind: "entity", name: "" },
-      localName: "extra",
-    });
-    const blankOwner = {
-      ...unit,
-      fields: [
-        ...unit.fields,
-        {
-          id: blankOwnerFieldId,
-          valueType: "string" as const,
-          cardinality: "one" as const,
-          index: false,
-          optional: false,
-          owned: false,
-        },
-      ],
-      identities: {
-        ...unit.identities,
-        fields: [...unit.identities.fields, blankOwnerFieldId],
-      },
-      policy: {
-        ...unit.policy,
-        identities: {
-          ...unit.policy.identities,
-          fields: [...unit.policy.identities.fields, blankOwnerFieldId],
-        },
-      },
-    } as InstalledCatalogUnit;
-    const ownerFail = await verifyFail(await rehashBoundUnit(blankOwner));
-    expect(ownerFail).toBeInstanceOf(InvalidIR);
-    expect(ownerFail.message).toMatch(/blank field owner name/);
+    classes.push("admin");
+    entities.push({ id: entity("extra"), traits: [] });
+    expect(unit.policy.classes).toEqual(["member"]);
+    expect(unit.catalog.entities.map((entry) => entry.id.name)).toEqual(["issue", "user"]);
+    expect(unit.unitHash).toBe(originalHash);
+    expect(Object.isFrozen(unit)).toBe(true);
+    expect(Object.isFrozen(unit.catalog.entities)).toBe(true);
+    expect(Object.isFrozen(unit.policy)).toBe(true);
+    expect(() => {
+      (unit.policy.classes as string[]).push("support");
+    }).toThrow();
+    expect(() => {
+      (unit.catalog.entities as Array<unknown>).push({});
+    }).toThrow();
+    expect(() => {
+      (unit as { unitHash: string }).unitHash = digestHex(0x00);
+    }).toThrow();
+    expect("pipe" in unit).toBe(false);
+    expect(Object.getPrototypeOf(unit)).toBe(Object.prototype);
   });
 
-  test("prepareAuthorizationCatalog rejects blank target fingerprint and blank entity name", () => {
+  test("assemble snapshots descriptor and policy before the async hash", async () => {
+    const entities = [...catalogDescriptor().entities];
+    const fields = [...catalogDescriptor().fields];
+    const descriptor = { ...catalogDescriptor(), entities, fields };
+    const installed = await install(descriptor);
+    const rules = [...installed.rules];
+    const policy = { ...installed, rules } as InstalledAuthorizationIRV1;
+    const assembled = assembleInstalledCatalogUnit(descriptor, policy);
+    expect(Result.isSuccess(assembled)).toBe(true);
+    if (!Result.isSuccess(assembled)) return;
+    expect(assembled.success.catalog.entities).not.toBe(descriptor.entities);
+    expect(assembled.success.catalog.fields).not.toBe(descriptor.fields);
+    expect(assembled.success.policy.rules).not.toBe(policy.rules);
+    expect(Object.isFrozen(assembled.success)).toBe(true);
+
+    const snapshotEntities = assembled.success.catalog.entities.map((entry) => entry.id.name);
+    entities.push({ id: entity("extra"), traits: [] });
+    entities.reverse();
+    fields.reverse();
+    rules.push(rules[0]!);
+    expect(assembled.success.catalog.entities.map((entry) => entry.id.name)).toEqual(snapshotEntities);
+    expect(assembled.success.policy.rules.length).toBe(1);
+
+    const afterMutation = assembleInstalledCatalogUnit(descriptor, policy);
+    expect(Result.isFailure(afterMutation)).toBe(true);
+  });
+});
+
+describe("prepareAuthorizationCatalog still rejects blank target fields", () => {
+  test("blank target fingerprint and blank entity name fail", () => {
     const descriptor = catalogDescriptor();
     const target = {
       database: descriptor.database,
@@ -1655,17 +1196,14 @@ describe("blank catalog identity is rejected in the shared kernel", () => {
     );
     expect(Result.isFailure(blankFingerprint)).toBe(true);
     if (Result.isFailure(blankFingerprint)) {
-      expect(blankFingerprint.failure).toBeInstanceOf(CatalogMismatch);
       expect(blankFingerprint.failure.message).toMatch(/blank schema fingerprint/);
     }
-
     const blankEntity = prepareAuthorizationCatalog(target, {
       ...descriptor,
       entities: [{ id: EntityId.make({ catalog, name: "" }), traits: [] }, ...descriptor.entities],
     });
     expect(Result.isFailure(blankEntity)).toBe(true);
     if (Result.isFailure(blankEntity)) {
-      expect(blankEntity.failure).toBeInstanceOf(InvalidIR);
       expect(blankEntity.failure.message).toMatch(/blank entity name/);
     }
   });

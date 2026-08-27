@@ -398,10 +398,6 @@ describe("installAuthorization", () => {
     expect(installed._tag).toBe("InstalledAuthorizationIR");
     expect(installed.version).toBe(INSTALLED_AUTHORIZATION_IR_VERSION);
     expect(installed.languageVersion).toBe(AUTHORIZATION_LANGUAGE_VERSION);
-    expect(installed.database).toBe(database);
-    expect(installed.catalog).toBe(catalog);
-    expect(installed.catalogVersion).toBe(version);
-    expect(installed.schemaFingerprint).toBe(fingerprint);
     expect(installed.policyHash).toMatch(/^[0-9a-f]{64}$/);
     expect(installed.accessPlans).toHaveLength(1);
     expect(installed.rules).toHaveLength(1);
@@ -632,17 +628,10 @@ describe("installAuthorization", () => {
       _tag: "InstalledAuthorizationIR",
       version: 1,
       languageVersion: "v1",
-      database: "todos",
-      catalog: "app",
-      catalogVersion: "1",
-      schemaFingerprint: "schema",
       policyHash: digestHex(0x44),
       classes: [],
       claims: [],
       principal: { subjectClaim: "sub" },
-      identities: { entities: [], traits: [], fields: [], operations: [] },
-      traitComposition: [],
-      operations: [],
       rules: [],
       decisions: emptyDecisions(),
       accessPlans: [
@@ -772,7 +761,6 @@ describe("installAuthorization", () => {
     const second = await install(shuffledTemplate, shuffledDescriptor);
     expect(canonicalizeInstalledAuthorization(first)).toBe(canonicalizeInstalledAuthorization(second));
     expect(first.policyHash).toBe(second.policyHash);
-    expect(first.identities.entities.map((item) => item.name)).toEqual(["issue", "tag", "user"]);
     expect(first.rules.map((item) => item.id)).toEqual([...first.rules.map((item) => item.id)].sort());
     expect(first.accessPlans.map((item) => item.rule)).toEqual(first.rules.map((item) => item.id));
   });
@@ -855,37 +843,7 @@ describe("installAuthorization", () => {
     });
     expect(canonicalizeInstalledAuthorization(first)).toBe(canonicalizeInstalledAuthorization(second));
     expect(first.policyHash).toBe(second.policyHash);
-    const create = first.operations.find((entry) => entry.id.localName === "create");
-    expect(create?.input).toEqual({
-      _tag: "struct",
-      fields: [
-        {
-          key: "labels",
-          optional: false,
-          shape: {
-            _tag: "array",
-            items: {
-              _tag: "struct",
-              fields: [
-                { key: "color", optional: false, shape: { _tag: "scalar", valueType: "string" } },
-                { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
-              ],
-            },
-          },
-        },
-        {
-          key: "meta",
-          optional: false,
-          shape: {
-            _tag: "struct",
-            fields: [
-              { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
-              { key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } },
-            ],
-          },
-        },
-      ],
-    });
+    expect("operations" in first).toBe(false);
   });
 
   test("encode/decode/hash round trip preserves canonical bytes", async () => {
@@ -924,10 +882,10 @@ describe("installAuthorization", () => {
     );
     const canonical = canonicalizeInstalledAuthorization(installed);
     expect(canonical).toBe(
-      '{"_tag":"InstalledAuthorizationIR","accessPlans":[{"lookups":[{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"user"}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}},{"_tag":"index","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"principal","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}}],"rule":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"}],"catalog":"app","catalogVersion":"1","claims":[{"key":"org","optional":false,"shape":{"_tag":"scalar","valueType":"string"}},{"key":"teams","optional":true,"shape":{"_tag":"array","items":{"_tag":"scalar","valueType":"string"}}}],"classes":["member"],"database":"todos","decisions":{"entities":[{"decision":{"allow":["9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"],"deny":[]},"target":{"_tag":"EntityId","catalog":"app","name":"issue"}}],"fields":[],"traits":[]},"identities":{"entities":[{"_tag":"EntityId","catalog":"app","name":"issue"},{"_tag":"EntityId","catalog":"app","name":"tag"},{"_tag":"EntityId","catalog":"app","name":"user"}],"fields":[{"_tag":"FieldId","catalog":"app","localName":"aliases","owner":{"kind":"entity","name":"issue"}},{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}},{"_tag":"FieldId","catalog":"app","localName":"internalNotes","owner":{"kind":"entity","name":"issue"}},{"_tag":"FieldId","catalog":"app","localName":"labels","owner":{"kind":"entity","name":"issue"}},{"_tag":"FieldId","catalog":"app","localName":"name","owner":{"kind":"entity","name":"tag"}},{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}},{"_tag":"FieldId","catalog":"app","localName":"parent","owner":{"kind":"entity","name":"issue"}},{"_tag":"FieldId","catalog":"app","localName":"tags","owner":{"kind":"trait","name":"taggable"}},{"_tag":"FieldId","catalog":"app","localName":"title","owner":{"kind":"entity","name":"issue"}}],"operations":[{"_tag":"OperationId","catalog":"app","localName":"create","owner":{"kind":"entity","name":"issue"},"target":"none"},{"_tag":"OperationId","catalog":"app","localName":"rename","owner":{"kind":"entity","name":"issue"},"target":"required"}],"traits":[{"_tag":"TraitId","catalog":"app","name":"orphaned"},{"_tag":"TraitId","catalog":"app","name":"taggable"}]},"languageVersion":"v1","operations":[{"id":{"_tag":"OperationId","catalog":"app","localName":"create","owner":{"kind":"entity","name":"issue"},"target":"none"},"input":{"_tag":"opaque"}},{"id":{"_tag":"OperationId","catalog":"app","localName":"rename","owner":{"kind":"entity","name":"issue"},"target":"required"},"input":{"_tag":"struct","fields":[{"key":"title","optional":false,"shape":{"_tag":"scalar","valueType":"string"}}]}}],"policyHash":"0d19514f83a778c352d80b532c3ff894a84455ae2db3482d616f9f4a046ce2ab","principal":{"entity":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}},"subjectClaim":"sub"},"rules":[{"expr":{"_tag":"eq","left":{"_tag":"ref","root":{"_tag":"resource"},"steps":[{"field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}}]},"right":{"_tag":"me"}},"focus":{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},"id":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46","traversalDepth":1,"usesMe":true,"usesResource":true,"usesSubject":false}],"schemaFingerprint":"schema","traitComposition":[{"composer":{"_tag":"EntityId","catalog":"app","name":"issue"},"trait":{"_tag":"TraitId","catalog":"app","name":"taggable"},"transitive":[{"_tag":"TraitId","catalog":"app","name":"taggable"}]}],"version":1}',
+      '{"_tag":"InstalledAuthorizationIR","accessPlans":[{"lookups":[{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"user"}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}},{"_tag":"index","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"principal","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}}],"rule":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"}],"claims":[{"key":"org","optional":false,"shape":{"_tag":"scalar","valueType":"string"}},{"key":"teams","optional":true,"shape":{"_tag":"array","items":{"_tag":"scalar","valueType":"string"}}}],"classes":["member"],"decisions":{"entities":[{"decision":{"allow":["9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"],"deny":[]},"target":{"_tag":"EntityId","catalog":"app","name":"issue"}}],"fields":[],"traits":[]},"languageVersion":"v1","policyHash":"2d7fc3d196762cb17c02dc6b35d109b75f1c694a34806250a6a8d7c7df48fb38","principal":{"entity":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}},"subjectClaim":"sub"},"rules":[{"expr":{"_tag":"eq","left":{"_tag":"ref","root":{"_tag":"resource"},"steps":[{"field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}}]},"right":{"_tag":"me"}},"focus":{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},"id":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46","traversalDepth":1,"usesMe":true,"usesResource":true,"usesSubject":false}],"version":1}',
     );
     expect(String(installed.policyHash)).toBe(
-      "0d19514f83a778c352d80b532c3ff894a84455ae2db3482d616f9f4a046ce2ab",
+      "2d7fc3d196762cb17c02dc6b35d109b75f1c694a34806250a6a8d7c7df48fb38",
     );
     const recomputed = await Effect.runPromise(hashInstalledAuthorization(installed));
     expect(recomputed).toBe(installed.policyHash);
@@ -951,7 +909,7 @@ describe("installAuthorization", () => {
       (installed.accessPlans as Array<unknown>).push({});
     }).toThrow();
     expect(() => {
-      (installed.identities.entities as Array<unknown>).push({});
+      (installed.rules as Array<unknown>).push({});
     }).toThrow();
     expect("pipe" in installed).toBe(false);
   });

@@ -16,12 +16,7 @@
 
 import type * as Brand from "effect/Brand";
 import * as Schema from "effect/Schema";
-import {
-  CatalogDescriptor,
-  OperationDescriptor,
-  RuleAccessPlan,
-  TraitComposition,
-} from "./catalog.ts";
+import { CatalogDescriptor, RuleAccessPlan } from "./catalog.ts";
 import { CanonicalAuthorizationExpr, RelativeAuthorizationExpr } from "./expr.ts";
 import {
   CanonicalIdentitySchemas,
@@ -132,14 +127,6 @@ export const AuthorizationDecisions = <
     fields: Schema.Array(DecisionEntry(ids.field)),
   });
 
-export const InstalledIdentityTable = Schema.Struct({
-  entities: Schema.Array(CanonicalIdentitySchemas.entity),
-  traits: Schema.Array(CanonicalIdentitySchemas.trait),
-  fields: Schema.Array(CanonicalIdentitySchemas.field),
-  operations: Schema.Array(CanonicalIdentitySchemas.operation),
-});
-export type InstalledIdentityTable = typeof InstalledIdentityTable.Type;
-
 /**
  * Catalog-relative, data-only template. Contains no functions, closures,
  * symbols, prototypes, Effects, or executable callbacks. The read
@@ -207,26 +194,23 @@ export const AuthorizationValidationInput = Schema.Struct({
 export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
 
 /**
- * Schema-decoded structural installed document. Decode checks shape and
- * identity collisions only — not policy hash, rule hashes, decision
- * semantics, or access-plan completeness. This is not runtime authority.
+ * Schema-decoded structural installed policy. Stores only policy-owned
+ * data: language version, principal/class/claim configuration, canonical
+ * rules, decisions, access plans, and the policy hash. Catalog identity,
+ * schema tables, and derived identity/operation/composition indexes live
+ * on {@link CatalogDescriptor}. Decode checks shape and identity
+ * collisions only — not policy hash, rule hashes, decision semantics, or
+ * access-plan completeness. This is not runtime authority.
  * Stored-document revalidation belongs to #368; until then, only
  * {@link installAuthorization} may seal {@link InstalledAuthorizationIRV1}.
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
   languageVersion: AuthorizationLanguageVersion,
-  database: DatabaseId,
-  catalog: CatalogId,
-  catalogVersion: CatalogVersion,
-  schemaFingerprint: SchemaFingerprint,
   policyHash: PolicyHash,
   classes: ClassVocabulary,
   claims: ClaimVocabulary,
   principal: InstalledPrincipalResolution,
-  identities: InstalledIdentityTable,
-  traitComposition: Schema.Array(TraitComposition),
-  operations: Schema.Array(OperationDescriptor),
   rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
   decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
   accessPlans: Schema.Array(RuleAccessPlan),

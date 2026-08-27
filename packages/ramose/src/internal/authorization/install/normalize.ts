@@ -1,8 +1,8 @@
 /**
  * Pure normalization of authoritative installed v1 tables.
  *
- * Deterministically orders identities, composition, rules, decisions,
- * and access-plan lookups. Rejects duplicates, contradictory
+ * Deterministically orders catalog descriptors, composition, rules,
+ * decisions, and access-plan lookups. Rejects duplicates, contradictory
  * composition, conflicting decisions, and missing plans. No Effect.
  */
 
@@ -25,12 +25,11 @@ import type {
   RuleId,
   TraitId,
 } from "../identities.ts";
-import { CanonicalIdentitySchemas, OperationId } from "../identities.ts";
+import { CanonicalIdentitySchemas } from "../identities.ts";
 import type {
   CanonicalAuthorizationDecisions,
   CanonicalAuthorizationRule,
   Decision,
-  InstalledIdentityTable,
   ValidatedAuthorizationIR,
 } from "../ir.ts";
 import type { JsonValue } from "../json.ts";
@@ -87,8 +86,6 @@ const encodeTrait = (id: TraitId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.trait)(id);
 const encodeField = (id: FieldId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.field)(id);
-const encodeOperationId = (id: OperationId): unknown =>
-  Schema.encodeUnknownSync(OperationId)(id);
 const encodeOperation = (operation: CatalogDescriptor["operations"][number]): unknown =>
   Schema.encodeUnknownSync(OperationDescriptor)(operation);
 const encodeComposition = (row: TraitComposition): unknown =>
@@ -128,33 +125,6 @@ export const normalizeClaims = (
   claims: ReadonlyArray<ClaimDescriptor>,
 ): Result.Result<ReadonlyArray<ClaimDescriptor>, ValidateFailure> =>
   uniqueSorted(claims, (claim) => claim.key, "claim");
-
-export const normalizeIdentities = (
-  descriptor: CatalogDescriptor,
-): Result.Result<InstalledIdentityTable, ValidateFailure> =>
-  Result.gen(function* () {
-    const entities = yield* uniqueSorted(
-      descriptor.entities.map((entity) => entity.id),
-      encodeEntity,
-      "entity identity",
-    );
-    const traits = yield* uniqueSorted(
-      descriptor.traits.map((trait) => trait.id),
-      encodeTrait,
-      "trait identity",
-    );
-    const fields = yield* uniqueSorted(
-      descriptor.fields.map((field) => field.id),
-      encodeField,
-      "field identity",
-    );
-    const operations = yield* uniqueSorted(
-      descriptor.operations.map((operation) => operation.id),
-      encodeOperationId,
-      "operation identity",
-    );
-    return { entities, traits, fields, operations };
-  });
 
 export const normalizeEntities = (
   entities: ReadonlyArray<EntityDescriptor>,
@@ -289,24 +259,17 @@ export const normalizeAccessPlans = (
 
 export const normalizeValidatedTables = (
   validated: ValidatedAuthorizationIR,
-  descriptor: CatalogDescriptor,
   plans: ReadonlyArray<RuleAccessPlan>,
 ) =>
   Result.gen(function* () {
     const classes = yield* normalizeClasses(validated.classes);
     const claims = yield* normalizeClaims(validated.claims);
-    const identities = yield* normalizeIdentities(descriptor);
-    const traitComposition = yield* normalizeTraitComposition(descriptor.traitComposition);
-    const operations = yield* normalizeOperations(descriptor.operations);
     const rules = yield* normalizeRules(validated.rules);
     const decisions = yield* normalizeDecisions(validated.decisions);
     const accessPlans = yield* normalizeAccessPlans(plans, rules);
     return {
       classes,
       claims,
-      identities,
-      traitComposition,
-      operations,
       rules,
       decisions,
       accessPlans,

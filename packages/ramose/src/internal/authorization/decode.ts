@@ -362,12 +362,11 @@ const identityCollision = (
 ): InvalidIR | undefined => {
   if (isCatalogUnit(document)) {
     return (
-      identityTableCollisions(document.identities) ??
-      entityDescriptorCollisions(document.entities) ??
-      traitDescriptorCollisions(document.traits) ??
-      fieldDescriptorCollisions(document.fields) ??
-      operationDescriptorCollisions(document.operations) ??
-      traitCompositionCollisions(document.traitComposition) ??
+      entityDescriptorCollisions(document.catalog.entities) ??
+      traitDescriptorCollisions(document.catalog.traits) ??
+      fieldDescriptorCollisions(document.catalog.fields) ??
+      operationDescriptorCollisions(document.catalog.operations) ??
+      traitCompositionCollisions(document.catalog.traitComposition) ??
       identityCollision(document.policy, encodeRule)
     );
   }
@@ -387,12 +386,7 @@ const identityCollision = (
     ) ?? decisionCollisions(document.decisions);
   if (collision !== undefined) return collision;
   if (isInstalled(document)) {
-    return (
-      identityTableCollisions(document.identities) ??
-      operationDescriptorCollisions(document.operations) ??
-      traitCompositionCollisions(document.traitComposition) ??
-      accessPlanCollisions(document.accessPlans)
-    );
+    return accessPlanCollisions(document.accessPlans);
   }
   return undefined;
 };
@@ -421,16 +415,8 @@ const decisionCollisions = (decisions: {
   uniqueEncoded(decisions.traits.map((entry) => entry.target), "trait decision target") ??
   uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target");
 
-const identityTableCollisions = (
-  identities: InstalledAuthorizationIRType["identities"],
-): InvalidIR | undefined =>
-  uniqueEncoded(identities.entities, "entity identity") ??
-  uniqueEncoded(identities.traits, "trait identity") ??
-  uniqueEncoded(identities.fields, "field identity") ??
-  uniqueEncoded(identities.operations, "operation identity");
-
 const entityDescriptorCollisions = (
-  entities: InstalledCatalogUnitType["entities"],
+  entities: CatalogDescriptor["entities"],
 ): InvalidIR | undefined =>
   internByIdentity(
     entities.map((entity) => {
@@ -447,7 +433,7 @@ const entityDescriptorCollisions = (
   );
 
 const traitDescriptorCollisions = (
-  traits: InstalledCatalogUnitType["traits"],
+  traits: CatalogDescriptor["traits"],
 ): InvalidIR | undefined =>
   internByIdentity(
     traits.map((trait) => {
@@ -464,7 +450,7 @@ const traitDescriptorCollisions = (
   );
 
 const fieldDescriptorCollisions = (
-  fields: InstalledCatalogUnitType["fields"],
+  fields: CatalogDescriptor["fields"],
 ): InvalidIR | undefined =>
   internByIdentity(
     fields.map((field) => {
@@ -481,7 +467,7 @@ const fieldDescriptorCollisions = (
   );
 
 const operationDescriptorCollisions = (
-  operations: InstalledAuthorizationIRType["operations"],
+  operations: CatalogDescriptor["operations"],
 ): InvalidIR | undefined =>
   internByIdentity(
     operations.map((operation) => {
@@ -499,7 +485,7 @@ const operationDescriptorCollisions = (
   );
 
 const traitCompositionCollisions = (
-  compositions: InstalledAuthorizationIRType["traitComposition"],
+  compositions: CatalogDescriptor["traitComposition"],
 ): InvalidIR | undefined =>
   internByIdentity(
     compositions.map((row) => {

@@ -131,7 +131,7 @@ export type _noPublicAuthorization = Expect<
       | "sealInstalledCatalogUnit"
       | "assembleInstalledCatalogUnit"
       | "verifyInstalledCatalogUnit"
-      | "requireUnitCoherence"
+      | "normalizeAndValidateCatalogUnit"
       | "CatalogUnitCorrupt"
       | "CatalogUnitHash"
       | "hashInstalledCatalogUnit"
@@ -217,8 +217,19 @@ export type _catalogUnitEncodedKnown = Expect<
 >;
 export type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
 export type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
-export type _installedCatalogDecoded = Expect<Equal<InstalledAuthorizationIR["catalog"], CatalogId>>;
-export type _installedCatalogEncoded = Expect<Equal<InstalledEncoded["catalog"], string>>;
+export type _installedHasNoCatalogHeader = Expect<
+  Equal<
+    Extract<
+      keyof InstalledAuthorizationIR,
+      "catalog" | "database" | "catalogVersion" | "schemaFingerprint" | "identities" | "operations" | "traitComposition"
+    >,
+    never
+  >
+>;
+export type _unitCatalogIsDescriptor = Expect<Equal<InstalledCatalogUnit["catalog"], CatalogDescriptor>>;
+export type _unitCatalogEncodedKnown = Expect<
+  Extends<CatalogUnitEncoded["catalog"], { readonly id: string; readonly database: string }>
+>;
 export type _jsonValueEncoded = Expect<Equal<typeof JsonScalar.Encoded, JsonScalar>>;
 
 type OwnerlessOperation = {
@@ -617,10 +628,6 @@ const installedFixture: InstalledAuthorizationIR = {
   _tag: "InstalledAuthorizationIR",
   version: INSTALLED_AUTHORIZATION_IR_VERSION,
   languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-  database: DatabaseId.make("todos"),
-  catalog,
-  catalogVersion: CatalogVersion.make("1"),
-  schemaFingerprint: SchemaFingerprint.make("schema"),
   policyHash: PolicyHash.make(POLICY_HASH_PLACEHOLDER),
   classes: ["member"],
   claims: [
@@ -642,21 +649,27 @@ const installedFixture: InstalledAuthorizationIR = {
     subjectClaim: "sub",
     entity: FieldId.make({ catalog, owner: { kind: "entity", name: "user" }, localName: "authId" }),
   },
-  identities: {
-    entities: [EntityId.make({ catalog, name: "issue" })],
-    traits: [TraitId.make({ catalog, name: "taggable" })],
-    fields: [FieldId.make({ catalog, owner: issueOwner, localName: "owner" })],
-    operations: [
-      OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
-      OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
-      OperationId.make({ catalog, owner: taggableOwner, localName: "addTag", target: "required" }),
-    ],
-  },
-  traitComposition: [
+  rules: [],
+  decisions: { entities: [], traits: [], fields: [] },
+  accessPlans: [],
+};
+
+const catalogDescriptor: CatalogDescriptor = {
+  id: catalog,
+  database: DatabaseId.make("todos"),
+  version: CatalogVersion.make("1"),
+  fingerprint: SchemaFingerprint.make("schema"),
+  entities: [{ id: EntityId.make({ catalog, name: "issue" }), traits: [TraitId.make({ catalog, name: "taggable" })] }],
+  traits: [{ id: TraitId.make({ catalog, name: "taggable" }), traits: [] }],
+  fields: [
     {
-      composer: EntityId.make({ catalog, name: "issue" }),
-      trait: TraitId.make({ catalog, name: "taggable" }),
-      transitive: [TraitId.make({ catalog, name: "taggable" })],
+      id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
+      valueType: "ref",
+      refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
     },
   ],
   operations: [
@@ -695,49 +708,21 @@ const installedFixture: InstalledAuthorizationIR = {
       },
     },
   ],
-  rules: [],
-  decisions: { entities: [], traits: [], fields: [] },
-  accessPlans: [],
-};
-
-const catalogDescriptor: CatalogDescriptor = {
-  id: catalog,
-  database: DatabaseId.make("todos"),
-  version: CatalogVersion.make("1"),
-  fingerprint: SchemaFingerprint.make("schema"),
-  entities: [{ id: EntityId.make({ catalog, name: "issue" }), traits: [TraitId.make({ catalog, name: "taggable" })] }],
-  traits: [{ id: TraitId.make({ catalog, name: "taggable" }), traits: [] }],
-  fields: [
+  traitComposition: [
     {
-      id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
-      valueType: "ref",
-      refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
+      composer: EntityId.make({ catalog, name: "issue" }),
+      trait: TraitId.make({ catalog, name: "taggable" }),
+      transitive: [TraitId.make({ catalog, name: "taggable" })],
     },
   ],
-  operations: installedFixture.operations,
-  traitComposition: installedFixture.traitComposition,
 };
 
 const catalogUnitFixture: InstalledCatalogUnit = {
   _tag: "InstalledCatalogUnit",
   version: INSTALLED_CATALOG_UNIT_VERSION,
-  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-  database: DatabaseId.make("todos"),
-  catalog,
-  catalogVersion: CatalogVersion.make("1"),
-  schemaFingerprint: SchemaFingerprint.make("schema"),
-  unitHash: CatalogUnitHash.make(POLICY_HASH_PLACEHOLDER),
-  entities: catalogDescriptor.entities,
-  traits: catalogDescriptor.traits,
-  fields: catalogDescriptor.fields,
-  traitComposition: catalogDescriptor.traitComposition,
-  identities: installedFixture.identities,
-  operations: installedFixture.operations,
+  catalog: catalogDescriptor,
   policy: installedFixture,
+  unitHash: CatalogUnitHash.make(POLICY_HASH_PLACEHOLDER),
 };
 
 const bindingInput: CatalogBindingInput = {
@@ -826,16 +811,9 @@ const _operationFixtures = () => {
   const unhashedTables: UnhashedInstalledTables = {
     version: INSTALLED_AUTHORIZATION_IR_VERSION,
     languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-    database: DatabaseId.make("todos"),
-    catalog,
-    catalogVersion: CatalogVersion.make("1"),
-    schemaFingerprint: SchemaFingerprint.make("schema"),
     classes: [],
     claims: [],
     principal: { subjectClaim: "sub" },
-    identities: { entities: [], traits: [], fields: [], operations: [] },
-    traitComposition: [],
-    operations: [],
     rules: [],
     decisions: { entities: [], traits: [], fields: [] },
     accessPlans: [],
@@ -1061,9 +1039,11 @@ describe("legacy authorization names cannot be imported", () => {
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
     expect("CatalogCasConflict" in ir).toBe(false);
+    expect("InstalledIdentityTable" in ir).toBe(false);
+    expect("normalizeIdentities" in ir).toBe(false);
     expect("InstalledCatalogUnit" in root).toBe(false);
     expect("sealInstalledCatalogUnit" in root).toBe(false);
-    expect("requireUnitCoherence" in root).toBe(false);
+    expect("normalizeAndValidateCatalogUnit" in root).toBe(false);
     expect("catalogUnitCanonicalBytes" in root).toBe(false);
     expect("hashInstalledCatalogUnit" in root).toBe(false);
     expect("hashCatalogSchemaFingerprint" in root).toBe(false);

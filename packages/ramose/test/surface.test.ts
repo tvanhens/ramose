@@ -88,7 +88,7 @@ const KILLED = [
   "sealInstalledCatalogUnit",
   "assembleInstalledCatalogUnit",
   "verifyInstalledCatalogUnit",
-  "requireUnitCoherence",
+  "normalizeAndValidateCatalogUnit",
   "CatalogUnitCorrupt",
   "CatalogUnitHash",
   "hashInstalledCatalogUnit",
