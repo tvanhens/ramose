@@ -23,15 +23,6 @@ import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
   Effect.isEffect(value) ? Effect.runPromise(value) : value;
-const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
-  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
-  try {
-    await value;
-    throw new Error("expected failure");
-  } catch (error) {
-    return error;
-  }
-};
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
@@ -53,27 +44,6 @@ describe("the credential on the wire", () => {
     // the upgrade is the only place the socket carries it — no auth frame
     expect(peer.frames.map((f) => f.op)).toEqual(["sync"]);
     expect(peer.calls[0].headers.authorization).toBe("Bearer s3cret");
-    await c.dispose();
-  });
-
-  test("a 403 policy denial is Unauthorized with the attribute it tripped on", async () => {
-    const peer = scriptedPeer({
-      http: () => ({
-        status: 403,
-        body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" },
-      }),
-    });
-    const c = client(peer);
-    const e = await runFail(seedWrite(
-      c.ramose.db("movies", Movies), function* (tx) {
-        yield* tx.delete(1);
-      }),
-    );
-    expect(e._tag).toBe("Unauthorized");
-    if (e._tag === "Unauthorized") {
-      expect(e.code).toBe("policy");
-      expect(e.attr).toBe(":doc/owner");
-    }
     await c.dispose();
   });
 

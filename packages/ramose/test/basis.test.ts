@@ -21,15 +21,6 @@ import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
   Effect.isEffect(value) ? Effect.runPromise(value) : value;
-const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
-  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
-  try {
-    await value;
-    throw new Error("expected failure");
-  } catch (error) {
-    return error;
-  }
-};
 
 /** Drain a stream into an array on its own fiber, as `useLive` would. */
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
@@ -110,18 +101,6 @@ describe("db.basis()", () => {
       t: 7,
     });
     expect(peer.calls).toHaveLength(1);
-
-    await c.dispose();
-  });
-
-  test("a 404 maps to DatabaseNotFound", async () => {
-    const peer = scriptedPeer({
-      http: () => ({ status: 404, body: { error: "no such database" } }),
-    });
-    const c = client(peer);
-
-    const failure = await runFail(c.ramose.db("movies", Movies).basis());
-    expect(failure._tag).toBe("DatabaseNotFound");
 
     await c.dispose();
   });

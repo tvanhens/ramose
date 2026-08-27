@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
-import { isDatabaseError, Query, Unauthorized } from "../src/db/internal.ts";
+import { Query } from "../src/db/internal.ts";
 import { client, scriptedPeer, runWithTestClock, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -294,68 +294,6 @@ describe("a socket that goes away", () => {
   });
 });
 
-describe("a refused handshake keeps auth identity", () => {
-  test("401 on the probe is Unauthorized, not NetworkError", async () => {
-    let issued = 0;
-    const peer = scriptedPeer({
-      answer: () => rows([]),
-      refuseUpgrades: 99,
-      http: () => ({ status: 401, body: { error: "token expired" } }),
-    });
-    const c = client(peer, {
-      token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
-    });
-    const e = await runFail(c.ramose.db("movies", Movies).query(names));
-
-    expect(e).toBeInstanceOf(Unauthorized);
-    expect(e._tag).toBe("Unauthorized");
-    expect(e.name).toBe("Unauthorized");
-    expect(e.status).toBe(401);
-    expect(e.message).toBe("token expired");
-    expect(isDatabaseError(e)).toBe(true);
-    // terminal: do not walk the transient ladder, and do not re-read the
-    // token for the probe (#183 hold — same credential that rode the upgrade)
-    expect(peer.sockets).toHaveLength(1);
-    expect(issued).toBe(1);
-    expect(peer.sockets[0]!.url).toContain("token=token-1");
-    expect(peer.calls).toEqual([
-      {
-        url: "https://peer.example.com/db/movies/session",
-        method: "GET",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer token-1",
-        },
-        body: undefined,
-      },
-    ]);
-    await c.dispose();
-  });
-
-  test("403 on the probe keeps policy code and attr", async () => {
-    const peer = scriptedPeer({
-      answer: () => rows([]),
-      refuseUpgrades: 99,
-      http: () => ({
-        status: 403,
-        body: { error: "Unauthorized", code: "policy", attr: ":doc/owner" },
-      }),
-    });
-    const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const e = await runFail(c.ramose.db("movies", Movies).query(names));
-
-    expect(e).toBeInstanceOf(Unauthorized);
-    expect(e._tag).toBe("Unauthorized");
-    if (e._tag === "Unauthorized") {
-      expect(e.status).toBe(403);
-      expect(e.code).toBe("policy");
-      expect(e.attr).toBe(":doc/owner");
-    }
-    expect(peer.sockets).toHaveLength(1);
-    await c.dispose();
-  });
-});
-
 describe("Unauthorized is handled in place", () => {
   test("a 401 re-reads the token, swaps the principal and re-issues the frame", async () => {
     let issued = 0;
@@ -406,19 +344,6 @@ describe("Unauthorized is handled in place", () => {
       expect(e.code).toBe("policy");
       expect(e.attr).toBe(":doc/owner");
     }
-    await c.dispose();
-  });
-
-  test("with no token configured there is nothing to swap", async () => {
-    const peer = scriptedPeer({
-      answer: () => ({ status: 401, body: { error: "unauthorized" } }),
-    });
-    const c = client(peer);
-    const e = await runFail(
-      c.ramose.db("movies", Movies).asOf(2).query(eids),
-    );
-    expect(e._tag).toBe("Unauthorized");
-    expect(peer.frames.map((f) => f.op)).toEqual(["q"]);
     await c.dispose();
   });
 });

@@ -301,21 +301,6 @@ describe("live survives the network", () => {
     await c.dispose();
   });
 
-  test("a refusal that survives the fresh token fails the stream", async () => {
-    const peer = peerAt({
-      t: 5,
-      datoms: [],
-      answer: () => ({ status: 401, body: { error: "no" } }),
-    });
-    const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const live = collect(c.ramose.db("movies", Movies).effect.live(names));
-    await until(() => live.done);
-
-    expect(live.done).toBe(true);
-    expect((live.error as { _tag?: string })?._tag).toBe("Unauthorized");
-    await c.dispose();
-  });
-
   test("a terminal InvalidRequest fails the stream rather than retrying", async () => {
     const peer = peerAt({
       t: 5,

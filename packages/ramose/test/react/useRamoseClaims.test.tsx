@@ -8,7 +8,6 @@ import type { ReactNode } from "react";
 import * as Ramose from "../../src/db/index.ts";
 import { RamoseProvider, useRamoseClaims } from "../../src/react/index.ts";
 import { registerDom } from "./harness.tsx";
-import { scriptedPeer } from "./peer.ts";
 
 registerDom();
 
@@ -18,17 +17,9 @@ const b64url = (value: unknown): string =>
 const jwtOf = (claims: Record<string, unknown>): string =>
   `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
 
-const wrap = (
-  token: Ramose.TokenInput,
-  peer = scriptedPeer(),
-) =>
+const wrap = (token: Ramose.TokenInput) =>
   ({ children }: { children?: ReactNode }) => (
-    <RamoseProvider
-      url="https://peer.example.com"
-      token={token}
-      fetch={peer.fetch}
-      webSocket={peer.webSocket}
-    >
+    <RamoseProvider url="https://peer.example.com" token={token}>
       {children}
     </RamoseProvider>
   );

@@ -122,9 +122,6 @@
     "packages/ramose/test/react/useQuery.test.tsx": [
       "scriptedPeer"
     ],
-    "packages/ramose/test/react/useRamoseClaims.test.tsx": [
-      "scriptedPeer"
-    ],
     "packages/ramose/test/required-update.test.ts": [
       "scriptedPeer"
     ],
