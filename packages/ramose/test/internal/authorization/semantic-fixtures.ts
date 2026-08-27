@@ -481,6 +481,16 @@ export const semanticRejects: readonly SemanticReject[] = [
   ),
   appReject("wrong owner: user.authId from title focus", [read(Issue.title).when(eq(User.authId, "x"))], /wrong owner/),
   appReject(
+    "intermediate non-ref",
+    [read(Issue).when(eq(path(Issue.title, User.authId), me))],
+    /non-ref traversal/,
+  ),
+  appReject(
+    "intermediate many hop",
+    [read(Issue).when(eq(path(Issue.workspace, Workspace.members, User.authId), "x"))],
+    /intermediate many-valued traversal/,
+  ),
+  appReject(
     "principal title is not unique",
     [read(Issue).when(eq(Issue.owner, me))],
     /principal field is not unique/,

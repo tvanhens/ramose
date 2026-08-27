@@ -90,30 +90,14 @@ const schemaField = (
   schema: AnySchema,
   owner: OwnerRef,
   localName: string,
-):
-  | {
-      readonly ident: string;
-      readonly cardinality: "one" | "many";
-      readonly valueType: string | undefined;
-    }
-  | undefined => {
+): { readonly ident: string } | undefined => {
   const fields =
     owner.kind === "entity"
       ? schema.entities[owner.name]?.fields
       : schemaTraits(schema).get(owner.name)?.fields;
-  const field = fields?.[localName] as
-    | {
-        readonly ident?: unknown;
-        readonly cardinality?: unknown;
-        readonly valueType?: unknown;
-      }
-    | undefined;
+  const field = fields?.[localName] as { readonly ident?: unknown } | undefined;
   if (field === undefined || typeof field.ident !== "string") return undefined;
-  return {
-    ident: field.ident,
-    cardinality: field.cardinality === "many" ? "many" : "one",
-    valueType: typeof field.valueType === "string" ? field.valueType : undefined,
-  };
+  return { ident: field.ident };
 };
 
 type NodeBudget = { nodes: number };
@@ -132,8 +116,6 @@ const lowerFieldId = (
 ): Result.Result<
   {
     readonly id: { readonly _tag: "RelativeFieldId"; readonly owner: OwnerRef; readonly localName: string };
-    readonly cardinality: "one" | "many";
-    readonly valueType: string | undefined;
   },
   InvalidIR
 > =>
@@ -157,11 +139,7 @@ const lowerFieldId = (
     if (field === undefined || field.ident !== step.ident) {
       return yield* invalid(`unknown field path '${step.ident}' is not in this catalog`);
     }
-    return {
-      id: { _tag: "RelativeFieldId" as const, owner, localName },
-      cardinality: field.cardinality,
-      valueType: field.valueType,
-    };
+    return { id: { _tag: "RelativeFieldId" as const, owner, localName } };
   });
 
 const lowerPathSteps = (
@@ -185,22 +163,8 @@ const lowerPathSteps = (
     }
     yield* takeNodes(budget, 1 + steps.length);
     const lowered: { readonly field: RelativeFieldId }[] = [];
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]!;
+    for (const step of steps) {
       const field = yield* lowerFieldId(schema, step);
-      const isLast = i === steps.length - 1;
-      if (!isLast) {
-        if (field.cardinality === "many") {
-          return yield* invalid(
-            `intermediate many-valued hop '${step.ident}' is not supported`,
-          );
-        }
-        if (field.valueType !== "ref") {
-          return yield* invalid(
-            `intermediate hop '${step.ident}' is not a ref`,
-          );
-        }
-      }
       lowered.push({ field: field.id });
     }
     return {

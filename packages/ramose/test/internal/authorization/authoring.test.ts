@@ -335,22 +335,6 @@ describe("structural InvalidIR", () => {
     expectInvalid(compile([read(Issue).when(any())]), /empty any/);
   });
 
-  test("intermediate non-ref", () => {
-    expectInvalid(
-      compile([read(Issue).when(eq(path(Issue.title, User.authId), me))]),
-      /not a ref/,
-    );
-  });
-
-  test("intermediate many hop", () => {
-    expectInvalid(
-      compile([
-        read(Issue).when(eq(path(Issue.workspace, Workspace.members, User.authId), "x")),
-      ]),
-      /intermediate many/,
-    );
-  });
-
   test("depth greater than 3", () => {
     expectInvalid(
       compile([
