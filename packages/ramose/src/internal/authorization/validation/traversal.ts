@@ -54,9 +54,9 @@ export const resourceFocus = (
 export const meEntity = (
   index: PreparedAuthorizationCatalog,
   principal: InstalledPrincipalResolution,
-): Result.Result<EntityId | undefined, ValidateFailure> => {
-  if (principal.entity === undefined) return Result.succeed(undefined);
-  return Result.gen(function* () {
+): Result.Result<EntityId | undefined, ValidateFailure> =>
+  Result.gen(function* () {
+    if (principal.entity === undefined) return undefined;
     const field = yield* requireField(index, principal.entity, "principal field");
     if (field.unique === undefined) {
       return yield* invalid("principal field is not unique");
@@ -71,7 +71,6 @@ export const meEntity = (
     if (entity === undefined) return yield* invalid("missing principal entity");
     return entity;
   });
-};
 
 export const walkRef = (
   index: PreparedAuthorizationCatalog,

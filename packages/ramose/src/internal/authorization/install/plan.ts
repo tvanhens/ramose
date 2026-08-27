@@ -220,11 +220,11 @@ const addPrincipalResolution = (
   index: PreparedAuthorizationCatalog,
   principal: InstalledPrincipalResolution,
   builder: PlanBuilder,
-): Result.Result<void, ValidateFailure> => {
-  if (principal.entity === undefined) {
-    return invalid("omitted principal-row fact");
-  }
-  return Result.gen(function* () {
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    if (principal.entity === undefined) {
+      return yield* invalid("omitted principal-row fact");
+    }
     const field = yield* requireField(index, principal.entity, "principal field");
     if (field.unique === undefined) {
       return yield* invalid("unrepresentable principal-row resolution: field is not unique");
@@ -236,7 +236,6 @@ const addPrincipalResolution = (
     yield* addIndex(builder, field.id);
     return yield* addPrincipal(builder, field.id);
   });
-};
 
 const addFocusMembership = (
   index: PreparedAuthorizationCatalog,

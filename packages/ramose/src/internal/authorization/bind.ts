@@ -570,15 +570,14 @@ const bindDecisions = (
 const bindPrincipal = (
   index: CatalogIndex,
   principal: PrincipalResolutionConfig,
-): Result.Result<InstalledPrincipalResolution, BindFailure> => {
-  if (principal.entity === undefined) {
-    return Result.succeed({ subjectClaim: principal.subjectClaim });
-  }
-  return Result.gen(function* () {
+): Result.Result<InstalledPrincipalResolution, BindFailure> =>
+  Result.gen(function* () {
+    if (principal.entity === undefined) {
+      return { subjectClaim: principal.subjectClaim };
+    }
     const entity = yield* bindField(index, principal.entity);
     return { subjectClaim: principal.subjectClaim, entity };
   });
-};
 
 /**
  * Deep-copy JSON-shaped data so later freeze cannot seal caller-owned
