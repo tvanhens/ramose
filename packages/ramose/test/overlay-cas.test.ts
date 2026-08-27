@@ -1,109 +1,86 @@
 /**
  * Overlay remapping for `:db/cas` — queued tx tuples, invocation.entity,
- * and invocation.input must all rewrite acknowledged named tempids before
- * post / `/op`.
+ * and invocation.input rewrite acknowledged named tempids as pure data.
+ * Engine re-run uses a real `Connection` (not a peer double).
  */
 
 import { describe, expect, test } from "bun:test";
-import { Connection } from "../src/internal/core/conn.ts";
-import { Index, toWireDatom, type WireDatom } from "../src/internal/core/index.ts";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { pipe } from "effect/Function";
+import { Connection } from "../src/internal/core/conn.ts";
+import { Index } from "../src/internal/core/index.ts";
+import { processTx, TxError } from "../src/internal/core/tx.ts";
 import {
   Operation,
-  Query,
-  TxRejected,
-  seedWrite,
   tempid,
 } from "../src/db/internal.ts";
 import { buildOp, runBody } from "../src/db/op-handle.ts";
-import { client, scriptedPeer, settle } from "./peer.ts";
+import {
+  collectOpInputTempidPaths,
+  pruneAckedNamedIds,
+  remapQueuedLayers,
+  rewritePendingInvocation,
+  rewritePendingTx,
+  submitDespiteLocalTxError,
+  type OverlayInFlightRecord,
+  type OverlayRemapLayer,
+} from "../src/db/overlay.ts";
+import { catalogWorld } from "./overlay-seed.ts";
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
-  Effect.isEffect(value) ? Effect.runPromise(value) : value;
-const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<any> => {
-  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
-  try {
-    await value;
-    throw new Error("expected failure");
-  } catch (error) {
-    return error;
-  }
-};
+const moviesWorld = () => catalogWorld(Movies);
 
-const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
-const ages = Query.q(() =>
-  pipe(Query.entities(User), Query.select({ name: User.name, age: User.age })),
-);
-
-const collect = <A, E>(stream: Stream.Stream<A, E>) => {
-  const seen: A[] = [];
-  let error: unknown;
-  const fiber = Effect.runFork(
-    Stream.runForEach(stream, (a) => Effect.sync(() => seen.push(a))).pipe(
-      Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          error = Cause.squash(cause);
-        }),
-      ),
-    ),
-  );
-  return {
-    seen,
-    get error() {
-      return error;
-    },
-    stop: () => Effect.runPromise(Fiber.interrupt(fiber)),
-  };
-};
-
-const snapshotOf = async (conn: Connection): Promise<{ t: number; datoms: WireDatom[] }> => {
-  const datoms: WireDatom[] = [];
-  for await (const chunk of conn.db().datoms(Index.EAVT, {})) {
-    for (const d of chunk) datoms.push(toWireDatom(d));
-  }
-  return { t: conn.t, datoms };
-};
-
-const moviesWorld = async () => {
-  const conn = await Connection.create();
-  await conn.transact([
-    { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
-    { ":db/ident": ":user/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-    { ":db/ident": ":user/friends", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-    { ":db/ident": ":user/bestFriend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-    { ":db/ident": ":movie/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
-    { ":db/ident": ":movie/year", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-    { ":db/ident": ":movie/released", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-    { ":db/ident": ":meta/source", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-  ]);
-  return conn;
-};
-
-const seedClient = async (
-  peer: { socket: { push: (f: unknown) => void } },
-  db: { query: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
-  conn: Connection,
-) => {
-  await db.query(names);
-  const snap = await snapshotOf(conn);
-  peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
-  await settle();
-  return snap;
-};
-
-const infoBody = (t: number) => ({
-  db: "movies",
-  t,
-  principal: { eid: null, class: "admin" },
+const layer = (
+  partial: Partial<OverlayRemapLayer> & Pick<OverlayRemapLayer, "tx">,
+): OverlayRemapLayer => ({
+  tempids: {},
+  generated: new Set(),
+  usedTempids: new Set(),
+  inputPaths: [],
+  ...partial,
 });
 
-/** Re-run an operation body from the posted `/op` invocation — real peer path. */
+const inflight = (
+  partial: Partial<OverlayInFlightRecord> & Pick<OverlayInFlightRecord, "tx">,
+): OverlayInFlightRecord => ({
+  names: new Set(),
+  usedTempids: new Set(),
+  inputPaths: [],
+  ...partial,
+});
+
+const casViaInput = Operation(
+  "user/cas-via-input",
+  {
+    input: Schema.Struct({
+      target: Schema.Union([Schema.String, Schema.Finite]),
+      title: Schema.optional(Schema.String),
+    }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.cas(op.tempid(input.target as string), User.age, null, 42);
+    return {};
+  },
+);
+
+const nestedCasViaInput = Operation(
+  "user/cas-via-nested-input",
+  {
+    input: Schema.Struct({
+      nested: Schema.Struct({
+        target: Schema.Union([Schema.String, Schema.Finite]),
+      }),
+    }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.cas(op.tempid(input.nested.target as string), User.age, null, 7);
+    return {};
+  },
+);
+
+/** Re-run an operation body the way `/op` does — real engine, no peer. */
 const rerunPostedOp = async (
   operation: Parameters<typeof runBody>[0],
   body: {
@@ -134,1042 +111,437 @@ const rerunPostedOp = async (
   return server.transact([...built.ops()]);
 };
 
+const trackOpInput = async (
+  operation: Parameters<typeof runBody>[0],
+  input: unknown,
+): Promise<{
+  paths: (readonly (string | number)[])[];
+  used: Set<string>;
+}> => {
+  const { input: tracked, paths } = collectOpInputTempidPaths(input);
+  const used = new Set<string>();
+  const built = buildOp({
+    schema: Movies,
+    db: "movies",
+    principal: { eid: null, class: "admin", claims: {} },
+    effects: "halt",
+    q: () => Effect.succeed([]),
+    pull: () => Effect.succeed(null),
+  });
+  await Effect.runPromise(
+    runBody(operation, built.op, tracked, {
+      onTempid: (name) => used.add(name),
+    }),
+  );
+  return { paths, used };
+};
+
+const failProcessTx = async (
+  conn: Connection,
+  tx: readonly unknown[],
+): Promise<TxError> => {
+  try {
+    await processTx(
+      conn.db(),
+      [...tx],
+      conn.t + 1,
+      conn.nextEntityId,
+      Date.now(),
+    );
+    throw new Error("expected processTx to reject");
+  } catch (err) {
+    if (err instanceof TxError) return err;
+    throw err;
+  }
+};
+
 describe("overlay CAS remapping", () => {
-  test("queued rewrite remaps a CAS tempid subject to the server eid", async () => {
-    const server = await moviesWorld();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const posts: unknown[][] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        if (posts.length === 0) await gate;
-        posts.push(call.body.tx as unknown[]);
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-      }),
-    );
-    await settle();
-    const second = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.cas(User.age, null, 42);
-      }),
-    );
-    await settle();
-    release();
-    await first;
-    await second;
-    expect(posts).toHaveLength(2);
-    const casOps = (posts[1] ?? []).filter(
-      (op): op is unknown[] => Array.isArray(op) && op[0] === ":db/cas",
-    );
-    expect(casOps).toHaveLength(1);
-    expect(typeof casOps[0]![1]).toBe("number");
-    const eid = casOps[0]![1] as number;
-    const row = await server.db().entity(eid);
-    expect(row![":user/name"]).toBe("Ada");
-    expect(row![":user/age"]).toBe(42);
-    const nameAttr = server.db().attr(":user/name")!.id;
-    const named = await server.db().datomsArray(Index.AVET, { a: nameAttr });
-    expect(named.filter((d) => d.op).map((d) => d.e)).toEqual([eid]);
-    await c.dispose();
-  });
-
-  test("queued rewrite remaps a CAS ref replacement tempid to the server eid", async () => {
-    const server = await moviesWorld();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const posts: unknown[][] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        if (posts.length === 0) await gate;
-        posts.push(call.body.tx as unknown[]);
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-      }),
-    );
-    await settle();
-    const second = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const ada = yield* tx.entity(tx.tempid("new"));
-        yield* ada.set(User.name, "Ada");
-        const e = yield* tx.entity();
-        yield* e.set(User.name, "Bea");
-        yield* e.cas(User.bestFriend, null, tx.tempid("new"));
-      }),
-    );
-    await settle();
-    release();
-    await first;
-    await second;
-    expect(posts).toHaveLength(2);
-    const casOps = (posts[1] ?? []).filter(
-      (op): op is unknown[] =>
-        Array.isArray(op) && op[0] === ":db/cas" && op[2] === ":user/bestFriend",
-    );
-    expect(casOps).toHaveLength(1);
-    expect(casOps[0]![3]).toBeNull();
-    expect(typeof casOps[0]![4]).toBe("number");
-    const friend = casOps[0]![4] as number;
-    expect((await server.db().entity(friend))![":user/name"]).toBe("Ada");
-    const bea = await server.db().entid([":user/name", "Bea"]);
-    expect((await server.db().entity(bea!))![":user/bestFriend"]).toBe(friend);
-    await c.dispose();
-  });
-
-  test("ackedNamed does not rewrite a later unrelated tempid(\"new\") after the queue drains", async () => {
-    const server = await moviesWorld();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const posts: unknown[][] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        if (posts.length === 0) await gate;
-        posts.push(call.body.tx as unknown[]);
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-      }),
-    );
-    await settle();
-    const second = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.cas(User.age, null, 42);
-      }),
-    );
-    await settle();
-    release();
-    await first;
-    await second;
-    expect(posts).toHaveLength(2);
-    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
-    expect((await server.db().entity(adaEid))![":user/age"]).toBe(42);
-
-    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
-
-    const third = await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Bea");
-        yield* tx.cas(adaEid, User.age, 31, 32);
-      }),
-    );
-    expect(third.t).toBeGreaterThan(0);
-    expect(posts).toHaveLength(3);
-    const thirdTx = posts[2] ?? [];
-    const beaAdds = thirdTx.filter(
-      (op): op is unknown[] =>
-        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Bea",
-    );
-    expect(beaAdds).toHaveLength(1);
-    expect(beaAdds[0]![1]).toBe("new");
-
-    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
-    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
-    const beaEid = await server.db().entid([":user/name", "Bea"]);
-    expect(beaEid).toBeDefined();
-    expect(beaEid).not.toBe(adaEid);
-
-    await c.dispose();
-  });
-
-  test("in-flight no-layer post still rewrites a named tempid after the earlier ack", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+  test("queued rewrite remaps a CAS tempid subject to the acknowledged eid", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
     ]);
-    const adaEid = seeded.tempids.u!;
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
+    const eid = minted.tempids.new!;
+    const ids = { new: eid };
+
+    expect(
+      rewritePendingTx(
+        [[":db/cas", "new", ":user/age", null, 42]],
+        ids,
+        schema,
+      ),
+    ).toEqual([[":db/cas", eid, ":user/age", null, 42]]);
+
+    const queued = layer({
+      tx: [[":db/cas", "new", ":user/age", null, 42]],
+      usedTempids: new Set(["new"]),
     });
-    const posts: unknown[][] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        if (posts.length === 0) await gate;
-        posts.push(call.body.tx as unknown[]);
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Cal");
-      }),
-    );
-    await settle();
-    const second = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Bea");
-        yield* tx.cas(adaEid, User.age, 31, 32);
-      }),
-    );
-    await settle();
-    release();
-    await first;
-    await second;
-    expect(posts).toHaveLength(2);
-    const secondTx = posts[1] ?? [];
-    const beaAdds = secondTx.filter(
-      (op): op is unknown[] =>
-        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Bea",
-    );
-    expect(beaAdds).toHaveLength(1);
-    expect(typeof beaAdds[0]![1]).toBe("number");
-    expect(beaAdds[0]![1]).not.toBe(adaEid);
-    expect(beaAdds[0]![1]).not.toBe("new");
-
-    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
-    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
-    const beaEid = await server.db().entid([":user/name", "Bea"]);
-    expect(beaEid).toBeDefined();
-    expect(beaEid).not.toBe(adaEid);
-    expect(await server.db().entid([":user/name", "Cal"])).toBeUndefined();
-
-    await c.dispose();
+    const ackedNamed: Record<string, number> = {};
+    remapQueuedLayers([queued], [], ackedNamed, ids, {}, schema);
+    expect(queued.tx).toEqual([[":db/cas", eid, ":user/age", null, 42]]);
+    expect(ackedNamed.new).toBe(eid);
   });
 
-  test("resync after a named-tempid ack does not keep the mapping if nothing is queued", async () => {
-    const server = await moviesWorld();
-    const posts: unknown[][] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posts.push(call.body.tx as unknown[]);
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-        yield* e.set(User.age, 30);
-      }),
-    );
-    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
-    const snap = await snapshotOf(server);
-    peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
-    await settle();
-
-    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
-
-    await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Bea");
-        yield* tx.cas(adaEid, User.age, 31, 32);
-      }),
-    );
-    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
-    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
-    const beaEid = await server.db().entid([":user/name", "Bea"]);
-    expect(beaEid).toBeDefined();
-    expect(beaEid).not.toBe(adaEid);
-
-    await c.dispose();
-  });
-
-  test("stale replica CAS still POSTs and succeeds without optimistic paint", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+  test("queued rewrite remaps a CAS ref replacement tempid to the eid", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
+      { ":db/id": "bea", ":user/name": "Bea" },
     ]);
-    const eid = seeded.tempids.u!;
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
+    const ada = minted.tempids.new!;
+    const bea = minted.tempids.bea!;
+    const ids = { new: ada };
+
+    expect(
+      rewritePendingTx(
+        [[":db/cas", bea, ":user/bestFriend", null, "new"]],
+        ids,
+        schema,
+      ),
+    ).toEqual([[":db/cas", bea, ":user/bestFriend", null, ada]]);
+
+    const queued = layer({
+      tx: [[":db/cas", bea, ":user/bestFriend", null, "new"]],
+      usedTempids: new Set(["new"]),
     });
-    let posted = 0;
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posted += 1;
-        await gate;
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    await server.transact([[":db/add", eid, ":user/age", 31]]);
-
-    const live = collect(db.effect.live(ages));
-    await settle();
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada", age: 30 }]);
-
-    const write = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        yield* tx.cas(eid, User.age, 31, 32);
-      }),
-    );
-    await settle();
-    expect(posted).toBe(1);
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada", age: 30 }]);
-
-    release();
-    await write;
-    await settle();
-    expect((await server.db().entity(eid))![":user/age"]).toBe(32);
-    const snap = await snapshotOf(server);
-    peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
-    await settle();
-    expect(await run(db.query(ages))).toEqual([{ name: "Ada", age: 32 }]);
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada", age: 32 }]);
-
-    await live.stop();
-    await c.dispose();
+    remapQueuedLayers([queued], [], {}, ids, {}, schema);
+    expect(queued.tx).toEqual([[":db/cas", bea, ":user/bestFriend", null, ada]]);
   });
 
-  test("CAS-only on a server-only numeric eid still POSTs", async () => {
-    const server = await moviesWorld();
-    let posted = 0;
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posted += 1;
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+  test("queued rewrite remaps a CAS expected ref named tempid to the eid", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
+      { ":db/id": "bea", ":user/name": "Bea" },
+      { ":db/id": "cal", ":user/name": "Cal" },
     ]);
-    const eid = seeded.tempids.u!;
+    const ada = minted.tempids.new!;
+    const bea = minted.tempids.bea!;
+    const cal = minted.tempids.cal!;
 
-    const report = await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        yield* tx.cas(eid, User.age, 30, 31);
-      }),
-    );
-    expect(posted).toBe(1);
-    expect(report.t).toBeGreaterThan(0);
-    expect((await server.db().entity(eid))![":user/age"]).toBe(31);
+    expect(
+      rewritePendingTx(
+        [[":db/cas", bea, ":user/bestFriend", "new", cal]],
+        { new: ada },
+        schema,
+      ),
+    ).toEqual([[":db/cas", bea, ":user/bestFriend", ada, cal]]);
 
-    await c.dispose();
+    const queued = layer({
+      tx: [[":db/cas", bea, ":user/bestFriend", "new", cal]],
+      usedTempids: new Set(["new"]),
+    });
+    remapQueuedLayers([queued], [], {}, { new: ada }, {}, schema);
+    expect(queued.tx).toEqual([[":db/cas", bea, ":user/bestFriend", ada, cal]]);
   });
 
-  test("CAS-only on a server-only lookup subject still POSTs", async () => {
-    const server = await moviesWorld();
-    let posted = 0;
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posted += 1;
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
+  test("non-ref CAS expected/replacement strings that equal a tempid name stay strings", async () => {
+    // Scalar slots are also pinned in required-update.test.ts (Staffs title).
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    expect(
+      rewritePendingTx(
+        [[":db/cas", "new", ":user/name", "new", "new"]],
+        { new: 2002 },
+        schema,
+      ),
+    ).toEqual([[":db/cas", 2002, ":user/name", "new", "new"]]);
+  });
 
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+  test("after the queue drains, pruneAckedNamedIds drops \"new\" so a later tempid is not rewritten", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
     ]);
-    const eid = seeded.tempids.u!;
-
-    const report = await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        yield* tx.cas([":user/name", "Ada"], User.age, 30, 31);
-      }),
-    );
-    expect(posted).toBe(1);
-    expect(report.t).toBeGreaterThan(0);
-    expect((await server.db().entity(eid))![":user/age"]).toBe(31);
-
-    await c.dispose();
-  });
-
-  test("CAS ref replacement of a server-only eid still POSTs", async () => {
-    const server = await moviesWorld();
-    const ada = await server.transact([{ ":db/id": "a", ":user/name": "Ada" }]);
-    const adaEid = ada.tempids.a!;
-    let posted = 0;
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posted += 1;
-        const rep = await server.transact(call.body.tx);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientTxId: call.body.clientTxId,
-          },
-        };
-      },
+    const eid = minted.tempids.new!;
+    const queued = layer({
+      tx: [[":db/cas", "new", ":user/age", null, 42]],
+      tempids: { new: eid },
+      usedTempids: new Set(["new"]),
     });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
+    const ackedNamed: Record<string, number> = {};
+    remapQueuedLayers([queued], [], ackedNamed, { new: eid }, { new: eid }, schema);
+    expect(ackedNamed.new).toBe(eid);
 
-    const bea = await server.transact([{ ":db/id": "b", ":user/name": "Bea" }]);
-    const beaEid = bea.tempids.b!;
-
-    const report = await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        yield* tx.cas(adaEid, User.bestFriend, null, beaEid);
-      }),
-    );
-    expect(posted).toBe(1);
-    expect(report.t).toBeGreaterThan(0);
-    expect((await server.db().entity(adaEid))![":user/bestFriend"]).toBe(beaEid);
-
-    await c.dispose();
+    pruneAckedNamedIds(ackedNamed, [], [], schema);
+    expect(ackedNamed).toEqual({});
+    expect(
+      rewritePendingTx(
+        [[":db/add", "new", ":user/name", "Bea"]],
+        ackedNamed,
+        schema,
+      ),
+    ).toEqual([[":db/add", "new", ":user/name", "Bea"]]);
   });
 
-  test("genuine CAS conflict still POSTs and fails without leftover overlay", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+  test("in-flight no-layer record is remapped the same way as pending", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Cal" },
     ]);
-    const eid = seeded.tempids.u!;
-    let posted = 0;
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
-        posted += 1;
-        try {
-          const rep = await server.transact(call.body.tx);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientTxId: call.body.clientTxId,
-            },
-          };
-        } catch (err) {
-          const code = err instanceof Error && "code" in err ? String((err as { code: string }).code) : "tx/rejected";
-          return {
-            status: 409,
-            body: { error: (err as Error).message, tag: "TxRejected", code },
-          };
-        }
-      },
+    const eid = minted.tempids.new!;
+    const rec = inflight({
+      names: new Set(["new"]),
+      usedTempids: new Set(["new"]),
+      tx: [
+        [":db/add", "new", ":user/name", "Bea"],
+        [":db/cas", "new", ":user/age", null, 32],
+      ],
     });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
+    const ackedNamed: Record<string, number> = {};
+    remapQueuedLayers([], [rec], ackedNamed, { new: eid }, {}, schema);
+    expect(rec.tx).toEqual([
+      [":db/add", eid, ":user/name", "Bea"],
+      [":db/cas", eid, ":user/age", null, 32],
+    ]);
+    expect(ackedNamed.new).toBe(eid);
+  });
 
-    const live = collect(db.effect.live(ages));
-    await settle();
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada", age: 30 }]);
+  test("resync / empty queue: prune leaves ackedNamed empty", async () => {
+    const ackedNamed: Record<string, number> = { new: 1754 };
+    pruneAckedNamedIds(ackedNamed, [], []);
+    expect(ackedNamed).toEqual({});
+  });
 
-    const err = await runFail(
-      seedWrite(db, function* (tx) {
-        yield* tx.cas(eid, User.age, 99, 32);
-      }),
+  test("generated tmp-1 is per-layer; explicit name \"new\" is shared even if the later layer allocated it", async () => {
+    const conn = await moviesWorld();
+    const schema = conn.db().schema;
+    const generated = layer({
+      tx: [[":db/cas", "tmp-1", ":user/age", null, 1]],
+      tempids: { "tmp-1": 3001 },
+      generated: new Set(["tmp-1"]),
+    });
+    const named = layer({
+      tx: [[":db/cas", "new", ":user/age", null, 2]],
+      tempids: { new: 4001 },
+      usedTempids: new Set(["new"]),
+    });
+    const ackedNamed: Record<string, number> = {};
+    remapQueuedLayers(
+      [generated, named],
+      [],
+      ackedNamed,
+      { "tmp-1": 2001, new: 1001 },
+      { "tmp-1": 3001, new: 4001 },
+      schema,
     );
-    await settle();
-    expect(posted).toBe(1);
-    expect(err).toBeInstanceOf(TxRejected);
-    expect((err as TxRejected).code).toBe("tx/cas-conflict");
-    expect((await server.db().entity(eid))![":user/age"]).toBe(30);
-    expect(live.seen.at(-1)).toEqual([{ name: "Ada", age: 30 }]);
-    expect(await run(db.query(ages))).toEqual([{ name: "Ada", age: 30 }]);
+    expect(generated.tx).toEqual([[":db/cas", "tmp-1", ":user/age", null, 1]]);
+    expect(named.tx).toEqual([[":db/cas", 1001, ":user/age", null, 2]]);
+    expect(ackedNamed["tmp-1"]).toBeUndefined();
+    expect(ackedNamed.new).toBe(1001);
+  });
 
-    await live.stop();
-    await c.dispose();
+  test("tempid(\"tmp-1\") throws", () => {
+    expect(() => tempid("tmp-1")).toThrow(
+      "ramose: tempid names matching tmp-<n> are reserved for the transaction builder",
+    );
   });
 });
 
-describe("overlay CAS /op remapping", () => {
-  const casViaInput = Operation(
-    "user/cas-via-input",
-    {
-      input: Schema.Struct({
-        target: Schema.Union([Schema.String, Schema.Finite]),
-        title: Schema.optional(Schema.String),
-      }),
-      output: Schema.Struct({}),
-    },
-    (op, input) => {
-      op.cas(op.tempid(input.target as string), User.age, null, 42);
-      return {};
-    },
-  );
+describe("overlay CAS invocation remapping", () => {
+  test("rewrites input.target used by op.cas(op.tempid) and leaves title \"new\"", async () => {
+    const conn = await moviesWorld();
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
+    ]);
+    const eid = minted.tempids.new!;
+    const input = { target: "new", title: "new" };
+    const { paths, used } = await trackOpInput(casViaInput, input);
+    expect(paths).toEqual([["target"]]);
+    expect(used.has("new")).toBe(true);
 
-  const nestedCasViaInput = Operation(
-    "user/cas-via-nested-input",
-    {
-      input: Schema.Struct({
-        nested: Schema.Struct({
-          target: Schema.Union([Schema.String, Schema.Finite]),
-        }),
-      }),
-      output: Schema.Struct({}),
-    },
-    (op, input) => {
-      op.cas(op.tempid(input.nested.target as string), User.age, null, 7);
-      return {};
-    },
-  );
+    const rewritten = rewritePendingInvocation(
+      { name: "user/cas-via-input", input, clientOpId: "op-1" },
+      { new: eid },
+      new Map(),
+      used,
+      paths,
+    );
+    expect(rewritten.input).toEqual({ target: eid, title: "new" });
+    expect(rewritten.tempids).toEqual({ new: eid });
 
-  test("queued /op remaps a named tempid inside invocation.input used by op.cas(op.tempid)", async () => {
-    const server = await moviesWorld();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
+    const queued = layer({
+      tx: [[":db/cas", "new", ":user/age", null, 42]],
+      usedTempids: used,
+      inputPaths: paths,
+      invocation: { name: "user/cas-via-input", input, clientOpId: "op-1" },
     });
-    const opBodies: Record<string, unknown>[] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (call.url.endsWith("/transact")) {
-          await gate;
-          const rep = await server.transact(call.body.tx);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientTxId: call.body.clientTxId,
-            },
-          };
-        }
-        if (call.url.endsWith("/op")) {
-          opBodies.push(call.body);
-          const rep = await rerunPostedOp(casViaInput, call.body, server);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientOpId: call.body.clientOpId,
-              output: {},
-            },
-          };
-        }
-        return { body: { t: server.t } };
+    remapQueuedLayers([queued], [], {}, { new: eid }, {}, conn.db().schema);
+    expect(queued.invocation?.input).toEqual({ target: eid, title: "new" });
+    expect(queued.invocation?.tempids).toEqual({ new: eid });
+  });
+
+  test("rewrites a nested input tempid used by op.cas(op.tempid)", async () => {
+    const conn = await moviesWorld();
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
+    ]);
+    const eid = minted.tempids.new!;
+    const input = { nested: { target: "new" } };
+    const { paths, used } = await trackOpInput(nestedCasViaInput, input);
+    expect(paths).toEqual([["nested", "target"]]);
+
+    const rewritten = rewritePendingInvocation(
+      { name: "user/cas-via-nested-input", input, clientOpId: "op-2" },
+      { new: eid },
+      new Map(),
+      used,
+      paths,
+    );
+    expect(rewritten.input).toEqual({ nested: { target: eid } });
+
+    const queued = layer({
+      tx: [[":db/cas", "new", ":user/age", null, 7]],
+      usedTempids: used,
+      inputPaths: paths,
+      invocation: { name: "user/cas-via-nested-input", input, clientOpId: "op-2" },
+    });
+    remapQueuedLayers([queued], [], {}, { new: eid }, {}, conn.db().schema);
+    expect(queued.invocation?.input).toEqual({ nested: { target: eid } });
+  });
+
+  test("contextual invocation.entity named tempid remaps to eid on a no-layer inFlight", async () => {
+    const conn = await moviesWorld();
+    const minted = await conn.transact([
+      { ":db/id": "new", ":user/name": "Cal" },
+    ]);
+    const eid = minted.tempids.new!;
+    const rec = inflight({
+      names: new Set(["new"]),
+      usedTempids: new Set(["new"]),
+      tx: [[":db/cas", 99, ":user/age", 31, 32]],
+      invocation: {
+        name: "user/stale-cas",
+        entity: "new",
+        input: { eid: 99 },
+        clientOpId: "op-3",
       },
     });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
+    remapQueuedLayers([], [rec], {}, { new: eid }, {}, conn.db().schema);
+    expect(rec.invocation?.entity).toBe(eid);
+    expect(rec.invocation?.entity).not.toBe("new");
+  });
 
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-      }),
+  test("after prune, a later invocation entity \"new\" is not rewritten", async () => {
+    const ackedNamed: Record<string, number> = { new: 1754 };
+    const held = inflight({
+      names: new Set(["new"]),
+      usedTempids: new Set(["new"]),
+      tx: [],
+      invocation: {
+        name: "user/stale-cas",
+        entity: "new",
+        input: {},
+        clientOpId: "op-hold",
+      },
+    });
+    pruneAckedNamedIds(ackedNamed, [], [held]);
+    expect(ackedNamed.new).toBe(1754);
+
+    pruneAckedNamedIds(ackedNamed, [], []);
+    expect(ackedNamed).toEqual({});
+
+    const later = rewritePendingInvocation(
+      { name: "user/later", entity: "new", input: {}, clientOpId: "op-4" },
+      ackedNamed,
+      new Map(),
+      new Set(["new"]),
     );
-    await settle();
-    const second = db.run(casViaInput, { target: "new", title: "new" });
-    await settle();
-    expect(opBodies).toHaveLength(0);
+    expect(later.entity).toBe("new");
+  });
+});
 
-    release();
-    await first;
-    await second;
-    expect(opBodies).toHaveLength(1);
-    const posted = opBodies[0]!;
-    const input = posted.input as { target: unknown; title?: unknown };
-    expect(typeof input.target).toBe("number");
-    expect(input.target).not.toBe("new");
-    expect(input.title).toBe("new");
-    const postedTempids = posted.tempids as Record<string, number> | undefined;
-    const targetEid = input.target as number;
-    expect(postedTempids?.new).toBe(targetEid);
+describe("overlay CAS engine re-run", () => {
+  test("remapped /op body CAS updates the minted entity, not a newly allocated one", async () => {
+    const server = await moviesWorld();
+    const minted = await server.transact([
+      { ":db/id": "new", ":user/name": "Ada" },
+    ]);
+    const adaEid = minted.tempids.new!;
+    const input = { target: "new", title: "new" };
+    const { paths, used } = await trackOpInput(casViaInput, input);
+    const remapped = rewritePendingInvocation(
+      { name: "user/cas-via-input", input, clientOpId: "op-rerun" },
+      { new: adaEid },
+      new Map(),
+      used,
+      paths,
+    );
+    expect(remapped.input).toEqual({ target: adaEid, title: "new" });
+    expect(remapped.tempids).toEqual({ new: adaEid });
 
-    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
-    expect(adaEid).toBe(targetEid);
+    await rerunPostedOp(casViaInput, remapped, server);
     expect((await server.db().entity(adaEid))![":user/age"]).toBe(42);
+    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
     const nameAttr = server.db().attr(":user/name")!.id;
     const named = await server.db().datomsArray(Index.AVET, { a: nameAttr });
     expect(named.filter((d) => d.op).map((d) => d.e)).toEqual([adaEid]);
-
-    await c.dispose();
   });
+});
 
-  test("queued /op remaps a nested input tempid used by op.cas(op.tempid)", async () => {
-    const server = await moviesWorld();
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const opBodies: Record<string, unknown>[] = [];
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (call.url.endsWith("/transact")) {
-          await gate;
-          const rep = await server.transact(call.body.tx);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientTxId: call.body.clientTxId,
-            },
-          };
-        }
-        if (call.url.endsWith("/op")) {
-          opBodies.push(call.body);
-          const rep = await rerunPostedOp(nestedCasViaInput, call.body, server);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientOpId: call.body.clientOpId,
-              output: {},
-            },
-          };
-        }
-        return { body: { t: server.t } };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Ada");
-      }),
-    );
-    await settle();
-    const second = db.run(nestedCasViaInput, { nested: { target: "new" } });
-    await settle();
-    release();
-    await first;
-    await second;
-    const input = opBodies[0]!.input as { nested: { target: unknown } };
-    expect(typeof input.nested.target).toBe("number");
-    const adaEid = await server.db().entid([":user/name", "Ada"]);
-    expect(input.nested.target).toBe(adaEid);
-    expect((await server.db().entity(adaEid!))![":user/age"]).toBe(7);
-
-    await c.dispose();
-  });
-
-  test("no-layer run rewrites a queued contextual entity after the tempid ack", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
-    ]);
-    const adaEid = seeded.tempids.u!;
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const opBodies: { entity?: unknown; name?: unknown }[] = [];
-    const staleCas = Operation(
-      "user/stale-cas",
-      {
-        on: User,
-        input: Schema.Struct({ eid: Schema.Finite }),
-        output: Schema.Struct({}),
-      },
-      (op, input) => {
-        op.cas(input.eid, User.age, 31, 32);
-        return {};
-      },
-    );
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (call.url.endsWith("/transact")) {
-          await gate;
-          const rep = await server.transact(call.body.tx);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientTxId: call.body.clientTxId,
-            },
-          };
-        }
-        if (call.url.endsWith("/op")) {
-          opBodies.push({ entity: call.body.entity, name: call.body.name });
-          const rep = await server.transact([
-            [":db/cas", call.body.input.eid, ":user/age", 31, 32],
-          ]);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientOpId: call.body.clientOpId,
-              output: {},
-            },
-          };
-        }
-        return { body: { t: server.t } };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Cal");
-      }),
-    );
-    await settle();
-    const second = db.run(staleCas, tempid("new"), { eid: adaEid });
-    await settle();
-    expect(opBodies).toHaveLength(0);
-
-    release();
-    await first;
-    await second;
-    const calEid = await server.db().entid([":user/name", "Cal"]);
-    expect(opBodies).toHaveLength(1);
-    expect(opBodies[0]!.name).toBe("user/stale-cas");
-    expect(typeof opBodies[0]!.entity).toBe("number");
-    expect(opBodies[0]!.entity).toBe(calEid);
-    expect(opBodies[0]!.entity).not.toBe("new");
-    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
-
-    await c.dispose();
-  });
-
-  test("no-layer run does not rewrite a later unrelated tempid(\"new\") after the queue drains", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
-      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
-    ]);
-    const adaEid = seeded.tempids.u!;
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const posts: unknown[][] = [];
-    const staleCas = Operation(
-      "user/stale-cas-expire",
-      {
-        on: User,
-        input: Schema.Struct({ eid: Schema.Finite }),
-        output: Schema.Struct({}),
-      },
-      (op, input) => {
-        op.cas(input.eid, User.age, 31, 32);
-        return {};
-      },
-    );
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (call.url.endsWith("/transact")) {
-          if (posts.length === 0) await gate;
-          posts.push(call.body.tx as unknown[]);
-          const rep = await server.transact(call.body.tx);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientTxId: call.body.clientTxId,
-            },
-          };
-        }
-        if (call.url.endsWith("/op")) {
-          const rep = await server.transact([
-            [":db/cas", call.body.input.eid, ":user/age", 31, 32],
-          ]);
-          return {
-            body: {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: rep.txData.map(toWireDatom),
-              clientOpId: call.body.clientOpId,
-              output: {},
-            },
-          };
-        }
-        return { body: { t: server.t } };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
-
-    const first = Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Cal");
-      }),
-    );
-    await settle();
-    const second = db.run(staleCas, tempid("new"), { eid: adaEid });
-    await settle();
-    release();
-    await first;
-    await second;
-    const calEid = (await server.db().entid([":user/name", "Cal"]))!;
-
-    await server.transact([[":db/add", adaEid, ":user/age", 33]]);
-    const third = await Effect.runPromise(
-      seedWrite(db, function* (tx) {
-        const e = yield* tx.entity(tx.tempid("new"));
-        yield* e.set(User.name, "Dot");
-        yield* tx.cas(adaEid, User.age, 33, 34);
-      }),
-    );
-    expect(third.t).toBeGreaterThan(0);
-    expect(posts).toHaveLength(2);
-    const thirdTx = posts[1] ?? [];
-    const dotAdds = thirdTx.filter(
-      (op): op is unknown[] =>
-        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Dot",
-    );
-    expect(dotAdds).toHaveLength(1);
-    expect(dotAdds[0]![1]).toBe("new");
-    expect(dotAdds[0]![1]).not.toBe(calEid);
-    const dotEid = await server.db().entid([":user/name", "Dot"]);
-    expect(dotEid).toBeDefined();
-    expect(dotEid).not.toBe(calEid);
-
-    await c.dispose();
-  });
-
-  test("stale replica CAS then op.query / op.pull still reaches /op", async () => {
-    const server = await moviesWorld();
-    const seeded = await server.transact([
+describe("overlay CAS speculative submit policy", () => {
+  test("stale replica CAS is tx/cas-conflict locally, still submitted, and commits on the fresher Connection", async () => {
+    const replica = await moviesWorld();
+    const seeded = await replica.transact([
       { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
     ]);
     const eid = seeded.tempids.u!;
-    let postedOp = 0;
-    const staleCasThenRead = Operation(
-      "user/stale-cas-then-read",
-      {
-        input: Schema.Struct({ eid: Schema.Finite }),
-        output: Schema.Struct({}),
-      },
-      async (op, input) => {
-        op.cas(input.eid, User.age, 31, 32);
-        await op.query(ages);
-        await op.pull(input.eid, { name: User.name, age: User.age });
-        return {};
-      },
-    );
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (!call.url.endsWith("/op")) return { body: { t: server.t } };
-        postedOp += 1;
-        const rep = await server.transact([
-          [":db/cas", call.body.input.eid, ":user/age", 31, 32],
-        ]);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientOpId: call.body.clientOpId,
-            output: {},
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
+    const casTx = [[":db/cas", eid, ":user/age", 31, 32]];
+    const err = await failProcessTx(replica, casTx);
+    expect(err.code).toBe("tx/cas-conflict");
+    expect(submitDespiteLocalTxError(err, casTx)).toBe(true);
+    expect((await replica.db().entity(eid))![":user/age"]).toBe(30);
 
-    await server.transact([[":db/add", eid, ":user/age", 31]]);
-
-    const report = await db.run(staleCasThenRead, { eid });
-    expect(postedOp).toBe(1);
-    expect(peer.calls.some((call) => call.url.endsWith("/op"))).toBe(true);
-    expect(report.output).toEqual({});
+    const server = await moviesWorld();
+    const fresh = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 31 },
+    ]);
+    expect(fresh.tempids.u).toBe(eid);
+    await server.transact(casTx);
     expect((await server.db().entity(eid))![":user/age"]).toBe(32);
-
-    await c.dispose();
   });
 
-  test("op.cas on a server-only eid then op.query still reaches /op", async () => {
+  test("missing-entity CAS still submits; a fresher Connection that has the entity commits", async () => {
+    const replica = await moviesWorld();
     const server = await moviesWorld();
-    let postedOp = 0;
-    const serverOnlyCasThenRead = Operation(
-      "user/server-only-cas-then-read",
-      {
-        input: Schema.Struct({ eid: Schema.Finite }),
-        output: Schema.Struct({}),
-      },
-      async (op, input) => {
-        op.cas(input.eid, User.age, 30, 31);
-        await op.query(ages);
-        return {};
-      },
-    );
-    const peer = scriptedPeer({
-      http: async (call) => {
-        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
-        if (!call.url.endsWith("/op")) return { body: { t: server.t } };
-        postedOp += 1;
-        const rep = await server.transact([
-          [":db/cas", call.body.input.eid, ":user/age", 30, 31],
-        ]);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.map(toWireDatom),
-            clientOpId: call.body.clientOpId,
-            output: {},
-          },
-        };
-      },
-    });
-    const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
-    await seedClient(peer, db, server);
-
     const seeded = await server.transact([
       { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
     ]);
     const eid = seeded.tempids.u!;
+    const casTx = [[":db/cas", eid, ":user/age", 30, 31]];
+    const err = await failProcessTx(replica, casTx);
+    expect(err.code).toBe("tx/missing-entity");
+    expect(submitDespiteLocalTxError(err, casTx)).toBe(true);
 
-    const report = await db.run(serverOnlyCasThenRead, { eid });
-    expect(postedOp).toBe(1);
-    expect(peer.calls.some((call) => call.url.endsWith("/op"))).toBe(true);
-    expect(report.output).toEqual({});
+    await server.transact(casTx);
     expect((await server.db().entity(eid))![":user/age"]).toBe(31);
+  });
 
-    await c.dispose();
+  test("lookup-ref CAS still submits; a Connection that resolves the lookup commits", async () => {
+    const replica = await moviesWorld();
+    const casTx = [[":db/cas", [":user/name", "Ada"], ":user/age", 30, 31]];
+    const err = await failProcessTx(replica, casTx);
+    expect(err.code).toBe("tx/lookup-ref");
+    expect(submitDespiteLocalTxError(err, casTx)).toBe(true);
+
+    const server = await moviesWorld();
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    await server.transact(casTx);
+    expect((await server.db().entity(seeded.tempids.u!))![":user/age"]).toBe(31);
+  });
+
+  test("a non-CAS tx/missing-entity is not submitted", async () => {
+    const replica = await moviesWorld();
+    const tx = [[":db/add", 99_999, ":user/age", 1]];
+    const err = await failProcessTx(replica, tx);
+    expect(err.code).toBe("tx/missing-entity");
+    expect(submitDespiteLocalTxError(err, tx)).toBe(false);
   });
 });
