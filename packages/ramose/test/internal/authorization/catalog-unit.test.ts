@@ -147,6 +147,28 @@ const catalogDescriptor = (): CatalogDescriptor => ({
   fingerprint,
 });
 
+const richCatalogTables = (): Omit<CatalogDescriptor, "fingerprint"> => ({
+  ...catalogSchemaTables(),
+  traits: [
+    { id: trait("named"), traits: [] },
+    { id: trait("taggable"), traits: [] },
+  ],
+});
+
+const richFingerprint = SchemaFingerprint.make(
+  await Effect.runPromise(
+    hashCatalogSchemaFingerprint({
+      ...richCatalogTables(),
+      fingerprint: SchemaFingerprint.make("placeholder"),
+    }),
+  ),
+);
+
+const richCatalogDescriptor = (): CatalogDescriptor => ({
+  ...richCatalogTables(),
+  fingerprint: richFingerprint,
+});
+
 const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,
@@ -213,6 +235,42 @@ const richTemplate = (): PolicyTemplateIR =>
         usesSubject: false,
         traversalDepth: 0,
       },
+      {
+        id: RuleId.make(digestHex(0x44)),
+        focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
+        expr: { _tag: "hasClass", class: "member" },
+        usesResource: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+      },
+      {
+        id: RuleId.make(digestHex(0x55)),
+        focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "named" } },
+        expr: { _tag: "hasClass", class: "admin" },
+        usesResource: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+      },
+      {
+        id: RuleId.make(digestHex(0x66)),
+        focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+        expr: { _tag: "hasClass", class: "admin" },
+        usesResource: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+      },
+      {
+        id: RuleId.make(digestHex(0x77)),
+        focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+        expr: { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "lit", value: "banned" } },
+        usesResource: false,
+        usesMe: false,
+        usesSubject: true,
+        traversalDepth: 0,
+      },
     ],
     decisions: {
       entities: [
@@ -220,7 +278,7 @@ const richTemplate = (): PolicyTemplateIR =>
           target: { _tag: "RelativeEntityId", name: "issue" },
           decision: {
             allow: [RuleId.make(digestHex(0x11)), RuleId.make(digestHex(0x22))],
-            deny: [],
+            deny: [RuleId.make(digestHex(0x66)), RuleId.make(digestHex(0x77))],
           },
         },
         {
@@ -231,8 +289,26 @@ const richTemplate = (): PolicyTemplateIR =>
           },
         },
       ],
-      traits: [],
-      fields: [],
+      traits: [
+        {
+          target: { _tag: "RelativeTraitId", name: "taggable" },
+          decision: { allow: [RuleId.make(digestHex(0x44))], deny: [] },
+        },
+        {
+          target: { _tag: "RelativeTraitId", name: "named" },
+          decision: { allow: [RuleId.make(digestHex(0x55))], deny: [] },
+        },
+      ],
+      fields: [
+        {
+          target: relativeField(issueOwner, "owner"),
+          decision: { allow: [RuleId.make(digestHex(0x11))], deny: [] },
+        },
+        {
+          target: relativeField(issueOwner, "title"),
+          decision: { allow: [RuleId.make(digestHex(0x22))], deny: [] },
+        },
+      ],
     },
   });
 
@@ -1098,26 +1174,29 @@ const expectVerifyCatalogTableMismatch = async (document: InstalledCatalogUnit, 
 };
 
 const sealRich = async () => {
-  const descriptor = catalogDescriptor();
+  const descriptor = richCatalogDescriptor();
   const policy = await install(descriptor, richTemplate());
   return seal(descriptor, policy);
 };
 
 describe("embedded policy tables must already be install-canonical", () => {
   test("equivalent canonical seals share unitHash", async () => {
-    const descriptor = catalogDescriptor();
+    const descriptor = richCatalogDescriptor();
     const [left, right] = await Promise.all([
       seal(descriptor, await install(descriptor, richTemplate())),
       seal(descriptor, await install(descriptor, richTemplate())),
     ]);
     expect(left.policy.classes).toEqual(["admin", "member"]);
     expect(left.policy.claims.map((claim) => claim.key)).toEqual(["org", "role"]);
-    expect(left.policy.rules).toHaveLength(3);
+    expect(left.policy.rules).toHaveLength(7);
     expect(left.policy.rules.map((rule) => rule.id)).toEqual(
       [...left.policy.rules.map((rule) => rule.id)].sort(),
     );
     expect(left.policy.decisions.entities.map((entry) => entry.target.name)).toEqual(["issue", "user"]);
     expect(left.policy.decisions.entities[0]?.decision.allow.length).toBe(2);
+    expect(left.policy.decisions.entities[0]?.decision.deny.length).toBe(2);
+    expect(left.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["named", "taggable"]);
+    expect(left.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["owner", "title"]);
     expect(left.unitHash).toBe(right.unitHash);
     expect(canonicalizeInstalledCatalogUnit(left)).toBe(canonicalizeInstalledCatalogUnit(right));
     const verified = await Effect.runPromise(verifyInstalledCatalogUnit(left));
@@ -1162,7 +1241,7 @@ describe("embedded policy tables must already be install-canonical", () => {
   test("verify rejects reordered policy.rules after policyHash and unitHash recompute", async () => {
     const unit = await sealRich();
     const canonicalRuleIds = unit.policy.rules.map((rule) => rule.id);
-    expect(canonicalRuleIds).toHaveLength(3);
+    expect(canonicalRuleIds).toHaveLength(7);
     expect(canonicalRuleIds).toEqual([...canonicalRuleIds].sort());
     const reordered = {
       ...unit,
@@ -1223,6 +1302,76 @@ describe("embedded policy tables must already be install-canonical", () => {
     const reorderedIssue = reordered.policy.decisions.entities.find((entry) => entry.target.name === "issue");
     expect(reorderedIssue?.decision.allow).toEqual([...canonicalAllow].reverse());
     expect(reorderedIssue?.decision.allow).not.toEqual(canonicalAllow);
+    const hashed = await rehashPolicyAndUnit(reordered);
+    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
+    expect(hashed.unitHash).not.toBe(unit.unitHash);
+    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
+  });
+
+  test("verify rejects reordered policy.decisions.traits after policyHash and unitHash recompute", async () => {
+    const unit = await sealRich();
+    expect(unit.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["named", "taggable"]);
+    const reordered = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          traits: [...unit.policy.decisions.traits].reverse(),
+        },
+      },
+    } as InstalledCatalogUnit;
+    expect(reordered.policy.decisions.traits.map((entry) => entry.target.name)).toEqual(["taggable", "named"]);
+    const hashed = await rehashPolicyAndUnit(reordered);
+    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
+    expect(hashed.unitHash).not.toBe(unit.unitHash);
+    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
+  });
+
+  test("verify rejects reordered policy.decisions.fields after policyHash and unitHash recompute", async () => {
+    const unit = await sealRich();
+    expect(unit.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["owner", "title"]);
+    const reordered = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          fields: [...unit.policy.decisions.fields].reverse(),
+        },
+      },
+    } as InstalledCatalogUnit;
+    expect(reordered.policy.decisions.fields.map((entry) => entry.target.localName)).toEqual(["title", "owner"]);
+    const hashed = await rehashPolicyAndUnit(reordered);
+    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
+    expect(hashed.unitHash).not.toBe(unit.unitHash);
+    await expectVerifyCatalogTableMismatch(hashed, /decisions/);
+  });
+
+  test("verify rejects reordered decision.deny ids after policyHash and unitHash recompute", async () => {
+    const unit = await sealRich();
+    const issue = unit.policy.decisions.entities.find((entry) => entry.target.name === "issue");
+    expect(issue?.decision.deny.length).toBe(2);
+    const canonicalDeny = [...(issue?.decision.deny ?? [])];
+    const reordered = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          entities: unit.policy.decisions.entities.map((entry) => ({
+            ...entry,
+            decision: {
+              ...entry.decision,
+              deny: [...entry.decision.deny].reverse(),
+            },
+          })),
+        },
+      },
+    } as InstalledCatalogUnit;
+    const reorderedIssue = reordered.policy.decisions.entities.find((entry) => entry.target.name === "issue");
+    expect(reorderedIssue?.decision.deny).toEqual([...canonicalDeny].reverse());
+    expect(reorderedIssue?.decision.deny).not.toEqual(canonicalDeny);
     const hashed = await rehashPolicyAndUnit(reordered);
     expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
     expect(hashed.unitHash).not.toBe(unit.unitHash);
