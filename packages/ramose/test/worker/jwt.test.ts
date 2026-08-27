@@ -5,6 +5,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import {
@@ -329,7 +330,23 @@ describe("JwtVerifier", () => {
   });
 
   test("maps every signature, registered-claim, time, and algorithm failure opaquely", async () => {
-    const now = nowSeconds();
+    const nowMs = Date.now();
+    const now = Math.floor(nowMs / 1_000);
+    const frozen: Clock.Clock = {
+      currentTimeMillisUnsafe: () => nowMs,
+      currentTimeMillis: Effect.succeed(nowMs),
+      monotonicTimeNanosUnsafe: () => BigInt(nowMs) * 1_000_000n,
+      monotonicTimeNanos: Effect.succeed(BigInt(nowMs) * 1_000_000n),
+      currentTimeNanosUnsafe: () => BigInt(nowMs) * 1_000_000n,
+      currentTimeNanos: Effect.succeed(BigInt(nowMs) * 1_000_000n),
+      sleep: () => Effect.void,
+    };
+    const rejectionAt = (token: string) =>
+      Effect.runPromise(
+        Effect.flip(
+          Effect.provideService(verifyEffect(token), Clock.Clock, frozen),
+        ),
+      );
     const cases = [
       await sign({ header: { alg: "ES256" } }),
       await sign({ payload: payload({ exp: now - 6, iat: now - 100 }) }),
@@ -351,7 +368,7 @@ describe("JwtVerifier", () => {
     cases.push(hmac);
 
     for (const token of cases) {
-      expectOpaque(await rejection(token), [
+      expectOpaque(await rejectionAt(token), [
         token,
         "wrong.example",
         "wrong-audience",
