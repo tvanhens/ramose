@@ -409,6 +409,27 @@ catalog build or install time.
 They do not require special runtime machinery beyond the rule snapshot
 and **LANG-2**.
 
+### Authoring language
+
+The read-authorization authoring API (`read`, `.when` / `.deny`, `any` /
+`all` / `not`, `eq` / `contains`, `me` / `subject` / `claim` / `lit` /
+`hasClass`, `$` / `path`) is a compile-time macro. It lowers to
+catalog-relative, data-only `PolicyTemplateIR`. Runtime evaluates that
+IR. Authoring callbacks receive a proxied schema only — never a `Db` or
+an Effect environment.
+
+- `read(T).when(expr)` is an allow rule. Multiple `.when` on the same
+  target OR together (**POL-4**).
+- `read(T).deny(expr)` is an explicit deny and wins over any allow
+  (**POL-4**).
+- A missing rule is deny (**POL-4**, **LANG-5**).
+- Entity-row, applicable trait, and field rules AND together
+  (**POL-1**–**POL-3**). Field rules only narrow; they cannot grant a
+  field the row or trait policy denied.
+- A readable ref whose target is unreadable is hidden as a complete
+  datom (**REF-1**). Authoring does not implement this; filter runtime
+  is #411 / #408. This layer only produces data.
+
 ## 16. Fail closed
 
 **FC-1.** Missing, invalid, incomplete, or mismatched policy, catalog,
