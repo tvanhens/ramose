@@ -3,7 +3,7 @@
  */
 
 import * as Result from "effect/Result";
-import { hashCanonicalRuleSync } from "../decode.ts";
+import { hashCanonicalRuleResult } from "../decode.ts";
 import type { CanonicalAuthorizationExpr } from "../expr.ts";
 import type { EntityId, OwnerRef, RuleId } from "../identities.ts";
 import type { CanonicalAuthorizationRule, CanonicalRuleFocus } from "../ir.ts";
@@ -35,6 +35,7 @@ import {
   rowFromRefTarget,
   type Binding,
   type Derived,
+  type StaticWork,
 } from "./types.ts";
 
 export const walkExpr = (
@@ -48,9 +49,10 @@ export const walkExpr = (
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
   existsDepth: number,
+  spent: StaticWork,
 ): Result.Result<Derived, ValidateFailure> => {
   const derived = emptyDerived();
-  const charged = charge(derived, 1);
+  const charged = charge(derived, spent, 1, limits.maxStaticWork);
   if (Result.isFailure(charged)) return Result.fail(charged.failure);
 
   switch (expr._tag) {
@@ -73,6 +75,7 @@ export const walkExpr = (
           claims,
           limits,
           existsDepth,
+          spent,
         );
         if (Result.isFailure(part)) return Result.fail(part.failure);
         mergeDerived(derived, part.success);
@@ -91,15 +94,16 @@ export const walkExpr = (
         claims,
         limits,
         existsDepth,
+        spent,
       );
       if (Result.isFailure(child)) return Result.fail(child.failure);
       mergeDerived(derived, child.success);
       return Result.succeed(derived);
     }
     case "eq": {
-      const left = walkValue(index, expr.left, resource, me, binds, input, claims, limits);
+      const left = walkValue(index, expr.left, resource, me, binds, input, claims, limits, spent);
       if (Result.isFailure(left)) return Result.fail(left.failure);
-      const right = walkValue(index, expr.right, resource, me, binds, input, claims, limits);
+      const right = walkValue(index, expr.right, resource, me, binds, input, claims, limits, spent);
       if (Result.isFailure(right)) return Result.fail(right.failure);
       mergeDerived(derived, left.success.derived);
       mergeDerived(derived, right.success.derived);
@@ -109,13 +113,13 @@ export const walkExpr = (
       return Result.succeed(derived);
     }
     case "has": {
-      const term = walkValue(index, expr.term, resource, me, binds, input, claims, limits);
+      const term = walkValue(index, expr.term, resource, me, binds, input, claims, limits, spent);
       if (Result.isFailure(term)) return Result.fail(term.failure);
       mergeDerived(derived, term.success.derived);
       return Result.succeed(derived);
     }
     case "in": {
-      const value = walkValue(index, expr.value, resource, me, binds, input, claims, limits);
+      const value = walkValue(index, expr.value, resource, me, binds, input, claims, limits, spent);
       if (Result.isFailure(value)) return Result.fail(value.failure);
       const collection = walkValue(
         index,
@@ -126,6 +130,7 @@ export const walkExpr = (
         input,
         claims,
         limits,
+        spent,
       );
       if (Result.isFailure(collection)) return Result.fail(collection.failure);
       mergeDerived(derived, value.success.derived);
@@ -139,7 +144,7 @@ export const walkExpr = (
       return Result.succeed(derived);
     }
     case "some": {
-      const collection = walkRef(index, expr.collection, resource, me, binds, limits);
+      const collection = walkRef(index, expr.collection, resource, me, binds, limits, spent);
       if (Result.isFailure(collection)) return Result.fail(collection.failure);
       mergeDerived(derived, collection.success.derived);
       if (expr.bind.length === 0) return invalid("blank binding name");
@@ -171,15 +176,16 @@ export const walkExpr = (
         claims,
         limits,
         existsDepth,
+        spent,
       );
       if (Result.isFailure(pred)) return Result.fail(pred.failure);
       mergeDerived(derived, pred.success);
       return Result.succeed(derived);
     }
     case "overlaps": {
-      const left = walkRef(index, expr.left, resource, me, binds, limits);
+      const left = walkRef(index, expr.left, resource, me, binds, limits, spent);
       if (Result.isFailure(left)) return Result.fail(left.failure);
-      const right = walkRef(index, expr.right, resource, me, binds, limits);
+      const right = walkRef(index, expr.right, resource, me, binds, limits, spent);
       if (Result.isFailure(right)) return Result.fail(right.failure);
       mergeDerived(derived, left.success.derived);
       mergeDerived(derived, right.success.derived);
@@ -221,6 +227,7 @@ export const walkExpr = (
         claims,
         limits,
         nextDepth,
+        spent,
       );
       if (Result.isFailure(pred)) return Result.fail(pred.failure);
       mergeDerived(derived, pred.success);
@@ -327,6 +334,7 @@ export const validateRule = (
     claims,
     limits,
     0,
+    { count: 0 },
   );
   if (Result.isFailure(derived)) return Result.fail(derived.failure);
 
@@ -351,7 +359,8 @@ export const validateRule = (
     existsDepth: derived.success.existsDepth,
     dependencies: sortedIds(derived.success.dependencies),
   };
-  const expectedId = hashCanonicalRuleSync(recomputed);
-  if (rule.id !== expectedId) return invalid("tampered rule id");
-  return Result.succeed({ ...recomputed, id: expectedId });
+  const expectedId = hashCanonicalRuleResult(recomputed);
+  if (Result.isFailure(expectedId)) return Result.fail(expectedId.failure);
+  if (rule.id !== expectedId.success) return invalid("tampered rule id");
+  return Result.succeed({ ...recomputed, id: expectedId.success });
 };

@@ -14,7 +14,7 @@ import type {
 } from "../catalog.ts";
 import type { EntityId, OwnerRef, RuleId } from "../identities.ts";
 import type { ClaimShape } from "../principal.ts";
-import type { ValidateFailure } from "./common.ts";
+import { invalid, type ValidateFailure } from "./common.ts";
 import {
   ownerFocus,
   requireEntity,
@@ -79,9 +79,28 @@ export const mergeDerived = (into: Derived, part: Derived): void => {
   into.staticWork += part.staticWork;
 };
 
-export const charge = (derived: Derived, nodes: number): Result.Result<void, ValidateFailure> => {
-  derived.staticWork += nodes;
+export type StaticWork = { count: number };
+
+export const takeWork = (
+  spent: StaticWork,
+  nodes: number,
+  maxStaticWork: number,
+): Result.Result<void, ValidateFailure> => {
+  spent.count += nodes;
+  if (spent.count > maxStaticWork) {
+    return invalid(`static work ${spent.count} exceeds ${maxStaticWork}`);
+  }
   return Result.succeed(undefined);
+};
+
+export const charge = (
+  derived: Derived,
+  spent: StaticWork,
+  nodes: number,
+  maxStaticWork: number,
+): Result.Result<void, ValidateFailure> => {
+  derived.staticWork += nodes;
+  return takeWork(spent, nodes, maxStaticWork);
 };
 
 export const rowFromRefTarget = (

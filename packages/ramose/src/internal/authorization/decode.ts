@@ -167,6 +167,24 @@ export const hashCanonicalRuleSync = (rule: CanonicalAuthorizationRuleType): Rul
   RuleId.make(sha256HexSync(UTF8.encode(canonicalizeJson(canonicalAuthorizationRuleJson(rule)))));
 
 /**
+ * Same digest as {@link hashCanonicalRuleSync}, as `Result`. JCS-invalid
+ * strings (lone surrogates) become {@link InvalidIR} instead of throwing.
+ */
+export const hashCanonicalRuleResult = (
+  rule: CanonicalAuthorizationRuleType,
+): Result.Result<RuleId, InvalidIR> => {
+  try {
+    return Result.succeed(hashCanonicalRuleSync(rule));
+  } catch (cause) {
+    return Result.fail(
+      new InvalidIR({
+        message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+    );
+  }
+};
+
+/**
  * Schema-encoded IR is JSON by construction. This is the only cast from
  * encode output into {@link JsonValue}; callers must not hash `unknown`.
  */

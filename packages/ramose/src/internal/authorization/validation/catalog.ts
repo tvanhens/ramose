@@ -6,6 +6,7 @@
  * composition, rejects composition cycles, and compares declared
  * `traitComposition.transitive` to that closure. Every direct entity/trait
  * edge must have a compiled composition row. Operation owners must exist.
+ * Every field owner and typed ref target must exist.
  * The result is consumed by semantic validation; binding can adopt the same
  * view later without changing this kernel.
  */
@@ -14,6 +15,7 @@ import * as Result from "effect/Result";
 import type {
   CatalogDescriptor,
   FieldDescriptor,
+  FieldRefTarget,
   OperationDescriptor,
 } from "../catalog.ts";
 import type { EntityId, FieldId, OperationId, OwnerRef, TraitId } from "../identities.ts";
@@ -132,6 +134,31 @@ const closeTraits = (
   return Result.succeed(closed);
 };
 
+const validateFieldRefTarget = (
+  refTarget: FieldRefTarget,
+  target: CatalogBindingTarget,
+  entities: ReadonlyMap<string, EntityId>,
+  traits: ReadonlyMap<string, TraitId>,
+): Result.Result<void, ValidateFailure> => {
+  if (refTarget._tag === "self" || refTarget._tag === "untargeted") {
+    return Result.succeed(undefined);
+  }
+  if (refTarget._tag === "entity") {
+    const scoped = catalogOfIdentity(refTarget.entity, target, "field ref target");
+    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
+    if (!entities.has(refTarget.entity.name)) {
+      return invalid(`missing field ref target entity '${refTarget.entity.name}'`);
+    }
+    return Result.succeed(undefined);
+  }
+  const scoped = catalogOfIdentity(refTarget.trait, target, "field ref target");
+  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
+  if (!traits.has(refTarget.trait.name)) {
+    return invalid(`missing field ref target trait '${refTarget.trait.name}'`);
+  }
+  return Result.succeed(undefined);
+};
+
 export const prepareAuthorizationCatalog = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
@@ -179,6 +206,18 @@ export const prepareAuthorizationCatalog = (
     if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
     const key = fieldKey(field.id);
     if (fields.has(key)) return invalid(`ambiguous field '${key}'`);
+    const owner = field.id.owner;
+    if (owner.kind === "entity") {
+      if (!entities.has(owner.name)) {
+        return invalid(`missing owner entity '${owner.name}' for field '${field.id.localName}'`);
+      }
+    } else if (!traits.has(owner.name)) {
+      return invalid(`missing owner trait '${owner.name}' for field '${field.id.localName}'`);
+    }
+    if (field.valueType === "ref") {
+      const refs = validateFieldRefTarget(field.refTarget, target, entities, traits);
+      if (Result.isFailure(refs)) return Result.fail(refs.failure);
+    }
     fields.set(key, field);
   }
 

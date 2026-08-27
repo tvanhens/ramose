@@ -56,7 +56,7 @@ import type {
   RelativeRefTerm,
   RelativeValueTerm,
 } from "./expr.ts";
-import { hashCanonicalRuleSync } from "./decode.ts";
+import { hashCanonicalRuleResult } from "./decode.ts";
 import type { InstalledPrincipalResolution, PrincipalResolutionConfig } from "./principal.ts";
 
 export type BindFailure = InvalidIR | CatalogMismatch;
@@ -647,7 +647,9 @@ const bindRule = (
     existsDepth: rule.existsDepth,
     dependencies: rule.dependencies,
   };
-  return Result.succeed({ ...bound, id: hashCanonicalRuleSync(bound) });
+  const id = hashCanonicalRuleResult(bound);
+  if (Result.isFailure(id)) return Result.fail(id.failure);
+  return Result.succeed({ ...bound, id: id.success });
 };
 
 const remapRuleIds = (
@@ -777,7 +779,17 @@ export const bindPolicyTemplateResult = (
 
   const idMap = new Map<RuleId, RuleId>();
   for (let i = 0; i < input.template.rules.length; i++) {
-    idMap.set(input.template.rules[i]!.id, rules.success[i]!.id);
+    const source = input.template.rules[i]!.id;
+    const canonical = rules.success[i]!.id;
+    const existing = idMap.get(source);
+    if (existing !== undefined) {
+      return invalid(
+        existing === canonical
+          ? `duplicate source rule id '${source}'`
+          : `colliding source rule id '${source}'`,
+      );
+    }
+    idMap.set(source, canonical);
   }
 
   const decisions = bindDecisions(index.success, input.template.decisions);

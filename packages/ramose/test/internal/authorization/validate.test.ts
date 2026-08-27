@@ -1582,6 +1582,34 @@ describe("targeted and targetless operations", () => {
       /missing operation owner entity 'ghost'/,
     );
   });
+
+  test("rejects a field whose owner is missing", () => {
+    const ghost = { kind: "entity" as const, name: "ghost" };
+    const missingOwner: CatalogDescriptor = {
+      ...descriptor,
+      fields: [...descriptor.fields, scalarField(ghost, "title")],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), missingOwner),
+      "InvalidIR",
+      /missing owner entity 'ghost' for field 'title'/,
+    );
+  });
+
+  test("rejects a field whose ref target is missing", () => {
+    const missingTarget: CatalogDescriptor = {
+      ...descriptor,
+      fields: [
+        ...descriptor.fields,
+        refField(issueOwner, "assignee", { _tag: "entity", entity: entity("ghost") }),
+      ],
+    };
+    expectFailure(
+      validate(boundDocument([ownsIssue()]), missingTarget),
+      "InvalidIR",
+      /missing field ref target entity 'ghost'/,
+    );
+  });
 });
 
 describe("decision and focus compatibility", () => {
@@ -1881,6 +1909,37 @@ describe("bounds", () => {
       ),
       "InvalidIR",
       /static work .* exceeds 1/,
+    );
+  });
+
+  test("rejects static work overflow during the walk, not after it", () => {
+    let expr: CanonicalAuthorizationExpr = { _tag: "const", value: true };
+    for (let i = 0; i < 32; i++) expr = { _tag: "not", expr };
+    const over = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      expr,
+      {
+        usesResource: false,
+        usesInput: false,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(
+      validateBoundAuthorizationResultForTest(
+        { bound: boundDocument([over]), descriptor },
+        {
+          maxTraversalDepth: 3,
+          maxExistsDepth: 3,
+          maxDependencies: 0,
+          maxStaticWork: 3,
+        },
+      ),
+      "InvalidIR",
+      /static work .* exceeds 3/,
     );
   });
 

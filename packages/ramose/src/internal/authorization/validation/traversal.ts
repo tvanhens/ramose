@@ -25,8 +25,10 @@ import {
   litScalar,
   resolveRefTarget,
   rowFromRefTarget,
+  takeWork,
   type Binding,
   type Derived,
+  type StaticWork,
   type TermShape,
 } from "./types.ts";
 
@@ -149,9 +151,12 @@ export const walkRef = (
   me: EntityId | undefined,
   binds: ReadonlyMap<string, Binding>,
   limits: ValidationLimits,
+  spent: StaticWork,
 ): Result.Result<{ readonly shape: TermShape; readonly derived: Derived }, ValidateFailure> => {
   const derived = emptyDerived();
   derived.staticWork = 1 + term.steps.length;
+  const charged = takeWork(spent, derived.staticWork, limits.maxStaticWork);
+  if (Result.isFailure(charged)) return Result.fail(charged.failure);
 
   let current: RowFocus | undefined;
   let originDepth = 0;
@@ -259,49 +264,44 @@ export const walkValue = (
   input: { readonly shape: OperationInputShape; readonly owner: OwnerRef } | undefined,
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
+  spent: StaticWork,
 ): Result.Result<{ readonly shape: TermShape; readonly derived: Derived }, ValidateFailure> => {
+  const finish = (shape: TermShape, derived: Derived) => {
+    const charged = takeWork(spent, derived.staticWork, limits.maxStaticWork);
+    if (Result.isFailure(charged)) return Result.fail(charged.failure);
+    return Result.succeed({ shape, derived });
+  };
   switch (term._tag) {
     case "ref":
-      return walkRef(index, term, resource, me, binds, limits);
+      return walkRef(index, term, resource, me, binds, limits, spent);
     case "lit":
-      return Result.succeed({
-        shape: litScalar(term.value),
-        derived: { ...emptyDerived(), staticWork: 1 },
-      });
+      return finish(litScalar(term.value), { ...emptyDerived(), staticWork: 1 });
     case "subject":
-      return Result.succeed({
-        shape: { _tag: "subject" },
-        derived: { ...emptyDerived(), usesSubject: true, staticWork: 1 },
-      });
+      return finish({ _tag: "subject" }, { ...emptyDerived(), usesSubject: true, staticWork: 1 });
     case "me":
-      return Result.succeed({
-        shape: { _tag: "me", entity: me },
-        derived: { ...emptyDerived(), usesMe: true, staticWork: 1 },
-      });
+      return finish({ _tag: "me", entity: me }, { ...emptyDerived(), usesMe: true, staticWork: 1 });
     case "claim": {
       const claim = claimByKey(claims, term.key);
       if (Result.isFailure(claim)) return Result.fail(claim.failure);
-      return Result.succeed({
-        shape: { _tag: "claim", shape: claim.success.shape },
-        derived: { ...emptyDerived(), staticWork: 1 },
-      });
+      return finish({ _tag: "claim", shape: claim.success.shape }, { ...emptyDerived(), staticWork: 1 });
     }
     case "input": {
       if (input === undefined) return invalid("operation input is not available in this rule focus");
       const shape = walkInputPath(index, input.shape, term.path, input.owner);
       if (Result.isFailure(shape)) return Result.fail(shape.failure);
-      return Result.succeed({
-        shape: shape.success,
-        derived: { ...emptyDerived(), usesInput: true, staticWork: 1 + term.path.length },
+      return finish(shape.success, {
+        ...emptyDerived(),
+        usesInput: true,
+        staticWork: 1 + term.path.length,
       });
     }
     case "bind": {
       const bound = binds.get(term.name);
       if (bound === undefined) return invalid(`unbound name '${term.name}'`);
-      return Result.succeed({
-        shape: { _tag: "row", focus: bound.focus },
-        derived: { ...emptyDerived(), staticWork: 1, traversalDepth: bound.traversalDepth },
-      });
+      return finish(
+        { _tag: "row", focus: bound.focus },
+        { ...emptyDerived(), staticWork: 1, traversalDepth: bound.traversalDepth },
+      );
     }
   }
 };

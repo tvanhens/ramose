@@ -521,6 +521,87 @@ describe("successful binding", () => {
     expect(bound.decisions.entities[0]?.decision.allow).toEqual([entityRule(bound, "issue").id]);
   });
 
+  test("rejects duplicate source rule IDs before remapping", () => {
+    const template = fullTemplate();
+    const first = template.rules[0]!;
+    expectFailure(
+      bindPolicyTemplateResult(
+        bindingInput({
+          template: {
+            ...template,
+            rules: [first, { ...first }],
+            decisions: {
+              entities: [
+                {
+                  target: { _tag: "RelativeEntityId", name: "issue" },
+                  decision: { allow: [first.id], deny: [] },
+                },
+              ],
+              traits: [],
+              fields: [],
+              operations: [],
+            },
+          },
+        }),
+      ),
+      "InvalidIR",
+      /duplicate source rule id/,
+    );
+  });
+
+  test("rejects colliding source rule IDs that bind to different bodies", () => {
+    const template = fullTemplate();
+    const first = template.rules[0]!;
+    const second = template.rules.find((entry) => entry.id !== first.id);
+    if (second === undefined) throw new Error("expected a second template rule");
+    expectFailure(
+      bindPolicyTemplateResult(
+        bindingInput({
+          template: {
+            ...template,
+            rules: [first, { ...second, id: first.id }],
+            decisions: {
+              entities: [
+                {
+                  target: { _tag: "RelativeEntityId", name: "issue" },
+                  decision: { allow: [first.id], deny: [] },
+                },
+              ],
+              traits: [],
+              fields: [],
+              operations: [],
+            },
+          },
+        }),
+      ),
+      "InvalidIR",
+      /colliding source rule id/,
+    );
+  });
+
+  test("converts JCS-invalid rule bodies into bind InvalidIR", () => {
+    const template = fullTemplate();
+    expectFailure(
+      bindPolicyTemplateResult(
+        bindingInput({
+          template: {
+            ...template,
+            rules: [
+              rule(
+                RULE_OWNS_ISSUE,
+                { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+                { _tag: "hasClass", class: "member\uD800" },
+              ),
+            ],
+            decisions: { entities: [], traits: [], fields: [], operations: [] },
+          },
+        }),
+      ),
+      "InvalidIR",
+      /canonical hash failed|lone surrogate/,
+    );
+  });
+
   test("entity-owned and trait-owned targeted operations bind", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
     expect(operationRule(bound, issueOwner, "rename", "required").focus).toEqual({

@@ -153,6 +153,7 @@ function httpErrorMessage(
 }
 
 const isTransientSocketReset = (e: unknown): boolean => {
+  if (e instanceof HttpError) return false;
   if (typeof e !== "object" || e === null) return false;
   if ("code" in e && e.code === "ECONNRESET") return true;
   return e instanceof Error && /socket connection was closed unexpectedly/i.test(e.message);
