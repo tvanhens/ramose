@@ -5,9 +5,9 @@
  * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
  * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
  * post-validation form with recomputed metadata for access-plan derivation
- * (#386). {@link InstalledAuthorizationIR} is the sealed form runtime accepts.
- * The four types are distinct: a template, bound, or validated document is not
- * assignable where installed IR is required.
+ * (#386). {@link InstalledAuthorizationIR} / {@link InstalledAuthorizationIRV1}
+ * is the sealed form runtime accepts. The four types are distinct: a template,
+ * bound, or validated document is not assignable where installed IR is required.
  *
  * Effect Schema is the source of truth. Binding lives in `bind.ts`.
  */
@@ -204,9 +204,11 @@ export const AuthorizationValidationInput = Schema.Struct({
 export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
 
 /**
- * Bound, sealed installed artifact. Runtime accepts only this form.
- * Catalog identity, version, schema fingerprint, and policy hash are
- * mandatory so a template or bound intermediate cannot be passed in their place.
+ * Bound, sealed installed v1 artifact. Runtime accepts only this form.
+ * Catalog identity, version, schema fingerprint, language version, and
+ * policy hash are mandatory so a template, bound, or unhashed intermediate
+ * cannot be passed in their place. The only production constructor is the
+ * Effectful bind → validate → assemble entry point.
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
@@ -227,6 +229,14 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
   accessPlans: Schema.Array(RuleAccessPlan),
 });
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
+
+/**
+ * Semantics-versioned name for the runtime-acceptable v1 artifact.
+ * Language version is already a `v1` literal on the schema; this alias
+ * is the type the installer and later read-authorizer stages consume.
+ */
+export const InstalledAuthorizationIRV1 = InstalledAuthorizationIR;
+export type InstalledAuthorizationIRV1 = InstalledAuthorizationIR;
 
 /**
  * Requested install identity the binder must match against the descriptor.

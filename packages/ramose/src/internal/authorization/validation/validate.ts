@@ -127,6 +127,7 @@ const validateBoundAuthorizationWithLimits = (
 /**
  * Pure semantic kernel. Recomputes derived flags. Does not hash, derive
  * access plans, or assemble {@link import("../ir.ts").InstalledAuthorizationIR}.
+ * Unhashed validated output is not runtime-acceptable installed IR.
  * Production entry: hard validation limits only. The Effect shell compares
  * rule IDs to domain-separated hashes of the canonical rule material.
  */

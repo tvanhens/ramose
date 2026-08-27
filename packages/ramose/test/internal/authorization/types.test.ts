@@ -73,6 +73,7 @@ import {
   type IncompleteProjected,
   JsonScalar,
   InstalledAuthorizationIR,
+  InstalledAuthorizationIRV1,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
   OperationInputShape,
@@ -113,6 +114,9 @@ export type _noPublicAuthorization = Expect<
       | "bindPolicyTemplate"
       | "bindAgainstAuthoritativeCatalog"
       | "validateBoundAuthorization"
+      | "installAuthorization"
+      | "installAgainstAuthoritativeCatalog"
+      | "InstalledAuthorizationIRV1"
     >,
     never
   >
@@ -141,6 +145,10 @@ export type _validatedFromSchema = Expect<
   Equal<ValidatedAuthorizationIR, typeof ValidatedAuthorizationIR.Type>
 >;
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+export type _installedV1FromSchema = Expect<
+  Equal<InstalledAuthorizationIRV1, typeof InstalledAuthorizationIRV1.Type>
+>;
+export type _installedV1IsInstalled = Expect<Equal<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
 export type _validationInputFromSchema = Expect<
   Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
 >;
@@ -255,6 +263,17 @@ export type _templateNotValidated = Expect<
 type PartialBound = Pick<BoundAuthorizationIR, "rules" | "decisions" | "principal">;
 export type _partialBoundNotInstalled = Expect<
   Equal<Extends<PartialBound, InstalledAuthorizationIR>, false>
+>;
+type UnhashedInstalledTables = Omit<InstalledAuthorizationIR, "_tag" | "policyHash">;
+export type _unhashedTablesNotInstalled = Expect<
+  Equal<Extends<UnhashedInstalledTables, InstalledAuthorizationIRV1>, false>
+>;
+export type _unhashedTablesNotInstalledAlias = Expect<
+  Equal<Extends<UnhashedInstalledTables, InstalledAuthorizationIR>, false>
+>;
+type AuthExports = typeof import("../../../src/internal/authorization/index.ts");
+export type _noPureAssembleExport = Expect<
+  Equal<Extends<"assembleUnhashedTables" | "assembleInstalledAuthorizationResult", keyof AuthExports>, false>
 >;
 export type _partialBoundNotTemplate = Expect<
   Equal<Extends<PartialBound, PolicyTemplateIR>, false>
@@ -725,6 +744,29 @@ const _operationFixtures = () => {
 
   // @ts-expect-error — a validated intermediate is not installed IR
   const validatedAsInstalled: InstalledAuthorizationIR = validatedFixture;
+
+  // @ts-expect-error — a validated intermediate is not installed v1 IR
+  const validatedAsInstalledV1: InstalledAuthorizationIRV1 = validatedFixture;
+
+  const unhashedTables: UnhashedInstalledTables = {
+    version: INSTALLED_AUTHORIZATION_IR_VERSION,
+    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+    database: DatabaseId.make("todos"),
+    catalog,
+    catalogVersion: CatalogVersion.make("1"),
+    schemaFingerprint: SchemaFingerprint.make("schema"),
+    classes: [],
+    claims: [],
+    principal: { subjectClaim: "sub" },
+    identities: { entities: [], traits: [], fields: [], operations: [] },
+    traitComposition: [],
+    operations: [],
+    rules: [],
+    decisions: { entities: [], traits: [], fields: [] },
+    accessPlans: [],
+  };
+  // @ts-expect-error — unhashed tables are not runtime-acceptable installed IR
+  const unhashedAsInstalled: InstalledAuthorizationIRV1 = unhashedTables;
 
   // @ts-expect-error — a bound intermediate is not validated IR
   const boundAsValidated: ValidatedAuthorizationIR = boundFixture;

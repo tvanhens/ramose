@@ -2,7 +2,7 @@
  * Core v1 semantic validation of catalog-bound authorization IR.
  *
  * Binding and structural decode are out of scope. Access-plan derivation
- * and installed-IR assembly are later slices. Deferred language tests
+ * and installed-IR assembly live in install tests. Deferred language tests
  * belong in decode tests — they must fail before this kernel runs.
  */
 

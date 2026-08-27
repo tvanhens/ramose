@@ -639,6 +639,27 @@ describe("schema shape rejections", () => {
     );
   });
 
+  test("rejects an exists access-plan lookup at Schema decode", () => {
+    expectInvalid(
+      decodeInstalledAuthorizationResult({
+        ...clone(installedEncoded),
+        accessPlans: [
+          {
+            rule: RULE_OWNS_ISSUE,
+            lookups: [
+              {
+                _tag: "exists",
+                entity: { _tag: "EntityId", catalog: "app", name: "issue" },
+                fields: [],
+              },
+            ],
+          },
+        ],
+      }),
+      /exists|_tag|Union|lookup/i,
+    );
+  });
+
   test("rejects a non-finite literal", () => {
     expectInvalid(
       decodePolicyTemplateResult({

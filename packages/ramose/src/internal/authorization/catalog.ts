@@ -226,14 +226,15 @@ export const CatalogDescriptor = Schema.Struct({
 export type CatalogDescriptor = typeof CatalogDescriptor.Type;
 
 /**
- * Facts and index lookups a decision requires. Computed in #358; this is
- * the type shape installed IR will carry.
+ * Facts and index lookups a v1 rule requires. Derived during install —
+ * never taken from a template. Database-wide `exists` scans are not v1.
  */
 export const RuleAccessLookup = Schema.Union([
   Schema.TaggedStruct("field", { field: FieldId }),
   Schema.TaggedStruct("entity", { entity: EntityId }),
-  Schema.TaggedStruct("exists", { entity: EntityId, fields: Schema.Array(FieldId) }),
+  Schema.TaggedStruct("trait", { trait: TraitId }),
   Schema.TaggedStruct("index", { field: FieldId }),
+  Schema.TaggedStruct("principal", { field: FieldId }),
 ]);
 export type RuleAccessLookup = typeof RuleAccessLookup.Type;
 

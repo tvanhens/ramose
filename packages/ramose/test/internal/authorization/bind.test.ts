@@ -1,8 +1,8 @@
 /**
  * Catalog-binding kernel tests.
  *
- * Structural decode is out of scope. Semantic expression validation,
- * hash recomputation, and installed-IR assembly are later slices.
+ * Structural decode is out of scope. Semantic expression validation
+ * and installed-IR assembly live in sibling suites.
  */
 
 import { describe, expect, test } from "bun:test";

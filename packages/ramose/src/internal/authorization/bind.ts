@@ -14,6 +14,7 @@
  * The result is {@link BoundAuthorizationIR}: non-executable, not
  * accepted by runtime authorization, and structurally distinct from
  * {@link PolicyTemplateIR} and {@link InstalledAuthorizationIR}.
+ * Installed IR is assembled only by {@link import("./install.ts").installAuthorization}.
  */
 
 import * as Context from "effect/Context";
