@@ -965,6 +965,60 @@ describe("me, claims, and classes", () => {
     expectValidated(validate(boundDocument([rule]), composing));
   });
 
+  test("accepts eq of subject and a uuid-shaped operation input", () => {
+    const withUuid: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        ...descriptor.operations,
+        {
+          id: operation(issueOwner, "key", "required"),
+          input: { _tag: "scalar", valueType: "uuid" },
+        },
+      ],
+    };
+    const rule = stamp(
+      { _tag: "operation", operation: operation(issueOwner, "key", "required") },
+      { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "input", path: [] } },
+      {
+        usesResource: false,
+        usesInput: true,
+        usesMe: false,
+        usesSubject: true,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([rule]), withUuid));
+  });
+
+  test("rejects eq of subject and a long-shaped operation input", () => {
+    const withLong: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        ...descriptor.operations,
+        {
+          id: operation(issueOwner, "key", "required"),
+          input: { _tag: "scalar", valueType: "long" },
+        },
+      ],
+    };
+    const rule = stamp(
+      { _tag: "operation", operation: operation(issueOwner, "key", "required") },
+      { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "input", path: [] } },
+      {
+        usesResource: false,
+        usesInput: true,
+        usesMe: false,
+        usesSubject: true,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(validate(boundDocument([rule]), withLong), "InvalidIR", /incompatible equality/);
+  });
+
   test("accepts eq of a child-trait resource and a parent-trait ref", () => {
     const labeledOwner = { kind: "trait" as const, name: "labeled" };
     const withChild: CatalogDescriptor = {
@@ -2071,7 +2125,8 @@ describe("type distinction", () => {
 });
 
 describe("bind then validate", () => {
-  test("a correctly flagged bound template validates after restamping", () => {
+  test("a correctly flagged bound template validates without restamping", () => {
+    const relativeId = RuleId.make(digestHex(0x11));
     const relative = bindPolicyTemplateResult({
       target,
       descriptor,
@@ -2086,7 +2141,7 @@ describe("bind then validate", () => {
         },
         rules: [
           {
-            id: RuleId.make(digestHex(0x11)),
+            id: relativeId,
             focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
             expr: {
               _tag: "eq",
@@ -2106,20 +2161,27 @@ describe("bind then validate", () => {
             dependencies: [],
           },
         ],
-        decisions: { entities: [], traits: [], fields: [], operations: [] },
+        decisions: {
+          entities: [
+            {
+              target: { _tag: "RelativeEntityId", name: "issue" },
+              decision: { allow: [relativeId], deny: [] },
+            },
+          ],
+          traits: [],
+          fields: [],
+          operations: [],
+        },
       },
     });
     expect(Result.isSuccess(relative)).toBe(true);
     if (Result.isFailure(relative)) throw relative.failure;
-    const stamped = stamp(relative.success.rules[0]!.focus, relative.success.rules[0]!.expr, {
-      usesResource: true,
-      usesInput: false,
-      usesMe: true,
-      usesSubject: false,
-      traversalDepth: 1,
-      existsDepth: 0,
-      dependencies: [],
-    });
-    expectValidated(validate({ ...relative.success, rules: [stamped] }));
+    expect(relative.success.rules[0]?.id).not.toBe(relativeId);
+    expect(relative.success.decisions.entities[0]?.decision.allow).toEqual([
+      relative.success.rules[0]!.id,
+    ]);
+    const validated = expectValidated(validate(relative.success));
+    expect(validated.rules[0]?.id).toBe(relative.success.rules[0]?.id);
+    expect(validated.decisions.entities[0]?.decision.allow).toEqual([validated.rules[0]!.id]);
   });
 });

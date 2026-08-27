@@ -227,12 +227,21 @@ export const eqCompatible = (
     if (b._tag === "ref" && b.cardinality === "many") return false;
     if (a._tag === "me") return meCompatibleWith(index, a.entity, b);
     if (a._tag === "subject") {
-      return (
-        b._tag === "subject" ||
-        scalarAssignable("string", b) ||
-        (b._tag === "claim" && claimScalar(b.shape) === "string") ||
-        (b._tag === "input" && inputScalar(b.shape) === "string")
-      );
+      if (b._tag === "subject") return true;
+      if (scalarAssignable("string", b)) return true;
+      if (b._tag === "claim") {
+        const scalar = claimScalar(b.shape);
+        return (
+          scalar !== undefined && scalarAssignable("string", { _tag: "scalar", valueType: scalar })
+        );
+      }
+      if (b._tag === "input") {
+        const scalar = inputScalar(b.shape);
+        return (
+          scalar !== undefined && scalarAssignable("string", { _tag: "scalar", valueType: scalar })
+        );
+      }
+      return false;
     }
     if (a._tag === "row") {
       if (b._tag === "row") return sameRow(index, a.focus, b.focus);

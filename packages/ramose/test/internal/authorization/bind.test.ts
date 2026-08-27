@@ -32,6 +32,7 @@ import {
   bindPolicyTemplateResult,
   decodeInstalledAuthorizationResult,
   type BoundAuthorizationIR as BoundAuthorizationIRType,
+  type CanonicalRuleFocus,
   type CatalogBindingInput,
   type CatalogBindingTarget,
   type CatalogDescriptor,
@@ -387,6 +388,45 @@ const expectBound = (result: Result.Result<BoundAuthorizationIRType, InvalidIR |
   return result.success;
 };
 
+const findRule = (
+  bound: BoundAuthorizationIRType,
+  match: (focus: CanonicalRuleFocus) => boolean,
+) => {
+  const found = bound.rules.find((entry) => match(entry.focus));
+  if (found === undefined) throw new Error("expected bound rule");
+  return found;
+};
+
+const entityRule = (bound: BoundAuthorizationIRType, name: string) =>
+  findRule(bound, (focus) => focus._tag === "entity" && focus.entity.name === name);
+
+const traitRule = (bound: BoundAuthorizationIRType, name: string) =>
+  findRule(bound, (focus) => focus._tag === "trait" && focus.trait.name === name);
+
+const fieldRule = (bound: BoundAuthorizationIRType, owner: OwnerRef, localName: string) =>
+  findRule(
+    bound,
+    (focus) =>
+      focus._tag === "field" &&
+      focus.field.owner.name === owner.name &&
+      focus.field.localName === localName,
+  );
+
+const operationRule = (
+  bound: BoundAuthorizationIRType,
+  owner: OwnerRef,
+  localName: string,
+  operationTarget: "required" | "none",
+) =>
+  findRule(
+    bound,
+    (focus) =>
+      focus._tag === "operation" &&
+      focus.operation.owner.name === owner.name &&
+      focus.operation.localName === localName &&
+      focus.operation.target === operationTarget,
+  );
+
 const expectFailure = (
   result: Result.Result<unknown, InvalidIR | CatalogMismatch>,
   tag: "InvalidIR" | "CatalogMismatch",
@@ -421,31 +461,30 @@ describe("successful binding", () => {
 
     expect(bound.principal.entity).toEqual(field(userOwner, "authId"));
 
-    const focuses = Object.fromEntries(bound.rules.map((entry) => [entry.id, entry.focus]));
-    expect(focuses[RULE_OWNS_ISSUE]).toEqual({ _tag: "entity", entity: entity("issue") });
-    expect(focuses[RULE_TAG_GRANT]).toEqual({ _tag: "trait", trait: trait("taggable") });
-    expect(focuses[RULE_FIELD]).toEqual({
+    expect(entityRule(bound, "issue").focus).toEqual({ _tag: "entity", entity: entity("issue") });
+    expect(traitRule(bound, "taggable").focus).toEqual({ _tag: "trait", trait: trait("taggable") });
+    expect(fieldRule(bound, issueOwner, "internalNotes").focus).toEqual({
       _tag: "field",
       field: field(issueOwner, "internalNotes"),
     });
-    expect(focuses[RULE_RENAME_INPUT]).toEqual({
+    expect(operationRule(bound, issueOwner, "rename", "required").focus).toEqual({
       _tag: "operation",
       operation: operation(issueOwner, "rename", "required"),
     });
-    expect(focuses[RULE_CREATE]).toEqual({
+    expect(operationRule(bound, issueOwner, "create", "none").focus).toEqual({
       _tag: "operation",
       operation: operation(issueOwner, "create", "none"),
     });
-    expect(focuses[RULE_ADD_TAG]).toEqual({
+    expect(operationRule(bound, taggableOwner, "addTag", "required").focus).toEqual({
       _tag: "operation",
       operation: operation(taggableOwner, "addTag", "required"),
     });
-    expect(focuses[RULE_REINDEX]).toEqual({
+    expect(operationRule(bound, taggableOwner, "reindex", "none").focus).toEqual({
       _tag: "operation",
       operation: operation(taggableOwner, "reindex", "none"),
     });
 
-    const owns = bound.rules.find((entry) => entry.id === RULE_OWNS_ISSUE)!;
+    const owns = entityRule(bound, "issue");
     expect(owns.expr).toEqual({
       _tag: "eq",
       left: {
@@ -456,7 +495,7 @@ describe("successful binding", () => {
       right: { _tag: "me" },
     });
 
-    const tagGrant = bound.rules.find((entry) => entry.id === RULE_TAG_GRANT)!;
+    const tagGrant = traitRule(bound, "taggable");
     expect(tagGrant.expr._tag).toBe("some");
     if (tagGrant.expr._tag === "some") {
       expect(tagGrant.expr.collection.steps[0]?.field).toEqual(field(taggableOwner, "tags"));
@@ -476,19 +515,19 @@ describe("successful binding", () => {
       operation(taggableOwner, "reindex", "none"),
     ]);
 
-    expect(bound.rules.find((entry) => entry.id === RULE_RENAME_INPUT)?.usesInput).toBe(true);
-    expect(bound.rules.find((entry) => entry.id === RULE_OWNS_ISSUE)?.usesMe).toBe(true);
+    expect(operationRule(bound, issueOwner, "rename", "required").usesInput).toBe(true);
+    expect(entityRule(bound, "issue").usesMe).toBe(true);
+    expect(entityRule(bound, "issue").id).not.toBe(RULE_OWNS_ISSUE);
+    expect(bound.decisions.entities[0]?.decision.allow).toEqual([entityRule(bound, "issue").id]);
   });
 
   test("entity-owned and trait-owned targeted operations bind", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    expect(
-      bound.rules.find((entry) => entry.id === RULE_RENAME_INPUT)?.focus,
-    ).toEqual({
+    expect(operationRule(bound, issueOwner, "rename", "required").focus).toEqual({
       _tag: "operation",
       operation: operation(issueOwner, "rename", "required"),
     });
-    expect(bound.rules.find((entry) => entry.id === RULE_ADD_TAG)?.focus).toEqual({
+    expect(operationRule(bound, taggableOwner, "addTag", "required").focus).toEqual({
       _tag: "operation",
       operation: operation(taggableOwner, "addTag", "required"),
     });
@@ -496,8 +535,8 @@ describe("successful binding", () => {
 
   test("entity-owned and trait-owned targetless operations remain owned and bind only with target none", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    const create = bound.rules.find((entry) => entry.id === RULE_CREATE)?.focus;
-    const reindex = bound.rules.find((entry) => entry.id === RULE_REINDEX)?.focus;
+    const create = operationRule(bound, issueOwner, "create", "none").focus;
+    const reindex = operationRule(bound, taggableOwner, "reindex", "none").focus;
     expect(create).toEqual({
       _tag: "operation",
       operation: operation(issueOwner, "create", "none"),
@@ -539,13 +578,13 @@ describe("successful binding", () => {
 
   test("traversal-step and existential-entity binding", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    const owns = bound.rules.find((entry) => entry.id === RULE_OWNS_ISSUE)!;
+    const owns = entityRule(bound, "issue");
     if (owns.expr._tag === "eq" && owns.expr.left._tag === "ref") {
       expect(owns.expr.left.steps.map((step) => step.field)).toEqual([field(issueOwner, "owner")]);
     } else {
       throw new Error("expected traversal eq");
     }
-    const tagGrant = bound.rules.find((entry) => entry.id === RULE_TAG_GRANT)!;
+    const tagGrant = traitRule(bound, "taggable");
     if (tagGrant.expr._tag === "some" && tagGrant.expr.pred._tag === "exists") {
       expect(tagGrant.expr.pred.entity).toEqual(entity("tag-grant"));
     } else {
@@ -578,7 +617,7 @@ describe("successful binding", () => {
 
   test("claim and input terms have no identities and pass through", () => {
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    const rename = bound.rules.find((entry) => entry.id === RULE_RENAME_INPUT)!;
+    const rename = operationRule(bound, issueOwner, "rename", "required");
     expect(rename.expr._tag).toBe("and");
     if (rename.expr._tag === "and") {
       expect(rename.expr.exprs).toContainEqual({ _tag: "hasClass", class: "member" });

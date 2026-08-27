@@ -32,6 +32,7 @@ import type {
   RelativeFieldId,
   RelativeOperationId,
   RelativeTraitId,
+  RuleId,
   TraitId,
 } from "./identities.ts";
 import {
@@ -55,6 +56,7 @@ import type {
   RelativeRefTerm,
   RelativeValueTerm,
 } from "./expr.ts";
+import { hashCanonicalRuleSync } from "./decode.ts";
 import type { InstalledPrincipalResolution, PrincipalResolutionConfig } from "./principal.ts";
 
 export type BindFailure = InvalidIR | CatalogMismatch;
@@ -633,7 +635,7 @@ const bindRule = (
   if (Result.isFailure(focus)) return Result.fail(focus.failure);
   const expr = bindExpr(index, rule.expr);
   if (Result.isFailure(expr)) return Result.fail(expr.failure);
-  return Result.succeed({
+  const bound: CanonicalAuthorizationRule = {
     id: rule.id,
     focus: focus.success,
     expr: expr.success,
@@ -644,8 +646,28 @@ const bindRule = (
     traversalDepth: rule.traversalDepth,
     existsDepth: rule.existsDepth,
     dependencies: rule.dependencies,
-  });
+  };
+  return Result.succeed({ ...bound, id: hashCanonicalRuleSync(bound) });
 };
+
+const remapRuleIds = (
+  ids: ReadonlyArray<RuleId>,
+  map: ReadonlyMap<RuleId, RuleId>,
+): ReadonlyArray<RuleId> => ids.map((id) => map.get(id) ?? id);
+
+const remapDecision = (
+  decision: Decision,
+  map: ReadonlyMap<RuleId, RuleId>,
+): Decision => ({
+  allow: remapRuleIds(decision.allow, map),
+  deny: remapRuleIds(decision.deny, map),
+});
+
+const remapDecisionEntries = <Target>(
+  entries: ReadonlyArray<{ readonly target: Target; readonly decision: Decision }>,
+  map: ReadonlyMap<RuleId, RuleId>,
+): ReadonlyArray<{ readonly target: Target; readonly decision: Decision }> =>
+  entries.map((entry) => ({ ...entry, decision: remapDecision(entry.decision, map) }));
 
 const bindDecisionEntries = <Relative, Canonical>(
   entries: ReadonlyArray<{ readonly target: Relative; readonly decision: Decision }>,
@@ -736,8 +758,10 @@ const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
 
 /**
  * Pure catalog-binding kernel. Resolves every relative identity in the
- * template against `input.descriptor`. Does not hash, recompute derived
- * flags, or assemble {@link import("./ir.ts").InstalledAuthorizationIR}.
+ * template against `input.descriptor`, then re-keys each rule ID from the
+ * catalog-qualified body and remaps decision references. Does not
+ * recompute derived flags or assemble
+ * {@link import("./ir.ts").InstalledAuthorizationIR}.
  */
 export const bindPolicyTemplateResult = (
   input: CatalogBindingInput,
@@ -750,6 +774,11 @@ export const bindPolicyTemplateResult = (
 
   const rules = firstError(input.template.rules.map((rule) => bindRule(index.success, rule)));
   if (Result.isFailure(rules)) return Result.fail(rules.failure);
+
+  const idMap = new Map<RuleId, RuleId>();
+  for (let i = 0; i < input.template.rules.length; i++) {
+    idMap.set(input.template.rules[i]!.id, rules.success[i]!.id);
+  }
 
   const decisions = bindDecisions(index.success, input.template.decisions);
   if (Result.isFailure(decisions)) return Result.fail(decisions.failure);
@@ -765,7 +794,12 @@ export const bindPolicyTemplateResult = (
     claims: input.template.claims,
     principal: principal.success,
     rules: rules.success,
-    decisions: decisions.success,
+    decisions: {
+      entities: remapDecisionEntries(decisions.success.entities, idMap),
+      traits: remapDecisionEntries(decisions.success.traits, idMap),
+      fields: remapDecisionEntries(decisions.success.fields, idMap),
+      operations: remapDecisionEntries(decisions.success.operations, idMap),
+    },
   };
   return Result.succeed(freezeBound(bound));
 };
