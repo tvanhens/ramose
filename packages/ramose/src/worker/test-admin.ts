@@ -130,23 +130,32 @@ const forward = async (
     ...coloHeader(request),
     ...internalHeaders(env),
   };
-  const res =
-    scope === "replica"
-      ? await nearestReplica(env, db, request).fetch(`https://replica${path}?db=${encodeURIComponent(db)}`, {
-          method: "POST",
-          headers,
-          body,
-        })
-      : await env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db)).fetch(transactorUrl(db, path), {
-          method: "POST",
-          headers,
-          body,
-        });
-  if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
-  return new Response(res.body, {
-    status: res.status,
-    headers: { "content-type": "application/json" },
-  });
+  try {
+    const res =
+      scope === "replica"
+        ? await nearestReplica(env, db, request).fetch(`https://replica${path}?db=${encodeURIComponent(db)}`, {
+            method: "POST",
+            headers,
+            body,
+          })
+        : await env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db)).fetch(transactorUrl(db, path), {
+            method: "POST",
+            headers,
+            body,
+          });
+    if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
+    return new Response(res.body, {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (err) {
+    // `ctx.abort` discards the isolate; the stub fetch rejects instead of
+    // returning the ack. The instance is gone — that is the success path.
+    if (path === "/admin/test/abort") {
+      return json({ ok: true, aborted: true });
+    }
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 };
 
 /** Worker entry for `/__test__/db/:name/...`. Caller already checked the env gate. */

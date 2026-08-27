@@ -77,12 +77,13 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       const urls = localUrls();
       const db = uniqueDb("cpw");
       const armed = await testAdmin(urls.openUrl, db, "/checkpoint", {
-        action: "arm-wait",
+        action: "arm-throw",
         name: "session.open",
+        error: "induced",
       });
       expect(armed.status).toBe(200);
       const status = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
-      expect(status.body.checkpoints["session.open"]?.action).toBe("wait");
+      expect(status.body.checkpoints["session.open"]?.action).toBe("throw");
       const released = await testAdmin(urls.openUrl, db, "/checkpoint", {
         action: "release",
         name: "session.open",
@@ -122,6 +123,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       expect(armed.status).toBe(200);
       const aborted = await testAdmin(urls.openUrl, db, "/abort", { target: "transactor" });
       expect(aborted.status).toBe(200);
+      expect(aborted.body.aborted).toBe(true);
       const status = await testAdmin(urls.openUrl, db, "/checkpoint", {
         scope: "transactor",
         action: "status",

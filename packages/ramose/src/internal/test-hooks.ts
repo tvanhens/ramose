@@ -140,7 +140,9 @@ export const handleIsolateTestAdmin = async (
   if (!path.startsWith("/admin/test/")) return undefined;
   enableTestHooks();
   if (path === "/admin/test/abort" && request.method === "POST") {
-    // Ack first — `ctx.abort` discards the isolate and would drop this response.
+    // Drop isolate test state. `ctx.abort` rebuilds the DO instance; miniflare
+    // may keep the module, so reset here as well as in the DO constructor.
+    resetTestHooks();
     if (abort !== undefined) queueMicrotask(() => abort("test abort"));
     return json({ ok: true, aborted: true });
   }

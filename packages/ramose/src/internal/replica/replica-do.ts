@@ -45,7 +45,7 @@ import { type WritesMode, parseWritesHeader } from "../../writes.ts";
 import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
-import { checkpoint, handleIsolateTestAdmin } from "../test-hooks.ts";
+import { checkpoint, handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -98,6 +98,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
+    resetTestHooks();
     this.sql = ctx.storage.sql;
   }
 

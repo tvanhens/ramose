@@ -17,7 +17,7 @@ import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
-import { handleIsolateTestAdmin } from "../test-hooks.ts";
+import { handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
 
 export type { TxAck };
 
@@ -41,6 +41,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
+    resetTestHooks();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
