@@ -766,7 +766,9 @@ export async function expandTx(
       if (expectedAbsent) {
         match = before.size === 0;
       } else {
-        const expectedTv = await valueFor(attr, op.expected, true);
+        // Expected is a db-before compare key; do not apply write-time
+        // entityPresent binding (same-tx retracts must not hide the stored ref).
+        const expectedTv = await valueFor(attr, op.expected, false);
         expectedLabel = String(expectedTv.v);
         match = before.size === 1 && before.has(valueKey(expectedTv.vt, expectedTv.v));
       }

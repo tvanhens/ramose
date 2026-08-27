@@ -33,12 +33,27 @@ export type TxField<C extends AnySchema> =
   | CatalogIdent<C>;
 
 /**
- * Field slot for {@link Tx.cas} / {@link TxHandle.cas}: only cardinality-one
- * idents. Card-many is a type error on a concrete catalog.
+ * `true` when `C` is a concrete catalog (keys are entity names). The
+ * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
+ * a non-distributive `CardAtIdent extends "one"` against that bound is
+ * `"one" | "many" extends "one"` → `never`.
  */
-export type TxCasField<C extends AnySchema> = {
-  [I in CatalogIdent<C>]: CardAtIdent<C, I> extends "one" ? { readonly ident: I } | I : never;
-}[CatalogIdent<C>];
+export type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
+  ? false
+  : true;
+
+/**
+ * Field slot for {@link Tx.cas} / {@link TxHandle.cas}: only cardinality-one
+ * idents. Card-many is a type error on a concrete catalog. Schema-erased
+ * `Tx` / `TxHandle` fall back to {@link TxField} so `cas` stays callable.
+ */
+export type TxCasField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? {
+      [I in CatalogIdent<C>]: CardAtIdent<C, I> extends "one"
+        ? { readonly ident: I } | I
+        : never;
+    }[CatalogIdent<C>]
+  : TxField<C>;
 
 type IdentOfTxField<C extends AnySchema, A> = A extends {
   readonly ident: infer I extends string;

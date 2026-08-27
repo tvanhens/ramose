@@ -13,6 +13,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
+  AnySchema,
   Db,
   DbError,
   Equal,
@@ -112,6 +113,16 @@ tx.set(handle, User.name, "Ada");
 tx.set(handle, User.age, 36);
 tx.cas(handle, User.age, 36, 37);
 handle.cas(User.age, null, 36);
+
+const erased = <C extends AnySchema>(tx: Tx<C>, h: TxHandle<C>) => {
+  tx.cas(h, ":user/age" as any, 36 as any, 37 as any);
+  h.cas(":user/age" as any, null, 36 as any);
+};
+declare const erasedTx: Tx<AnySchema>;
+declare const erasedH: TxHandle<AnySchema>;
+erasedTx.cas(erasedH, ":user/age", 36, 37);
+erasedH.cas(":user/age", null, 36);
+void erased;
 tx.set(handle, Meta.source, "import");
 // bag: Movie.title on a user handle is legal — do not close the world
 tx.set(handle, Movie.title, "not a movie but types allow any ns");

@@ -36,6 +36,8 @@ import {
   Entity,
   type ReadDb,
   type TxHandle,
+  type TxCasField,
+  type TxField,
   Ref,
   type TokenSource,
   token,
@@ -496,6 +498,7 @@ export type _anyCatalog = Expect<
   Equal<ReturnType<typeof anyCatalog<typeof Movies>>, typeof Movies>
 >;
 export type _moviesIsAny = Expect<Extends<typeof Movies, DbSchema.Any>>;
+export type _erasedCasField = Expect<Extends<TxCasField<DbSchema.Any>, TxField<DbSchema.Any>>>;
 
 /** `Field` / `Entity` / `Schema` are types as well as constructors. */
 export type _attributeTag = Expect<Equal<Field["_tag"], "Field">>;

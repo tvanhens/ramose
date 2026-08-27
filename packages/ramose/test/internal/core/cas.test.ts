@@ -274,6 +274,29 @@ describe("db/cas", () => {
     expect((await conn.db().entity(eid))![":user/age"]).toBe(37);
   });
 
+  test("same-tx retractEntity then CAS expected=old component ref succeeds", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([
+      { ":db/id": "u", ":user/name": "A", ":user/address": { ":db/id": "old", ":address/city": "Paris" } },
+    ]);
+    const u = r1.tempids.u;
+    const oldAddr = r1.tempids.old;
+    const created = await conn.transact([{ ":db/id": "new", ":address/city": "Oslo" }]);
+    const newAddr = created.tempids.new;
+
+    await expect(
+      conn.transact([[":db/cas", u, ":user/address", newAddr, newAddr]]),
+    ).rejects.toMatchObject({ code: "tx/cas-conflict" });
+    expect((await conn.db().entity(u))![":user/address"]).toBe(oldAddr);
+
+    await conn.transact([
+      [":db/retractEntity", oldAddr],
+      [":db/cas", u, ":user/address", oldAddr, newAddr],
+    ]);
+    expect((await conn.db().entity(u))![":user/address"]).toBe(newAddr);
+    expect(await conn.db().entity(oldAddr)).toBeUndefined();
+  });
+
   test("TxError from CAS is still a TxError", async () => {
     const conn = await setup();
     const r1 = await conn.transact([{ ":db/id": "u", ":user/age": 1 }]);

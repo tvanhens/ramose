@@ -302,6 +302,7 @@ const schemaLess = Operation(
     const e = body.entity();
     e.set(":user/name", "Ada");
     e.set(User.name, input.name);
+    e.cas(":user/age", null, 1);
     return {};
   },
 );

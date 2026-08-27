@@ -205,12 +205,30 @@ const rewriteMap = (
   return out;
 };
 
-/** @internal Pending-layer tempid rewrite. Tests pin `:db/update`. */
+/** @internal Pending-layer tempid rewrite. Tests pin `:db/update` and `:db/cas`. */
 export const rewritePendingTx = (
   tx: readonly unknown[],
   ids: Record<string, number>,
   schema: Schema | undefined,
 ): unknown[] => rewriteTx(tx, ids, schema);
+
+/** Subject + every value slot after the attr, rewritten when the attr is a ref. */
+const rewriteAttrOp = (
+  item: readonly unknown[],
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown[] => {
+  const [op, e, a, ...values] = item;
+  const next: unknown[] = [op, rewriteEntityForm(e, ids, schema)];
+  if (item.length >= 3) next.push(a);
+  const rewriteValues = isRefAttr(schema, a);
+  for (const v of values) {
+    next.push(rewriteValues ? rewriteEntityForm(v, ids, schema) : v);
+  }
+  return next;
+};
+
+const ATTR_OPS = new Set([":db/add", ":db/retract", ":db/update", ":db/cas"]);
 
 const rewriteTx = (
   tx: readonly unknown[],
@@ -219,15 +237,10 @@ const rewriteTx = (
 ): unknown[] =>
   tx.map((item) => {
     if (Array.isArray(item)) {
-      const [op, e, a, v] = item as unknown[];
+      const [op, e] = item as unknown[];
       if (op === ":db/retractEntity") return [op, rewriteEntityForm(e, ids, schema)];
-      if (op === ":db/add" || op === ":db/retract" || op === ":db/update") {
-        const next: unknown[] = [op, rewriteEntityForm(e, ids, schema)];
-        if (item.length >= 3) next.push(a);
-        if (item.length >= 4) {
-          next.push(isRefAttr(schema, a) ? rewriteEntityForm(v, ids, schema) : v);
-        }
-        return next;
+      if (typeof op === "string" && ATTR_OPS.has(op)) {
+        return rewriteAttrOp(item, ids, schema);
       }
       return item;
     }
@@ -321,8 +334,13 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
   });
 };
 
+const isGeneratedTempid = (tmp: string): boolean => /^tmp-\d+$/.test(tmp);
+
 export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
+  /** Named tempids acked by earlier posts — used to rewrite a CAS that
+   * submitted without a pending layer (local `tx/cas-conflict`). */
+  const ackedNamed: Record<string, number> = {};
   let conn: Connection | undefined;
   let confirmedT = 0;
   /** `t` values whose facts are already in the follower. Used so a late
@@ -440,15 +458,22 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const was = local[tmp];
       if (typeof was === "number") eids.set(was, serverEid);
     }
-    // only rewrite tempid *strings* a queued item referred to and did not mint
+    // Rewrite tempid strings a queued item referred to. Generated `tmp-N`
+    // names are per-builder — a later layer that minted `tmp-1` owns a
+    // different entity. A named tempid (`tx.tempid("new")`) is shared
+    // across queued txs, even if local processTx also allocated it
+    // (CAS subject / ref slot), so an earlier ack must rewrite `:db/cas`.
     const referred: Record<string, number> = {};
     for (const [tmp, serverEid] of Object.entries(acked)) {
       referred[tmp] = serverEid;
+      if (!isGeneratedTempid(tmp)) ackedNamed[tmp] = serverEid;
     }
     for (const layer of pending) {
       const foreign: Record<string, number> = {};
       for (const [tmp, serverEid] of Object.entries(referred)) {
-        if (layer.tempids[tmp] === undefined) foreign[tmp] = serverEid;
+        if (layer.tempids[tmp] === undefined || !isGeneratedTempid(tmp)) {
+          foreign[tmp] = serverEid;
+        }
       }
       if (Object.keys(foreign).length > 0) {
         layer.tx = rewriteTx(layer.tx, foreign, conn?.db().schema);
@@ -630,34 +655,46 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
+  // CAS is the only TxError that must still submit: local db-before can
+  // be stale vs the server. Do not paint a pending layer — the ack decides.
+  const tryLocalExpand = (txData: readonly unknown[]) =>
+    Effect.tryPromise({
+      try: () =>
+        processTx(
+          view(),
+          txData as unknown[],
+          // Fake local `t` only — not a dense log assignment. Must sit
+          // above painted server facts (`factTs`) as well as `confirmedT`,
+          // or a later pending layer collides with an ack we did not
+          // stamp as prefix.
+          Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+          nextEid(),
+          Date.now(),
+        ),
+      catch: classifyTx,
+    }).pipe(
+      Effect.catchIf(
+        (e): e is TxRejected => e instanceof TxRejected && e.code === "tx/cas-conflict",
+        () => Effect.void,
+      ),
+    );
+
   const transact: Overlay["transact"] = (tx) =>
     ready(false).pipe(
       Effect.flatMap(() =>
         Effect.gen(function* () {
-          const expansion = yield* Effect.tryPromise({
-            try: () =>
-              processTx(
-                view(),
-                tx as unknown[],
-                // Fake local `t` only — not a dense log assignment. Must sit
-                // above painted server facts (`factTs`) as well as `confirmedT`,
-                // or a later pending layer collides with an ack we did not
-                // stamp as prefix.
-                Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-                nextEid(),
-                Date.now(),
-              ),
-            catch: classifyTx,
-          });
+          const expansion = yield* tryLocalExpand(tx);
 
           const id = clientTxId();
-          pending.push({
-            clientTxId: id,
-            tx: tx as unknown[],
-            datoms: expansion.datoms,
-            tempids: expansion.tempids,
-          });
-          notify();
+          if (expansion) {
+            pending.push({
+              clientTxId: id,
+              tx: tx as unknown[],
+              datoms: expansion.datoms,
+              tempids: expansion.tempids,
+            });
+            notify();
+          }
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             // `options.post` is `Effect<unknown, DbError>` — requirements
@@ -667,7 +704,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
                 options.post(
-                  pending.find((l) => l.clientTxId === id)?.tx ?? (tx as unknown[]),
+                  pending.find((l) => l.clientTxId === id)?.tx ??
+                    rewriteTx(tx, ackedNamed, conn?.db().schema),
                   id,
                 ),
               )
@@ -807,25 +845,17 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           let invocation: OperationInvocation = { ...args.invocation };
 
           if (tx.length > 0) {
-            const expansion = yield* Effect.tryPromise({
-              try: () =>
-                processTx(
-                  view(),
-                  tx,
-                  Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-                  nextEid(),
-                  Date.now(),
-                ),
-              catch: classifyTx,
-            });
-            pending.push({
-              clientTxId: id,
-              tx,
-              datoms: expansion.datoms,
-              tempids: expansion.tempids,
-              invocation,
-            });
-            notify();
+            const expansion = yield* tryLocalExpand(tx);
+            if (expansion) {
+              pending.push({
+                clientTxId: id,
+                tx,
+                datoms: expansion.datoms,
+                tempids: expansion.tempids,
+                invocation,
+              });
+              notify();
+            }
           }
 
           const posted = yield* Effect.callback<OverlayOpAck, DbError>((resume) => {

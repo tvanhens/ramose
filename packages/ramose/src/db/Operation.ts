@@ -23,6 +23,7 @@ import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
+  type ConcreteCatalog,
   type PutAttrs,
   type PutCreateAttrs,
   type PutSubject,
@@ -34,15 +35,6 @@ import {
   type TxValue,
   type UpdateMapAttrs,
 } from "./Tx.ts";
-
-/**
- * `true` when `C` is a concrete catalog (keys are entity names). The
- * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
- * `TxValue` against that bound is `never`.
- */
-type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
-  ? false
-  : true;
 
 type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? TxKnownEntity<C>
