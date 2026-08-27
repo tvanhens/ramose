@@ -359,15 +359,18 @@ export class Transactor {
   /**
    * Persist one complete catalog unit and advance the head. Bytes are
    * written before the head pointer in a single `transactionSync`.
+   * `installT` is the transactor's committed basis, not a caller timestamp.
    */
-  async compareAndSwapCatalogUnit(input: CompareAndSwapCatalogUnitInput): Promise<CatalogHead> {
+  async compareAndSwapCatalogUnit(
+    input: Omit<CompareAndSwapCatalogUnitInput, "installT">,
+  ): Promise<CatalogHead> {
     await this.init();
     this.requireTransactorDatabase(input.database);
     this.requireTransactorDatabase(input.unit.database);
     const verified = await Effect.runPromise(Effect.result(verifyInstalledCatalogUnit(input.unit)));
     if (Result.isFailure(verified)) throw verified.failure;
     const result = this.host.transactionSync(() =>
-      casCatalogUnit(this.host.sql, { ...input, unit: verified.success }),
+      casCatalogUnit(this.host.sql, { ...input, unit: verified.success, installT: this.t }),
     );
     if (Result.isFailure(result)) throw result.failure;
     return result.success;

@@ -47,6 +47,7 @@ import {
   normalizeOperations,
   normalizeTraitComposition,
 } from "./install/normalize.ts";
+import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 import { invalid, mismatch, type ValidateFailure } from "./validation/common.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION, AuthorizationLanguageVersion } from "./version.ts";
 import type { JsonValue } from "./json.ts";
@@ -298,6 +299,15 @@ export const requireUnitCoherence = (
     }
     yield* requirePolicyPresent(document.policy);
     yield* requireIdentityTable(document.identities);
+    yield* prepareAuthorizationCatalog(
+      {
+        database: document.database,
+        catalog: document.catalog,
+        catalogVersion: document.catalogVersion,
+        schemaFingerprint: document.schemaFingerprint,
+      },
+      schemaDescriptorFromUnit(document),
+    );
     yield* requireLanguageVersion(document.languageVersion, "catalog unit");
     yield* requireLanguageVersion(document.policy.languageVersion, "embedded policy");
     yield* requireMatchingIdentityFields(

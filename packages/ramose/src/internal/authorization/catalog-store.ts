@@ -156,15 +156,44 @@ const readUnitRow = (
   });
 };
 
-const sameStoredHash = (
+const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let i = 0; i < left.byteLength; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+};
+
+const requireStoredUnitBytes = (
   sql: SqlLike,
-  catalog: CatalogId,
-  catalogVersion: CatalogVersion,
-  unitHash: CatalogUnitHash,
-): Result.Result<boolean, CatalogUnitCorrupt> =>
+  input: CompareAndSwapCatalogUnitInput,
+): Result.Result<void, CatalogUnitCorrupt> =>
   Result.gen(function* () {
-    const row = yield* readUnitRow(sql, catalog, catalogVersion);
-    return row !== undefined && row.unitHash === unitHash;
+    const row = yield* readUnitRow(sql, input.catalog, input.unit.catalogVersion);
+    if (row === undefined) {
+      return yield* Result.fail(
+        new CatalogUnitCorrupt({
+          message: "catalog unit row missing for idempotent retry",
+          catalog: input.catalog,
+        }),
+      );
+    }
+    if (row.unitHash !== input.unit.unitHash) {
+      return yield* Result.fail(
+        new CatalogUnitCorrupt({
+          message: "catalog unit hash mismatch",
+          catalog: input.catalog,
+        }),
+      );
+    }
+    if (!bytesEqual(row.bytes, catalogUnitCanonicalBytes(input.unit))) {
+      return yield* Result.fail(
+        new CatalogUnitCorrupt({
+          message: "catalog unit bytes do not match canonical unit",
+          catalog: input.catalog,
+        }),
+      );
+    }
   });
 
 const isIdempotentRetry = (
@@ -176,8 +205,8 @@ const isIdempotentRetry = (
     if (head.catalogVersion !== input.unit.catalogVersion || head.unitHash !== input.unit.unitHash) {
       return false;
     }
-    if (head.installT === input.installT) return true;
-    return yield* sameStoredHash(sql, input.catalog, input.unit.catalogVersion, input.unit.unitHash);
+    yield* requireStoredUnitBytes(sql, input);
+    return true;
   });
 
 const writeUnitAndHead = (
@@ -186,20 +215,22 @@ const writeUnitAndHead = (
 ): Result.Result<CatalogHead, CatalogStoreFailure> =>
   Result.gen(function* () {
     const existing = yield* readUnitRow(sql, input.catalog, input.unit.catalogVersion);
-    if (existing !== undefined && existing.unitHash !== input.unit.unitHash) {
-      return yield* casConflict(input.catalog, input.expectedVersion ?? undefined, input.unit.catalogVersion);
-    }
-    if (existing === undefined) {
-      const bytes = catalogUnitCanonicalBytes(input.unit);
-      sql.exec(
-        `INSERT INTO catalog_units (catalog, catalog_version, install_t, unit_hash, bytes) VALUES (?, ?, ?, ?, ?)`,
+    if (existing !== undefined) {
+      return yield* casConflict(
         input.catalog,
+        input.expectedVersion ?? undefined,
         input.unit.catalogVersion,
-        input.installT,
-        input.unit.unitHash,
-        blobParam(bytes),
       );
     }
+    const bytes = catalogUnitCanonicalBytes(input.unit);
+    sql.exec(
+      `INSERT INTO catalog_units (catalog, catalog_version, install_t, unit_hash, bytes) VALUES (?, ?, ?, ?, ?)`,
+      input.catalog,
+      input.unit.catalogVersion,
+      input.installT,
+      input.unit.unitHash,
+      blobParam(bytes),
+    );
     sql.exec(
       `INSERT OR REPLACE INTO catalog_heads (catalog, catalog_version, install_t, unit_hash) VALUES (?, ?, ?, ?)`,
       input.catalog,
@@ -360,6 +391,12 @@ export const verifyStoredCatalogUnit = Effect.fn("CatalogStore.verifyStoredCatal
         expected: input.catalog,
         actual: document.catalog,
       });
+    }
+    if (document.catalog !== row.catalog) {
+      return yield* corrupt(input.catalog, "stored catalog unit catalog does not match row");
+    }
+    if (document.catalogVersion !== row.catalogVersion) {
+      return yield* corrupt(input.catalog, "stored catalog unit version does not match row");
     }
     if (document.unitHash !== row.unitHash) {
       return yield* corrupt(input.catalog, "catalog unit hash mismatch");

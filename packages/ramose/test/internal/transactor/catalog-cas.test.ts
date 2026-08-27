@@ -24,6 +24,7 @@ import {
   hashInstalledCatalogUnit,
   installAuthorization,
   sealInstalledCatalogUnit,
+  compareAndSwapCatalogUnit,
   type CatalogBindingInput,
   type CatalogDescriptor,
   type FieldRefTarget,
@@ -186,15 +187,32 @@ const cas = (
   h: Harness,
   unit: InstalledCatalogUnitV1,
   expectedVersion: CatalogVersion | null,
-  installT: number,
 ) =>
   h.transactor.compareAndSwapCatalogUnit({
     database,
     catalog,
     expectedVersion,
     unit,
-    installT,
   });
+
+const casAt = (
+  h: Harness,
+  unit: InstalledCatalogUnitV1,
+  expectedVersion: CatalogVersion | null,
+  installT: number,
+) => {
+  const result = h.transactionSync(() =>
+    compareAndSwapCatalogUnit(h.sql, {
+      database,
+      catalog,
+      expectedVersion,
+      unit,
+      installT,
+    }),
+  );
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
 
 const load = (h: Harness, basisT: number) =>
   h.transactor.loadCatalogUnitAtBasis({ database, catalog, basisT });
@@ -212,12 +230,26 @@ const casFail = async (
   h: Harness,
   unit: InstalledCatalogUnitV1,
   expectedVersion: CatalogVersion | null,
+) => {
+  try {
+    await cas(h, unit, expectedVersion);
+    throw new Error("expected CAS to fail");
+  } catch (error) {
+    return error as { readonly _tag?: string; readonly message?: string };
+  }
+};
+
+const casAtFail = (
+  h: Harness,
+  unit: InstalledCatalogUnitV1,
+  expectedVersion: CatalogVersion | null,
   installT: number,
 ) => {
   try {
-    await cas(h, unit, expectedVersion, installT);
+    casAt(h, unit, expectedVersion, installT);
     throw new Error("expected CAS to fail");
   } catch (error) {
+    if (error instanceof Error && error.message === "expected CAS to fail") throw error;
     return error as { readonly _tag?: string; readonly message?: string };
   }
 };
@@ -239,7 +271,7 @@ describe("catalog unit CAS", () => {
   test("first CAS succeeds and load returns the complete unit", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    const head = await cas(h, unit, null, h.transactor.t);
+    const head = await cas(h, unit, null);
     expect(head.catalogVersion).toBe(version1);
     expect(head.unitHash).toBe(unit.unitHash);
     const loaded = await load(h, head.installT);
@@ -254,13 +286,13 @@ describe("catalog unit CAS", () => {
   test("stale expectedVersion fails and load still returns the first complete unit", async () => {
     const h = await fresh();
     const first = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, first, null, 1);
+    await cas(h, first, null);
     const second = await sealUnit(
       descriptorOf(version2, fingerprint2, [{ id: entity("project"), traits: [] }]),
     );
-    const staleNull = await casFail(h, second, null, 2);
+    const staleNull = await casFail(h, second, null);
     expect(staleNull).toBeInstanceOf(CatalogCasConflict);
-    const staleOld = await casFail(h, second, CatalogVersion.make("0"), 2);
+    const staleOld = await casFail(h, second, CatalogVersion.make("0"));
     expect(staleOld).toBeInstanceOf(CatalogCasConflict);
     const loaded = await load(h, 1);
     expect(loaded.unitHash).toBe(first.unitHash);
@@ -275,8 +307,8 @@ describe("catalog unit CAS", () => {
     const newUnit = await sealUnit(
       descriptorOf(version2, fingerprint2, [{ id: entity("project"), traits: [] }]),
     );
-    await cas(h, oldUnit, null, 1);
-    await cas(h, newUnit, version1, 2);
+    casAt(h, oldUnit, null, 1);
+    casAt(h, newUnit, version1, 2);
     const atOld = await load(h, 1);
     const atNew = await load(h, 2);
     expect(atOld.unitHash).toBe(oldUnit.unitHash);
@@ -298,15 +330,15 @@ describe("catalog unit CAS", () => {
   test("two conflicting CAS attempts with the same expectedVersion: only one succeeds", async () => {
     const h = await fresh();
     const first = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, first, null, 1);
+    casAt(h, first, null, 1);
     const winner = await sealUnit(
       descriptorOf(version2, fingerprint2, [{ id: entity("project"), traits: [] }]),
     );
     const loser = await sealUnit(
       descriptorOf(version2, SchemaFingerprint.make("schema-3"), [{ id: entity("other"), traits: [] }]),
     );
-    await cas(h, winner, version1, 2);
-    const conflict = await casFail(h, loser, version1, 3);
+    casAt(h, winner, version1, 2);
+    const conflict = casAtFail(h, loser, version1, 3);
     expect(conflict).toBeInstanceOf(CatalogCasConflict);
     const loaded = await load(h, 3);
     expect(loaded.unitHash).toBe(winner.unitHash);
@@ -327,7 +359,7 @@ describe("catalog unit CAS", () => {
     } as InstalledCatalogUnit;
     const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(tampered));
     const hashed = { ...tampered, unitHash } as InstalledCatalogUnitV1;
-    const failure = await casFail(h, hashed, null, 1);
+    const failure = await casFail(h, hashed, null);
     expect(failure._tag === "CatalogMismatch" || failure._tag === "InvalidIR").toBe(true);
     expect(h.transactor.catalogHead(catalog)).toBeUndefined();
     const atBasis = await loadFail(h, 1);
@@ -340,9 +372,9 @@ describe("catalog unit CAS", () => {
   test("corrupt unit bytes on CAS retry surface CatalogUnitCorrupt, not a missing-row write", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     h.sql.exec(`UPDATE catalog_units SET bytes = ? WHERE catalog = ?`, 1, catalog);
-    const failure = await casFail(h, unit, null, 2);
+    const failure = await casFail(h, unit, null);
     expect(failure._tag).toBe("CatalogUnitCorrupt");
     expect(h.transactor.catalogHead(catalog)?.unitHash).toBe(unit.unitHash);
     expect(
@@ -353,7 +385,7 @@ describe("catalog unit CAS", () => {
   test("raw inconsistent bytes with a matching hash fail load closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     const json = readUnitJson(h);
     const identities = json.identities as { entities: Array<{ name: string }> };
     identities.entities = identities.entities.filter((id) => id.name !== "user");
@@ -377,7 +409,7 @@ describe("catalog unit CAS", () => {
   test("corrupt stored bytes fail closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     writeUnitBytes(h, "not-json{{{");
     const failure = await loadFail(h, 1);
     expect(failure._tag).toBe("CatalogUnitCorrupt");
@@ -386,7 +418,7 @@ describe("catalog unit CAS", () => {
   test("hash/version mismatch fails closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     h.sql.exec(`UPDATE catalog_units SET unit_hash = ? WHERE catalog = ?`, digestHex(0x00), catalog);
     const hashFail = await loadFail(h, 1);
     expect(hashFail._tag).toBe("CatalogUnitCorrupt");
@@ -405,7 +437,7 @@ describe("catalog unit CAS", () => {
   test("unsupported language version stored fails closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     const json = readUnitJson(h);
     json.languageVersion = "v2";
     writeUnitBytes(h, json);
@@ -418,7 +450,7 @@ describe("catalog unit CAS", () => {
   test("missing required components fail closed", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     const json = readUnitJson(h);
     delete json.policy;
     writeUnitBytes(h, json);
@@ -431,7 +463,7 @@ describe("catalog unit CAS", () => {
     const before = await loadFail(h, 1);
     expect(before).toBeInstanceOf(CatalogMismatch);
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 2);
+    casAt(h, unit, null, 2);
     const stillBefore = await loadFail(h, 1);
     expect(stillBefore).toBeInstanceOf(CatalogMismatch);
     const loaded = await load(h, 2);
@@ -441,13 +473,99 @@ describe("catalog unit CAS", () => {
   test("Harness restart after CAS still loads the durable unit", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    await cas(h, unit, null, 1);
+    await cas(h, unit, null);
     const restarted = h.restart({ dbName: "todos" });
     await restarted.transactor.init();
     const loaded = await load(restarted, 1);
     expect(loaded.unitHash).toBe(unit.unitHash);
     expect(loaded.policy.catalog).toBe(catalog);
     expect(restarted.transactor.catalogHead(catalog)?.unitHash).toBe(unit.unitHash);
+  });
+
+  test("CAS back to a superseded catalog version is a conflict", async () => {
+    const h = await fresh();
+    const first = await sealUnit(descriptorOf(version1, fingerprint1));
+    const second = await sealUnit(
+      descriptorOf(version2, fingerprint2, [{ id: entity("project"), traits: [] }]),
+    );
+    casAt(h, first, null, 1);
+    casAt(h, second, version1, 2);
+    const reuse = casAtFail(h, first, version2, 3);
+    expect(reuse).toBeInstanceOf(CatalogCasConflict);
+    expect(h.transactor.catalogHead(catalog)?.catalogVersion).toBe(version2);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(2);
+    const loaded = await load(h, 3);
+    expect(loaded.unitHash).toBe(second.unitHash);
+    expect(loaded.catalogVersion).toBe(version2);
+    expect(loaded.entities.some((entry) => entry.id.name === "project")).toBe(true);
+    expect(loaded.policy.schemaFingerprint).toBe(fingerprint2);
+  });
+
+  test("Transactor CAS derives installT from the committed basis", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    const basis = h.transactor.t;
+    const head = await cas(h, unit, null);
+    expect(head.installT).toBe(basis);
+    const loaded = await load(h, basis);
+    expect(loaded.unitHash).toBe(unit.unitHash);
+    if (basis > 1) {
+      const before = await loadFail(h, basis - 1);
+      expect(before).toBeInstanceOf(CatalogMismatch);
+    }
+  });
+
+  test("Transactor CAS ignores a caller-supplied installT", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    const input = {
+      database,
+      catalog,
+      expectedVersion: null,
+      unit,
+      installT: 99,
+    };
+    const head = await h.transactor.compareAndSwapCatalogUnit(input);
+    expect(head.installT).toBe(h.transactor.t);
+    expect(head.installT).not.toBe(99);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(h.transactor.t);
+  });
+
+  test("idempotent retry of the current head does not rewrite install_t", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    const first = casAt(h, unit, null, 1);
+    expect(first.installT).toBe(1);
+    const retry = casAt(h, unit, null, 5);
+    expect(retry.installT).toBe(1);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(1);
+    const again = casAt(h, unit, version1, 5);
+    expect(again.installT).toBe(1);
+    const loaded = await load(h, 1);
+    expect(loaded.unitHash).toBe(unit.unitHash);
+  });
+
+  test("missing unit row on same-installT retry is CatalogUnitCorrupt", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    await cas(h, unit, null);
+    h.sql.exec(`DELETE FROM catalog_units WHERE catalog = ?`, catalog);
+    const failure = await casFail(h, unit, null);
+    expect(failure._tag).toBe("CatalogUnitCorrupt");
+    expect(h.transactor.catalogHead(catalog)?.unitHash).toBe(unit.unitHash);
+    expect(
+      h.sql.exec(`SELECT catalog FROM catalog_units WHERE catalog = ?`, catalog).toArray(),
+    ).toHaveLength(0);
+  });
+
+  test("row catalog_version that does not match stored bytes fails load closed", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    await cas(h, unit, null);
+    h.sql.exec(`UPDATE catalog_units SET catalog_version = '9' WHERE catalog = ?`, catalog);
+    const failure = await loadFail(h, h.transactor.t);
+    expect(failure._tag).toBe("CatalogUnitCorrupt");
+    expect(h.transactor.catalogHead(catalog)?.catalogVersion).toBe(version1);
   });
 
   test("public barrels do not export catalog CAS or install helpers", async () => {

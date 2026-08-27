@@ -413,4 +413,53 @@ describe("sealInstalledCatalogUnit", () => {
     // @ts-expect-error — unhashed tables are not a sealed catalog unit
     requireSealed(assembled.success);
   });
+
+  test("dropping a required trait or retargeting a ref fails closed while identity ids stay", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const droppedTrait: CatalogDescriptor = {
+      ...descriptor,
+      entities: descriptor.entities.map((entry) =>
+        entry.id.name === "issue" ? { ...entry, traits: [] } : entry,
+      ),
+    };
+    expect(droppedTrait.entities.map((entry) => entry.id)).toEqual(descriptor.entities.map((entry) => entry.id));
+    const droppedAssemble = assembleInstalledCatalogUnit(droppedTrait, policy);
+    expect(Result.isFailure(droppedAssemble)).toBe(true);
+    if (Result.isFailure(droppedAssemble)) {
+      expect(droppedAssemble.failure._tag === "InvalidIR" || droppedAssemble.failure._tag === "CatalogMismatch").toBe(
+        true,
+      );
+      expect(droppedAssemble.failure.message).toMatch(/does not compose trait|missing trait composition/);
+    }
+    const droppedDocument = {
+      ...unit,
+      entities: droppedTrait.entities,
+    } as InstalledCatalogUnit;
+    const droppedHash = await Effect.runPromise(hashInstalledCatalogUnit(droppedDocument));
+    const droppedVerify = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...droppedDocument, unitHash: droppedHash })),
+    );
+    expect(droppedVerify._tag === "InvalidIR" || droppedVerify._tag === "CatalogMismatch").toBe(true);
+    expect(droppedVerify.message).toMatch(/does not compose trait|missing trait composition/);
+
+    const retargeted: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((entry) =>
+        entry.valueType === "ref" && entry.id.localName === "owner"
+          ? { ...entry, refTarget: { _tag: "entity" as const, entity: entity("missing") } }
+          : entry,
+      ),
+    };
+    expect(retargeted.fields.map((entry) => entry.id)).toEqual(descriptor.fields.map((entry) => entry.id));
+    const retargetAssemble = assembleInstalledCatalogUnit(retargeted, policy);
+    expect(Result.isFailure(retargetAssemble)).toBe(true);
+    if (Result.isFailure(retargetAssemble)) {
+      expect(retargetAssemble.failure._tag === "InvalidIR" || retargetAssemble.failure._tag === "CatalogMismatch").toBe(
+        true,
+      );
+      expect(retargetAssemble.failure.message).toMatch(/missing field ref target/);
+    }
+  });
 });
