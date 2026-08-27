@@ -120,6 +120,15 @@ const digestFailure = (cause: unknown): InvalidIR =>
     message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
 
+/** JCS text, or {@link InvalidIR} for lone surrogates and other JCS violations. */
+const canonicalizeJsonResult = (json: JsonValue): Result.Result<string, InvalidIR> => {
+  try {
+    return Result.succeed(canonicalizeJson(json));
+  } catch (cause) {
+    return Result.fail(digestFailure(cause));
+  }
+};
+
 /**
  * SHA-256 of RFC 8785 JCS text via Web Crypto. Consumes only
  * schema-encoded JSON — not arbitrary `unknown`. Unprefixed; rule and
@@ -150,10 +159,7 @@ export const hashDomainSeparatedCanonicalText = Effect.fn(
 export const hashDomainSeparatedCanonicalJson = Effect.fn(
   "Authorization.hashDomainSeparatedCanonicalJson",
 )(function* (domain: string, json: JsonValue) {
-  const canonicalText = yield* Effect.try({
-    try: () => canonicalizeJson(json),
-    catch: digestFailure,
-  });
+  const canonicalText = yield* Effect.fromResult(canonicalizeJsonResult(json));
   return yield* hashDomainSeparatedCanonicalText(domain, canonicalText);
 });
 
@@ -213,13 +219,7 @@ export const canonicalAuthorizationRuleJson = (
  */
 export const canonicalAuthorizationRuleMaterial = (
   rule: CanonicalAuthorizationRuleType,
-): Result.Result<string, InvalidIR> => {
-  try {
-    return Result.succeed(canonicalizeJson(canonicalAuthorizationRuleJson(rule)));
-  } catch (cause) {
-    return Result.fail(digestFailure(cause));
-  }
-};
+): Result.Result<string, InvalidIR> => canonicalizeJsonResult(canonicalAuthorizationRuleJson(rule));
 
 /**
  * Schema-encoded IR is JSON by construction. This is the only cast from
