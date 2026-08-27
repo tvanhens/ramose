@@ -190,44 +190,37 @@ const fieldAccessibleFrom = (
   return trait !== undefined && composedTraitNames(trait).has(owner.name);
 };
 
+const resolveCompileRef = (
+  schema: AnySchema,
+  fieldSchema: unknown,
+  fieldOwner: OwnerRef,
+): Result.Result<
+  { readonly targetNs: string | undefined; readonly targetKind?: "entity" | "trait" },
+  InvalidIR
+> =>
+  Result.gen(function* () {
+    if (isSelfRefSchema(fieldSchema)) {
+      return { targetNs: fieldOwner.name, targetKind: fieldOwner.kind };
+    }
+    const ns = refTargetOf(fieldSchema)?.()?.ns;
+    if (typeof ns !== "string") return { targetNs: undefined };
+    const owner = yield* ownerOfNamespace(schema, ns);
+    return { targetNs: owner.name, targetKind: owner.kind };
+  });
+
 const nextRowFromRef = (
   schema: AnySchema,
   fieldSchema: unknown,
   fieldOwner: OwnerRef,
   ident: string,
-): Result.Result<RowCursor, InvalidIR> => {
-  if (isSelfRefSchema(fieldSchema)) return Result.succeed(fieldOwner);
-  const ns = refTargetOf(fieldSchema)?.()?.ns;
-  if (typeof ns !== "string") {
-    return invalid(`cannot traverse from an untargeted ref through '${ident}'`);
-  }
-  if (Object.hasOwn(schema.entities, ns)) {
-    return Result.succeed({ kind: "entity", name: ns });
-  }
-  if (schemaTraits(schema).has(ns)) {
-    return Result.succeed({ kind: "trait", name: ns });
-  }
-  return invalid(`invalid path: '${ns}' is not in this catalog`);
-};
-
-const resolveCompileRef = (
-  schema: AnySchema,
-  fieldSchema: unknown,
-  fieldOwner: OwnerRef,
-): { readonly targetNs: string | undefined; readonly targetKind?: "entity" | "trait" } => {
-  if (isSelfRefSchema(fieldSchema)) {
-    return { targetNs: fieldOwner.name, targetKind: fieldOwner.kind };
-  }
-  const ns = refTargetOf(fieldSchema)?.()?.ns;
-  if (typeof ns !== "string") return { targetNs: undefined };
-  if (Object.hasOwn(schema.entities, ns)) {
-    return { targetNs: ns, targetKind: "entity" };
-  }
-  if (schemaTraits(schema).has(ns)) {
-    return { targetNs: ns, targetKind: "trait" };
-  }
-  return { targetNs: ns };
-};
+): Result.Result<RowCursor, InvalidIR> =>
+  Result.gen(function* () {
+    const target = yield* resolveCompileRef(schema, fieldSchema, fieldOwner);
+    if (target.targetNs === undefined || target.targetKind === undefined) {
+      return yield* invalid(`cannot traverse from an untargeted ref through '${ident}'`);
+    }
+    return { kind: target.targetKind, name: target.targetNs };
+  });
 
 const rowOfRef = (
   shape: Extract<CompileShape, { readonly _tag: "ref" }>,
@@ -480,15 +473,16 @@ const lowerPathSteps = (
         );
       }
       if (isLast) {
-        const target = resolveCompileRef(ctx.schema, field.schema, field.id.owner);
-        terminal =
-          field.valueType === "ref"
-            ? compileRef(target.targetNs, target.targetKind, field.cardinality)
-            : {
-                _tag: "scalar",
-                valueType: field.valueType ?? "string",
-                cardinality: field.cardinality,
-              };
+        if (field.valueType === "ref") {
+          const target = yield* resolveCompileRef(ctx.schema, field.schema, field.id.owner);
+          terminal = compileRef(target.targetNs, target.targetKind, field.cardinality);
+        } else {
+          terminal = {
+            _tag: "scalar",
+            valueType: field.valueType ?? "string",
+            cardinality: field.cardinality,
+          };
+        }
       }
       lowered.push({ field: field.id });
     }

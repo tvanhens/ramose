@@ -928,6 +928,46 @@ describe("trait composition in principal-ref / ref-ref equality", () => {
   });
 });
 
+describe("entity vs composed-trait ref targets (Resource.userRef / actorRef)", () => {
+  const Actor = Trait("actor", {});
+  const User = Entity("user", { authId: Field.unique(string(), "upsert") }, { traits: [Actor] });
+  const Stranger = Entity("stranger", { authId: Field.unique(string(), "upsert") });
+  const Resource = Entity("resource", {
+    userRef: Ref(User),
+    actorRef: Ref(Actor),
+    manyActorRefs: Field.many(Ref(Actor)),
+    strangerRef: Ref(Stranger),
+  });
+  const Resources = Schema({ user: User, stranger: Stranger, resource: Resource });
+  const compileResource = (rules: readonly ReadRule[]) =>
+    compileReadAuthorizationResult({
+      schema: Resources,
+      rules,
+      claims: [],
+      principal: { entity: User.authId },
+    });
+
+  test("eq(userRef, actorRef) compiles in both directions when User composes Actor", () => {
+    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.actorRef))]));
+    expectOk(compileResource([read(Resource).when(eq(Resource.actorRef, Resource.userRef))]));
+  });
+
+  test("contains(manyActorRefs, userRef) is compatible via eqCompatible", () => {
+    expectOk(compileResource([read(Resource).when(contains(Resource.manyActorRefs, Resource.userRef))]));
+  });
+
+  test("eq fails when the entity does not compose the trait", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.strangerRef, Resource.actorRef))]),
+      /incompatible equality/,
+    );
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.actorRef, Resource.strangerRef))]),
+      /incompatible equality/,
+    );
+  });
+});
+
 describe("targeted vs untargeted refs", () => {
   const Resource = Entity("resource", {
     userRef: Ref(User),
@@ -964,6 +1004,95 @@ describe("targeted vs untargeted refs", () => {
       compileResource([read(Resource).when(eq(Resource.looseRef, me))]),
       /incompatible equality/,
     );
+  });
+});
+
+describe("ref targets must be in the catalog", () => {
+  const External = Entity("external", { name: string() });
+  const OrphanTrait = Trait("orphan", {});
+  const Resource = Entity("resource", {
+    userRef: Ref(User),
+    external: Ref(External),
+    externals: Field.many(Ref(External)),
+    orphan: Ref(OrphanTrait),
+    looseRef: Field(Ref),
+    parent: Ref.self,
+  });
+  const Resources = Schema({ user: User, resource: Resource });
+  const compileResource = (rules: readonly ReadRule[]) =>
+    compileReadAuthorizationResult({
+      schema: Resources,
+      rules,
+      claims: [],
+      principal: { entity: User.authId },
+    });
+
+  test("terminal ref to an entity outside the schema is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.external, Resource.external))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.external, me))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+  });
+
+  test("contains of an out-of-catalog collection is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(contains(Resource.externals, Resource.userRef))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+    expectInvalid(
+      compileResource([read(Resource).when(contains(Resource.externals, me))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+  });
+
+  test("$() terminal to an out-of-catalog ref is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource).when($(Resource).external.eq(me))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+    expectInvalid(
+      compileResource([read(Resource).when($(Resource).external.eq($(Resource).external))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+  });
+
+  test("field-target read(Resource.external) is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource.external).when((external) => external(me))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+    expectInvalid(
+      compileResource([read(Resource.external).when(eq(Resource.external, me))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+  });
+
+  test("trait ref target omitted from the schema is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.orphan, Resource.orphan))]),
+      /invalid path: 'orphan' is not in this catalog/,
+    );
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.orphan, me))]),
+      /invalid path: 'orphan' is not in this catalog/,
+    );
+  });
+
+  test("intermediate hop through an out-of-schema ref is InvalidIR", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(path(Resource.external, External.name), "x"))]),
+      /invalid path: 'external' is not in this catalog/,
+    );
+  });
+
+  test("self-ref and untargeted Field(Ref) stay in-schema", () => {
+    expectOk(compileResource([read(Resource).when(eq(Resource.parent, Resource.parent))]));
+    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.looseRef))]));
+    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.userRef))]));
   });
 });
 
