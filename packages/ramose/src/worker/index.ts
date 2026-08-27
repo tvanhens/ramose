@@ -184,7 +184,9 @@ const handle = (
     info.db = db;
     info.path = rest;
     info.route = routeOf(rest, request.method);
-    const token = bearerOf(request);
+    const allowQueryToken =
+      rest === "/session" && (request.headers.get("upgrade") ?? "").toLowerCase() === "websocket";
+    const token = bearerOf(request, { allowQueryToken });
     if (token === undefined) return yield* new Unauthorized({});
     const admission = yield* AuthenticationAdmission;
     yield* admission

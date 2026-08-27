@@ -481,6 +481,73 @@ describe("Jwks", () => {
     }
   });
 
+  test("unchanged JWKS refetch does not evict the previous distinct generation", async () => {
+    let keys: object[] = [jwk("a")];
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const issued = Math.floor(Date.now() / 1000);
+      const tok = (name: string) =>
+        signToken("acme", "member", "user_ada", undefined, {
+          kid: name,
+          iat: issued,
+          exp: issued + 100,
+        });
+      const tokenA = await tok("a");
+      const tokenB = await tok("b");
+      const unknown = await tok("missing");
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          const first = yield* tryAdmit(tokenA);
+          expect(first.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(1);
+
+          yield* TestClock.adjust(1);
+          keys = [jwk("b")];
+          const rotated = yield* tryAdmit(tokenB);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          const stillA = yield* tryAdmit(tokenA);
+          expect(stillA.principal.subject).toBe("user_ada");
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          const miss = yield* Effect.flip(tryAdmit(unknown));
+          expect(miss._tag === "AuthenticationRejected" || miss._tag === "JwksUnavailable").toBe(true);
+          expect(fetches).toBe(3);
+
+          const keptA = yield* tryAdmit(tokenA);
+          const keptB = yield* tryAdmit(tokenB);
+          expect(keptA.principal.subject).toBe("user_ada");
+          expect(keptB.principal.subject).toBe("user_ada");
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("bounded: at most 2 generations retained", async () => {
     let kid = "a";
     let fetches = 0;

@@ -6,10 +6,11 @@ import { describe, expect, test } from "bun:test";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { TestClock } from "effect/testing";
-import { AUD, ISS, JWKS } from "../../../../../test/local/auth-keys.ts";
+import { AUD, ISS, JWKS, PUBLIC_JWK } from "../../../../../test/local/auth-keys.ts";
 import { AuthenticationAdmission } from "../../../src/internal/authorization/runtime/authentication.ts";
 import { authenticationLayer, localAuthenticationLayer } from "../../../src/internal/authorization/runtime/layer.ts";
 import { toAuthorizationPrincipal } from "../../../src/internal/authorization/runtime/verified-principal.ts";
@@ -345,6 +346,57 @@ describe("AuthenticationAdmission", () => {
       }),
     );
     expect(now).toBe(15_000);
+  });
+
+  test("exp is evaluated after JWKS fetch, not from a pre-fetch clock", async () => {
+    let release!: () => void;
+    const releaseP = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const server = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        started();
+        await releaseP;
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    const token = await signToken("acme", "member", "user_ada", undefined, { iat: 0, exp: 2 });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const failed = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(0);
+          const fiber = yield* Effect.forkChild(
+            Effect.gen(function* () {
+              const admission = yield* AuthenticationAdmission;
+              return yield* admission.admit({
+                database: "acme",
+                token: Redacted.make(token),
+                route: "http",
+              });
+            }),
+          );
+          yield* Effect.promise(() => startedP);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("3 seconds");
+          release();
+          return yield* Effect.flip(Fiber.join(fiber));
+        }).pipe(Effect.provide(Layer.mergeAll(authenticationLayer(env), TestClock.layer()))),
+      );
+      expect(failed._tag).toBe("AuthenticationRejected");
+      expect(failed.message).toBe("expired");
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

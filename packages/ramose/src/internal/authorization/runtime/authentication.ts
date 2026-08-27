@@ -163,20 +163,27 @@ export const createAuthentication = (
     if (issuers.length === 0) return yield* rejected("iss");
     if (aud === undefined || aud.length === 0) return yield* rejected("aud");
 
-    const now = yield* Clock.currentTimeMillis;
+    const verifyAtNow = (value: string, keys: JWTVerifyGetKey) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const payload = yield* verifyOnce(value, keys, now, issuers, aud);
+        return { payload, now };
+      });
+
     const keys = yield* jwks.keySet;
-    let payload = yield* verifyOnce(token, keys, now, issuers, aud).pipe(Effect.result);
-    if (Result.isFailure(payload) && payload.failure.message === "kid") {
+    let verified = yield* verifyAtNow(token, keys).pipe(Effect.result);
+    if (Result.isFailure(verified) && verified.failure.message === "kid") {
       const rotated = yield* jwks.refresh;
-      payload = yield* verifyOnce(token, rotated, now, issuers, aud).pipe(Effect.result);
+      verified = yield* verifyAtNow(token, rotated).pipe(Effect.result);
     }
-    if (Result.isFailure(payload)) {
+    if (Result.isFailure(verified)) {
       return yield* rejected(
-        payload.failure.message === "kid" ? "jwks" : payload.failure.message,
+        verified.failure.message === "kid" ? "jwks" : verified.failure.message,
       );
     }
+    const { payload, now } = verified.success;
     const principal = yield* Effect.fromResult(
-      validateClaims(payload.success, request, now, maxTtl, aud),
+      validateClaims(payload, request, now, maxTtl, aud),
     );
     return { principal, expiresAt: principal.expiresAt };
   });

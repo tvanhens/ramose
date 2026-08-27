@@ -36,7 +36,7 @@ const fetchOf = (url: string, init?: RequestInit) =>
 const UNAUTHORIZED = JSON.stringify({ error: "unauthorized" });
 
 describe("bearerOf", () => {
-  test("Authorization Bearer then ?token=", () => {
+  test("Authorization Bearer is case-insensitive; credential is not lowercased", () => {
     expect(
       bearerOf(new Request("https://peer.example/db/acme/info", { headers: { authorization: "Bearer abc" } })),
     ).toBe("abc");
@@ -50,8 +50,21 @@ describe("bearerOf", () => {
         new Request("https://peer.example/db/acme/info", { headers: { authorization: "BEARER SecretToken" } }),
       ),
     ).toBe("SecretToken");
-    expect(bearerOf(new Request("https://peer.example/db/acme/session?token=xyz"))).toBe("xyz");
     expect(bearerOf(new Request("https://peer.example/db/acme/info"))).toBeUndefined();
+  });
+
+  test("query token only when allowQueryToken is true", () => {
+    const session = new Request("https://peer.example/db/acme/session?token=SecretToken");
+    const info = new Request("https://peer.example/db/acme/info?token=SecretToken");
+    expect(bearerOf(session)).toBeUndefined();
+    expect(bearerOf(info)).toBeUndefined();
+    expect(bearerOf(session, { allowQueryToken: false })).toBeUndefined();
+    expect(bearerOf(session, { allowQueryToken: true })).toBe("SecretToken");
+    expect(bearerOf(info, { allowQueryToken: true })).toBe("SecretToken");
+    const both = new Request("https://peer.example/db/acme/session?token=queryTok", {
+      headers: { authorization: "Bearer HeaderTok" },
+    });
+    expect(bearerOf(both, { allowQueryToken: true })).toBe("HeaderTok");
   });
 });
 
@@ -115,23 +128,39 @@ describe("createServer admission", () => {
     expect(await res.text()).toBe(UNAUTHORIZED);
   });
 
-  test("GET /db/acme/session?token=… → same 401", async () => {
+  test("/db/acme/info?token= is ignored (same 401 as no token)", async () => {
     const jwt = await signToken("acme", "member");
-    const res = await fetchOf(`https://peer.example/db/acme/session?token=${encodeURIComponent(jwt)}`);
-    expect(res.status).toBe(401);
-    expect(await res.text()).toBe(UNAUTHORIZED);
+    const noToken = await fetchOf("https://peer.example/db/acme/info");
+    const query = await fetchOf(`https://peer.example/db/acme/info?token=${encodeURIComponent(jwt)}`);
+    expect(noToken.status).toBe(401);
+    expect(query.status).toBe(401);
+    expect(await query.text()).toBe(await noToken.text());
   });
 
-  test("Authorization Bearer and ?token= both reach admit (still 401)", async () => {
+  test("GET /db/acme/session?token= without Upgrade ignores query token", async () => {
     const jwt = await signToken("acme", "member");
-    const header = await fetchOf("https://peer.example/db/acme/info", {
+    const noToken = await fetchOf("https://peer.example/db/acme/info");
+    const queryOnly = await fetchOf(`https://peer.example/db/acme/session?token=${encodeURIComponent(jwt)}`);
+    expect(queryOnly.status).toBe(401);
+    expect(await queryOnly.text()).toBe(await noToken.text());
+
+    const withHeader = await fetchOf(`https://peer.example/db/acme/session?token=${encodeURIComponent(jwt)}`, {
       headers: { authorization: `Bearer ${jwt}` },
     });
-    const query = await fetchOf(`https://peer.example/db/acme/info?token=${encodeURIComponent(jwt)}`);
-    expect(header.status).toBe(401);
-    expect(query.status).toBe(401);
-    expect(await header.text()).toBe(await query.text());
-    expect(await fetchOf("https://peer.example/db/acme/info").then((r) => r.text())).toBe(UNAUTHORIZED);
+    expect(withHeader.status).toBe(401);
+    expect(await withHeader.text()).toBe(UNAUTHORIZED);
+  });
+
+  test("GET /db/acme/session?token= with Upgrade: websocket reaches admit", async () => {
+    const jwt = await signToken("acme", "member");
+    const bearer = await fetchOf("https://peer.example/db/acme/info", {
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    const upgrade = await fetchOf(`https://peer.example/db/acme/session?token=${encodeURIComponent(jwt)}`, {
+      headers: { upgrade: "websocket" },
+    });
+    expect(upgrade.status).toBe(401);
+    expect(await upgrade.text()).toBe(await bearer.text());
   });
 
   test("/db/!!!/info no token → 401 not 400 (AUTH-5)", async () => {

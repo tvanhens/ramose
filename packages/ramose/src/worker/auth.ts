@@ -37,11 +37,15 @@ export const toWirePrincipal = (p: VerifiedPrincipal): Principal => ({
   db: p.database,
 });
 
-/** `Authorization: Bearer …`, else `?token=` (a browser cannot set headers on an upgrade). */
-export function bearerOf(request: Request): string | undefined {
+/** `Authorization: Bearer …`. `?token=` only when `allowQueryToken` (WebSocket upgrade). */
+export function bearerOf(
+  request: Request,
+  options?: { allowQueryToken?: boolean },
+): string | undefined {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(\S+)/i.exec(header.trim());
   if (match !== null) return match[1];
+  if (options?.allowQueryToken !== true) return undefined;
   try {
     const t = new URL(request.url).searchParams.get("token");
     if (t !== null && t.length > 0) return t;

@@ -61,7 +61,21 @@ const unavailable = (message: string) => new JwksUnavailable({ message });
 type Generation = {
   readonly at: number;
   readonly getKey: JWTVerifyGetKey;
+  readonly fingerprint: string;
 };
+
+const fingerprintKey = (key: JSONWebKeySet["keys"][number]): string => {
+  if (typeof key.kid === "string" && key.kid.length > 0) return key.kid;
+  return JSON.stringify({
+    kty: key.kty ?? null,
+    crv: key.crv ?? null,
+    x: key.x ?? null,
+    y: key.y ?? null,
+  });
+};
+
+const fingerprintOf = (jwks: JSONWebKeySet): string =>
+  jwks.keys.map(fingerprintKey).sort().join("\0");
 
 const combine = (generations: readonly Generation[]): JWTVerifyGetKey => {
   const current = generations[0];
@@ -155,7 +169,14 @@ export const createJwks = (env: AuthBindings): JwksService => {
   };
 
   const push = (at: number, jwks: JSONWebKeySet): JWTVerifyGetKey => {
-    generations.unshift({ at, getKey: createLocalJWKSet(jwks) });
+    const fingerprint = fingerprintOf(jwks);
+    const current = generations[0];
+    if (current !== undefined && current.fingerprint === fingerprint) {
+      generations[0] = { at, getKey: current.getKey, fingerprint };
+      stale = false;
+      return combine(generations);
+    }
+    generations.unshift({ at, getKey: createLocalJWKSet(jwks), fingerprint });
     generations.splice(JWKS_MAX_GENERATIONS);
     stale = false;
     return combine(generations);
