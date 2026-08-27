@@ -952,11 +952,18 @@ export const compileReadAuthorizationResult = (
       return yield* invalid("duplicate class");
     }
 
+    if (input.rules.length > MAX_COLLECTION_SIZE) {
+      return yield* invalid(
+        `rule collection size ${input.rules.length} exceeds ${MAX_COLLECTION_SIZE}`,
+      );
+    }
+
     const rules: RelativeAuthorizationRule[] = [];
     const bodies = new Set<string>();
     const buckets = new Map<string, DecisionBucket>();
     const claimByKey = new Map(declaredClaims.map((claim) => [claim.key, claim]));
     const principalEntity = principalEntityName(input.principal);
+    const documentBudget: NodeBudget = { nodes: 0 };
 
     for (let i = 0; i < input.rules.length; i++) {
       const authored = yield* requireReadRule(input.rules[i]);
@@ -969,7 +976,7 @@ export const compileReadAuthorizationResult = (
           principalEntity,
         },
         authored.expr,
-        { nodes: 0 },
+        documentBudget,
       );
       for (const key of lowered.claims) {
         if (!declaredClaimKeys.has(key)) {

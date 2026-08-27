@@ -1124,6 +1124,32 @@ describe("field-target callbacks use the same proxy", () => {
       right: { _tag: "subject" },
     });
   });
+
+  test("self-ref callback hops stay on the field's owning row", () => {
+    const viaCallback = expectOk(
+      compile([read(Issue.parent).when((parent) => parent.title.eq("x"))]),
+    );
+    const viaPath = expectOk(compile([read(Issue.parent).when(eq(path(Issue.parent, Issue.title), "x"))]));
+    expect(viaCallback.rules[0]?.expr).toEqual(viaPath.rules[0]?.expr);
+    expectOk(compile([read(Issue.parent).when((parent) => parent.parent.title.eq("x"))]));
+  });
+
+  test("trait-owned self-ref callback stays on the trait row", () => {
+    const Linkable = Trait("linkable", {
+      parent: Ref.self,
+      label: string(),
+    });
+    const LinkedIssue = Entity("issue", { owner: Ref(User) }, { traits: [Linkable] });
+    const LinkedApp = Schema({ user: User, issue: LinkedIssue });
+    expectOk(
+      compileReadAuthorizationResult({
+        schema: LinkedApp,
+        rules: [read(Linkable.parent).when((p) => p.label.eq("x"))],
+        claims: [],
+        principal: { entity: User.authId },
+      }),
+    );
+  });
 });
 
 describe("expression-size bounds before iterating", () => {
@@ -1159,6 +1185,47 @@ describe("expression-size bounds before iterating", () => {
       ]),
       /collection size/,
     );
+  });
+
+  test("oversized rule list fails before lowering any rule", () => {
+    const rules: ReadRule[] = [];
+    rules[MAX_COLLECTION_SIZE] = read(Issue).when(allow);
+    expectInvalid(compile(rules), /rule collection size .* exceeds 1024/);
+
+    let indexed = 0;
+    const proxied = new Proxy([] as ReadRule[], {
+      get(_target, prop) {
+        if (prop === "length") return MAX_COLLECTION_SIZE + 1;
+        if (typeof prop === "string" && /^\d+$/.test(prop)) {
+          indexed += 1;
+          return read(Issue).when(allow);
+        }
+        return undefined;
+      },
+    });
+    expectInvalid(compile(proxied), /rule collection size .* exceeds 1024/);
+    expect(indexed).toBe(0);
+  });
+
+  test("document-wide node budget fails before lowering every rule", () => {
+    let indexed = 0;
+    const count = 800;
+    const proxied = new Proxy([] as ReadRule[], {
+      get(_target, prop) {
+        if (prop === "length") return count;
+        if (typeof prop === "string" && /^\d+$/.test(prop)) {
+          indexed += 1;
+          return read(Issue).when(all(allow, eq(Issue.title, lit(`x${prop}`))));
+        }
+        return undefined;
+      },
+    });
+    expectInvalid(
+      compile(proxied),
+      new RegExp(`node budget .* exceeds ${MAX_JSON_NODES}`),
+    );
+    expect(indexed).toBeGreaterThan(0);
+    expect(indexed).toBeLessThan(count);
   });
 });
 

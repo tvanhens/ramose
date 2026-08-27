@@ -11,6 +11,7 @@ import { isSelfRefSchema, refTargetOf } from "../../../db/valueTypes.ts";
 import { contains, eq } from "./expr.ts";
 import {
   isPathCarrier,
+  parseIdent,
   stepFromCarrier,
   AUTH_PATH_TAG,
   type AuthOperandInput,
@@ -93,7 +94,10 @@ const navigate = (owner: FieldOwner, steps: readonly AuthPathStep[]): AuthPathPr
       }
       if (prop === "then" || prop === "toJSON") return undefined;
       if (typeof prop !== "string") return undefined;
-      return navigate({ fields: {} }, [...steps, missingStep(owner, prop)]);
+      return navigate(
+        owner.ns !== undefined ? { ns: owner.ns, fields: {} } : { fields: {} },
+        [...steps, missingStep(owner, prop)],
+      );
     },
     apply(_t, _this, args) {
       if (steps.length === 0) {
@@ -147,8 +151,14 @@ export const path = (...hops: ReadonlyArray<AuthPathLike | { readonly ident: str
 
 /**
  * Wrap a stamped field in the same callable {@link navigate} proxy `$()` uses.
- * Steps start with that field; further hops land on its ref target
- * (`refTargetOf` / self / empty).
+ * Steps start with that field. Self-refs seed the owning row from
+ * {@link parseIdent} (`:issue/parent` → `issue`) so further hops stay
+ * qualified; targeted refs hop via `refTargetOf`; untargeted refs have no
+ * next owner.
  */
-export const seededPath = (field: PathCarrier): AuthPathProxy =>
-  navigate(nextOwner(field, { fields: {} }) ?? { fields: {} }, [stepFromCarrier(field)]);
+export const seededPath = (field: PathCarrier): AuthPathProxy => {
+  const parsed = parseIdent(field.ident);
+  const ownerFromField: FieldOwner =
+    parsed === undefined ? { fields: {} } : { ns: parsed.ns, fields: {} };
+  return navigate(nextOwner(field, ownerFromField) ?? { fields: {} }, [stepFromCarrier(field)]);
+};
