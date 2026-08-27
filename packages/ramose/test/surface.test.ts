@@ -83,6 +83,18 @@ const KILLED = [
   "TxSpec",
   "seedWrite",
   "submitRaw",
+  "InstalledCatalogUnit",
+  "InstalledCatalogUnitV1",
+  "sealInstalledCatalogUnit",
+  "assembleInstalledCatalogUnit",
+  "verifyInstalledCatalogUnit",
+  "requireUnitCoherence",
+  "compareAndSwapCatalogUnit",
+  "loadCatalogUnitAtBasis",
+  "CatalogCasConflict",
+  "CatalogUnitCorrupt",
+  "CatalogUnitHash",
+  "hashInstalledCatalogUnit",
 ];
 
 describe("the `ramose` barrel", () => {

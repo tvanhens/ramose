@@ -68,3 +68,27 @@ export type AuthorizationFailure =
   | CatalogMismatch
   | AuthorizationBudgetExceeded
   | AuthorizationDenied;
+
+/** CAS lost the race against another complete unit, or a stale expected version. */
+export class CatalogCasConflict extends Data.TaggedError("CatalogCasConflict")<{
+  readonly message: string;
+  readonly catalog: CatalogId;
+  readonly expectedVersion?: CatalogVersion;
+  readonly actualVersion?: CatalogVersion;
+}> {}
+
+/** Stored catalog-unit bytes failed hash, decode, or completeness checks. */
+export class CatalogUnitCorrupt extends Data.TaggedError("CatalogUnitCorrupt")<{
+  readonly message: string;
+  readonly catalog: CatalogId;
+}> {}
+
+/**
+ * Storage-layer failures for the installed catalog-unit CAS.
+ * Not an authorization-evaluation failure.
+ */
+export type CatalogStoreFailure =
+  | InvalidIR
+  | CatalogMismatch
+  | CatalogCasConflict
+  | CatalogUnitCorrupt;

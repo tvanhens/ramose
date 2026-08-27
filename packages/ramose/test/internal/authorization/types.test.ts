@@ -20,6 +20,7 @@ import {
   BudgetExhausted,
   CatalogId,
   CatalogMismatch,
+  CatalogUnitHash,
   CatalogVersion,
   DatabaseId,
   AUTHORIZATION_LANGUAGE_VERSION,
@@ -31,6 +32,7 @@ import {
   FieldId,
   Incomplete,
   INSTALLED_AUTHORIZATION_IR_VERSION,
+  INSTALLED_CATALOG_UNIT_VERSION,
   BOUND_AUTHORIZATION_IR_VERSION,
   VALIDATED_AUTHORIZATION_IR_VERSION,
   InvalidIR,
@@ -58,6 +60,7 @@ import {
   TraitId,
   True,
   type AuthorizationFailure,
+  type CatalogStoreFailure,
   AuthorizationPrincipal,
   AuthorizationValidationInput,
   BoundAuthorizationIR,
@@ -71,8 +74,11 @@ import {
   type IncompleteProjected,
   JsonScalar,
   decodeInstalledAuthorizationResult,
+  decodeInstalledCatalogUnitResult,
   InstalledAuthorizationIR,
+  InstalledCatalogUnit,
   type InstalledAuthorizationIRV1,
+  type InstalledCatalogUnitV1,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
   OperationInputShape,
@@ -97,6 +103,10 @@ import {
 import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
 // @ts-expect-error — not a public package export yet
 import type { InstalledAuthorizationIR as _PublicInstalled } from "ramose/db";
+// @ts-expect-error — not a public package export yet
+import type { InstalledCatalogUnit as _PublicCatalogUnit } from "ramose";
+// @ts-expect-error — not a public package export yet
+import type { InstalledCatalogUnit as _PublicCatalogUnitDb } from "ramose/db";
 
 type PublicKeys = keyof typeof import("ramose");
 export type _noPublicAuthorization = Expect<
@@ -116,6 +126,17 @@ export type _noPublicAuthorization = Expect<
       | "installAuthorization"
       | "installAgainstAuthoritativeCatalog"
       | "InstalledAuthorizationIRV1"
+      | "InstalledCatalogUnit"
+      | "InstalledCatalogUnitV1"
+      | "sealInstalledCatalogUnit"
+      | "assembleInstalledCatalogUnit"
+      | "verifyInstalledCatalogUnit"
+      | "requireUnitCoherence"
+      | "compareAndSwapCatalogUnit"
+      | "loadCatalogUnitAtBasis"
+      | "CatalogCasConflict"
+      | "CatalogUnitCorrupt"
+      | "CatalogUnitHash"
     >,
     never
   >
@@ -131,6 +152,7 @@ export type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof Cata
 export type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
 export type _digestHexFromSchema = Expect<Equal<DigestHex, typeof DigestHex.Type>>;
 export type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
+export type _catalogUnitHashFromSchema = Expect<Equal<CatalogUnitHash, typeof CatalogUnitHash.Type>>;
 export type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
 export type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
 export type _traitIdFromSchema = Expect<Equal<TraitId, typeof TraitId.Type>>;
@@ -144,10 +166,17 @@ export type _validatedFromSchema = Expect<
   Equal<ValidatedAuthorizationIR, typeof ValidatedAuthorizationIR.Type>
 >;
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+export type _catalogUnitFromSchema = Expect<Equal<InstalledCatalogUnit, typeof InstalledCatalogUnit.Type>>;
 export type _structuralNotVerified = Expect<
   Equal<Extends<InstalledAuthorizationIR, InstalledAuthorizationIRV1>, false>
 >;
 export type _verifiedIsStructural = Expect<Extends<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
+export type _catalogUnitStructuralNotVerified = Expect<
+  Equal<Extends<InstalledCatalogUnit, InstalledCatalogUnitV1>, false>
+>;
+export type _catalogUnitVerifiedIsStructural = Expect<
+  Extends<InstalledCatalogUnitV1, InstalledCatalogUnit>
+>;
 type DecodedInstalled = Extract<
   ReturnType<typeof decodeInstalledAuthorizationResult>,
   { readonly _tag: "Success" }
@@ -155,6 +184,14 @@ type DecodedInstalled = Extract<
 export type _decodeIsStructural = Expect<Equal<DecodedInstalled, InstalledAuthorizationIR>>;
 export type _decodeNotVerified = Expect<
   Equal<Extends<DecodedInstalled, InstalledAuthorizationIRV1>, false>
+>;
+type DecodedCatalogUnit = Extract<
+  ReturnType<typeof decodeInstalledCatalogUnitResult>,
+  { readonly _tag: "Success" }
+>["success"];
+export type _decodeUnitIsStructural = Expect<Equal<DecodedCatalogUnit, InstalledCatalogUnit>>;
+export type _decodeUnitNotVerified = Expect<
+  Equal<Extends<DecodedCatalogUnit, InstalledCatalogUnitV1>, false>
 >;
 export type _validationInputFromSchema = Expect<
   Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
@@ -170,9 +207,13 @@ export type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof A
 
 type TemplateEncoded = typeof PolicyTemplateIR.Encoded;
 type InstalledEncoded = typeof InstalledAuthorizationIR.Encoded;
+type CatalogUnitEncoded = typeof InstalledCatalogUnit.Encoded;
 export type _templateEncodedKnown = Expect<Extends<TemplateEncoded, { readonly _tag: "PolicyTemplateIR" }>>;
 export type _installedEncodedKnown = Expect<
   Extends<InstalledEncoded, { readonly _tag: "InstalledAuthorizationIR" }>
+>;
+export type _catalogUnitEncodedKnown = Expect<
+  Extends<CatalogUnitEncoded, { readonly _tag: "InstalledCatalogUnit" }>
 >;
 export type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
 export type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
@@ -282,6 +323,10 @@ type AuthExports = typeof import("../../../src/internal/authorization/index.ts")
 export type _noPureAssembleExport = Expect<
   Equal<Extends<"assembleUnhashedTables" | "assembleInstalledAuthorizationResult", keyof AuthExports>, false>
 >;
+export type _catalogUnitOnBarrel = Expect<Extends<"InstalledCatalogUnit", keyof AuthExports>>;
+export type _sealCatalogUnitOnBarrel = Expect<Extends<"sealInstalledCatalogUnit", keyof AuthExports>>;
+export type _casOnBarrel = Expect<Extends<"compareAndSwapCatalogUnit", keyof AuthExports>>;
+export type _loadCatalogUnitOnBarrel = Expect<Extends<"loadCatalogUnitAtBasis", keyof AuthExports>>;
 export type _partialBoundNotTemplate = Expect<
   Equal<Extends<PartialBound, PolicyTemplateIR>, false>
 >;
@@ -473,6 +518,16 @@ export type _allFailures = Expect<
     | "AuthorizationBudgetExceeded"
     | "AuthorizationDenied"
   >
+>;
+type StoreFailureTags = CatalogStoreFailure["_tag"];
+export type _catalogStoreFailures = Expect<
+  Equal<
+    StoreFailureTags,
+    "InvalidIR" | "CatalogMismatch" | "CatalogCasConflict" | "CatalogUnitCorrupt"
+  >
+>;
+export type _casNotAuthorizationFailure = Expect<
+  Equal<Extends<"CatalogCasConflict" | "CatalogUnitCorrupt", FailureTags>, false>
 >;
 
 const templateFixture: PolicyTemplateIR = {
@@ -676,6 +731,24 @@ const catalogDescriptor: CatalogDescriptor = {
   traitComposition: installedFixture.traitComposition,
 };
 
+const catalogUnitFixture: InstalledCatalogUnit = {
+  _tag: "InstalledCatalogUnit",
+  version: INSTALLED_CATALOG_UNIT_VERSION,
+  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+  database: DatabaseId.make("todos"),
+  catalog,
+  catalogVersion: CatalogVersion.make("1"),
+  schemaFingerprint: SchemaFingerprint.make("schema"),
+  unitHash: CatalogUnitHash.make(POLICY_HASH_PLACEHOLDER),
+  entities: catalogDescriptor.entities,
+  traits: catalogDescriptor.traits,
+  fields: catalogDescriptor.fields,
+  traitComposition: catalogDescriptor.traitComposition,
+  identities: installedFixture.identities,
+  operations: installedFixture.operations,
+  policy: installedFixture,
+};
+
 const bindingInput: CatalogBindingInput = {
   target: {
     database: DatabaseId.make("todos"),
@@ -722,6 +795,9 @@ const _operationFixtures = () => {
 
   // @ts-expect-error — structural document is not verified installed v1
   const structuralAsVerified: InstalledAuthorizationIRV1 = installedFixture;
+
+  // @ts-expect-error — structural catalog unit is not verified installed catalog unit v1
+  const structuralUnitAsVerified: InstalledCatalogUnitV1 = catalogUnitFixture;
 
   // @ts-expect-error — installed IR is not a template
   const asTemplate: PolicyTemplateIR = installedFixture;
@@ -881,6 +957,7 @@ const _operationFixtures = () => {
     noTarget,
     asInstalled,
     structuralAsVerified,
+    structuralUnitAsVerified,
     asTemplate,
     boundAsInstalled,
     validatedAsInstalled,
@@ -939,6 +1016,9 @@ test("authorization type fixtures compile", () => {
   expect(DEFAULT_AUTHORIZATION_BUDGET).toBeGreaterThan(0);
   expect(new InvalidIR({ message: "bad" })._tag).toBe("InvalidIR");
   expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");
+  expect(Schema.is(CatalogUnitHash)(POLICY_HASH_PLACEHOLDER)).toBe(true);
+  expect(catalogUnitFixture._tag).toBe("InstalledCatalogUnit");
+  expect(INSTALLED_CATALOG_UNIT_VERSION).toBe(1);
   expect(
     new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,
   ).toBe("AuthorizationBudgetExceeded");
@@ -976,5 +1056,24 @@ describe("legacy authorization names cannot be imported", () => {
     expect("RuleSnapshot" in ir).toBe(false);
     expect("ApplicationSnapshot" in ir).toBe(false);
     expect("AuthorizedSnapshot" in ir).toBe(false);
+  });
+
+  test("InstalledCatalogUnit is on the internal barrel and not on public barrels", async () => {
+    const ir = await import("../../../src/internal/authorization/index.ts");
+    const root = await import("../../../src/index.ts");
+    const db = await import("../../../src/db/index.ts");
+    expect("InstalledCatalogUnit" in ir).toBe(true);
+    expect("sealInstalledCatalogUnit" in ir).toBe(true);
+    expect("compareAndSwapCatalogUnit" in ir).toBe(true);
+    expect("loadCatalogUnitAtBasis" in ir).toBe(true);
+    expect("CatalogCasConflict" in ir).toBe(true);
+    expect("CatalogUnitCorrupt" in ir).toBe(true);
+    expect("InstalledCatalogUnit" in root).toBe(false);
+    expect("sealInstalledCatalogUnit" in root).toBe(false);
+    expect("compareAndSwapCatalogUnit" in root).toBe(false);
+    expect("requireUnitCoherence" in root).toBe(false);
+    expect("loadCatalogUnitAtBasis" in root).toBe(false);
+    expect("InstalledCatalogUnit" in db).toBe(false);
+    expect("compareAndSwapCatalogUnit" in db).toBe(false);
   });
 });

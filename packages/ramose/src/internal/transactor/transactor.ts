@@ -52,6 +52,20 @@ import {
 import type { Principal } from "../../worker/auth.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import {
+  compareAndSwapCatalogUnit as casCatalogUnit,
+  ensureCatalogUnitTables,
+  readCatalogHead,
+  selectCatalogUnitAtBasis,
+  verifyStoredCatalogUnit,
+  type CatalogHead,
+  type CompareAndSwapCatalogUnitInput,
+  type LoadCatalogUnitInput,
+} from "../authorization/catalog-store.ts";
+import { verifyInstalledCatalogUnit, type InstalledCatalogUnitV1 } from "../authorization/catalog-unit.ts";
+import { CatalogMismatch } from "../authorization/failures.ts";
+import { DatabaseId } from "../authorization/identities.ts";
 import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
@@ -212,6 +226,7 @@ export class Transactor {
     const sql = this.host.sql;
     sql.exec(`CREATE TABLE IF NOT EXISTS log (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+    ensureCatalogUnitTables(sql);
     this.store = new R2NodeStore(this.host.bucket, { codec: gzipCodec, maxNodes: 4096 });
 
     let rec = this.getMeta<RootRecord>("root") ?? (await readCurrentRoot(this.host.bucket));
@@ -324,6 +339,57 @@ export class Transactor {
   }
   get isDead(): boolean {
     return this.dead !== undefined;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Installed catalog-unit CAS (internal; not an HTTP route)
+  // ---------------------------------------------------------------------------
+
+  private requireTransactorDatabase(database: DatabaseId): void {
+    const expected = DatabaseId.make(this.host.dbName);
+    if (database !== expected) {
+      throw new CatalogMismatch({
+        message: "catalog unit database does not match transactor",
+        expectedDatabase: expected,
+        actualDatabase: database,
+      });
+    }
+  }
+
+  /**
+   * Persist one complete catalog unit and advance the head. Bytes are
+   * written before the head pointer in a single `transactionSync`.
+   */
+  async compareAndSwapCatalogUnit(input: CompareAndSwapCatalogUnitInput): Promise<CatalogHead> {
+    await this.init();
+    this.requireTransactorDatabase(input.database);
+    this.requireTransactorDatabase(input.unit.database);
+    const verified = await Effect.runPromise(Effect.result(verifyInstalledCatalogUnit(input.unit)));
+    if (Result.isFailure(verified)) throw verified.failure;
+    const result = this.host.transactionSync(() =>
+      casCatalogUnit(this.host.sql, { ...input, unit: verified.success }),
+    );
+    if (Result.isFailure(result)) throw result.failure;
+    return result.success;
+  }
+
+  /**
+   * Load the complete unit visible at `basisT`. Hash/component failure
+   * is closed — never a partial mix of schema and policy.
+   */
+  async loadCatalogUnitAtBasis(input: LoadCatalogUnitInput): Promise<InstalledCatalogUnitV1> {
+    await this.init();
+    this.requireTransactorDatabase(input.database);
+    const selected = this.host.transactionSync(() => selectCatalogUnitAtBasis(this.host.sql, input));
+    if (Result.isFailure(selected)) throw selected.failure;
+    const verified = await Effect.runPromise(Effect.result(verifyStoredCatalogUnit(selected.success, input)));
+    if (Result.isFailure(verified)) throw verified.failure;
+    return verified.success;
+  }
+
+  /** Current head metadata for tests and install orchestration. */
+  catalogHead(catalog: CompareAndSwapCatalogUnitInput["catalog"]): CatalogHead | undefined {
+    return readCatalogHead(this.host.sql, catalog);
   }
   /** Called by the indexer after publishing a new root. */
   adoptRoot(rec: RootRecord): void {
