@@ -8,11 +8,13 @@ import {
   toJson,
 } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
+import { testHooksEnabled } from "../internal/test-hooks.ts";
 import { isUnrecognizedWrites } from "../writes.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { authenticateRequest } from "./admit.ts";
+import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
   type Route,
@@ -187,6 +189,14 @@ export const handle = (
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       return yield* new NotFound({});
+    }
+    if (url.pathname.startsWith("/__test__/")) {
+      info.route = "admin";
+      if (!testHooksEnabled(env)) return yield* new NotFound({});
+      return yield* Effect.tryPromise({
+        try: () => handleTestAdmin(request, env, url),
+        catch: (e) => asTestAdminError(e),
+      });
     }
     if (url.pathname === "/health") {
       info.route = "health";

@@ -149,6 +149,27 @@ describe("production handle admission ordering", () => {
     expect(await body(response)).toMatchObject({ ok: true, service: "ramose" });
   });
 
+  test("gated /__test__ admin is not an external JWT path", async () => {
+    const closed = await fetch("/__test__/db/acme/checkpoint", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "status" }),
+    });
+    expect(closed.status).toBe(404);
+
+    const open = await fetch(
+      "/__test__/db/acme/checkpoint",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "status" }),
+      },
+      { RAMOSE_TEST_HOOKS: "1" } as unknown as RamoseEnv,
+    );
+    expect(open.status).toBe(200);
+    expect(await body(open)).toMatchObject({ ok: true });
+  });
+
   test("an invalid database name is hidden until authentication succeeds", async () => {
     const missing = await fetch("/db/-invalid/info");
     expect(missing.status).toBe(401);

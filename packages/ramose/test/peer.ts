@@ -1,10 +1,9 @@
 /**
- * `scriptedPeer` — a fault-injection double, not the default test environment.
+ * `scriptedPeer` — allowlisted under issue #390 and not for new tests.
  *
  * Public reads, writes, auth, operations, and multi-client live run against
- * the Alchemy local stack (`test/local`). Keep this double when a test
- * needs exact frame/request ordering, a refused upgrade, or inspection of
- * HTTPS vs session-socket traffic before serialization leaves the client.
+ * the Alchemy local stack (`test/local`) with `test/support/recorder.ts`.
+ * Do not add consumers. Migrate existing ones; shrink the allowlist.
  *
  * Writes are HTTPS (`POST /db/:name/transact`); reads and `t` ticks are
  * the socket (`GET /db/:name/session`).

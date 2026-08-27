@@ -12,6 +12,7 @@ import { registerExamples } from "./examples.ts";
 import { localUrls } from "./fixtures.ts";
 import { registerMultiClient } from "./multi-client.ts";
 import { registerQuery } from "./query.ts";
+import { registerInstrumentation } from "./instrumentation.ts";
 import { registerCatalogSeed, registerServiceBinding } from "./service-binding.ts";
 
 setDefaultTimeout(90_000);
@@ -27,3 +28,4 @@ registerExamples({ urls: localUrls });
 registerServiceBinding({ urls: localUrls });
 registerCatalogSeed({ urls: localUrls });
 registerQuery({ urls: localUrls });
+registerInstrumentation({ urls: localUrls });

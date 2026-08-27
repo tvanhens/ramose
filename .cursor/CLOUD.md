@@ -14,7 +14,8 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 - There is no separate linter. The type checker is the lint gate:
   `bun run typecheck` (`bunx tsc --noEmit`).
 - Tests: `bun run test:unit` (package + example unit tests, `--parallel=3`,
-  no services). `bun run test:local` deploys the Alchemy local stack
+  no services). `bun run test:doubles` rejects new test doubles (#390).
+  `bun run test:local` deploys the Alchemy local stack
   (workerd, serial) and needs the same `CI=1` / placeholder Cloudflare
   credentials as `dev:todos`. `bun run test` runs unit then local.
 - `bun run test:e2e` runs `test/e2e` against a live peer and only executes when

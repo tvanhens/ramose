@@ -17,6 +17,7 @@ import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
+import { handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
 
 export type { TxAck };
 
@@ -40,6 +41,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
+    resetTestHooks();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
@@ -126,6 +128,8 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     if (url.pathname === "/health") {
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
+    if (testAdmin !== undefined) return testAdmin;
     return this.core.handleRequest(request);
   }
 }

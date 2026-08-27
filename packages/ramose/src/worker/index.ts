@@ -2,9 +2,11 @@
  * Ramose peer Worker — HTTP API and edge executor.
  *
  *   GET  /health              { ok, service, stage, time, operations: string[] }
+ *   POST /__test__/db/:name/* test-only (RAMOSE_TEST_HOOKS=1; 404 otherwise)
  *   *    /db/:name/*          verified JWT admission, then fail-closed until catalog + filtered Db
  *
- * `/health` is the only unauthenticated route (AUTH-1, AUTH-6).
+ * `/health` is the only unauthenticated public route (AUTH-1, AUTH-6).
+ * `/__test__/*` is gated local instrumentation, not an external database path.
  */
 
 import type { RamoseEnv } from "../RamoseEnv.ts";

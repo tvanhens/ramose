@@ -116,6 +116,15 @@ export const AUTH_SCHEMA = [
   attr(":doc/audit", "string"),
 ];
 
+/** POST a test-only admin path (`/__test__/db/:name/...`). */
+export const testAdmin = async (
+  base: string,
+  db: string,
+  rest: "/r2" | "/checkpoint" | "/abort",
+  body: unknown,
+): Promise<{ status: number; body: any; res: Response }> =>
+  json(base, `/__test__/db/${encodeURIComponent(db)}${rest}`, post(body));
+
 export const seedTx = async (
   base: string,
   db: string,

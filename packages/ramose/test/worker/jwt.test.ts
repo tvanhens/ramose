@@ -7,7 +7,6 @@ import {
 } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import { TestClock } from "effect/testing";
 import {
   exportJWK,
   generateKeyPair,
@@ -29,7 +28,7 @@ import {
   type JwksServiceBinding,
 } from "../../src/worker/jwt.ts";
 
-const NOW = 2_000_000_000;
+const nowSeconds = (): number => Math.floor(Date.now() / 1_000);
 const ISS = "https://issuer.example.test";
 const AUD = "ramose:test";
 
@@ -87,15 +86,18 @@ interface SignOptions {
 
 const payload = (
   over: Record<string, unknown> = {},
-): JWTPayload => ({
-  iss: ISS,
-  aud: AUD,
-  sub: "user-ada",
-  iat: NOW,
-  exp: NOW + 300,
-  ramose: { db: "acme", class: "member" },
-  ...over,
-});
+): JWTPayload => {
+  const now = nowSeconds();
+  return {
+    iss: ISS,
+    aud: AUD,
+    sub: "user-ada",
+    iat: now,
+    exp: now + 300,
+    ramose: { db: "acme", class: "member" },
+    ...over,
+  };
+};
 
 const sign = async (options: SignOptions = {}): Promise<string> => {
   const signingKey = options.key ?? keyA;
@@ -109,11 +111,7 @@ const sign = async (options: SignOptions = {}): Promise<string> => {
 const verifyEffect = (
   token: string,
   verifierEnv = env(),
-) =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(NOW * 1_000);
-    return yield* fromEnv(verifierEnv).verify(Redacted.make(token));
-  }).pipe(Effect.provide(TestClock.layer()));
+) => fromEnv(verifierEnv).verify(Redacted.make(token));
 
 const verify = (token: string, verifierEnv = env()) =>
   Effect.runPromise(verifyEffect(token, verifierEnv));
@@ -134,26 +132,27 @@ const expectOpaque = (error: unknown, secrets: readonly string[] = []) => {
 
 describe("JwtVerifier", () => {
   test("verifies a real token and constructs one immutable principal", async () => {
-    const token = await sign({
-      payload: payload({
-        ramose: {
-          db: "acme",
-          class: "member",
-          attrs: {
-            active: true,
-            displayName: "Ada",
-            score: 2.5,
-            roles: ["writer", "reader"],
-            levels: [1, 2],
-          },
+    const claims = payload({
+      ramose: {
+        db: "acme",
+        class: "member",
+        attrs: {
+          active: true,
+          displayName: "Ada",
+          score: 2.5,
+          roles: ["writer", "reader"],
+          levels: [1, 2],
         },
-      }),
+      },
     });
+    const token = await sign({ payload: claims });
     const verified = await verify(token);
+    const iat = claims.iat as number;
+    const exp = claims.exp as number;
 
     expect(verified.kid).toBe("key-a");
-    expect(verified.iat).toBe(NOW);
-    expect(verified.exp).toBe(NOW + 300);
+    expect(verified.iat).toBe(iat);
+    expect(verified.exp).toBe(exp);
     expect(verified.principal).toEqual({
       kind: "user",
       class: "member",
@@ -162,7 +161,7 @@ describe("JwtVerifier", () => {
         sub: "user-ada",
         iss: ISS,
         aud: AUD,
-        exp: NOW + 300,
+        exp,
         attrs: {
           active: true,
           displayName: "Ada",
@@ -308,19 +307,20 @@ describe("JwtVerifier", () => {
   });
 
   test("maps every signature, registered-claim, time, and algorithm failure opaquely", async () => {
+    const now = nowSeconds();
     const cases = [
       await sign({ header: { alg: "ES256" } }),
-      await sign({ payload: payload({ exp: NOW - 6, iat: NOW - 100 }) }),
-      await sign({ payload: payload({ nbf: NOW + 60 }) }),
-      await sign({ payload: payload({ iat: NOW + 6, exp: NOW + 306 }) }),
-      await sign({ payload: payload({ iat: NOW, exp: NOW + 901 }) }),
+      await sign({ payload: payload({ exp: now - 6, iat: now - 100 }) }),
+      await sign({ payload: payload({ nbf: now + 60 }) }),
+      await sign({ payload: payload({ iat: now + 6, exp: now + 306 }) }),
+      await sign({ payload: payload({ iat: now, exp: now + 901 }) }),
       await sign({ payload: payload({ iss: "https://wrong.example" }) }),
       await sign({ payload: payload({ aud: "wrong-audience" }) }),
       await sign({ payload: payload({ iat: undefined }) }),
       await sign({ payload: payload({ exp: undefined }) }),
-      await sign({ payload: payload({ iat: NOW + 0.5 }) }),
-      await sign({ payload: payload({ exp: NOW + 300.5 }) }),
-      await sign({ payload: payload({ nbf: NOW - 0.5 }) }),
+      await sign({ payload: payload({ iat: now + 0.5 }) }),
+      await sign({ payload: payload({ exp: now + 300.5 }) }),
+      await sign({ payload: payload({ nbf: now - 0.5 }) }),
     ];
 
     const hmac = await new SignJWT(payload())
@@ -340,7 +340,10 @@ describe("JwtVerifier", () => {
 
   test("uses the configured issuer set and maximum lifetime default", async () => {
     const token = await sign({
-      payload: payload({ iss: "https://issuer-two.example", exp: NOW + 900 }),
+      payload: payload({
+        iss: "https://issuer-two.example",
+        exp: nowSeconds() + 900,
+      }),
     });
     const verifierEnv = env([keyA.publicJwk], {
       RAMOSE_JWT_ISS: `${ISS}, https://issuer-two.example`,
