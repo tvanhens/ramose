@@ -806,16 +806,16 @@ describe("access plans", () => {
     const grant = entity("tag-grant");
     const userField = field(grantOwner, "user");
     const tagField = field(grantOwner, "tag");
-    const requiredSubset: ReadonlyArray<RuleAccessLookup> = [
+    const requiredSubset: RuleAccessLookup[] = [
       { _tag: "exists", entity: grant, fields: [userField] },
     ];
-    const requiredBoth: ReadonlyArray<RuleAccessLookup> = [
+    const requiredBoth: RuleAccessLookup[] = [
       { _tag: "exists", entity: grant, fields: [tagField, userField] },
     ];
-    const actualSuperset: ReadonlyArray<RuleAccessLookup> = [
+    const actualSuperset: RuleAccessLookup[] = [
       { _tag: "exists", entity: grant, fields: [tagField, userField] },
     ];
-    const actualReordered: ReadonlyArray<RuleAccessLookup> = [
+    const actualReordered: RuleAccessLookup[] = [
       { _tag: "exists", entity: grant, fields: [userField, tagField] },
     ];
     expect(accessPlanCovers(actualSuperset, requiredSubset)).toBe(true);
@@ -825,12 +825,7 @@ describe("access plans", () => {
     expect(missingAccessLookups(actualReordered, requiredBoth)).toEqual([]);
     expect(missingAccessLookups(requiredSubset, actualSuperset)).toEqual(actualSuperset);
     expect(
-      Result.isSuccess(
-        requireCompleteAccessPlan(
-          { rule: RuleId.make(digestHex(1)), lookups: [...actualSuperset] },
-          [...requiredSubset],
-        ),
-      ),
+      Result.isSuccess(requireCompleteAccessPlan({ rule: RuleId.make(digestHex(1)), lookups: actualSuperset }, requiredSubset)),
     ).toBe(true);
   });
 
