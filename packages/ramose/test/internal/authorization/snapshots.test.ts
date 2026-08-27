@@ -1,0 +1,587 @@
+/**
+ * #339: raw / rule / authorized snapshots are distinct capabilities.
+ */
+import { describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { Connection } from "../../../src/internal/core/conn.ts";
+import {
+  AUTHORIZATION_LANGUAGE_VERSION,
+  CatalogId,
+  CatalogMismatch,
+  CatalogVersion,
+  DatabaseId,
+  EntityId,
+  FieldId,
+  InvalidIR,
+  LeaseExpired,
+  POLICY_TEMPLATE_IR_VERSION,
+  RelativeFieldId,
+  RuleId,
+  SchemaFingerprint,
+  TraitId,
+  decodeInstalledAuthorizationResult,
+  encodeInstalledAuthorization,
+  installAuthorization,
+  isVerifiedInstalledAuthorization,
+  type CatalogBindingInput,
+  type CatalogBindingTarget,
+  type CatalogDescriptor,
+  type FieldRefTarget,
+  type InstalledAuthorizationIRV1,
+  type OwnerRef,
+  type PolicyTemplateIR,
+  type RelativeAuthorizationExpr,
+} from "../../../src/internal/authorization/index.ts";
+import { queryAuthorized, pullAuthorized } from "../../../src/internal/authorization/runtime/application-read.ts";
+import { AuthorizedApplicationAccess } from "../../../src/internal/authorization/runtime/application-snapshot.ts";
+import {
+  collapseApplicationBasis,
+  effectiveApplicationT,
+  mergeSnapshotBases,
+} from "../../../src/internal/authorization/runtime/basis.ts";
+import { ApplicationSnapshotUnavailable, SnapshotCancelled } from "../../../src/internal/authorization/runtime/failures.ts";
+import {
+  authorizedSnapshotLayer,
+  denyAllCapabilityLayer,
+  evaluatorRuleSnapshotLayer,
+  rawOnlyCapabilityLayer,
+  rawStorageFromDb,
+  scopedAuthorizedSnapshot,
+  scopedRawSnapshot,
+  scopedRuleSnapshot,
+  trustedSnapshotLayer,
+} from "../../../src/internal/authorization/runtime/layers.ts";
+import { projectFetched } from "../../../src/internal/authorization/runtime/projection.ts";
+import { RawStorageAccess } from "../../../src/internal/authorization/runtime/raw-storage.ts";
+import { RuleSnapshotAccess } from "../../../src/internal/authorization/runtime/rule-snapshot.ts";
+import {
+  AuthorizedSnapshot,
+  RawSnapshot,
+  RuleSnapshot,
+  fieldIdentOf,
+  inspectAuthorizedSnapshot,
+  inspectRawSnapshot,
+  inspectRuleSnapshot,
+  invalidateAuthorizedSnapshot,
+  invalidateRawSnapshot,
+  invalidateRuleSnapshot,
+  physicalCurrentDb,
+} from "../../../src/internal/authorization/runtime/snapshots.ts";
+import { digestHex } from "./fixtures.ts";
+
+const catalog = CatalogId.make("app");
+const database = DatabaseId.make("todos");
+const version = CatalogVersion.make("1");
+const fingerprint = SchemaFingerprint.make("schema");
+const issueOwner = { kind: "entity" as const, name: "issue" };
+const userOwner = { kind: "entity" as const, name: "user" };
+
+const target: CatalogBindingTarget = {
+  database,
+  catalog,
+  catalogVersion: version,
+  schemaFingerprint: fingerprint,
+};
+
+const entity = (name: string) => EntityId.make({ catalog, name });
+const trait = (name: string) => TraitId.make({ catalog, name });
+const field = (owner: OwnerRef, localName: string) => FieldId.make({ catalog, owner, localName });
+const relativeField = (owner: OwnerRef, localName: string) =>
+  RelativeFieldId.make({ owner, localName });
+
+const scalarField = (
+  owner: OwnerRef,
+  localName: string,
+  options: { readonly unique?: "upsert" | "strict" } = {},
+): CatalogDescriptor["fields"][number] => ({
+  id: field(owner, localName),
+  valueType: "string",
+  cardinality: "one",
+  ...(options.unique === undefined ? {} : { unique: options.unique }),
+  index: options.unique !== undefined,
+  optional: false,
+  owned: false,
+});
+
+const refField = (
+  owner: OwnerRef,
+  localName: string,
+  refTarget: FieldRefTarget,
+): CatalogDescriptor["fields"][number] => ({
+  id: field(owner, localName),
+  valueType: "ref",
+  refTarget,
+  cardinality: "one",
+  index: false,
+  optional: false,
+  owned: false,
+});
+
+const catalogDescriptor = (): CatalogDescriptor => ({
+  id: catalog,
+  database,
+  version,
+  fingerprint,
+  entities: [
+    { id: entity("user"), traits: [] },
+    { id: entity("issue"), traits: [trait("taggable")] },
+  ],
+  traits: [{ id: trait("taggable"), traits: [] }],
+  fields: [
+    scalarField(userOwner, "authId", { unique: "upsert" }),
+    scalarField(issueOwner, "title"),
+    refField(issueOwner, "owner", { _tag: "entity", entity: entity("user") }),
+    refField(issueOwner, "parent", { _tag: "self" }),
+  ],
+  operations: [],
+  traitComposition: [
+    { composer: entity("issue"), trait: trait("taggable"), transitive: [trait("taggable")] },
+  ],
+});
+
+const rule = (
+  id: string,
+  expr: RelativeAuthorizationExpr,
+): PolicyTemplateIR["rules"][number] => ({
+  id: RuleId.make(id),
+  focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+  expr,
+  usesResource: true,
+  usesMe: true,
+  usesSubject: false,
+  traversalDepth: 1,
+});
+
+const template = (): PolicyTemplateIR => ({
+  _tag: "PolicyTemplateIR",
+  version: POLICY_TEMPLATE_IR_VERSION,
+  languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+  classes: ["member"],
+  claims: [{ key: "org", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
+  principal: { subjectClaim: "sub", entity: relativeField(userOwner, "authId") },
+  rules: [
+    rule(digestHex(0x11), {
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: relativeField(issueOwner, "owner") }],
+      },
+      right: { _tag: "me" },
+    }),
+  ],
+  decisions: {
+    entities: [
+      {
+        target: { _tag: "RelativeEntityId", name: "issue" },
+        decision: { allow: [RuleId.make(digestHex(0x11))], deny: [] },
+      },
+    ],
+    traits: [],
+    fields: [],
+  },
+});
+
+const bindingInput = (descriptor: CatalogDescriptor = catalogDescriptor()): CatalogBindingInput => ({
+  target,
+  descriptor,
+  template: template(),
+});
+
+const principal = {
+  subject: "ada",
+  claims: { org: "acme" },
+  classes: ["member"],
+  me: { entity: entity("user"), eid: 0 },
+};
+
+const SCHEMA = [
+  { ":db/ident": ":user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+  { ":db/ident": ":issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":issue/parent", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+];
+
+const setup = async () => {
+  const installed = await Effect.runPromise(installAuthorization(bindingInput()));
+  const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+  await conn.transact(SCHEMA);
+  const report = await conn.transact([
+    { ":db/id": "ada", ":user/authId": "ada" },
+    { ":db/id": "issue", ":issue/title": "Secret", ":issue/owner": "ada" },
+  ]);
+  const db = conn.db();
+  return {
+    installed,
+    conn,
+    db,
+    ada: report.tempids.ada as number,
+    issue: report.tempids.issue as number,
+    descriptor: catalogDescriptor(),
+  };
+};
+
+describe("basis arithmetic", () => {
+  test("effective t prefers a smaller as-of", () => {
+    expect(effectiveApplicationT(10)).toBe(10);
+    expect(effectiveApplicationT(10, 4)).toBe(4);
+    expect(effectiveApplicationT(10, 12)).toBe(10);
+  });
+
+  test("application collapse keeps history and as-of separate from the rule basis", () => {
+    const application = collapseApplicationBasis({ basisT: 9, asOfT: 3, history: true });
+    expect(application).toEqual({ basisT: 9, asOfT: 3, history: true, effectiveT: 3 });
+    expect(mergeSnapshotBases(application, 9)).toEqual({ application, ruleBasisT: 9 });
+  });
+});
+
+describe("pure projection cells", () => {
+  test("fetched datoms distinguish absent entity, absent field, and present values", () => {
+    const present = { e: 1, a: 2, v: "Secret", vt: 3, t: 1, op: true } as const;
+    expect(projectFetched([], [], false)._tag).toBe("EntityAbsent");
+    expect(projectFetched([present], [], false)._tag).toBe("FieldAbsent");
+    expect(projectFetched([present], [present], false)).toEqual({ _tag: "Present", value: "Secret" });
+    expect(projectFetched([present], [present, { ...present, v: "Other" }], true)).toEqual({
+      _tag: "Present",
+      value: ["Secret", "Other"],
+    });
+  });
+
+  test("field idents are owner/localName, not a recoverable raw handle", () => {
+    expect(fieldIdentOf(field(issueOwner, "title"))).toBe(":issue/title");
+  });
+});
+
+describe("snapshot construction", () => {
+  test("raw, rule, and authorized snapshots expose explicit bases", async () => {
+    const { db, installed, ada, issue, descriptor } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const appSvc = yield* AuthorizedApplicationAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT, asOfT: db.basisT - 1, history: true });
+      const rules = yield* ruleSvc.project({
+        raw,
+        installed,
+        catalog: descriptor,
+        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        basisT: db.basisT,
+      });
+      const auth = yield* appSvc.open({
+        raw,
+        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 3,
+        asOfT: db.basisT - 1,
+        history: true,
+      });
+      const title = yield* ruleSvc.lookup(rules, issue, field(issueOwner, "title"));
+      const owner = yield* ruleSvc.traverse(rules, issue, [field(issueOwner, "owner")]);
+      const queried = yield* queryAuthorized(auth, { find: ["?t"], where: [["?e", ":issue/title", "?t"]] });
+      const pulled = yield* pullAuthorized(auth, issue, [":issue/title"]);
+      return { raw, rules, auth, title, owner, queried, pulled };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(out.raw).toBeInstanceOf(RawSnapshot);
+    expect(out.rules).toBeInstanceOf(RuleSnapshot);
+    expect(out.auth).toBeInstanceOf(AuthorizedSnapshot);
+    expect(inspectRawSnapshot(out.raw)).toMatchObject({
+      database,
+      basisT: db.basisT,
+      asOfT: db.basisT - 1,
+      history: true,
+      effectiveT: db.basisT - 1,
+    });
+    expect(inspectRuleSnapshot(out.rules)).toMatchObject({
+      database,
+      catalog,
+      catalogVersion: version,
+      basisT: db.basisT,
+      policyHash: installed.policyHash,
+    });
+    expect(inspectAuthorizedSnapshot(out.auth)).toMatchObject({
+      database,
+      catalog,
+      catalogVersion: version,
+      basisT: db.basisT,
+      ruleBasisT: db.basisT,
+      asOfT: db.basisT - 1,
+      history: true,
+      leaseEpoch: 3,
+    });
+    expect(out.title).toEqual({ _tag: "Present", value: "Secret" });
+    expect(out.owner).toEqual({ _tag: "Present", value: ada });
+    expect(out.queried).toEqual([]);
+    expect(out.pulled).toBeNull();
+    expect(physicalCurrentDb(out.raw)).toBe(db);
+  });
+
+  test("missing principal, catalog, or unsealed IR cannot construct an authorized snapshot", async () => {
+    const { db, installed, descriptor } = await setup();
+    const encoded = encodeInstalledAuthorization(installed);
+    const structural = decodeInstalledAuthorizationResult(encoded);
+    expect(structural._tag).toBe("Success");
+    expect(isVerifiedInstalledAuthorization(installed)).toBe(true);
+    expect(isVerifiedInstalledAuthorization(structural._tag === "Success" ? structural.success : null)).toBe(false);
+
+    const program = Effect.gen(function* () {
+      const raw = yield* RawStorageAccess;
+      const app = yield* AuthorizedApplicationAccess;
+      const opened = yield* raw.open({ database, basisT: db.basisT });
+      const blankPrincipal = yield* Effect.flip(app.open({
+        raw: opened,
+        principal: { subject: "", claims: {}, classes: [] },
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 0,
+      }));
+      const unsealed = yield* Effect.flip(app.open({
+        raw: opened,
+        principal,
+        installed: (structural._tag === "Success" ? structural.success : installed) as InstalledAuthorizationIRV1,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 0,
+      }));
+      const mismatch = yield* Effect.flip(app.open({
+        raw: opened,
+        principal,
+        installed,
+        catalog: CatalogId.make("other"),
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 0,
+      }));
+      const rules = yield* RuleSnapshotAccess;
+      const ruleMismatch = yield* Effect.flip(rules.project({
+        raw: opened,
+        installed,
+        catalog: { ...descriptor, id: CatalogId.make("other") },
+        principal,
+        basisT: db.basisT,
+      }));
+      return { blankPrincipal, unsealed, mismatch, ruleMismatch };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(out.blankPrincipal).toBeInstanceOf(ApplicationSnapshotUnavailable);
+    expect(out.unsealed).toBeInstanceOf(InvalidIR);
+    expect(out.mismatch).toBeInstanceOf(CatalogMismatch);
+    expect(out.ruleMismatch).toBeInstanceOf(CatalogMismatch);
+  });
+
+  test("deny or raw-only Layers cannot yield a privileged snapshot", async () => {
+    const { db, installed } = await setup();
+    const denied = await Effect.runPromise(
+      Effect.gen(function* () {
+        const raw = yield* RawStorageAccess;
+        const app = yield* AuthorizedApplicationAccess;
+        return {
+          raw: yield* Effect.flip(raw.open({ database, basisT: 1 })),
+          app: yield* Effect.flip(app.open({} as never)),
+        };
+      }).pipe(Effect.provide(denyAllCapabilityLayer)),
+    );
+    expect(denied.raw._tag).toBe("RawStorageUnavailable");
+    expect(denied.app._tag).toBe("ApplicationSnapshotUnavailable");
+
+    const rawOnly = await Effect.runPromise(
+      Effect.gen(function* () {
+        const raw = yield* RawStorageAccess;
+        const app = yield* AuthorizedApplicationAccess;
+        const opened = yield* raw.open({ database, basisT: db.basisT });
+        const failed = yield* Effect.flip(app.open({
+          raw: opened,
+          principal,
+          installed,
+          catalog,
+          catalogVersion: version,
+          database,
+          applicationBasisT: db.basisT,
+          ruleBasisT: db.basisT,
+          leaseEpoch: 0,
+        }));
+        return { opened, failed };
+      }).pipe(Effect.provide(rawOnlyCapabilityLayer(db, database))),
+    );
+    expect(rawOnly.opened).toBeInstanceOf(RawSnapshot);
+    expect(rawOnly.failed).toBeInstanceOf(ApplicationSnapshotUnavailable);
+  });
+
+  test("cancellation and lease expiry prevent further use", async () => {
+    const { db, installed, issue } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const appSvc = yield* AuthorizedApplicationAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT, expiresAt: Date.now() - 1 });
+      const liveRaw = yield* rawSvc.open({ database, basisT: db.basisT });
+      const rules = yield* ruleSvc.project({
+        raw: liveRaw,
+        installed,
+        catalog: catalogDescriptor(),
+        principal,
+        basisT: db.basisT,
+      });
+      const auth = yield* appSvc.open({
+        raw: liveRaw,
+        principal,
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 1,
+      });
+      invalidateRawSnapshot(liveRaw);
+      invalidateRuleSnapshot(rules);
+      invalidateAuthorizedSnapshot(auth);
+      return {
+        expired: inspectRawSnapshot(raw).expiresAt < Date.now(),
+        cancelledRaw: inspectRawSnapshot(liveRaw).cancelled,
+        cancelledRule: inspectRuleSnapshot(rules).cancelled,
+        cancelledAuth: inspectAuthorizedSnapshot(auth).cancelled,
+        query: yield* Effect.flip(queryAuthorized(auth, {})),
+        lookup: yield* Effect.flip(ruleSvc.lookup(rules, issue, field(issueOwner, "title"))),
+      };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(out.expired).toBe(true);
+    expect(out.cancelledRaw).toBe(true);
+    expect(out.cancelledRule).toBe(true);
+    expect(out.cancelledAuth).toBe(true);
+    expect(out.query).toBeInstanceOf(SnapshotCancelled);
+    expect(out.lookup).toBeInstanceOf(SnapshotCancelled);
+  });
+
+  test("scoped snapshots cancel on release", async () => {
+    const { db, installed } = await setup();
+    const program = Effect.scoped(Effect.gen(function* () {
+      const raw = yield* scopedRawSnapshot({ database, basisT: db.basisT });
+      const rules = yield* scopedRuleSnapshot({
+        raw,
+        installed,
+        catalog: catalogDescriptor(),
+        principal,
+        basisT: db.basisT,
+      });
+      const auth = yield* scopedAuthorizedSnapshot({
+        raw,
+        principal,
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 1,
+      });
+      return { raw, rules, auth };
+    })).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(inspectRawSnapshot(out.raw).cancelled).toBe(true);
+    expect(inspectRuleSnapshot(out.rules).cancelled).toBe(true);
+    expect(inspectAuthorizedSnapshot(out.auth).cancelled).toBe(true);
+    const after = await Effect.runPromise(Effect.flip(queryAuthorized(out.auth, {})));
+    expect(after).toBeInstanceOf(SnapshotCancelled);
+  });
+
+  test("rule lookup does not appear on the authorized snapshot", async () => {
+    const { db, installed, issue, ada } = await setup();
+    const program = Effect.gen(function* () {
+      const raw = yield* RawStorageAccess;
+      const rules = yield* RuleSnapshotAccess;
+      const app = yield* AuthorizedApplicationAccess;
+      const opened = yield* raw.open({ database, basisT: db.basisT });
+      const ruleSnap = yield* rules.project({
+        raw: opened,
+        installed,
+        catalog: catalogDescriptor(),
+        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        basisT: db.basisT,
+      });
+      const auth = yield* app.open({
+        raw: opened,
+        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 0,
+      });
+      const hidden = yield* rules.lookup(ruleSnap, issue, field(issueOwner, "title"));
+      const visible = yield* queryAuthorized(auth, { find: ["?t"], where: [["?e", ":issue/title", "?t"]] });
+      return { hidden, visible };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(out.hidden).toEqual({ _tag: "Present", value: "Secret" });
+    expect(out.visible).toEqual([]);
+  });
+
+  test("evaluator rule service stays unwired for leftover evaluation", async () => {
+    const { db, installed } = await setup();
+    const program = Effect.gen(function* () {
+      const raw = yield* RawStorageAccess;
+      const rules = yield* RuleSnapshotAccess;
+      const opened = yield* raw.open({ database, basisT: db.basisT });
+      const snap = yield* rules.project({
+        raw: opened,
+        installed,
+        catalog: catalogDescriptor(),
+        principal,
+        basisT: db.basisT,
+      });
+      return yield* Effect.flip(rules.evaluateRule(snap, digestHex(0x11)));
+    }).pipe(Effect.provide(Layer.mergeAll(rawStorageFromDb(db, database), evaluatorRuleSnapshotLayer)));
+
+    const failed = await Effect.runPromise(program);
+    expect(failed._tag).toBe("RuleSnapshotUnavailable");
+  });
+
+  test("expired lease is a typed failure on application reads", async () => {
+    const { db, installed } = await setup();
+    const program = Effect.gen(function* () {
+      const raw = yield* RawStorageAccess;
+      const app = yield* AuthorizedApplicationAccess;
+      const opened = yield* raw.open({ database, basisT: db.basisT });
+      const auth = yield* app.open({
+        raw: opened,
+        principal,
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+        leaseEpoch: 0,
+        expiresAt: Date.now() - 5,
+      });
+      return yield* Effect.flip(queryAuthorized(auth, {}));
+    }).pipe(Effect.provide(Layer.mergeAll(rawStorageFromDb(db, database), authorizedSnapshotLayer)));
+
+    const failed = await Effect.runPromise(program);
+    expect(failed).toBeInstanceOf(LeaseExpired);
+  });
+});

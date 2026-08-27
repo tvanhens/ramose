@@ -154,9 +154,22 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
     const decoded = yield* Effect.fromResult(
       decodeInstalledAuthorizationResult(encodeInstalledAuthorization(installed)),
     );
-    return verifiedInstalledAuthorization(freezePlain(clonePlain(decoded)));
+    const sealed = verifiedInstalledAuthorization(freezePlain(clonePlain(decoded)));
+    sealedInstalled.add(sealed);
+    return sealed;
   },
 );
+
+const sealedInstalled = new WeakSet<object>();
+
+/**
+ * Runtime seal check. Structural decode output is not in this set.
+ * Effect brands alone are not a security boundary (TCB-4).
+ */
+export const isVerifiedInstalledAuthorization = (
+  value: unknown,
+): value is InstalledAuthorizationIRV1Type =>
+  typeof value === "object" && value !== null && sealedInstalled.has(value);
 
 /**
  * One auditable binder entry point: catalog binding input → installed v1 IR.

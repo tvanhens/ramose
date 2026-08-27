@@ -9,8 +9,15 @@
  */
 
 import * as Data from "effect/Data";
+import type {
+  AuthorizationBudgetExceeded,
+  CatalogMismatch,
+  IncompleteReason,
+  IncompleteRuleSnapshot,
+  InvalidIR,
+  LeaseExpired,
+} from "../failures.ts";
 import type { CatalogId, OperationId } from "../identities.ts";
-import type { IncompleteReason } from "../failures.ts";
 
 export {
   AuthorizationDenied,
@@ -42,9 +49,33 @@ export class AuthenticationRejected extends Data.TaggedError("AuthenticationReje
   readonly message: string;
 }> {}
 
+export class SnapshotCancelled extends Data.TaggedError("SnapshotCancelled")<{
+  readonly message: string;
+}> {}
+
+export {
+  AuthorizationBudgetExceeded,
+  CatalogMismatch,
+  IncompleteRuleSnapshot,
+  InvalidIR,
+  LeaseExpired,
+} from "../failures.ts";
+
 export type RawStorageFailure = RawStorageUnavailable;
-export type RuleSnapshotFailure = RuleSnapshotUnavailable;
-export type ApplicationSnapshotFailure = ApplicationSnapshotUnavailable;
+export type RuleSnapshotFailure =
+  | RuleSnapshotUnavailable
+  | IncompleteRuleSnapshot
+  | AuthorizationBudgetExceeded
+  | LeaseExpired
+  | CatalogMismatch
+  | InvalidIR
+  | SnapshotCancelled;
+export type ApplicationSnapshotFailure =
+  | ApplicationSnapshotUnavailable
+  | CatalogMismatch
+  | InvalidIR
+  | LeaseExpired
+  | SnapshotCancelled;
 export type CatalogOperationFailure = CatalogOperationNotFound;
 export type AuthenticationAdmissionFailure = AuthenticationRejected;
 

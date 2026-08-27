@@ -18,6 +18,6 @@ export const toAuthorizationDenied = <A = never>(
   _internal?: unknown,
 ): Effect.Effect<A, AuthorizationDenied> => Effect.fail(DENIED);
 
-/** The configured-database close. Application access until #339/#343/#344. */
+/** The configured-database close. Admission and request-edge wiring remain #344 / #343. */
 export const closeConfiguredAccess: Effect.Effect<never, AuthorizationDenied> =
   Effect.fail(DENIED);

@@ -1,6 +1,6 @@
 /**
- * #338 capability boundaries: deny stubs fail closed, brands are not
- * `Db`, and legacy authorization names are gone from public barrels.
+ * #338 / #339 capability boundaries: deny stubs fail closed, live Layers
+ * construct opaque snapshots, and runtime tags stay off the IR barrel.
  */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
@@ -10,7 +10,6 @@ import {
   CatalogVersion,
   DatabaseId,
   OperationId,
-  PolicyHash,
 } from "../../../src/internal/authorization/identities.ts";
 import { AuthorizationDenied } from "../../../src/internal/authorization/failures.ts";
 import { AuthenticationAdmission } from "../../../src/internal/authorization/runtime/authentication.ts";
@@ -47,19 +46,9 @@ describe("fail-closed capability layers", () => {
       const auth = yield* AuthenticationAdmission;
       return {
         raw: yield* Effect.flip(raw.open({ database, basisT: 1 })),
-        rules: yield* Effect.flip(rules.project({
-          database,
-          basisT: 1,
-          policyHash: PolicyHash.make("0".repeat(64)),
-          principal: { subject: "ada", claims: {}, classes: [] },
-        })),
-        app: yield* Effect.flip(app.open({
-          database,
-          basisT: 1,
-          principal: { subject: "ada", claims: {}, classes: [] },
-          installed: {} as never,
-          leaseEpoch: 0,
-        })),
+        rules: yield* Effect.flip(rules.project({} as never)),
+        app: yield* Effect.flip(app.open({} as never)),
+        lookup: yield* Effect.flip(rules.lookup({} as never, 1, {} as never)),
         ops: yield* Effect.flip(ops.resolve({
           catalog,
           catalogVersion: CatalogVersion.make("1"),
@@ -77,6 +66,7 @@ describe("fail-closed capability layers", () => {
     expect(out.raw).toBeInstanceOf(RawStorageUnavailable);
     expect(out.rules).toBeInstanceOf(RuleSnapshotUnavailable);
     expect(out.app).toBeInstanceOf(ApplicationSnapshotUnavailable);
+    expect(out.lookup).toBeInstanceOf(RuleSnapshotUnavailable);
     expect(out.ops).toBeInstanceOf(CatalogOperationNotFound);
     expect(out.auth).toBeInstanceOf(AuthenticationRejected);
   });
@@ -111,5 +101,10 @@ describe("legacy authorization names cannot be imported", () => {
     expect("CatalogLocalOperations" in ir).toBe(false);
     expect("AuthenticationAdmission" in ir).toBe(false);
     expect("denyAllCapabilityLayer" in ir).toBe(false);
+    expect("RawSnapshot" in ir).toBe(false);
+    expect("RuleSnapshot" in ir).toBe(false);
+    expect("AuthorizedSnapshot" in ir).toBe(false);
+    expect("queryAuthorized" in ir).toBe(false);
+    expect("trustedSnapshotLayer" in ir).toBe(false);
   });
 });

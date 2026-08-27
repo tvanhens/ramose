@@ -8,9 +8,9 @@
  * - Keeps novelty since the current root sorted in memory and spilled to
  *   SQLite (survives eviction/restart without a full resync).
  * - Caches hot segments in SQLite (`segcache`) in front of R2.
- * - Serves `GET /basis` → { t, root, novelty } to Workers, and executes
- *   reads itself (`POST /query`: datalog / pull / entity) — the Worker's
- *   read path forwards here instead of running datalog in the Worker.
+ * - Serves `GET /basis` → { t, root, novelty } to Workers. Application
+ *   `POST /query` requires an AuthorizedSnapshot and stays closed until
+ *   request-edge construction lands.
  * - Drops novelty ≤ new root on root flip.
  *
  * Workers never talk to the Transactor for reads (invariant §1.5).
@@ -18,9 +18,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
-  DEFAULT_QUERY_MAX_CELLS,
   type LogEntry,
-  type QueryStats,
   type RootRecord,
   type WireDatom,
   type WireFrame,
@@ -28,15 +26,12 @@ import {
   decodeLogChunk,
   encodeLogChunk,
   entryFromFrame,
-  fromJson,
   gzipCodec,
-  query as runQuery,
-  pull as runPull,
   toJson,
   toWireDatom,
 } from "../core/index.ts";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
-import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
+import { type RamoseEnv, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
 import type { Principal } from "../../worker/auth.ts";
 import { Unauthorized } from "../../db/Errors.ts";
@@ -650,44 +645,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         return json(basis);
       }
       case "/query": {
-        // Executes the read on the replica (SPEC §8): plain datalog, pull, or a whole-entity read.
-        // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
-        // is exactly what the Worker used to build itself.
-        await this.sync();
-        await this.catchUpTo(requestedMinT(url.searchParams.get("minT") ?? request.headers.get("x-ramose-min-t")));
-        if (!this.root) return json({ error: "database has no root yet" }, 503);
-        const body = fromJson(await request.json()) as {
-          query?: unknown;
-          inputs?: unknown[];
-          asOf?: number;
-          history?: boolean;
-          explain?: boolean;
-          pull?: { eid: number | string | [string, unknown]; pattern: unknown };
-          entity?: number;
-        };
-        if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
-        const basis = makeBasis(dbName, this.root, this.entries);
-        const before = { ...this.store.stats };
-        const db = await dbFromBasis(this.store, basis, {
-          ...(typeof body.asOf === "number" && { asOf: body.asOf }),
-          history: !!body.history,
-        });
-        this.stats.queries++;
-        const hdrs = () => ({
-          "x-ramose-basis-t": String(basis.t),
-          "x-ramose-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
-          "x-ramose-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
-        });
-        if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
-        if (body.pull) {
-          const eid = typeof body.pull.eid === "number" ? body.pull.eid : await db.entid(body.pull.eid as any);
-          if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs());
-          return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
-        }
-        const stats: QueryStats = { clauses: [] };
-        const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-        if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
-        return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
+        // Application reads consume only an AuthorizedSnapshot (TCB-1, TCB-3).
+        // Request-edge construction is #344 / #343; until then this path is closed.
+        return json({ error: "unauthorized" }, 401);
       }
       case "/info":
         return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
