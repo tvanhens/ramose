@@ -11,6 +11,7 @@ import {
   CatalogId,
   CatalogMismatch,
   CatalogVersion,
+  InvalidIR,
   DatabaseId,
   EntityId,
   FieldId,
@@ -267,6 +268,13 @@ const writeUnitBytes = (h: Harness, json: unknown) => {
   h.sql.exec(`UPDATE catalog_units SET bytes = ? WHERE catalog = ?`, bytes, catalog);
 };
 
+const durableLogT = (h: Harness): number => {
+  const raw = h.sql.exec(`SELECT MAX(t) AS t FROM log`).toArray()[0]?.t;
+  const t = Number(raw);
+  if (!Number.isSafeInteger(t)) throw new Error("expected durable log t");
+  return t;
+};
+
 describe("catalog unit CAS", () => {
   test("first CAS succeeds and load returns the complete unit", async () => {
     const h = await fresh();
@@ -504,9 +512,10 @@ describe("catalog unit CAS", () => {
   test("Transactor CAS derives installT from the committed basis", async () => {
     const h = await fresh();
     const unit = await sealUnit(descriptorOf(version1, fingerprint1));
-    const basis = h.transactor.t;
+    const basis = durableLogT(h);
     const head = await cas(h, unit, null);
     expect(head.installT).toBe(basis);
+    expect(head.installT).toBe(durableLogT(h));
     const loaded = await load(h, basis);
     expect(loaded.unitHash).toBe(unit.unitHash);
     if (basis > 1) {
@@ -526,9 +535,36 @@ describe("catalog unit CAS", () => {
       installT: 99,
     };
     const head = await h.transactor.compareAndSwapCatalogUnit(input);
-    expect(head.installT).toBe(h.transactor.t);
+    expect(head.installT).toBe(durableLogT(h));
     expect(head.installT).not.toBe(99);
-    expect(h.transactor.catalogHead(catalog)?.installT).toBe(h.transactor.t);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(durableLogT(h));
+  });
+
+  test("Transactor CAS uses MAX(log.t) when in-memory t is ahead of the log", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    const logT = durableLogT(h);
+    (h.transactor.connection as unknown as { basisT: number }).basisT = logT + 7;
+    expect(h.transactor.t).toBe(logT + 7);
+    const head = await cas(h, unit, null);
+    expect(head.installT).toBe(logT);
+    expect(head.installT).toBe(durableLogT(h));
+    expect(head.installT).not.toBe(h.transactor.t);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(logT);
+  });
+
+  test("Transactor CAS fails closed when the durable log is empty", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    h.sql.exec(`DELETE FROM log`);
+    expect(h.sql.exec(`SELECT MAX(t) AS t FROM log`).toArray()[0]?.t ?? null).toBeNull();
+    const failure = await casFail(h, unit, null);
+    expect(failure).toBeInstanceOf(InvalidIR);
+    expect(failure.message).toMatch(/durable log has no committed basis/);
+    expect(h.transactor.catalogHead(catalog)).toBeUndefined();
+    expect(
+      h.sql.exec(`SELECT catalog FROM catalog_units WHERE catalog = ?`, catalog).toArray(),
+    ).toHaveLength(0);
   });
 
   test("idempotent retry of the current head does not rewrite install_t", async () => {
@@ -543,6 +579,21 @@ describe("catalog unit CAS", () => {
     expect(again.installT).toBe(1);
     const loaded = await load(h, 1);
     expect(loaded.unitHash).toBe(unit.unitHash);
+  });
+
+  test("row install_t that does not match the head fails idempotent retry", async () => {
+    const h = await fresh();
+    const unit = await sealUnit(descriptorOf(version1, fingerprint1));
+    const head = await cas(h, unit, null);
+    expect(head.installT).toBe(durableLogT(h));
+    h.sql.exec(`UPDATE catalog_units SET install_t = 0 WHERE catalog = ?`, catalog);
+    const failure = await casFail(h, unit, null);
+    expect(failure._tag).toBe("CatalogUnitCorrupt");
+    expect(failure.message).toMatch(/install_t/);
+    expect(h.transactor.catalogHead(catalog)?.installT).toBe(head.installT);
+    expect(h.transactor.catalogHead(catalog)?.unitHash).toBe(unit.unitHash);
+    const stored = h.sql.exec(`SELECT install_t FROM catalog_units WHERE catalog = ?`, catalog).toArray()[0];
+    expect(Number(stored?.install_t)).toBe(0);
   });
 
   test("missing unit row on same-installT retry is CatalogUnitCorrupt", async () => {

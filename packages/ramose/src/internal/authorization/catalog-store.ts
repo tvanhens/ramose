@@ -137,12 +137,12 @@ const readUnitRow = (
   catalog: CatalogId,
   catalogVersion: CatalogVersion,
 ): Result.Result<
-  { readonly unitHash: CatalogUnitHash; readonly bytes: Uint8Array } | undefined,
+  { readonly unitHash: CatalogUnitHash; readonly bytes: Uint8Array; readonly installT: number } | undefined,
   CatalogUnitCorrupt
 > => {
   const row = sql
     .exec(
-      `SELECT unit_hash, bytes FROM catalog_units WHERE catalog = ? AND catalog_version = ?`,
+      `SELECT unit_hash, bytes, install_t FROM catalog_units WHERE catalog = ? AND catalog_version = ?`,
       catalog,
       catalogVersion,
     )
@@ -150,9 +150,19 @@ const readUnitRow = (
   if (row === undefined) return Result.succeed(undefined);
   const bytes = asBytes(row.bytes, catalog);
   if (Result.isFailure(bytes)) return Result.fail(bytes.failure);
+  const installT = Number(row.install_t);
+  if (!Number.isSafeInteger(installT) || installT < 0) {
+    return Result.fail(
+      new CatalogUnitCorrupt({
+        message: "catalog unit install_t is invalid",
+        catalog,
+      }),
+    );
+  }
   return Result.succeed({
     unitHash: CatalogUnitHash.make(String(row.unit_hash)),
     bytes: bytes.success,
+    installT,
   });
 };
 
@@ -167,6 +177,7 @@ const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => {
 const requireStoredUnitBytes = (
   sql: SqlLike,
   input: CompareAndSwapCatalogUnitInput,
+  installT: number,
 ): Result.Result<void, CatalogUnitCorrupt> =>
   Result.gen(function* () {
     const row = yield* readUnitRow(sql, input.catalog, input.unit.catalogVersion);
@@ -174,6 +185,14 @@ const requireStoredUnitBytes = (
       return yield* Result.fail(
         new CatalogUnitCorrupt({
           message: "catalog unit row missing for idempotent retry",
+          catalog: input.catalog,
+        }),
+      );
+    }
+    if (row.installT !== installT) {
+      return yield* Result.fail(
+        new CatalogUnitCorrupt({
+          message: "catalog unit install_t does not match head",
           catalog: input.catalog,
         }),
       );
@@ -205,7 +224,7 @@ const isIdempotentRetry = (
     if (head.catalogVersion !== input.unit.catalogVersion || head.unitHash !== input.unit.unitHash) {
       return false;
     }
-    yield* requireStoredUnitBytes(sql, input);
+    yield* requireStoredUnitBytes(sql, input, head.installT);
     return true;
   });
 

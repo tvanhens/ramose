@@ -11,6 +11,7 @@ import {
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   CatalogId,
   CatalogMismatch,
+  CatalogUnitCorrupt,
   CatalogVersion,
   DatabaseId,
   EntityId,
@@ -28,6 +29,7 @@ import {
   decodeInstalledCatalogUnitResult,
   encodeInstalledCatalogUnit,
   hashDomainSeparatedCanonicalJson,
+  hashInstalledAuthorization,
   hashInstalledCatalogUnit,
   installAuthorization,
   sealInstalledCatalogUnit,
@@ -554,5 +556,99 @@ describe("sealInstalledCatalogUnit", () => {
     if (Result.isFailure(droppedAssemble)) {
       expect(droppedAssemble.failure.message).toMatch(/accessPlans|access plan/);
     }
+  });
+
+  test("changing a decision and recomputing only unitHash fails verify", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const flipped = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          entities: unit.policy.decisions.entities.map((entry) => ({
+            ...entry,
+            decision: { allow: [], deny: entry.decision.allow },
+          })),
+        },
+      },
+    } as InstalledCatalogUnit;
+    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(flipped));
+    expect(unitHash).not.toBe(unit.unitHash);
+    expect(flipped.policy.policyHash).toBe(unit.policy.policyHash);
+    const failure = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...flipped, unitHash })),
+    );
+    expect(failure).toBeInstanceOf(CatalogUnitCorrupt);
+    expect(failure.message).toMatch(/policy hash|hash mismatch/);
+    const verified = await Effect.runPromise(verifyInstalledCatalogUnit(unit));
+    requireSealed(verified);
+    expect(verified.unitHash).toBe(unit.unitHash);
+  });
+
+  test("changing a decision and recomputing policy and unit hashes still fails when inconsistent", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const contradictory = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        decisions: {
+          ...unit.policy.decisions,
+          entities: unit.policy.decisions.entities.map((entry) => ({
+            ...entry,
+            decision: { allow: entry.decision.allow, deny: entry.decision.allow },
+          })),
+        },
+      },
+    } as InstalledCatalogUnit;
+    expect(contradictory.policy.rules).toEqual(unit.policy.rules);
+    expect(contradictory.policy.accessPlans).toEqual(unit.policy.accessPlans);
+    const policyHash = await Effect.runPromise(hashInstalledAuthorization(contradictory.policy));
+    const hashedPolicy = { ...contradictory, policy: { ...contradictory.policy, policyHash } };
+    const unitHash = await Effect.runPromise(hashInstalledCatalogUnit(hashedPolicy));
+    const failure = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...hashedPolicy, unitHash })),
+    );
+    expect(failure._tag === "InvalidIR" || failure._tag === "CatalogMismatch").toBe(true);
+    expect(failure.message).toMatch(/contradictory|decision|allow and deny/);
+  });
+
+  test("flipping a rule usage flag and recomputing unitHash fails verify", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const flippedMe = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        rules: unit.policy.rules.map((rule) => ({ ...rule, usesMe: !rule.usesMe })),
+      },
+    } as InstalledCatalogUnit;
+    const flippedMeHash = await Effect.runPromise(hashInstalledCatalogUnit(flippedMe));
+    const flippedMeFail = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...flippedMe, unitHash: flippedMeHash })),
+    );
+    expect(flippedMeFail._tag === "InvalidIR" || flippedMeFail._tag === "CatalogMismatch").toBe(true);
+    expect(flippedMeFail.message).toMatch(/usesMe|usesResource|rules|accessPlans/);
+
+    const flippedSubject = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        rules: unit.policy.rules.map((rule) => ({ ...rule, usesSubject: !rule.usesSubject })),
+      },
+    } as InstalledCatalogUnit;
+    const flippedSubjectHash = await Effect.runPromise(hashInstalledCatalogUnit(flippedSubject));
+    const flippedSubjectFail = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...flippedSubject, unitHash: flippedSubjectHash })),
+    );
+    expect(flippedSubjectFail._tag === "InvalidIR" || flippedSubjectFail._tag === "CatalogMismatch").toBe(
+      true,
+    );
+    expect(flippedSubjectFail.message).toMatch(/usesSubject|usesMe|usesResource|rules/);
   });
 });

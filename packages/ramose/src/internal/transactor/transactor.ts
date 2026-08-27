@@ -60,18 +60,37 @@ import {
   selectCatalogUnitAtBasis,
   verifyStoredCatalogUnit,
   type CatalogHead,
+  type CatalogStoreFailure,
   type CompareAndSwapCatalogUnitInput,
   type LoadCatalogUnitInput,
 } from "../authorization/catalog-store.ts";
 import { verifyInstalledCatalogUnit, type InstalledCatalogUnitV1 } from "../authorization/catalog-unit.ts";
-import { CatalogMismatch } from "../authorization/failures.ts";
+import { CatalogMismatch, InvalidIR } from "../authorization/failures.ts";
 import { DatabaseId } from "../authorization/identities.ts";
 import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
-import { type SocketLike, type TransactorHost } from "./host.ts";
+import { type SocketLike, type SqlLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 
 export { TransactorDeadError };
+
+/**
+ * Durable committed basis inside the caller's `transactionSync`.
+ * `this.t` / `conn.t` can already include txs assigned by `conn.transact`
+ * before the group-commit log write, so catalog installs must not use it.
+ */
+const durableCommittedT = (sql: SqlLike): Result.Result<number, InvalidIR> => {
+  const row = sql.exec(`SELECT MAX(t) AS t FROM log`).toArray()[0];
+  const raw = row?.t;
+  if (raw === null || raw === undefined) {
+    return Result.fail(new InvalidIR({ message: "durable log has no committed basis" }));
+  }
+  const t = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isSafeInteger(t) || t < 0) {
+    return Result.fail(new InvalidIR({ message: "durable log has no committed basis" }));
+  }
+  return Result.succeed(t);
+};
 
 /** Reshape Worker-verified caller metadata. Not an authorization decision. */
 function asPrincipal(x: unknown): Principal | undefined {
@@ -359,7 +378,8 @@ export class Transactor {
   /**
    * Persist one complete catalog unit and advance the head. Bytes are
    * written before the head pointer in a single `transactionSync`.
-   * `installT` is the transactor's committed basis, not a caller timestamp.
+   * `installT` is `MAX(t) FROM log` inside that transaction — not `this.t`,
+   * which can include in-flight group-commit assignments not yet durable.
    */
   async compareAndSwapCatalogUnit(
     input: Omit<CompareAndSwapCatalogUnitInput, "installT">,
@@ -369,9 +389,15 @@ export class Transactor {
     this.requireTransactorDatabase(input.unit.database);
     const verified = await Effect.runPromise(Effect.result(verifyInstalledCatalogUnit(input.unit)));
     if (Result.isFailure(verified)) throw verified.failure;
-    const result = this.host.transactionSync(() =>
-      casCatalogUnit(this.host.sql, { ...input, unit: verified.success, installT: this.t }),
-    );
+    const result = this.host.transactionSync((): Result.Result<CatalogHead, CatalogStoreFailure> => {
+      const installT = durableCommittedT(this.host.sql);
+      if (Result.isFailure(installT)) return Result.fail(installT.failure);
+      return casCatalogUnit(this.host.sql, {
+        ...input,
+        unit: verified.success,
+        installT: installT.success,
+      });
+    });
     if (Result.isFailure(result)) throw result.failure;
     return result.success;
   }

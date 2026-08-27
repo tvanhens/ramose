@@ -26,6 +26,8 @@ import {
   canonicalizeInstalledCatalogUnit,
   decodeInstalledCatalogUnitResult,
   encodeInstalledCatalogUnit,
+  hashCanonicalRule,
+  hashInstalledAuthorization,
   hashInstalledCatalogUnit,
 } from "./decode.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "./failures.ts";
@@ -37,8 +39,11 @@ import {
   SchemaFingerprint,
 } from "./identities.ts";
 import {
+  BOUND_AUTHORIZATION_IR_VERSION,
+  CanonicalAuthorizationRule,
   InstalledAuthorizationIR,
   InstalledIdentityTable,
+  type BoundAuthorizationIR,
   type InstalledAuthorizationIR as InstalledAuthorizationIRType,
   type InstalledAuthorizationIRV1 as InstalledAuthorizationIRV1Type,
   type InstalledIdentityTable as InstalledIdentityTableType,
@@ -50,6 +55,7 @@ import {
   normalizeTraitComposition,
 } from "./install/normalize.ts";
 import { deriveRuleAccessPlan } from "./install/plan.ts";
+import { validateBoundAuthorizationResult } from "./validate.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 import { invalid, mismatch, type ValidateFailure } from "./validation/common.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION, AuthorizationLanguageVersion } from "./version.ts";
@@ -271,6 +277,68 @@ const encodeAccessPlans = (
   plans: InstalledAuthorizationIRType["accessPlans"],
 ): unknown => plans.map((plan) => Schema.encodeUnknownSync(RuleAccessPlan)(plan));
 
+const encodeRules = (
+  rules: ReadonlyArray<CanonicalAuthorizationRule>,
+): unknown => rules.map((rule) => Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule));
+
+const boundAuthorizationFromPolicy = (policy: InstalledAuthorizationIRType): BoundAuthorizationIR => ({
+  _tag: "BoundAuthorizationIR",
+  version: BOUND_AUTHORIZATION_IR_VERSION,
+  languageVersion: policy.languageVersion,
+  database: policy.database,
+  catalog: policy.catalog,
+  catalogVersion: policy.catalogVersion,
+  schemaFingerprint: policy.schemaFingerprint,
+  classes: policy.classes,
+  claims: policy.claims,
+  principal: policy.principal,
+  rules: policy.rules,
+  decisions: policy.decisions,
+});
+
+/**
+ * Revalidate the embedded policy against the unit descriptor. Coherence
+ * checks identity tables and re-derives access plans; this recomputes
+ * rule/decision semantics and usage flags.
+ */
+const requireEmbeddedPolicySemantics = (
+  document: InstalledCatalogUnit,
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    const validated = yield* validateBoundAuthorizationResult({
+      bound: boundAuthorizationFromPolicy(document.policy),
+      descriptor: schemaDescriptorFromUnit(document),
+    });
+    yield* canonicalEqual(
+      encodeRules(validated.rules),
+      encodeRules(document.policy.rules),
+      "rules",
+    );
+  });
+
+const requireEmbeddedPolicyHashes = Effect.fn("Authorization.requireEmbeddedPolicyHashes")(
+  function* (
+    policy: InstalledAuthorizationIRType,
+  ): Effect.fn.Return<void, InvalidIR | CatalogUnitCorrupt> {
+    const policyHash = yield* hashInstalledAuthorization(policy);
+    if (policyHash !== policy.policyHash) {
+      return yield* new CatalogUnitCorrupt({
+        message: "installed policy hash mismatch",
+        catalog: policy.catalog,
+      });
+    }
+    for (const rule of policy.rules) {
+      const id = yield* hashCanonicalRule(rule);
+      if (id !== rule.id) {
+        return yield* new CatalogUnitCorrupt({
+          message: "catalog unit rule hash mismatch",
+          catalog: policy.catalog,
+        });
+      }
+    }
+  },
+);
+
 const schemaDescriptorFromUnit = (document: InstalledCatalogUnit): CatalogDescriptor => ({
   id: document.catalog,
   database: document.database,
@@ -373,6 +441,7 @@ export const requireUnitCoherence = (
       encodeAccessPlans(document.policy.accessPlans),
       "accessPlans",
     );
+    yield* requireEmbeddedPolicySemantics(document);
   });
 
 /**
@@ -384,22 +453,32 @@ export const assembleInstalledCatalogUnit = (
   policy: InstalledAuthorizationIRType,
 ): Result.Result<UnhashedCatalogUnitTables, AssembleCatalogUnitFailure> =>
   Result.gen(function* () {
-    yield* requireDescriptorTables(descriptor);
-    yield* requirePolicyPresent(policy);
-    yield* requireLanguageVersion(policy.languageVersion, "installed policy");
+    const descriptorSnapshot = freezePlain(clonePlain(descriptor));
+    const policySnapshot = freezePlain(clonePlain(policy));
+    yield* requireDescriptorTables(descriptorSnapshot);
+    yield* requirePolicyPresent(policySnapshot);
+    yield* requireLanguageVersion(policySnapshot.languageVersion, "installed policy");
     yield* requireLanguageVersion(AUTHORIZATION_LANGUAGE_VERSION, "catalog unit");
-    yield* requireMatchingIdentity(descriptor, policy);
+    yield* requireMatchingIdentity(descriptorSnapshot, policySnapshot);
 
     const [identities, operations, traitComposition] = yield* Result.all([
-      normalizeIdentities(descriptor),
-      normalizeOperations(descriptor.operations),
-      normalizeTraitComposition(descriptor.traitComposition),
+      normalizeIdentities(descriptorSnapshot),
+      normalizeOperations(descriptorSnapshot.operations),
+      normalizeTraitComposition(descriptorSnapshot.traitComposition),
     ]);
 
-    yield* canonicalEqual(encodeIdentities(policy.identities), encodeIdentities(identities), "identities");
-    yield* canonicalEqual(encodeOperations(policy.operations), encodeOperations(operations), "operations");
     yield* canonicalEqual(
-      encodeComposition(policy.traitComposition),
+      encodeIdentities(policySnapshot.identities),
+      encodeIdentities(identities),
+      "identities",
+    );
+    yield* canonicalEqual(
+      encodeOperations(policySnapshot.operations),
+      encodeOperations(operations),
+      "operations",
+    );
+    yield* canonicalEqual(
+      encodeComposition(policySnapshot.traitComposition),
       encodeComposition(traitComposition),
       "traitComposition",
     );
@@ -407,17 +486,17 @@ export const assembleInstalledCatalogUnit = (
     const tables = {
       version: INSTALLED_CATALOG_UNIT_VERSION,
       languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-      database: descriptor.database,
-      catalog: descriptor.id,
-      catalogVersion: descriptor.version,
-      schemaFingerprint: descriptor.fingerprint,
-      entities: descriptor.entities,
-      traits: descriptor.traits,
-      fields: descriptor.fields,
+      database: descriptorSnapshot.database,
+      catalog: descriptorSnapshot.id,
+      catalogVersion: descriptorSnapshot.version,
+      schemaFingerprint: descriptorSnapshot.fingerprint,
+      entities: descriptorSnapshot.entities,
+      traits: descriptorSnapshot.traits,
+      fields: descriptorSnapshot.fields,
       traitComposition,
       identities,
       operations,
-      policy,
+      policy: policySnapshot,
     };
     yield* requireUnitCoherence({
       _tag: "InstalledCatalogUnit",
@@ -436,17 +515,19 @@ export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCa
   function* (
     descriptor: CatalogDescriptor,
     policy: InstalledAuthorizationIRV1Type,
-  ): Effect.fn.Return<InstalledCatalogUnitV1, AssembleCatalogUnitFailure> {
+  ): Effect.fn.Return<InstalledCatalogUnitV1, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
     const tables = yield* Effect.fromResult(assembleInstalledCatalogUnit(descriptor, policy));
+    const snapshot = freezePlain(clonePlain(tables));
     const hashingDocument: InstalledCatalogUnit = {
       _tag: "InstalledCatalogUnit",
-      ...tables,
+      ...snapshot,
       unitHash: PLACEHOLDER_UNIT_HASH,
     };
+    yield* requireEmbeddedPolicyHashes(snapshot.policy);
     const unitHash = yield* hashInstalledCatalogUnit(hashingDocument);
     const assembled: InstalledCatalogUnit = {
       _tag: "InstalledCatalogUnit",
-      ...clonePlain(tables),
+      ...snapshot,
       unitHash,
     };
     const decoded = yield* Effect.fromResult(
@@ -465,16 +546,18 @@ export const verifyInstalledCatalogUnit = Effect.fn("Authorization.verifyInstall
   function* (
     document: InstalledCatalogUnit,
   ): Effect.fn.Return<InstalledCatalogUnitV1, InvalidIR | CatalogMismatch | CatalogUnitCorrupt> {
-    yield* Effect.fromResult(requireUnitCoherence(document));
-    const digest = yield* hashInstalledCatalogUnit(document);
-    if (digest !== document.unitHash) {
+    const snapshot = freezePlain(clonePlain(document));
+    yield* Effect.fromResult(requireUnitCoherence(snapshot));
+    yield* requireEmbeddedPolicyHashes(snapshot.policy);
+    const digest = yield* hashInstalledCatalogUnit(snapshot);
+    if (digest !== snapshot.unitHash) {
       return yield* new CatalogUnitCorrupt({
         message: "catalog unit hash mismatch",
-        catalog: document.catalog,
+        catalog: snapshot.catalog,
       });
     }
     const decoded = yield* Effect.fromResult(
-      decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(document)),
+      decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(snapshot)),
     );
     return verifiedInstalledCatalogUnit(freezePlain(clonePlain(decoded)));
   },
