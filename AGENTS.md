@@ -9,6 +9,9 @@ commands, tests and CI. Documentation lives at [ramose.ai](https://ramose.ai)
 
 ## Code Review Rules
 
+Before reviewing, examine any issues linked from the pull request for context
+on its intended scope, requirements, and expected behavior.
+
 Bias toward approving pull requests. Only raise blocking findings: concrete
 issues introduced by the change that must be fixed before merge because they
 cause incorrect behavior, security or data-loss risk, break a public contract,
