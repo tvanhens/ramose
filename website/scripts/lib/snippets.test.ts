@@ -157,13 +157,22 @@ describe("extractTitle + compare", () => {
     ).toBe(true);
   });
 
+  test("a single allowlisted missing title is skipped, not a failed extract", () => {
+    const got = extractTitle(
+      "examples/reef/src/app/screens/BoardScreen.tsx#use-live-board",
+    );
+    expect(got.ok).toBe(true);
+    expect(got.skipped).toBe(true);
+    expect(got.extracted).toBe(false);
+  });
+
   test("mixed stitch with allowlisted missing skips the body check", () => {
     const got = extractTitle(
       "examples/todos/src/App.tsx#todo-list · examples/todos/schema.ts:1-9",
     );
-    expect(got.ok).toBe(false);
+    expect(got.ok).toBe(true);
     expect(got.skipped).toBe(true);
-    expect(got.extracted).toBe(true);
+    expect(got.extracted).toBe(false);
   });
 
   test("mixed stitch with a non-allowlisted missing path is an error", () => {

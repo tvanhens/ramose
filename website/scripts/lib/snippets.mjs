@@ -20,6 +20,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import deletedCitationAllowlist from "./deleted-citation-allowlist.json" with { type: "json" };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SITE = resolve(HERE, "../..");
@@ -29,9 +30,9 @@ export const REPO = resolve(SITE, "..");
 // citations are errors by default; only these paths may skip the body/Shot
 // check. Shrink-only — do not glob, and do not add a general missing-file
 // escape. Removal of entries is owned by #416 / #442.
-const DELETED_CITATION_ALLOWLIST = new Set(
-  JSON.parse(readFileSync(join(HERE, "deleted-citation-allowlist.json"), "utf8")),
-);
+// Imported (not readFileSync) so the Astro/Vite build of Shot.astro
+// embeds the list instead of looking for a sibling JSON in dist/.
+const DELETED_CITATION_ALLOWLIST = new Set(deletedCitationAllowlist);
 
 const isAllowlistedDeleted = (relPath) =>
   DELETED_CITATION_ALLOWLIST.has(relPath);
@@ -198,11 +199,12 @@ export const extractTitle = (title) => {
     labels.push(got.label);
     any = true;
   }
-  // A stitch that cites an allowlisted-deleted file cannot be compared to
-  // the remaining extract — the fence still has those lines. Skip the body
-  // check. A non-allowlisted missing path already returned as an error.
+  // Allowlisted-deleted citations are not errors. The fence stays as
+  // written (`extracted: false`) so docs-check and the Astro remark
+  // plugin skip replacement instead of failing the build. A
+  // non-allowlisted missing path already returned as an error above.
   if (skippedSome) {
-    return { ok: false, extracted: true, skipped: true, error: `cited file does not exist`, text: parts.join("\n\n"), labels };
+    return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
   }
   if (!any) return { ok: true, extracted: false, text: "", labels: [] };
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
