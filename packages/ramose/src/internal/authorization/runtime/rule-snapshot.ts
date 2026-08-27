@@ -15,17 +15,13 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import { DEFAULT_AUTHORIZATION_BUDGET } from "../bounds.ts";
 import type { CatalogDescriptor } from "../catalog.ts";
 import type { FieldId } from "../identities.ts";
-import { isVerifiedInstalledAuthorization } from "../install.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
 import {
   AuthorizationBudgetExceeded,
-  CatalogMismatch,
   IncompleteRuleSnapshot,
-  InvalidIR,
   InvalidTraversal,
   MissingMe,
   NotLoaded,
@@ -48,8 +44,7 @@ import {
 } from "./projection.ts";
 import {
   checkRuleSnapshot,
-  createRuleSnapshot,
-  physicalCurrentDb,
+  mintRuleSnapshot,
   ruleProjectionState,
   type RawSnapshot,
   type RuleSnapshot,
@@ -134,56 +129,9 @@ const requireComplete = (projected: Projected): Effect.Effect<Projected, RuleSna
 
 export const projectRuleSnapshot = Effect.fn("Authorization.projectRuleSnapshot")(
   function* (request: RuleSnapshotRequest) {
-    if (!isVerifiedInstalledAuthorization(request.installed)) {
-      return yield* new InvalidIR({ message: "compiled policy is not sealed installed IR" });
-    }
-    if (request.principal.subject.length === 0) {
-      return yield* new RuleSnapshotUnavailable({ message: "verified principal is required" });
-    }
-    if (
-      request.catalog.id !== request.installed.catalog ||
-      request.catalog.version !== request.installed.catalogVersion ||
-      request.catalog.database !== request.installed.database ||
-      request.catalog.fingerprint !== request.installed.schemaFingerprint
-    ) {
-      return yield* new CatalogMismatch({
-        message: "catalog identity does not match installed policy",
-        expected: request.installed.catalog,
-        actual: request.catalog.id,
-        expectedVersion: request.installed.catalogVersion,
-        actualVersion: request.catalog.version,
-        expectedFingerprint: request.installed.schemaFingerprint,
-        actualFingerprint: request.catalog.fingerprint,
-        expectedDatabase: request.installed.database,
-        actualDatabase: request.catalog.database,
-      });
-    }
-    if (request.raw.database !== request.installed.database) {
-      return yield* new CatalogMismatch({
-        message: "raw snapshot database does not match installed policy",
-        expectedDatabase: request.installed.database,
-        actualDatabase: request.raw.database,
-      });
-    }
-    const current = physicalCurrentDb(request.raw);
-    if (current === undefined) {
-      return yield* new SnapshotCancelled({ message: "raw snapshot is not a live capability" });
-    }
-    if (request.basisT > current.basisT) {
-      return yield* new RuleSnapshotUnavailable({ message: "rule basis is ahead of storage" });
-    }
-    const view = request.basisT < current.basisT ? current.asOf(request.basisT) : current;
-    return createRuleSnapshot({
-      database: request.installed.database,
-      catalog: request.catalog,
-      installed: request.installed,
-      principal: request.principal,
-      current: view,
-      basisT: request.basisT,
-      leaseEpoch: request.leaseEpoch ?? request.raw.leaseEpoch,
-      budgetLimit: request.budgetLimit ?? DEFAULT_AUTHORIZATION_BUDGET,
-      ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
-    });
+    const minted = mintRuleSnapshot(request);
+    if (Result.isFailure(minted)) return yield* minted.failure;
+    return minted.success;
   },
 );
 
@@ -194,9 +142,10 @@ export const lookupRuleField = Effect.fn("Authorization.lookupRuleField")(functi
 ) {
   const state = yield* requireLiveRule(snapshot);
   const projected = yield* Effect.tryPromise({
-    try: () => projectFieldFromDb(state.current, state.fields, eid, field, state.budget),
+    try: () => projectFieldFromDb(state.current, state.index, eid, field, state.budget),
     catch: () => new RuleSnapshotUnavailable({ message: "rule lookup failed" }),
   });
+  yield* requireLiveRule(snapshot);
   if (projected._tag === "BudgetExhausted") {
     return yield* new AuthorizationBudgetExceeded({
       message: "rule projection budget exhausted",
@@ -214,9 +163,10 @@ export const traverseRuleFields = Effect.fn("Authorization.traverseRuleFields")(
 ) {
   const state = yield* requireLiveRule(snapshot);
   const projected = yield* Effect.tryPromise({
-    try: () => traverseFieldsFromDb(state.current, state.fields, eid, steps, state.budget),
+    try: () => traverseFieldsFromDb(state.current, state.index, eid, steps, state.budget),
     catch: () => new RuleSnapshotUnavailable({ message: "rule traversal failed" }),
   });
+  yield* requireLiveRule(snapshot);
   if (projected === BudgetExhaustedProjection || projected._tag === "BudgetExhausted") {
     return yield* new AuthorizationBudgetExceeded({
       message: "rule projection budget exhausted",
@@ -234,9 +184,10 @@ export const traverseRuleFromMe = Effect.fn("Authorization.traverseRuleFromMe")(
   const state = yield* requireLiveRule(snapshot);
   const projected = yield* Effect.tryPromise({
     try: () =>
-      traverseFromMeFromDb(state.current, state.fields, state.principal, steps, state.budget),
+      traverseFromMeFromDb(state.current, state.index, state.principal, steps, state.budget),
     catch: () => new RuleSnapshotUnavailable({ message: "rule me traversal failed" }),
   });
+  yield* requireLiveRule(snapshot);
   if (projected._tag === "BudgetExhausted") {
     return yield* new AuthorizationBudgetExceeded({
       message: "rule projection budget exhausted",

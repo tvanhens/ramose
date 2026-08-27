@@ -16,8 +16,8 @@ import { Index, type Datom } from "../../core/datom.ts";
 import type { Db } from "../../core/db.ts";
 import { datomJsValue } from "../../core/db.ts";
 import { MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
-import type { FieldDescriptor } from "../catalog.ts";
-import type { FieldId } from "../identities.ts";
+import type { FieldDescriptor, FieldRefTarget } from "../catalog.ts";
+import type { FieldId, OwnerRef } from "../identities.ts";
 import {
   BudgetExhaustedProjection,
   EntityAbsent,
@@ -30,8 +30,20 @@ import {
   type ProjectedValue,
 } from "../truth.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
+import {
+  fieldDescriptorKey,
+  type TraversalCompositions,
+} from "./field-index.ts";
 import type { AuthorizationBudgetState } from "./snapshots.ts";
-import { fieldDescriptorKey, fieldIdentOf } from "./snapshots.ts";
+
+export type { TraversalCompositions } from "./field-index.ts";
+export { fieldStorageIndex, traversalCompositionsOf } from "./field-index.ts";
+
+export type FieldProjectionIndex = {
+  readonly fields: ReadonlyMap<string, FieldDescriptor>;
+  readonly storageIdents: ReadonlyMap<string, string>;
+  readonly compositions: TraversalCompositions;
+};
 
 export const chargeBudget = (budget: AuthorizationBudgetState, cost = 1): boolean => {
   budget.spent += cost;
@@ -57,53 +69,135 @@ export const resolveFieldDescriptor = (
   field: FieldId,
 ): FieldDescriptor | undefined => fields.get(fieldDescriptorKey(field));
 
+const traitComposes = (
+  compositions: TraversalCompositions,
+  traitName: string,
+  otherName: string,
+): boolean =>
+  traitName === otherName || compositions.traitTraits.get(traitName)?.has(otherName) === true;
+
+const entityComposes = (
+  compositions: TraversalCompositions,
+  entityName: string,
+  traitName: string,
+): boolean => compositions.entityTraits.get(entityName)?.has(traitName) === true;
+
+const ownerMatchesFocus = (
+  owner: OwnerRef,
+  focusKind: "entity" | "trait",
+  focusName: string,
+  compositions: TraversalCompositions,
+): boolean => {
+  if (focusKind === "entity") {
+    if (owner.kind === "entity") return owner.name === focusName;
+    return entityComposes(compositions, focusName, owner.name);
+  }
+  if (owner.kind === "entity") return false;
+  return traitComposes(compositions, focusName, owner.name);
+};
+
+export const fieldOwnerMatchesPriorTarget = (
+  field: FieldDescriptor,
+  prior: { readonly refTarget: FieldRefTarget; readonly owner: OwnerRef },
+  compositions: TraversalCompositions,
+): boolean => {
+  const owner = field.id.owner;
+  switch (prior.refTarget._tag) {
+    case "untargeted":
+      return false;
+    case "self":
+      return ownerMatchesFocus(owner, prior.owner.kind, prior.owner.name, compositions);
+    case "entity":
+      if (prior.refTarget.entity.catalog !== field.id.catalog) return false;
+      return ownerMatchesFocus(owner, "entity", prior.refTarget.entity.name, compositions);
+    case "trait":
+      if (prior.refTarget.trait.catalog !== field.id.catalog) return false;
+      return ownerMatchesFocus(owner, "trait", prior.refTarget.trait.name, compositions);
+  }
+};
+
+const resolveStorageAttr = (db: Db, index: FieldProjectionIndex, field: FieldId) => {
+  const ident = index.storageIdents.get(fieldDescriptorKey(field));
+  if (ident === undefined) return undefined;
+  return db.attr(ident);
+};
+
+const projectBoundField = async (
+  db: Db,
+  eid: number,
+  attrId: number,
+  many: boolean,
+  budget: AuthorizationBudgetState,
+): Promise<Projected> => {
+  if (!chargeBudget(budget)) return BudgetExhaustedProjection;
+  const exists = await db.first(Index.EAVT, { e: eid });
+  if (exists === undefined) return EntityAbsent;
+  const fieldDatoms: Datom[] = [];
+  for await (const chunk of db.datoms(Index.EAVT, { e: eid, a: attrId })) {
+    for (const datom of chunk) {
+      if (!chargeBudget(budget)) return BudgetExhaustedProjection;
+      fieldDatoms.push(datom);
+      if (!many) return projectFetched([exists], fieldDatoms, false);
+    }
+  }
+  return projectFetched([exists], fieldDatoms, many);
+};
+
 export const projectFieldFromDb = async (
   db: Db,
-  fields: ReadonlyMap<string, FieldDescriptor>,
+  index: FieldProjectionIndex,
   eid: number,
   field: FieldId,
   budget: AuthorizationBudgetState,
 ): Promise<Projected> => {
-  if (!chargeBudget(budget)) return BudgetExhaustedProjection;
-  const descriptor = resolveFieldDescriptor(fields, field);
+  const descriptor = resolveFieldDescriptor(index.fields, field);
   if (descriptor === undefined) return InvalidTraversalProjection;
-  const attr = db.attr(fieldIdentOf(field));
+  const attr = resolveStorageAttr(db, index, field);
   if (attr === undefined) return NotLoadedProjection;
-  const [entityDatoms, fieldDatoms] = await Promise.all([
-    db.datomsArray(Index.EAVT, { e: eid }),
-    db.datomsArray(Index.EAVT, { e: eid, a: attr.id }),
-  ]);
-  return projectFetched(entityDatoms, fieldDatoms, descriptor.cardinality === "many");
+  return projectBoundField(db, eid, attr.id, descriptor.cardinality === "many", budget);
 };
 
 export const traverseFieldsFromDb = async (
   db: Db,
-  fields: ReadonlyMap<string, FieldDescriptor>,
+  index: FieldProjectionIndex,
   eid: number,
   steps: readonly FieldId[],
   budget: AuthorizationBudgetState,
 ): Promise<Projected> => {
   if (steps.length === 0 || steps.length > MAX_TRAVERSAL_DEPTH) return InvalidTraversalProjection;
   let current = eid;
+  let prior:
+    | { readonly refTarget: FieldRefTarget; readonly owner: OwnerRef }
+    | undefined;
   for (let i = 0; i < steps.length; i++) {
-    if (!chargeBudget(budget)) return BudgetExhaustedProjection;
     const field = steps[i]!;
-    const descriptor = resolveFieldDescriptor(fields, field);
+    const descriptor = resolveFieldDescriptor(index.fields, field);
     if (descriptor === undefined) return InvalidTraversalProjection;
-    const last = i === steps.length - 1;
-    if (!last && (descriptor.valueType !== "ref" || descriptor.cardinality === "many")) {
+    if (prior !== undefined && !fieldOwnerMatchesPriorTarget(descriptor, prior, index.compositions)) {
       return InvalidTraversalProjection;
     }
-    const attr = db.attr(fieldIdentOf(field));
+    const last = i === steps.length - 1;
+    if (!last) {
+      if (descriptor.valueType !== "ref" || descriptor.cardinality === "many") {
+        return InvalidTraversalProjection;
+      }
+      if (descriptor.refTarget._tag === "untargeted") return InvalidTraversalProjection;
+    }
+    const attr = resolveStorageAttr(db, index, field);
     if (attr === undefined) return NotLoadedProjection;
-    const [entityDatoms, fieldDatoms] = await Promise.all([
-      db.datomsArray(Index.EAVT, { e: current }),
-      db.datomsArray(Index.EAVT, { e: current, a: attr.id }),
-    ]);
-    const cell = projectFetched(entityDatoms, fieldDatoms, descriptor.cardinality === "many");
+    const cell = await projectBoundField(
+      db,
+      current,
+      attr.id,
+      descriptor.cardinality === "many",
+      budget,
+    );
     if (cell._tag !== "Present") return cell;
     if (last) return cell;
+    if (descriptor.valueType !== "ref") return InvalidTraversalProjection;
+    if (descriptor.refTarget._tag === "untargeted") return InvalidTraversalProjection;
     if (typeof cell.value !== "number") return InvalidTraversalProjection;
+    prior = { refTarget: descriptor.refTarget, owner: descriptor.id.owner };
     current = cell.value;
   }
   return InvalidTraversalProjection;
@@ -111,11 +205,11 @@ export const traverseFieldsFromDb = async (
 
 export const traverseFromMeFromDb = async (
   db: Db,
-  fields: ReadonlyMap<string, FieldDescriptor>,
+  index: FieldProjectionIndex,
   principal: AuthorizationPrincipal,
   steps: readonly FieldId[],
   budget: AuthorizationBudgetState,
 ): Promise<Projected> => {
   if (principal.me === undefined) return MissingMeProjection;
-  return traverseFieldsFromDb(db, fields, principal.me.eid, steps, budget);
+  return traverseFieldsFromDb(db, index, principal.me.eid, steps, budget);
 };

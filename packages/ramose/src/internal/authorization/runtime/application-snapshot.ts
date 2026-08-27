@@ -15,17 +15,12 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type { CatalogId, CatalogVersion, DatabaseId } from "../identities.ts";
-import { isVerifiedInstalledAuthorization } from "../install.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
-import { CatalogMismatch, InvalidIR } from "../failures.ts";
+import { type ApplicationSnapshotFailure } from "./failures.ts";
+import * as Result from "effect/Result";
 import {
-  ApplicationSnapshotUnavailable,
-  type ApplicationSnapshotFailure,
-} from "./failures.ts";
-import {
-  createAuthorizedSnapshot,
-  physicalCurrentDb,
+  mintAuthorizedSnapshot,
   type AuthorizedSnapshot,
   type RawSnapshot,
 } from "./snapshots.ts";
@@ -58,58 +53,8 @@ export class AuthorizedApplicationAccess extends Context.Service<
 
 export const openAuthorizedSnapshot = Effect.fn("Authorization.openAuthorizedSnapshot")(
   function* (request: AuthorizedSnapshotRequest) {
-    if (request.principal === undefined || request.principal.subject.length === 0) {
-      return yield* new ApplicationSnapshotUnavailable({
-        message: "verified principal is required",
-      });
-    }
-    if (!isVerifiedInstalledAuthorization(request.installed)) {
-      return yield* new InvalidIR({ message: "compiled policy is not sealed installed IR" });
-    }
-    if (request.catalog === undefined || request.catalogVersion === undefined) {
-      return yield* new ApplicationSnapshotUnavailable({
-        message: "catalog identity is required",
-      });
-    }
-    if (
-      request.catalog !== request.installed.catalog ||
-      request.catalogVersion !== request.installed.catalogVersion ||
-      request.database !== request.installed.database
-    ) {
-      return yield* new CatalogMismatch({
-        message: "catalog identity does not match installed policy",
-        expected: request.installed.catalog,
-        actual: request.catalog,
-        expectedVersion: request.installed.catalogVersion,
-        actualVersion: request.catalogVersion,
-        expectedDatabase: request.installed.database,
-        actualDatabase: request.database,
-      });
-    }
-    if (request.raw.database !== request.installed.database) {
-      return yield* new CatalogMismatch({
-        message: "raw snapshot database does not match installed policy",
-        expectedDatabase: request.installed.database,
-        actualDatabase: request.raw.database,
-      });
-    }
-    if (physicalCurrentDb(request.raw) === undefined) {
-      return yield* new ApplicationSnapshotUnavailable({
-        message: "raw snapshot is not a live capability",
-      });
-    }
-    return createAuthorizedSnapshot({
-      database: request.database,
-      catalog: request.catalog,
-      catalogVersion: request.catalogVersion,
-      installed: request.installed,
-      principal: request.principal,
-      applicationBasisT: request.applicationBasisT,
-      ruleBasisT: request.ruleBasisT,
-      leaseEpoch: request.leaseEpoch,
-      ...(request.asOfT === undefined ? {} : { asOfT: request.asOfT }),
-      ...(request.history === undefined ? {} : { history: request.history }),
-      ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
-    });
+    const minted = mintAuthorizedSnapshot(request);
+    if (Result.isFailure(minted)) return yield* minted.failure;
+    return minted.success;
   },
 );

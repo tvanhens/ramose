@@ -9,21 +9,36 @@
  * Privileged storage handles stay in WeakMaps. A forged object that is
  * merely typed as a snapshot cannot yield a physical `Db`.
  *
+ * Unchecked factories stay module-private. Callers mint capabilities only
+ * through {@link mintRawSnapshot}, {@link mintRuleSnapshot}, and
+ * {@link mintAuthorizedSnapshot}.
+ *
  * @internal
  */
 
 import type { Db } from "../../core/db.ts";
-import { LeaseExpired } from "../failures.ts";
+import { CatalogMismatch, InvalidIR, LeaseExpired } from "../failures.ts";
+import { DEFAULT_AUTHORIZATION_BUDGET } from "../bounds.ts";
 import type { CatalogDescriptor, FieldDescriptor } from "../catalog.ts";
 import type { CatalogId, CatalogVersion, DatabaseId, PolicyHash } from "../identities.ts";
+import { isVerifiedInstalledAuthorization } from "../install.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
+import * as Result from "effect/Result";
 import {
   collapseApplicationBasis,
   mergeSnapshotBases,
   type SnapshotBases,
 } from "./basis.ts";
-import { SnapshotCancelled } from "./failures.ts";
+import {
+  ApplicationSnapshotUnavailable,
+  RawStorageUnavailable,
+  RuleSnapshotUnavailable,
+  SnapshotCancelled,
+  type ApplicationSnapshotFailure,
+  type RawStorageFailure,
+  type RuleSnapshotFailure,
+} from "./failures.ts";
 import {
   cancelLease,
   checkLease,
@@ -31,7 +46,13 @@ import {
   inspectLease,
   type SnapshotLeaseState,
 } from "./lease.ts";
-import * as Result from "effect/Result";
+import {
+  fieldDescriptorKey,
+  fieldStorageIndex,
+  physicalStorageIdent,
+  traversalCompositionsOf,
+} from "./field-index.ts";
+import type { FieldProjectionIndex } from "./projection.ts";
 
 export type AuthorizationBudgetState = {
   readonly limit: number;
@@ -54,7 +75,7 @@ export type RuleProjectionState = {
   readonly basisT: number;
   readonly principal: AuthorizationPrincipal;
   readonly installed: InstalledAuthorizationIRV1;
-  readonly fields: ReadonlyMap<string, FieldDescriptor>;
+  readonly index: FieldProjectionIndex;
   readonly current: Db;
   readonly lease: SnapshotLeaseState;
   readonly budget: AuthorizationBudgetState;
@@ -79,6 +100,17 @@ let constructRaw: (state: RawState) => RawSnapshot;
 let constructRule: (state: RuleProjectionState) => RuleSnapshot;
 let constructAuthorized: (state: AuthorizedState) => AuthorizedSnapshot;
 
+const freezePrincipal = (principal: AuthorizationPrincipal): AuthorizationPrincipal => {
+  const cloned = structuredClone(principal) as AuthorizationPrincipal;
+  if (cloned.me !== undefined) {
+    Object.freeze(cloned.me.entity);
+    Object.freeze(cloned.me);
+  }
+  Object.freeze(cloned.claims);
+  Object.freeze(cloned.classes);
+  return Object.freeze(cloned);
+};
+
 /** Privileged facts at a named basis. Storage, transactor, indexer only. */
 export class RawSnapshot {
   readonly kind = "raw" as const;
@@ -97,6 +129,7 @@ export class RawSnapshot {
     this.effectiveT = state.application.effectiveT;
     this.leaseEpoch = state.lease.epoch;
     rawStates.set(this, state);
+    Object.freeze(this);
   }
 
   static {
@@ -122,6 +155,7 @@ export class RuleSnapshot {
     this.basisT = state.basisT;
     this.leaseEpoch = state.lease.epoch;
     ruleStates.set(this, state);
+    Object.freeze(this);
   }
 
   static {
@@ -161,6 +195,7 @@ export class AuthorizedSnapshot {
     this.ruleBasisT = state.bases.ruleBasisT;
     this.leaseEpoch = state.lease.epoch;
     authorizedStates.set(this, state);
+    Object.freeze(this);
   }
 
   static {
@@ -172,6 +207,13 @@ const deadLease = (epoch: number) => ({ epoch, expiresAt: 0, cancelled: true as 
 
 const notLive = (): SnapshotCancelled =>
   new SnapshotCancelled({ message: "snapshot is not a live capability" });
+
+const liveRawState = (snapshot: RawSnapshot, now?: number): RawState | undefined => {
+  const state = rawStates.get(snapshot);
+  if (state === undefined) return undefined;
+  if (Result.isFailure(checkLease(state.lease, now))) return undefined;
+  return state;
+};
 
 export const inspectRawSnapshot = (
   snapshot: RawSnapshot,
@@ -187,12 +229,13 @@ export const inspectRawSnapshot = (
 } => {
   const state = rawStates.get(snapshot);
   const lease = state === undefined ? deadLease(snapshot.leaseEpoch) : inspectLease(state.lease);
+  const application = state?.application;
   return {
-    database: snapshot.database,
-    basisT: snapshot.basisT,
-    asOfT: snapshot.asOfT,
-    history: snapshot.history,
-    effectiveT: snapshot.effectiveT,
+    database: state?.database ?? snapshot.database,
+    basisT: application?.basisT ?? snapshot.basisT,
+    asOfT: application?.asOfT ?? snapshot.asOfT,
+    history: application?.history ?? snapshot.history,
+    effectiveT: application?.effectiveT ?? snapshot.effectiveT,
     leaseEpoch: snapshot.leaseEpoch,
     cancelled: lease.cancelled,
     expiresAt: lease.expiresAt,
@@ -215,11 +258,11 @@ export const inspectRuleSnapshot = (
   const state = ruleStates.get(snapshot);
   const lease = state === undefined ? deadLease(snapshot.leaseEpoch) : inspectLease(state.lease);
   return {
-    database: snapshot.database,
-    catalog: snapshot.catalog,
-    catalogVersion: snapshot.catalogVersion,
-    policyHash: snapshot.policyHash,
-    basisT: snapshot.basisT,
+    database: state?.database ?? snapshot.database,
+    catalog: state?.catalog ?? snapshot.catalog,
+    catalogVersion: state?.catalogVersion ?? snapshot.catalogVersion,
+    policyHash: state?.policyHash ?? snapshot.policyHash,
+    basisT: state?.basisT ?? snapshot.basisT,
     leaseEpoch: snapshot.leaseEpoch,
     cancelled: lease.cancelled,
     expiresAt: lease.expiresAt,
@@ -247,16 +290,16 @@ export const inspectAuthorizedSnapshot = (
   const state = authorizedStates.get(snapshot);
   const lease = state === undefined ? deadLease(snapshot.leaseEpoch) : inspectLease(state.lease);
   return {
-    database: snapshot.database,
-    catalog: snapshot.catalog,
-    catalogVersion: snapshot.catalogVersion,
-    policyHash: snapshot.policyHash,
-    principal: snapshot.principal,
-    basisT: snapshot.basisT,
-    asOfT: snapshot.asOfT,
-    history: snapshot.history,
-    effectiveT: snapshot.effectiveT,
-    ruleBasisT: snapshot.ruleBasisT,
+    database: state?.database ?? snapshot.database,
+    catalog: state?.catalog ?? snapshot.catalog,
+    catalogVersion: state?.catalogVersion ?? snapshot.catalogVersion,
+    policyHash: state?.policyHash ?? snapshot.policyHash,
+    principal: state?.principal ?? snapshot.principal,
+    basisT: state?.bases.application.basisT ?? snapshot.basisT,
+    asOfT: state?.bases.application.asOfT ?? snapshot.asOfT,
+    history: state?.bases.application.history ?? snapshot.history,
+    effectiveT: state?.bases.application.effectiveT ?? snapshot.effectiveT,
+    ruleBasisT: state?.bases.ruleBasisT ?? snapshot.ruleBasisT,
     leaseEpoch: snapshot.leaseEpoch,
     cancelled: lease.cancelled,
     expiresAt: lease.expiresAt,
@@ -304,19 +347,25 @@ export const checkAuthorizedSnapshot = (
 ): Result.Result<void, LeaseExpired | SnapshotCancelled> =>
   requireLiveLease(authorizedStates.get(snapshot)?.lease, now);
 
-/** @internal Trusted storage / rule projection only. */
-export const physicalCurrentDb = (snapshot: RawSnapshot): Db | undefined =>
-  rawStates.get(snapshot)?.current;
+/** @internal Trusted storage / rule projection only. Dead or expired raw handles yield `undefined`. */
+export const physicalCurrentDb = (snapshot: RawSnapshot, now?: number): Db | undefined =>
+  liveRawState(snapshot, now)?.current;
 
 /** @internal Trusted storage only. Application collapse of the raw handle. */
-export const physicalViewDb = (snapshot: RawSnapshot): Db | undefined =>
-  rawStates.get(snapshot)?.view;
+export const physicalViewDb = (snapshot: RawSnapshot, now?: number): Db | undefined =>
+  liveRawState(snapshot, now)?.view;
 
 /** @internal Policy evaluator only. */
 export const ruleProjectionState = (snapshot: RuleSnapshot): RuleProjectionState | undefined =>
   ruleStates.get(snapshot);
 
-export const createRawSnapshot = (input: {
+const collapsedView = (current: Db, application: ReturnType<typeof collapseApplicationBasis>): Db => {
+  let view = current.asOf(application.effectiveT);
+  if (application.history) view = view.history();
+  return view;
+};
+
+const createRawSnapshot = (input: {
   readonly database: DatabaseId;
   readonly current: Db;
   readonly basisT: number;
@@ -331,23 +380,22 @@ export const createRawSnapshot = (input: {
     ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
     ...(input.history === undefined ? {} : { history: input.history }),
   });
-  let view = input.current;
-  if (application.asOfT !== undefined) view = view.asOf(application.asOfT);
-  if (application.history) view = view.history();
-  return constructRaw({
-    database: input.database,
-    current: input.current,
-    view,
-    application,
-    lease: createLeaseState({
-      epoch: input.leaseEpoch,
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-      ...(input.now === undefined ? {} : { now: input.now }),
+  return constructRaw(
+    Object.freeze({
+      database: input.database,
+      current: input.current,
+      view: collapsedView(input.current, application),
+      application,
+      lease: createLeaseState({
+        epoch: input.leaseEpoch,
+        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+        ...(input.now === undefined ? {} : { now: input.now }),
+      }),
     }),
-  });
+  );
 };
 
-export const createRuleSnapshot = (input: {
+const createRuleSnapshot = (input: {
   readonly database: DatabaseId;
   readonly catalog: CatalogDescriptor;
   readonly installed: InstalledAuthorizationIRV1;
@@ -361,26 +409,32 @@ export const createRuleSnapshot = (input: {
 }): RuleSnapshot => {
   const fields = new Map<string, FieldDescriptor>();
   for (const field of input.catalog.fields) fields.set(fieldDescriptorKey(field.id), field);
-  return constructRule({
-    database: input.database,
-    catalog: input.catalog.id,
-    catalogVersion: input.catalog.version,
-    policyHash: input.installed.policyHash,
-    basisT: input.basisT,
-    principal: input.principal,
-    installed: input.installed,
-    fields,
-    current: input.current,
-    budget: { limit: input.budgetLimit, spent: 0 },
-    lease: createLeaseState({
-      epoch: input.leaseEpoch,
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-      ...(input.now === undefined ? {} : { now: input.now }),
+  return constructRule(
+    Object.freeze({
+      database: input.database,
+      catalog: input.catalog.id,
+      catalogVersion: input.catalog.version,
+      policyHash: input.installed.policyHash,
+      basisT: input.basisT,
+      principal: freezePrincipal(input.principal),
+      installed: input.installed,
+      index: Object.freeze({
+        fields,
+        storageIdents: fieldStorageIndex(input.catalog.fields),
+        compositions: traversalCompositionsOf(input.catalog),
+      }),
+      current: input.current,
+      budget: { limit: input.budgetLimit, spent: 0 },
+      lease: createLeaseState({
+        epoch: input.leaseEpoch,
+        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+        ...(input.now === undefined ? {} : { now: input.now }),
+      }),
     }),
-  });
+  );
 };
 
-export const createAuthorizedSnapshot = (input: {
+const createAuthorizedSnapshot = (input: {
   readonly database: DatabaseId;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
@@ -394,35 +448,196 @@ export const createAuthorizedSnapshot = (input: {
   readonly expiresAt?: number | undefined;
   readonly now?: number | undefined;
 }): AuthorizedSnapshot =>
-  constructAuthorized({
-    database: input.database,
-    catalog: input.catalog,
-    catalogVersion: input.catalogVersion,
-    policyHash: input.installed.policyHash,
-    principal: input.principal,
-    installed: input.installed,
-    bases: mergeSnapshotBases(
-      collapseApplicationBasis({
-        basisT: input.applicationBasisT,
-        ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
-        ...(input.history === undefined ? {} : { history: input.history }),
+  constructAuthorized(
+    Object.freeze({
+      database: input.database,
+      catalog: input.catalog,
+      catalogVersion: input.catalogVersion,
+      policyHash: input.installed.policyHash,
+      principal: freezePrincipal(input.principal),
+      installed: input.installed,
+      bases: mergeSnapshotBases(
+        collapseApplicationBasis({
+          basisT: input.applicationBasisT,
+          ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
+          ...(input.history === undefined ? {} : { history: input.history }),
+        }),
+        input.ruleBasisT,
+      ),
+      lease: createLeaseState({
+        epoch: input.leaseEpoch,
+        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+        ...(input.now === undefined ? {} : { now: input.now }),
       }),
-      input.ruleBasisT,
-    ),
-    lease: createLeaseState({
-      epoch: input.leaseEpoch,
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-      ...(input.now === undefined ? {} : { now: input.now }),
     }),
-  });
+  );
 
-export const fieldDescriptorKey = (id: {
+export const mintRawSnapshot = (input: {
+  readonly database: DatabaseId;
+  readonly current: Db;
+  readonly basisT: number;
+  readonly asOfT?: number | undefined;
+  readonly history?: boolean | undefined;
+  readonly leaseEpoch: number;
+  readonly expiresAt?: number | undefined;
+  readonly now?: number | undefined;
+}): Result.Result<RawSnapshot, RawStorageFailure> => {
+  if (input.basisT > input.current.basisT) {
+    return Result.fail(new RawStorageUnavailable({ message: "requested basis is ahead of storage" }));
+  }
+  return Result.succeed(createRawSnapshot(input));
+};
+
+export const mintRuleSnapshot = (input: {
+  readonly raw: RawSnapshot;
+  readonly installed: InstalledAuthorizationIRV1;
+  readonly catalog: CatalogDescriptor;
+  readonly principal: AuthorizationPrincipal;
+  readonly basisT: number;
+  readonly leaseEpoch?: number | undefined;
+  readonly budgetLimit?: number | undefined;
+  readonly expiresAt?: number | undefined;
+}): Result.Result<RuleSnapshot, RuleSnapshotFailure> => {
+  if (!isVerifiedInstalledAuthorization(input.installed)) {
+    return Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
+  }
+  if (input.principal.subject.length === 0) {
+    return Result.fail(new RuleSnapshotUnavailable({ message: "verified principal is required" }));
+  }
+  if (
+    input.catalog.id !== input.installed.catalog ||
+    input.catalog.version !== input.installed.catalogVersion ||
+    input.catalog.database !== input.installed.database ||
+    input.catalog.fingerprint !== input.installed.schemaFingerprint
+  ) {
+    return Result.fail(
+      new CatalogMismatch({
+        message: "catalog identity does not match installed policy",
+        expected: input.installed.catalog,
+        actual: input.catalog.id,
+        expectedVersion: input.installed.catalogVersion,
+        actualVersion: input.catalog.version,
+        expectedFingerprint: input.installed.schemaFingerprint,
+        actualFingerprint: input.catalog.fingerprint,
+        expectedDatabase: input.installed.database,
+        actualDatabase: input.catalog.database,
+      }),
+    );
+  }
+  const rawLive = checkRawSnapshot(input.raw);
+  if (Result.isFailure(rawLive)) return Result.fail(rawLive.failure);
+  const rawState = liveRawState(input.raw);
+  if (rawState === undefined) return Result.fail(notLive());
+  if (rawState.database !== input.installed.database) {
+    return Result.fail(
+      new CatalogMismatch({
+        message: "raw snapshot database does not match installed policy",
+        expectedDatabase: input.installed.database,
+        actualDatabase: rawState.database,
+      }),
+    );
+  }
+  if (input.basisT > rawState.current.basisT) {
+    return Result.fail(new RuleSnapshotUnavailable({ message: "rule basis is ahead of storage" }));
+  }
+  const view = input.basisT < rawState.current.basisT ? rawState.current.asOf(input.basisT) : rawState.current;
+  return Result.succeed(
+    createRuleSnapshot({
+      database: input.installed.database,
+      catalog: input.catalog,
+      installed: input.installed,
+      principal: input.principal,
+      current: view,
+      basisT: input.basisT,
+      leaseEpoch: input.leaseEpoch ?? input.raw.leaseEpoch,
+      budgetLimit: input.budgetLimit ?? DEFAULT_AUTHORIZATION_BUDGET,
+      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    }),
+  );
+};
+
+export const mintAuthorizedSnapshot = (input: {
+  readonly raw: RawSnapshot;
+  readonly principal: AuthorizationPrincipal;
+  readonly installed: InstalledAuthorizationIRV1;
   readonly catalog: CatalogId;
-  readonly owner: { readonly kind: string; readonly name: string };
-  readonly localName: string;
-}): string => `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}`;
+  readonly catalogVersion: CatalogVersion;
+  readonly database: DatabaseId;
+  readonly applicationBasisT: number;
+  readonly ruleBasisT: number;
+  readonly leaseEpoch: number;
+  readonly asOfT?: number | undefined;
+  readonly history?: boolean | undefined;
+  readonly expiresAt?: number | undefined;
+}): Result.Result<AuthorizedSnapshot, ApplicationSnapshotFailure> => {
+  if (input.principal === undefined || input.principal.subject.length === 0) {
+    return Result.fail(new ApplicationSnapshotUnavailable({ message: "verified principal is required" }));
+  }
+  if (!isVerifiedInstalledAuthorization(input.installed)) {
+    return Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
+  }
+  if (input.catalog === undefined || input.catalogVersion === undefined) {
+    return Result.fail(new ApplicationSnapshotUnavailable({ message: "catalog identity is required" }));
+  }
+  if (
+    input.catalog !== input.installed.catalog ||
+    input.catalogVersion !== input.installed.catalogVersion ||
+    input.database !== input.installed.database
+  ) {
+    return Result.fail(
+      new CatalogMismatch({
+        message: "catalog identity does not match installed policy",
+        expected: input.installed.catalog,
+        actual: input.catalog,
+        expectedVersion: input.installed.catalogVersion,
+        actualVersion: input.catalogVersion,
+        expectedDatabase: input.installed.database,
+        actualDatabase: input.database,
+      }),
+    );
+  }
+  const rawLive = checkRawSnapshot(input.raw);
+  if (Result.isFailure(rawLive)) return Result.fail(rawLive.failure);
+  const rawState = liveRawState(input.raw);
+  if (rawState === undefined) {
+    return Result.fail(new ApplicationSnapshotUnavailable({ message: "raw snapshot is not a live capability" }));
+  }
+  if (rawState.database !== input.installed.database) {
+    return Result.fail(
+      new CatalogMismatch({
+        message: "raw snapshot database does not match installed policy",
+        expectedDatabase: input.installed.database,
+        actualDatabase: rawState.database,
+      }),
+    );
+  }
+  if (input.applicationBasisT > rawState.current.basisT || input.ruleBasisT > rawState.current.basisT) {
+    return Result.fail(new ApplicationSnapshotUnavailable({ message: "basis is ahead of storage" }));
+  }
+  if (
+    input.applicationBasisT !== rawState.application.basisT ||
+    (input.asOfT === undefined ? undefined : input.asOfT) !== rawState.application.asOfT ||
+    (input.history === true) !== rawState.application.history
+  ) {
+    return Result.fail(
+      new ApplicationSnapshotUnavailable({ message: "application basis does not match raw snapshot" }),
+    );
+  }
+  return Result.succeed(
+    createAuthorizedSnapshot({
+      database: input.database,
+      catalog: input.catalog,
+      catalogVersion: input.catalogVersion,
+      installed: input.installed,
+      principal: input.principal,
+      applicationBasisT: input.applicationBasisT,
+      ruleBasisT: input.ruleBasisT,
+      leaseEpoch: input.leaseEpoch,
+      ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
+      ...(input.history === undefined ? {} : { history: input.history }),
+      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    }),
+  );
+};
 
-export const fieldIdentOf = (id: {
-  readonly owner: { readonly name: string };
-  readonly localName: string;
-}): string => `:${id.owner.name}/${id.localName}`;
+export { fieldDescriptorKey, fieldStorageIndex, physicalStorageIdent, traversalCompositionsOf };

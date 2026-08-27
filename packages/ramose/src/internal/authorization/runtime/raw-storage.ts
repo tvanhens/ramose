@@ -7,7 +7,7 @@
  *
  * Effect Context tags are not the security boundary. The snapshot value
  * is opaque; a substituted service cannot mint a live raw handle without
- * going through {@link createRawSnapshot}.
+ * going through {@link mintRawSnapshot}.
  *
  * @internal
  */
@@ -16,9 +16,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type { Db } from "../../core/db.ts";
 import type { DatabaseId } from "../identities.ts";
-import { RawStorageUnavailable } from "./failures.ts";
 import type { RawStorageFailure } from "./failures.ts";
-import { createRawSnapshot, type RawSnapshot } from "./snapshots.ts";
+import * as Result from "effect/Result";
+import { mintRawSnapshot, type RawSnapshot } from "./snapshots.ts";
 
 export interface RawSnapshotRequest {
   readonly database: DatabaseId;
@@ -49,12 +49,7 @@ export const openRawSnapshot = Effect.fn("Authorization.openRawSnapshot")(functi
   request: RawSnapshotRequest,
 ) {
   const current = yield* physical.open(request);
-  if (request.basisT > current.basisT) {
-    return yield* new RawStorageUnavailable({
-      message: "requested basis is ahead of storage",
-    });
-  }
-  return createRawSnapshot({
+  const minted = mintRawSnapshot({
     database: request.database,
     current,
     basisT: request.basisT,
@@ -63,4 +58,6 @@ export const openRawSnapshot = Effect.fn("Authorization.openRawSnapshot")(functi
     ...(request.history === undefined ? {} : { history: request.history }),
     ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
   });
+  if (Result.isFailure(minted)) return yield* minted.failure;
+  return minted.success;
 });

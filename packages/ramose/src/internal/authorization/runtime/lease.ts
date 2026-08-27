@@ -25,7 +25,12 @@ export const createLeaseState = (input: {
   readonly now?: number;
 }): SnapshotLeaseState => {
   const now = input.now ?? Date.now();
-  const expiresAt = input.expiresAt ?? now + MAX_READ_LEASE_MS;
+  const maxExpiresAt = now + MAX_READ_LEASE_MS;
+  const requested = input.expiresAt ?? maxExpiresAt;
+  const expiresAt =
+    typeof requested === "number" && Number.isFinite(requested)
+      ? Math.min(requested, maxExpiresAt)
+      : maxExpiresAt;
   return { epoch: input.epoch, expiresAt, cancelled: false };
 };
 
