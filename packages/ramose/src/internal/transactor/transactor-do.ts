@@ -17,6 +17,7 @@ import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
+import { handleIsolateTestAdmin } from "../test-hooks.ts";
 
 export type { TxAck };
 
@@ -126,6 +127,8 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     if (url.pathname === "/health") {
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
+    if (testAdmin !== undefined) return testAdmin;
     return this.core.handleRequest(request);
   }
 }

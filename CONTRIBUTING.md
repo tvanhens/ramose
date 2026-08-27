@@ -62,6 +62,7 @@ suffixes) is deferred — do not bikeshed it on this pass.
 ```sh
 bun install
 bun run typecheck
+bun run test:doubles            # reject new test doubles (#390)
 bun run test:unit               # fast package tests (`--parallel=3`, no workerd)
 bun run test:local              # Alchemy local stack (serial, workerd)
 bun run test                    # unit then local
@@ -79,17 +80,27 @@ harness-specific port and credential caveats.
 
 ## Choosing a test layer
 
-Three layers. Pick the shallowest one that can prove the claim.
+Three layers. Pick the shallowest one that can prove the claim. **Do not
+introduce mocks, fakes, scripted peers, or in-memory infrastructure
+substitutes** (issue #390). `AGENTS.md` carries the same policy.
 
 | Layer | Command | When |
 |---|---|---|
-| Unit / component | `bun run test:unit` | Query lowering, retry schedules, malformed frames, transactor rollback, replica `applyDatoms` control, React lifecycle, cache TTL, provider plan/apply. Doubles stay narrow: `scriptedPeer` (exact frames), the transactor harness (storage faults), a FakeSocket (session protocol). |
-| Local integration | `bun run test:local` | Anything that crosses a public Ramose boundary: install → transact → query → pull, HTTP/WebSocket routing, Worker ↔ Transactor ↔ QueryReplica, multi-client live, auth/policy, operations, service bindings, catalog seeding, Todos acceptance, reef-shaped board fixtures (not `examples/reef`). One Alchemy stack (`test/local/alchemy.run.ts`) with `Test.make({ dev: true })` and the normal sidecar. Unique database names; do not reset DO/R2. |
-| Cloudflare e2e | `bun run test:e2e` / `test:e2e:cf` | Edge propagation, deployment convergence, production persistence. The same peer contract (`test/contracts/peer.contract.ts`) runs here against `RAMOSE_URL`. |
+| Pure unit | `bun run test:unit` | Parsers, query lowering, policy compilation, state transitions, error classification, retry decisions, serialization. No Worker, DO, R2, Cache API, WebSocket, or auth service. If a failure reaction is a pure transition, feed it ordinary input values. |
+| Alchemy local | `bun run test:local` | Anything that crosses an infrastructure boundary. One shared stack (`test/local/alchemy.run.ts`) with `Test.make({ dev: true })`. Unique database names; do not reset DO/R2. During the authorization redesign, `/db/*` is 401; local tests still exercise the real Worker/DO/R2 topology (health, deny, `/__test__/*` recorders and checkpoints). Successful install/transact/query/live claims resume when #344 / #339 / #343 reopen the data plane. |
+| Cloudflare e2e | `bun run test:e2e` / `test:e2e:cf` | Edge propagation, deployment convergence, production persistence, and Cloudflare failures workerd cannot reproduce honestly. The same peer contract (`test/contracts/peer.contract.ts`) runs here against `RAMOSE_URL`. |
 
-A mock is appropriate only for precise failure injection, exact frame ordering, inspecting a request before it leaves the component, internal rollback state, or a virtual clock. Ordinary successful reads, writes, authorization, operations, subscriptions, Worker routing, bindings, and multi-client behavior use the local stack.
+Allowed instrumentation wraps a real implementation and forwards to it:
 
-`mock.module("cloudflare:workers")` stays only in replica DO unit tests that need direct `applyDatoms` control. It is not how public Worker behavior is exercised.
+- `test/support/recorder.ts` / `test/support/live.ts` — recording `fetch` and `WebSocket` that always call through
+- Checkpoints in `packages/ramose/src/internal/test-hooks.ts` (`transactor.commit`, `replica.apply`, `session.notify`, `indexer.run`)
+- `POST /__test__/db/:name/r2|checkpoint|abort` — write/corrupt real local R2, arm/release/throw at a checkpoint, abort a DO isolate
+
+These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
+
+Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket` / `MemCache`, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`, in-process peers, scripted fetch/WebSocket implementations, fake DO namespaces, or a virtual service whose only purpose is to fail on the Nth call. `Alchemy.inMemoryState()` is Alchemy's deploy-state store for the real local stack, not a Ramose double.
+
+`bun run test:doubles` (`scripts/check-test-doubles.ts`) fails CI on new violations. Existing ones are listed in `scripts/test-double-allowlist.json`. Shrink that allowlist as migrations merge; do not add entries. Faults that cannot be induced locally belong in pure decision tests or cloud e2e — do not fabricate a substitute implementation that claims to prove them.
 
 ## End-to-end tests
 

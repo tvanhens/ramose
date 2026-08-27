@@ -1,0 +1,133 @@
+/**
+ * Forwarding recorders and `/__test__/*` admin against the real local Worker.
+ *
+ * `/db/*` stays fail-closed. These tests prove the instrumentation path:
+ * record-and-forward, real R2 put/get, isolate checkpoints, DO abort.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { recordingTransport } from "../support/recorder.ts";
+import { json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
+
+export function registerInstrumentation(target: { urls: () => LocalUrls }): void {
+  describe("forwarding instrumentation on the local peer", () => {
+    test("recording fetch forwards /health and records the real 200", async () => {
+      const rec = recordingTransport();
+      const url = `${target.urls().openUrl.replace(/\/+$/, "")}/health`;
+      const res = await rec.fetch(url);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok?: boolean; service?: string };
+      expect(body.ok).toBe(true);
+      expect(body.service).toBe("ramose");
+      expect(rec.calls).toHaveLength(1);
+      expect(rec.calls[0]?.status).toBe(200);
+      expect(rec.calls[0]?.url).toContain("/health");
+    });
+
+    test("recording fetch forwards a fail-closed /db/* 401 without inventing success", async () => {
+      const rec = recordingTransport();
+      const db = uniqueDb("rec");
+      const res = await rec.fetch(
+        `${target.urls().openUrl.replace(/\/+$/, "")}/db/${db}/info`,
+      );
+      expect(res.status).toBe(401);
+      expect(rec.calls[0]?.status).toBe(401);
+    });
+
+    test("test admin is the only /__test__ path; /db/* stays 401", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("adm");
+      const closed = await json(urls.openUrl, `/db/${db}/transact`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tx: [] }),
+      });
+      expect(closed.status).toBe(401);
+      const status = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
+      expect(status.status).toBe(200);
+      expect(status.body.ok).toBe(true);
+    });
+
+    test("writes and reads real local R2 bytes, including corrupt payloads", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("r2");
+      const payload = btoa("not-a-segment");
+      const put = await testAdmin(urls.openUrl, db, "/r2", {
+        action: "put",
+        key: "seg/corrupt",
+        bodyBase64: payload,
+      });
+      expect(put.status).toBe(200);
+      expect(put.body.ok).toBe(true);
+      const got = await testAdmin(urls.openUrl, db, "/r2", {
+        action: "get",
+        key: "seg/corrupt",
+      });
+      expect(got.status).toBe(200);
+      expect(got.body.found).toBe(true);
+      expect(got.body.bodyBase64).toBe(payload);
+      const listed = await testAdmin(urls.openUrl, db, "/r2", {
+        action: "list",
+        prefix: "seg/",
+      });
+      expect(listed.body.objects.some((o: { key: string }) => o.key === "seg/corrupt")).toBe(true);
+    });
+
+    test("worker-scope checkpoints arm, report, and release", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("cpw");
+      const armed = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        action: "arm-wait",
+        name: "session.open",
+      });
+      expect(armed.status).toBe(200);
+      const status = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
+      expect(status.body.checkpoints["session.open"]?.action).toBe("wait");
+      const released = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        action: "release",
+        name: "session.open",
+      });
+      expect(released.status).toBe(200);
+      const after = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
+      expect(after.body.checkpoints["session.open"]).toBeUndefined();
+    });
+
+    test("transactor-scope checkpoint arms on the real DO isolate", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("cpt");
+      const armed = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        scope: "transactor",
+        action: "arm-throw",
+        name: "transactor.commit",
+        error: "induced-rollback",
+      });
+      expect(armed.status).toBe(200);
+      expect(armed.body.action).toBe("throw");
+      const status = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        scope: "transactor",
+        action: "status",
+      });
+      expect(status.status).toBe(200);
+      expect(status.body.checkpoints["transactor.commit"]?.action).toBe("throw");
+    });
+
+    test("aborting the transactor DO starts a fresh isolate (checkpoint state is gone)", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("abt");
+      const armed = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        scope: "transactor",
+        action: "arm-wait",
+        name: "transactor.commit",
+      });
+      expect(armed.status).toBe(200);
+      const aborted = await testAdmin(urls.openUrl, db, "/abort", { target: "transactor" });
+      expect(aborted.status).toBe(200);
+      const status = await testAdmin(urls.openUrl, db, "/checkpoint", {
+        scope: "transactor",
+        action: "status",
+      });
+      expect(status.status).toBe(200);
+      expect(status.body.checkpoints["transactor.commit"]).toBeUndefined();
+    });
+  });
+}

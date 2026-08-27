@@ -2,6 +2,7 @@
  * Ramose peer Worker — HTTP API and edge executor.
  *
  *   GET  /health              { ok, service, stage, time, operations: string[] }
+ *   POST /__test__/db/:name/* test-only (RAMOSE_TEST_HOOKS=1; 404 otherwise)
  *   *    /db/:name/*          fail-closed until #344 / #339 / #343
  *
  * External `/db/*` access is deny until verified JWT admission and
@@ -30,6 +31,8 @@ import {
 } from "./errors.ts";
 import { isUnrecognizedWrites } from "../writes.ts";
 export { resolveWrites } from "../writes.ts";
+import { testHooksEnabled } from "../internal/test-hooks.ts";
+import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
@@ -147,6 +150,14 @@ const handle = (
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/" || url.pathname === "/index.html") {
       return yield* new NotFound({});
+    }
+    if (url.pathname.startsWith("/__test__/")) {
+      info.route = "admin";
+      if (!testHooksEnabled(env)) return yield* new NotFound({});
+      return yield* Effect.tryPromise({
+        try: () => handleTestAdmin(request, env, url),
+        catch: (e) => asTestAdminError(e),
+      });
     }
     if (url.pathname === "/health") {
       info.route = "health";

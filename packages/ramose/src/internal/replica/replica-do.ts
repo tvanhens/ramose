@@ -45,6 +45,7 @@ import { type WritesMode, parseWritesHeader } from "../../writes.ts";
 import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
+import { checkpoint, handleIsolateTestAdmin } from "../test-hooks.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -155,7 +156,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * cursor is `basisT` after this returns — it does not move on a poll.
    */
   private async applyDatoms(e: LogEntry): Promise<void> {
+    await checkpoint("replica.apply");
     this.appendEntry(e);
+    await checkpoint("session.notify");
     await this.notifySessions(e);
   }
 
@@ -691,6 +694,14 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       }
       case "/info":
         return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
+      case "/admin/test/checkpoint":
+      case "/admin/test/abort": {
+        const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) =>
+          this.ctx.abort(reason),
+        );
+        if (testAdmin !== undefined) return testAdmin;
+        return json({ error: "not found" }, 404);
+      }
       case "/admin/reconnect": {
         try {
           this.ws?.close(1000, "reconnect");

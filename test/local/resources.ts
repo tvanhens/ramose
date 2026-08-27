@@ -11,6 +11,7 @@ import * as Ramose from "ramose";
 import { AUD, ISS, JWKS } from "./auth-keys.ts";
 import { Open } from "./open.ts";
 import { Movies, operations } from "./ops.ts";
+import { TEST_HOOKS_ENV } from "./test-hooks-env.ts";
 
 export { Open };
 
@@ -29,6 +30,7 @@ export const Empty = Ramose.Server("Empty", {
   peer: "EmptyPeer",
   storage: "EmptyStore",
   main: empty,
+  env: TEST_HOOKS_ENV,
 });
 
 /** Extra peer — no seed-token credential. */
@@ -36,6 +38,7 @@ export const Token = Ramose.Server("Token", {
   peer: "TokenPeer",
   storage: "TokenStore",
   main: empty,
+  env: TEST_HOOKS_ENV,
 });
 
 /** JWT verifier bindings reserved for #344. Data plane is still 401. */
@@ -48,6 +51,7 @@ export const Policy = Ramose.Server("Policy", {
     ...jwtAuth(),
     allowedOrigins: ["https://app.acme.test"],
   },
+  env: TEST_HOOKS_ENV,
 });
 
 /** Same fail-closed data plane, no anonymous class leftover. */
@@ -56,6 +60,7 @@ export const PolicyClosed = Ramose.Server("PolicyClosed", {
   storage: "PolicyClosedStore",
   main: empty,
   auth: jwtAuth(),
+  env: TEST_HOOKS_ENV,
 });
 
 /** Same fail-closed data plane as Policy. */
@@ -64,6 +69,7 @@ export const PolicySchema = Ramose.Server("PolicySchema", {
   storage: "PolicySchemaStore",
   main: empty,
   auth: jwtAuth(),
+  env: TEST_HOOKS_ENV,
 });
 
 /** Catalog seed is closed until authorized catalog publication. */
@@ -72,6 +78,7 @@ export const Seeded = Ramose.Server("Seeded", {
   storage: "SeededStore",
   main: empty,
   databases: { movies: Movies },
+  env: TEST_HOOKS_ENV,
 });
 
 /** Issuer Worker the JWKS service binding dispatches through. */
@@ -93,7 +100,7 @@ export const JwksBound = Ramose.Server("JwksBound", {
     issuers: ISS,
     aud: AUD,
   },
-  env: { JWKS: Jwks },
+  env: { JWKS: Jwks, ...TEST_HOOKS_ENV },
 });
 
 /** Same dummy JWKS URL, no service binding — tokens 401. */
@@ -106,4 +113,5 @@ export const JwksUrlOnly = Ramose.Server("JwksUrlOnly", {
     issuers: ISS,
     aud: AUD,
   },
+  env: TEST_HOOKS_ENV,
 });

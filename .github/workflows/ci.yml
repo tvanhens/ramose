@@ -17,6 +17,7 @@ jobs:
       # (#335 / #351). typecheck excludes it; test:unit does not run
       # examples/reef/test. Do not add it back until the rebuild (#350).
       - run: bun run typecheck
+      - run: bun run test:doubles
       - run: bun run test:unit
       # Cited docs fences must extract from source. A drifted title, a
       # missing marker, or a transcribed block that no longer matches fails

@@ -56,6 +56,7 @@ import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError }
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
+import { checkpoint, checkpointSync } from "../test-hooks.ts";
 
 export { TransactorDeadError };
 
@@ -477,8 +478,10 @@ export class Transactor {
         if (entries.length === 0) continue;
         const tWrite = performance.now();
         try {
+          await checkpoint("transactor.commit");
           // ONE storage write for the whole batch (group commit).
           this.host.transactionSync(() => {
+            checkpointSync("transactor.commit.write");
             for (const e of entries) this.appendLogRow(e);
             this.setMeta("next_eid", this.conn.nextEntityId);
             const persist = [...batchAcks].filter(([, a]) => a.output !== undefined);

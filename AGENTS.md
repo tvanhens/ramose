@@ -7,6 +7,45 @@ See `README.md` for the product overview and `CONTRIBUTING.md` for local
 commands, tests and CI. Documentation lives at [ramose.ai](https://ramose.ai)
 (source in `website/`). There is no in-repo `docs/` folder.
 
+## Testing policy
+
+Do not introduce mocks, fakes, scripted peers, or in-memory infrastructure
+substitutes. Ramose has three test layers:
+
+1. **Pure unit tests** (`bun run test:unit`) — parsers, query lowering, policy
+   compilation, state transitions, error classification, retry decisions,
+   serialization, and other deterministic logic. No Worker, Durable Object,
+   R2, Cache API, WebSocket, or auth service. If a failure reaction is a
+   pure transition, test it with ordinary input values.
+2. **Alchemy local integration** (`bun run test:local`) — anything that
+   crosses an infrastructure boundary. Share one Alchemy stack per suite
+   (`test/local`) and isolate tests with unique database names. During the
+   authorization redesign, `/db/*` is fail-closed (401); local tests still
+   run against the real Worker/DO/R2 topology and prove health, deny, and
+   `/__test__/*` instrumentation. Successful data-plane claims resume when
+   #344 / #339 / #343 reopen `/db/*`.
+3. **Cloudflare e2e** (`bun run test:e2e` / `test:e2e:cf`) — edge
+   propagation, deployment convergence, and platform failures workerd
+   cannot reproduce honestly.
+
+Allowed instrumentation wraps a real implementation and forwards to it:
+`test/support/recorder.ts` (HTTP/WebSocket), checkpoints in
+`packages/ramose/src/internal/test-hooks.ts`, and `/__test__/db/:name/*`
+(R2 put/get/corrupt, checkpoint arm/release, DO abort). These are inert
+unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`.
+
+Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket`
+/ `MemCache`, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`,
+in-process peers, scripted `fetch`/WebSocket implementations, fake DO
+namespaces, or virtual services whose only purpose is to fail on the Nth
+call. `Alchemy.inMemoryState()` is Alchemy deploy state for the real local
+stack, not a Ramose double. Domain fixtures and pure-function inputs are
+fine.
+
+`scripts/check-test-doubles.ts` rejects new violations. Existing ones are
+allowlisted in `scripts/test-double-allowlist.json` — shrink that file;
+do not add entries.
+
 ## Cursor Cloud specific instructions
 
 Cursor Cloud Agent environment and runtime caveats live in

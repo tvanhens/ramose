@@ -1,0 +1,149 @@
+{
+  "comment": "Existing #390 test-double violations. Shrink to empty as migrations merge. Do not add new entries.",
+  "files": {
+    "examples/todos/test/todos.test.ts": [
+      "WebSocketImpl",
+      "inProcessPeer"
+    ],
+    "packages/ramose/test/auth-session.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/basis.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/better-auth/client.test.ts": [
+      "memoryAdapter"
+    ],
+    "packages/ramose/test/better-auth/ramoseToken.test.ts": [
+      "memoryAdapter"
+    ],
+    "packages/ramose/test/client.test.ts": [
+      "TestClock",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/connect.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/db-seam.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/db/io.test.ts": [
+      "WebSocketImpl",
+      "inProcessPeer"
+    ],
+    "packages/ramose/test/db/kernel-query.test.ts": [
+      "WebSocketImpl",
+      "inProcessPeer"
+    ],
+    "packages/ramose/test/internal/replica/session-follow.test.ts": [
+      "FakeSocket",
+      "MemoryBucket",
+      "bun:sqlite",
+      "mock.module"
+    ],
+    "packages/ramose/test/internal/replica/session-writes.test.ts": [
+      "FakeSocket",
+      "MemoryBucket",
+      "bun:sqlite",
+      "mock.module"
+    ],
+    "packages/ramose/test/internal/storage/store.test.ts": [
+      "MemCache",
+      "MemoryBucket"
+    ],
+    "packages/ramose/test/internal/transactor/harness.ts": [
+      "FakeAnalytics",
+      "FakeSocket",
+      "MemoryBucket",
+      "bun:sqlite"
+    ],
+    "packages/ramose/test/internal/transactor/indexer.test.ts": [
+      "MemoryBucket"
+    ],
+    "packages/ramose/test/internal/transactor/observability.test.ts": [
+      "FakeAnalytics"
+    ],
+    "packages/ramose/test/internal/transactor/transactor.test.ts": [
+      "FakeSocket"
+    ],
+    "packages/ramose/test/live-pull.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/live.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/operations.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/overlay.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/peer.ts": [
+      "FakeSocket",
+      "TestClock",
+      "WebSocketImpl",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/principal.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/harness.tsx": [
+      "happy-dom"
+    ],
+    "packages/ramose/test/react/hydrate.test.tsx": [
+      "happy-dom",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/peer.ts": [
+      "FakeSocket",
+      "WebSocketImpl",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/provider.test.tsx": [
+      "happy-dom",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/useBasis.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/useConnectionStatus.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/useLive.test.tsx": [
+      "happy-dom",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/usePrincipal.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/usePull.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/useQuery.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/react/useRamoseClaims.test.tsx": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/required-update.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/session.test.ts": [
+      "TestClock",
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/token.test.ts": [
+      "scriptedPeer"
+    ],
+    "packages/ramose/test/worker/analytics.test.ts": [
+      "fakeDataset"
+    ],
+    "packages/ramose/test/worker/basis-cache.test.ts": [
+      "fakeEnv"
+    ],
+    "packages/ramose/test/worker/session.test.ts": [
+      "FakeSocket",
+      "fakeDispatch"
+    ]
+  }
+}

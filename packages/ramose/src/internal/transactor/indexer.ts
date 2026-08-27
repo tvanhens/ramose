@@ -15,6 +15,7 @@
 
 import { type LogEntry, type RootRecord, componentLogger, gzipCodec, txFrame } from "../core/index.ts";
 import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "../storage/index.ts";
+import { checkpoint } from "../test-hooks.ts";
 import type { Transactor } from "./transactor.ts";
 
 export interface IndexerOptions {
@@ -91,6 +92,7 @@ export class Indexer {
     const putsBefore = this.t.nodeStore.stats.r2Puts;
     const noveltyBefore = conn.noveltyCount; // O(1) counter, read before the merge/flush
     try {
+      await checkpoint("indexer.run");
       // 1. Bounded slice of the log.
       const toT = Math.min(conn.t, fromT + this.opts.maxTxsPerRun);
       const entries: LogEntry[] = this.t.readLogEntries(fromT, toT);
