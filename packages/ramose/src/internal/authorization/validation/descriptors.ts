@@ -19,30 +19,28 @@ import {
 } from "../principal.ts";
 import { invalid, type ValidateFailure } from "./common.ts";
 
-const schemaFailure = (error: { readonly message: string }): Result.Result<never, ValidateFailure> =>
-  Result.fail(new InvalidIR({ message: error.message }));
+const schemaResult = <A>(
+  result: Result.Result<A, { readonly message: string }>,
+): Result.Result<A, ValidateFailure> =>
+  Result.mapError(result, (error) => new InvalidIR({ message: error.message }));
 
 export const validateVocabularies = (
   subjectClaim: string,
   classes: ReadonlyArray<string>,
   claims: ReadonlyArray<ClaimDescriptor>,
-): Result.Result<void, ValidateFailure> => {
-  const subject = Schema.decodeResult(SubjectClaim)(subjectClaim);
-  if (Result.isFailure(subject)) return schemaFailure(subject.failure);
-  const classVocab = Schema.decodeResult(ClassVocabulary)(classes);
-  if (Result.isFailure(classVocab)) return schemaFailure(classVocab.failure);
-  const claimVocab = Schema.decodeResult(ClaimVocabulary)(claims);
-  if (Result.isFailure(claimVocab)) return schemaFailure(claimVocab.failure);
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* schemaResult(Schema.decodeResult(SubjectClaim)(subjectClaim));
+    yield* schemaResult(Schema.decodeResult(ClassVocabulary)(classes));
+    yield* schemaResult(Schema.decodeResult(ClaimVocabulary)(claims));
+  });
 
 export const validateInputShapeKeys = (
   shape: OperationInputShape,
-): Result.Result<void, ValidateFailure> => {
-  const decoded = Schema.decodeResult(OperationInputShapeSchema)(shape);
-  if (Result.isFailure(decoded)) return schemaFailure(decoded.failure);
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* schemaResult(Schema.decodeResult(OperationInputShapeSchema)(shape));
+  });
 
 export const claimByKey = (
   claims: ReadonlyArray<ClaimDescriptor>,

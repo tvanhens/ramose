@@ -86,24 +86,23 @@ export const rowFromRefTarget = (
   index: PreparedAuthorizationCatalog,
   target: FieldRefTarget,
   owner: OwnerRef,
-): Result.Result<RowFocus | undefined, ValidateFailure> => {
-  switch (target._tag) {
-    case "entity": {
-      const entity = requireEntity(index, target.entity, "ref target");
-      if (Result.isFailure(entity)) return Result.fail(entity.failure);
-      return Result.succeed({ _tag: "entity", entity: entity.success });
+): Result.Result<RowFocus | undefined, ValidateFailure> =>
+  Result.gen(function* () {
+    switch (target._tag) {
+      case "entity": {
+        const entity = yield* requireEntity(index, target.entity, "ref target");
+        return { _tag: "entity" as const, entity };
+      }
+      case "trait": {
+        const trait = yield* requireTrait(index, target.trait, "ref target");
+        return { _tag: "trait" as const, trait };
+      }
+      case "self":
+        return yield* ownerFocus(index, owner);
+      case "untargeted":
+        return undefined;
     }
-    case "trait": {
-      const trait = requireTrait(index, target.trait, "ref target");
-      if (Result.isFailure(trait)) return Result.fail(trait.failure);
-      return Result.succeed({ _tag: "trait", trait: trait.success });
-    }
-    case "self":
-      return ownerFocus(index, owner);
-    case "untargeted":
-      return Result.succeed(undefined);
-  }
-};
+  });
 
 export const refTargetAsFocus = (target: FieldRefTarget): RowFocus | undefined => {
   if (target._tag === "entity") return { _tag: "entity", entity: target.entity };
@@ -115,28 +114,24 @@ export const resolveRefTarget = (
   index: PreparedAuthorizationCatalog,
   target: FieldRefTarget,
   owner: OwnerRef,
-): Result.Result<FieldRefTarget, ValidateFailure> => {
-  if (target._tag === "self") {
-    const focus = ownerFocus(index, owner);
-    if (Result.isFailure(focus)) return Result.fail(focus.failure);
-    return Result.succeed(
-      focus.success._tag === "entity"
-        ? { _tag: "entity", entity: focus.success.entity }
-        : { _tag: "trait", trait: focus.success.trait },
-    );
-  }
-  if (target._tag === "entity") {
-    const entity = requireEntity(index, target.entity, "ref target");
-    if (Result.isFailure(entity)) return Result.fail(entity.failure);
-    return Result.succeed({ _tag: "entity", entity: entity.success });
-  }
-  if (target._tag === "trait") {
-    const trait = requireTrait(index, target.trait, "ref target");
-    if (Result.isFailure(trait)) return Result.fail(trait.failure);
-    return Result.succeed({ _tag: "trait", trait: trait.success });
-  }
-  return Result.succeed(target);
-};
+): Result.Result<FieldRefTarget, ValidateFailure> =>
+  Result.gen(function* () {
+    if (target._tag === "self") {
+      const focus = yield* ownerFocus(index, owner);
+      return focus._tag === "entity"
+        ? { _tag: "entity" as const, entity: focus.entity }
+        : { _tag: "trait" as const, trait: focus.trait };
+    }
+    if (target._tag === "entity") {
+      const entity = yield* requireEntity(index, target.entity, "ref target");
+      return { _tag: "entity" as const, entity };
+    }
+    if (target._tag === "trait") {
+      const trait = yield* requireTrait(index, target.trait, "ref target");
+      return { _tag: "trait" as const, trait };
+    }
+    return target;
+  });
 
 export const refCompatibleWithRow = (
   index: PreparedAuthorizationCatalog,

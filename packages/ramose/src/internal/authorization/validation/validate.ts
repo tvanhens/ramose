@@ -70,59 +70,51 @@ const boundTarget = (bound: BoundAuthorizationIR) => ({
 const validateBoundAuthorizationWithLimits = (
   input: AuthorizationValidationInput,
   limits: ValidationLimits,
-): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> => {
-  const index = prepareAuthorizationCatalog(boundTarget(input.bound), input.descriptor);
-  if (Result.isFailure(index)) return Result.fail(index.failure);
-
-  const vocab = validateVocabularies(
-    input.bound.principal.subjectClaim,
-    input.bound.classes,
-    input.bound.claims,
-  );
-  if (Result.isFailure(vocab)) return Result.fail(vocab.failure);
-
-  const principalOk = meEntity(index.success, input.bound.principal);
-  if (Result.isFailure(principalOk)) return Result.fail(principalOk.failure);
-
-  const classes = new Set(input.bound.classes);
-  const rules: CanonicalAuthorizationRule[] = [];
-  const byId = new Map<RuleId, CanonicalAuthorizationRule>();
-  for (const rule of input.bound.rules) {
-    const validated = validateRule(
-      index.success,
-      rule,
-      input.bound.principal,
-      classes,
+): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> =>
+  Result.gen(function* () {
+    const index = yield* prepareAuthorizationCatalog(boundTarget(input.bound), input.descriptor);
+    yield* validateVocabularies(
+      input.bound.principal.subjectClaim,
+      input.bound.classes,
       input.bound.claims,
-      limits,
     );
-    if (Result.isFailure(validated)) return Result.fail(validated.failure);
-    if (byId.has(validated.success.id)) {
-      return invalid(`duplicate rule identity: ${validated.success.id}`);
+    yield* meEntity(index, input.bound.principal);
+
+    const classes = new Set(input.bound.classes);
+    const rules: CanonicalAuthorizationRule[] = [];
+    const byId = new Map<RuleId, CanonicalAuthorizationRule>();
+    for (const rule of input.bound.rules) {
+      const validated = yield* validateRule(
+        index,
+        rule,
+        input.bound.principal,
+        classes,
+        input.bound.claims,
+        limits,
+      );
+      if (byId.has(validated.id)) {
+        return yield* invalid(`duplicate rule identity: ${validated.id}`);
+      }
+      byId.set(validated.id, validated);
+      rules.push(validated);
     }
-    byId.set(validated.success.id, validated.success);
-    rules.push(validated.success);
-  }
 
-  const decisions = validateDecisions(index.success, input.bound.decisions, byId);
-  if (Result.isFailure(decisions)) return Result.fail(decisions.failure);
-
-  const validated: ValidatedAuthorizationIRType = {
-    _tag: "ValidatedAuthorizationIR",
-    version: VALIDATED_AUTHORIZATION_IR_VERSION,
-    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-    database: input.bound.database,
-    catalog: input.bound.catalog,
-    catalogVersion: input.bound.catalogVersion,
-    schemaFingerprint: input.bound.schemaFingerprint,
-    classes: input.bound.classes,
-    claims: input.bound.claims,
-    principal: input.bound.principal,
-    rules,
-    decisions: input.bound.decisions,
-  };
-  return Result.succeed(freezeValidated(validated));
-};
+    yield* validateDecisions(index, input.bound.decisions, byId);
+    return freezeValidated({
+      _tag: "ValidatedAuthorizationIR" as const,
+      version: VALIDATED_AUTHORIZATION_IR_VERSION,
+      languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+      database: input.bound.database,
+      catalog: input.bound.catalog,
+      catalogVersion: input.bound.catalogVersion,
+      schemaFingerprint: input.bound.schemaFingerprint,
+      classes: input.bound.classes,
+      claims: input.bound.claims,
+      principal: input.bound.principal,
+      rules,
+      decisions: input.bound.decisions,
+    });
+  });
 
 /**
  * Pure semantic kernel. Recomputes derived flags. Does not hash, derive
@@ -143,11 +135,11 @@ export const validateBoundAuthorizationResult = (
 export const validateBoundAuthorizationResultForTest = (
   input: AuthorizationValidationInput,
   limits: Partial<ValidationLimits>,
-): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> => {
-  const tightened = tightenValidationLimits(limits);
-  if (Result.isFailure(tightened)) return Result.fail(tightened.failure);
-  return validateBoundAuthorizationWithLimits(input, tightened.success);
-};
+): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> =>
+  Result.gen(function* () {
+    const tightened = yield* tightenValidationLimits(limits);
+    return yield* validateBoundAuthorizationWithLimits(input, tightened);
+  });
 
 const verifyRuleHashes = Effect.fn("Authorization.verifyRuleHashes")(function* (
   validated: ValidatedAuthorizationIRType,

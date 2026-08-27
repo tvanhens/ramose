@@ -99,9 +99,10 @@ const addTerminalMembership = (
   if (field.valueType === "ref") {
     return addRefIndex(builder, field.id);
   }
-  const indexed = requireIndexed(field);
-  if (Result.isFailure(indexed)) return Result.fail(indexed.failure);
-  return addIndex(builder, field.id);
+  return Result.gen(function* () {
+    yield* requireIndexed(field);
+    return yield* addIndex(builder, field.id);
+  });
 };
 
 const walkRef = (
@@ -124,46 +125,41 @@ const walkRef = (
       current = { _tag: "entity", entity: me };
       break;
   }
-  const membership = addMembership(builder, current);
-  if (Result.isFailure(membership)) return Result.fail(membership.failure);
+  return Result.gen(function* () {
+    yield* addMembership(builder, current);
 
-  if (term.steps.length === 0) return Result.succeed(undefined);
+    if (term.steps.length === 0) return;
 
-  for (let i = 0; i < term.steps.length; i++) {
-    const step = term.steps[i]!;
-    const field = requireField(index, step.field, "access-plan field");
-    if (Result.isFailure(field)) return Result.fail(field.failure);
-    if (!fieldAccessibleFrom(index, current, field.success)) {
-      return invalid(`omitted field fact '${fieldLabel(step.field)}'`);
-    }
-    const fact = addField(builder, field.success.id);
-    if (Result.isFailure(fact)) return Result.fail(fact.failure);
-
-    const isLast = i === term.steps.length - 1;
-    if (!isLast) {
-      if (field.success.cardinality === "many") {
-        return invalid("unrepresentable intermediate many-valued hop");
+    for (let i = 0; i < term.steps.length; i++) {
+      const step = term.steps[i]!;
+      const field = yield* requireField(index, step.field, "access-plan field");
+      if (!fieldAccessibleFrom(index, current, field)) {
+        return yield* invalid(`omitted field fact '${fieldLabel(step.field)}'`);
       }
-      if (field.success.valueType !== "ref") {
-        return invalid(`unrepresentable non-ref hop through '${fieldLabel(step.field)}'`);
-      }
-      const next = rowFromRefTarget(index, field.success.refTarget, field.success.id.owner);
-      if (Result.isFailure(next)) return Result.fail(next.failure);
-      if (next.success === undefined) {
-        return invalid(`omitted hop target for '${fieldLabel(step.field)}'`);
-      }
-      current = next.success;
-      const hopMembership = addMembership(builder, current);
-      if (Result.isFailure(hopMembership)) return Result.fail(hopMembership.failure);
-      continue;
-    }
+      yield* addField(builder, field.id);
 
-    if (field.success.cardinality === "many" && (use === "collection" || use === "presence")) {
-      const terminal = addTerminalMembership(builder, field.success);
-      if (Result.isFailure(terminal)) return Result.fail(terminal.failure);
+      const isLast = i === term.steps.length - 1;
+      if (!isLast) {
+        if (field.cardinality === "many") {
+          return yield* invalid("unrepresentable intermediate many-valued hop");
+        }
+        if (field.valueType !== "ref") {
+          return yield* invalid(`unrepresentable non-ref hop through '${fieldLabel(step.field)}'`);
+        }
+        const next = yield* rowFromRefTarget(index, field.refTarget, field.id.owner);
+        if (next === undefined) {
+          return yield* invalid(`omitted hop target for '${fieldLabel(step.field)}'`);
+        }
+        current = next;
+        yield* addMembership(builder, current);
+        continue;
+      }
+
+      if (field.cardinality === "many" && (use === "collection" || use === "presence")) {
+        yield* addTerminalMembership(builder, field);
+      }
     }
-  }
-  return Result.succeed(undefined);
+  });
 };
 
 const walkValue = (
@@ -197,27 +193,26 @@ const walkExpr = (
     case "hasClass":
       return Result.succeed(undefined);
     case "and":
-    case "or": {
-      for (const child of expr.exprs) {
-        const part = walkExpr(index, child, resource, me, builder);
-        if (Result.isFailure(part)) return Result.fail(part.failure);
-      }
-      return Result.succeed(undefined);
-    }
+    case "or":
+      return Result.gen(function* () {
+        for (const child of expr.exprs) {
+          yield* walkExpr(index, child, resource, me, builder);
+        }
+      });
     case "not":
       return walkExpr(index, expr.expr, resource, me, builder);
-    case "eq": {
-      const left = walkValue(index, expr.left, resource, me, "value", builder);
-      if (Result.isFailure(left)) return Result.fail(left.failure);
-      return walkValue(index, expr.right, resource, me, "value", builder);
-    }
+    case "eq":
+      return Result.gen(function* () {
+        yield* walkValue(index, expr.left, resource, me, "value", builder);
+        yield* walkValue(index, expr.right, resource, me, "value", builder);
+      });
     case "has":
       return walkValue(index, expr.term, resource, me, "presence", builder);
-    case "in": {
-      const value = walkValue(index, expr.value, resource, me, "value", builder);
-      if (Result.isFailure(value)) return Result.fail(value.failure);
-      return walkValue(index, expr.collection, resource, me, "collection", builder);
-    }
+    case "in":
+      return Result.gen(function* () {
+        yield* walkValue(index, expr.value, resource, me, "value", builder);
+        yield* walkValue(index, expr.collection, resource, me, "collection", builder);
+      });
   }
 };
 
@@ -229,75 +224,61 @@ const addPrincipalResolution = (
   if (principal.entity === undefined) {
     return invalid("omitted principal-row fact");
   }
-  const field = requireField(index, principal.entity, "principal field");
-  if (Result.isFailure(field)) return Result.fail(field.failure);
-  if (field.success.unique === undefined) {
-    return invalid("unrepresentable principal-row resolution: field is not unique");
-  }
-  const indexed = requireIndexed(field.success);
-  if (Result.isFailure(indexed)) return Result.fail(indexed.failure);
-  const owner = ownerFocus(index, field.success.id.owner);
-  if (Result.isFailure(owner)) return Result.fail(owner.failure);
-  const membership = addMembership(builder, owner.success);
-  if (Result.isFailure(membership)) return Result.fail(membership.failure);
-  const fact = addField(builder, field.success.id);
-  if (Result.isFailure(fact)) return Result.fail(fact.failure);
-  const indexLookup = addIndex(builder, field.success.id);
-  if (Result.isFailure(indexLookup)) return Result.fail(indexLookup.failure);
-  return addPrincipal(builder, field.success.id);
+  return Result.gen(function* () {
+    const field = yield* requireField(index, principal.entity, "principal field");
+    if (field.unique === undefined) {
+      return yield* invalid("unrepresentable principal-row resolution: field is not unique");
+    }
+    yield* requireIndexed(field);
+    const owner = yield* ownerFocus(index, field.id.owner);
+    yield* addMembership(builder, owner);
+    yield* addField(builder, field.id);
+    yield* addIndex(builder, field.id);
+    return yield* addPrincipal(builder, field.id);
+  });
 };
 
 const addFocusMembership = (
   index: PreparedAuthorizationCatalog,
   rule: CanonicalAuthorizationRule,
   builder: PlanBuilder,
-): Result.Result<void, ValidateFailure> => {
-  const resource = resourceFocus(index, rule.focus);
-  if (Result.isFailure(resource)) return Result.fail(resource.failure);
-  const membership = addMembership(builder, resource.success);
-  if (Result.isFailure(membership)) return Result.fail(membership.failure);
-  if (rule.focus._tag === "field") {
-    return addField(builder, rule.focus.field);
-  }
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    const resource = yield* resourceFocus(index, rule.focus);
+    yield* addMembership(builder, resource);
+    if (rule.focus._tag === "field") {
+      yield* addField(builder, rule.focus.field);
+    }
+  });
 
 export const deriveRuleAccessPlan = (
   index: PreparedAuthorizationCatalog,
   rule: CanonicalAuthorizationRule,
   principal: InstalledPrincipalResolution,
-): Result.Result<RuleAccessPlan, ValidateFailure> => {
-  const builder: PlanBuilder = { seen: new Map() };
-  const resource = resourceFocus(index, rule.focus);
-  if (Result.isFailure(resource)) return Result.fail(resource.failure);
-  const me = meEntity(index, principal);
-  if (Result.isFailure(me)) return Result.fail(me.failure);
+): Result.Result<RuleAccessPlan, ValidateFailure> =>
+  Result.gen(function* () {
+    const builder: PlanBuilder = { seen: new Map() };
+    const resource = yield* resourceFocus(index, rule.focus);
+    const me = yield* meEntity(index, principal);
 
-  if (rule.usesResource) {
-    const focus = addFocusMembership(index, rule, builder);
-    if (Result.isFailure(focus)) return Result.fail(focus.failure);
-  } else if (rule.focus._tag === "field") {
-    const field = addField(builder, rule.focus.field);
-    if (Result.isFailure(field)) return Result.fail(field.failure);
-    const owner = ownerFocus(index, rule.focus.field.owner);
-    if (Result.isFailure(owner)) return Result.fail(owner.failure);
-    const membership = addMembership(builder, owner.success);
-    if (Result.isFailure(membership)) return Result.fail(membership.failure);
-  } else {
-    const membership = addMembership(builder, resource.success);
-    if (Result.isFailure(membership)) return Result.fail(membership.failure);
-  }
+    if (rule.usesResource) {
+      yield* addFocusMembership(index, rule, builder);
+    } else if (rule.focus._tag === "field") {
+      yield* addField(builder, rule.focus.field);
+      const owner = yield* ownerFocus(index, rule.focus.field.owner);
+      yield* addMembership(builder, owner);
+    } else {
+      yield* addMembership(builder, resource);
+    }
 
-  const walked = walkExpr(index, rule.expr, resource.success, me.success, builder);
-  if (Result.isFailure(walked)) return Result.fail(walked.failure);
+    yield* walkExpr(index, rule.expr, resource, me, builder);
 
-  if (rule.usesMe) {
-    const resolved = addPrincipalResolution(index, principal, builder);
-    if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
-  }
+    if (rule.usesMe) {
+      yield* addPrincipalResolution(index, principal, builder);
+    }
 
-  const lookups = [...builder.seen.entries()]
-    .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0))
-    .map(([, lookup]) => lookup);
-  return Result.succeed({ rule: rule.id, lookups });
-};
+    const lookups = [...builder.seen.entries()]
+      .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0))
+      .map(([, lookup]) => lookup);
+    return { rule: rule.id, lookups };
+  });

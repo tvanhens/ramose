@@ -94,71 +94,67 @@ const requireLanguageVersion = (
 const assembleUnhashedTables = (
   validated: ValidatedAuthorizationIR,
   descriptor: CatalogDescriptor,
-): Result.Result<UnhashedInstalledTables, ValidateFailure> => {
-  const language = requireLanguageVersion(validated.languageVersion, "validated IR");
-  if (Result.isFailure(language)) return Result.fail(language.failure);
+): Result.Result<UnhashedInstalledTables, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* requireLanguageVersion(validated.languageVersion, "validated IR");
 
-  const index = prepareAuthorizationCatalog(
-    {
+    const index = yield* prepareAuthorizationCatalog(
+      {
+        database: validated.database,
+        catalog: validated.catalog,
+        catalogVersion: validated.catalogVersion,
+        schemaFingerprint: validated.schemaFingerprint,
+      },
+      descriptor,
+    );
+
+    const plans = [];
+    for (const rule of validated.rules) {
+      const plan = yield* deriveRuleAccessPlan(index, rule, validated.principal);
+      plans.push(plan);
+    }
+
+    const tables = yield* normalizeValidatedTables(validated, descriptor, plans);
+    return {
+      version: INSTALLED_AUTHORIZATION_IR_VERSION,
+      languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
       database: validated.database,
       catalog: validated.catalog,
       catalogVersion: validated.catalogVersion,
       schemaFingerprint: validated.schemaFingerprint,
-    },
-    descriptor,
-  );
-  if (Result.isFailure(index)) return Result.fail(index.failure);
-
-  const plans = [];
-  for (const rule of validated.rules) {
-    const plan = deriveRuleAccessPlan(index.success, rule, validated.principal);
-    if (Result.isFailure(plan)) return Result.fail(plan.failure);
-    plans.push(plan.success);
-  }
-
-  const tables = normalizeValidatedTables(validated, descriptor, plans);
-  if (Result.isFailure(tables)) return Result.fail(tables.failure);
-
-  return Result.succeed({
-    version: INSTALLED_AUTHORIZATION_IR_VERSION,
-    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-    database: validated.database,
-    catalog: validated.catalog,
-    catalogVersion: validated.catalogVersion,
-    schemaFingerprint: validated.schemaFingerprint,
-    classes: tables.success.classes,
-    claims: tables.success.claims,
-    principal: validated.principal,
-    identities: tables.success.identities,
-    traitComposition: tables.success.traitComposition,
-    operations: tables.success.operations,
-    rules: tables.success.rules,
-    decisions: tables.success.decisions,
-    accessPlans: tables.success.accessPlans,
+      classes: tables.classes,
+      claims: tables.claims,
+      principal: validated.principal,
+      identities: tables.identities,
+      traitComposition: tables.traitComposition,
+      operations: tables.operations,
+      rules: tables.rules,
+      decisions: tables.decisions,
+      accessPlans: tables.accessPlans,
+    };
   });
-};
 
 const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthorization")(
   function* (
     validated: ValidatedAuthorizationIR,
     descriptor: CatalogDescriptor,
   ): Effect.fn.Return<InstalledAuthorizationIRV1Type, InstallFailure> {
-    const tables = assembleUnhashedTables(validated, descriptor);
-    if (Result.isFailure(tables)) return yield* tables.failure;
+    const tables = yield* Effect.fromResult(assembleUnhashedTables(validated, descriptor));
     const hashingDocument: InstalledAuthorizationIRType = {
       _tag: "InstalledAuthorizationIR",
-      ...tables.success,
+      ...tables,
       policyHash: PLACEHOLDER_POLICY_HASH,
     };
     const policyHash = yield* hashInstalledAuthorization(hashingDocument);
     const installed: InstalledAuthorizationIRType = {
       _tag: "InstalledAuthorizationIR",
-      ...clonePlain(tables.success),
+      ...clonePlain(tables),
       policyHash,
     };
-    const decoded = decodeInstalledAuthorizationResult(encodeInstalledAuthorization(installed));
-    if (Result.isFailure(decoded)) return yield* decoded.failure;
-    return verifiedInstalledAuthorization(freezePlain(clonePlain(decoded.success)));
+    const decoded = yield* Effect.fromResult(
+      decodeInstalledAuthorizationResult(encodeInstalledAuthorization(installed)),
+    );
+    return verifiedInstalledAuthorization(freezePlain(clonePlain(decoded)));
   },
 );
 
@@ -171,14 +167,11 @@ export const installAuthorization = Effect.fn("Authorization.installAuthorizatio
   function* (
     input: CatalogBindingInput,
   ): Effect.fn.Return<InstalledAuthorizationIRV1Type, InstallFailure> {
-    const templateVersion = requireLanguageVersion(
-      input.template.languageVersion,
-      "policy template",
+    yield* Effect.fromResult(
+      requireLanguageVersion(input.template.languageVersion, "policy template"),
     );
-    if (Result.isFailure(templateVersion)) return yield* templateVersion.failure;
     const bound = yield* bindPolicyTemplate(input);
-    const boundVersion = requireLanguageVersion(bound.languageVersion, "bound IR");
-    if (Result.isFailure(boundVersion)) return yield* boundVersion.failure;
+    yield* Effect.fromResult(requireLanguageVersion(bound.languageVersion, "bound IR"));
     const validated = yield* validateBoundAuthorization({
       bound,
       descriptor: input.descriptor,

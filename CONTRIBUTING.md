@@ -22,6 +22,14 @@ conformance tests can cite them:
 - Authorization and noninterference:
   [`packages/ramose/src/internal/design/authorization.md`](packages/ramose/src/internal/design/authorization.md)
 
+Pure synchronous fallible transformations in
+`packages/ramose/src/internal/authorization` compose with `Result.gen`
+(`yield*` unwraps a `Result`; the first failure short-circuits). Collect
+independent Results with `Result.all`. Translate error vocabularies with
+`Result.mapError` before `yield*`. Existing Effect orchestration shells
+cross that boundary with `Effect.fromResult` — do not turn the pure
+binding, validation, or install kernels into `Effect.gen`.
+
 ## Public vocabulary
 
 The app surface uses the words the docs teach. Recorded here so a rename

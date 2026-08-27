@@ -1000,6 +1000,47 @@ describe("type distinction", () => {
   });
 });
 
+describe("first-failure order", () => {
+  test("the first rule fails before a later missing field", () => {
+    const first = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      { _tag: "hasClass", class: "ghost" },
+      none,
+    );
+    const second = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      {
+        _tag: "eq",
+        left: resourceRef(step(issueOwner, "missing-later")),
+        right: { _tag: "me" },
+      },
+      { usesResource: true, usesMe: true, usesSubject: false, traversalDepth: 1 },
+    );
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([first, second]), descriptor }),
+      "InvalidIR",
+      /undeclared class 'ghost'/,
+    );
+  });
+
+  test("eq walks the left operand before the right operand", () => {
+    const rule = stamp(
+      { _tag: "entity", entity: entity("issue") },
+      {
+        _tag: "eq",
+        left: resourceRef(step(issueOwner, "missing-left")),
+        right: { _tag: "claim", key: "undeclared-right" },
+      },
+      { usesResource: true, usesMe: false, usesSubject: false, traversalDepth: 1 },
+    );
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([rule]), descriptor }),
+      "InvalidIR",
+      /wrong owner for field 'entity:issue\.missing-left'|stale identity: missing traversal field/,
+    );
+  });
+});
+
 describe("bind then validate", () => {
   test("a correctly flagged bound template validates without restamping", async () => {
     const bound = Result.getOrThrow(

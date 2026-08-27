@@ -43,13 +43,13 @@ export const tightenValidationLimits = (
     }
     return Result.succeed(Math.min(value, hard));
   };
-  const maxTraversalDepth = clamp("maxTraversalDepth", defaultValidationLimits.maxTraversalDepth);
-  if (Result.isFailure(maxTraversalDepth)) return Result.fail(maxTraversalDepth.failure);
-  const maxStaticWork = clamp("maxStaticWork", defaultValidationLimits.maxStaticWork);
-  if (Result.isFailure(maxStaticWork)) return Result.fail(maxStaticWork.failure);
-  return Result.succeed({
-    maxTraversalDepth: maxTraversalDepth.success,
-    maxStaticWork: maxStaticWork.success,
+  return Result.gen(function* () {
+    const maxTraversalDepth = yield* clamp(
+      "maxTraversalDepth",
+      defaultValidationLimits.maxTraversalDepth,
+    );
+    const maxStaticWork = yield* clamp("maxStaticWork", defaultValidationLimits.maxStaticWork);
+    return { maxTraversalDepth, maxStaticWork };
   });
 };
 

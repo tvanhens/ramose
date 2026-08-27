@@ -51,33 +51,32 @@ const compareCanonical = (left: string, right: string): number => compareCanonic
 const sortByCanonical = <T>(
   items: ReadonlyArray<T>,
   encode: (item: T) => unknown,
-): Result.Result<ReadonlyArray<T>, ValidateFailure> => {
-  const keyed: Array<{ readonly key: string; readonly item: T }> = [];
-  for (const item of items) {
-    const key = canonicalKey(encode(item));
-    if (Result.isFailure(key)) return Result.fail(key.failure);
-    keyed.push({ key: key.success, item });
-  }
-  keyed.sort((left, right) => compareCanonical(left.key, right.key));
-  return Result.succeed(keyed.map((entry) => entry.item));
-};
+): Result.Result<ReadonlyArray<T>, ValidateFailure> =>
+  Result.gen(function* () {
+    const keyed: Array<{ readonly key: string; readonly item: T }> = [];
+    for (const item of items) {
+      const key = yield* canonicalKey(encode(item));
+      keyed.push({ key, item });
+    }
+    keyed.sort((left, right) => compareCanonical(left.key, right.key));
+    return keyed.map((entry) => entry.item);
+  });
 
 const uniqueSorted = <T>(
   items: ReadonlyArray<T>,
   encode: (item: T) => unknown,
   label: string,
-): Result.Result<ReadonlyArray<T>, ValidateFailure> => {
-  const sorted = sortByCanonical(items, encode);
-  if (Result.isFailure(sorted)) return Result.fail(sorted.failure);
-  const seen = new Set<string>();
-  for (const item of sorted.success) {
-    const key = canonicalKey(encode(item));
-    if (Result.isFailure(key)) return Result.fail(key.failure);
-    if (seen.has(key.success)) return invalid(`duplicate ${label}`);
-    seen.add(key.success);
-  }
-  return sorted;
-};
+): Result.Result<ReadonlyArray<T>, ValidateFailure> =>
+  Result.gen(function* () {
+    const sorted = yield* sortByCanonical(items, encode);
+    const seen = new Set<string>();
+    for (const item of sorted) {
+      const key = yield* canonicalKey(encode(item));
+      if (seen.has(key)) return yield* invalid(`duplicate ${label}`);
+      seen.add(key);
+    }
+    return sorted;
+  });
 
 const encodeEntity = (id: EntityId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.entity)(id);
@@ -124,62 +123,51 @@ export const normalizeClaims = (
 
 export const normalizeIdentities = (
   descriptor: CatalogDescriptor,
-): Result.Result<InstalledIdentityTable, ValidateFailure> => {
-  const entities = uniqueSorted(
-    descriptor.entities.map((entity) => entity.id),
-    encodeEntity,
-    "entity identity",
-  );
-  if (Result.isFailure(entities)) return Result.fail(entities.failure);
-  const traits = uniqueSorted(
-    descriptor.traits.map((trait) => trait.id),
-    encodeTrait,
-    "trait identity",
-  );
-  if (Result.isFailure(traits)) return Result.fail(traits.failure);
-  const fields = uniqueSorted(
-    descriptor.fields.map((field) => field.id),
-    encodeField,
-    "field identity",
-  );
-  if (Result.isFailure(fields)) return Result.fail(fields.failure);
-  const operations = uniqueSorted(
-    descriptor.operations.map((operation) => operation.id),
-    encodeOperationId,
-    "operation identity",
-  );
-  if (Result.isFailure(operations)) return Result.fail(operations.failure);
-  return Result.succeed({
-    entities: entities.success,
-    traits: traits.success,
-    fields: fields.success,
-    operations: operations.success,
+): Result.Result<InstalledIdentityTable, ValidateFailure> =>
+  Result.gen(function* () {
+    const entities = yield* uniqueSorted(
+      descriptor.entities.map((entity) => entity.id),
+      encodeEntity,
+      "entity identity",
+    );
+    const traits = yield* uniqueSorted(
+      descriptor.traits.map((trait) => trait.id),
+      encodeTrait,
+      "trait identity",
+    );
+    const fields = yield* uniqueSorted(
+      descriptor.fields.map((field) => field.id),
+      encodeField,
+      "field identity",
+    );
+    const operations = yield* uniqueSorted(
+      descriptor.operations.map((operation) => operation.id),
+      encodeOperationId,
+      "operation identity",
+    );
+    return { entities, traits, fields, operations };
   });
-};
 
 export const normalizeTraitComposition = (
   rows: ReadonlyArray<TraitComposition>,
-): Result.Result<ReadonlyArray<TraitComposition>, ValidateFailure> => {
-  const closed: TraitComposition[] = [];
-  for (const row of rows) {
-    const transitive = uniqueSorted(row.transitive, encodeTrait, "transitive trait");
-    if (Result.isFailure(transitive)) return Result.fail(transitive.failure);
-    closed.push({
-      composer: row.composer,
-      trait: row.trait,
-      transitive: transitive.success,
-    });
-  }
-  const sorted = uniqueSorted(
-    closed,
-    (row) => ({ composer: encodeEntity(row.composer), trait: encodeTrait(row.trait) }),
-    "trait-composition identity",
-  );
-  if (Result.isFailure(sorted)) return Result.fail(sorted.failure);
-  const encoded = uniqueSorted(sorted.success, encodeComposition, "trait-composition row");
-  if (Result.isFailure(encoded)) return Result.fail(encoded.failure);
-  return encoded;
-};
+): Result.Result<ReadonlyArray<TraitComposition>, ValidateFailure> =>
+  Result.gen(function* () {
+    const closed: TraitComposition[] = [];
+    for (const row of rows) {
+      const transitive = yield* uniqueSorted(row.transitive, encodeTrait, "transitive trait");
+      closed.push({
+        composer: row.composer,
+        trait: row.trait,
+        transitive,
+      });
+    }
+    const sorted = yield* uniqueSorted(
+      closed,
+      (row) => ({ composer: encodeEntity(row.composer), trait: encodeTrait(row.trait) }),
+      "trait-composition identity",
+    );
+    return yield* uniqueSorted(sorted, encodeComposition, "trait-composition row");
+  });
 
 const canonicalizeInputShape = (shape: OperationInputShape): OperationInputShape => {
   switch (shape._tag) {
@@ -222,71 +210,68 @@ export const normalizeRules = (
 
 export const normalizeDecisions = (
   decisions: CanonicalAuthorizationDecisions,
-): Result.Result<CanonicalAuthorizationDecisions, ValidateFailure> => {
-  const entities = normalizeDecisionEntries(
-    decisions.entities,
-    encodeEntity,
-    "entity decision target",
-  );
-  if (Result.isFailure(entities)) return Result.fail(entities.failure);
-  const traits = normalizeDecisionEntries(decisions.traits, encodeTrait, "trait decision target");
-  if (Result.isFailure(traits)) return Result.fail(traits.failure);
-  const fields = normalizeDecisionEntries(decisions.fields, encodeField, "field decision target");
-  if (Result.isFailure(fields)) return Result.fail(fields.failure);
-  return Result.succeed({
-    entities: entities.success,
-    traits: traits.success,
-    fields: fields.success,
+): Result.Result<CanonicalAuthorizationDecisions, ValidateFailure> =>
+  Result.gen(function* () {
+    const entities = yield* normalizeDecisionEntries(
+      decisions.entities,
+      encodeEntity,
+      "entity decision target",
+    );
+    const traits = yield* normalizeDecisionEntries(
+      decisions.traits,
+      encodeTrait,
+      "trait decision target",
+    );
+    const fields = yield* normalizeDecisionEntries(
+      decisions.fields,
+      encodeField,
+      "field decision target",
+    );
+    return { entities, traits, fields };
   });
-};
 
 export const normalizeAccessPlans = (
   plans: ReadonlyArray<RuleAccessPlan>,
   rules: ReadonlyArray<CanonicalAuthorizationRule>,
-): Result.Result<ReadonlyArray<RuleAccessPlan>, ValidateFailure> => {
-  const sorted = uniqueSorted(plans, (plan) => plan.rule, "access-plan identity");
-  if (Result.isFailure(sorted)) return Result.fail(sorted.failure);
-  if (sorted.success.length !== rules.length) {
-    return invalid("missing access plan");
-  }
-  const expected = new Set(rules.map((rule) => rule.id));
-  for (const plan of sorted.success) {
-    if (!expected.has(plan.rule)) return invalid(`conflicting access plan for '${plan.rule}'`);
-    expected.delete(plan.rule);
-  }
-  if (expected.size !== 0) return invalid("missing access plan");
-  return sorted;
-};
+): Result.Result<ReadonlyArray<RuleAccessPlan>, ValidateFailure> =>
+  Result.gen(function* () {
+    const sorted = yield* uniqueSorted(plans, (plan) => plan.rule, "access-plan identity");
+    if (sorted.length !== rules.length) {
+      return yield* invalid("missing access plan");
+    }
+    const expected = new Set(rules.map((rule) => rule.id));
+    for (const plan of sorted) {
+      if (!expected.has(plan.rule)) {
+        return yield* invalid(`conflicting access plan for '${plan.rule}'`);
+      }
+      expected.delete(plan.rule);
+    }
+    if (expected.size !== 0) return yield* invalid("missing access plan");
+    return sorted;
+  });
 
 export const normalizeValidatedTables = (
   validated: ValidatedAuthorizationIR,
   descriptor: CatalogDescriptor,
   plans: ReadonlyArray<RuleAccessPlan>,
-) => {
-  const classes = normalizeClasses(validated.classes);
-  if (Result.isFailure(classes)) return Result.fail(classes.failure);
-  const claims = normalizeClaims(validated.claims);
-  if (Result.isFailure(claims)) return Result.fail(claims.failure);
-  const identities = normalizeIdentities(descriptor);
-  if (Result.isFailure(identities)) return Result.fail(identities.failure);
-  const traitComposition = normalizeTraitComposition(descriptor.traitComposition);
-  if (Result.isFailure(traitComposition)) return Result.fail(traitComposition.failure);
-  const operations = normalizeOperations(descriptor.operations);
-  if (Result.isFailure(operations)) return Result.fail(operations.failure);
-  const rules = normalizeRules(validated.rules);
-  if (Result.isFailure(rules)) return Result.fail(rules.failure);
-  const decisions = normalizeDecisions(validated.decisions);
-  if (Result.isFailure(decisions)) return Result.fail(decisions.failure);
-  const accessPlans = normalizeAccessPlans(plans, rules.success);
-  if (Result.isFailure(accessPlans)) return Result.fail(accessPlans.failure);
-  return Result.succeed({
-    classes: classes.success,
-    claims: claims.success,
-    identities: identities.success,
-    traitComposition: traitComposition.success,
-    operations: operations.success,
-    rules: rules.success,
-    decisions: decisions.success,
-    accessPlans: accessPlans.success,
+) =>
+  Result.gen(function* () {
+    const classes = yield* normalizeClasses(validated.classes);
+    const claims = yield* normalizeClaims(validated.claims);
+    const identities = yield* normalizeIdentities(descriptor);
+    const traitComposition = yield* normalizeTraitComposition(descriptor.traitComposition);
+    const operations = yield* normalizeOperations(descriptor.operations);
+    const rules = yield* normalizeRules(validated.rules);
+    const decisions = yield* normalizeDecisions(validated.decisions);
+    const accessPlans = yield* normalizeAccessPlans(plans, rules);
+    return {
+      classes,
+      claims,
+      identities,
+      traitComposition,
+      operations,
+      rules,
+      decisions,
+      accessPlans,
+    };
   });
-};

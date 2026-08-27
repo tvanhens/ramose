@@ -965,6 +965,58 @@ describe("Effect orchestration and catalog capability", () => {
   });
 });
 
+describe("first-failure order", () => {
+  test("blank target fields fail before a later catalog mismatch", () => {
+    expectFailure(
+      bindPolicyTemplateResult(
+        bindingInput({
+          target: {
+            ...target,
+            database: DatabaseId.make(""),
+            catalog: CatalogId.make("other"),
+          },
+        }),
+      ),
+      "CatalogMismatch",
+      /blank database/,
+    );
+  });
+
+  test("eq binds the left term before the right term", () => {
+    const template = fullTemplate();
+    expectFailure(
+      bindPolicyTemplateResult(
+        bindingInput({
+          template: {
+            ...template,
+            rules: [
+              rule(
+                RULE_OWNS_ISSUE,
+                { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+                {
+                  _tag: "eq",
+                  left: {
+                    _tag: "ref",
+                    root: { _tag: "resource" },
+                    steps: [{ field: relativeField(issueOwner, "missing-left") }],
+                  },
+                  right: {
+                    _tag: "ref",
+                    root: { _tag: "resource" },
+                    steps: [{ field: relativeField(issueOwner, "missing-right") }],
+                  },
+                },
+              ),
+            ],
+          },
+        }),
+      ),
+      "InvalidIR",
+      /wrong local name for field 'entity:issue\.missing-left'/,
+    );
+  });
+});
+
 describe("type distinction at the installed boundary", () => {
   test("template and bound values are not installed IR", () => {
     const template = fullTemplate();

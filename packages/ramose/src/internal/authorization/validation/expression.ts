@@ -35,67 +35,76 @@ export const walkExpr = (
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
   spent: StaticWork,
-): Result.Result<Derived, ValidateFailure> => {
-  const derived = emptyDerived();
-  const charged = charge(derived, spent, 1, limits.maxStaticWork);
-  if (Result.isFailure(charged)) return Result.fail(charged.failure);
+): Result.Result<Derived, ValidateFailure> =>
+  Result.gen(function* () {
+    const derived = emptyDerived();
+    yield* charge(derived, spent, 1, limits.maxStaticWork);
 
-  switch (expr._tag) {
-    case "const":
-      return Result.succeed(derived);
-    case "hasClass":
-      if (!classes.has(expr.class)) return invalid(`undeclared class '${expr.class}'`);
-      return Result.succeed(derived);
-    case "and":
-    case "or": {
-      for (const child of expr.exprs) {
-        const part = walkExpr(index, child, resource, me, classes, claims, limits, spent);
-        if (Result.isFailure(part)) return Result.fail(part.failure);
-        mergeDerived(derived, part.success);
+    switch (expr._tag) {
+      case "const":
+        return derived;
+      case "hasClass":
+        if (!classes.has(expr.class)) return yield* invalid(`undeclared class '${expr.class}'`);
+        return derived;
+      case "and":
+      case "or": {
+        for (const child of expr.exprs) {
+          const part = yield* walkExpr(index, child, resource, me, classes, claims, limits, spent);
+          mergeDerived(derived, part);
+        }
+        return derived;
       }
-      return Result.succeed(derived);
-    }
-    case "not": {
-      const child = walkExpr(index, expr.expr, resource, me, classes, claims, limits, spent);
-      if (Result.isFailure(child)) return Result.fail(child.failure);
-      mergeDerived(derived, child.success);
-      return Result.succeed(derived);
-    }
-    case "eq": {
-      const left = walkValue(index, expr.left, resource, me, claims, limits, spent);
-      if (Result.isFailure(left)) return Result.fail(left.failure);
-      const right = walkValue(index, expr.right, resource, me, claims, limits, spent);
-      if (Result.isFailure(right)) return Result.fail(right.failure);
-      mergeDerived(derived, left.success.derived);
-      mergeDerived(derived, right.success.derived);
-      if (!eqCompatible(index, left.success.shape, right.success.shape)) {
-        return invalid("incompatible equality operands");
+      case "not": {
+        const child = yield* walkExpr(
+          index,
+          expr.expr,
+          resource,
+          me,
+          classes,
+          claims,
+          limits,
+          spent,
+        );
+        mergeDerived(derived, child);
+        return derived;
       }
-      return Result.succeed(derived);
-    }
-    case "has": {
-      const term = walkValue(index, expr.term, resource, me, claims, limits, spent);
-      if (Result.isFailure(term)) return Result.fail(term.failure);
-      mergeDerived(derived, term.success.derived);
-      return Result.succeed(derived);
-    }
-    case "in": {
-      const value = walkValue(index, expr.value, resource, me, claims, limits, spent);
-      if (Result.isFailure(value)) return Result.fail(value.failure);
-      const collection = walkValue(index, expr.collection, resource, me, claims, limits, spent);
-      if (Result.isFailure(collection)) return Result.fail(collection.failure);
-      mergeDerived(derived, value.success.derived);
-      mergeDerived(derived, collection.success.derived);
-      const element = collectionElement(collection.success.shape);
-      if (Result.isFailure(element)) return Result.fail(element.failure);
-      if (element.success === undefined) return invalid("membership requires a collection");
-      if (!eqCompatible(index, value.success.shape, element.success)) {
-        return invalid("incompatible membership operands");
+      case "eq": {
+        const left = yield* walkValue(index, expr.left, resource, me, claims, limits, spent);
+        const right = yield* walkValue(index, expr.right, resource, me, claims, limits, spent);
+        mergeDerived(derived, left.derived);
+        mergeDerived(derived, right.derived);
+        if (!eqCompatible(index, left.shape, right.shape)) {
+          return yield* invalid("incompatible equality operands");
+        }
+        return derived;
       }
-      return Result.succeed(derived);
+      case "has": {
+        const term = yield* walkValue(index, expr.term, resource, me, claims, limits, spent);
+        mergeDerived(derived, term.derived);
+        return derived;
+      }
+      case "in": {
+        const value = yield* walkValue(index, expr.value, resource, me, claims, limits, spent);
+        const collection = yield* walkValue(
+          index,
+          expr.collection,
+          resource,
+          me,
+          claims,
+          limits,
+          spent,
+        );
+        mergeDerived(derived, value.derived);
+        mergeDerived(derived, collection.derived);
+        const element = yield* collectionElement(collection.shape);
+        if (element === undefined) return yield* invalid("membership requires a collection");
+        if (!eqCompatible(index, value.shape, element)) {
+          return yield* invalid("incompatible membership operands");
+        }
+        return derived;
+      }
     }
-  }
-};
+  });
 
 const compareDerived = (
   rule: CanonicalAuthorizationRule,
@@ -118,22 +127,20 @@ const compareDerived = (
 const validateFocus = (
   index: PreparedAuthorizationCatalog,
   focus: CanonicalRuleFocus,
-): Result.Result<void, ValidateFailure> => {
-  switch (focus._tag) {
-    case "entity": {
-      const entity = requireEntity(index, focus.entity, "rule focus entity");
-      return Result.isFailure(entity) ? Result.fail(entity.failure) : Result.succeed(undefined);
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    switch (focus._tag) {
+      case "entity":
+        yield* requireEntity(index, focus.entity, "rule focus entity");
+        return;
+      case "trait":
+        yield* requireTrait(index, focus.trait, "rule focus trait");
+        return;
+      case "field":
+        yield* requireField(index, focus.field, "rule focus field");
+        return;
     }
-    case "trait": {
-      const trait = requireTrait(index, focus.trait, "rule focus trait");
-      return Result.isFailure(trait) ? Result.fail(trait.failure) : Result.succeed(undefined);
-    }
-    case "field": {
-      const field = requireField(index, focus.field, "rule focus field");
-      return Result.isFailure(field) ? Result.fail(field.failure) : Result.succeed(undefined);
-    }
-  }
-};
+  });
 
 export const validateRule = (
   index: PreparedAuthorizationCatalog,
@@ -142,36 +149,24 @@ export const validateRule = (
   classes: ReadonlySet<string>,
   claims: ReadonlyArray<ClaimDescriptor>,
   limits: ValidationLimits,
-): Result.Result<CanonicalAuthorizationRule, ValidateFailure> => {
-  const focusOk = validateFocus(index, rule.focus);
-  if (Result.isFailure(focusOk)) return Result.fail(focusOk.failure);
-  const resource = resourceFocus(index, rule.focus);
-  if (Result.isFailure(resource)) return Result.fail(resource.failure);
-  const me = meEntity(index, principal);
-  if (Result.isFailure(me)) return Result.fail(me.failure);
+): Result.Result<CanonicalAuthorizationRule, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* validateFocus(index, rule.focus);
+    const resource = yield* resourceFocus(index, rule.focus);
+    const me = yield* meEntity(index, principal);
 
-  const derived = walkExpr(
-    index,
-    rule.expr,
-    resource.success,
-    me.success,
-    classes,
-    claims,
-    limits,
-    { count: 0 },
-  );
-  if (Result.isFailure(derived)) return Result.fail(derived.failure);
+    const derived = yield* walkExpr(index, rule.expr, resource, me, classes, claims, limits, {
+      count: 0,
+    });
 
-  const compared = compareDerived(rule, derived.success, limits);
-  if (Result.isFailure(compared)) return Result.fail(compared.failure);
-
-  return Result.succeed({
-    id: rule.id,
-    focus: rule.focus,
-    expr: rule.expr,
-    usesResource: derived.success.usesResource,
-    usesMe: derived.success.usesMe,
-    usesSubject: derived.success.usesSubject,
-    traversalDepth: derived.success.traversalDepth,
+    yield* compareDerived(rule, derived, limits);
+    return {
+      id: rule.id,
+      focus: rule.focus,
+      expr: rule.expr,
+      usesResource: derived.usesResource,
+      usesMe: derived.usesMe,
+      usesSubject: derived.usesSubject,
+      traversalDepth: derived.traversalDepth,
+    };
   });
-};

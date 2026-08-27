@@ -101,17 +101,6 @@ const requireNonBlank = (
 ): Result.Result<string, BindFailure> =>
   isBlank(value) ? mismatch({ message: `blank ${label}` }) : Result.succeed(value);
 
-const firstError = <A>(
-  results: ReadonlyArray<Result.Result<A, BindFailure>>,
-): Result.Result<ReadonlyArray<A>, BindFailure> => {
-  const values: A[] = [];
-  for (const result of results) {
-    if (Result.isFailure(result)) return Result.fail(result.failure);
-    values.push(result.success);
-  }
-  return Result.succeed(values);
-};
-
 const intern = <K, V>(
   map: Map<K, V>,
   key: K,
@@ -149,182 +138,164 @@ const catalogOfIdentity = (
 const validateTarget = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
-): Result.Result<void, BindFailure> => {
-  const blanks = firstError([
-    requireNonBlank(target.database, "database"),
-    requireNonBlank(target.catalog, "catalog id"),
-    requireNonBlank(target.catalogVersion, "catalog version"),
-    requireNonBlank(target.schemaFingerprint, "schema fingerprint"),
-    requireNonBlank(descriptor.database, "descriptor database"),
-    requireNonBlank(descriptor.id, "descriptor catalog id"),
-    requireNonBlank(descriptor.version, "descriptor catalog version"),
-    requireNonBlank(descriptor.fingerprint, "descriptor schema fingerprint"),
-  ]);
-  if (Result.isFailure(blanks)) return Result.fail(blanks.failure);
+): Result.Result<void, BindFailure> =>
+  Result.gen(function* () {
+    yield* Result.all([
+      requireNonBlank(target.database, "database"),
+      requireNonBlank(target.catalog, "catalog id"),
+      requireNonBlank(target.catalogVersion, "catalog version"),
+      requireNonBlank(target.schemaFingerprint, "schema fingerprint"),
+      requireNonBlank(descriptor.database, "descriptor database"),
+      requireNonBlank(descriptor.id, "descriptor catalog id"),
+      requireNonBlank(descriptor.version, "descriptor catalog version"),
+      requireNonBlank(descriptor.fingerprint, "descriptor schema fingerprint"),
+    ]);
 
-  if (target.database !== descriptor.database) {
-    return mismatch({
-      message: "cross-database catalog",
-      expectedDatabase: target.database,
-      actualDatabase: descriptor.database,
-    });
-  }
-  if (target.catalog !== descriptor.id) {
-    return mismatch({
-      message: "cross-catalog descriptor",
-      expected: target.catalog,
-      actual: descriptor.id,
-    });
-  }
-  if (target.catalogVersion !== descriptor.version) {
-    return mismatch({
-      message: "stale catalog version",
-      expected: target.catalog,
-      actual: descriptor.id,
-      expectedVersion: target.catalogVersion,
-      actualVersion: descriptor.version,
-    });
-  }
-  if (target.schemaFingerprint !== descriptor.fingerprint) {
-    return mismatch({
-      message: "schema fingerprint mismatch",
-      expected: target.catalog,
-      actual: descriptor.id,
-      expectedFingerprint: target.schemaFingerprint,
-      actualFingerprint: descriptor.fingerprint,
-    });
-  }
-  return Result.succeed(undefined);
-};
+    if (target.database !== descriptor.database) {
+      return yield* mismatch({
+        message: "cross-database catalog",
+        expectedDatabase: target.database,
+        actualDatabase: descriptor.database,
+      });
+    }
+    if (target.catalog !== descriptor.id) {
+      return yield* mismatch({
+        message: "cross-catalog descriptor",
+        expected: target.catalog,
+        actual: descriptor.id,
+      });
+    }
+    if (target.catalogVersion !== descriptor.version) {
+      return yield* mismatch({
+        message: "stale catalog version",
+        expected: target.catalog,
+        actual: descriptor.id,
+        expectedVersion: target.catalogVersion,
+        actualVersion: descriptor.version,
+      });
+    }
+    if (target.schemaFingerprint !== descriptor.fingerprint) {
+      return yield* mismatch({
+        message: "schema fingerprint mismatch",
+        expected: target.catalog,
+        actual: descriptor.id,
+        expectedFingerprint: target.schemaFingerprint,
+        actualFingerprint: descriptor.fingerprint,
+      });
+    }
+  });
 
 const indexCatalog = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
-): Result.Result<CatalogIndex, BindFailure> => {
-  const targetOk = validateTarget(target, descriptor);
-  if (Result.isFailure(targetOk)) return Result.fail(targetOk.failure);
+): Result.Result<CatalogIndex, BindFailure> =>
+  Result.gen(function* () {
+    yield* validateTarget(target, descriptor);
 
-  const entities = new Map<string, EntityId>();
-  const traits = new Map<string, TraitId>();
-  const fields = new Map<string, FieldId>();
-  const operations = new Map<string, OperationId>();
-  const owners = new Map<string, OwnerRef>();
-  const fieldsByOwnerName = new Map<string, FieldId[]>();
+    const entities = new Map<string, EntityId>();
+    const traits = new Map<string, TraitId>();
+    const fields = new Map<string, FieldId>();
+    const operations = new Map<string, OperationId>();
+    const owners = new Map<string, OwnerRef>();
+    const fieldsByOwnerName = new Map<string, FieldId[]>();
 
-  for (const entity of descriptor.entities) {
-    const scoped = catalogOfIdentity(entity.id, target, "entity");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (isBlank(entity.id.name)) return invalid("blank entity name");
-    const added = intern(entities, entity.id.name, entity.id, `entity identity '${entity.id.name}'`);
-    if (Result.isFailure(added)) return Result.fail(added.failure);
-    const owner: OwnerRef = { kind: "entity", name: entity.id.name };
-    const ownerAdded = intern(owners, ownerKey(owner), owner, `owner '${ownerKey(owner)}'`);
-    if (Result.isFailure(ownerAdded)) return Result.fail(ownerAdded.failure);
-  }
-
-  for (const trait of descriptor.traits) {
-    const scoped = catalogOfIdentity(trait.id, target, "trait");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (isBlank(trait.id.name)) return invalid("blank trait name");
-    const added = intern(traits, trait.id.name, trait.id, `trait identity '${trait.id.name}'`);
-    if (Result.isFailure(added)) return Result.fail(added.failure);
-    const owner: OwnerRef = { kind: "trait", name: trait.id.name };
-    const ownerAdded = intern(owners, ownerKey(owner), owner, `owner '${ownerKey(owner)}'`);
-    if (Result.isFailure(ownerAdded)) return Result.fail(ownerAdded.failure);
-  }
-
-  for (const field of descriptor.fields) {
-    const scoped = catalogOfIdentity(field.id, target, "field");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (isBlank(field.id.localName)) return invalid("blank field local name");
-    if (isBlank(field.id.owner.name)) return invalid("blank field owner name");
-    if (!owners.has(ownerKey(field.id.owner))) {
-      return invalid(
-        `missing owner ${field.id.owner.kind} '${field.id.owner.name}' for field '${field.id.localName}'`,
-      );
+    for (const entity of descriptor.entities) {
+      yield* catalogOfIdentity(entity.id, target, "entity");
+      if (isBlank(entity.id.name)) return yield* invalid("blank entity name");
+      yield* intern(entities, entity.id.name, entity.id, `entity identity '${entity.id.name}'`);
+      const owner: OwnerRef = { kind: "entity", name: entity.id.name };
+      yield* intern(owners, ownerKey(owner), owner, `owner '${ownerKey(owner)}'`);
     }
-    const added = intern(
+
+    for (const trait of descriptor.traits) {
+      yield* catalogOfIdentity(trait.id, target, "trait");
+      if (isBlank(trait.id.name)) return yield* invalid("blank trait name");
+      yield* intern(traits, trait.id.name, trait.id, `trait identity '${trait.id.name}'`);
+      const owner: OwnerRef = { kind: "trait", name: trait.id.name };
+      yield* intern(owners, ownerKey(owner), owner, `owner '${ownerKey(owner)}'`);
+    }
+
+    for (const field of descriptor.fields) {
+      yield* catalogOfIdentity(field.id, target, "field");
+      if (isBlank(field.id.localName)) return yield* invalid("blank field local name");
+      if (isBlank(field.id.owner.name)) return yield* invalid("blank field owner name");
+      if (!owners.has(ownerKey(field.id.owner))) {
+        return yield* invalid(
+          `missing owner ${field.id.owner.kind} '${field.id.owner.name}' for field '${field.id.localName}'`,
+        );
+      }
+      yield* intern(
+        fields,
+        fieldKey(field.id.owner, field.id.localName),
+        field.id,
+        `field identity '${field.id.owner.kind}:${field.id.owner.name}.${field.id.localName}'`,
+      );
+      pushIndex(fieldsByOwnerName, ownerNameLocalKey(field.id.owner.name, field.id.localName), field.id);
+      if (field.valueType === "ref") {
+        yield* validateRefTarget(field.refTarget, target, entities, traits, "field ref target");
+      }
+    }
+
+    for (const operation of descriptor.operations) {
+      yield* catalogOfIdentity(operation.id, target, "operation");
+      if (isBlank(operation.id.localName)) return yield* invalid("blank operation local name");
+      if (isBlank(operation.id.owner.name)) return yield* invalid("blank operation owner name");
+      if (!owners.has(ownerKey(operation.id.owner))) {
+        return yield* invalid(
+          `missing owner ${operation.id.owner.kind} '${operation.id.owner.name}' for operation '${operation.id.localName}'`,
+        );
+      }
+      yield* intern(
+        operations,
+        operationKey(operation.id.owner, operation.id.localName, operation.id.target),
+        operation.id,
+        `operation identity '${operation.id.owner.kind}:${operation.id.owner.name}.${operation.id.localName}:${operation.id.target}'`,
+      );
+      yield* validateInputShape(operation.input, target, entities, traits);
+    }
+
+    for (const entity of descriptor.entities) {
+      for (const trait of entity.traits) {
+        yield* catalogOfIdentity(trait, target, "entity trait");
+        if (!traits.has(trait.name)) {
+          return yield* invalid(`missing trait '${trait.name}' composed by entity '${entity.id.name}'`);
+        }
+      }
+    }
+    for (const trait of descriptor.traits) {
+      for (const composed of trait.traits) {
+        yield* catalogOfIdentity(composed, target, "trait composition");
+        if (!traits.has(composed.name)) {
+          return yield* invalid(`missing trait '${composed.name}' composed by trait '${trait.id.name}'`);
+        }
+      }
+    }
+    for (const row of descriptor.traitComposition) {
+      yield* catalogOfIdentity(row.composer, target, "trait-composition composer");
+      yield* catalogOfIdentity(row.trait, target, "trait-composition trait");
+      if (!entities.has(row.composer.name)) {
+        return yield* invalid(`missing composer entity '${row.composer.name}'`);
+      }
+      if (!traits.has(row.trait.name)) {
+        return yield* invalid(`missing composed trait '${row.trait.name}'`);
+      }
+      for (const transitive of row.transitive) {
+        yield* catalogOfIdentity(transitive, target, "trait-composition transitive");
+        if (!traits.has(transitive.name)) {
+          return yield* invalid(`missing transitive trait '${transitive.name}'`);
+        }
+      }
+    }
+
+    return {
+      target,
+      entities,
+      traits,
       fields,
-      fieldKey(field.id.owner, field.id.localName),
-      field.id,
-      `field identity '${field.id.owner.kind}:${field.id.owner.name}.${field.id.localName}'`,
-    );
-    if (Result.isFailure(added)) return Result.fail(added.failure);
-    pushIndex(fieldsByOwnerName, ownerNameLocalKey(field.id.owner.name, field.id.localName), field.id);
-    if (field.valueType === "ref") {
-      const refs = validateRefTarget(field.refTarget, target, entities, traits, "field ref target");
-      if (Result.isFailure(refs)) return Result.fail(refs.failure);
-    }
-  }
-
-  for (const operation of descriptor.operations) {
-    const scoped = catalogOfIdentity(operation.id, target, "operation");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (isBlank(operation.id.localName)) return invalid("blank operation local name");
-    if (isBlank(operation.id.owner.name)) return invalid("blank operation owner name");
-    if (!owners.has(ownerKey(operation.id.owner))) {
-      return invalid(
-        `missing owner ${operation.id.owner.kind} '${operation.id.owner.name}' for operation '${operation.id.localName}'`,
-      );
-    }
-    const added = intern(
-      operations,
-      operationKey(operation.id.owner, operation.id.localName, operation.id.target),
-      operation.id,
-      `operation identity '${operation.id.owner.kind}:${operation.id.owner.name}.${operation.id.localName}:${operation.id.target}'`,
-    );
-    if (Result.isFailure(added)) return Result.fail(added.failure);
-    const refs = validateInputShape(operation.input, target, entities, traits);
-    if (Result.isFailure(refs)) return Result.fail(refs.failure);
-  }
-
-  for (const entity of descriptor.entities) {
-    for (const trait of entity.traits) {
-      const scoped = catalogOfIdentity(trait, target, "entity trait");
-      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-      if (!traits.has(trait.name)) {
-        return invalid(`missing trait '${trait.name}' composed by entity '${entity.id.name}'`);
-      }
-    }
-  }
-  for (const trait of descriptor.traits) {
-    for (const composed of trait.traits) {
-      const scoped = catalogOfIdentity(composed, target, "trait composition");
-      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-      if (!traits.has(composed.name)) {
-        return invalid(`missing trait '${composed.name}' composed by trait '${trait.id.name}'`);
-      }
-    }
-  }
-  for (const row of descriptor.traitComposition) {
-    const composerOk = catalogOfIdentity(row.composer, target, "trait-composition composer");
-    if (Result.isFailure(composerOk)) return Result.fail(composerOk.failure);
-    const traitOk = catalogOfIdentity(row.trait, target, "trait-composition trait");
-    if (Result.isFailure(traitOk)) return Result.fail(traitOk.failure);
-    if (!entities.has(row.composer.name)) {
-      return invalid(`missing composer entity '${row.composer.name}'`);
-    }
-    if (!traits.has(row.trait.name)) {
-      return invalid(`missing composed trait '${row.trait.name}'`);
-    }
-    for (const transitive of row.transitive) {
-      const scoped = catalogOfIdentity(transitive, target, "trait-composition transitive");
-      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-      if (!traits.has(transitive.name)) {
-        return invalid(`missing transitive trait '${transitive.name}'`);
-      }
-    }
-  }
-
-  return Result.succeed({
-    target,
-    entities,
-    traits,
-    fields,
-    owners,
-    fieldsByOwnerName,
+      owners,
+      fieldsByOwnerName,
+    };
   });
-};
 
 const validateRefTarget = (
   refTarget: FieldRefTarget | undefined,
@@ -332,25 +303,23 @@ const validateRefTarget = (
   entities: ReadonlyMap<string, EntityId>,
   traits: ReadonlyMap<string, TraitId>,
   label: string,
-): Result.Result<void, BindFailure> => {
-  if (refTarget === undefined || refTarget._tag === "self" || refTarget._tag === "untargeted") {
-    return Result.succeed(undefined);
-  }
-  if (refTarget._tag === "entity") {
-    const scoped = catalogOfIdentity(refTarget.entity, target, label);
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (!entities.has(refTarget.entity.name)) {
-      return invalid(`missing ${label} entity '${refTarget.entity.name}'`);
+): Result.Result<void, BindFailure> =>
+  Result.gen(function* () {
+    if (refTarget === undefined || refTarget._tag === "self" || refTarget._tag === "untargeted") {
+      return;
     }
-    return Result.succeed(undefined);
-  }
-  const scoped = catalogOfIdentity(refTarget.trait, target, label);
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  if (!traits.has(refTarget.trait.name)) {
-    return invalid(`missing ${label} trait '${refTarget.trait.name}'`);
-  }
-  return Result.succeed(undefined);
-};
+    if (refTarget._tag === "entity") {
+      yield* catalogOfIdentity(refTarget.entity, target, label);
+      if (!entities.has(refTarget.entity.name)) {
+        return yield* invalid(`missing ${label} entity '${refTarget.entity.name}'`);
+      }
+      return;
+    }
+    yield* catalogOfIdentity(refTarget.trait, target, label);
+    if (!traits.has(refTarget.trait.name)) {
+      return yield* invalid(`missing ${label} trait '${refTarget.trait.name}'`);
+    }
+  });
 
 const validateInputShape = (
   shape: OperationInputShape,
@@ -366,13 +335,12 @@ const validateInputShape = (
       return validateRefTarget(shape.refTarget, target, entities, traits, "operation input ref target");
     case "array":
       return validateInputShape(shape.items, target, entities, traits);
-    case "struct": {
-      for (const field of shape.fields) {
-        const nested = validateInputShape(field.shape, target, entities, traits);
-        if (Result.isFailure(nested)) return Result.fail(nested.failure);
-      }
-      return Result.succeed(undefined);
-    }
+    case "struct":
+      return Result.gen(function* () {
+        for (const field of shape.fields) {
+          yield* validateInputShape(field.shape, target, entities, traits);
+        }
+      });
   }
 };
 
@@ -441,38 +409,36 @@ const bindField = (
 const bindFocus = (
   index: CatalogIndex,
   focus: RelativeRuleFocus,
-): Result.Result<CanonicalRuleFocus, BindFailure> => {
-  switch (focus._tag) {
-    case "entity": {
-      const entity = bindEntity(index, focus.entity);
-      if (Result.isFailure(entity)) return Result.fail(entity.failure);
-      return Result.succeed({ _tag: "entity", entity: entity.success });
+): Result.Result<CanonicalRuleFocus, BindFailure> =>
+  Result.gen(function* () {
+    switch (focus._tag) {
+      case "entity": {
+        const entity = yield* bindEntity(index, focus.entity);
+        return { _tag: "entity" as const, entity };
+      }
+      case "trait": {
+        const trait = yield* bindTrait(index, focus.trait);
+        return { _tag: "trait" as const, trait };
+      }
+      case "field": {
+        const field = yield* bindField(index, focus.field);
+        return { _tag: "field" as const, field };
+      }
     }
-    case "trait": {
-      const trait = bindTrait(index, focus.trait);
-      if (Result.isFailure(trait)) return Result.fail(trait.failure);
-      return Result.succeed({ _tag: "trait", trait: trait.success });
-    }
-    case "field": {
-      const field = bindField(index, focus.field);
-      if (Result.isFailure(field)) return Result.fail(field.failure);
-      return Result.succeed({ _tag: "field", field: field.success });
-    }
-  }
-};
+  });
 
 const bindRefTerm = (
   index: CatalogIndex,
   term: RelativeRefTerm,
-): Result.Result<CanonicalRefTerm, BindFailure> => {
-  const steps: CanonicalRefTerm["steps"][number][] = [];
-  for (const step of term.steps) {
-    const field = bindField(index, step.field);
-    if (Result.isFailure(field)) return Result.fail(field.failure);
-    steps.push({ field: field.success });
-  }
-  return Result.succeed({ _tag: "ref", root: term.root, steps });
-};
+): Result.Result<CanonicalRefTerm, BindFailure> =>
+  Result.gen(function* () {
+    const steps: CanonicalRefTerm["steps"][number][] = [];
+    for (const step of term.steps) {
+      const field = yield* bindField(index, step.field);
+      steps.push({ field });
+    }
+    return { _tag: "ref" as const, root: term.root, steps };
+  });
 
 const bindValueTerm = (
   index: CatalogIndex,
@@ -498,63 +464,55 @@ const bindExpr = (
     case "hasClass":
       return Result.succeed(expr);
     case "and":
-    case "or": {
-      const exprs = firstError(expr.exprs.map((child) => bindExpr(index, child)));
-      if (Result.isFailure(exprs)) return Result.fail(exprs.failure);
-      return Result.succeed({ _tag: expr._tag, exprs: exprs.success });
-    }
-    case "not": {
-      const child = bindExpr(index, expr.expr);
-      if (Result.isFailure(child)) return Result.fail(child.failure);
-      return Result.succeed({ _tag: "not", expr: child.success });
-    }
-    case "eq": {
-      const left = bindValueTerm(index, expr.left);
-      if (Result.isFailure(left)) return Result.fail(left.failure);
-      const right = bindValueTerm(index, expr.right);
-      if (Result.isFailure(right)) return Result.fail(right.failure);
-      return Result.succeed({ _tag: "eq", left: left.success, right: right.success });
-    }
-    case "has": {
-      const term = bindValueTerm(index, expr.term);
-      if (Result.isFailure(term)) return Result.fail(term.failure);
-      return Result.succeed({ _tag: "has", term: term.success });
-    }
-    case "in": {
-      const value = bindValueTerm(index, expr.value);
-      if (Result.isFailure(value)) return Result.fail(value.failure);
-      const collection = bindValueTerm(index, expr.collection);
-      if (Result.isFailure(collection)) return Result.fail(collection.failure);
-      return Result.succeed({
-        _tag: "in",
-        value: value.success,
-        collection: collection.success,
+    case "or":
+      return Result.gen(function* () {
+        const exprs = yield* Result.all(expr.exprs.map((child) => bindExpr(index, child)));
+        return { _tag: expr._tag, exprs };
       });
-    }
+    case "not":
+      return Result.gen(function* () {
+        const child = yield* bindExpr(index, expr.expr);
+        return { _tag: "not" as const, expr: child };
+      });
+    case "eq":
+      return Result.gen(function* () {
+        const left = yield* bindValueTerm(index, expr.left);
+        const right = yield* bindValueTerm(index, expr.right);
+        return { _tag: "eq" as const, left, right };
+      });
+    case "has":
+      return Result.gen(function* () {
+        const term = yield* bindValueTerm(index, expr.term);
+        return { _tag: "has" as const, term };
+      });
+    case "in":
+      return Result.gen(function* () {
+        const value = yield* bindValueTerm(index, expr.value);
+        const collection = yield* bindValueTerm(index, expr.collection);
+        return { _tag: "in" as const, value, collection };
+      });
   }
 };
 
 const bindRule = (
   index: CatalogIndex,
   rule: RelativeAuthorizationRule,
-): Result.Result<{ readonly rule: CanonicalAuthorizationRule; readonly material: string }, BindFailure> => {
-  const focus = bindFocus(index, rule.focus);
-  if (Result.isFailure(focus)) return Result.fail(focus.failure);
-  const expr = bindExpr(index, rule.expr);
-  if (Result.isFailure(expr)) return Result.fail(expr.failure);
-  const bound: CanonicalAuthorizationRule = {
-    id: rule.id,
-    focus: focus.success,
-    expr: expr.success,
-    usesResource: rule.usesResource,
-    usesMe: rule.usesMe,
-    usesSubject: rule.usesSubject,
-    traversalDepth: rule.traversalDepth,
-  };
-  const material = canonicalAuthorizationRuleMaterial(bound);
-  if (Result.isFailure(material)) return Result.fail(material.failure);
-  return Result.succeed({ rule: bound, material: material.success });
-};
+): Result.Result<{ readonly rule: CanonicalAuthorizationRule; readonly material: string }, BindFailure> =>
+  Result.gen(function* () {
+    const focus = yield* bindFocus(index, rule.focus);
+    const expr = yield* bindExpr(index, rule.expr);
+    const bound: CanonicalAuthorizationRule = {
+      id: rule.id,
+      focus,
+      expr,
+      usesResource: rule.usesResource,
+      usesMe: rule.usesMe,
+      usesSubject: rule.usesSubject,
+      traversalDepth: rule.traversalDepth,
+    };
+    const material = yield* canonicalAuthorizationRuleMaterial(bound);
+    return { rule: bound, material };
+  });
 
 const remapRuleIds = (
   ids: ReadonlyArray<RuleId>,
@@ -581,37 +539,33 @@ const bindDecisionEntries = <Relative, Canonical>(
 ): Result.Result<
   ReadonlyArray<{ readonly target: Canonical; readonly decision: Decision }>,
   BindFailure
-> => {
-  const bound: { readonly target: Canonical; readonly decision: Decision }[] = [];
-  const seen = new Set<unknown>();
-  for (const entry of entries) {
-    const target = bindTarget(entry.target);
-    if (Result.isFailure(target)) return Result.fail(target.failure);
-    if (seen.has(target.success)) {
-      return invalid("ambiguous bound decision target");
+> =>
+  Result.gen(function* () {
+    const bound: { readonly target: Canonical; readonly decision: Decision }[] = [];
+    const seen = new Set<unknown>();
+    for (const entry of entries) {
+      const target = yield* bindTarget(entry.target);
+      if (seen.has(target)) {
+        return yield* invalid("ambiguous bound decision target");
+      }
+      seen.add(target);
+      bound.push({ target, decision: entry.decision });
     }
-    seen.add(target.success);
-    bound.push({ target: target.success, decision: entry.decision });
-  }
-  return Result.succeed(bound);
-};
+    return bound;
+  });
 
 const bindDecisions = (
   index: CatalogIndex,
   decisions: RelativeAuthorizationDecisions,
-): Result.Result<CanonicalAuthorizationDecisions, BindFailure> => {
-  const entities = bindDecisionEntries(decisions.entities, (target) => bindEntity(index, target));
-  if (Result.isFailure(entities)) return Result.fail(entities.failure);
-  const traits = bindDecisionEntries(decisions.traits, (target) => bindTrait(index, target));
-  if (Result.isFailure(traits)) return Result.fail(traits.failure);
-  const fields = bindDecisionEntries(decisions.fields, (target) => bindField(index, target));
-  if (Result.isFailure(fields)) return Result.fail(fields.failure);
-  return Result.succeed({
-    entities: entities.success,
-    traits: traits.success,
-    fields: fields.success,
+): Result.Result<CanonicalAuthorizationDecisions, BindFailure> =>
+  Result.gen(function* () {
+    const entities = yield* bindDecisionEntries(decisions.entities, (target) =>
+      bindEntity(index, target),
+    );
+    const traits = yield* bindDecisionEntries(decisions.traits, (target) => bindTrait(index, target));
+    const fields = yield* bindDecisionEntries(decisions.fields, (target) => bindField(index, target));
+    return { entities, traits, fields };
   });
-};
 
 const bindPrincipal = (
   index: CatalogIndex,
@@ -620,9 +574,10 @@ const bindPrincipal = (
   if (principal.entity === undefined) {
     return Result.succeed({ subjectClaim: principal.subjectClaim });
   }
-  const entity = bindField(index, principal.entity);
-  if (Result.isFailure(entity)) return Result.fail(entity.failure);
-  return Result.succeed({ subjectClaim: principal.subjectClaim, entity: entity.success });
+  return Result.gen(function* () {
+    const entity = yield* bindField(index, principal.entity);
+    return { subjectClaim: principal.subjectClaim, entity };
+  });
 };
 
 /**
@@ -666,52 +621,45 @@ const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
  */
 export const bindPolicyTemplateResult = (
   input: CatalogBindingInput,
-): Result.Result<BoundAuthorizationIRType, BindFailure> => {
-  const index = indexCatalog(input.target, input.descriptor);
-  if (Result.isFailure(index)) return Result.fail(index.failure);
+): Result.Result<BoundAuthorizationIRType, BindFailure> =>
+  Result.gen(function* () {
+    const index = yield* indexCatalog(input.target, input.descriptor);
+    const principal = yield* bindPrincipal(index, input.template.principal);
+    const boundRules = yield* Result.all(input.template.rules.map((rule) => bindRule(index, rule)));
 
-  const principal = bindPrincipal(index.success, input.template.principal);
-  if (Result.isFailure(principal)) return Result.fail(principal.failure);
-
-  const boundRules = firstError(input.template.rules.map((rule) => bindRule(index.success, rule)));
-  if (Result.isFailure(boundRules)) return Result.fail(boundRules.failure);
-
-  const seen = new Map<RuleId, string>();
-  const rules: CanonicalAuthorizationRule[] = [];
-  for (let i = 0; i < input.template.rules.length; i++) {
-    const source = input.template.rules[i]!.id;
-    const { rule, material } = boundRules.success[i]!;
-    const existing = seen.get(source);
-    if (existing !== undefined) {
-      return invalid(
-        existing === material
-          ? `duplicate source rule id '${source}'`
-          : `colliding source rule id '${source}'`,
-      );
+    const seen = new Map<RuleId, string>();
+    const rules: CanonicalAuthorizationRule[] = [];
+    for (let i = 0; i < input.template.rules.length; i++) {
+      const source = input.template.rules[i]!.id;
+      const { rule, material } = boundRules[i]!;
+      const existing = seen.get(source);
+      if (existing !== undefined) {
+        return yield* invalid(
+          existing === material
+            ? `duplicate source rule id '${source}'`
+            : `colliding source rule id '${source}'`,
+        );
+      }
+      seen.set(source, material);
+      rules.push(rule);
     }
-    seen.set(source, material);
-    rules.push(rule);
-  }
 
-  const decisions = bindDecisions(index.success, input.template.decisions);
-  if (Result.isFailure(decisions)) return Result.fail(decisions.failure);
-
-  const bound: BoundAuthorizationIRType = {
-    _tag: "BoundAuthorizationIR",
-    version: BOUND_AUTHORIZATION_IR_VERSION,
-    languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
-    database: input.target.database,
-    catalog: input.target.catalog,
-    catalogVersion: input.target.catalogVersion,
-    schemaFingerprint: input.target.schemaFingerprint,
-    classes: input.template.classes,
-    claims: input.template.claims,
-    principal: principal.success,
-    rules,
-    decisions: decisions.success,
-  };
-  return Result.succeed(freezeBound(bound));
-};
+    const decisions = yield* bindDecisions(index, input.template.decisions);
+    return freezeBound({
+      _tag: "BoundAuthorizationIR" as const,
+      version: BOUND_AUTHORIZATION_IR_VERSION,
+      languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
+      database: input.target.database,
+      catalog: input.target.catalog,
+      catalogVersion: input.target.catalogVersion,
+      schemaFingerprint: input.target.schemaFingerprint,
+      classes: input.template.classes,
+      claims: input.template.claims,
+      principal,
+      rules,
+      decisions,
+    });
+  });
 
 const restampBoundRuleIds = Effect.fn("Authorization.restampBoundRuleIds")(function* (
   bound: BoundAuthorizationIRType,

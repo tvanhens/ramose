@@ -80,77 +80,65 @@ const validateDecisionRules = (
   decision: Decision,
   rules: ReadonlyMap<RuleId, CanonicalAuthorizationRule>,
   compatible: (rule: CanonicalAuthorizationRule) => Result.Result<void, ValidateFailure>,
-): Result.Result<void, ValidateFailure> => {
-  const allowOk = uniqueDecisionIds(decision.allow, "allow");
-  if (Result.isFailure(allowOk)) return Result.fail(allowOk.failure);
-  const denyOk = uniqueDecisionIds(decision.deny, "deny");
-  if (Result.isFailure(denyOk)) return Result.fail(denyOk.failure);
-  const seen = new Set<RuleId>();
-  for (const id of decision.allow) {
-    seen.add(id);
-    const rule = lookupRule(rules, id);
-    if (Result.isFailure(rule)) return Result.fail(rule.failure);
-    const fit = compatible(rule.success);
-    if (Result.isFailure(fit)) return Result.fail(fit.failure);
-  }
-  for (const id of decision.deny) {
-    if (seen.has(id)) return invalid("contradictory allow and deny rule");
-    const rule = lookupRule(rules, id);
-    if (Result.isFailure(rule)) return Result.fail(rule.failure);
-    const fit = compatible(rule.success);
-    if (Result.isFailure(fit)) return Result.fail(fit.failure);
-  }
-  return Result.succeed(undefined);
-};
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* uniqueDecisionIds(decision.allow, "allow");
+    yield* uniqueDecisionIds(decision.deny, "deny");
+    const seen = new Set<RuleId>();
+    for (const id of decision.allow) {
+      seen.add(id);
+      const rule = yield* lookupRule(rules, id);
+      yield* compatible(rule);
+    }
+    for (const id of decision.deny) {
+      if (seen.has(id)) return yield* invalid("contradictory allow and deny rule");
+      const rule = yield* lookupRule(rules, id);
+      yield* compatible(rule);
+    }
+  });
 
 export const validateDecisions = (
   index: PreparedAuthorizationCatalog,
   decisions: CanonicalAuthorizationDecisions,
   rules: ReadonlyMap<RuleId, CanonicalAuthorizationRule>,
-): Result.Result<void, ValidateFailure> => {
-  const seenEntities = new Set<string>();
-  for (const entry of decisions.entities) {
-    const target = requireEntity(index, entry.target, "entity decision target");
-    if (Result.isFailure(target)) return Result.fail(target.failure);
-    const key = entityKey(target.success);
-    if (seenEntities.has(key)) return invalid("duplicate entity decision target");
-    seenEntities.add(key);
-    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
-      ruleFitsEntity(index, rule, target.success)
-        ? Result.succeed(undefined)
-        : invalid("rule focus is incompatible with entity decision"),
-    );
-    if (Result.isFailure(ok)) return Result.fail(ok.failure);
-  }
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    const seenEntities = new Set<string>();
+    for (const entry of decisions.entities) {
+      const target = yield* requireEntity(index, entry.target, "entity decision target");
+      const key = entityKey(target);
+      if (seenEntities.has(key)) return yield* invalid("duplicate entity decision target");
+      seenEntities.add(key);
+      yield* validateDecisionRules(entry.decision, rules, (rule) =>
+        ruleFitsEntity(index, rule, target)
+          ? Result.succeed(undefined)
+          : invalid("rule focus is incompatible with entity decision"),
+      );
+    }
 
-  const seenTraits = new Set<string>();
-  for (const entry of decisions.traits) {
-    const target = requireTrait(index, entry.target, "trait decision target");
-    if (Result.isFailure(target)) return Result.fail(target.failure);
-    const key = traitKey(target.success);
-    if (seenTraits.has(key)) return invalid("duplicate trait decision target");
-    seenTraits.add(key);
-    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
-      ruleFitsTrait(index, rule, target.success)
-        ? Result.succeed(undefined)
-        : invalid("rule focus is incompatible with trait decision"),
-    );
-    if (Result.isFailure(ok)) return Result.fail(ok.failure);
-  }
+    const seenTraits = new Set<string>();
+    for (const entry of decisions.traits) {
+      const target = yield* requireTrait(index, entry.target, "trait decision target");
+      const key = traitKey(target);
+      if (seenTraits.has(key)) return yield* invalid("duplicate trait decision target");
+      seenTraits.add(key);
+      yield* validateDecisionRules(entry.decision, rules, (rule) =>
+        ruleFitsTrait(index, rule, target)
+          ? Result.succeed(undefined)
+          : invalid("rule focus is incompatible with trait decision"),
+      );
+    }
 
-  const seenFields = new Set<string>();
-  for (const entry of decisions.fields) {
-    const target = requireField(index, entry.target, "field decision target");
-    if (Result.isFailure(target)) return Result.fail(target.failure);
-    const key = fieldKey(target.success.id);
-    if (seenFields.has(key)) return invalid("duplicate field decision target");
-    seenFields.add(key);
-    const ok = validateDecisionRules(entry.decision, rules, (rule) =>
-      ruleFitsField(index, rule, target.success)
-        ? Result.succeed(undefined)
-        : invalid("rule focus is incompatible with field decision"),
-    );
-    if (Result.isFailure(ok)) return Result.fail(ok.failure);
-  }
-  return Result.succeed(undefined);
-};
+    const seenFields = new Set<string>();
+    for (const entry of decisions.fields) {
+      const target = yield* requireField(index, entry.target, "field decision target");
+      const key = fieldKey(target.id);
+      if (seenFields.has(key)) return yield* invalid("duplicate field decision target");
+      seenFields.add(key);
+      yield* validateDecisionRules(entry.decision, rules, (rule) =>
+        ruleFitsField(index, rule, target)
+          ? Result.succeed(undefined)
+          : invalid("rule focus is incompatible with field decision"),
+      );
+    }
+  });

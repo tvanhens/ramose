@@ -1015,6 +1015,14 @@ describe("installAuthorization", () => {
     expect(failure.message).toMatch(/cross-catalog/);
   });
 
+  test("unsupported language version fails before later catalog binding", async () => {
+    const failure = await installFail(
+      templateOf([], emptyDecisions(), { languageVersion: "v0" as typeof AUTHORIZATION_LANGUAGE_VERSION }),
+    );
+    expect(failure).toBeInstanceOf(InvalidIR);
+    expect(failure.message).toMatch(/unsupported authorization language version in policy template/);
+  });
+
   test("JCS-invalid class names fail as InvalidIR at the hash boundary", async () => {
     const failure = await installFail(
       templateOf([], emptyDecisions(), { classes: ["member\uD800"] }),

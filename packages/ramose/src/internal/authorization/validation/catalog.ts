@@ -99,270 +99,266 @@ const validateTarget = (
 
 const closeTraits = (
   edges: Map<string, Set<string>>,
-): Result.Result<Map<string, Set<string>>, ValidateFailure> => {
-  const closed = new Map<string, Set<string>>();
-  const visit = (
-    name: string,
-    active: string[],
-    done: Set<string>,
-  ): Result.Result<void, ValidateFailure> => {
-    if (active.includes(name)) {
-      return invalid(`trait composition cycle: ${[...active, name].join(" → ")}`);
-    }
-    if (done.has(name)) return Result.succeed(undefined);
-    active.push(name);
-    const nested = edges.get(name);
-    if (nested !== undefined) {
-      for (const child of nested) {
-        const ok = visit(child, active, done);
-        if (Result.isFailure(ok)) return Result.fail(ok.failure);
+): Result.Result<Map<string, Set<string>>, ValidateFailure> =>
+  Result.gen(function* () {
+    const closed = new Map<string, Set<string>>();
+    const visit = (
+      name: string,
+      active: string[],
+      done: Set<string>,
+    ): Result.Result<void, ValidateFailure> =>
+      Result.gen(function* () {
+        if (active.includes(name)) {
+          return yield* invalid(`trait composition cycle: ${[...active, name].join(" → ")}`);
+        }
+        if (done.has(name)) return;
+        active.push(name);
+        const nested = edges.get(name);
+        if (nested !== undefined) {
+          for (const child of nested) {
+            yield* visit(child, active, done);
+          }
+        }
+        active.pop();
+        done.add(name);
+      });
+    for (const [name, direct] of edges) {
+      const done = new Set<string>();
+      for (const child of direct) {
+        yield* visit(child, [], done);
       }
+      closed.set(name, done);
     }
-    active.pop();
-    done.add(name);
-    return Result.succeed(undefined);
-  };
-  for (const [name, direct] of edges) {
-    const done = new Set<string>();
-    for (const child of direct) {
-      const ok = visit(child, [], done);
-      if (Result.isFailure(ok)) return Result.fail(ok.failure);
-    }
-    closed.set(name, done);
-  }
-  return Result.succeed(closed);
-};
+    return closed;
+  });
 
 const validateFieldRefTarget = (
   refTarget: FieldRefTarget,
   target: CatalogBindingTarget,
   entities: ReadonlyMap<string, EntityId>,
   traits: ReadonlyMap<string, TraitId>,
-): Result.Result<void, ValidateFailure> => {
-  if (refTarget._tag === "self" || refTarget._tag === "untargeted") {
-    return Result.succeed(undefined);
-  }
-  if (refTarget._tag === "entity") {
-    const scoped = catalogOfIdentity(refTarget.entity, target, "field ref target");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (!entities.has(refTarget.entity.name)) {
-      return invalid(`missing field ref target entity '${refTarget.entity.name}'`);
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    if (refTarget._tag === "self" || refTarget._tag === "untargeted") {
+      return;
     }
-    return Result.succeed(undefined);
-  }
-  const scoped = catalogOfIdentity(refTarget.trait, target, "field ref target");
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  if (!traits.has(refTarget.trait.name)) {
-    return invalid(`missing field ref target trait '${refTarget.trait.name}'`);
-  }
-  return Result.succeed(undefined);
-};
+    if (refTarget._tag === "entity") {
+      yield* catalogOfIdentity(refTarget.entity, target, "field ref target");
+      if (!entities.has(refTarget.entity.name)) {
+        return yield* invalid(`missing field ref target entity '${refTarget.entity.name}'`);
+      }
+      return;
+    }
+    yield* catalogOfIdentity(refTarget.trait, target, "field ref target");
+    if (!traits.has(refTarget.trait.name)) {
+      return yield* invalid(`missing field ref target trait '${refTarget.trait.name}'`);
+    }
+  });
 
 export const prepareAuthorizationCatalog = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
-): Result.Result<PreparedAuthorizationCatalog, ValidateFailure> => {
-  const targetOk = validateTarget(target, descriptor);
-  if (Result.isFailure(targetOk)) return Result.fail(targetOk.failure);
+): Result.Result<PreparedAuthorizationCatalog, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* validateTarget(target, descriptor);
 
-  const entities = new Map<string, EntityId>();
-  const traits = new Map<string, TraitId>();
-  const fields = new Map<string, FieldDescriptor>();
-  const operations = new Map<string, OperationDescriptor>();
-  const entityTraitEdges = new Map<string, Set<string>>();
-  const traitTraitEdges = new Map<string, Set<string>>();
+    const entities = new Map<string, EntityId>();
+    const traits = new Map<string, TraitId>();
+    const fields = new Map<string, FieldDescriptor>();
+    const operations = new Map<string, OperationDescriptor>();
+    const entityTraitEdges = new Map<string, Set<string>>();
+    const traitTraitEdges = new Map<string, Set<string>>();
 
-  for (const entity of descriptor.entities) {
-    const scoped = catalogOfIdentity(entity.id, target, "entity");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (entities.has(entity.id.name)) return invalid(`ambiguous entity '${entity.id.name}'`);
-    entities.set(entity.id.name, entity.id);
-    const composed = new Set<string>();
-    for (const trait of entity.traits) {
-      const traitScoped = catalogOfIdentity(trait, target, "entity trait");
-      if (Result.isFailure(traitScoped)) return Result.fail(traitScoped.failure);
-      composed.add(trait.name);
-    }
-    entityTraitEdges.set(entity.id.name, composed);
-  }
-
-  for (const trait of descriptor.traits) {
-    const scoped = catalogOfIdentity(trait.id, target, "trait");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    if (traits.has(trait.id.name)) return invalid(`ambiguous trait '${trait.id.name}'`);
-    traits.set(trait.id.name, trait.id);
-    const composed = new Set<string>();
-    for (const nested of trait.traits) {
-      const nestedScoped = catalogOfIdentity(nested, target, "trait composition");
-      if (Result.isFailure(nestedScoped)) return Result.fail(nestedScoped.failure);
-      composed.add(nested.name);
-    }
-    traitTraitEdges.set(trait.id.name, composed);
-  }
-
-  for (const field of descriptor.fields) {
-    const scoped = catalogOfIdentity(field.id, target, "field");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    const key = fieldKey(field.id);
-    if (fields.has(key)) return invalid(`ambiguous field '${key}'`);
-    const owner = field.id.owner;
-    if (owner.kind === "entity") {
-      if (!entities.has(owner.name)) {
-        return invalid(`missing owner entity '${owner.name}' for field '${field.id.localName}'`);
+    for (const entity of descriptor.entities) {
+      yield* catalogOfIdentity(entity.id, target, "entity");
+      if (entities.has(entity.id.name)) {
+        return yield* invalid(`ambiguous entity '${entity.id.name}'`);
       }
-    } else if (!traits.has(owner.name)) {
-      return invalid(`missing owner trait '${owner.name}' for field '${field.id.localName}'`);
-    }
-    if (field.valueType === "ref") {
-      const refs = validateFieldRefTarget(field.refTarget, target, entities, traits);
-      if (Result.isFailure(refs)) return Result.fail(refs.failure);
-    }
-    fields.set(key, field);
-  }
-
-  for (const operation of descriptor.operations) {
-    const scoped = catalogOfIdentity(operation.id, target, "operation");
-    if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-    const key = operationKey(operation.id);
-    if (operations.has(key)) return invalid(`ambiguous operation '${key}'`);
-    const owner = operation.id.owner;
-    if (owner.kind === "entity") {
-      if (!entities.has(owner.name)) {
-        return invalid(`missing operation owner entity '${owner.name}'`);
+      entities.set(entity.id.name, entity.id);
+      const composed = new Set<string>();
+      for (const trait of entity.traits) {
+        yield* catalogOfIdentity(trait, target, "entity trait");
+        composed.add(trait.name);
       }
-    } else if (!traits.has(owner.name)) {
-      return invalid(`missing operation owner trait '${owner.name}'`);
+      entityTraitEdges.set(entity.id.name, composed);
     }
-    const keys = validateInputShapeKeys(operation.input);
-    if (Result.isFailure(keys)) return Result.fail(keys.failure);
-    operations.set(key, operation);
-  }
 
-  const closed = closeTraits(traitTraitEdges);
-  if (Result.isFailure(closed)) return Result.fail(closed.failure);
-  const traitTraits = closed.success;
-  const entityTraits = new Map<string, Set<string>>();
-  for (const [name, direct] of entityTraitEdges) {
-    const seen = new Set<string>();
-    for (const trait of direct) {
-      seen.add(trait);
-      const nested = traitTraits.get(trait);
+    for (const trait of descriptor.traits) {
+      yield* catalogOfIdentity(trait.id, target, "trait");
+      if (traits.has(trait.id.name)) {
+        return yield* invalid(`ambiguous trait '${trait.id.name}'`);
+      }
+      traits.set(trait.id.name, trait.id);
+      const composed = new Set<string>();
+      for (const nested of trait.traits) {
+        yield* catalogOfIdentity(nested, target, "trait composition");
+        composed.add(nested.name);
+      }
+      traitTraitEdges.set(trait.id.name, composed);
+    }
+
+    for (const field of descriptor.fields) {
+      yield* catalogOfIdentity(field.id, target, "field");
+      const key = fieldKey(field.id);
+      if (fields.has(key)) return yield* invalid(`ambiguous field '${key}'`);
+      const owner = field.id.owner;
+      if (owner.kind === "entity") {
+        if (!entities.has(owner.name)) {
+          return yield* invalid(
+            `missing owner entity '${owner.name}' for field '${field.id.localName}'`,
+          );
+        }
+      } else if (!traits.has(owner.name)) {
+        return yield* invalid(
+          `missing owner trait '${owner.name}' for field '${field.id.localName}'`,
+        );
+      }
+      if (field.valueType === "ref") {
+        yield* validateFieldRefTarget(field.refTarget, target, entities, traits);
+      }
+      fields.set(key, field);
+    }
+
+    for (const operation of descriptor.operations) {
+      yield* catalogOfIdentity(operation.id, target, "operation");
+      const key = operationKey(operation.id);
+      if (operations.has(key)) return yield* invalid(`ambiguous operation '${key}'`);
+      const owner = operation.id.owner;
+      if (owner.kind === "entity") {
+        if (!entities.has(owner.name)) {
+          return yield* invalid(`missing operation owner entity '${owner.name}'`);
+        }
+      } else if (!traits.has(owner.name)) {
+        return yield* invalid(`missing operation owner trait '${owner.name}'`);
+      }
+      yield* validateInputShapeKeys(operation.input);
+      operations.set(key, operation);
+    }
+
+    const traitTraits = yield* closeTraits(traitTraitEdges);
+    const entityTraits = new Map<string, Set<string>>();
+    for (const [name, direct] of entityTraitEdges) {
+      const seen = new Set<string>();
+      for (const trait of direct) {
+        seen.add(trait);
+        const nested = traitTraits.get(trait);
+        if (nested !== undefined) {
+          for (const child of nested) seen.add(child);
+        }
+      }
+      entityTraits.set(name, seen);
+    }
+
+    const seenComposition = new Set<string>();
+    for (const row of descriptor.traitComposition) {
+      yield* catalogOfIdentity(row.composer, target, "trait-composition composer");
+      yield* catalogOfIdentity(row.trait, target, "trait-composition trait");
+      if (!entities.has(row.composer.name)) {
+        return yield* invalid(`missing composer entity '${row.composer.name}'`);
+      }
+      if (!traits.has(row.trait.name)) {
+        return yield* invalid(`missing composed trait '${row.trait.name}'`);
+      }
+      const compositionKey = `${row.composer.name}${SEPARATOR}${row.trait.name}`;
+      if (seenComposition.has(compositionKey)) {
+        return yield* invalid(
+          `duplicate trait composition '${row.composer.name}'/'${row.trait.name}'`,
+        );
+      }
+      seenComposition.add(compositionKey);
+      const computed = entityTraits.get(row.composer.name);
+      if (computed === undefined || !computed.has(row.trait.name)) {
+        return yield* invalid(
+          `entity '${row.composer.name}' does not compose trait '${row.trait.name}'`,
+        );
+      }
+      const expected = new Set<string>([row.trait.name]);
+      const nested = traitTraits.get(row.trait.name);
       if (nested !== undefined) {
-        for (const child of nested) seen.add(child);
+        for (const child of nested) expected.add(child);
       }
-    }
-    entityTraits.set(name, seen);
-  }
-
-  const seenComposition = new Set<string>();
-  for (const row of descriptor.traitComposition) {
-    const composerOk = catalogOfIdentity(row.composer, target, "trait-composition composer");
-    if (Result.isFailure(composerOk)) return Result.fail(composerOk.failure);
-    const traitOk = catalogOfIdentity(row.trait, target, "trait-composition trait");
-    if (Result.isFailure(traitOk)) return Result.fail(traitOk.failure);
-    if (!entities.has(row.composer.name)) {
-      return invalid(`missing composer entity '${row.composer.name}'`);
-    }
-    if (!traits.has(row.trait.name)) {
-      return invalid(`missing composed trait '${row.trait.name}'`);
-    }
-    const compositionKey = `${row.composer.name}${SEPARATOR}${row.trait.name}`;
-    if (seenComposition.has(compositionKey)) {
-      return invalid(`duplicate trait composition '${row.composer.name}'/'${row.trait.name}'`);
-    }
-    seenComposition.add(compositionKey);
-    const computed = entityTraits.get(row.composer.name);
-    if (computed === undefined || !computed.has(row.trait.name)) {
-      return invalid(`entity '${row.composer.name}' does not compose trait '${row.trait.name}'`);
-    }
-    const expected = new Set<string>([row.trait.name]);
-    const nested = traitTraits.get(row.trait.name);
-    if (nested !== undefined) {
-      for (const child of nested) expected.add(child);
-    }
-    const declared = new Set<string>();
-    for (const transitive of row.transitive) {
-      const scoped = catalogOfIdentity(transitive, target, "trait-composition transitive");
-      if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-      if (!traits.has(transitive.name)) {
-        return invalid(`missing transitive trait '${transitive.name}'`);
+      const declared = new Set<string>();
+      for (const transitive of row.transitive) {
+        yield* catalogOfIdentity(transitive, target, "trait-composition transitive");
+        if (!traits.has(transitive.name)) {
+          return yield* invalid(`missing transitive trait '${transitive.name}'`);
+        }
+        if (declared.has(transitive.name)) {
+          return yield* invalid(`duplicate transitive trait '${transitive.name}'`);
+        }
+        declared.add(transitive.name);
       }
-      if (declared.has(transitive.name)) {
-        return invalid(`duplicate transitive trait '${transitive.name}'`);
-      }
-      declared.add(transitive.name);
-    }
-    if (expected.size !== declared.size) {
-      return invalid(
-        `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
-      );
-    }
-    for (const name of expected) {
-      if (!declared.has(name)) {
-        return invalid(
+      if (expected.size !== declared.size) {
+        return yield* invalid(
           `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
         );
       }
-    }
-  }
-
-  for (const [entityName, direct] of entityTraitEdges) {
-    for (const traitName of direct) {
-      if (!seenComposition.has(`${entityName}${SEPARATOR}${traitName}`)) {
-        return invalid(`missing trait composition for '${entityName}'/'${traitName}'`);
+      for (const name of expected) {
+        if (!declared.has(name)) {
+          return yield* invalid(
+            `contradictory trait composition for '${row.composer.name}'/'${row.trait.name}'`,
+          );
+        }
       }
     }
-  }
 
-  return Result.succeed({
-    target,
-    entities,
-    traits,
-    fields,
-    entityTraits,
-    traitTraits,
+    for (const [entityName, direct] of entityTraitEdges) {
+      for (const traitName of direct) {
+        if (!seenComposition.has(`${entityName}${SEPARATOR}${traitName}`)) {
+          return yield* invalid(`missing trait composition for '${entityName}'/'${traitName}'`);
+        }
+      }
+    }
+
+    return {
+      target,
+      entities,
+      traits,
+      fields,
+      entityTraits,
+      traitTraits,
+    };
   });
-};
 
 export const requireEntity = (
   index: PreparedAuthorizationCatalog,
   id: EntityId,
   label: string,
-): Result.Result<EntityId, ValidateFailure> => {
-  const scoped = catalogOfIdentity(id, index.target, label);
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  const found = index.entities.get(id.name);
-  if (found === undefined) return invalid(`stale identity: missing ${label} '${id.name}'`);
-  return Result.succeed(found);
-};
+): Result.Result<EntityId, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* catalogOfIdentity(id, index.target, label);
+    const found = index.entities.get(id.name);
+    if (found === undefined) return yield* invalid(`stale identity: missing ${label} '${id.name}'`);
+    return found;
+  });
 
 export const requireTrait = (
   index: PreparedAuthorizationCatalog,
   id: TraitId,
   label: string,
-): Result.Result<TraitId, ValidateFailure> => {
-  const scoped = catalogOfIdentity(id, index.target, label);
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  const found = index.traits.get(id.name);
-  if (found === undefined) return invalid(`stale identity: missing ${label} '${id.name}'`);
-  return Result.succeed(found);
-};
+): Result.Result<TraitId, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* catalogOfIdentity(id, index.target, label);
+    const found = index.traits.get(id.name);
+    if (found === undefined) return yield* invalid(`stale identity: missing ${label} '${id.name}'`);
+    return found;
+  });
 
 export const requireField = (
   index: PreparedAuthorizationCatalog,
   id: FieldId,
   label: string,
-): Result.Result<FieldDescriptor, ValidateFailure> => {
-  const scoped = catalogOfIdentity(id, index.target, label);
-  if (Result.isFailure(scoped)) return Result.fail(scoped.failure);
-  const found = index.fields.get(fieldKey(id));
-  if (found === undefined) {
-    return invalid(
-      `stale identity: missing ${label} '${id.owner.kind}:${id.owner.name}.${id.localName}'`,
-    );
-  }
-  return Result.succeed(found);
-};
+): Result.Result<FieldDescriptor, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* catalogOfIdentity(id, index.target, label);
+    const found = index.fields.get(fieldKey(id));
+    if (found === undefined) {
+      return yield* invalid(
+        `stale identity: missing ${label} '${id.owner.kind}:${id.owner.name}.${id.localName}'`,
+      );
+    }
+    return found;
+  });
 
 export const entityComposes = (
   index: PreparedAuthorizationCatalog,

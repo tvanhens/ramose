@@ -198,11 +198,10 @@ export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(func
 export const hashCanonicalRule = Effect.fn("Authorization.hashCanonicalRule")(function* (
   rule: CanonicalAuthorizationRuleType,
 ) {
-  const material = canonicalAuthorizationRuleMaterial(rule);
-  if (Result.isFailure(material)) return yield* material.failure;
+  const material = yield* Effect.fromResult(canonicalAuthorizationRuleMaterial(rule));
   const digest = yield* hashDomainSeparatedCanonicalText(
     AUTHORIZATION_RULE_HASH_DOMAIN_V1,
-    material.success,
+    material,
   );
   return RuleId.make(digest);
 });
@@ -233,25 +232,26 @@ const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
   encodeRule: (rule: unknown) => JsonValue,
   input: unknown,
-): Result.Result<A, InvalidIR> => {
-  const hostile = inspectRawJson(input);
-  if (hostile !== undefined) {
-    return Result.fail(new InvalidIR({ message: hostile }));
-  }
-  const json = Schema.decodeUnknownResult(Schema.Json)(input);
-  if (Result.isFailure(json)) {
-    return Result.fail(new InvalidIR({ message: json.failure.message }));
-  }
-  const decoded = decode(json.success);
-  if (Result.isFailure(decoded)) {
-    return Result.fail(new InvalidIR({ message: decoded.failure.message }));
-  }
-  const collision = identityCollision(decoded.success, encodeRule);
-  if (collision !== undefined) {
-    return Result.fail(collision);
-  }
-  return Result.succeed(freezePlain(decoded.success));
-};
+): Result.Result<A, InvalidIR> =>
+  Result.gen(function* () {
+    const hostile = inspectRawJson(input);
+    if (hostile !== undefined) {
+      return yield* Result.fail(new InvalidIR({ message: hostile }));
+    }
+    const json = yield* Result.mapError(
+      Schema.decodeUnknownResult(Schema.Json)(input),
+      (failure) => new InvalidIR({ message: failure.message }),
+    );
+    const decoded = yield* Result.mapError(
+      decode(json),
+      (failure) => new InvalidIR({ message: failure.message }),
+    );
+    const collision = identityCollision(decoded, encodeRule);
+    if (collision !== undefined) {
+      return yield* Result.fail(collision);
+    }
+    return freezePlain(decoded);
+  });
 
 const identityCollision = (
   document: unknown,
