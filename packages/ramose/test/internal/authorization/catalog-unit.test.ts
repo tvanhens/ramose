@@ -1377,6 +1377,26 @@ describe("embedded policy tables must already be install-canonical", () => {
     expect(hashed.unitHash).not.toBe(unit.unitHash);
     await expectVerifyCatalogTableMismatch(hashed, /decisions/);
   });
+
+  test("verify rejects reordered policy.accessPlans after policyHash and unitHash recompute", async () => {
+    const unit = await sealRich();
+    expect(unit.policy.accessPlans.length).toBeGreaterThanOrEqual(2);
+    const canonicalPlans = [...unit.policy.accessPlans];
+    const reordered = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        accessPlans: [...unit.policy.accessPlans].reverse(),
+      },
+    } as InstalledCatalogUnit;
+    expect(reordered.policy.rules).toEqual(unit.policy.rules);
+    expect(reordered.policy.accessPlans).toEqual([...canonicalPlans].reverse());
+    expect(reordered.policy.accessPlans).not.toEqual(canonicalPlans);
+    const hashed = await rehashPolicyAndUnit(reordered);
+    expect(hashed.policy.policyHash).not.toBe(unit.policy.policyHash);
+    expect(hashed.unitHash).not.toBe(unit.unitHash);
+    await expectVerifyCatalogTableMismatch(hashed, /accessPlans/);
+  });
 });
 
 describe("schema fingerprint binds descriptor contents", () => {
