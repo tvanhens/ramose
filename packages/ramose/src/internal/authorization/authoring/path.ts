@@ -74,15 +74,20 @@ const navigate = (owner: FieldOwner, steps: readonly AuthPathStep[]): AuthPathPr
   const path = new AuthPath(steps);
   return new Proxy(path, {
     get(target, prop, receiver) {
+      if (typeof prop === "string") {
+        const field = fieldOf(owner, prop);
+        if (field !== undefined) {
+          const step = isPathCarrier(field) ? stepFromCarrier(field) : missingStep(owner, prop);
+          const next = isPathCarrier(field) ? (nextOwner(field, owner) ?? { fields: {} }) : { fields: {} };
+          return navigate(next, [...steps, step]);
+        }
+      }
       if (prop === "eq" || prop === "contains" || prop === "_tag" || prop === "steps") {
         return Reflect.get(target, prop, receiver);
       }
-      if (typeof prop !== "string") return undefined;
       if (prop === "then" || prop === "toJSON") return undefined;
-      const field = fieldOf(owner, prop);
-      const step = isPathCarrier(field) ? stepFromCarrier(field) : missingStep(owner, prop);
-      const next = isPathCarrier(field) ? (nextOwner(field, owner) ?? { fields: {} }) : { fields: {} };
-      return navigate(next, [...steps, step]);
+      if (typeof prop !== "string") return undefined;
+      return navigate({ fields: {} }, [...steps, missingStep(owner, prop)]);
     },
   }) as unknown as AuthPathProxy;
 };

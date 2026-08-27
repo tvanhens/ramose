@@ -430,7 +430,7 @@ describe("InvalidIR failures", () => {
   });
 
   test("eq on card-many", () => {
-    expectInvalid(compile([read(Issue).when(eq(Workspace.members, me))]), /card-many|contains/);
+    expectInvalid(compile([read(Workspace).when(eq(Workspace.members, me))]), /card-many|contains/);
     expectInvalid(compile([read(Issue).when(eq(Issue.tags, me))]), /card-many|contains/);
   });
 
@@ -472,7 +472,9 @@ describe("InvalidIR failures", () => {
 
   test("intermediate many hop", () => {
     expectInvalid(
-      compile([read(Issue).when(eq(path(Workspace.members, User.authId), "x"))]),
+      compile([
+        read(Issue).when(eq(path(Issue.workspace, Workspace.members, User.authId), "x")),
+      ]),
       /intermediate many/,
     );
   });
@@ -543,6 +545,120 @@ describe("InvalidIR failures", () => {
       ]),
       /unsupported expression tag 'some'/,
     );
+  });
+
+  test("rejects paths unreachable from the rule focus", () => {
+    expectInvalid(
+      compile([read(Issue).when(eq(User.authId, "x"))]),
+      /wrong owner for field 'entity:user\.authId'/,
+    );
+    expectInvalid(
+      compile([read(Issue).when(contains(path(Issue.owner, Workspace.members), me))]),
+      /wrong owner for field 'entity:workspace\.members'/,
+    );
+    expectInvalid(
+      compile([read(Issue.title).when(eq(User.authId, "x"))]),
+      /wrong owner/,
+    );
+  });
+
+  test("composed trait fields stay reachable from the entity focus", () => {
+    const issueTags = expectOk(compile([read(Issue).when(contains(Issue.tags, me))]));
+    const traitTags = expectOk(compile([read(Issue).when(contains(Taggable.tags, me))]));
+    expect(issueTags.rules[0]?.expr).toEqual(traitTags.rules[0]?.expr);
+    expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
+    expectOk(compile([read(Issue).when(eq(path(Issue.parent, Issue.owner), me))]));
+  });
+
+  test("malformed operand payloads return InvalidIR", () => {
+    expectInvalid(compile([read(Issue).when(eq({ _tag: "claim" }, me))]), /malformed claim/);
+    expectInvalid(
+      compile([read(Issue).when(eq({ _tag: "claim", key: "" }, me))]),
+      /blank claim key/,
+    );
+    expectInvalid(compile([read(Issue).when(eq({ _tag: "path" }, me))]), /malformed path/);
+    expectInvalid(
+      compile([read(Issue).when(eq({ _tag: "path", steps: [] }, me))]),
+      /malformed path/,
+    );
+    expectInvalid(
+      compile([read(Issue).when(eq({ _tag: "path", steps: [{}] }, me))]),
+      /malformed path/,
+    );
+    expectInvalid(
+      compile([read(Issue).when(eq({ _tag: "lit", value: { nested: true } }, me))]),
+      /JSON scalar/,
+    );
+  });
+
+  test("rejects incompatible equality operands at compile", () => {
+    expectInvalid(compile([read(Issue).when(eq(Issue.title, me))]), /incompatible equality/);
+    expectInvalid(compile([read(Issue).when(eq(Issue.title, 1))]), /incompatible equality/);
+    expectOk(compile([read(Issue).when(eq(Issue.owner, me))]));
+    expectOk(compile([read(Issue).when(eq(subject, claim("org")))]));
+    expectOk(compile([read(Issue).when(eq(Issue.title, "hello"))]));
+  });
+
+  test("rejects expression depth above 64", () => {
+    let tooDeep: AuthExpr = allow;
+    for (let i = 0; i < 65; i++) tooDeep = not(tooDeep);
+    expectInvalid(compile([read(Issue).when(tooDeep)]), /expression depth 65 exceeds 64/);
+  });
+});
+
+describe("schema field names reserved by $()", () => {
+  const Thing = Entity("thing", {
+    eq: string(),
+    contains: string(),
+    steps: string(),
+  });
+  const Things = Schema({ thing: Thing });
+  const compileThing = (rules: readonly ReadRule[]) =>
+    compileReadAuthorizationResult({
+      schema: Things,
+      rules,
+      claims: [],
+      principal: {},
+    });
+
+  test("proxy navigates real eq/contains/steps fields", () => {
+    const dollars = expectOk(compileThing([read(Thing).when(eq($(Thing).eq, "x"))]));
+    const method = expectOk(compileThing([read(Thing).when($(Thing).eq.eq("x"))]));
+    const callback = expectOk(compileThing([read(Thing).when((thing) => eq(thing.eq, "x"))]));
+    const containsField = expectOk(compileThing([read(Thing).when(eq($(Thing).contains, "c"))]));
+    const stepsField = expectOk(compileThing([read(Thing).when(eq($(Thing).steps, "s"))]));
+
+    const eqField = {
+      _tag: "RelativeFieldId" as const,
+      owner: { kind: "entity" as const, name: "thing" },
+      localName: "eq",
+    };
+    expect(dollars.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: { _tag: "ref", root: { _tag: "resource" }, steps: [{ field: eqField }] },
+      right: { _tag: "lit", value: "x" },
+    });
+    expect(method.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
+    expect(callback.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
+    expect(containsField.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: { ...eqField, localName: "contains" } }],
+      },
+      right: { _tag: "lit", value: "c" },
+    });
+    expect(stepsField.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: { ...eqField, localName: "steps" } }],
+      },
+      right: { _tag: "lit", value: "s" },
+    });
+    expectOk(compile([read(Issue).when($(Issue).owner.eq(me))]));
   });
 });
 
