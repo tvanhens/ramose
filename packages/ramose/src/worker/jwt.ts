@@ -74,6 +74,20 @@ const integer = (value: unknown): Result.Result<number, Unauthorized> =>
     ? Result.succeed(value)
     : failure();
 
+export const temporalClaimsHold = (
+  iat: number,
+  exp: number,
+  nbf: number | undefined,
+  nowMs: number,
+): boolean => {
+  const nowSeconds = Math.floor(nowMs / 1_000);
+  return (
+    iat <= nowSeconds + CLOCK_TOLERANCE_SECONDS &&
+    exp + CLOCK_TOLERANCE_SECONDS >= nowSeconds &&
+    (nbf === undefined || nbf <= nowSeconds + CLOCK_TOLERANCE_SECONDS)
+  );
+};
+
 const audience = (
   value: unknown,
 ): Result.Result<string | readonly string[], Unauthorized> => {
@@ -223,10 +237,10 @@ const verifiedPrincipal = (
     const aud = yield* audience(payload.aud);
     const iat = yield* integer(payload.iat);
     const exp = yield* integer(payload.exp);
-    if (payload.nbf !== undefined) yield* integer(payload.nbf);
+    const nbf =
+      payload.nbf === undefined ? undefined : yield* integer(payload.nbf);
 
-    const nowSeconds = Math.floor(nowMs / 1_000);
-    if (iat > nowSeconds + CLOCK_TOLERANCE_SECONDS) return yield* failure();
+    if (!temporalClaimsHold(iat, exp, nbf, nowMs)) return yield* failure();
     const lifetime = exp - iat;
     if (!Number.isInteger(lifetime) || lifetime <= 0 || lifetime > maxTtl) {
       return yield* failure();
@@ -307,10 +321,13 @@ const makeVerifier = (env: JwtVerifierEnv): JwtVerifierClient => {
     const url = env.RAMOSE_JWKS_URL;
     const inline = env.RAMOSE_JWKS_JSON;
     const serviceName = env.RAMOSE_JWKS_SERVICE;
+    const hasUrl = typeof url === "string" && url.length > 0;
+    const hasInline = typeof inline === "string" && inline.length > 0;
     const issuers = parseIssuers(env.RAMOSE_JWT_ISS);
     const aud = env.RAMOSE_JWT_AUD;
     const maxTtl = parseMaxTtl(env.RAMOSE_JWT_MAX_TTL);
     if (
+      hasUrl === hasInline ||
       issuers.length === 0 ||
       typeof aud !== "string" ||
       aud.length === 0 ||
@@ -322,7 +339,7 @@ const makeVerifier = (env: JwtVerifierEnv): JwtVerifierClient => {
     let resolver:
       | ReturnType<typeof createLocalJWKSet>
       | ReturnType<typeof createRemoteJWKSet>;
-    if (typeof url === "string" && url.length > 0) {
+    if (hasUrl) {
       const options: RemoteJWKSetOptions = {
         timeoutDuration: 5_000,
         cooldownDuration: 30_000,
@@ -333,17 +350,15 @@ const makeVerifier = (env: JwtVerifierEnv): JwtVerifierClient => {
         if (binding === undefined) return denyAll();
         options[customFetch] = serviceBindingFetch(binding);
       }
-      resolver = createRemoteJWKSet(new URL(url), options);
-    } else if (typeof inline === "string" && inline.length > 0) {
-      resolver = createLocalJWKSet(JSON.parse(inline) as JSONWebKeySet);
+      resolver = createRemoteJWKSet(new URL(url!), options);
     } else {
-      return denyAll();
+      resolver = createLocalJWKSet(JSON.parse(inline!) as JSONWebKeySet);
     }
 
     const verify = Effect.fn("JwtVerifier.verify")(function* (
       token: Redacted.Redacted<string>,
     ) {
-      const nowMs = yield* Clock.currentTimeMillis;
+      const verifyStartedMs = yield* Clock.currentTimeMillis;
       const verified = yield* Effect.tryPromise({
         try: () =>
           jwtVerify(Redacted.value(token), resolver, {
@@ -351,11 +366,12 @@ const makeVerifier = (env: JwtVerifierEnv): JwtVerifierClient => {
             audience: aud,
             algorithms: [...ALGORITHMS],
             clockTolerance: CLOCK_TOLERANCE_SECONDS,
-            currentDate: new Date(nowMs),
+            currentDate: new Date(verifyStartedMs),
             requiredClaims: ["sub", "iat", "exp"],
           }),
         catch: () => unauthorized(),
       });
+      const nowMs = yield* Clock.currentTimeMillis;
       return yield* Effect.fromResult(
         verifiedPrincipal(
           token,

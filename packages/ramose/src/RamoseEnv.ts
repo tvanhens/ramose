@@ -27,7 +27,7 @@ export interface RamoseEnv {
    * error 1042, so the peer must dispatch through the binding.
    */
   RAMOSE_JWKS_SERVICE?: string;
-  /** test/offline seam: a literal JWK Set, used when RAMOSE_JWKS_URL is unset */
+  /** test/offline seam: a literal JWK Set; mutually exclusive with RAMOSE_JWKS_URL */
   RAMOSE_JWKS_JSON?: string;
   /** accepted `iss` values, comma-separated */
   RAMOSE_JWT_ISS?: string;

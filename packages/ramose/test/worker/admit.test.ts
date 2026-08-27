@@ -209,6 +209,15 @@ describe("production handle admission ordering", () => {
     expect(await body(response)).toEqual({ error: "unauthorized" });
   });
 
+  test("a valid JWT cannot authenticate for another database", async () => {
+    const validToken = await token();
+    const response = await fetch("/db/other/info", {
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+    expect(response.status).toBe(401);
+    expect(await body(response)).toEqual({ error: "unauthorized" });
+  });
+
   test("HTTP query token is rejected even when it is valid", async () => {
     const validToken = await token();
     const absentHeader = await fetch(

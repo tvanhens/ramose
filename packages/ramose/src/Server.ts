@@ -151,11 +151,7 @@ export interface ServerAuth {
    * principals. External `/db/*` is fail-closed until that lands.
    */
   readonly jwksUrl?: AuthEnvValue | undefined;
-  /**
-   * Literal JWK Set for offline / test verification. Used when
-   * {@link jwksUrl} is unset (the Worker prefers the URL if both are
-   * bound). Lowers onto `RAMOSE_JWKS_JSON`.
-   */
+  /** Literal JWK Set for offline / test verification; mutually exclusive with {@link jwksUrl}. */
   readonly jwksJson?: AuthEnvValue | undefined;
   /**
    * Name of a service binding on the server Worker to fetch `jwksUrl`

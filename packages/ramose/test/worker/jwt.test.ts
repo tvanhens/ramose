@@ -25,6 +25,7 @@ import {
   fromEnv,
   resetJwtVerifier,
   serviceBindingFetch,
+  temporalClaimsHold,
   type JwksServiceBinding,
 } from "../../src/worker/jwt.ts";
 
@@ -338,6 +339,32 @@ describe("JwtVerifier", () => {
     }
   });
 
+  test("applies temporal post-checks against the fresh verification time", () => {
+    const now = 1_000;
+    expect(temporalClaimsHold(now, now + 1, undefined, now * 1_000)).toBe(
+      true,
+    );
+    expect(
+      temporalClaimsHold(now, now + 1, undefined, (now + 6) * 1_000),
+    ).toBe(true);
+    expect(
+      temporalClaimsHold(now, now + 1, undefined, (now + 7) * 1_000),
+    ).toBe(false);
+
+    expect(
+      temporalClaimsHold(now + 5, now + 100, undefined, now * 1_000),
+    ).toBe(true);
+    expect(
+      temporalClaimsHold(now + 6, now + 100, undefined, now * 1_000),
+    ).toBe(false);
+    expect(temporalClaimsHold(now, now + 100, now + 5, now * 1_000)).toBe(
+      true,
+    );
+    expect(temporalClaimsHold(now, now + 100, now + 6, now * 1_000)).toBe(
+      false,
+    );
+  });
+
   test("uses the configured issuer set and maximum lifetime default", async () => {
     const token = await sign({
       payload: payload({
@@ -369,7 +396,7 @@ describe("JwtVerifier", () => {
     }
   });
 
-  test("remote JWKS wins over inline JSON and resolves through the named service", async () => {
+  test("remote-only JWKS resolves through the named service", async () => {
     const token = await sign();
     const urls: string[] = [];
     const binding: JwksServiceBinding = {
@@ -379,7 +406,7 @@ describe("JwtVerifier", () => {
       },
     };
     const remoteEnv = env([], {
-      RAMOSE_JWKS_JSON: "invalid-inline-json-must-be-ignored",
+      RAMOSE_JWKS_JSON: undefined,
       RAMOSE_JWKS_URL: "https://issuer.example.test/.well-known/jwks.json",
       RAMOSE_JWKS_SERVICE: "JWKS",
       JWKS: binding,
@@ -388,6 +415,25 @@ describe("JwtVerifier", () => {
     expect(urls).toEqual([
       "https://issuer.example.test/.well-known/jwks.json",
     ]);
+  });
+
+  test("configuring both remote and inline JWKS denies all", async () => {
+    const token = await sign();
+    let fetched = false;
+    const binding: JwksServiceBinding = {
+      fetch: async () => {
+        fetched = true;
+        return Response.json({ keys: [keyA.publicJwk] });
+      },
+    };
+    const bothEnv = env([keyA.publicJwk], {
+      RAMOSE_JWKS_URL: "https://issuer.example.test/.well-known/jwks.json",
+      RAMOSE_JWKS_SERVICE: "JWKS",
+      JWKS: binding,
+    });
+
+    expectOpaque(await rejection(token, bothEnv), [token]);
+    expect(fetched).toBe(false);
   });
 
   test("maps JWKS network and abort failures to the same Unauthorized", async () => {
