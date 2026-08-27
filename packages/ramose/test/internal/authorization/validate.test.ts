@@ -964,6 +964,79 @@ describe("me, claims, and classes", () => {
     );
     expectValidated(validate(boundDocument([rule]), composing));
   });
+
+  test("accepts eq of a child-trait resource and a parent-trait ref", () => {
+    const labeledOwner = { kind: "trait" as const, name: "labeled" };
+    const withChild: CatalogDescriptor = {
+      ...descriptor,
+      traits: [
+        { id: trait("taggable"), traits: [] },
+        { id: trait("orphaned"), traits: [] },
+        { id: trait("labeled"), traits: [trait("taggable")] },
+      ],
+      operations: [
+        ...descriptor.operations,
+        {
+          id: operation(labeledOwner, "relate", "required"),
+          input: { _tag: "ref", refTarget: { _tag: "trait", trait: trait("taggable") } },
+        },
+      ],
+    };
+    const rule = stamp(
+      { _tag: "operation", operation: operation(labeledOwner, "relate", "required") },
+      {
+        _tag: "eq",
+        left: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+        right: { _tag: "input", path: [] },
+      },
+      {
+        usesResource: true,
+        usesInput: true,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectValidated(validate(boundDocument([rule]), withChild));
+  });
+
+  test("rejects eq of unrelated trait rows", () => {
+    const orphanedOwner = { kind: "trait" as const, name: "orphaned" };
+    const withOrphanOp: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        ...descriptor.operations,
+        {
+          id: operation(orphanedOwner, "relate", "required"),
+          input: { _tag: "ref", refTarget: { _tag: "trait", trait: trait("taggable") } },
+        },
+      ],
+    };
+    const rule = stamp(
+      { _tag: "operation", operation: operation(orphanedOwner, "relate", "required") },
+      {
+        _tag: "eq",
+        left: { _tag: "ref", root: { _tag: "resource" }, steps: [] },
+        right: { _tag: "input", path: [] },
+      },
+      {
+        usesResource: true,
+        usesInput: true,
+        usesMe: false,
+        usesSubject: false,
+        traversalDepth: 0,
+        existsDepth: 0,
+        dependencies: [],
+      },
+    );
+    expectFailure(
+      validate(boundDocument([rule]), withOrphanOp),
+      "InvalidIR",
+      /incompatible equality/,
+    );
+  });
 });
 
 describe("operation input", () => {

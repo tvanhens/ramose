@@ -427,7 +427,11 @@ export const sameRow = (
     return left.entity.catalog === right.entity.catalog && left.entity.name === right.entity.name;
   }
   if (left._tag === "trait" && right._tag === "trait") {
-    return left.trait.catalog === right.trait.catalog && left.trait.name === right.trait.name;
+    if (left.trait.catalog !== right.trait.catalog) return false;
+    return (
+      traitComposes(index, left.trait, right.trait.name) ||
+      traitComposes(index, right.trait, left.trait.name)
+    );
   }
   if (left._tag === "entity" && right._tag === "trait") {
     return entityComposes(index, left.entity, right.trait.name);
