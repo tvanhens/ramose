@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import * as Effect from "effect/Effect";
-import { schemaTx } from "../../../src/db/ensure.ts";
-import { txBuilder, txOps } from "../../../src/db/Tx.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index } from "../../../src/internal/core/datom.ts";
 import { TxError } from "../../../src/internal/core/tx.ts";
-import { Movies, User } from "../../db/fixture.ts";
 
 const SCHEMA = [
   { ":db/ident": ":user/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
@@ -41,15 +37,11 @@ describe("db/cas", () => {
     expect((await conn.db().entity(u))![":user/age"]).toBe(31);
   });
 
-  test("absent expected when absent: tempid and existing entity without the attr", async () => {
+  test("absent expected (null) on an existing entity without the attr", async () => {
     const conn = await setup();
-    const created = await conn.transact([[":db/cas", "u", ":user/age", null, 10]]);
-    const u = created.tempids.u;
-    expect((await conn.db().entity(u))![":user/age"]).toBe(10);
-
     const named = await conn.transact([{ ":db/id": "v", ":user/name": "V" }]);
     const v = named.tempids.v;
-    await conn.transact([[":db/cas", v, ":user/age", undefined, 11]]);
+    await conn.transact([[":db/cas", v, ":user/age", null, 11]]);
     expect((await conn.db().entity(v))![":user/age"]).toBe(11);
   });
 
@@ -88,6 +80,17 @@ describe("db/cas", () => {
     expect((await conn.db().entity(u))![":user/age"]).toBe(31);
   });
 
+  test("lookup-ref subject must exist in db-before, not only via a same-tx add", async () => {
+    const conn = await setup();
+    await expect(
+      conn.transact([
+        { ":db/id": "u", ":user/email": "fresh@x", ":user/name": "N" },
+        [":db/cas", [":user/email", "fresh@x"], ":user/age", null, 1],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/lookup-ref" });
+    expect(await conn.db().entid([":user/email", "fresh@x"])).toBeUndefined();
+  });
+
   test("unique conflict on replacement leaves original values unchanged", async () => {
     const conn = await setup();
     const r1 = await conn.transact([
@@ -101,15 +104,6 @@ describe("db/cas", () => {
     });
     expect((await conn.db().entity(a))![":user/handle"]).toBe("aa");
     expect((await conn.db().entity(b))![":user/handle"]).toBe("bb");
-  });
-
-  test("CAS is not upsert: tempid + taken unique replacement is tx/unique-conflict", async () => {
-    const conn = await setup();
-    await conn.transact([{ ":db/id": "a", ":user/name": "A", ":user/handle": "aa" }]);
-    await expect(conn.transact([[":db/cas", "new", ":user/handle", null, "aa"]])).rejects.toMatchObject({
-      code: "tx/unique-conflict",
-    });
-    expect(await conn.db().entid([":user/handle", "aa"])).toBeDefined();
   });
 
   test("card-many is tx/invalid", async () => {
@@ -149,97 +143,6 @@ describe("db/cas", () => {
     await expect(conn.transact([[":db/cas", 99_999, ":user/age", null, 10]])).rejects.toMatchObject({
       code: "tx/missing-entity",
     });
-  });
-
-  test("same-tx two matching CAS with different replacements: last wins", async () => {
-    const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    const age = conn.db().attr(":user/age")!.id;
-    const r2 = await conn.transact([
-      [":db/cas", u, ":user/age", 30, 31],
-      [":db/cas", u, ":user/age", 30, 32],
-    ]);
-    expect(ageOps(conn, r2.txData)).toEqual([[30, false], [32, true]]);
-    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
-    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
-    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
-    const hist = await conn.db().history().datomsArray(Index.EAVT, { e: u, a: age });
-    expect(hist.map((d) => [d.v, d.op])).toEqual([
-      [30, true],
-      [30, false],
-      [32, true],
-    ]);
-    expect((await conn.db().asOf(r1.t).entity(u))![":user/age"]).toBe(30);
-    expect((await conn.db().asOf(r2.t).entity(u))![":user/age"]).toBe(32);
-  });
-
-  test("same-tx two matching CAS: query and subsequent CAS see one value", async () => {
-    const conn = await setup();
-    const { query } = await import("../../../src/internal/core/query/engine.ts");
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    await conn.transact([
-      [":db/cas", u, ":user/age", 30, 31],
-      [":db/cas", u, ":user/age", 30, 32],
-    ]);
-    expect(await query(conn.db(), `[:find ?a . :where [${u} :user/age ?a]]`)).toBe(32);
-    await conn.transact([[":db/cas", u, ":user/age", 32, 33]]);
-    expect((await conn.db().entity(u))![":user/age"]).toBe(33);
-  });
-
-  test("same-tx CAS then ordinary add: last wins without contradictory datoms", async () => {
-    const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    const age = conn.db().attr(":user/age")!.id;
-    await conn.transact([
-      [":db/cas", u, ":user/age", 30, 31],
-      [":db/add", u, ":user/age", 32],
-    ]);
-    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
-    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
-    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
-  });
-
-  test("same-tx ordinary add then CAS: last wins without contradictory datoms", async () => {
-    const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    const age = conn.db().attr(":user/age")!.id;
-    await conn.transact([
-      [":db/add", u, ":user/age", 31],
-      [":db/cas", u, ":user/age", 30, 32],
-    ]);
-    expect((await conn.db().entity(u))![":user/age"]).toBe(32);
-    const eavt = await conn.db().datomsArray(Index.EAVT, { e: u, a: age });
-    expect(eavt.map((d) => [d.v, d.op])).toEqual([[32, true]]);
-  });
-
-  test("same-tx two CAS with different expecteds: tx/cas-conflict", async () => {
-    const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    await expect(
-      conn.transact([
-        [":db/cas", u, ":user/age", 30, 31],
-        [":db/cas", u, ":user/age", 99, 32],
-      ]),
-    ).rejects.toMatchObject({ code: "tx/cas-conflict" });
-    expect((await conn.db().entity(u))![":user/age"]).toBe(30);
-  });
-
-  test("same-tx second CAS expected=first replacement fails (db-before compare)", async () => {
-    const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
-    const u = r1.tempids.u;
-    await expect(
-      conn.transact([
-        [":db/cas", u, ":user/age", 30, 31],
-        [":db/cas", u, ":user/age", 31, 32],
-      ]),
-    ).rejects.toMatchObject({ code: "tx/cas-conflict" });
-    expect((await conn.db().entity(u))![":user/age"]).toBe(30);
   });
 
   test("history / as-of / current after a successful CAS", async () => {
@@ -284,7 +187,7 @@ describe("db/cas", () => {
     expect((await conn.db().entity(u))![":user/age"]).toBe(30);
   });
 
-  test("ref-typed card-one: nested map replacement and ident replacement", async () => {
+  test("ref-typed card-one: nested map replacement, ident replacement, expected vs db-before", async () => {
     const conn = await setup();
     const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A" }]);
     const u = r1.tempids.u;
@@ -309,26 +212,7 @@ describe("db/cas", () => {
     expect((await conn.db().entity(u))![":user/favorite"]).toBe(conn.db().schema.entid(":color/red"));
   });
 
-  test("tx.cas lowers to :db/cas and commits through Connection", async () => {
-    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
-    await conn.transact(schemaTx(Movies) as unknown[]);
-    const create = txBuilder(Movies);
-    Effect.runSync(create.put(User, { name: "Ada", age: 36 }));
-    const created = await conn.transact([...txOps(create)]);
-    const eid = created.tempids["tmp-1"]!;
-    expect(typeof eid).toBe("number");
-    const cas = txBuilder(Movies);
-    Effect.runSync(cas.cas(eid, User.age, 36, 37));
-    expect(txOps(cas)).toEqual([[":db/cas", eid, ":user/age", 36, 37]]);
-    const handle = txBuilder(Movies);
-    const h = Effect.runSync(handle.entity(eid));
-    Effect.runSync(h.cas(User.age, null, 1));
-    expect(txOps(handle)).toEqual([[":db/cas", eid, ":user/age", null, 1]]);
-    await conn.transact([...txOps(cas)]);
-    expect((await conn.db().entity(eid))![":user/age"]).toBe(37);
-  });
-
-  test("same-tx retractEntity then CAS expected=old component ref succeeds", async () => {
+  test("same-tx retractEntity of other entity then CAS expected=old component ref", async () => {
     const conn = await setup();
     const r1 = await conn.transact([
       { ":db/id": "u", ":user/name": "A", ":user/address": { ":db/id": "old", ":address/city": "Paris" } },
@@ -357,5 +241,114 @@ describe("db/cas", () => {
     await expect(conn.transact([[":db/cas", r1.tempids.u, ":user/age", 9, 2]])).rejects.toBeInstanceOf(
       TxError,
     );
+  });
+
+  test("replacement ref may be a tempid created by an add in the same tx", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A" }]);
+    const u = r1.tempids.u;
+    const r2 = await conn.transact([
+      { ":db/id": "addr", ":address/city": "Oslo" },
+      [":db/cas", u, ":user/address", null, "addr"],
+    ]);
+    const addr = r2.tempids.addr;
+    expect(typeof addr).toBe("number");
+    expect((await conn.db().entity(u))![":user/address"]).toBe(addr);
+    expect((await conn.db().entity(addr))![":address/city"]).toBe("Oslo");
+  });
+
+  test("tempid subject is tx/invalid and allocates no entity", async () => {
+    const conn = await setup();
+    const next = conn.nextEntityId;
+    const t = conn.t;
+    await expect(conn.transact([[":db/cas", "new", ":user/age", null, 10]])).rejects.toMatchObject({
+      code: "tx/invalid",
+    });
+    expect(conn.nextEntityId).toBe(next);
+    expect(conn.t).toBe(t);
+    expect(await conn.db().entid([":user/email", "nobody@x"])).toBeUndefined();
+  });
+
+  test("undefined expected is tx/invalid (not the absent encoding)", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A" }]);
+    const u = r1.tempids.u;
+    await expect(conn.transact([[":db/cas", u, ":user/age", undefined, 11]])).rejects.toMatchObject({
+      code: "tx/invalid",
+    });
+    expect((await conn.db().entity(u))![":user/age"]).toBeUndefined();
+  });
+
+  test("two CAS on the same (e, a) is tx/invalid and commits nothing", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    const t = conn.t;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/cas", u, ":user/age", 30, 32],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    expect(conn.t).toBe(t);
+    expect((await conn.db().entity(u))![":user/age"]).toBe(30);
+  });
+
+  test("CAS + add / retract / update on the same (e, a) is tx/invalid", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/add", u, ":user/age", 32],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    await expect(
+      conn.transact([
+        [":db/add", u, ":user/age", 32],
+        [":db/cas", u, ":user/age", 30, 33],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/retract", u, ":user/age", 30],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/update", u, ":user/age", 32],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    expect((await conn.db().entity(u))![":user/age"]).toBe(30);
+  });
+
+  test("retractEntity of the CAS subject is tx/invalid", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/retractEntity", u],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    expect(await conn.db().entity(u)).toBeDefined();
+    expect((await conn.db().entity(u))![":user/age"]).toBe(30);
+  });
+
+  test("two CAS on different attrs of the same entity is OK", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await conn.transact([
+      [":db/cas", u, ":user/age", 30, 31],
+      [":db/cas", u, ":user/name", "A", "B"],
+    ]);
+    const row = await conn.db().entity(u);
+    expect(row![":user/age"]).toBe(31);
+    expect(row![":user/name"]).toBe("B");
   });
 });

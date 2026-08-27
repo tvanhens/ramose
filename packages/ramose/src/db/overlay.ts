@@ -10,10 +10,11 @@
  */
 
 import { Connection } from "../internal/core/conn.ts";
-import { type Datom, Index } from "../internal/core/datom.ts";
+import { type Datom, Index, ValueTag } from "../internal/core/datom.ts";
 import { Db as EngineDb } from "../internal/core/db.ts";
 import { fromWireDatom, type WireDatom } from "../internal/core/log.ts";
 import { Novelty } from "../internal/core/novelty.ts";
+import type { Schema } from "../internal/core/schema.ts";
 import {
   QueryBudgetError,
   QueryError,
@@ -24,7 +25,7 @@ import {
   normalizePullPattern,
   pull as enginePull,
 } from "../internal/core/query/pull.ts";
-import { processTx, TxError, type TxResult } from "../internal/core/tx.ts";
+import { processTx, TxError } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
 import type { AnySchema } from "./Schema.ts";
 import { schemaTx } from "./ensure.ts";
@@ -32,7 +33,6 @@ import { tryLowerQueryObject } from "./query/index.ts";
 import { lowerPullPattern } from "./Pull.ts";
 import { NotOne } from "./Errors.ts";
 import { buildOp, entityRefOf, runBody } from "./op-handle.ts";
-import { isBuilderTempidName } from "./entityArg.ts";
 import {
   asLookupRef,
   materializeOutput,
@@ -51,29 +51,6 @@ import {
 } from "./Errors.ts";
 import { record, retryTransient } from "./http.ts";
 import type { Session } from "./session.ts";
-import {
-  collectNamedTempids,
-  collectOpInputTempidPaths,
-  pruneAckedNamedIds,
-  remapQueuedLayers,
-  rewritePendingInvocation,
-  rewritePendingTx,
-  submitDespiteLocalTxError,
-} from "./overlay-remap.ts";
-
-export {
-  collectNamedTempids,
-  collectOpInputTempidPaths,
-  pruneAckedNamedIds,
-  remapQueuedLayers,
-  rewritePendingInvocation,
-  rewritePendingTx,
-  submitDespiteLocalTxError,
-} from "./overlay-remap.ts";
-export type {
-  OverlayInFlightRecord,
-  OverlayRemapLayer,
-} from "./overlay-remap.ts";
 
 export interface OverlayAck {
   readonly t: number;
@@ -137,21 +114,6 @@ interface PendingLayer {
   tx: unknown[];
   datoms: Datom[];
   tempids: Record<string, number>;
-  /** Builder-minted `tmp-N` names — provenance, not inferred from the string. */
-  generated: Set<string>;
-  /** Named tempids this payload treats as entity refs (tx, entity, op.tempid). */
-  usedTempids: Set<string>;
-  /** Input paths the body read as tempid / entity values. */
-  inputPaths: (readonly (string | number)[])[];
-  invocation?: OperationInvocation;
-}
-
-/** No-layer posts (local CAS-bypass) still in the outbox. */
-interface InFlightNamed {
-  names: Set<string>;
-  usedTempids: Set<string>;
-  inputPaths: (readonly (string | number)[])[];
-  tx: unknown[];
   invocation?: OperationInvocation;
 }
 
@@ -169,12 +131,126 @@ const asTempids = (value: unknown): Record<string, number> => {
   return out;
 };
 
+const remapEntityRef = (
+  entity: unknown,
+  eids: Map<number, number>,
+  referred: Record<string, number>,
+): unknown => {
+  if (typeof entity === "number") return eids.get(entity) ?? entity;
+  if (typeof entity === "string" && referred[entity] !== undefined) {
+    return referred[entity];
+  }
+  // Lookups (`[":user/name", "Ada"]`) are identity-based — pass through.
+  return entity;
+};
+
 const clientTxId = (): string =>
   typeof globalThis.crypto?.randomUUID === "function"
     ? globalThis.crypto.randomUUID()
     : `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
+const rewriteTempid = (value: unknown, ids: Record<string, number>): unknown =>
+  typeof value === "string" && ids[value] !== undefined ? ids[value] : value;
+
+const isLookupRef = (value: unknown): value is readonly [string, unknown] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  typeof value[0] === "string" &&
+  value[0].startsWith(":");
+
+const forwardIdent = (ident: string): string => {
+  const slash = ident.lastIndexOf("/");
+  return slash >= 0 && ident[slash + 1] === "_"
+    ? ident.slice(0, slash + 1) + ident.slice(slash + 2)
+    : ident;
+};
+
+const isRefAttr = (schema: Schema | undefined, a: unknown): boolean => {
+  if (schema === undefined) return false;
+  if (typeof a === "number") return schema.attr(a)?.valueType === ValueTag.Ref;
+  if (typeof a !== "string") return false;
+  return schema.attr(forwardIdent(a))?.valueType === ValueTag.Ref;
+};
+
+/** Rewrite a tempid only in entity / ref positions — never a scalar like a title. */
+const rewriteEntityForm = (
+  value: unknown,
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown => {
+  if (isLookupRef(value)) return value;
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return rewriteMap(value as Record<string, unknown>, ids, schema);
+  }
+  return rewriteTempid(value, ids);
+};
+
+const rewriteMap = (
+  m: Record<string, unknown>,
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (k === ":db/id") {
+      out[k] = rewriteEntityForm(v, ids, schema);
+    } else if (isRefAttr(schema, k)) {
+      out[k] = Array.isArray(v) && !isLookupRef(v)
+        ? v.map((x) => rewriteEntityForm(x, ids, schema))
+        : rewriteEntityForm(v, ids, schema);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+};
+
+/** @internal Pending-layer tempid rewrite. Tests pin `:db/update`. */
+export const rewritePendingTx = (
+  tx: readonly unknown[],
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown[] => rewriteTx(tx, ids, schema);
+
+const rewriteTx = (
+  tx: readonly unknown[],
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown[] =>
+  tx.map((item) => {
+    if (Array.isArray(item)) {
+      const [op, e, a, v] = item as unknown[];
+      if (op === ":db/retractEntity") return [op, rewriteEntityForm(e, ids, schema)];
+      if (op === ":db/add" || op === ":db/retract" || op === ":db/update") {
+        const next: unknown[] = [op, rewriteEntityForm(e, ids, schema)];
+        if (item.length >= 3) next.push(a);
+        if (item.length >= 4) {
+          next.push(isRefAttr(schema, a) ? rewriteEntityForm(v, ids, schema) : v);
+        }
+        return next;
+      }
+      return item;
+    }
+    if (item !== null && typeof item === "object") {
+      return rewriteMap(item as Record<string, unknown>, ids, schema);
+    }
+    return item;
+  });
+
 const factKey = (d: Datom): string => `${d.a}\0${JSON.stringify(d.v)}\0${d.op}`;
+
+const rewriteEid = (e: number, eids: Map<number, number>): number =>
+  eids.get(e) ?? e;
+
+const rewriteDatoms = (datoms: readonly Datom[], eids: Map<number, number>): Datom[] => {
+  if (eids.size === 0) return datoms as Datom[];
+  return datoms.map((d) => {
+    const e = rewriteEid(d.e, eids);
+    const v =
+      typeof d.v === "number" && eids.has(d.v) ? eids.get(d.v)! : d.v;
+    return e === d.e && v === d.v ? d : { ...d, e, v };
+  });
+};
 
 const classifyQuery = (err: unknown): DbError => {
   if (isDatabaseError(err)) return err;
@@ -247,10 +323,6 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
 
 export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
-  /** Named tempids acked by earlier posts — rewrite a write that submitted
-   * without a pending layer (local CAS bypass) or `/op` input. */
-  const ackedNamed: Record<string, number> = {};
-  const inFlightNamed: InFlightNamed[] = [];
   let conn: Connection | undefined;
   let confirmedT = 0;
   /** `t` values whose facts are already in the follower. Used so a late
@@ -359,38 +431,45 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     options.session.bump(t);
   };
 
-  // Named tempids are tx-local once nothing queued needs them.
-  const pruneAckedNamed = (): void => {
-    pruneAckedNamedIds(ackedNamed, pending, inFlightNamed, conn?.db().schema);
-  };
-
-  const dropInFlight = (rec: InFlightNamed | undefined): void => {
-    if (rec === undefined) return;
-    const i = inFlightNamed.indexOf(rec);
-    if (i >= 0) inFlightNamed.splice(i, 1);
-    pruneAckedNamed();
-  };
-
   const remapQueued = (
     acked: Record<string, number>,
     local: Record<string, number>,
   ): void => {
-    remapQueuedLayers(
-      pending,
-      inFlightNamed,
-      ackedNamed,
-      acked,
-      local,
-      conn?.db().schema,
-    );
+    const eids = new Map<number, number>();
+    for (const [tmp, serverEid] of Object.entries(acked)) {
+      const was = local[tmp];
+      if (typeof was === "number") eids.set(was, serverEid);
+    }
+    // only rewrite tempid *strings* a queued item referred to and did not mint
+    const referred: Record<string, number> = {};
+    for (const [tmp, serverEid] of Object.entries(acked)) {
+      referred[tmp] = serverEid;
+    }
+    for (const layer of pending) {
+      const foreign: Record<string, number> = {};
+      for (const [tmp, serverEid] of Object.entries(referred)) {
+        if (layer.tempids[tmp] === undefined) foreign[tmp] = serverEid;
+      }
+      if (Object.keys(foreign).length > 0) {
+        layer.tx = rewriteTx(layer.tx, foreign, conn?.db().schema);
+      }
+      if (layer.invocation?.entity !== undefined) {
+        const next = remapEntityRef(layer.invocation.entity, eids, referred);
+        if (next !== layer.invocation.entity) {
+          layer.invocation = { ...layer.invocation, entity: next };
+        }
+      }
+      layer.datoms = rewriteDatoms(layer.datoms, eids);
+      for (const [tmp, e] of Object.entries(layer.tempids)) {
+        layer.tempids[tmp] = eids.get(e) ?? e;
+      }
+    }
   };
 
   const dropLayer = (clientTxId: string): PendingLayer | undefined => {
     const i = pending.findIndex((l) => l.clientTxId === clientTxId);
     if (i < 0) return undefined;
-    const layer = pending.splice(i, 1)[0];
-    pruneAckedNamed();
-    return layer;
+    return pending.splice(i, 1)[0];
   };
 
   const remapDropped = (layer: PendingLayer, incoming: readonly Datom[]): void => {
@@ -551,93 +630,44 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
-  // Optimistic paint. Replica-state CAS failures still submit — the
-  // server may see a fresher entity. Other local rejections stay
-  // fail-closed.
-  const expandLocally = async (
-    txData: readonly unknown[],
-  ): Promise<TxResult | undefined> => {
-    try {
-      return await processTx(
-        view(),
-        [...txData],
-        // Fake local `t` only — not a dense log assignment. Must sit
-        // above painted server facts (`factTs`) as well as `confirmedT`,
-        // or a later pending layer collides with an ack we did not
-        // stamp as prefix.
-        Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-        nextEid(),
-        Date.now(),
-      );
-    } catch (err) {
-      if (!(err instanceof TxError)) throw err;
-      if (submitDespiteLocalTxError(err, txData)) return undefined;
-      throw err;
-    }
-  };
-
-  const tryLocalExpand = (txData: readonly unknown[]) =>
-    Effect.tryPromise({
-      try: () => expandLocally(txData),
-      catch: classifyTx,
-    });
-
-  const generatedOf = (
-    expansion: TxResult | undefined,
-    minted: ReadonlySet<string>,
-  ): Set<string> => {
-    const out = new Set<string>(minted);
-    if (expansion !== undefined) {
-      for (const name of Object.keys(expansion.tempids)) {
-        if (isBuilderTempidName(name)) out.add(name);
-      }
-    }
-    return out;
-  };
-
   const transact: Overlay["transact"] = (tx) =>
     ready(false).pipe(
       Effect.flatMap(() =>
         Effect.gen(function* () {
-          const expansion = yield* tryLocalExpand(tx);
+          const expansion = yield* Effect.tryPromise({
+            try: () =>
+              processTx(
+                view(),
+                tx as unknown[],
+                // Fake local `t` only — not a dense log assignment. Must sit
+                // above painted server facts (`factTs`) as well as `confirmedT`,
+                // or a later pending layer collides with an ack we did not
+                // stamp as prefix.
+                Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+                nextEid(),
+                Date.now(),
+              ),
+            catch: classifyTx,
+          });
 
           const id = clientTxId();
-          const schema = conn?.db().schema;
-          const usedTempids = collectNamedTempids(tx, schema);
-          const generated = generatedOf(expansion, new Set());
-          if (expansion) {
-            pending.push({
-              clientTxId: id,
-              tx: tx as unknown[],
-              datoms: expansion.datoms,
-              tempids: expansion.tempids,
-              generated,
-              usedTempids,
-              inputPaths: [],
-            });
-            notify();
-          }
+          pending.push({
+            clientTxId: id,
+            tx: tx as unknown[],
+            datoms: expansion.datoms,
+            tempids: expansion.tempids,
+          });
+          notify();
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             // `options.post` is `Effect<unknown, DbError>` — requirements
             // channel `never` — so there are no surrounding services for a
             // child Effect to inherit and `runPromiseWith` would add nothing.
-            const layerAtSubmit = pending.find((l) => l.clientTxId === id);
-            let inFlight: InFlightNamed | undefined;
-            if (layerAtSubmit === undefined) {
-              const names = collectNamedTempids(tx, conn?.db().schema);
-              if (names.size > 0) {
-                inFlight = { names, usedTempids, inputPaths: [], tx: tx as unknown[] };
-                inFlightNamed.push(inFlight);
-              }
-            }
             const run = () =>
               // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
                 options.post(
-                  pending.find((l) => l.clientTxId === id)?.tx ??
-                    inFlight?.tx ??
-                    rewritePendingTx(tx, ackedNamed, conn?.db().schema),
+                  pending.find((l) => l.clientTxId === id)?.tx ?? (tx as unknown[]),
                   id,
                 ),
               )
@@ -657,7 +687,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                     const layer = dropLayer(id);
                     if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
                     if (layer !== undefined) remapQueued(tempids, layer.tempids);
-                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -680,7 +709,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 .catch(async (err) => {
                   await enqueueApply(() => {
                     dropLayer(id);
-                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -697,10 +725,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const speculative = async (extra: readonly unknown[]): Promise<EngineDb> => {
-    if (extra.length === 0) return view();
     const base = view();
-    const expansion = await expandLocally(extra);
-    if (expansion === undefined) return base;
+    if (extra.length === 0) return base;
+    const expansion = await processTx(
+      base,
+      [...extra],
+      Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+      nextEid(),
+      Date.now(),
+    );
     return overlayDb(base, expansion.datoms);
   };
 
@@ -757,23 +790,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
           collected = built.ops;
 
-          const usedFromTempid = new Set<string>();
-          const { input: trackedInput, paths: inputPaths } =
-            collectOpInputTempidPaths(args.invocation.input);
           yield* runBody(
             args.operation,
             built.op,
-            trackedInput,
-            {
-              ...(args.invocation.tempids !== undefined
-                ? { resolved: args.invocation.tempids }
-                : {}),
-              onTempid: (name) => {
-                if (!isBuilderTempidName(name) && !name.startsWith(":")) {
-                  usedFromTempid.add(name);
-                }
-              },
-            },
+            args.invocation.input,
           ).pipe(
             // `BodyFailed.cause` is the value the body actually threw; classify
             // that, not the wrapper.
@@ -784,29 +804,28 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
           const tx = [...built.ops()];
           const id = args.invocation.clientOpId;
-          const schema = conn?.db().schema;
-          const usedTempids = collectNamedTempids(tx, schema, {
-            entity: args.invocation.entity,
-          });
-          for (const name of usedFromTempid) usedTempids.add(name);
           let invocation: OperationInvocation = { ...args.invocation };
 
           if (tx.length > 0) {
-            const expansion = yield* tryLocalExpand(tx);
-            const generated = generatedOf(expansion, built.generated());
-            if (expansion) {
-              pending.push({
-                clientTxId: id,
-                tx,
-                datoms: expansion.datoms,
-                tempids: expansion.tempids,
-                generated,
-                usedTempids,
-                inputPaths,
-                invocation,
-              });
-              notify();
-            }
+            const expansion = yield* Effect.tryPromise({
+              try: () =>
+                processTx(
+                  view(),
+                  tx,
+                  Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+                  nextEid(),
+                  Date.now(),
+                ),
+              catch: classifyTx,
+            });
+            pending.push({
+              clientTxId: id,
+              tx,
+              datoms: expansion.datoms,
+              tempids: expansion.tempids,
+              invocation,
+            });
+            notify();
           }
 
           const posted = yield* Effect.callback<OverlayOpAck, DbError>((resume) => {
@@ -824,34 +843,13 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             // `postOp` is `Effect<unknown, DbError>` — requirements channel
             // `never` — so there are no surrounding services to inherit here
             // either; see the note on `run` above.
-            const layerAtSubmit = pending.find((l) => l.clientTxId === id);
-            let inFlight: InFlightNamed | undefined;
-            if (layerAtSubmit === undefined) {
-              const names = collectNamedTempids(tx, conn?.db().schema, {
-                entity: invocation.entity,
-              });
-              for (const name of usedTempids) names.add(name);
-              if (names.size > 0) {
-                inFlight = { names, usedTempids, inputPaths, tx, invocation };
-                inFlightNamed.push(inFlight);
-              }
-            }
-            const invocationToPost = (): OperationInvocation => {
-              const layer = pending.find((l) => l.clientTxId === id);
-              if (layer?.invocation !== undefined) return layer.invocation;
-              if (inFlight?.invocation !== undefined) return inFlight.invocation;
-              return rewritePendingInvocation(
-                invocation,
-                ackedNamed,
-                new Map(),
-                usedTempids,
-                inputPaths,
-              );
-            };
             const runPost = () =>
               // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
-                postOp(invocationToPost()),
+                postOp(
+                  pending.find((l) => l.clientTxId === id)?.invocation ??
+                    invocation,
+                ),
               )
                 .then(async (body) => {
                   const ack = record(body);
@@ -863,7 +861,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                     const layer = dropLayer(id);
                     if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
                     if (layer !== undefined) remapQueued(tempids, layer.tempids);
-                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -887,7 +884,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 .catch(async (err) => {
                   await enqueueApply(() => {
                     dropLayer(id);
-                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -920,7 +916,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
     if (frame.op === "resync") {
       pending.length = 0;
-      pruneAckedNamed();
       const t = typeof frame.t === "number" ? frame.t : 0;
       return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
         () => {

@@ -303,10 +303,6 @@ export const makeDatabases = (
           input: invocation.input,
           clientOpId: invocation.clientOpId,
           ...(invocation.entity !== undefined ? { entity: invocation.entity } : {}),
-          ...(invocation.tempids !== undefined &&
-          Object.keys(invocation.tempids).length > 0
-            ? { tempids: invocation.tempids }
-            : {}),
         },
       });
       return result.body;

@@ -22,19 +22,19 @@
  *   - cardinality-one asserts retract the previous value implicitly
  *   - redundant asserts / retracts of absent facts are elided
  *   - :db.unique/value conflicts throw
- *   - :db/cas compares expected against db-before only (not the within-tx overlay);
- *     a match is an ordinary emitAdd (last matching CAS on (e,a) wins). Superseded
- *     same-tx card-one datoms are cancelled before commit so indexes never carry
- *     contradictory same-t add/retract pairs.
+ *   - :db/cas is cardinality-one only
+ *   - CAS subject must exist in db-before (eid or lookup ref; a tempid subject is invalid)
+ *   - CAS expected is compared against db-before only (not the within-tx overlay)
+ *   - `null` expected asserts that the attribute is absent
+ *   - CAS replacement uses ordinary coercion and may be a same-tx tempid
+ *   - at most one mutation of a CAS (e, a) pair in the tx
  */
 
 import {
   type Datom,
-  type DatomValue,
   type TaggedValue,
   Index,
   ValueTag,
-  valueEquals,
   valueKey,
 } from "./datom.ts";
 import { Db } from "./db.ts";
@@ -77,7 +77,7 @@ export interface TxOp {
   e: EForm;
   a?: string | number;
   v?: unknown;
-  /** CAS expected; `null` / `undefined` means “assert only when absent”. */
+  /** CAS expected; `null` is the encoded absent expectation — not `undefined`. */
   expected?: unknown;
   hasV?: boolean;
 }
@@ -195,7 +195,7 @@ export function flattenTxData(txData: TxData): TxOp[] {
               e: e as EForm,
               a: a as string | number,
               v: isPlainObject(replacement) ? expandMap(replacement as Record<string, unknown>) : replacement,
-              expected: isPlainObject(expected) ? expandMap(expected as Record<string, unknown>) : expected,
+              expected,
               hasV: true,
             });
           }
@@ -426,35 +426,6 @@ export async function expandTx(
     return m;
   };
 
-  /** Drop same-t datoms for one (e,a,v) from the pending commit (not yet durable). */
-  const cancelSameTxFact = (
-    e: number,
-    a: number,
-    vt: ValueTag,
-    v: DatomValue,
-    op?: boolean,
-  ): void => {
-    for (let i = out.length - 1; i >= 0; i--) {
-      const d = out[i]!;
-      if (d.t !== t || d.e !== e || d.a !== a || !valueEquals(d.vt, d.v, vt, v)) continue;
-      if (op !== undefined && d.op !== op) continue;
-      out.splice(i, 1);
-    }
-    for (let i = expanded.length - 1; i >= 0; i--) {
-      const x = expanded[i]!;
-      const d = x.datom;
-      if (d.t !== t || x.e !== e || x.a !== a || !valueEquals(d.vt, d.v, vt, v)) continue;
-      if (op !== undefined && d.op !== op) continue;
-      expanded.splice(i, 1);
-    }
-  };
-
-  const releaseUnique = (attr: Attribute, e: number, vt: ValueTag, v: DatomValue): void => {
-    if (!attr.unique) return;
-    const uk = attr.id + "|" + valueKey(vt, v);
-    if (uniqueSeen.get(uk) === e) uniqueSeen.delete(uk);
-  };
-
   const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
@@ -477,14 +448,9 @@ export async function expandTx(
     }
     if (attr.cardinality === "one" && vals.size > 0) {
       for (const [ok, od] of vals) {
-        if (od.t === t) {
-          cancelSameTxFact(e, attr.id, od.vt, od.v, true);
-          releaseUnique(attr, e, od.vt, od.v);
-        } else {
-          const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
-          out.push(r);
-          record("retract", e, attr, r, true);
-        }
+        const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
+        out.push(r);
+        record("retract", e, attr, r, true);
         vals.delete(ok);
       }
     }
@@ -498,14 +464,9 @@ export async function expandTx(
     const vals = await current(e, attr.id);
     if (tv === undefined) {
       for (const [k, d] of vals) {
-        if (d.t === t) {
-          cancelSameTxFact(e, attr.id, d.vt, d.v, true);
-          releaseUnique(attr, e, d.vt, d.v);
-        } else {
-          const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
-          out.push(r);
-          record("retract", e, attr, r);
-        }
+        const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+        out.push(r);
+        record("retract", e, attr, r);
         vals.delete(k);
       }
       return;
@@ -513,14 +474,9 @@ export async function expandTx(
     const vk = valueKey(tv.vt, tv.v);
     const d = vals.get(vk);
     if (!d) return; // absent → elide
-    if (d.t === t) {
-      cancelSameTxFact(e, attr.id, d.vt, d.v, true);
-      releaseUnique(attr, e, d.vt, d.v);
-    } else {
-      const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
-      out.push(r);
-      record("retract", e, attr, r);
-    }
+    const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+    out.push(r);
+    record("retract", e, attr, r);
     vals.delete(vk);
   };
 
@@ -547,8 +503,9 @@ export async function expandTx(
       if (attr && attr.valueType === ValueTag.Ref) {
         for (const [vk, d] of m) {
           if (d.v === e && d.t === t) {
-            cancelSameTxFact(ee, aa, d.vt, d.v, true);
-            releaseUnique(attr, ee, d.vt, d.v);
+            const r: Datom = { e: ee, a: aa, vt: d.vt, v: d.v, t, op: false };
+            out.push(r);
+            record("retract", ee, attr, r);
             m.delete(vk);
           }
         }
@@ -556,11 +513,12 @@ export async function expandTx(
     }
   };
 
-  // Tempid subjects of add/update/cas — a ref may resolve these. A tempid that
-  // appears only as a ref value is a dangling mint and is rejected.
+  // Tempid subjects of add/update — a ref may resolve these. A tempid that
+  // appears only as a ref value is a dangling mint and is rejected. CAS
+  // subjects must already exist and never allocate.
   const subjectTempids = new Set<string>();
   for (const op of ops) {
-    if (op.kind !== "add" && op.kind !== "update" && op.kind !== "cas") continue;
+    if (op.kind !== "add" && op.kind !== "update") continue;
     if (isTempid(op.e) && !TX_TEMPID.has(op.e)) {
       subjectTempids.add(aliasOf(op.e));
       subjectTempids.add(op.e);
@@ -746,6 +704,67 @@ export async function expandTx(
     }
   };
 
+  // At most one mutation of a CAS (e, a) pair in this tx. Structural —
+  // tx/invalid, not tx/cas-conflict. retractEntity of a *different*
+  // entity (e.g. an old component) is allowed even if it retracts a
+  // CAS pair as an incoming-ref side effect.
+  const resolveCasSubject = async (form: unknown): Promise<number> => {
+    if (typeof form === "string" && (TX_TEMPID.has(form) || isTempid(form))) {
+      throw new TxError(":db/cas subject must be an existing eid or lookup ref");
+    }
+    if (isLookupRef(form)) {
+      const id = await db.entid(form);
+      if (id === undefined) {
+        throw new TxError(
+          `lookup ref ${JSON.stringify(form)} does not resolve`,
+          "tx/lookup-ref",
+        );
+      }
+      return id;
+    }
+    const e = await resolveEntity(form, false);
+    if (e === undefined) {
+      throw new TxError(":db/cas subject must be an existing eid or lookup ref");
+    }
+    return e;
+  };
+
+  const casPairs = new Set<string>();
+  const casSubjects = new Set<number>();
+  const pairKey = (e: number, a: number): string => e + ":" + a;
+  for (const op of ops) {
+    if (op.kind !== "cas") continue;
+    const attr = attrOf(op.a);
+    const e = await resolveCasSubject(op.e);
+    const k = pairKey(e, attr.id);
+    if (casPairs.has(k)) {
+      throw new TxError(`:db/cas may mutate (${e}, ${attr.ident}) at most once in a transaction`);
+    }
+    casPairs.add(k);
+    casSubjects.add(e);
+  }
+  if (casPairs.size > 0) {
+    for (const op of ops) {
+      if (op.kind === "cas") continue;
+      if (op.kind === "retractEntity") {
+        const e = await resolveEntity(op.e, false);
+        if (e !== undefined && casSubjects.has(e)) {
+          throw new TxError("cannot :db/retractEntity a :db/cas subject in the same transaction");
+        }
+        continue;
+      }
+      if (op.a === undefined) continue;
+      const attr = attrOf(op.a);
+      const e = await resolveEntity(op.e, false);
+      if (e === undefined) continue;
+      if (casPairs.has(pairKey(e, attr.id))) {
+        throw new TxError(
+          `cannot ${op.kind} the same (${e}, ${attr.ident}) as a :db/cas in the same transaction`,
+        );
+      }
+    }
+  }
+
   // --- Main pass ------------------------------------------------------------
   for (const op of ops) {
     if (op.kind === "retractEntity") {
@@ -792,25 +811,24 @@ export async function expandTx(
       continue;
     }
     if (op.kind === "cas") {
-      const attr = attrOf(op.a);
-      if (attr.cardinality !== "one") {
-        throw new TxError(`:db/cas is cardinality-one only (${attr.ident})`, "tx/invalid");
+      if (op.expected === undefined) {
+        throw new TxError(":db/cas expected must be a value or null (undefined is not the absent encoding)");
       }
-      const e = await resolveEntity(op.e, true);
-      if (e === undefined) continue;
+      const attr = attrOf(op.a);
+      const e = await resolveCasSubject(op.e);
+      if (attr.cardinality !== "one") {
+        throw new TxError(`:db/cas is cardinality-one only (${attr.ident})`);
+      }
       await assertWriteTarget(e, attr, true);
       const replacementTv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, replacementTv);
-      // Compare against db-before only — same-tx adds/retracts/CAS do not
-      // change later CAS expecteds. Matching replacements last-win via emitAdd.
       const before = new Map<string, Datom>();
       for (const d of await db.datomsArray(Index.EAVT, { e, a: attr.id })) {
         before.set(valueKey(d.vt, d.v), d);
       }
-      const expectedAbsent = op.expected === null || op.expected === undefined;
       let expectedLabel = "absent";
       let match = false;
-      if (expectedAbsent) {
+      if (op.expected === null) {
         match = before.size === 0;
       } else {
         // Expected is a db-before compare key; do not apply write-time

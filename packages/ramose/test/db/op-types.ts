@@ -58,9 +58,6 @@ const writes = (async () => {
   const e = op.entity();
   e.set(User.name, "Ada");
   e.set(User.age, 36);
-  op.cas(e, User.age, 36, 37);
-  e.cas(User.age, null, 36);
-  op.self.cas(User.age, null, 36);
   e.set(Meta.source, "import");
   // bag: Movie.title on a user handle is legal — do not close the world
   e.set(Movie.title, "not a movie but types allow any ns");
@@ -107,18 +104,6 @@ export type _writesHandle = Expect<
   e.set(User.friends, true);
   // @ts-expect-error name is string, not number
   op.self.set(User.name, 42);
-  // @ts-expect-error cas is cardinality-one only
-  e.cas(User.friends, null, userId);
-  // @ts-expect-error cas is cardinality-one only
-  op.cas(e, User.friends, null, userId);
-  // @ts-expect-error cas is cardinality-one only
-  op.self.cas(User.friends, null, userId);
-  // @ts-expect-error age is long, not string
-  e.cas(User.age, "nope", 37);
-  // @ts-expect-error replacement type
-  op.self.cas(User.age, 36, "nope");
-  // @ts-expect-error unknown attr
-  e.cas(User.nope, 1, 2);
 }
 
 // ── ref values name a not-yet-existing entity ──────────────────────────────
@@ -216,7 +201,7 @@ export type _renamed = Expect<
   Equal<typeof renamed, Promise<OpReport<{}, typeof Movies>>>
 >;
 db.run(setUserName, 1001, { name: "Ada" });
-db.run(setUserName, tempid("new"), { name: "Ada" });
+db.run(setUserName, tempid("tmp-1"), { name: "Ada" });
 // @ts-expect-error a bare string is not a tempid
 db.run(setUserName, "tmp-1", { name: "Ada" });
 db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
@@ -280,7 +265,7 @@ const issueOp = Operation(
 declare const boardDb: Db<typeof Board>;
 boardDb.run(issueOp, [Issue.key, "i-1"], {});
 boardDb.run(issueOp, [":issue/key", "i-1"] as const, {});
-boardDb.run(issueOp, tempid("new"), {});
+boardDb.run(issueOp, tempid("tmp-1"), {});
 declare const issueRow: { readonly id: Eid<typeof Issue> };
 boardDb.run(issueOp, issueRow, {});
 declare const commentRow: { readonly id: Eid<typeof Comment> };
@@ -302,7 +287,6 @@ const schemaLess = Operation(
     const e = body.entity();
     e.set(":user/name", "Ada");
     e.set(User.name, input.name);
-    e.cas(":user/age", null, 1);
     return {};
   },
 );

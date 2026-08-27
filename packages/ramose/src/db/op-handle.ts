@@ -21,7 +21,7 @@ import {
 import { asPromise, runSync } from "./promise.ts";
 import type { AnyQueryObject } from "./query/index.ts";
 import { lowerEntityArg, tempid } from "./entityArg.ts";
-import { txBuilder, txGeneratedTempids, txOps, type TxHandle } from "./Tx.ts";
+import { txBuilder, txOps, type TxHandle } from "./Tx.ts";
 
 export interface OpHandleOptions {
   readonly schema: AnySchema;
@@ -50,19 +50,11 @@ export interface OpHandleOptions {
       ): Effect.Effect<unknown, DbError>;
     };
   };
-  /**
-   * Named tempids already resolved by an earlier acknowledged transaction.
-   * `op.tempid(name)` returns the eid so a re-run of the body cannot allocate.
-   */
-  readonly resolvedTempids?: Readonly<Record<string, number>>;
-  /** Every name passed to `op.tempid` during this body run. */
-  readonly onTempid?: (name: string) => void;
 }
 
 export interface BuiltOp {
   readonly op: RuntimeOp;
   readonly ops: () => readonly unknown[];
-  readonly generated: () => ReadonlySet<string>;
 }
 
 const wrapSelf = (tx: ReturnType<typeof txBuilder>, self: unknown): TxHandle => {
@@ -169,7 +161,6 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
     effect,
     entity: tx.entity,
     set: tx.set,
-    cas: tx.cas,
     remove: tx.remove,
     delete: tx.delete,
     put: tx.put,
@@ -179,7 +170,6 @@ export const buildOp = (options: OpHandleOptions): BuiltOp => {
   return {
     op,
     ops: () => frozen ?? txOps(tx),
-    generated: () => txGeneratedTempids(tx),
   };
 };
 
@@ -189,9 +179,6 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
   set: (field, value) => {
     runSync(entity.set(field, value));
   },
-  cas: (field, expected, replacement) => {
-    runSync(entity.cas(field, expected, replacement));
-  },
   remove: (field, value) => {
     runSync(entity.remove(field, value));
   },
@@ -200,33 +187,8 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
   },
 });
 
-export interface TempidOptions {
-  readonly resolved?: Readonly<Record<string, number>>;
-  readonly onTempid?: (name: string) => void;
-}
-
-/**
- * Resolve a caller tempid name. A number is an already-remapped eid
- * (overlay rewrote `invocation.input` before `/op` re-ran the body).
- * A string consults the invocation's resolved map, then brands.
- */
-export const resolveOpTempid = (
-  name: unknown,
-  options?: TempidOptions,
-): unknown => {
-  if (typeof name === "number") return name;
-  if (typeof name !== "string") return tempid(String(name));
-  options?.onTempid?.(name);
-  const eid = options?.resolved?.[name];
-  if (eid !== undefined) return eid;
-  return tempid(name);
-};
-
 /** Wrap the Effect runtime handle as the async `Op` a body sees. */
-export const asPromiseOp = (
-  op: RuntimeOp,
-  tempidOptions?: TempidOptions,
-): Op<any, any> => {
+export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
   const entity = ((id?: unknown) =>
     promiseEntity(
       runSync(id === undefined ? op.entity() : op.entity(id)),
@@ -239,12 +201,9 @@ export const asPromiseOp = (
     principal: op.principal,
     db: op.db,
     entity,
-    tempid: ((name: string) => resolveOpTempid(name, tempidOptions)) as Op<any, any>["tempid"],
+    tempid,
     set: (e, field, value) => {
       runSync(op.set(e, field, value));
-    },
-    cas: (e, field, expected, replacement) => {
-      runSync(op.cas(e, field, expected, replacement));
     },
     remove: (e, field, value) => {
       runSync(op.remove(e, field, value));
@@ -308,10 +267,9 @@ export const runBody = (
   operation: Pick<AnyOperation, "body">,
   op: RuntimeOp,
   input: unknown,
-  tempidOptions?: TempidOptions,
 ): Effect.Effect<{ output: unknown; halted: boolean }, BodyFailed> =>
   Effect.tryPromise({
-    try: () => Promise.resolve(operation.body(asPromiseOp(op, tempidOptions), input)),
+    try: () => Promise.resolve(operation.body(asPromiseOp(op), input)),
     catch: (cause) => new BodyFailed({ cause }),
   }).pipe(
     Effect.map((output) =>

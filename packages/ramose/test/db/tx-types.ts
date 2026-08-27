@@ -13,7 +13,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
-  AnySchema,
   Db,
   DbError,
   Equal,
@@ -111,18 +110,6 @@ declare const handle: TxHandle<typeof Movies>;
 
 tx.set(handle, User.name, "Ada");
 tx.set(handle, User.age, 36);
-tx.cas(handle, User.age, 36, 37);
-handle.cas(User.age, null, 36);
-
-const erased = <C extends AnySchema>(tx: Tx<C>, h: TxHandle<C>) => {
-  tx.cas(h, ":user/age" as any, 36 as any, 37 as any);
-  h.cas(":user/age" as any, null, 36 as any);
-};
-declare const erasedTx: Tx<AnySchema>;
-declare const erasedH: TxHandle<AnySchema>;
-erasedTx.cas(erasedH, ":user/age", 36, 37);
-erasedH.cas(":user/age", null, 36);
-void erased;
 tx.set(handle, Meta.source, "import");
 // bag: Movie.title on a user handle is legal — do not close the world
 tx.set(handle, Movie.title, "not a movie but types allow any ns");
@@ -143,16 +130,6 @@ tx.set(handle, Movie.title, "not a movie but types allow any ns");
   tx.set(handle, ":user/name" as const, 42);
   // @ts-expect-error friends is a ref (number), not a string
   handle.set(User.friends, "Ada");
-  // @ts-expect-error cas is cardinality-one only
-  handle.cas(User.friends, null, userId);
-  // @ts-expect-error cas is cardinality-one only
-  tx.cas(handle, User.friends, null, userId);
-  // @ts-expect-error age is long, not string
-  handle.cas(User.age, "nope", 37);
-  // @ts-expect-error replacement type
-  handle.cas(User.age, 36, "nope");
-  // @ts-expect-error unknown attr
-  handle.cas(User.nope, 1, 2);
 }
 handle.remove(User.age, 35);
 handle.remove(User.name);

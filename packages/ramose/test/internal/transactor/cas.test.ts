@@ -91,6 +91,22 @@ describe("transactor: :db/cas", () => {
     expect((await h2.transactor.connection.db().entity(eid))![":k/v"]).toBe("x");
   });
 
+  test("same-tx two CAS on the same pair is tx/invalid and commits nothing", async () => {
+    const h = await fresh();
+    const seed = await h.transactor.transact([{ ":k/id": 1, ":k/v": "old" }]);
+    const eid = eidOf(seed);
+    const tBefore = h.transactor.t;
+    await expect(
+      h.transactor.transact([
+        [":db/cas", eid, ":k/v", "old", "a"],
+        [":db/cas", eid, ":k/v", "old", "b"],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    expect((await h.transactor.connection.db().entity(eid))![":k/v"]).toBe("old");
+    expect(h.transactor.t).toBe(tBefore);
+    expect(h.logTs()).toEqual(Array.from({ length: tBefore }, (_, i) => i + 1));
+  });
+
   test("HTTP 409 for a mismatching CAS", async () => {
     const h = await fresh();
     const seed = await h.transactor.transact([{ ":k/id": 1, ":k/v": "old" }]);
