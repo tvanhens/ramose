@@ -65,7 +65,7 @@ import {
 } from "../authorization/index.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "../authorization/failures.ts";
 import { DatabaseId } from "../authorization/identities.ts";
-import type { InstalledAttr } from "../../db/evolution.ts";
+import type { InstalledAttr } from "../core/evolution.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

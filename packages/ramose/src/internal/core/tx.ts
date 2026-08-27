@@ -62,13 +62,13 @@ import {
   isTxEid,
   txEid,
 } from "./schema.ts";
+import type { SchemaTxOp } from "../../db/ensure.ts";
 import {
   checkEvolution,
   namespacesNeedingOccupancy,
   occupancyIdents,
   type InstalledAttr,
-} from "../../db/evolution.ts";
-import type { SchemaTxOp } from "../../db/ensure.ts";
+} from "./evolution.ts";
 
 export class TxError extends Error {
   constructor(msg: string, readonly code: string = "tx/invalid") {
@@ -864,6 +864,10 @@ export async function expandTx(
   const retracted = new Set<number>();
   const retractEntity = async (e: number): Promise<void> => {
     if (retracted.has(e)) return;
+    // Guard every visit — including :db/isComponent recursion — so a
+    // component edge cannot delete the catalog singleton, a unit, or a
+    // projected schema entity without going through rejectCatalogRetractEntity.
+    await rejectCatalogRetractEntity(e);
     if (isCasReplacementEid(e)) {
       throw new TxError("cannot :db/retractEntity a :db/cas replacement in the same transaction");
     }

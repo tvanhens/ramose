@@ -20,10 +20,10 @@ import { decodeInstalledCatalogUnitResult } from "./decode.ts";
 import { CatalogMismatch, CatalogUnitCorrupt } from "./failures.ts";
 import { CatalogId, type DatabaseId } from "./identities.ts";
 import { catalogPublicationOf, composerIdentFromName, schemaTxFromCatalog } from "./schema-tx.ts";
-import { installTx, type InstalledAttr } from "../../db/evolution.ts";
 import type { Connection, TxReport } from "../core/conn.ts";
 import type { Db } from "../core/db.ts";
 import { Index } from "../core/datom.ts";
+import { installTx, type InstalledAttr } from "../core/evolution.ts";
 import {
   RAMOSE_CATALOG_HEAD_IDENT,
   RAMOSE_CATALOG_IDENT,

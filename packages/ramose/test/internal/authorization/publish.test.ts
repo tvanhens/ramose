@@ -340,6 +340,46 @@ describe("catalog-unit retractEntity", () => {
     await conn.transact([[":db/retractEntity", eid]]);
     expect(await conn.db().entity(eid)).toBeUndefined();
   });
+
+  test("component-recursive retractEntity of catalog/unit/schema targets is tx/system", async () => {
+    const conn = await Connection.create();
+    // Seed a component ref before publish; post-publish schema extension is sealed.
+    await conn.transact([
+      {
+        ":db/ident": ":evil/owns",
+        ":db/valueType": ":db.type/ref",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/isComponent": true,
+        ":db/optional": true,
+      },
+    ]);
+    await publish(conn, await sealUnit());
+    const head = await resolveCatalogHead(conn.db());
+    if (head === null) throw new Error("expected head");
+    const t = conn.t;
+    const titleBefore = conn.db().schema.attr(":issue/title");
+    expect(titleBefore).toBeDefined();
+
+    const trap = async (target: unknown) => {
+      const created = await conn.transact([{ ":db/id": "trap", ":evil/owns": target }]);
+      await expect(conn.transact([[":db/retractEntity", created.tempids.trap]])).rejects.toMatchObject({
+        code: "tx/system",
+      });
+      // Clean up the trap entity without following the component into the protected target.
+      await conn.transact([[":db/retract", created.tempids.trap, ":evil/owns"]]);
+      await conn.transact([[":db/retractEntity", created.tempids.trap]]);
+    };
+
+    await trap(head);
+    await trap(RAMOSE_CATALOG_IDENT);
+    await trap(":issue/title");
+
+    expect(conn.t).toBeGreaterThan(t);
+    expect(await resolveCatalogHead(conn.db())).toBe(head);
+    expect((await conn.db().entity(head))?.[RAMOSE_CATALOG_UNIT_HASH_IDENT]).toBeTypeOf("string");
+    expect(await conn.db().exists(RAMOSE_CATALOG)).toBe(true);
+    expect(conn.db().schema.attr(":issue/title")).toEqual(titleBefore);
+  });
 });
 
 describe("field evolution at publish", () => {

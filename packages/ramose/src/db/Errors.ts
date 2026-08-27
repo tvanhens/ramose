@@ -31,10 +31,10 @@
  * | `NetworkError`        | the request never produced a response      |
  * | `OperationRejected`   | named operation refused (409)              |
  *
- * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link IncompatibleSchema} (`install()` refused a data-model split).
+ * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality).
  * A runtime authorization denial is {@link Unauthorized}. A query that
- * cannot lower is {@link InvalidRequest}.
+ * cannot lower is {@link InvalidRequest}. Schema evolution refusals during
+ * catalog publication surface as `tx/incompatible-schema` on the wire.
  *
  * Wire shapes the classifier understands:
  *
