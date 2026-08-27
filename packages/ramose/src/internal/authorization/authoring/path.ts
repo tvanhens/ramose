@@ -6,6 +6,7 @@
  * Real Entity / Field objects are never mutated.
  */
 
+import type { PathCarrier } from "../../../db/shapes.ts";
 import { isSelfRefSchema, refTargetOf } from "../../../db/valueTypes.ts";
 import { contains, eq } from "./expr.ts";
 import {
@@ -143,3 +144,11 @@ export const path = (...hops: ReadonlyArray<AuthPathLike | { readonly ident: str
   }
   return new AuthPath(steps);
 };
+
+/**
+ * Wrap a stamped field in the same callable {@link navigate} proxy `$()` uses.
+ * Steps start with that field; further hops land on its ref target
+ * (`refTargetOf` / self / empty).
+ */
+export const seededPath = (field: PathCarrier): AuthPathProxy =>
+  navigate(nextOwner(field, { fields: {} }) ?? { fields: {} }, [stepFromCarrier(field)]);

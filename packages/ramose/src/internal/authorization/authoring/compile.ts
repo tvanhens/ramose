@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { canonicalizeJson } from "../canonical-json.ts";
-import { MAX_JSON_DEPTH, MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
+import { MAX_COLLECTION_SIZE, MAX_JSON_DEPTH, MAX_JSON_NODES, MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
 import {
   decodePolicyTemplateResult,
   encodePolicyTemplate,
@@ -129,7 +129,22 @@ type CompileShape =
   | { readonly _tag: "subject" }
   | { readonly _tag: "claim"; readonly shape: ClaimShape | undefined }
   | { readonly _tag: "scalar"; readonly valueType: string; readonly cardinality?: "one" | "many" }
-  | { readonly _tag: "ref"; readonly targetNs: string | undefined; readonly cardinality?: "one" | "many" };
+  | {
+      readonly _tag: "ref";
+      readonly targetNs: string | undefined;
+      readonly targetKind?: "entity" | "trait";
+      readonly cardinality?: "one" | "many";
+    };
+
+type NodeBudget = { nodes: number };
+
+const takeNodes = (budget: NodeBudget, n: number): Result.Result<void, InvalidIR> => {
+  budget.nodes += n;
+  if (budget.nodes > MAX_JSON_NODES) {
+    return invalid(`expression node budget ${budget.nodes} exceeds ${MAX_JSON_NODES}`);
+  }
+  return Result.succeed(undefined);
+};
 
 type LoweredOperand = {
   readonly term: RelativeValueTerm;
@@ -178,10 +193,10 @@ const fieldAccessibleFrom = (
 const nextRowFromRef = (
   schema: AnySchema,
   fieldSchema: unknown,
-  current: RowCursor,
+  fieldOwner: OwnerRef,
   ident: string,
 ): Result.Result<RowCursor, InvalidIR> => {
-  if (isSelfRefSchema(fieldSchema)) return Result.succeed(current);
+  if (isSelfRefSchema(fieldSchema)) return Result.succeed(fieldOwner);
   const ns = refTargetOf(fieldSchema)?.()?.ns;
   if (typeof ns !== "string") {
     return invalid(`cannot traverse from an untargeted ref through '${ident}'`);
@@ -195,12 +210,81 @@ const nextRowFromRef = (
   return invalid(`invalid path: '${ns}' is not in this catalog`);
 };
 
-const refTargetNs = (
+const resolveCompileRef = (
+  schema: AnySchema,
   fieldSchema: unknown,
-  current: RowCursor,
-): string | undefined => {
-  if (isSelfRefSchema(fieldSchema)) return current.name;
-  return refTargetOf(fieldSchema)?.()?.ns;
+  fieldOwner: OwnerRef,
+): { readonly targetNs: string | undefined; readonly targetKind?: "entity" | "trait" } => {
+  if (isSelfRefSchema(fieldSchema)) {
+    return { targetNs: fieldOwner.name, targetKind: fieldOwner.kind };
+  }
+  const ns = refTargetOf(fieldSchema)?.()?.ns;
+  if (typeof ns !== "string") return { targetNs: undefined };
+  if (Object.hasOwn(schema.entities, ns)) {
+    return { targetNs: ns, targetKind: "entity" };
+  }
+  if (schemaTraits(schema).has(ns)) {
+    return { targetNs: ns, targetKind: "trait" };
+  }
+  return { targetNs: ns };
+};
+
+const rowOfRef = (
+  shape: Extract<CompileShape, { readonly _tag: "ref" }>,
+): { readonly kind: "entity" | "trait"; readonly name: string } | undefined => {
+  if (shape.targetNs === undefined) return undefined;
+  return { kind: shape.targetKind ?? "entity", name: shape.targetNs };
+};
+
+const sameRow = (
+  schema: AnySchema,
+  left: { readonly kind: "entity" | "trait"; readonly name: string },
+  right: { readonly kind: "entity" | "trait"; readonly name: string },
+): boolean => {
+  if (left.kind === "entity" && right.kind === "entity") {
+    return left.name === right.name;
+  }
+  if (left.kind === "trait" && right.kind === "trait") {
+    if (left.name === right.name) return true;
+    const leftTrait = schemaTraits(schema).get(left.name);
+    const rightTrait = schemaTraits(schema).get(right.name);
+    return (
+      (leftTrait !== undefined && composedTraitNames(leftTrait).has(right.name)) ||
+      (rightTrait !== undefined && composedTraitNames(rightTrait).has(left.name))
+    );
+  }
+  const entityName = left.kind === "entity" ? left.name : right.name;
+  const traitName = left.kind === "trait" ? left.name : right.name;
+  const entity = schema.entities[entityName];
+  return entity !== undefined && composedTraitNames(entity).has(traitName);
+};
+
+const sameRefTarget = (
+  schema: AnySchema,
+  left: Extract<CompileShape, { readonly _tag: "ref" }>,
+  right: Extract<CompileShape, { readonly _tag: "ref" }>,
+): boolean => {
+  const leftUntargeted = left.targetNs === undefined;
+  const rightUntargeted = right.targetNs === undefined;
+  if (leftUntargeted && rightUntargeted) return true;
+  if (leftUntargeted || rightUntargeted) return false;
+  const leftRow = rowOfRef(left);
+  const rightRow = rowOfRef(right);
+  return leftRow !== undefined && rightRow !== undefined && sameRow(schema, leftRow, rightRow);
+};
+
+const meCompatibleWith = (
+  schema: AnySchema,
+  principalEntity: string | undefined,
+  other: CompileShape,
+): boolean => {
+  if (other._tag === "me") return true;
+  if (other._tag !== "ref") return false;
+  const focus = rowOfRef(other);
+  return (
+    focus !== undefined &&
+    (principalEntity === undefined || sameRow(schema, { kind: "entity", name: principalEntity }, focus))
+  );
 };
 
 const litShape = (value: string | number | boolean | null): CompileShape => {
@@ -222,18 +306,13 @@ const scalarAssignable = (expected: string, actual: CompileShape): boolean => {
 };
 
 const eqCompatible = (
+  schema: AnySchema,
   left: CompileShape,
   right: CompileShape,
   principalEntity: string | undefined,
 ): boolean => {
   const pair = (a: CompileShape, b: CompileShape): boolean => {
-    if (a._tag === "me") {
-      if (b._tag === "me") return true;
-      if (b._tag === "ref") {
-        return b.targetNs !== undefined && (principalEntity === undefined || b.targetNs === principalEntity);
-      }
-      return false;
-    }
+    if (a._tag === "me") return meCompatibleWith(schema, principalEntity, b);
     if (a._tag === "subject") {
       if (b._tag === "subject") return true;
       if (scalarAssignable("string", b)) return true;
@@ -247,9 +326,7 @@ const eqCompatible = (
       return false;
     }
     if (a._tag === "ref") {
-      if (b._tag === "ref") {
-        return a.targetNs === undefined || b.targetNs === undefined || a.targetNs === b.targetNs;
-      }
+      if (b._tag === "ref") return sameRefTarget(schema, a, b);
       return false;
     }
     if (a._tag === "scalar") {
@@ -273,9 +350,18 @@ const eqCompatible = (
   return pair(left, right) || pair(right, left);
 };
 
+const compileRef = (
+  targetNs: string | undefined,
+  targetKind: "entity" | "trait" | undefined,
+  cardinality: "one" | "many",
+): Extract<CompileShape, { readonly _tag: "ref" }> =>
+  targetKind === undefined
+    ? { _tag: "ref", targetNs, cardinality }
+    : { _tag: "ref", targetNs, targetKind, cardinality };
+
 const membershipElement = (shape: CompileShape): CompileShape | undefined => {
   if (shape._tag === "ref" && shape.cardinality === "many") {
-    return { _tag: "ref", targetNs: shape.targetNs, cardinality: "one" };
+    return compileRef(shape.targetNs, shape.targetKind, "one");
   }
   if (shape._tag === "scalar" && shape.cardinality === "many") {
     return { _tag: "scalar", valueType: shape.valueType, cardinality: "one" };
@@ -339,16 +425,23 @@ const lowerPathSteps = (
   ctx: Lowering,
   steps: readonly AuthPathStep[],
   role: "eq" | "contains-collection" | "contains-value" | "term",
+  budget: NodeBudget,
 ): Result.Result<LoweredOperand, InvalidIR> =>
   Result.gen(function* () {
     if (steps.length === 0) {
       return yield* invalid("invalid path: empty traversal");
+    }
+    if (steps.length > MAX_COLLECTION_SIZE) {
+      return yield* invalid(
+        `path collection size ${steps.length} exceeds ${MAX_COLLECTION_SIZE}`,
+      );
     }
     if (steps.length > MAX_TRAVERSAL_DEPTH) {
       return yield* invalid(
         `traversal depth ${steps.length} exceeds ${MAX_TRAVERSAL_DEPTH}`,
       );
     }
+    yield* takeNodes(budget, 1 + steps.length);
     const lowered: { readonly field: RelativeFieldId }[] = [];
     let current = rowFromFocus(ctx.focus);
     let terminal: CompileShape = { _tag: "scalar", valueType: "string" };
@@ -372,7 +465,7 @@ const lowerPathSteps = (
             `intermediate hop '${step.ident}' is not a ref`,
           );
         }
-        current = yield* nextRowFromRef(ctx.schema, field.schema, current, step.ident);
+        current = yield* nextRowFromRef(ctx.schema, field.schema, field.id.owner, step.ident);
       } else if (role === "eq" && field.cardinality === "many") {
         return yield* invalid(
           `eq cannot compare card-many path '${step.ident}'; use contains`,
@@ -387,13 +480,10 @@ const lowerPathSteps = (
         );
       }
       if (isLast) {
+        const target = resolveCompileRef(ctx.schema, field.schema, field.id.owner);
         terminal =
           field.valueType === "ref"
-            ? {
-                _tag: "ref",
-                targetNs: refTargetNs(field.schema, current),
-                cardinality: field.cardinality,
-              }
+            ? compileRef(target.targetNs, target.targetKind, field.cardinality)
             : {
                 _tag: "scalar",
                 valueType: field.valueType ?? "string",
@@ -416,6 +506,9 @@ const readPathSteps = (input: unknown): Result.Result<readonly AuthPathStep[], I
   const steps = (input as { readonly steps?: unknown }).steps;
   if (!Array.isArray(steps) || steps.length === 0) {
     return invalid("malformed path");
+  }
+  if (steps.length > MAX_COLLECTION_SIZE) {
+    return invalid(`path collection size ${steps.length} exceeds ${MAX_COLLECTION_SIZE}`);
   }
   const checked: AuthPathStep[] = [];
   for (const step of steps) {
@@ -448,6 +541,7 @@ const lowerOperand = (
   ctx: Lowering,
   input: unknown,
   role: "eq" | "contains-collection" | "contains-value" | "term",
+  budget: NodeBudget,
 ): Result.Result<LoweredOperand, InvalidIR> =>
   Result.gen(function* () {
     if (typeof input !== "object" || input === null) {
@@ -459,6 +553,7 @@ const lowerOperand = (
         `unsupported operand tag '${typeof tag === "string" ? tag : "unknown"}'`,
       );
     }
+    yield* takeNodes(budget, 1);
     switch (tag) {
       case "me":
         return { term: { _tag: "me" as const }, shape: { _tag: "me" as const } };
@@ -485,7 +580,7 @@ const lowerOperand = (
         return { term: { _tag: "lit" as const, value }, shape: litShape(value) };
       }
       case "path":
-        return yield* lowerPathSteps(ctx, yield* readPathSteps(input), role);
+        return yield* lowerPathSteps(ctx, yield* readPathSteps(input), role, budget);
       default:
         return yield* invalid(`unsupported operand tag '${tag}'`);
     }
@@ -506,6 +601,7 @@ const mergeUnique = (into: string[], extras: readonly string[]): void => {
 const lowerExpr = (
   ctx: Lowering,
   input: unknown,
+  budget: NodeBudget,
   depth = 0,
 ): Result.Result<LoweredExpr, InvalidIR> =>
   Result.gen(function* () {
@@ -521,6 +617,7 @@ const lowerExpr = (
         `unsupported expression tag '${typeof tag === "string" ? tag : "unknown"}'`,
       );
     }
+    yield* takeNodes(budget, 1);
     const record = input as Record<string, unknown>;
     switch (tag) {
       case "const": {
@@ -553,6 +650,12 @@ const lowerExpr = (
         if (exprs.length === 0) {
           return yield* invalid(tag === "and" ? "empty all() is invalid" : "empty any() is invalid");
         }
+        if (exprs.length > MAX_COLLECTION_SIZE) {
+          return yield* invalid(
+            `expression collection size ${exprs.length} exceeds ${MAX_COLLECTION_SIZE}`,
+          );
+        }
+        yield* takeNodes(budget, 1 + exprs.length);
         const children: RelativeAuthorizationExpr[] = [];
         const classes: string[] = [];
         const claims: string[] = [];
@@ -560,7 +663,12 @@ const lowerExpr = (
           if (depth + 1 > MAX_JSON_DEPTH) {
             return yield* invalid(`expression depth ${depth + 1} exceeds ${MAX_JSON_DEPTH}`);
           }
-          const lowered = yield* lowerExpr(ctx, child, depth + 1);
+          if (budget.nodes >= MAX_JSON_NODES) {
+            return yield* invalid(
+              `expression node budget ${budget.nodes + 1} exceeds ${MAX_JSON_NODES}`,
+            );
+          }
+          const lowered = yield* lowerExpr(ctx, child, budget, depth + 1);
           children.push(lowered.expr);
           mergeUnique(classes, lowered.classes);
           mergeUnique(claims, lowered.claims);
@@ -582,7 +690,7 @@ const lowerExpr = (
         if (depth + 1 > MAX_JSON_DEPTH) {
           return yield* invalid(`expression depth ${depth + 1} exceeds ${MAX_JSON_DEPTH}`);
         }
-        const child = yield* lowerExpr(ctx, childExpr, depth + 1);
+        const child = yield* lowerExpr(ctx, childExpr, budget, depth + 1);
         return {
           expr: { _tag: "not" as const, expr: child.expr },
           classes: child.classes,
@@ -600,9 +708,9 @@ const lowerExpr = (
         ) {
           return yield* invalid("malformed eq");
         }
-        const left = yield* lowerOperand(ctx, leftInput, "eq");
-        const right = yield* lowerOperand(ctx, rightInput, "eq");
-        if (!eqCompatible(left.shape, right.shape, ctx.principalEntity)) {
+        const left = yield* lowerOperand(ctx, leftInput, "eq", budget);
+        const right = yield* lowerOperand(ctx, rightInput, "eq", budget);
+        if (!eqCompatible(ctx.schema, left.shape, right.shape, ctx.principalEntity)) {
           return yield* invalid("incompatible equality operands");
         }
         return {
@@ -622,13 +730,13 @@ const lowerExpr = (
         ) {
           return yield* invalid("malformed contains");
         }
-        const collection = yield* lowerOperand(ctx, collectionInput, "contains-collection");
-        const value = yield* lowerOperand(ctx, valueInput, "contains-value");
+        const collection = yield* lowerOperand(ctx, collectionInput, "contains-collection", budget);
+        const value = yield* lowerOperand(ctx, valueInput, "contains-value", budget);
         const element = membershipElement(collection.shape);
         if (element === undefined) {
           return yield* invalid("membership requires a collection");
         }
-        if (!eqCompatible(value.shape, element, ctx.principalEntity)) {
+        if (!eqCompatible(ctx.schema, value.shape, element, ctx.principalEntity)) {
           return yield* invalid("incompatible membership operands");
         }
         return {
@@ -867,6 +975,7 @@ export const compileReadAuthorizationResult = (
           principalEntity,
         },
         authored.expr,
+        { nodes: 0 },
       );
       for (const key of lowered.claims) {
         if (!declaredClaimKeys.has(key)) {

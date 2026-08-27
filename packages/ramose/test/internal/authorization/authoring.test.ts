@@ -25,6 +25,8 @@ import {
   encodePolicyTemplate,
   hashRelativeRule,
   installAuthorization,
+  MAX_COLLECTION_SIZE,
+  MAX_JSON_NODES,
   validateBoundAuthorizationResult,
   $,
   all,
@@ -832,6 +834,202 @@ describe("core-v1 integration", () => {
     expect(installed.decisions.entities).toHaveLength(1);
     expect(installed.decisions.traits).toHaveLength(1);
     expect(installed.accessPlans).toHaveLength(3);
+  });
+});
+
+describe("self-ref hops from the field owner", () => {
+  const Linkable = Trait("linkable", {
+    parent: Ref.self,
+    label: string(),
+  });
+  const LinkedIssue = Entity("issue", { owner: Ref(User) }, { traits: [Linkable] });
+  const LinkedApp = Schema({ user: User, issue: LinkedIssue });
+
+  test("trait self-ref then entity field is the wrong owner", () => {
+    expectInvalid(
+      compileReadAuthorizationResult({
+        schema: LinkedApp,
+        rules: [read(LinkedIssue).when(eq(path(Linkable.parent, LinkedIssue.owner), me))],
+        claims: [],
+        principal: { entity: User.authId },
+      }),
+      /wrong owner/,
+    );
+  });
+
+  test("entity self-ref stays on the entity", () => {
+    expectOk(compile([read(Issue).when(eq(path(Issue.parent, Issue.owner), me))]));
+  });
+
+  test("after a trait self-ref, a trait-owned field stays reachable", () => {
+    expectOk(
+      compileReadAuthorizationResult({
+        schema: LinkedApp,
+        rules: [read(LinkedIssue).when(eq(path(Linkable.parent, Linkable.label), "x"))],
+        claims: [],
+        principal: { entity: User.authId },
+      }),
+    );
+  });
+});
+
+describe("trait composition in principal-ref / ref-ref equality", () => {
+  const Member = Trait("member", {});
+  const Base = Trait("base", {});
+  const Extra = Trait("extra", {}, { traits: [Base] });
+  const Person = Entity("person", { authId: Field.unique(string(), "upsert") }, { traits: [Member] });
+  const Guest = Entity("guest", { authId: Field.unique(string(), "upsert") });
+  const Holder = Entity("holder", { authId: Field.unique(string(), "upsert") }, { traits: [Extra] });
+  const Bag = Entity("bag", {
+    holder: Ref(Member),
+    owner: Ref(Person),
+    guest: Ref(Guest),
+    base: Ref(Base),
+    extra: Ref(Extra),
+  });
+  const Bags = Schema({ person: Person, guest: Guest, holder: Holder, bag: Bag });
+
+  const compileBag = (
+    rules: readonly ReadRule[],
+    principal: { readonly entity: typeof Person.authId | typeof Guest.authId | typeof Holder.authId },
+  ) =>
+    compileReadAuthorizationResult({
+      schema: Bags,
+      rules,
+      claims: [],
+      principal,
+    });
+
+  test("me matches a ref to a trait the principal entity composes", () => {
+    expectOk(compileBag([read(Bag).when(eq(Bag.holder, me))], { entity: Person.authId }));
+  });
+
+  test("me does not match a trait the principal entity does not compose", () => {
+    expectInvalid(
+      compileBag([read(Bag).when(eq(Bag.holder, me))], { entity: Guest.authId }),
+      /incompatible equality/,
+    );
+  });
+
+  test("two refs are compatible when an entity composes the trait target", () => {
+    expectOk(compileBag([read(Bag).when(eq(Bag.holder, Bag.owner))], { entity: Person.authId }));
+    expectInvalid(
+      compileBag([read(Bag).when(eq(Bag.holder, Bag.guest))], { entity: Person.authId }),
+      /incompatible equality/,
+    );
+  });
+
+  test("two trait refs are compatible when one trait composes the other", () => {
+    expectOk(compileBag([read(Bag).when(eq(Bag.base, Bag.extra))], { entity: Holder.authId }));
+  });
+
+  test("two distinct entity refs stay incompatible", () => {
+    expectInvalid(compile([read(Issue).when(eq(Issue.owner, Issue.workspace))]), /incompatible equality/);
+  });
+});
+
+describe("targeted vs untargeted refs", () => {
+  const Resource = Entity("resource", {
+    userRef: Ref(User),
+    looseRef: Field(Ref),
+    otherLoose: Field(Ref),
+  });
+  const Resources = Schema({ user: User, resource: Resource });
+  const compileResource = (rules: readonly ReadRule[]) =>
+    compileReadAuthorizationResult({
+      schema: Resources,
+      rules,
+      claims: [],
+      principal: { entity: User.authId },
+    });
+
+  test("exactly one untargeted ref is incompatible", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.looseRef, Resource.userRef))]),
+      /incompatible equality/,
+    );
+  });
+
+  test("two untargeted refs are compatible", () => {
+    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.looseRef))]));
+    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.otherLoose))]));
+  });
+
+  test("two targeted refs to the same entity are compatible", () => {
+    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.userRef))]));
+  });
+
+  test("untargeted ref is incompatible with me", () => {
+    expectInvalid(
+      compileResource([read(Resource).when(eq(Resource.looseRef, me))]),
+      /incompatible equality/,
+    );
+  });
+});
+
+describe("field-target callbacks use the same proxy", () => {
+  test("owner(me) compiles the same as eq(Issue.owner, me)", () => {
+    const viaCallback = expectOk(compile([read(Issue.owner).when((owner) => owner(me))]));
+    const viaEq = expectOk(compile([read(Issue.owner).when(eq(Issue.owner, me))]));
+    expect(viaCallback.rules[0]?.expr).toEqual(viaEq.rules[0]?.expr);
+    expect(viaCallback.rules[0]?.focus).toEqual({
+      _tag: "field",
+      field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "owner" },
+    });
+  });
+
+  test("owner.authId.eq(subject) hops to the ref target", () => {
+    const template = expectOk(
+      compile([read(Issue.owner).when((owner) => owner.authId.eq(subject))]),
+    );
+    expect(template.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [
+          { field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "owner" } },
+          { field: { _tag: "RelativeFieldId", owner: userOwner, localName: "authId" } },
+        ],
+      },
+      right: { _tag: "subject" },
+    });
+  });
+});
+
+describe("expression-size bounds before iterating", () => {
+  test("wide all exceeding MAX_COLLECTION_SIZE fails without iterating", () => {
+    const oversized = all(...Array(MAX_COLLECTION_SIZE + 1).fill(allow));
+    expectInvalid(compile([read(Issue).when(oversized)]), /collection size/);
+  });
+
+  test("wide all exceeding MAX_JSON_NODES fails at compile with a node-budget message", () => {
+    const chunk = all(...Array(256).fill(allow));
+    const wide = all(...Array(16).fill(chunk));
+    expectInvalid(
+      compile([read(Issue).when(wide)]),
+      new RegExp(`node budget .* exceeds ${MAX_JSON_NODES}`),
+    );
+  });
+
+  test("oversized smuggled path fails collection-size before traversal", () => {
+    expectInvalid(
+      compile([
+        read(Issue).when(
+          eq(
+            {
+              _tag: "path",
+              steps: Array.from({ length: MAX_COLLECTION_SIZE + 1 }, () => ({
+                ident: ":issue/owner",
+                localName: "owner",
+              })),
+            },
+            me,
+          ),
+        ),
+      ]),
+      /collection size/,
+    );
   });
 });
 

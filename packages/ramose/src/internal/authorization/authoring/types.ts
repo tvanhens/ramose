@@ -80,6 +80,15 @@ type RefTargetFields<F> = F extends {
     : { readonly [key: string]: unknown }
   : { readonly [key: string]: unknown };
 
+/** Fields reachable after a field-target `read(Issue.owner)` hop. */
+export type FieldTargetFields<T> = T extends {
+  readonly schema: { readonly _target?: infer Target };
+}
+  ? Target extends { readonly fields: infer Fields }
+    ? Fields
+    : { readonly [key: string]: unknown }
+  : { readonly [key: string]: unknown };
+
 export type AuthPathMethods = AuthPathLike & {
   readonly eq: (rhs: AuthOperandInput) => AuthExpr;
   readonly contains: (rhs: AuthOperandInput) => AuthExpr;

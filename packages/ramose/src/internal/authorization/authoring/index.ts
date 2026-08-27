@@ -19,7 +19,7 @@ export {
   not,
   subject,
 } from "./expr.ts";
-export { $, path } from "./path.ts";
+export { $, path, seededPath } from "./path.ts";
 export { read, type ReadBuilder } from "./read.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
 export type {
@@ -28,6 +28,7 @@ export type {
   AuthPathLike as AuthPath,
   AuthPathProxy,
   CompileReadAuthorizationInput,
+  FieldTargetFields,
   ReadRule,
   ReadTarget,
 } from "./types.ts";

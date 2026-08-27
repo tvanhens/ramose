@@ -5,7 +5,7 @@
  * schema (`$()`), never a `Db` or Effect environment.
  */
 
-import { $, path } from "./path.ts";
+import { $, seededPath } from "./path.ts";
 import {
   isAuthPath,
   isEntityTarget,
@@ -14,6 +14,7 @@ import {
   READ_RULE_TAG,
   type AuthExpr,
   type AuthPathProxy,
+  type FieldTargetFields,
   type ReadRule,
   type ReadTarget,
 } from "./types.ts";
@@ -32,7 +33,7 @@ const resolveExpr = (
     return expr($(target));
   }
   if (isPathCarrier(target)) {
-    return expr(path(target) as AuthPathProxy);
+    return expr(seededPath(target));
   }
   return expr($({ fields: {} }) as AuthPathProxy);
 };
@@ -54,7 +55,9 @@ const builder = <Proxy>(target: ReadTarget): ReadBuilder<Proxy> => ({
 export function read<N extends { readonly _tag: "Entity" | "Trait"; readonly fields: object }>(
   target: N,
 ): ReadBuilder<AuthPathProxy<N["fields"]>>;
-export function read(target: { readonly ident: string }): ReadBuilder<AuthPathProxy>;
+export function read<F extends { readonly ident: string }>(
+  target: F,
+): ReadBuilder<AuthPathProxy<FieldTargetFields<F>>>;
 export function read(target: ReadTarget): ReadBuilder<AuthPathProxy> {
   return builder(target);
 }
