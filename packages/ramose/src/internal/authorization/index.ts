@@ -22,6 +22,7 @@ export * from "./bind.ts";
 export * from "./bounds.ts";
 export * from "./canonical-json.ts";
 export * from "./catalog.ts";
+export * from "./catalog-unit.ts";
 export * from "./decode.ts";
 export * from "./expr.ts";
 export * from "./failures.ts";

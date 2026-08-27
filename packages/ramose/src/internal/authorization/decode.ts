@@ -24,8 +24,12 @@ import {
 } from "./bounds.ts";
 import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
 import { OperationDescriptor, TraitComposition } from "./catalog.ts";
+import {
+  InstalledCatalogUnit,
+  type InstalledCatalogUnit as InstalledCatalogUnitType,
+} from "./catalog-unit.ts";
 import { InvalidIR } from "./failures.ts";
-import { OperationId, PolicyHash, RuleId } from "./identities.ts";
+import { CatalogUnitHash, OperationId, PolicyHash, RuleId } from "./identities.ts";
 import {
   CanonicalAuthorizationRule,
   InstalledAuthorizationIR,
@@ -38,6 +42,7 @@ import {
 } from "./ir.ts";
 import type { JsonValue } from "./json.ts";
 import {
+  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
 } from "./version.ts";
@@ -48,6 +53,7 @@ const UTF8 = new TextEncoder();
 
 export type PolicyTemplateIREncoded = typeof PolicyTemplateIR.Encoded;
 export type InstalledAuthorizationIREncoded = typeof InstalledAuthorizationIR.Encoded;
+export type InstalledCatalogUnitEncoded = typeof InstalledCatalogUnit.Encoded;
 export type RelativeAuthorizationRuleEncoded = typeof RelativeAuthorizationRule.Encoded;
 export type CanonicalAuthorizationRuleEncoded = typeof CanonicalAuthorizationRule.Encoded;
 
@@ -70,6 +76,16 @@ export const decodeInstalledAuthorizationResult = (
     input,
   );
 
+/** Structural document only. Not {@link InstalledCatalogUnitV1}. */
+export const decodeInstalledCatalogUnitResult = (
+  input: unknown,
+): Result.Result<InstalledCatalogUnitType, InvalidIR> =>
+  decodeDocument(
+    Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
+    (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
+    input,
+  );
+
 export const decodePolicyTemplate = Effect.fn("decodePolicyTemplate")(function* (
   input: unknown,
 ): Effect.fn.Return<PolicyTemplateIRType, InvalidIR> {
@@ -82,12 +98,22 @@ export const decodeInstalledAuthorization = Effect.fn("decodeInstalledAuthorizat
   },
 );
 
+export const decodeInstalledCatalogUnit = Effect.fn("decodeInstalledCatalogUnit")(
+  function* (input: unknown): Effect.fn.Return<InstalledCatalogUnitType, InvalidIR> {
+    return yield* Effect.fromResult(decodeInstalledCatalogUnitResult(input));
+  },
+);
+
 export const encodePolicyTemplate = (document: PolicyTemplateIRType): PolicyTemplateIREncoded =>
   Schema.encodeUnknownSync(PolicyTemplateIR)(document);
 
 export const encodeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): InstalledAuthorizationIREncoded => Schema.encodeUnknownSync(InstalledAuthorizationIR)(document);
+
+export const encodeInstalledCatalogUnit = (
+  document: InstalledCatalogUnitType,
+): InstalledCatalogUnitEncoded => Schema.encodeUnknownSync(InstalledCatalogUnit)(document);
 
 // Hoisted for the same reason as the two above: a `Schema.*Sync` call sitting
 // inside an `Effect.fn` generator turns an encode failure into a defect rather
@@ -107,6 +133,9 @@ export const canonicalizePolicyTemplate = (document: PolicyTemplateIRType): stri
 export const canonicalizeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): string => canonicalizeJson(encodedJson(encodeInstalledAuthorization(document)));
+
+export const canonicalizeInstalledCatalogUnit = (document: InstalledCatalogUnitType): string =>
+  canonicalizeJson(encodedJson(encodeInstalledCatalogUnit(document)));
 
 const concatUtf8 = (prefix: string, text: string): Uint8Array => {
   const left = UTF8.encode(prefix);
@@ -185,6 +214,16 @@ export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalled
   },
 );
 
+export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCatalogUnit")(
+  function* (document: InstalledCatalogUnitType) {
+    const digest = yield* hashDomainSeparatedCanonicalJson(
+      AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
+      omitKey(encodedJson(encodeInstalledCatalogUnit(document)), "unitHash"),
+    );
+    return CatalogUnitHash.make(digest);
+  },
+);
+
 export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(function* (
   rule: RelativeAuthorizationRuleType,
 ) {
@@ -257,6 +296,14 @@ const identityCollision = (
   document: unknown,
   encodeRule: (rule: unknown) => JsonValue,
 ): InvalidIR | undefined => {
+  if (isCatalogUnit(document)) {
+    return (
+      identityTableCollisions(document.identities) ??
+      operationDescriptorCollisions(document.operations) ??
+      traitCompositionCollisions(document.traitComposition) ??
+      identityCollision(document.policy, encodeRule)
+    );
+  }
   if (!isTemplate(document) && !isInstalled(document)) {
     return new InvalidIR({ message: "rejected malformed document" });
   }
@@ -292,6 +339,11 @@ const isInstalled = (document: unknown): document is InstalledAuthorizationIRTyp
   typeof document === "object" &&
   document !== null &&
   (document as { readonly _tag?: unknown })._tag === "InstalledAuthorizationIR";
+
+const isCatalogUnit = (document: unknown): document is InstalledCatalogUnitType =>
+  typeof document === "object" &&
+  document !== null &&
+  (document as { readonly _tag?: unknown })._tag === "InstalledCatalogUnit";
 
 const decisionCollisions = (decisions: {
   readonly entities: ReadonlyArray<{ readonly target: unknown }>;

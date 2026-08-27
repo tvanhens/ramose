@@ -41,6 +41,10 @@ export type DigestHex = typeof DigestHex.Type;
 export const PolicyHash = DigestHex.pipe(Schema.brand("PolicyHash"));
 export type PolicyHash = typeof PolicyHash.Type;
 
+/** Installed catalog-unit identity. Canonical serialized form is {@link DigestHex}. */
+export const CatalogUnitHash = DigestHex.pipe(Schema.brand("CatalogUnitHash"));
+export type CatalogUnitHash = typeof CatalogUnitHash.Type;
+
 /**
  * Rule identity. Canonical serialized form is {@link DigestHex}.
  * One identity mapping to two different canonical bodies is an error;

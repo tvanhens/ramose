@@ -68,3 +68,12 @@ export type AuthorizationFailure =
   | CatalogMismatch
   | AuthorizationBudgetExceeded
   | AuthorizationDenied;
+
+/**
+ * Catalog-unit bytes failed hash, decode, or completeness checks.
+ * Not an authorization-evaluation failure.
+ */
+export class CatalogUnitCorrupt extends Data.TaggedError("CatalogUnitCorrupt")<{
+  readonly message: string;
+  readonly catalog: CatalogId;
+}> {}
