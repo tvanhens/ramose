@@ -17,9 +17,6 @@
     "packages/ramose/test/connect.test.ts": [
       "scriptedPeer"
     ],
-    "packages/ramose/test/db-seam.test.ts": [
-      "scriptedPeer"
-    ],
     "packages/ramose/test/db/io.test.ts": [
       "WebSocketImpl",
       "inProcessPeer"

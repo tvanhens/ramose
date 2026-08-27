@@ -21,31 +21,9 @@ themselves in every open tab.
 
 ---
 
-A schema, a query, and a typed write:
-
-```ts
-import * as Ramose from "ramose/db";
-
-const Todo = Ramose.Entity("todo", {
-  title: Ramose.string(),
-  done: Ramose.boolean(),
-});
-
-const ramose = Ramose.connect({ url: process.env.RAMOSE_URL });
-const db = ramose.db("todos", Ramose.Schema({ todo: Todo }));
-
-const todos = Ramose.Query.from(Todo);
-const rows = await db.query(todos);
-
-const setDone = Ramose.Operation.patch("todo/set-done", Todo, ["done"]);
-await db.run(setDone, rows[0]!.id, { done: true });
-```
-
----
-
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Live queries.** `db.live(query)` re-runs itself when the data changes.
+- **Live queries.** They re-run themselves when the data changes.
   No refetch code, no invalidation, no WebSocket server to write.
 - **Permissions in the database.** Who may read or write each field is checked
   on the server, deny by default — not middleware you remember to add.

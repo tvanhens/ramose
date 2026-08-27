@@ -17,7 +17,7 @@ import { PolicyMemo, type Principal } from "../../../packages/ramose/src/interna
 import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
 import * as Ramose from "ramose";
 import { classOfRole } from "ramose/better-auth";
-import { operations } from "../src/app/mutations.ts";
+import { operations } from "../src/domain/operations.ts";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";

@@ -68,7 +68,7 @@ import {
   reshapePullResult,
   type ValidatePull,
 } from "./Pull.ts";
-import type { ConnectionStatus, Session } from "./session.ts";
+import type { Session } from "./session.ts";
 import type { Subscription } from "./subscription.ts";
 
 /**
@@ -319,99 +319,11 @@ interface View {
   readonly minT?: number | undefined;
 }
 
-// ── the hook seam ──────────────────────────────────────────────────────────
-
-/**
- * @internal What a client adapter needs that the public surface
- * deliberately does not say: a **structural** identity for a view (so
- * `db.asOf(t)` built inline compares equal across reads instead of
- * re-subscribing — or looping — on every one), the pinned coordinate
- * (so an `asOf` view can be answered with no request), and the session's
- * wake (so the basis can be re-read on every paint).
- *
- * It rides a registry symbol rather than an export so the public barrel
- * stays exactly what `db-portable.test.ts` asserts.
- */
-export interface DbSeam {
-  /**
-   * Equal iff two views read the same coordinates over the same client.
-   * This is the view half of a live subscription key:
-   * `(viewKey, astKey)`.
-   */
-  readonly key: string;
-  /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
-  readonly asOf: number | undefined;
-  /**
-   * Subscribe to the session's wakes (tx/resync, local writes, drops).
-   * Returns the unsubscribe, or `undefined` on an HTTPS-only client, where
-   * there is nothing to wake on.
-   */
-  readonly onWake: (cb: () => void) => (() => void) | undefined;
-  /**
-   * The highest basis the session has seen, `undefined` without a session —
-   * so a waker can tell a wake that carries news from one it caused itself
-   * (observing the basis bumps the session).
-   */
-  readonly t: () => number | undefined;
-  /**
-   * Session generation — 0 before a socket exists. A reconnect after a
-   * terminal live error is new information.
-   */
-  readonly generation: () => number;
-  /**
-   * `"offline"` with no socket factory; otherwise the session's
-   * {@link ConnectionStatus} (`"connecting"` until the first handshake).
-   */
-  readonly status: () => ConnectionStatus;
-  /**
-   * Standing query that emits the raw wire result — no take-unwrap, no
-   * page-wrap. `useLive` shares this handle and applies each subscriber's
-   * `finalize`.
-   */
-  readonly liveRaw: (
-    query: AnyQueryObject,
-  ) => Subscription<unknown, unknown>;
-}
-
-/** @internal The registry key {@link DbSeam} is attached under. */
-export const DB_SEAM: symbol = Symbol.for("ramose.db.seam");
-
 /**
  * @internal Raw `POST /transact` submit — admin / seed / test. Not on the
  * public `Db` or `EffectDb` shapes. App writes use {@link Db.run}.
  */
 export const DB_SUBMIT: unique symbol = Symbol.for("ramose.db.submit");
-
-/** One token per client, so views over different clients never compare equal. */
-const clientTokens = new WeakMap<Wire, number>();
-let nextClientToken = 1;
-
-const attachSeam = (
-  db: object,
-  wire: Wire,
-  name: string,
-  view: View,
-  liveRaw: DbSeam["liveRaw"],
-): void => {
-  let client = clientTokens.get(wire);
-  if (client === undefined) {
-    client = nextClientToken++;
-    clientTokens.set(wire, client);
-  }
-  const seam: DbSeam = {
-    key:
-      `${client}/${name}` +
-      `?asOf=${view.asOf ?? ""}&history=${view.history === true}` +
-      `&minT=${view.minT ?? ""}`,
-    asOf: view.asOf,
-    onWake: (cb) => wire.session(name)?.onWake(cb),
-    t: () => wire.session(name)?.t,
-    generation: () => wire.session(name)?.generation ?? 0,
-    status: () => wire.session(name)?.status ?? "offline",
-    liveRaw,
-  };
-  (db as Record<symbol, unknown>)[DB_SEAM] = seam;
-};
 
 /**
  * One pass of a standing read: the emission, the basis `t` the peer
@@ -486,7 +398,6 @@ const makeRead = <C extends AnySchema>(
   const runQuery = (
     input: AnyQueryObject,
     minT: number | undefined,
-    raw = false,
   ): Effect.Effect<
     {
       readonly rows: unknown;
@@ -520,9 +431,6 @@ const makeRead = <C extends AnySchema>(
       );
       const t = typeof reply.t === "number" ? reply.t : 0;
       const viewed = typeof reply.epoch === "number" ? reply.epoch : undefined;
-      // Shared `useLive` cache holds this raw wire result; each subscriber
-      // applies its own `finalize` (take-unwrap / page-wrap / reshape).
-      if (raw) return { rows: reply.result, t, viewed };
       // `finalize` applies the query's terminal too: a page wraps, a take
       // unwraps — an `oneOrFail()` miss comes back as the NotOne to fail with
       const rows = lowered.finalize(reply.result);
@@ -624,12 +532,9 @@ const makeRead = <C extends AnySchema>(
       ),
     );
 
-  const liveStanding = (
-    input: AnyQueryObject,
-    raw: boolean,
-  ) =>
+  const liveStanding = (input: AnyQueryObject) =>
     standing<unknown, DbError | NotOne>((minT) =>
-      runQuery(input, minT, raw).pipe(
+      runQuery(input, minT).pipe(
         Effect.map((pass) => ({
           value: pass.rows,
           t: pass.t,
@@ -652,7 +557,7 @@ const makeRead = <C extends AnySchema>(
       )) as EffectReadDb<C>["query"],
 
     live: ((input: AnyQueryObject) =>
-      liveStanding(input, false)) as EffectReadDb<C>["live"],
+      liveStanding(input)) as EffectReadDb<C>["live"],
 
     pull: ((subject: unknown, pattern: unknown) =>
       fenced(
@@ -695,10 +600,6 @@ const makeRead = <C extends AnySchema>(
       return makeRead(wire, name, schema, { ...view, history: true }, bad);
     },
   };
-  // enumerable, so `makeDb`'s spread carries it onto the writable db too
-  attachSeam(read, wire, name, view, (query) =>
-    fromStream(liveStanding(query, true)),
-  );
   return read;
 };
 
@@ -776,11 +677,6 @@ const awaitWake = (
     });
   });
 
-const copySeam = (from: object, to: object): void => {
-  const seam = (from as Record<symbol, unknown>)[DB_SEAM];
-  if (seam !== undefined) (to as Record<symbol, unknown>)[DB_SEAM] = seam;
-};
-
 const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
   const read = {
     name: inner.name,
@@ -812,7 +708,6 @@ const wrapRead = <C extends AnySchema>(inner: EffectReadDb<C>): ReadDb<C> => {
     },
     effect: inner,
   } as ReadDb<C>;
-  copySeam(inner, read);
   return read;
 };
 
@@ -829,7 +724,6 @@ const wrapDb = <C extends AnySchema>(inner: EffectDb<C>): Db<C> => {
       )) as Db<C>["run"],
     effect: inner,
   } as Db<C>;
-  copySeam(inner, db);
   return db;
 };
 

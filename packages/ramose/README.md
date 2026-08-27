@@ -48,15 +48,6 @@ export const Todo = Ramose.Entity("todo", {
 export const Todos = Ramose.Schema({ todo: Todo });
 ```
 
-```ts
-import * as Ramose from "ramose/db";
-import { Todo, Todos } from "./schema.ts";
-
-const ramose = Ramose.connect({ url });
-const db = ramose.db("todos", Todos);
-const todos = await db.query(Ramose.Query.from(Todo));
-```
-
 ## Docs
 
 Full documentation lives at **[ramose.ai](https://ramose.ai)**. Start with

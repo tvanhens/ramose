@@ -1,14 +1,11 @@
 /**
- * Every write the app makes. Each is a named operation — the session overlay
- * applies the optimistic prefix locally, then the peer commits it or the
- * policy rejects it with `Unauthorized` / `OperationRejected`. A denial drops
- * the pending layer; the UI surfaces the error as a toast (enforcement
- * is server-side; the buttons are merely polite).
+ * Typed writes the peer registers. The compiled policy accepts or rejects
+ * each operation with `Unauthorized` / `OperationRejected`.
  */
 
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
-import { rankAfter } from "../domain/rank.ts";
+import { rankAfter } from "./rank.ts";
 import {
   Comment,
   Issue,
@@ -16,7 +13,7 @@ import {
   Reef,
   type Priority,
   type Status,
-} from "../domain/schema.ts";
+} from "./schema.ts";
 
 const Op = Ramose.Operation.for(Reef);
 const { Query } = Ramose;
@@ -48,8 +45,7 @@ const authFetch = (
  * Workspace provisioning as an operation: install + optional org registration
  * as effects, then seed labels. The peer upserts the creator's `user` row
  * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
- * must not write that row. Effects come first, so there is no optimistic
- * prefix; the creating tab has no session yet.
+ * must not write that row. Effects come first; there is no session yet.
  */
 export const provisionWorkspaceOp = Op(
   "workspace/provision",

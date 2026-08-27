@@ -7,6 +7,7 @@ import {
   extractCitation,
   extractTitle,
   parseTitleCitations,
+  resolveShotCode,
   REPO,
 } from "./snippets.mjs";
 import {
@@ -92,6 +93,48 @@ describe("extractCitation", () => {
     expect(got.text).toContain('Ramose.Entity("todo"');
     expect(got.text).toContain("createdAt");
   });
+
+  test("allowlisted missing path is skipped", () => {
+    const got = extractCitation({
+      relPath: "examples/todos/src/App.tsx",
+      marker: "todo-list",
+      start: null,
+      end: null,
+    });
+    expect(got.ok).toBe(false);
+    expect(got.skipped).toBe(true);
+    expect(got.error).toContain("examples/todos/src/App.tsx");
+    const shot = resolveShotCode("examples/todos/src/App.tsx#todo-list");
+    expect(shot?.skipped).toBe(true);
+    expect(shot?.error).toBeUndefined();
+  });
+
+  test("non-allowlisted missing path is an error, not skipped", () => {
+    const got = extractCitation({
+      relPath: "examples/does-not-exist/Nope.tsx",
+      marker: "anything",
+      start: null,
+      end: null,
+    });
+    expect(got.ok).toBe(false);
+    expect(got.skipped).toBeUndefined();
+    expect(got.error).toContain("cited file does not exist");
+    const shot = resolveShotCode("examples/does-not-exist/Nope.tsx#anything");
+    expect(shot?.skipped).toBeUndefined();
+    expect(shot?.error).toContain("cited file does not exist");
+  });
+
+  test("bad marker on a kept file is an error", () => {
+    const got = extractCitation({
+      relPath: "examples/todos/schema.ts",
+      marker: "no-such-marker",
+      start: null,
+      end: null,
+    });
+    expect(got.ok).toBe(false);
+    expect(got.skipped).toBeUndefined();
+    expect(got.error).toContain("#no-such-marker");
+  });
 });
 
 describe("extractTitle + compare", () => {
@@ -112,6 +155,24 @@ describe("extractTitle + compare", () => {
     expect(
       bodyMatchesExtract("foo\n// …\n// note\nbar", "foo\nbar").ok,
     ).toBe(true);
+  });
+
+  test("mixed stitch with allowlisted missing skips the body check", () => {
+    const got = extractTitle(
+      "examples/todos/src/App.tsx#todo-list · examples/todos/schema.ts:1-9",
+    );
+    expect(got.ok).toBe(false);
+    expect(got.skipped).toBe(true);
+    expect(got.extracted).toBe(true);
+  });
+
+  test("mixed stitch with a non-allowlisted missing path is an error", () => {
+    const got = extractTitle(
+      "examples/does-not-exist/Nope.tsx#x · examples/todos/schema.ts:1-9",
+    );
+    expect(got.ok).toBe(false);
+    expect(got.skipped).toBeUndefined();
+    expect(got.error).toContain("cited file does not exist");
   });
 });
 

@@ -51,9 +51,8 @@ a 15-minute JWT with `ramose: { db: <slug>, class: <role> }`.
 examples/reef/
   alchemy.run.ts        the stack: peer + auth Worker
   src/
-    domain/             catalog, policy, queries, ranking, roles, constants
+    domain/             catalog, policy, queries, ranking, roles, constants, operations
     infra/              the peer resources and the auth Worker entry
-    app/mutations.ts    typed writes the peer and policy tests import
   test/                 policy compilation and ranking — unit tests
 ```
 
@@ -66,7 +65,7 @@ examples/reef/
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers share |
 | `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (`Ramose.Server` owns it: `auth` is the source of truth) and the stack wiring both Workers |
-| `src/app/mutations.ts` | typed operations imported by infra and policy tests |
+| `src/domain/operations.ts` | typed operations imported by infra and policy tests |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking |
 
 ## Deploying to real Cloudflare

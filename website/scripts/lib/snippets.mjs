@@ -25,6 +25,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const SITE = resolve(HERE, "../..");
 export const REPO = resolve(SITE, "..");
 
+// Exact paths of known-deleted client files still cited from MDX. Missing
+// citations are errors by default; only these paths may skip the body/Shot
+// check. Shrink-only — do not glob, and do not add a general missing-file
+// escape. Removal of entries is owned by #416 / #442.
+const DELETED_CITATION_ALLOWLIST = new Set(
+  JSON.parse(readFileSync(join(HERE, "deleted-citation-allowlist.json"), "utf8")),
+);
+
+const isAllowlistedDeleted = (relPath) =>
+  DELETED_CITATION_ALLOWLIST.has(relPath);
+
 const CITE_RE =
   /([\w./-]+\.(?:ts|tsx|mjs|json|css))(?:#([\w-]+)|:(\d+)(?:-(\d+))?)/g;
 
@@ -108,7 +119,11 @@ const markerBounds = (lines, name) => {
 export const extractCitation = (cite, hintDir) => {
   const found = resolveRepoFile(cite.relPath, hintDir);
   if (!found) {
-    return { ok: false, skipped: true, error: `cited file does not exist: ${cite.relPath}` };
+    const error = `cited file does not exist: ${cite.relPath}`;
+    if (isAllowlistedDeleted(cite.relPath)) {
+      return { ok: false, skipped: true, error };
+    }
+    return { ok: false, error };
   }
   const rel = relative(REPO, found).replaceAll("\\", "/");
   const lines = readFileSync(found, "utf8").split("\n");
@@ -183,10 +198,13 @@ export const extractTitle = (title) => {
     labels.push(got.label);
     any = true;
   }
-  // A stitch that cites a deleted file cannot be compared to the remaining
-  // extract — the fence still has those lines. Skip the body check.
-  if (skippedSome) return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
-  if (!any) return { ok: true, extracted: false, skipped: true, text: "", labels: [] };
+  // A stitch that cites an allowlisted-deleted file cannot be compared to
+  // the remaining extract — the fence still has those lines. Skip the body
+  // check. A non-allowlisted missing path already returned as an error.
+  if (skippedSome) {
+    return { ok: false, extracted: true, skipped: true, error: `cited file does not exist`, text: parts.join("\n\n"), labels };
+  }
+  if (!any) return { ok: true, extracted: false, text: "", labels: [] };
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
 };
 

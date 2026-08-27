@@ -145,7 +145,6 @@ export const pullPatternKey = (pattern: unknown): string => {
 
 /**
  * Full live-subscription identity: `(viewKey, astKey)`.
- * `viewKey` is {@link DbSeam.key}.
  */
 export const liveSubscriptionKey = (
   viewKey: string,

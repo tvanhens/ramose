@@ -25,7 +25,7 @@
 
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose";
-import { operations } from "../app/mutations.ts";
+import { operations } from "./operations.ts";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
 

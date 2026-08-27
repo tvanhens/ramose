@@ -32,7 +32,7 @@ import * as Effect from "effect/Effect";
 import { Api } from "./api.ts";
 import { REEF_DOMAIN, pinned, zoneOf } from "./domain.ts";
 import { compiledPolicy } from "../domain/policy.ts";
-import { operations } from "../app/mutations.ts";
+import { operations } from "../domain/operations.ts";
 import {
   AUTH_BASE_PATH,
   DEV_PEER_PORT,
