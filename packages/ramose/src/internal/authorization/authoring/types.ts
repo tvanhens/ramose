@@ -87,10 +87,10 @@ export type AuthPathMethods = AuthPathLike & {
 
 export type AuthPathProxy<Fields = object> = AuthPathMethods & {
   readonly [K in keyof Fields]: AuthPathProxy<RefTargetFields<Fields[K]>>;
-};
+} & ((rhs: AuthOperandInput) => AuthExpr);
 
 export const isAuthPath = (value: unknown): value is AuthPathLike =>
-  typeof value === "object" &&
+  (typeof value === "object" || typeof value === "function") &&
   value !== null &&
   (value as { readonly _tag?: unknown })._tag === AUTH_PATH_TAG &&
   Array.isArray((value as { readonly steps?: unknown }).steps);

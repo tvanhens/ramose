@@ -30,7 +30,7 @@ export const lit = (value: string | number | boolean | null): BoxedOperand => ({
 
 export const hasClass = (className: string): AuthExpr => ({
   _tag: "hasClass",
-  class: className,
+  class: typeof className === "string" ? className : "",
 });
 
 export const all = (...exprs: readonly AuthExpr[]): AuthExpr => ({

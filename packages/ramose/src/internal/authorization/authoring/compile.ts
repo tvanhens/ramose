@@ -43,7 +43,6 @@ import {
   parseIdent,
   READ_RULE_TAG,
   stepFromCarrier,
-  type AuthExpr,
   type AuthPathStep,
   type CompileReadAuthorizationInput,
   type ReadRule,
@@ -129,8 +128,8 @@ type CompileShape =
   | { readonly _tag: "me" }
   | { readonly _tag: "subject" }
   | { readonly _tag: "claim"; readonly shape: ClaimShape | undefined }
-  | { readonly _tag: "scalar"; readonly valueType: string }
-  | { readonly _tag: "ref"; readonly targetNs: string | undefined };
+  | { readonly _tag: "scalar"; readonly valueType: string; readonly cardinality?: "one" | "many" }
+  | { readonly _tag: "ref"; readonly targetNs: string | undefined; readonly cardinality?: "one" | "many" };
 
 type LoweredOperand = {
   readonly term: RelativeValueTerm;
@@ -274,6 +273,19 @@ const eqCompatible = (
   return pair(left, right) || pair(right, left);
 };
 
+const membershipElement = (shape: CompileShape): CompileShape | undefined => {
+  if (shape._tag === "ref" && shape.cardinality === "many") {
+    return { _tag: "ref", targetNs: shape.targetNs, cardinality: "one" };
+  }
+  if (shape._tag === "scalar" && shape.cardinality === "many") {
+    return { _tag: "scalar", valueType: shape.valueType, cardinality: "one" };
+  }
+  if (shape._tag === "claim" && shape.shape !== undefined && shape.shape._tag === "array") {
+    return { _tag: "claim", shape: shape.shape.items };
+  }
+  return undefined;
+};
+
 const principalEntityName = (
   principal: CompileReadAuthorizationInput["principal"],
 ): string | undefined => {
@@ -377,8 +389,16 @@ const lowerPathSteps = (
       if (isLast) {
         terminal =
           field.valueType === "ref"
-            ? { _tag: "ref", targetNs: refTargetNs(field.schema, current) }
-            : { _tag: "scalar", valueType: field.valueType ?? "string" };
+            ? {
+                _tag: "ref",
+                targetNs: refTargetNs(field.schema, current),
+                cardinality: field.cardinality,
+              }
+            : {
+                _tag: "scalar",
+                valueType: field.valueType ?? "string",
+                cardinality: field.cardinality,
+              };
       }
       lowered.push({ field: field.id });
     }
@@ -501,30 +521,42 @@ const lowerExpr = (
         `unsupported expression tag '${typeof tag === "string" ? tag : "unknown"}'`,
       );
     }
-    const expr = input as AuthExpr;
-    switch (expr._tag) {
-      case "const":
-        return { expr: { _tag: "const" as const, value: expr.value }, classes: [], claims: [] };
-      case "hasClass":
-        if (expr.class.length === 0) {
+    const record = input as Record<string, unknown>;
+    switch (tag) {
+      case "const": {
+        const value = record.value;
+        if (typeof value !== "boolean") {
+          return yield* invalid("malformed const");
+        }
+        return { expr: { _tag: "const" as const, value }, classes: [], claims: [] };
+      }
+      case "hasClass": {
+        const className = record.class;
+        if (typeof className !== "string") {
+          return yield* invalid("malformed hasClass");
+        }
+        if (className.length === 0) {
           return yield* invalid("blank class name");
         }
         return {
-          expr: { _tag: "hasClass" as const, class: expr.class },
-          classes: [expr.class],
+          expr: { _tag: "hasClass" as const, class: className },
+          classes: [className],
           claims: [],
         };
+      }
       case "and":
       case "or": {
-        if (expr.exprs.length === 0) {
-          return yield* invalid(
-            expr._tag === "and" ? "empty all() is invalid" : "empty any() is invalid",
-          );
+        const exprs = record.exprs;
+        if (!Array.isArray(exprs)) {
+          return yield* invalid(tag === "and" ? "malformed all" : "malformed any");
+        }
+        if (exprs.length === 0) {
+          return yield* invalid(tag === "and" ? "empty all() is invalid" : "empty any() is invalid");
         }
         const children: RelativeAuthorizationExpr[] = [];
         const classes: string[] = [];
         const claims: string[] = [];
-        for (const child of expr.exprs) {
+        for (const child of exprs) {
           if (depth + 1 > MAX_JSON_DEPTH) {
             return yield* invalid(`expression depth ${depth + 1} exceeds ${MAX_JSON_DEPTH}`);
           }
@@ -535,7 +567,7 @@ const lowerExpr = (
         }
         return {
           expr:
-            expr._tag === "and"
+            tag === "and"
               ? { _tag: "and" as const, exprs: children }
               : { _tag: "or" as const, exprs: children },
           classes,
@@ -543,10 +575,14 @@ const lowerExpr = (
         };
       }
       case "not": {
+        const childExpr = record.expr;
+        if (typeof childExpr !== "object" || childExpr === null) {
+          return yield* invalid("malformed not");
+        }
         if (depth + 1 > MAX_JSON_DEPTH) {
           return yield* invalid(`expression depth ${depth + 1} exceeds ${MAX_JSON_DEPTH}`);
         }
-        const child = yield* lowerExpr(ctx, expr.expr, depth + 1);
+        const child = yield* lowerExpr(ctx, childExpr, depth + 1);
         return {
           expr: { _tag: "not" as const, expr: child.expr },
           classes: child.classes,
@@ -554,8 +590,18 @@ const lowerExpr = (
         };
       }
       case "eq": {
-        const left = yield* lowerOperand(ctx, expr.left, "eq");
-        const right = yield* lowerOperand(ctx, expr.right, "eq");
+        const leftInput = record.left;
+        const rightInput = record.right;
+        if (
+          leftInput === undefined ||
+          leftInput === null ||
+          rightInput === undefined ||
+          rightInput === null
+        ) {
+          return yield* invalid("malformed eq");
+        }
+        const left = yield* lowerOperand(ctx, leftInput, "eq");
+        const right = yield* lowerOperand(ctx, rightInput, "eq");
         if (!eqCompatible(left.shape, right.shape, ctx.principalEntity)) {
           return yield* invalid("incompatible equality operands");
         }
@@ -566,14 +612,33 @@ const lowerExpr = (
         };
       }
       case "in": {
-        const collection = yield* lowerOperand(ctx, expr.collection, "contains-collection");
-        const value = yield* lowerOperand(ctx, expr.value, "contains-value");
+        const valueInput = record.value;
+        const collectionInput = record.collection;
+        if (
+          valueInput === undefined ||
+          valueInput === null ||
+          collectionInput === undefined ||
+          collectionInput === null
+        ) {
+          return yield* invalid("malformed contains");
+        }
+        const collection = yield* lowerOperand(ctx, collectionInput, "contains-collection");
+        const value = yield* lowerOperand(ctx, valueInput, "contains-value");
+        const element = membershipElement(collection.shape);
+        if (element === undefined) {
+          return yield* invalid("membership requires a collection");
+        }
+        if (!eqCompatible(value.shape, element, ctx.principalEntity)) {
+          return yield* invalid("incompatible membership operands");
+        }
         return {
           expr: { _tag: "in" as const, value: value.term, collection: collection.term },
           classes: [],
           claims: claimKeysOf([value.term, collection.term]),
         };
       }
+      default:
+        return yield* invalid(`unsupported expression tag '${tag}'`);
     }
   });
 

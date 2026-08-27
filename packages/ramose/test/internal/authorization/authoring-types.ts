@@ -22,7 +22,7 @@ const Workspace = Entity("workspace", {
   members: Field.many(Ref(User)),
 });
 const Tag = Entity("tag", { name: string() });
-const Taggable = Trait("taggable", { tags: Field.many(Ref(Tag)) });
+const Taggable = Trait("taggable", { tags: Field.many(Ref(User)) });
 const Issue = Entity(
   "issue",
   {
@@ -51,6 +51,7 @@ export type _compileResultIsTemplate = Expect<Equal<CompileSuccess, PolicyTempla
 export type _inputHasRules = Expect<Extends<CompileReadAuthorizationInput["rules"], readonly ReadRule[]>>;
 
 void User;
+void Tag;
 void Issue;
 void Taggable;
 void Schema;

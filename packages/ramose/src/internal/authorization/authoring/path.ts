@@ -72,7 +72,12 @@ const missingStep = (owner: FieldOwner, name: string): AuthPathStep => ({
 
 const navigate = (owner: FieldOwner, steps: readonly AuthPathStep[]): AuthPathProxy => {
   const path = new AuthPath(steps);
-  return new Proxy(path, {
+  const applyEq = (rhs: AuthOperandInput) => path.eq(rhs);
+  const target = Object.assign(applyEq, path, {
+    eq: (rhs: AuthOperandInput) => path.eq(rhs),
+    contains: (rhs: AuthOperandInput) => path.contains(rhs),
+  });
+  return new Proxy(target, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {
         const field = fieldOf(owner, prop);
@@ -88,6 +93,12 @@ const navigate = (owner: FieldOwner, steps: readonly AuthPathStep[]): AuthPathPr
       if (prop === "then" || prop === "toJSON") return undefined;
       if (typeof prop !== "string") return undefined;
       return navigate({ fields: {} }, [...steps, missingStep(owner, prop)]);
+    },
+    apply(_t, _this, args) {
+      if (steps.length === 0) {
+        return { _tag: "eq" };
+      }
+      return path.eq(args[0] as AuthOperandInput);
     },
   }) as unknown as AuthPathProxy;
 };

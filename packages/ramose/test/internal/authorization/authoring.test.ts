@@ -59,7 +59,7 @@ const Workspace = Entity("workspace", {
   members: Field.many(Ref(User)),
 });
 const Tag = Entity("tag", { name: string() });
-const Taggable = Trait("taggable", { tags: Field.many(Ref(Tag)) });
+const Taggable = Trait("taggable", { tags: Field.many(Ref(User)) });
 const Issue = Entity(
   "issue",
   {
@@ -599,10 +599,67 @@ describe("InvalidIR failures", () => {
     expectOk(compile([read(Issue).when(eq(Issue.title, "hello"))]));
   });
 
+  test("rejects incompatible membership operands at compile", () => {
+    const Labeled = Trait("labeled", { labels: Field.many(Ref(Tag)) });
+    const Note = Entity("note", { title: string() }, { traits: [Labeled] });
+    const LabeledApp = Schema({ user: User, tag: Tag, note: Note });
+    expectInvalid(
+      compileReadAuthorizationResult({
+        schema: LabeledApp,
+        rules: [read(Labeled).when(contains(Labeled.labels, me))],
+        claims: [],
+        principal: { entity: User.authId },
+      }),
+      /incompatible membership/,
+    );
+    expectInvalid(compile([read(Issue).when(contains(me, Issue.owner))]), /membership requires a collection/);
+    expectOk(compile([read(Workspace).when(contains(Workspace.members, me))]));
+    expectOk(compile([read(Issue).when(contains(path(Issue.workspace, Workspace.members), me))]));
+    expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
+  });
+
+  test("malformed recognized tags return InvalidIR and do not throw", () => {
+    const cases: ReadonlyArray<{ readonly expr: unknown; readonly pattern: RegExp }> = [
+      { expr: { _tag: "hasClass" }, pattern: /malformed hasClass/ },
+      { expr: { _tag: "hasClass", class: undefined }, pattern: /malformed hasClass/ },
+      { expr: { _tag: "hasClass", class: 1 }, pattern: /malformed hasClass/ },
+      { expr: { _tag: "const" }, pattern: /malformed const/ },
+      { expr: { _tag: "const", value: "yes" }, pattern: /malformed const/ },
+      { expr: { _tag: "and" }, pattern: /malformed all/ },
+      { expr: { _tag: "and", exprs: "nope" }, pattern: /malformed all/ },
+      { expr: { _tag: "or" }, pattern: /malformed any/ },
+      { expr: { _tag: "or", exprs: 1 }, pattern: /malformed any/ },
+      { expr: { _tag: "not" }, pattern: /malformed not/ },
+      { expr: { _tag: "not", expr: "nope" }, pattern: /malformed not/ },
+      { expr: { _tag: "eq" }, pattern: /malformed eq/ },
+      { expr: { _tag: "eq", left: me }, pattern: /malformed eq/ },
+      { expr: { _tag: "in" }, pattern: /malformed contains/ },
+      { expr: { _tag: "in", value: me }, pattern: /malformed contains/ },
+      { expr: contains(undefined, me), pattern: /malformed contains/ },
+      { expr: contains(Issue.tags, undefined), pattern: /malformed contains/ },
+      { expr: hasClass(undefined as unknown as string), pattern: /blank class name/ },
+    ];
+    for (const { expr, pattern } of cases) {
+      let result: Result.Result<unknown, InvalidIR>;
+      try {
+        result = compile([read(Issue).when(expr as AuthExpr)]);
+      } catch (cause) {
+        throw new Error(`compile threw for ${JSON.stringify(expr)}: ${String(cause)}`);
+      }
+      expectInvalid(result, pattern);
+    }
+  });
+
   test("rejects expression depth above 64", () => {
     let tooDeep: AuthExpr = allow;
     for (let i = 0; i < 65; i++) tooDeep = not(tooDeep);
     expectInvalid(compile([read(Issue).when(tooDeep)]), /expression depth 65 exceeds 64/);
+  });
+
+  test("wide all still fails on a deep child", () => {
+    let tooDeep: AuthExpr = allow;
+    for (let i = 0; i < 65; i++) tooDeep = not(tooDeep);
+    expectInvalid(compile([read(Issue).when(all(allow, tooDeep))]), /expression depth .* exceeds 64/);
   });
 });
 
@@ -611,6 +668,8 @@ describe("schema field names reserved by $()", () => {
     eq: string(),
     contains: string(),
     steps: string(),
+    then: string(),
+    toJSON: string(),
   });
   const Things = Schema({ thing: Thing });
   const compileThing = (rules: readonly ReadRule[]) =>
@@ -625,8 +684,12 @@ describe("schema field names reserved by $()", () => {
     const dollars = expectOk(compileThing([read(Thing).when(eq($(Thing).eq, "x"))]));
     const method = expectOk(compileThing([read(Thing).when($(Thing).eq.eq("x"))]));
     const callback = expectOk(compileThing([read(Thing).when((thing) => eq(thing.eq, "x"))]));
+    const collidingCall = expectOk(compileThing([read(Thing).when((thing) => thing.eq("x"))]));
+    const conciseField = expectOk(compileThing([read(Thing).when(eq(Thing.eq, "x"))]));
     const containsField = expectOk(compileThing([read(Thing).when(eq($(Thing).contains, "c"))]));
     const stepsField = expectOk(compileThing([read(Thing).when(eq($(Thing).steps, "s"))]));
+    const thenField = expectOk(compileThing([read(Thing).when($(Thing).then.eq("x"))]));
+    const toJsonField = expectOk(compileThing([read(Thing).when($(Thing).toJSON.eq("x"))]));
 
     const eqField = {
       _tag: "RelativeFieldId" as const,
@@ -640,6 +703,26 @@ describe("schema field names reserved by $()", () => {
     });
     expect(method.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
     expect(callback.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
+    expect(collidingCall.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
+    expect(conciseField.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
+    expect(thenField.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: { ...eqField, localName: "then" } }],
+      },
+      right: { _tag: "lit", value: "x" },
+    });
+    expect(toJsonField.rules[0]?.expr).toEqual({
+      _tag: "eq",
+      left: {
+        _tag: "ref",
+        root: { _tag: "resource" },
+        steps: [{ field: { ...eqField, localName: "toJSON" } }],
+      },
+      right: { _tag: "lit", value: "x" },
+    });
     expect(containsField.rules[0]?.expr).toEqual({
       _tag: "eq",
       left: {
@@ -659,6 +742,7 @@ describe("schema field names reserved by $()", () => {
       right: { _tag: "lit", value: "s" },
     });
     expectOk(compile([read(Issue).when($(Issue).owner.eq(me))]));
+    expectInvalid(compileThing([read(Thing).when($(Thing)("x"))]), /malformed eq/);
   });
 });
 

@@ -7,6 +7,7 @@
 
 import { $, path } from "./path.ts";
 import {
+  isAuthPath,
   isEntityTarget,
   isPathCarrier,
   isTraitTarget,
@@ -26,7 +27,7 @@ const resolveExpr = (
   target: ReadTarget,
   expr: AuthExpr | ((proxy: AuthPathProxy) => AuthExpr),
 ): AuthExpr => {
-  if (typeof expr !== "function") return expr;
+  if (typeof expr !== "function" || isAuthPath(expr)) return expr as AuthExpr;
   if (isEntityTarget(target) || isTraitTarget(target)) {
     return expr($(target));
   }
