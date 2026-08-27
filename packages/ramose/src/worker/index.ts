@@ -2,21 +2,25 @@
  * Ramose peer Worker — HTTP API and edge executor.
  *
  *   GET  /health              { ok, service, stage, time, operations: string[] }
- *   *    /db/:name/*          fail-closed until verified JWT (#412) + catalog + filtered Db (#421/#423)
+ *   *    /db/:name/*          JWT verified; data plane fail-closed until catalog + filtered Db (#421/#423)
  *
- * External `/db/*` access is deny until verified JWT admission, an
- * installed catalog, and a filtered `Db`. `/health` is the only
- * unauthenticated route (AUTH-1, AUTH-6).
+ * External `/db/*` verifies a JWT then still denies until an installed
+ * catalog and a filtered `Db`. `/health` is the only unauthenticated
+ * route (AUTH-1, AUTH-6).
  */
 
 import { Histogram, RateMeter, componentLogger, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
+import { AuthenticationAdmission } from "../internal/authorization/runtime/authentication.ts";
+import { authenticationLayer } from "../internal/authorization/runtime/layer.ts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { isDatabaseName } from "../db/DatabaseName.ts";
 import { type AnyOperations, operationNames } from "../db/Operation.ts";
+import { bearerOf } from "./auth.ts";
 import {
   BadRequest,
   type Internal,
@@ -135,7 +139,7 @@ const handle = (
   t0: number,
   info: RequestInfo,
   peer: ServerOptions,
-): Effect.Effect<Response, RamoseError> =>
+): Effect.Effect<Response, RamoseError, AuthenticationAdmission> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
@@ -172,12 +176,29 @@ const handle = (
 
     const m = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
     if (!m) return yield* new NotFound({});
-    const db = decodeURIComponent(m[1]);
+    const db = yield* Effect.try({
+      try: () => decodeURIComponent(m[1]!),
+      catch: () => new Unauthorized({}),
+    });
     const rest = m[2] ?? "/";
     info.db = db;
     info.path = rest;
     info.route = routeOf(rest, request.method);
-    if (!isDatabaseName(db)) return yield* new BadRequest({ message: "invalid database name" });
+    const token = bearerOf(request);
+    if (token === undefined) return yield* new Unauthorized({});
+    const admission = yield* AuthenticationAdmission;
+    yield* admission
+      .admit({
+        database: db,
+        token: Redacted.make(token),
+        route: rest === "/session" ? "websocket" : "http",
+      })
+      .pipe(
+        Effect.catchTags({
+          AuthenticationRejected: () => Effect.fail(new Unauthorized({})),
+          JwksUnavailable: () => Effect.fail(new Unauthorized({})),
+        }),
+      );
     return yield* new Unauthorized({});
   });
 
@@ -188,7 +209,12 @@ const runFetch = (request: Request, env: RamoseEnv, peer: ServerOptions): Promis
     handle(request, env, t0, info, peer).pipe(
       Effect.catchTags(recover(info, t0)),
       Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),
-      Effect.provideService(Analytics, fromBinding(bindingOf(env))),
+      Effect.provide(
+        Layer.mergeAll(
+          authenticationLayer(env),
+          Layer.succeed(Analytics, fromBinding(bindingOf(env))),
+        ),
+      ),
     ),
   );
 };

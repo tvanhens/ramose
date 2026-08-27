@@ -21,21 +21,59 @@ const key = async () => {
   return privateKey;
 };
 
+export type SignOver = {
+  readonly iss?: string;
+  readonly aud?: string;
+  readonly sub?: string | null;
+  readonly iat?: number | null;
+  readonly exp?: string | number;
+  readonly nbf?: number;
+  readonly alg?: string;
+  readonly kid?: string;
+  readonly secret?: string;
+  readonly ramose?: unknown;
+};
+
+const b64url = (value: unknown): string =>
+  Buffer.from(JSON.stringify(value)).toString("base64url");
+
 /** Sign a `ramose.db` / `ramose.class` token for `db`. */
 export const signToken = async (
   db: string,
   cls: string,
   sub = "user_ada",
   attrs?: Record<string, unknown>,
-  over: Record<string, unknown> = {},
+  over: SignOver = {},
 ): Promise<string> => {
-  let jwt = new SignJWT({
-    ramose: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) },
-  }).setProtectedHeader({ alg: "ES256", kid: "test" });
-  jwt = jwt.setIssuer((over.iss as string) ?? ISS);
-  jwt = jwt.setAudience((over.aud as string) ?? AUD);
-  jwt = jwt.setSubject((over.sub as string) ?? sub);
-  jwt = jwt.setIssuedAt((over.iat as number) ?? undefined);
-  jwt = jwt.setExpirationTime((over.exp as string | number) ?? "5m");
+  const alg = over.alg ?? "ES256";
+  const kid = over.kid ?? "test";
+  const ramose =
+    over.ramose !== undefined
+      ? over.ramose
+      : { db, class: cls, ...(attrs === undefined ? {} : { attrs }) };
+  if (alg === "none") {
+    const now = Math.floor(Date.now() / 1000);
+    const exp = typeof over.exp === "number" ? over.exp : (over.iat ?? now) + 300;
+    const payload: Record<string, unknown> = {
+      ramose,
+      iss: over.iss ?? ISS,
+      aud: over.aud ?? AUD,
+      exp,
+    };
+    if (over.iat !== null) payload.iat = over.iat ?? now;
+    if (over.sub !== null) payload.sub = over.sub ?? sub;
+    if (over.nbf !== undefined) payload.nbf = over.nbf;
+    return `${b64url({ alg: "none", kid })}.${b64url(payload)}.`;
+  }
+  let jwt = new SignJWT({ ramose }).setProtectedHeader({ alg, kid });
+  jwt = jwt.setIssuer(over.iss ?? ISS);
+  jwt = jwt.setAudience(over.aud ?? AUD);
+  if (over.sub !== null) jwt = jwt.setSubject(over.sub ?? sub);
+  if (over.iat !== null) jwt = jwt.setIssuedAt(over.iat ?? undefined);
+  jwt = jwt.setExpirationTime(over.exp ?? "5m");
+  if (over.nbf !== undefined) jwt = jwt.setNotBefore(over.nbf);
+  if (alg === "HS256") {
+    return jwt.sign(new TextEncoder().encode(over.secret ?? "hs256-test-secret"));
+  }
   return jwt.sign(await key());
 };

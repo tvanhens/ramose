@@ -147,8 +147,9 @@ export type AuthEnvValue = string | object;
  */
 export interface ServerAuth {
   /**
-   * Where the issuer's public keys live. Reserved for #412 verified
-   * principals. External `/db/*` is fail-closed until that lands.
+   * Where the issuer's public keys live. JWT verification is live;
+   * the data plane stays fail-closed until catalog + filtered Db
+   * (#421/#423).
    */
   readonly jwksUrl?: AuthEnvValue | undefined;
   /**

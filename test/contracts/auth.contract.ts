@@ -34,15 +34,22 @@ export function registerAuthContract(target: AuthTarget): void {
       const { openUrl, tokenUrl, policyUrl } = target.urls();
       const db = uniqueDb("acme");
       const jwt = await signToken(db, "admin");
+      const bodies: unknown[] = [];
       for (const [base, tok] of [
         [openUrl, undefined],
         [tokenUrl, SHARED_TOKEN],
         [policyUrl, jwt],
       ] as const) {
         for (const pending of everyDbSurface(base, db, tok)) {
-          expect((await pending).status).toBe(401);
+          const res = await pending;
+          expect(res.status).toBe(401);
+          expect(res.body).toEqual({ error: "unauthorized" });
+          bodies.push(res.body);
         }
       }
+      expect(new Set(bodies.map((b) => JSON.stringify(b)))).toEqual(
+        new Set([JSON.stringify({ error: "unauthorized" })]),
+      );
     });
 
     test("RAMOSE_TOKEN is not a data-plane principal", async () => {

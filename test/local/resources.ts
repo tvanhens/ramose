@@ -2,8 +2,9 @@
  * Owned Ramose peers for the local integration stack.
  *
  * Each Server has its own storage and Worker logical ids so they do not
- * collide. Auth peers share the checked-in JWKS; every data plane is
- * fail-closed until verified JWT (#412) + catalog + filtered `Db` (#421/#423).
+ * collide. Auth peers share the checked-in JWKS; JWT verification is
+ * live and every data plane stays 401 until catalog + filtered `Db`
+ * (#421/#423).
  */
 
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -38,7 +39,7 @@ export const Token = Ramose.Server("Token", {
   main: empty,
 });
 
-/** JWT verifier bindings reserved for #412. Data plane is still 401. */
+/** JWT verifier bindings. Data plane is still 401 until catalog + filtered Db. */
 export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",
   storage: "PolicyStore",
