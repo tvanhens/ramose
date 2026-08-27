@@ -32,6 +32,7 @@ export * from "./install.ts";
 export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./principal.ts";
+export * from "./read-filter.ts";
 export * from "./truth.ts";
 export * from "./validate.ts";
 export * from "./version.ts";
