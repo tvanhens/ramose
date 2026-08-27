@@ -319,6 +319,10 @@ raw-transact fallbacks are forbidden.
 present a JWT whose signature, issuer, audience, expiration, not-before,
 algorithm, and required subject / principal claims verify. Algorithms are
 explicit; the token header MUST NOT choose them.
+Verification uses `jose` (`createLocalJWKSet` / `createRemoteJWKSet` and
+`jwtVerify`). Rotation is issuer-owned overlap: every token has a non-empty
+`kid`, new keys use new `kid` values, and issuers retain old public keys until
+all tokens they signed have expired.
 
 **AUTH-3.** Principal classes and claims are resolved through the active
 catalog's policy configuration. Deployment, schema, and administrative

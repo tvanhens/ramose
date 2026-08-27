@@ -5,7 +5,7 @@
  * `OperationRejected`) come from `db/Errors.ts`. Worker-only HTTP tags
  * stay here: `NotFound`, `BadRequest`, `Internal`, `UpstreamError`.
  *
- * The HTTP boundary in index.ts runs one `Effect` per request; everything that
+ * The HTTP boundary in handle.ts runs one `Effect` per request; everything that
  * is not a 2xx is a `Data.TaggedError` in its error channel, mapped back to a
  * response with `Effect.catchTags`. The status codes and body fields here are
  * exactly the ones the Worker has always returned (the client parses

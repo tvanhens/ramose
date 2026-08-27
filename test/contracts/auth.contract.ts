@@ -52,5 +52,15 @@ export function registerAuthContract(target: AuthTarget): void {
       expect((await json(policyUrl, `/db/${db}/query`, q)).status).toBe(401);
       expect((await json(policyUrl, `/db/${db}/info`, { token: SHARED_TOKEN })).status).toBe(401);
     });
+
+    test("a verified JWT crosses admission before the closed data plane", async () => {
+      const { policyUrl, jwksBoundUrl, jwksUrlOnlyUrl } = target.urls();
+      const jwt = await signToken("acme", "member");
+      expect((await json(policyUrl, "/db/-invalid/info")).status).toBe(401);
+      expect((await json(policyUrl, `/db/-invalid/info?token=${encodeURIComponent(jwt)}`)).status).toBe(401);
+      expect((await json(policyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(400);
+      expect((await json(jwksBoundUrl, "/db/-invalid/info", { token: jwt })).status).toBe(400);
+      expect((await json(jwksUrlOnlyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(401);
+    });
   });
 }
