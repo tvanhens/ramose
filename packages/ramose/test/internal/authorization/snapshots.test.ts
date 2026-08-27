@@ -44,7 +44,12 @@ import {
   effectiveApplicationT,
   mergeSnapshotBases,
 } from "../../../src/internal/authorization/runtime/basis.ts";
-import { ApplicationSnapshotUnavailable, SnapshotCancelled } from "../../../src/internal/authorization/runtime/failures.ts";
+import { issueAdmissionTicket } from "../../../src/internal/authorization/runtime/authentication.ts";
+import {
+  ApplicationSnapshotUnavailable,
+  AuthenticationRejected,
+  SnapshotCancelled,
+} from "../../../src/internal/authorization/runtime/failures.ts";
 import {
   authorizedSnapshotLayer,
   denyAllCapabilityLayer,
@@ -214,14 +219,29 @@ const principal = {
   me: { entity: entity("user"), eid: 0 },
 };
 
+const admit = (
+  who: typeof principal = principal,
+  options: {
+    readonly database?: DatabaseId;
+    readonly leaseEpoch?: number;
+    readonly expiresAt?: number;
+  } = {},
+) =>
+  issueAdmissionTicket({
+    principal: who,
+    database: options.database ?? database,
+    leaseEpoch: options.leaseEpoch ?? 0,
+    expiresAt: options.expiresAt ?? Date.now() + 4_000,
+  });
+
 const SCHEMA = [
-  { ":db/ident": ":user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-  { ":db/ident": ":issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  { ":db/ident": ":issue/parent", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-  { ":db/ident": ":issue/link", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
-  { ":db/ident": ":issue/labels", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
-  { ":db/ident": ":taggable/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app/entity/user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+  { ":db/ident": ":app/entity/issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":app/entity/issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+  { ":db/ident": ":app/entity/issue/parent", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app/entity/issue/link", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":app/entity/issue/labels", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
+  { ":db/ident": ":app/trait/taggable/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
 ];
 
 const setup = async () => {
@@ -229,8 +249,8 @@ const setup = async () => {
   const conn = await Connection.create({ now: () => 1_700_000_000_000 });
   await conn.transact(SCHEMA);
   const report = await conn.transact([
-    { ":db/id": "ada", ":user/authId": "ada" },
-    { ":db/id": "issue", ":issue/title": "Secret", ":issue/owner": "ada" },
+    { ":db/id": "ada", ":app/entity/user/authId": "ada" },
+    { ":db/id": "issue", ":app/entity/issue/title": "Secret", ":app/entity/issue/owner": "ada" },
   ]);
   const db = conn.db();
   return {
@@ -269,16 +289,27 @@ describe("pure projection cells", () => {
     });
   });
 
-  test("physical storage idents are unique owner/localName mappings", () => {
-    expect(physicalStorageIdent(field(issueOwner, "title"))).toBe(":issue/title");
+  test("physical storage idents include catalog and owner kind", () => {
+    expect(physicalStorageIdent(field(issueOwner, "title"))).toBe(":app/entity/issue/title");
     const unique = fieldStorageIndex([scalarField(issueOwner, "title")]);
-    expect(unique.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":issue/title");
-    const collided = fieldStorageIndex([
+    expect(unique.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app/entity/issue/title");
+    const entityAndTrait = fieldStorageIndex([
       scalarField(issueOwner, "title"),
       scalarField({ kind: "trait", name: "issue" }, "title"),
     ]);
-    expect(collided.get(fieldDescriptorKey(field(issueOwner, "title")))).toBeUndefined();
-    expect(collided.get(fieldDescriptorKey(field({ kind: "trait", name: "issue" }, "title")))).toBeUndefined();
+    expect(entityAndTrait.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(
+      ":app/entity/issue/title",
+    );
+    expect(entityAndTrait.get(fieldDescriptorKey(field({ kind: "trait", name: "issue" }, "title")))).toBe(
+      ":app/trait/issue/title",
+    );
+    const otherTitle = {
+      ...scalarField(issueOwner, "title"),
+      id: FieldId.make({ catalog: CatalogId.make("other"), owner: issueOwner, localName: "title" }),
+    };
+    const crossCatalog = fieldStorageIndex([scalarField(issueOwner, "title"), otherTitle]);
+    expect(crossCatalog.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app/entity/issue/title");
+    expect(crossCatalog.get(fieldDescriptorKey(otherTitle.id))).toBe(":other/entity/issue/title");
   });
 });
 
@@ -294,12 +325,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw,
-        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }, { leaseEpoch: 3 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -366,50 +397,68 @@ describe("snapshot construction", () => {
       const opened = yield* raw.open({ database, basisT: db.basisT });
       const blankPrincipal = yield* Effect.flip(app.open({
         raw: opened,
-        principal: { subject: "", claims: {}, classes: [] },
+        ticket: issueAdmissionTicket({
+          principal: { subject: "", claims: {}, classes: [] },
+          database,
+          leaseEpoch: 0,
+          expiresAt: Date.now() + 4_000,
+        }),
         installed,
         catalog,
         catalogVersion: version,
         database,
         applicationBasisT: db.basisT,
         ruleBasisT: db.basisT,
-        leaseEpoch: 0,
+      }));
+      const forgedTicket = yield* Effect.flip(app.open({
+        raw: opened,
+        ticket: {
+          principal,
+          database,
+          leaseEpoch: 0,
+          expiresAt: Date.now() + 4_000,
+        },
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
       }));
       const unsealed = yield* Effect.flip(app.open({
         raw: opened,
-        principal,
+        ticket: admit(),
         installed: (structural._tag === "Success" ? structural.success : installed) as InstalledAuthorizationIRV1,
         catalog,
         catalogVersion: version,
         database,
         applicationBasisT: db.basisT,
         ruleBasisT: db.basisT,
-        leaseEpoch: 0,
       }));
       const mismatch = yield* Effect.flip(app.open({
         raw: opened,
-        principal,
+        ticket: admit(),
         installed,
         catalog: CatalogId.make("other"),
         catalogVersion: version,
         database,
         applicationBasisT: db.basisT,
         ruleBasisT: db.basisT,
-        leaseEpoch: 0,
       }));
       const rules = yield* RuleSnapshotAccess;
       const ruleMismatch = yield* Effect.flip(rules.project({
         raw: opened,
         installed,
         catalog: { ...descriptor, id: CatalogId.make("other") },
-        principal,
+        ticket: admit(),
         basisT: db.basisT,
       }));
-      return { blankPrincipal, unsealed, mismatch, ruleMismatch };
+      return { blankPrincipal, forgedTicket, unsealed, mismatch, ruleMismatch };
     }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
 
     const out = await Effect.runPromise(program);
-    expect(out.blankPrincipal).toBeInstanceOf(ApplicationSnapshotUnavailable);
+    expect(out.blankPrincipal).toBeInstanceOf(AuthenticationRejected);
+    expect(out.forgedTicket).toBeInstanceOf(AuthenticationRejected);
     expect(out.unsealed).toBeInstanceOf(InvalidIR);
     expect(out.mismatch).toBeInstanceOf(CatalogMismatch);
     expect(out.ruleMismatch).toBeInstanceOf(CatalogMismatch);
@@ -437,7 +486,7 @@ describe("snapshot construction", () => {
         const opened = yield* raw.open({ database, basisT: db.basisT });
         const failed = yield* Effect.flip(app.open({
           raw: opened,
-          principal,
+          ticket: admit(),
           installed,
           catalog,
           catalogVersion: version,
@@ -465,12 +514,12 @@ describe("snapshot construction", () => {
         raw: liveRaw,
         installed,
         catalog: catalogDescriptor(),
-        principal,
+        ticket: admit(),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw: liveRaw,
-        principal,
+        ticket: admit(principal, { leaseEpoch: 1 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -509,12 +558,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: catalogDescriptor(),
-        principal,
+        ticket: admit(),
         basisT: db.basisT,
       });
       const auth = yield* scopedAuthorizedSnapshot({
         raw,
-        principal,
+        ticket: admit(principal, { leaseEpoch: 1 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -545,12 +594,12 @@ describe("snapshot construction", () => {
         raw: opened,
         installed,
         catalog: catalogDescriptor(),
-        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: db.basisT,
       });
       const auth = yield* app.open({
         raw: opened,
-        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
         installed,
         catalog,
         catalogVersion: version,
@@ -579,7 +628,7 @@ describe("snapshot construction", () => {
         raw: opened,
         installed,
         catalog: catalogDescriptor(),
-        principal,
+        ticket: admit(),
         basisT: db.basisT,
       });
       return yield* Effect.flip(rules.evaluateRule(snap, digestHex(0x11)));
@@ -597,7 +646,7 @@ describe("snapshot construction", () => {
       const opened = yield* raw.open({ database, basisT: db.basisT });
       const auth = yield* app.open({
         raw: opened,
-        principal,
+        ticket: admit(),
         installed,
         catalog,
         catalogVersion: version,
@@ -648,12 +697,12 @@ describe("snapshot construction", () => {
           raw,
           installed,
           catalog: descriptor,
-          principal,
+          ticket: admit(),
           basisT: db.basisT,
         })),
         auth: yield* Effect.flip(appSvc.open({
           raw,
-          principal,
+          ticket: admit(),
           installed,
           catalog,
           catalogVersion: version,
@@ -680,7 +729,7 @@ describe("snapshot construction", () => {
       const raw = yield* rawSvc.open({ database, basisT: db.basisT });
       const future = yield* Effect.flip(appSvc.open({
         raw,
-        principal,
+        ticket: admit(),
         installed,
         catalog,
         catalogVersion: version,
@@ -691,7 +740,7 @@ describe("snapshot construction", () => {
       }));
       const mismatched = yield* Effect.flip(appSvc.open({
         raw,
-        principal,
+        ticket: admit(),
         installed,
         catalog,
         catalogVersion: version,
@@ -727,7 +776,7 @@ describe("snapshot construction", () => {
     const { db, installed, ada, descriptor } = await setup();
     const mutable = {
       subject: "ada",
-      claims: { org: "acme" },
+      claims: { org: "acme", teams: ["eng"] },
       classes: ["member"],
       me: { entity: entity("user"), eid: ada },
     };
@@ -740,12 +789,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        principal: mutable,
+        ticket: admit(mutable),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw,
-        principal: mutable,
+        ticket: admit(mutable),
         installed,
         catalog,
         catalogVersion: version,
@@ -767,9 +816,14 @@ describe("snapshot construction", () => {
     expect(out.auth.principal.subject).toBe("ada");
     expect(out.auth.principal.me?.eid).toBe(ada);
     expect(out.auth.principal.classes).toEqual(["member"]);
+    expect(out.auth.principal.claims.teams).toEqual(["eng"]);
     expect(() => {
       (out.raw as { database: DatabaseId }).database = DatabaseId.make("other");
     }).toThrow();
+    expect(() => {
+      (out.auth.principal.claims.teams as string[]).push("ops");
+    }).toThrow();
+    expect(out.auth.principal.claims.teams).toEqual(["eng"]);
     expect(out.fromMe).toEqual({ _tag: "Present", value: "ada" });
   });
 
@@ -778,13 +832,15 @@ describe("snapshot construction", () => {
     expect("createRawSnapshot" in mod).toBe(false);
     expect("createRuleSnapshot" in mod).toBe(false);
     expect("createAuthorizedSnapshot" in mod).toBe(false);
+    expect("ruleProjectionState" in mod).toBe(false);
     expect(typeof mod.mintAuthorizedSnapshot).toBe("function");
+    expect(typeof mod.projectLiveRuleField).toBe("function");
   });
 
   test("traversal hops must belong to the prior ref target", async () => {
     const { conn, installed, ada, issue, descriptor } = await setup();
     const childReport = await conn.transact([
-      { ":db/id": "child", ":issue/title": "Child", ":issue/owner": ada, ":issue/parent": issue },
+      { ":db/id": "child", ":app/entity/issue/title": "Child", ":app/entity/issue/owner": ada, ":app/entity/issue/parent": issue },
     ]);
     const child = childReport.tempids.child as number;
     const later = conn.db();
@@ -796,7 +852,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        principal: { ...principal, me: { entity: entity("user"), eid: ada } },
+        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: later.basisT,
       });
       const ownerThenUser = yield* ruleSvc.traverse(rules, issue, [
@@ -833,7 +889,7 @@ describe("snapshot construction", () => {
 
   test("projection charges the budget for existence and each field datom", async () => {
     const { conn, installed, issue, descriptor } = await setup();
-    await conn.transact([{ ":db/id": issue, ":issue/labels": ["a", "b", "c"] }]);
+    await conn.transact([{ ":db/id": issue, ":app/entity/issue/labels": ["a", "b", "c"] }]);
     const later = conn.db();
     const program = Effect.gen(function* () {
       const rawSvc = yield* RawStorageAccess;
@@ -843,7 +899,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        principal,
+        ticket: admit(),
         basisT: later.basisT,
         budgetLimit: 1,
       });
@@ -852,7 +908,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        principal,
+        ticket: admit(),
         basisT: later.basisT,
         budgetLimit: 3,
       });
@@ -863,5 +919,38 @@ describe("snapshot construction", () => {
     const out = await Effect.runPromise(program);
     expect(out.scalar).toBeInstanceOf(AuthorizationBudgetExceeded);
     expect(out.many).toBeInstanceOf(AuthorizationBudgetExceeded);
+  });
+
+  test("rule snapshots require the current storage basis", async () => {
+    const { db, installed, descriptor } = await setup();
+    const stale = Math.max(0, db.basisT - 1);
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const appSvc = yield* AuthorizedApplicationAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      const rules = yield* Effect.flip(ruleSvc.project({
+        raw,
+        installed,
+        catalog: descriptor,
+        ticket: admit(),
+        basisT: stale,
+      }));
+      const auth = yield* Effect.flip(appSvc.open({
+        raw,
+        ticket: admit(),
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: stale,
+      }));
+      return { rules, auth };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+
+    const out = await Effect.runPromise(program);
+    expect(out.rules._tag).toBe("RuleSnapshotUnavailable");
+    expect(out.auth).toBeInstanceOf(ApplicationSnapshotUnavailable);
   });
 });

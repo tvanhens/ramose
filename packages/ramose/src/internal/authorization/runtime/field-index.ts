@@ -1,9 +1,10 @@
 /**
- * Canonical field identity and catalog-to-storage mapping for rule projection.
+ * Canonical field identity and database-wide field-to-storage mapping.
  *
- * Lookup is keyed by catalog + owner kind + owner name + local name. A
- * reconstructed `:owner/localName` wire ident is used only when that
- * mapping is unique for the catalog.
+ * Lookup is keyed by catalog + owner kind + owner name + local name.
+ * The reconstructed storage ident includes those same components so two
+ * catalogs — or an entity and a trait — never share a physical attribute
+ * because they reuse an owner/local field name.
  *
  * @internal
  */
@@ -23,14 +24,15 @@ export const fieldDescriptorKey = (id: {
 }): string => `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}`;
 
 /**
- * Physical schema ident for a unique owner/local field name.
- * Canonical field identity still includes catalog and owner kind;
- * {@link fieldStorageIndex} is the mapping used at projection time.
+ * Database-wide physical schema ident for a canonical field identity.
+ * Catalog and owner kind are part of the ident so cross-catalog and
+ * entity/trait reuse of an owner/local name stay distinct.
  */
 export const physicalStorageIdent = (id: {
-  readonly owner: { readonly name: string };
+  readonly catalog: CatalogId;
+  readonly owner: { readonly kind: string; readonly name: string };
   readonly localName: string;
-}): string => `:${id.owner.name}/${id.localName}`;
+}): string => `:${id.catalog}/${id.owner.kind}/${id.owner.name}/${id.localName}`;
 
 export const fieldStorageIndex = (
   fields: readonly FieldDescriptor[],

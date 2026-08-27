@@ -8,6 +8,7 @@ import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
+import type { AdmissionTicket } from "../../../src/internal/authorization/runtime/authentication.ts";
 import type { AuthorizedSnapshotRequest } from "../../../src/internal/authorization/runtime/application-snapshot.ts";
 import {
   pullAuthorized,
@@ -42,7 +43,7 @@ export type _queryRejectsRule = Expect<RejectRuleQuery>;
 export type _pullRejectsRaw = Expect<RejectRawPull>;
 export type _pullRejectsRule = Expect<RejectRulePull>;
 
-export type _openRequiresPrincipal = Expect<Extends<"principal", keyof AuthorizedSnapshotRequest>>;
+export type _openRequiresTicket = Expect<Extends<"ticket", keyof AuthorizedSnapshotRequest>>;
 export type _openRequiresInstalled = Expect<Extends<"installed", keyof AuthorizedSnapshotRequest>>;
 export type _openRequiresCatalog = Expect<Extends<"catalog", keyof AuthorizedSnapshotRequest>>;
 export type _openRequiresCatalogVersion = Expect<
@@ -83,20 +84,21 @@ new RuleSnapshot();
 // @ts-expect-error — constructor is private
 new AuthorizedSnapshot();
 
-const _missingPrincipal: AuthorizedSnapshotRequest = {
+const _missingTicket: AuthorizedSnapshotRequest = {
   raw,
-  // @ts-expect-error — verified principal is required
-  principal: undefined,
+  // @ts-expect-error — sealed admission ticket is required
+  ticket: undefined,
   installed: {} as InstalledAuthorizationIRV1,
   catalog: "app" as AuthorizedSnapshotRequest["catalog"],
   catalogVersion: "1" as AuthorizedSnapshotRequest["catalogVersion"],
   database: "todos" as AuthorizedSnapshotRequest["database"],
   applicationBasisT: 1,
   ruleBasisT: 1,
-  leaseEpoch: 0,
 };
 
-void _missingPrincipal;
+void _missingTicket;
+declare const _ticket: AdmissionTicket;
+void _ticket;
 void queryAuthorized;
 void pullAuthorized;
 void query;

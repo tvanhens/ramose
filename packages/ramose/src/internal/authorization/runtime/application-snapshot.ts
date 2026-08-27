@@ -2,9 +2,9 @@
  * Authorized application access (TCB-3, TCB-4, CUR-1, HIST-1).
  *
  * Query, pull, live, session, and operation results consume only this
- * snapshot. Construction requires a verified principal, sealed installed
- * IR, catalog identity, and explicit application and rule bases.
- * Missing any of those fails closed (FC-1).
+ * snapshot. Construction requires a sealed admission ticket, sealed
+ * installed IR, catalog identity, and explicit application and rule
+ * bases. Missing any of those fails closed (FC-1).
  *
  * Raw-to-authorized conversion does not copy rule-snapshot facts onto
  * the application handle. The authorized cursor stays empty until #367.
@@ -16,7 +16,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type { CatalogId, CatalogVersion, DatabaseId } from "../identities.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
-import type { AuthorizationPrincipal } from "../principal.ts";
+import type { AdmissionTicket } from "./authentication.ts";
 import { type ApplicationSnapshotFailure } from "./failures.ts";
 import {
   mintAuthorizedSnapshot,
@@ -26,14 +26,14 @@ import {
 
 export interface AuthorizedSnapshotRequest {
   readonly raw: RawSnapshot;
-  readonly principal: AuthorizationPrincipal;
+  readonly ticket: AdmissionTicket;
   readonly installed: InstalledAuthorizationIRV1;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
   readonly database: DatabaseId;
   readonly applicationBasisT: number;
   readonly ruleBasisT: number;
-  readonly leaseEpoch: number;
+  readonly leaseEpoch?: number | undefined;
   readonly asOfT?: number | undefined;
   readonly history?: boolean | undefined;
   readonly expiresAt?: number | undefined;

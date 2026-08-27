@@ -11,7 +11,9 @@
  *
  * Unchecked factories stay module-private. Callers mint capabilities only
  * through {@link mintRawSnapshot}, {@link mintRuleSnapshot}, and
- * {@link mintAuthorizedSnapshot}.
+ * {@link mintAuthorizedSnapshot}. Rule and authorized minting require a
+ * sealed admission ticket. Rule projection never exports the physical
+ * `Db`; the evaluator uses lease-checked, bounded operations.
  *
  * @internal
  */
@@ -20,11 +22,16 @@ import type { Db } from "../../core/db.ts";
 import { CatalogMismatch, InvalidIR, LeaseExpired } from "../failures.ts";
 import { DEFAULT_AUTHORIZATION_BUDGET } from "../bounds.ts";
 import type { CatalogDescriptor, FieldDescriptor } from "../catalog.ts";
-import type { CatalogId, CatalogVersion, DatabaseId, PolicyHash } from "../identities.ts";
+import type { CatalogId, CatalogVersion, DatabaseId, FieldId, PolicyHash } from "../identities.ts";
 import { isVerifiedInstalledAuthorization } from "../install.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
+import type { Projected } from "../truth.ts";
 import * as Result from "effect/Result";
+import {
+  isVerifiedAdmissionTicket,
+  type AdmissionTicket,
+} from "./authentication.ts";
 import {
   collapseApplicationBasis,
   mergeSnapshotBases,
@@ -32,6 +39,7 @@ import {
 } from "./basis.ts";
 import {
   ApplicationSnapshotUnavailable,
+  AuthenticationRejected,
   RawStorageUnavailable,
   RuleSnapshotUnavailable,
   SnapshotCancelled,
@@ -39,6 +47,7 @@ import {
   type RawStorageFailure,
   type RuleSnapshotFailure,
 } from "./failures.ts";
+import { freezePrincipal } from "./principal-freeze.ts";
 import {
   cancelLease,
   checkLease,
@@ -52,7 +61,12 @@ import {
   physicalStorageIdent,
   traversalCompositionsOf,
 } from "./field-index.ts";
-import type { FieldProjectionIndex } from "./projection.ts";
+import {
+  projectFieldFromDb,
+  traverseFieldsFromDb,
+  traverseFromMeFromDb,
+  type FieldProjectionIndex,
+} from "./projection.ts";
 
 export type AuthorizationBudgetState = {
   readonly limit: number;
@@ -67,7 +81,7 @@ type RawState = {
   readonly application: ReturnType<typeof collapseApplicationBasis>;
 };
 
-export type RuleProjectionState = {
+type RuleProjectionState = {
   readonly database: DatabaseId;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
@@ -99,17 +113,6 @@ const authorizedStates = new WeakMap<AuthorizedSnapshot, AuthorizedState>();
 let constructRaw: (state: RawState) => RawSnapshot;
 let constructRule: (state: RuleProjectionState) => RuleSnapshot;
 let constructAuthorized: (state: AuthorizedState) => AuthorizedSnapshot;
-
-const freezePrincipal = (principal: AuthorizationPrincipal): AuthorizationPrincipal => {
-  const cloned = structuredClone(principal) as AuthorizationPrincipal;
-  if (cloned.me !== undefined) {
-    Object.freeze(cloned.me.entity);
-    Object.freeze(cloned.me);
-  }
-  Object.freeze(cloned.claims);
-  Object.freeze(cloned.classes);
-  return Object.freeze(cloned);
-};
 
 /** Privileged facts at a named basis. Storage, transactor, indexer only. */
 export class RawSnapshot {
@@ -355,9 +358,108 @@ export const physicalCurrentDb = (snapshot: RawSnapshot, now?: number): Db | und
 export const physicalViewDb = (snapshot: RawSnapshot, now?: number): Db | undefined =>
   liveRawState(snapshot, now)?.view;
 
-/** @internal Policy evaluator only. */
-export const ruleProjectionState = (snapshot: RuleSnapshot): RuleProjectionState | undefined =>
-  ruleStates.get(snapshot);
+export type RuleProjectionBudget = {
+  readonly spent: number;
+  readonly limit: number;
+};
+
+export type LiveRuleProjection = {
+  readonly projected: Projected;
+  readonly budget: RuleProjectionBudget;
+};
+
+const liveRuleState = (snapshot: RuleSnapshot, now?: number): RuleProjectionState | undefined => {
+  const state = ruleStates.get(snapshot);
+  if (state === undefined) return undefined;
+  if (Result.isFailure(checkLease(state.lease, now))) return undefined;
+  return state;
+};
+
+const ruleProjectionBudget = (state: RuleProjectionState): RuleProjectionBudget => ({
+  spent: state.budget.spent,
+  limit: state.budget.limit,
+});
+
+const runLiveRuleProjection = async (
+  snapshot: RuleSnapshot,
+  project: (state: RuleProjectionState) => Promise<Projected>,
+): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> => {
+  const state = liveRuleState(snapshot);
+  if (state === undefined) return Result.fail(notLive());
+  const projected = await project(state);
+  if (liveRuleState(snapshot) === undefined) return Result.fail(notLive());
+  return Result.succeed({ projected, budget: ruleProjectionBudget(state) });
+};
+
+/** @internal Policy evaluator only. Lease-checked, bounded field lookup. */
+export const projectLiveRuleField = (
+  snapshot: RuleSnapshot,
+  eid: number,
+  field: FieldId,
+): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> =>
+  runLiveRuleProjection(snapshot, (state) =>
+    projectFieldFromDb(state.current, state.index, eid, field, state.budget),
+  );
+
+/** @internal Policy evaluator only. Lease-checked, bounded traversal. */
+export const traverseLiveRuleFields = (
+  snapshot: RuleSnapshot,
+  eid: number,
+  steps: readonly FieldId[],
+): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> =>
+  runLiveRuleProjection(snapshot, (state) =>
+    traverseFieldsFromDb(state.current, state.index, eid, steps, state.budget),
+  );
+
+/** @internal Policy evaluator only. Lease-checked, bounded me traversal. */
+export const traverseLiveRuleFromMe = (
+  snapshot: RuleSnapshot,
+  steps: readonly FieldId[],
+): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> =>
+  runLiveRuleProjection(snapshot, (state) =>
+    traverseFromMeFromDb(state.current, state.index, state.principal, steps, state.budget),
+  );
+
+const requireAdmissionTicket = (
+  ticket: AdmissionTicket,
+  database: DatabaseId,
+  now = Date.now(),
+): Result.Result<AuthorizationPrincipal, AuthenticationRejected | LeaseExpired | CatalogMismatch> => {
+  if (!isVerifiedAdmissionTicket(ticket)) {
+    return Result.fail(new AuthenticationRejected({ message: "admission ticket is not sealed" }));
+  }
+  if (ticket.principal.subject.length === 0) {
+    return Result.fail(new AuthenticationRejected({ message: "verified principal is required" }));
+  }
+  if (ticket.database !== database) {
+    return Result.fail(
+      new CatalogMismatch({
+        message: "admission ticket database does not match installed policy",
+        expectedDatabase: database,
+        actualDatabase: ticket.database,
+      }),
+    );
+  }
+  if (now >= ticket.expiresAt) {
+    return Result.fail(new LeaseExpired({ message: "admission ticket expired" }));
+  }
+  return Result.succeed(ticket.principal);
+};
+
+const requireMatchingLeaseEpoch = (
+  ticket: AdmissionTicket,
+  leaseEpoch: number | undefined,
+): Result.Result<number, AuthenticationRejected> => {
+  if (leaseEpoch !== undefined && leaseEpoch !== ticket.leaseEpoch) {
+    return Result.fail(
+      new AuthenticationRejected({ message: "admission ticket lease epoch does not match" }),
+    );
+  }
+  return Result.succeed(ticket.leaseEpoch);
+};
+
+const ticketExpiresAt = (ticket: AdmissionTicket, expiresAt: number | undefined): number =>
+  Math.min(expiresAt ?? ticket.expiresAt, ticket.expiresAt);
 
 const collapsedView = (current: Db, application: ReturnType<typeof collapseApplicationBasis>): Db => {
   let view = current.asOf(application.effectiveT);
@@ -492,7 +594,7 @@ export const mintRuleSnapshot = (input: {
   readonly raw: RawSnapshot;
   readonly installed: InstalledAuthorizationIRV1;
   readonly catalog: CatalogDescriptor;
-  readonly principal: AuthorizationPrincipal;
+  readonly ticket: AdmissionTicket;
   readonly basisT: number;
   readonly leaseEpoch?: number | undefined;
   readonly budgetLimit?: number | undefined;
@@ -502,9 +604,8 @@ export const mintRuleSnapshot = (input: {
     if (!isVerifiedInstalledAuthorization(input.installed)) {
       return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
     }
-    if (input.principal.subject.length === 0) {
-      return yield* Result.fail(new RuleSnapshotUnavailable({ message: "verified principal is required" }));
-    }
+    const principal = yield* requireAdmissionTicket(input.ticket, input.installed.database);
+    const leaseEpoch = yield* requireMatchingLeaseEpoch(input.ticket, input.leaseEpoch);
     if (
       input.catalog.id !== input.installed.catalog ||
       input.catalog.version !== input.installed.catalogVersion ||
@@ -537,46 +638,44 @@ export const mintRuleSnapshot = (input: {
         }),
       );
     }
-    if (input.basisT > rawState.current.basisT) {
-      return yield* Result.fail(new RuleSnapshotUnavailable({ message: "rule basis is ahead of storage" }));
+    if (input.basisT !== rawState.current.basisT) {
+      return yield* Result.fail(
+        new RuleSnapshotUnavailable({ message: "rule basis must equal the current storage basis" }),
+      );
     }
-    const view = input.basisT < rawState.current.basisT ? rawState.current.asOf(input.basisT) : rawState.current;
     return createRuleSnapshot({
       database: input.installed.database,
       catalog: input.catalog,
       installed: input.installed,
-      principal: input.principal,
-      current: view,
+      principal,
+      current: rawState.current,
       basisT: input.basisT,
-      leaseEpoch: input.leaseEpoch ?? input.raw.leaseEpoch,
+      leaseEpoch,
       budgetLimit: input.budgetLimit ?? DEFAULT_AUTHORIZATION_BUDGET,
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+      expiresAt: ticketExpiresAt(input.ticket, input.expiresAt),
     });
   });
 
 export const mintAuthorizedSnapshot = (input: {
   readonly raw: RawSnapshot;
-  readonly principal: AuthorizationPrincipal;
+  readonly ticket: AdmissionTicket;
   readonly installed: InstalledAuthorizationIRV1;
   readonly catalog: CatalogId;
   readonly catalogVersion: CatalogVersion;
   readonly database: DatabaseId;
   readonly applicationBasisT: number;
   readonly ruleBasisT: number;
-  readonly leaseEpoch: number;
+  readonly leaseEpoch?: number | undefined;
   readonly asOfT?: number | undefined;
   readonly history?: boolean | undefined;
   readonly expiresAt?: number | undefined;
 }): Result.Result<AuthorizedSnapshot, ApplicationSnapshotFailure> =>
   Result.gen(function* () {
-    if (input.principal === undefined || input.principal.subject.length === 0) {
-      return yield* Result.fail(
-        new ApplicationSnapshotUnavailable({ message: "verified principal is required" }),
-      );
-    }
     if (!isVerifiedInstalledAuthorization(input.installed)) {
       return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
     }
+    const principal = yield* requireAdmissionTicket(input.ticket, input.installed.database);
+    const leaseEpoch = yield* requireMatchingLeaseEpoch(input.ticket, input.leaseEpoch);
     if (input.catalog === undefined || input.catalogVersion === undefined) {
       return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "catalog identity is required" }));
     }
@@ -613,8 +712,13 @@ export const mintAuthorizedSnapshot = (input: {
         }),
       );
     }
-    if (input.applicationBasisT > rawState.current.basisT || input.ruleBasisT > rawState.current.basisT) {
+    if (input.applicationBasisT > rawState.current.basisT) {
       return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "basis is ahead of storage" }));
+    }
+    if (input.ruleBasisT !== rawState.current.basisT) {
+      return yield* Result.fail(
+        new ApplicationSnapshotUnavailable({ message: "rule basis must equal the current storage basis" }),
+      );
     }
     if (
       input.applicationBasisT !== rawState.application.basisT ||
@@ -630,13 +734,13 @@ export const mintAuthorizedSnapshot = (input: {
       catalog: input.catalog,
       catalogVersion: input.catalogVersion,
       installed: input.installed,
-      principal: input.principal,
+      principal,
       applicationBasisT: input.applicationBasisT,
       ruleBasisT: input.ruleBasisT,
-      leaseEpoch: input.leaseEpoch,
+      leaseEpoch,
+      expiresAt: ticketExpiresAt(input.ticket, input.expiresAt),
       ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
       ...(input.history === undefined ? {} : { history: input.history }),
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
     });
   });
 

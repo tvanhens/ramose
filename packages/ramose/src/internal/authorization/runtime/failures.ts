@@ -69,13 +69,15 @@ export type RuleSnapshotFailure =
   | LeaseExpired
   | CatalogMismatch
   | InvalidIR
-  | SnapshotCancelled;
+  | SnapshotCancelled
+  | AuthenticationRejected;
 export type ApplicationSnapshotFailure =
   | ApplicationSnapshotUnavailable
   | CatalogMismatch
   | InvalidIR
   | LeaseExpired
-  | SnapshotCancelled;
+  | SnapshotCancelled
+  | AuthenticationRejected;
 export type CatalogOperationFailure = CatalogOperationNotFound;
 export type AuthenticationAdmissionFailure = AuthenticationRejected;
 

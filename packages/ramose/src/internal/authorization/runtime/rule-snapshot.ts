@@ -9,6 +9,9 @@
  * {@link evaluateRule} stays unwired — leftover #337 evaluation is out
  * of scope. The accessor is the completeness-aware projection.
  *
+ * Physical rule state stays in the snapshot WeakMap. This module calls
+ * only lease-checked, bounded projection operations.
+ *
  * @internal
  */
 
@@ -17,7 +20,6 @@ import * as Effect from "effect/Effect";
 import type { CatalogDescriptor } from "../catalog.ts";
 import type { FieldId } from "../identities.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
-import type { AuthorizationPrincipal } from "../principal.ts";
 import {
   AuthorizationBudgetExceeded,
   IncompleteRuleSnapshot,
@@ -26,25 +28,18 @@ import {
   NotLoaded,
 } from "../failures.ts";
 import type { Truth } from "../truth.ts";
-import {
-  BudgetExhaustedProjection,
-  type IncompleteProjected,
-  type Projected,
-} from "../truth.ts";
+import { type IncompleteProjected, type Projected } from "../truth.ts";
+import type { AdmissionTicket } from "./authentication.ts";
 import {
   RuleSnapshotUnavailable,
-  SnapshotCancelled,
   type RuleSnapshotFailure,
 } from "./failures.ts";
 import {
-  projectFieldFromDb,
-  traverseFieldsFromDb,
-  traverseFromMeFromDb,
-} from "./projection.ts";
-import {
-  checkRuleSnapshot,
   mintRuleSnapshot,
-  ruleProjectionState,
+  projectLiveRuleField,
+  traverseLiveRuleFields,
+  traverseLiveRuleFromMe,
+  type LiveRuleProjection,
   type RawSnapshot,
   type RuleSnapshot,
 } from "./snapshots.ts";
@@ -53,7 +48,7 @@ export interface RuleSnapshotRequest {
   readonly raw: RawSnapshot;
   readonly installed: InstalledAuthorizationIRV1;
   readonly catalog: CatalogDescriptor;
-  readonly principal: AuthorizationPrincipal;
+  readonly ticket: AdmissionTicket;
   readonly basisT: number;
   readonly leaseEpoch?: number | undefined;
   readonly budgetLimit?: number | undefined;
@@ -89,16 +84,6 @@ export class RuleSnapshotAccess extends Context.Service<
   RuleSnapshotAccessService
 >()("ramose/authorization/runtime/RuleSnapshotAccess") {}
 
-const requireLiveRule = (snapshot: RuleSnapshot) =>
-  Effect.gen(function* () {
-    yield* Effect.fromResult(checkRuleSnapshot(snapshot));
-    const state = ruleProjectionState(snapshot);
-    if (state === undefined) {
-      return yield* new SnapshotCancelled({ message: "snapshot is not a live capability" });
-    }
-    return state;
-  });
-
 const projectedToFailure = (
   projected: IncompleteProjected,
 ): RuleSnapshotFailure => {
@@ -126,6 +111,21 @@ const requireComplete = (projected: Projected): Effect.Effect<Projected, RuleSna
   return Effect.succeed(projected);
 };
 
+const completeLiveProjection = (
+  outcome: LiveRuleProjection,
+): Effect.Effect<Projected, RuleSnapshotFailure> => {
+  if (outcome.projected._tag === "BudgetExhausted") {
+    return Effect.fail(
+      new AuthorizationBudgetExceeded({
+        message: "rule projection budget exhausted",
+        spent: outcome.budget.spent,
+        limit: outcome.budget.limit,
+      }),
+    );
+  }
+  return requireComplete(outcome.projected);
+};
+
 export const projectRuleSnapshot = Effect.fn("Authorization.projectRuleSnapshot")(
   function* (request: RuleSnapshotRequest) {
     return yield* Effect.fromResult(mintRuleSnapshot(request));
@@ -137,20 +137,11 @@ export const lookupRuleField = Effect.fn("Authorization.lookupRuleField")(functi
   eid: number,
   field: FieldId,
 ) {
-  const state = yield* requireLiveRule(snapshot);
-  const projected = yield* Effect.tryPromise({
-    try: () => projectFieldFromDb(state.current, state.index, eid, field, state.budget),
+  const outcome = yield* Effect.tryPromise({
+    try: () => projectLiveRuleField(snapshot, eid, field),
     catch: () => new RuleSnapshotUnavailable({ message: "rule lookup failed" }),
   });
-  yield* requireLiveRule(snapshot);
-  if (projected._tag === "BudgetExhausted") {
-    return yield* new AuthorizationBudgetExceeded({
-      message: "rule projection budget exhausted",
-      spent: state.budget.spent,
-      limit: state.budget.limit,
-    });
-  }
-  return yield* requireComplete(projected);
+  return yield* completeLiveProjection(yield* Effect.fromResult(outcome));
 });
 
 export const traverseRuleFields = Effect.fn("Authorization.traverseRuleFields")(function* (
@@ -158,41 +149,22 @@ export const traverseRuleFields = Effect.fn("Authorization.traverseRuleFields")(
   eid: number,
   steps: readonly FieldId[],
 ) {
-  const state = yield* requireLiveRule(snapshot);
-  const projected = yield* Effect.tryPromise({
-    try: () => traverseFieldsFromDb(state.current, state.index, eid, steps, state.budget),
+  const outcome = yield* Effect.tryPromise({
+    try: () => traverseLiveRuleFields(snapshot, eid, steps),
     catch: () => new RuleSnapshotUnavailable({ message: "rule traversal failed" }),
   });
-  yield* requireLiveRule(snapshot);
-  if (projected === BudgetExhaustedProjection || projected._tag === "BudgetExhausted") {
-    return yield* new AuthorizationBudgetExceeded({
-      message: "rule projection budget exhausted",
-      spent: state.budget.spent,
-      limit: state.budget.limit,
-    });
-  }
-  return yield* requireComplete(projected);
+  return yield* completeLiveProjection(yield* Effect.fromResult(outcome));
 });
 
 export const traverseRuleFromMe = Effect.fn("Authorization.traverseRuleFromMe")(function* (
   snapshot: RuleSnapshot,
   steps: readonly FieldId[],
 ) {
-  const state = yield* requireLiveRule(snapshot);
-  const projected = yield* Effect.tryPromise({
-    try: () =>
-      traverseFromMeFromDb(state.current, state.index, state.principal, steps, state.budget),
+  const outcome = yield* Effect.tryPromise({
+    try: () => traverseLiveRuleFromMe(snapshot, steps),
     catch: () => new RuleSnapshotUnavailable({ message: "rule me traversal failed" }),
   });
-  yield* requireLiveRule(snapshot);
-  if (projected._tag === "BudgetExhausted") {
-    return yield* new AuthorizationBudgetExceeded({
-      message: "rule projection budget exhausted",
-      spent: state.budget.spent,
-      limit: state.budget.limit,
-    });
-  }
-  return yield* requireComplete(projected);
+  return yield* completeLiveProjection(yield* Effect.fromResult(outcome));
 });
 
 export const evaluateRuleUnwired: Effect.Effect<never, RuleSnapshotUnavailable> =
