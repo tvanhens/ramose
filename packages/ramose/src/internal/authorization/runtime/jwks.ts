@@ -29,6 +29,7 @@ export type AuthBindings = {
 
 export interface JwksService {
   readonly keySet: Effect.Effect<JWTVerifyGetKey, JwksUnavailable>;
+  readonly candidates: Effect.Effect<readonly JWTVerifyGetKey[], JwksUnavailable>;
   readonly invalidate: Effect.Effect<void>;
   readonly refresh: Effect.Effect<JWTVerifyGetKey, JwksUnavailable>;
 }
@@ -301,6 +302,11 @@ export const createJwks = (env: AuthBindings): JwksService => {
     return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.keySet"));
 
+  const candidates = keySet.pipe(
+    Effect.map(() => generations.map((generation) => generation.getKey)),
+    Effect.withSpan("Jwks.candidates"),
+  );
+
   const invalidate = Effect.sync(() => {
     stale = true;
   });
@@ -334,5 +340,5 @@ export const createJwks = (env: AuthBindings): JwksService => {
     return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.refresh"));
 
-  return { keySet, invalidate, refresh };
+  return { keySet, candidates, invalidate, refresh };
 };

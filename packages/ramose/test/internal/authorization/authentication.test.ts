@@ -18,7 +18,11 @@ import {
 } from "../../../src/internal/authorization/runtime/authentication.ts";
 import type { JwksService } from "../../../src/internal/authorization/runtime/jwks.ts";
 import { authenticationLayer, localAuthenticationLayer } from "../../../src/internal/authorization/runtime/layer.ts";
-import { toAuthorizationPrincipal } from "../../../src/internal/authorization/runtime/verified-principal.ts";
+import {
+  ATTRS_MAX_DEPTH,
+  ATTRS_MAX_NODES,
+  toAuthorizationPrincipal,
+} from "../../../src/internal/authorization/runtime/verified-principal.ts";
 import { toWirePrincipal } from "../../../src/worker/auth.ts";
 import { signToken } from "../../sign-local-token.ts";
 
@@ -308,6 +312,41 @@ describe("AuthenticationAdmission", () => {
     }).toThrow();
   });
 
+  test("deep-but-legal ramose.attrs admit and are frozen at every level", async () => {
+    const depth = 12;
+    let nested: unknown = { leaf: true };
+    for (let i = 0; i < depth; i++) nested = { nested };
+    const token = await signToken("acme", "member", "user_ada", nested as Record<string, unknown>);
+    const { principal } = await run(admitOf("acme", token));
+    let node: unknown = principal.claims.attrs;
+    for (let i = 0; i < depth; i++) {
+      expect(Object.isFrozen(node)).toBe(true);
+      node = (node as { nested: unknown }).nested;
+    }
+    expect(Object.isFrozen(node)).toBe(true);
+    expect(node).toEqual({ leaf: true });
+  });
+
+  test("excessive ramose.attrs nesting is claims, not a defect", async () => {
+    let nested: unknown = { leaf: true };
+    for (let i = 0; i < ATTRS_MAX_DEPTH + 1; i++) nested = { nested };
+    const token = await signToken("acme", "member", "user_ada", nested as Record<string, unknown>);
+    const failure = await run(failAdmit("acme", token));
+    expect(failure._tag).toBe("AuthenticationRejected");
+    expect(failure.message).toBe("claims");
+    expect(JSON.stringify(failure)).not.toContain(token);
+    expect(leak(failure, token)).not.toContain(token);
+  });
+
+  test("excessive ramose.attrs node count is claims", async () => {
+    const attrs = Object.fromEntries(Array.from({ length: ATTRS_MAX_NODES }, (_, i) => [`k${i}`, {}]));
+    const token = await signToken("acme", "member", "user_ada", attrs);
+    const failure = await run(failAdmit("acme", token));
+    expect(failure._tag).toBe("AuthenticationRejected");
+    expect(failure.message).toBe("claims");
+    expect(JSON.stringify(failure)).not.toContain(token);
+  });
+
   test("incomplete issuer/audience fail closed", async () => {
     const token = await signToken("acme", "member");
     const noIss = localAuthenticationLayer({ jwksJson: JWKS, issuers: "", aud: AUD });
@@ -362,12 +401,15 @@ describe("AuthenticationAdmission", () => {
     const token = await signToken("acme", "member");
     for (const code of ["ERR_JWK_INVALID", "ERR_JWKS_INVALID"]) {
       let refreshes = 0;
+      let current: JWTVerifyGetKey = throwing(code);
       const jwks: JwksService = {
-        keySet: Effect.succeed(throwing(code)),
+        keySet: Effect.sync(() => current),
+        candidates: Effect.sync(() => [current]),
         invalidate: Effect.void,
         refresh: Effect.sync(() => {
           refreshes += 1;
-          return goodKeys;
+          current = goodKeys;
+          return current;
         }),
       };
       const admitted = await Effect.runPromise(admitWith(jwks, token));
@@ -378,6 +420,7 @@ describe("AuthenticationAdmission", () => {
     let claimRefreshes = 0;
     const claimsJwks: JwksService = {
       keySet: Effect.succeed(goodKeys),
+      candidates: Effect.succeed([goodKeys]),
       invalidate: Effect.void,
       refresh: Effect.sync(() => {
         claimRefreshes += 1;

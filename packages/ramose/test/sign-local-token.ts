@@ -29,7 +29,7 @@ export type SignOver = {
   readonly exp?: string | number;
   readonly nbf?: number;
   readonly alg?: string;
-  readonly kid?: string;
+  readonly kid?: string | null;
   readonly secret?: string;
   readonly jwk?: {
     readonly crv: string;
@@ -53,11 +53,12 @@ export const signToken = async (
   over: SignOver = {},
 ): Promise<string> => {
   const alg = over.alg ?? "ES256";
-  const kid = over.kid ?? "test";
+  const kid = over.kid === null ? undefined : (over.kid ?? "test");
   const ramose =
     over.ramose !== undefined
       ? over.ramose
       : { db, class: cls, ...(attrs === undefined ? {} : { attrs }) };
+  const header = kid === undefined ? { alg } : { alg, kid };
   if (alg === "none") {
     const now = Math.floor(Date.now() / 1000);
     const exp = typeof over.exp === "number" ? over.exp : (over.iat ?? now) + 300;
@@ -70,9 +71,9 @@ export const signToken = async (
     if (over.iat !== null) payload.iat = over.iat ?? now;
     if (over.sub !== null) payload.sub = over.sub ?? sub;
     if (over.nbf !== undefined) payload.nbf = over.nbf;
-    return `${b64url({ alg: "none", kid })}.${b64url(payload)}.`;
+    return `${b64url(header)}.${b64url(payload)}.`;
   }
-  let jwt = new SignJWT({ ramose }).setProtectedHeader({ alg, kid });
+  let jwt = new SignJWT({ ramose }).setProtectedHeader(header);
   jwt = jwt.setIssuer(over.iss ?? ISS);
   jwt = jwt.setAudience(over.aud ?? AUD);
   if (over.sub !== null) jwt = jwt.setSubject(over.sub ?? sub);

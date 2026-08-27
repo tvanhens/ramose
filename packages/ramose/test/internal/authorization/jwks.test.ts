@@ -639,6 +639,74 @@ describe("Jwks", () => {
     }
   });
 
+  test("kid-less tokens verify against every live retained generation", async () => {
+    let keys: object[] = [{ ...PUBLIC_JWK, kid: "a" }];
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const issued = Math.floor(Date.now() / 1000);
+      const over = { iat: issued, exp: issued + 600, kid: null };
+      const kidlessA = await signToken("acme", "member", "user_ada", undefined, over);
+      const kidlessB = await signToken("acme", "member", "user_ada", undefined, {
+        ...over,
+        jwk: NEXT_PRIVATE_JWK,
+      });
+      const rotateB = await signToken("acme", "member", "user_ada", undefined, {
+        kid: "b",
+        iat: issued,
+        exp: issued + 600,
+        jwk: NEXT_PRIVATE_JWK,
+      });
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          const first = yield* tryAdmit(kidlessA);
+          expect(first.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(1);
+
+          yield* TestClock.adjust(1);
+          keys = [{ ...NEXT_PUBLIC_JWK, kid: "b" }];
+          const rotated = yield* tryAdmit(rotateB);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          const stillA = yield* tryAdmit(kidlessA);
+          const stillB = yield* tryAdmit(kidlessB);
+          expect(stillA.principal.subject).toBe("user_ada");
+          expect(stillB.principal.subject).toBe("user_ada");
+
+          yield* TestClock.adjust(JWKS_RETIRED_GRACE_MS);
+          const expiredA = yield* Effect.flip(tryAdmit(kidlessA));
+          expect(expiredA._tag).toBe("AuthenticationRejected");
+          const keptB = yield* tryAdmit(kidlessB);
+          expect(keptB.principal.subject).toBe("user_ada");
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("fingerprintOf covers full public JWK material, not kid only", () => {
     const original = fingerprintOf({ keys: [PUBLIC_JWK] });
     const sameKidNewCoords = fingerprintOf({

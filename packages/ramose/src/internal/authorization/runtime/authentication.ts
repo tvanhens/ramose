@@ -122,7 +122,7 @@ const validateClaims = (
     if (typeof payload.iss !== "string" || payload.iss.length === 0) {
       return yield* Result.fail(rejected("iss"));
     }
-    return makeVerifiedPrincipal({
+    return yield* makeVerifiedPrincipal({
       subject: payload.sub,
       database: ramose.db,
       className: ramose.class,
@@ -135,13 +135,33 @@ const validateClaims = (
     });
   });
 
+const isSignatureFailure = (cause: unknown): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  (cause as { code?: string }).code === "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+
+type VerifyAttempt = {
+  readonly retryNext: boolean;
+  readonly reject: AuthenticationRejected;
+};
+
+const classifyVerifyFailure = (cause: unknown): VerifyAttempt => {
+  if (isRefreshableKeyFailure(cause)) {
+    return { retryNext: true, reject: rejected("kid") };
+  }
+  if (isSignatureFailure(cause)) {
+    return { retryNext: true, reject: rejected("claims") };
+  }
+  return { retryNext: false, reject: rejected(joseReason(cause)) };
+};
+
 const verifyOnce = (
   token: string,
   keys: JWTVerifyGetKey,
   now: number,
   issuers: readonly string[],
   aud: string,
-): Effect.Effect<JWTPayload, AuthenticationRejected> =>
+): Effect.Effect<JWTPayload, VerifyAttempt> =>
   Effect.tryPromise({
     try: () =>
       jwtVerify(token, keys, {
@@ -150,8 +170,25 @@ const verifyOnce = (
         audience: aud,
         currentDate: new Date(now),
       }).then((verified) => verified.payload),
-    catch: (cause) =>
-      rejected(isRefreshableKeyFailure(cause) ? "kid" : joseReason(cause)),
+    catch: classifyVerifyFailure,
+  });
+
+const verifyLive = (
+  token: string,
+  generations: readonly JWTVerifyGetKey[],
+  now: number,
+  issuers: readonly string[],
+  aud: string,
+): Effect.Effect<JWTPayload, AuthenticationRejected> =>
+  Effect.gen(function* () {
+    let last = rejected("jwks");
+    for (const keys of generations) {
+      const attempt = yield* verifyOnce(token, keys, now, issuers, aud).pipe(Effect.result);
+      if (Result.isSuccess(attempt)) return attempt.success;
+      last = attempt.failure.reject;
+      if (!attempt.failure.retryNext) return yield* last;
+    }
+    return yield* last;
   });
 
 export const createAuthentication = (
@@ -168,17 +205,18 @@ export const createAuthentication = (
     if (issuers.length === 0) return yield* rejected("iss");
     if (aud === undefined || aud.length === 0) return yield* rejected("aud");
 
-    const verifyAtNow = (value: string, keys: JWTVerifyGetKey) =>
+    const verifyAtNow = (value: string, generations: readonly JWTVerifyGetKey[]) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const payload = yield* verifyOnce(value, keys, now, issuers, aud);
+        const payload = yield* verifyLive(value, generations, now, issuers, aud);
         return { payload, now };
       });
 
-    const keys = yield* jwks.keySet;
-    let verified = yield* verifyAtNow(token, keys).pipe(Effect.result);
+    const live = yield* jwks.candidates;
+    let verified = yield* verifyAtNow(token, live).pipe(Effect.result);
     if (Result.isFailure(verified) && verified.failure.message === "kid") {
-      const rotated = yield* jwks.refresh;
+      yield* jwks.refresh;
+      const rotated = yield* jwks.candidates;
       verified = yield* verifyAtNow(token, rotated).pipe(Effect.result);
     }
     if (Result.isFailure(verified)) {

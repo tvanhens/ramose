@@ -4,6 +4,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import { AUD, ISS, JWKS, SHARED_TOKEN } from "../../../../test/local/auth-keys.ts";
+import { ATTRS_MAX_DEPTH } from "../../src/internal/authorization/runtime/verified-principal.ts";
 import type { RamoseEnv } from "../../src/RamoseEnv.ts";
 import { bearerOf } from "../../src/worker/auth.ts";
 import { signToken } from "../sign-local-token.ts";
@@ -167,6 +168,17 @@ describe("createServer admission", () => {
     const res = await fetchOf("https://peer.example/db/!!!/info");
     expect(res.status).toBe(401);
     expect(res.status).not.toBe(400);
+    expect(await res.text()).toBe(UNAUTHORIZED);
+  });
+
+  test("over-cap ramose.attrs JWT → same 401 body", async () => {
+    let nested: unknown = { leaf: true };
+    for (let i = 0; i < ATTRS_MAX_DEPTH + 1; i++) nested = { nested };
+    const jwt = await signToken("acme", "member", "user_ada", nested as Record<string, unknown>);
+    const res = await fetchOf("https://peer.example/db/acme/info", {
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.status).toBe(401);
     expect(await res.text()).toBe(UNAUTHORIZED);
   });
 
