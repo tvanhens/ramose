@@ -67,7 +67,7 @@ bun run test:unit               # fast package tests (`--parallel=3`, no workerd
 bun run test:local              # Alchemy local stack (serial, workerd)
 bun run test                    # unit then local
 bun website/scripts/docs-check.mjs   # cited snippets + docs facts; blocks CI
-bun run dev:todos               # local peer on :1337, todos app on :5173
+bun run dev:todos               # local peer on :1337
 bun run dev:reef                # frozen during the authorization redesign; not a CI/compatibility target
 ```
 
