@@ -104,17 +104,137 @@ describe("Jwks", () => {
         RAMOSE_JWT_AUD: AUD,
       };
       const oldTok = await signToken("acme", "member", "user_ada", undefined, { kid: "test" });
-      await Effect.runPromise(admit(env, "acme", oldTok));
-      expect(fetches).toBe(1);
-
-      keys = [jwk("test"), jwk("next")];
       const nextTok = await signToken("acme", "member", "user_ada", undefined, { kid: "next" });
-      const rotated = await Effect.runPromise(admit(env, "acme", nextTok));
-      expect(rotated.principal.subject).toBe("user_ada");
-      expect(fetches).toBe(2);
+      // Same-admit skip treats now === generation.at as "just loaded". Advance
+      // the clock so this is a cache-hit + new kid (generation.at is in the past).
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
 
-      const still = await Effect.runPromise(admit(env, "acme", oldTok));
-      expect(still.principal.subject).toBe("user_ada");
+          yield* tryAdmit(oldTok);
+          expect(fetches).toBe(1);
+
+          yield* TestClock.adjust(1);
+          keys = [jwk("test"), jwk("next")];
+          const rotated = yield* tryAdmit(nextTok);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          const still = yield* tryAdmit(oldTok);
+          expect(still.principal.subject).toBe("user_ada");
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("concurrent cold keySet coalesces to one remote fetch", async () => {
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    try {
+      const env = { RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks` };
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const jwks = yield* Jwks;
+          yield* Effect.all(
+            Array.from({ length: 10 }, () => jwks.keySet),
+            { concurrency: "unbounded" },
+          );
+        }).pipe(Effect.provide(withClock(jwksLayer(env)))),
+      );
+      expect(fetches).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("concurrent unknown-kid admits on a warm cache refresh at most once", async () => {
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const good = await signToken("acme", "member", "user_ada", undefined, { kid: "test" });
+      const unknowns = await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          signToken("acme", "member", "user_ada", undefined, { kid: `rand-${i}` }),
+        ),
+      );
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          yield* admission.admit({
+            database: "acme",
+            token: Redacted.make(good),
+            route: "http",
+          });
+          expect(fetches).toBe(1);
+
+          // Cache-hit + new kid: generation.at must be older than this admit.
+          yield* TestClock.adjust(1);
+          yield* Effect.all(
+            unknowns.map((tok) =>
+              Effect.flip(
+                admission.admit({
+                  database: "acme",
+                  token: Redacted.make(tok),
+                  route: "http",
+                }),
+              ),
+            ),
+            { concurrency: "unbounded" },
+          );
+          expect(fetches).toBe(2);
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("cold unknown-kid single admit fetches once, not twice", async () => {
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const unknown = await signToken("acme", "member", "user_ada", undefined, { kid: "missing" });
+      const failed = await Effect.runPromise(Effect.flip(admit(env, "acme", unknown)));
+      expect(failed._tag === "AuthenticationRejected" || failed._tag === "JwksUnavailable").toBe(true);
+      expect(fetches).toBe(1);
     } finally {
       server.stop(true);
     }
@@ -252,6 +372,9 @@ describe("Jwks", () => {
           yield* tryAdmit(good);
           expect(fetches).toBe(1);
 
+          // First kid-miss on a cache-hit: generation.at is in the past so
+          // refresh is allowed once (same-instant skip does not apply).
+          yield* TestClock.adjust(1);
           const firstMiss = yield* Effect.flip(tryAdmit(unknownA));
           expect(firstMiss._tag === "AuthenticationRejected" || firstMiss._tag === "JwksUnavailable").toBe(
             true,

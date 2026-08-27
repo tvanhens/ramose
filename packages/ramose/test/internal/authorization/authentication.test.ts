@@ -221,6 +221,17 @@ describe("AuthenticationAdmission", () => {
     expect(failure.message).toBe("ttl");
   });
 
+  test("fractional iat is rejected as ttl", async () => {
+    const token = await signToken("acme", "member", "user_ada", undefined, { iat: 1.5, exp: 100 });
+    const failure = await run(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(50_000);
+        return yield* failAdmit("acme", token);
+      }),
+    );
+    expect(failure.message).toBe("ttl");
+  });
+
   test("missing iat with far-future exp is rejected as ttl", async () => {
     const token = await signToken("acme", "member", "user_ada", undefined, {
       iat: null,

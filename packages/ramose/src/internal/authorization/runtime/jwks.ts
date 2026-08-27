@@ -6,6 +6,7 @@
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import { createLocalJWKSet, type JWTVerifyGetKey } from "jose";
 import type { JSONWebKeySet } from "jose";
@@ -134,6 +135,8 @@ export const createJwks = (env: AuthBindings): JwksService => {
   const generations: Generation[] = [];
   let stale = false;
   let lastKidRefreshAt = 0;
+  let pending: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable> | undefined;
+  const loadedByFiber = new WeakSet<object>();
   let fetchImpl: Fetcher["fetch"] | undefined;
   let fetchError: JwksUnavailable | undefined;
   try {
@@ -158,21 +161,71 @@ export const createJwks = (env: AuthBindings): JwksService => {
     return combine(generations);
   };
 
+  const markLoaded = Effect.withFiber((fiber) =>
+    Effect.sync(() => {
+      loadedByFiber.add(fiber);
+    }),
+  );
+
+  const unmarkLoaded = Effect.withFiber((fiber) =>
+    Effect.sync(() => {
+      loadedByFiber.delete(fiber);
+    }),
+  );
+
+  const loadedByThisFiber = Effect.withFiber((fiber) => Effect.succeed(loadedByFiber.has(fiber)));
+
+  const awaitPending = (d: Deferred.Deferred<JWTVerifyGetKey, JwksUnavailable>) =>
+    Effect.gen(function* () {
+      const keys = yield* Deferred.await(d);
+      yield* markLoaded;
+      return keys;
+    });
+
+  const doLoad = (now: number): Effect.Effect<JWTVerifyGetKey, JwksUnavailable> =>
+    Effect.gen(function* () {
+      const url = env.RAMOSE_JWKS_URL;
+      if (url) {
+        const parsed = yield* loadRemote(url, fetchImpl as Fetcher["fetch"]);
+        return push(now, parsed);
+      }
+      const parsed = localJson();
+      if (parsed === undefined) return yield* unavailable("jwks");
+      return push(now, parsed);
+    });
+
+  // Isolate-wide: at most one in-flight JWKS load. Joiners await the same Deferred.
+  const loadOnce = (now: number): Effect.Effect<JWTVerifyGetKey, JwksUnavailable> =>
+    Effect.gen(function* () {
+      if (pending !== undefined) return yield* awaitPending(pending);
+      const d = yield* Deferred.make<JWTVerifyGetKey, JwksUnavailable>();
+      if (pending !== undefined) return yield* awaitPending(pending);
+      pending = d;
+      yield* doLoad(now).pipe(
+        Effect.matchEffect({
+          onFailure: (e) => Deferred.fail(d, e),
+          onSuccess: (a) => Deferred.succeed(d, a),
+        }),
+        Effect.ensuring(
+          Effect.gen(function* () {
+            pending = undefined;
+            yield* Deferred.fail(d, unavailable("jwks"));
+          }),
+        ),
+      );
+      yield* markLoaded;
+      return yield* Deferred.await(d);
+    });
+
   const keySet = Effect.gen(function* () {
     if (fetchError !== undefined) return yield* fetchError;
     const now = yield* Clock.currentTimeMillis;
     const current = generations[0];
     if (!stale && current !== undefined && now - current.at < JWKS_CACHE_TTL_MS) {
+      yield* unmarkLoaded;
       return combine(generations);
     }
-    const url = env.RAMOSE_JWKS_URL;
-    if (url) {
-      const parsed = yield* loadRemote(url, fetchImpl as Fetcher["fetch"]);
-      return push(now, parsed);
-    }
-    const parsed = localJson();
-    if (parsed === undefined) return yield* unavailable("jwks");
-    return push(now, parsed);
+    return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.keySet"));
 
   const invalidate = Effect.sync(() => {
@@ -181,8 +234,22 @@ export const createJwks = (env: AuthBindings): JwksService => {
 
   const refresh = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
+    if (pending !== undefined) return yield* Deferred.await(pending);
+
+    const current = generations[0];
+    const alreadyLoaded = yield* loadedByThisFiber;
+    // Same admit already awaited this generation, or it was loaded at this
+    // Clock instant (TestClock: now === current.at). Do not refetch — the
+    // just-loaded set cannot contain an unknown kid. Cache-hit + new kid
+    // after the clock moves is allowed below (generation.at is in the past).
+    if (alreadyLoaded || (current !== undefined && now - current.at === 0)) {
+      if (lastKidRefreshAt === 0) lastKidRefreshAt = now;
+      if (current === undefined) return yield* unavailable("jwks");
+      return combine(generations);
+    }
+
     if (lastKidRefreshAt !== 0 && now - lastKidRefreshAt < JWKS_REFRESH_COOLDOWN_MS) {
-      if (generations[0] === undefined) return yield* unavailable("jwks");
+      if (current === undefined) return yield* unavailable("jwks");
       return combine(generations);
     }
     lastKidRefreshAt = now;

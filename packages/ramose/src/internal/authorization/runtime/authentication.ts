@@ -87,9 +87,11 @@ const validateClaims = (
   fallbackAud: string,
 ): Result.Result<VerifiedPrincipal, AuthenticationRejected> =>
   Result.gen(function* () {
-    if (typeof payload.exp !== "number") return yield* Result.fail(rejected("expired"));
+    if (typeof payload.exp !== "number" || !Number.isInteger(payload.exp)) {
+      return yield* Result.fail(rejected("expired"));
+    }
     if (payload.nbf !== undefined) {
-      if (typeof payload.nbf !== "number" || payload.nbf * 1000 > now) {
+      if (typeof payload.nbf !== "number" || !Number.isInteger(payload.nbf) || payload.nbf * 1000 > now) {
         return yield* Result.fail(rejected("nbf"));
       }
     }
@@ -106,7 +108,9 @@ const validateClaims = (
     if (ramose.attrs !== undefined && !isPlainObject(ramose.attrs)) {
       return yield* Result.fail(rejected("claims"));
     }
-    if (typeof payload.iat !== "number") return yield* Result.fail(rejected("ttl"));
+    if (typeof payload.iat !== "number" || !Number.isInteger(payload.iat)) {
+      return yield* Result.fail(rejected("ttl"));
+    }
     if (payload.iat * 1000 > now) return yield* Result.fail(rejected("ttl"));
     if (payload.exp <= payload.iat) return yield* Result.fail(rejected("ttl"));
     if (payload.exp - payload.iat > maxTtl) return yield* Result.fail(rejected("ttl"));
