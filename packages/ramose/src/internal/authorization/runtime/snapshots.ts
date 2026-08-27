@@ -23,7 +23,7 @@ import { CatalogMismatch, InvalidIR, LeaseExpired } from "../failures.ts";
 import { DEFAULT_AUTHORIZATION_BUDGET } from "../bounds.ts";
 import type { CatalogDescriptor, FieldDescriptor } from "../catalog.ts";
 import type { CatalogId, CatalogVersion, DatabaseId, FieldId, PolicyHash } from "../identities.ts";
-import { isVerifiedInstalledAuthorization } from "../install.ts";
+import { isVerifiedInstalledAuthorization, sealedCatalogOf } from "../install.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
 import type { Projected } from "../truth.ts";
@@ -368,11 +368,15 @@ export type LiveRuleProjection = {
   readonly budget: RuleProjectionBudget;
 };
 
-const liveRuleState = (snapshot: RuleSnapshot, now?: number): RuleProjectionState | undefined => {
+const requireLiveRuleState = (
+  snapshot: RuleSnapshot,
+  now?: number,
+): Result.Result<RuleProjectionState, LeaseExpired | SnapshotCancelled> => {
   const state = ruleStates.get(snapshot);
-  if (state === undefined) return undefined;
-  if (Result.isFailure(checkLease(state.lease, now))) return undefined;
-  return state;
+  if (state === undefined) return Result.fail(notLive());
+  const lease = checkLease(state.lease, now);
+  if (Result.isFailure(lease)) return lease;
+  return Result.succeed(state);
 };
 
 const ruleProjectionBudget = (state: RuleProjectionState): RuleProjectionBudget => ({
@@ -384,11 +388,12 @@ const runLiveRuleProjection = async (
   snapshot: RuleSnapshot,
   project: (state: RuleProjectionState) => Promise<Projected>,
 ): Promise<Result.Result<LiveRuleProjection, LeaseExpired | SnapshotCancelled>> => {
-  const state = liveRuleState(snapshot);
-  if (state === undefined) return Result.fail(notLive());
-  const projected = await project(state);
-  if (liveRuleState(snapshot) === undefined) return Result.fail(notLive());
-  return Result.succeed({ projected, budget: ruleProjectionBudget(state) });
+  const before = requireLiveRuleState(snapshot);
+  if (Result.isFailure(before)) return before;
+  const projected = await project(before.success);
+  const after = requireLiveRuleState(snapshot);
+  if (Result.isFailure(after)) return after;
+  return Result.succeed({ projected, budget: ruleProjectionBudget(after.success) });
 };
 
 /** @internal Policy evaluator only. Lease-checked, bounded field lookup. */
@@ -422,7 +427,7 @@ export const traverseLiveRuleFromMe = (
 
 const requireAdmissionTicket = (
   ticket: AdmissionTicket,
-  database: DatabaseId,
+  installed: InstalledAuthorizationIRV1,
   now = Date.now(),
 ): Result.Result<AuthorizationPrincipal, AuthenticationRejected | LeaseExpired | CatalogMismatch> => {
   if (!isVerifiedAdmissionTicket(ticket)) {
@@ -431,19 +436,39 @@ const requireAdmissionTicket = (
   if (ticket.principal.subject.length === 0) {
     return Result.fail(new AuthenticationRejected({ message: "verified principal is required" }));
   }
-  if (ticket.database !== database) {
+  if (ticket.database !== installed.database) {
     return Result.fail(
       new CatalogMismatch({
         message: "admission ticket database does not match installed policy",
-        expectedDatabase: database,
+        expectedDatabase: installed.database,
         actualDatabase: ticket.database,
       }),
+    );
+  }
+  if (ticket.catalogVersion !== installed.catalogVersion || ticket.policyHash !== installed.policyHash) {
+    return Result.fail(
+      new AuthenticationRejected({ message: "admission ticket is not bound to the active installed policy" }),
     );
   }
   if (now >= ticket.expiresAt) {
     return Result.fail(new LeaseExpired({ message: "admission ticket expired" }));
   }
   return Result.succeed(ticket.principal);
+};
+
+const isValidBasisT = (value: number): boolean =>
+  Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+
+const clampProjectionBudget = (
+  limit: number | undefined,
+): Result.Result<number, RuleSnapshotUnavailable> => {
+  const requested = limit ?? DEFAULT_AUTHORIZATION_BUDGET;
+  if (!Number.isFinite(requested) || !Number.isInteger(requested) || requested < 0) {
+    return Result.fail(
+      new RuleSnapshotUnavailable({ message: "projection budget must be a finite non-negative integer" }),
+    );
+  }
+  return Result.succeed(Math.min(requested, DEFAULT_AUTHORIZATION_BUDGET));
 };
 
 const requireMatchingLeaseEpoch = (
@@ -584,6 +609,9 @@ export const mintRawSnapshot = (input: {
   readonly expiresAt?: number | undefined;
   readonly now?: number | undefined;
 }): Result.Result<RawSnapshot, RawStorageFailure> => {
+  if (!isValidBasisT(input.basisT) || (input.asOfT !== undefined && !isValidBasisT(input.asOfT))) {
+    return Result.fail(new RawStorageUnavailable({ message: "basis must be a non-negative integer" }));
+  }
   if (input.basisT > input.current.basisT) {
     return Result.fail(new RawStorageUnavailable({ message: "requested basis is ahead of storage" }));
   }
@@ -604,8 +632,16 @@ export const mintRuleSnapshot = (input: {
     if (!isVerifiedInstalledAuthorization(input.installed)) {
       return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
     }
-    const principal = yield* requireAdmissionTicket(input.ticket, input.installed.database);
+    const principal = yield* requireAdmissionTicket(input.ticket, input.installed);
     const leaseEpoch = yield* requireMatchingLeaseEpoch(input.ticket, input.leaseEpoch);
+    const sealedCatalog = sealedCatalogOf(input.installed);
+    if (sealedCatalog === undefined) {
+      return yield* Result.fail(new InvalidIR({ message: "installed policy has no sealed catalog" }));
+    }
+    if (!isValidBasisT(input.basisT)) {
+      return yield* Result.fail(new RuleSnapshotUnavailable({ message: "rule basis must be a non-negative integer" }));
+    }
+    const budgetLimit = yield* clampProjectionBudget(input.budgetLimit);
     if (
       input.catalog.id !== input.installed.catalog ||
       input.catalog.version !== input.installed.catalogVersion ||
@@ -645,13 +681,13 @@ export const mintRuleSnapshot = (input: {
     }
     return createRuleSnapshot({
       database: input.installed.database,
-      catalog: input.catalog,
+      catalog: sealedCatalog,
       installed: input.installed,
       principal,
       current: rawState.current,
       basisT: input.basisT,
       leaseEpoch,
-      budgetLimit: input.budgetLimit ?? DEFAULT_AUTHORIZATION_BUDGET,
+      budgetLimit,
       expiresAt: ticketExpiresAt(input.ticket, input.expiresAt),
     });
   });
@@ -674,8 +710,15 @@ export const mintAuthorizedSnapshot = (input: {
     if (!isVerifiedInstalledAuthorization(input.installed)) {
       return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
     }
-    const principal = yield* requireAdmissionTicket(input.ticket, input.installed.database);
+    const principal = yield* requireAdmissionTicket(input.ticket, input.installed);
     const leaseEpoch = yield* requireMatchingLeaseEpoch(input.ticket, input.leaseEpoch);
+    if (
+      !isValidBasisT(input.applicationBasisT) ||
+      !isValidBasisT(input.ruleBasisT) ||
+      (input.asOfT !== undefined && !isValidBasisT(input.asOfT))
+    ) {
+      return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "basis must be a non-negative integer" }));
+    }
     if (input.catalog === undefined || input.catalogVersion === undefined) {
       return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "catalog identity is required" }));
     }
@@ -744,4 +787,11 @@ export const mintAuthorizedSnapshot = (input: {
     });
   });
 
-export { fieldDescriptorKey, fieldStorageIndex, physicalStorageIdent, traversalCompositionsOf };
+export {
+  encodeIdentPart,
+  fieldDescriptorKey,
+  fieldStorageIndex,
+  physicalComposerIdent,
+  physicalStorageIdent,
+  traversalCompositionsOf,
+};

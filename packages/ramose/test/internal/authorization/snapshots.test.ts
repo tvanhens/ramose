@@ -19,6 +19,7 @@ import {
   InvalidTraversal,
   LeaseExpired,
   MAX_READ_LEASE_MS,
+  PolicyHash,
   POLICY_TEMPLATE_IR_VERSION,
   RelativeFieldId,
   RuleId,
@@ -48,6 +49,7 @@ import { issueAdmissionTicket } from "../../../src/internal/authorization/runtim
 import {
   ApplicationSnapshotUnavailable,
   AuthenticationRejected,
+  RawStorageUnavailable,
   SnapshotCancelled,
 } from "../../../src/internal/authorization/runtime/failures.ts";
 import {
@@ -220,6 +222,7 @@ const principal = {
 };
 
 const admit = (
+  installed: InstalledAuthorizationIRV1,
   who: typeof principal = principal,
   options: {
     readonly database?: DatabaseId;
@@ -230,11 +233,17 @@ const admit = (
   issueAdmissionTicket({
     principal: who,
     database: options.database ?? database,
+    catalogVersion: installed.catalogVersion,
+    policyHash: installed.policyHash,
     leaseEpoch: options.leaseEpoch ?? 0,
     expiresAt: options.expiresAt ?? Date.now() + 4_000,
   });
 
 const SCHEMA = [
+  { ":db/ident": ":app.entity.user", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":app.entity.issue", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":app.trait.taggable", ":ramose/kind": ":ramose.kind/trait" },
+  { ":db/ident": ":app.entity.issue", ":ramose/composes": ":app.trait.taggable" },
   { ":db/ident": ":app.entity.user/authId", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
   { ":db/ident": ":app.entity.issue/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
   { ":db/ident": ":app.entity.issue/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
@@ -310,6 +319,17 @@ describe("pure projection cells", () => {
     const crossCatalog = fieldStorageIndex([scalarField(issueOwner, "title"), otherTitle]);
     expect(crossCatalog.get(fieldDescriptorKey(field(issueOwner, "title")))).toBe(":app.entity.issue/title");
     expect(crossCatalog.get(fieldDescriptorKey(otherTitle.id))).toBe(":other.entity.issue/title");
+    const dottedOwner = FieldId.make({
+      catalog: CatalogId.make("a"),
+      owner: { kind: "entity", name: "x.entity.y" },
+      localName: "title",
+    });
+    const dottedCatalog = FieldId.make({
+      catalog: CatalogId.make("a.entity.x"),
+      owner: { kind: "entity", name: "y" },
+      localName: "title",
+    });
+    expect(physicalStorageIdent(dottedOwner)).not.toBe(physicalStorageIdent(dottedCatalog));
   });
 });
 
@@ -325,12 +345,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw,
-        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }, { leaseEpoch: 3 }),
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }, { leaseEpoch: 3 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -400,6 +420,8 @@ describe("snapshot construction", () => {
         ticket: issueAdmissionTicket({
           principal: { subject: "", claims: {}, classes: [] },
           database,
+          catalogVersion: installed.catalogVersion,
+          policyHash: installed.policyHash,
           leaseEpoch: 0,
           expiresAt: Date.now() + 4_000,
         }),
@@ -415,6 +437,8 @@ describe("snapshot construction", () => {
         ticket: {
           principal,
           database,
+          catalogVersion: installed.catalogVersion,
+          policyHash: installed.policyHash,
           leaseEpoch: 0,
           expiresAt: Date.now() + 4_000,
         },
@@ -427,7 +451,7 @@ describe("snapshot construction", () => {
       }));
       const unsealed = yield* Effect.flip(app.open({
         raw: opened,
-        ticket: admit(),
+        ticket: admit(installed),
         installed: (structural._tag === "Success" ? structural.success : installed) as InstalledAuthorizationIRV1,
         catalog,
         catalogVersion: version,
@@ -437,7 +461,7 @@ describe("snapshot construction", () => {
       }));
       const mismatch = yield* Effect.flip(app.open({
         raw: opened,
-        ticket: admit(),
+        ticket: admit(installed),
         installed,
         catalog: CatalogId.make("other"),
         catalogVersion: version,
@@ -450,7 +474,7 @@ describe("snapshot construction", () => {
         raw: opened,
         installed,
         catalog: { ...descriptor, id: CatalogId.make("other") },
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: db.basisT,
       }));
       return { blankPrincipal, forgedTicket, unsealed, mismatch, ruleMismatch };
@@ -486,7 +510,7 @@ describe("snapshot construction", () => {
         const opened = yield* raw.open({ database, basisT: db.basisT });
         const failed = yield* Effect.flip(app.open({
           raw: opened,
-          ticket: admit(),
+          ticket: admit(installed),
           installed,
           catalog,
           catalogVersion: version,
@@ -514,12 +538,12 @@ describe("snapshot construction", () => {
         raw: liveRaw,
         installed,
         catalog: catalogDescriptor(),
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw: liveRaw,
-        ticket: admit(principal, { leaseEpoch: 1 }),
+        ticket: admit(installed, principal, { leaseEpoch: 1 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -558,12 +582,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: catalogDescriptor(),
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: db.basisT,
       });
       const auth = yield* scopedAuthorizedSnapshot({
         raw,
-        ticket: admit(principal, { leaseEpoch: 1 }),
+        ticket: admit(installed, principal, { leaseEpoch: 1 }),
         installed,
         catalog,
         catalogVersion: version,
@@ -594,12 +618,12 @@ describe("snapshot construction", () => {
         raw: opened,
         installed,
         catalog: catalogDescriptor(),
-        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: db.basisT,
       });
       const auth = yield* app.open({
         raw: opened,
-        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }),
         installed,
         catalog,
         catalogVersion: version,
@@ -628,7 +652,7 @@ describe("snapshot construction", () => {
         raw: opened,
         installed,
         catalog: catalogDescriptor(),
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: db.basisT,
       });
       return yield* Effect.flip(rules.evaluateRule(snap, digestHex(0x11)));
@@ -646,7 +670,7 @@ describe("snapshot construction", () => {
       const opened = yield* raw.open({ database, basisT: db.basisT });
       const auth = yield* app.open({
         raw: opened,
-        ticket: admit(),
+        ticket: admit(installed),
         installed,
         catalog,
         catalogVersion: version,
@@ -697,12 +721,12 @@ describe("snapshot construction", () => {
           raw,
           installed,
           catalog: descriptor,
-          ticket: admit(),
+          ticket: admit(installed),
           basisT: db.basisT,
         })),
         auth: yield* Effect.flip(appSvc.open({
           raw,
-          ticket: admit(),
+          ticket: admit(installed),
           installed,
           catalog,
           catalogVersion: version,
@@ -729,7 +753,7 @@ describe("snapshot construction", () => {
       const raw = yield* rawSvc.open({ database, basisT: db.basisT });
       const future = yield* Effect.flip(appSvc.open({
         raw,
-        ticket: admit(),
+        ticket: admit(installed),
         installed,
         catalog,
         catalogVersion: version,
@@ -740,7 +764,7 @@ describe("snapshot construction", () => {
       }));
       const mismatched = yield* Effect.flip(appSvc.open({
         raw,
-        ticket: admit(),
+        ticket: admit(installed),
         installed,
         catalog,
         catalogVersion: version,
@@ -789,12 +813,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit(mutable),
+        ticket: admit(installed, mutable),
         basisT: db.basisT,
       });
       const auth = yield* appSvc.open({
         raw,
-        ticket: admit(mutable),
+        ticket: admit(installed, mutable),
         installed,
         catalog,
         catalogVersion: version,
@@ -852,7 +876,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit({ ...principal, me: { entity: entity("user"), eid: ada } }),
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }),
         basisT: later.basisT,
       });
       const ownerThenUser = yield* ruleSvc.traverse(rules, issue, [
@@ -899,7 +923,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: later.basisT,
         budgetLimit: 1,
       });
@@ -908,7 +932,7 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: later.basisT,
         budgetLimit: 3,
       });
@@ -933,12 +957,12 @@ describe("snapshot construction", () => {
         raw,
         installed,
         catalog: descriptor,
-        ticket: admit(),
+        ticket: admit(installed),
         basisT: stale,
       }));
       const auth = yield* Effect.flip(appSvc.open({
         raw,
-        ticket: admit(),
+        ticket: admit(installed),
         installed,
         catalog,
         catalogVersion: version,
@@ -952,5 +976,134 @@ describe("snapshot construction", () => {
     const out = await Effect.runPromise(program);
     expect(out.rules._tag).toBe("RuleSnapshotUnavailable");
     expect(out.auth).toBeInstanceOf(ApplicationSnapshotUnavailable);
+  });
+
+  test("a sealed catalog, not a caller-supplied descriptor, drives rule projection", async () => {
+    const { db, installed, issue, ada, descriptor } = await setup();
+    const tampered: CatalogDescriptor = {
+      ...descriptor,
+      fields: descriptor.fields.map((row) =>
+        row.id.localName === "owner" && row.valueType === "ref"
+          ? { ...row, refTarget: { _tag: "untargeted" } }
+          : row,
+      ),
+    };
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      const rules = yield* ruleSvc.project({
+        raw,
+        installed,
+        catalog: tampered,
+        ticket: admit(installed, { ...principal, me: { entity: entity("user"), eid: ada } }),
+        basisT: db.basisT,
+      });
+      return yield* ruleSvc.traverse(rules, issue, [
+        field(issueOwner, "owner"),
+        field(userOwner, "authId"),
+      ]);
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    expect(await Effect.runPromise(program)).toEqual({ _tag: "Present", value: "ada" });
+  });
+
+  test("an admission ticket must be bound to the installed policy", async () => {
+    const { db, installed } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const appSvc = yield* AuthorizedApplicationAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      return yield* Effect.flip(appSvc.open({
+        raw,
+        ticket: issueAdmissionTicket({
+          principal,
+          database,
+          catalogVersion: installed.catalogVersion,
+          policyHash: PolicyHash.make("1".repeat(64)),
+          leaseEpoch: 0,
+          expiresAt: Date.now() + 4_000,
+        }),
+        installed,
+        catalog,
+        catalogVersion: version,
+        database,
+        applicationBasisT: db.basisT,
+        ruleBasisT: db.basisT,
+      }));
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    expect(await Effect.runPromise(program)).toBeInstanceOf(AuthenticationRejected);
+  });
+
+  test("projection rejects a starting eid that is not the field owner", async () => {
+    const { db, installed, ada, descriptor } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      const rules = yield* ruleSvc.project({
+        raw,
+        installed,
+        catalog: descriptor,
+        ticket: admit(installed),
+        basisT: db.basisT,
+      });
+      return yield* Effect.flip(ruleSvc.lookup(rules, ada, field(issueOwner, "title")));
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    const failed = await Effect.runPromise(program);
+    expect(failed).toBeInstanceOf(IncompleteRuleSnapshot);
+    expect((failed as IncompleteRuleSnapshot).reason).toEqual(InvalidTraversal);
+  });
+
+  test("caller-supplied projection budgets are finite and capped", async () => {
+    const { db, installed, descriptor } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      return yield* Effect.flip(ruleSvc.project({
+        raw,
+        installed,
+        catalog: descriptor,
+        ticket: admit(installed),
+        basisT: db.basisT,
+        budgetLimit: Number.POSITIVE_INFINITY,
+      }));
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    expect(await Effect.runPromise(program)).toHaveProperty("_tag", "RuleSnapshotUnavailable");
+  });
+
+  test("an expired rule lease is LeaseExpired, not SnapshotCancelled", async () => {
+    const { db, installed, issue, descriptor } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      const ruleSvc = yield* RuleSnapshotAccess;
+      const raw = yield* rawSvc.open({ database, basisT: db.basisT });
+      const rules = yield* ruleSvc.project({
+        raw,
+        installed,
+        catalog: descriptor,
+        ticket: admit(installed),
+        basisT: db.basisT,
+        expiresAt: Date.now() - 5,
+      });
+      return yield* Effect.flip(ruleSvc.lookup(rules, issue, field(issueOwner, "title")));
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    expect(await Effect.runPromise(program)).toBeInstanceOf(LeaseExpired);
+  });
+
+  test("invalid raw bases are typed failures", async () => {
+    const { db } = await setup();
+    const program = Effect.gen(function* () {
+      const rawSvc = yield* RawStorageAccess;
+      return {
+        negative: yield* Effect.flip(rawSvc.open({ database, basisT: -1 })),
+        fractional: yield* Effect.flip(rawSvc.open({ database, basisT: 1.5 })),
+        infinite: yield* Effect.flip(rawSvc.open({ database, basisT: Number.POSITIVE_INFINITY })),
+      };
+    }).pipe(Effect.provide(trustedSnapshotLayer({ open: () => Effect.succeed(db) })));
+    const out = await Effect.runPromise(program);
+    expect(out.negative).toBeInstanceOf(RawStorageUnavailable);
+    expect(out.fractional).toBeInstanceOf(RawStorageUnavailable);
+    expect(out.infinite).toBeInstanceOf(RawStorageUnavailable);
   });
 });

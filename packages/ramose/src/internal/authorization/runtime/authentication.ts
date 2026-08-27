@@ -15,7 +15,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
-import type { DatabaseId } from "../identities.ts";
+import type { CatalogVersion, DatabaseId, PolicyHash } from "../identities.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
 import type { AuthenticationAdmissionFailure } from "./failures.ts";
 import { freezePrincipal } from "./principal-freeze.ts";
@@ -29,6 +29,8 @@ export interface AdmissionRequest {
 export interface AdmissionTicket {
   readonly principal: AuthorizationPrincipal;
   readonly database: DatabaseId;
+  readonly catalogVersion: CatalogVersion;
+  readonly policyHash: PolicyHash;
   readonly leaseEpoch: number;
   readonly expiresAt: number;
 }
@@ -42,12 +44,16 @@ const sealedTickets = new WeakSet<object>();
 export const issueAdmissionTicket = (input: {
   readonly principal: AuthorizationPrincipal;
   readonly database: DatabaseId;
+  readonly catalogVersion: CatalogVersion;
+  readonly policyHash: PolicyHash;
   readonly leaseEpoch: number;
   readonly expiresAt: number;
 }): AdmissionTicket => {
   const ticket: AdmissionTicket = Object.freeze({
     principal: freezePrincipal(input.principal),
     database: input.database,
+    catalogVersion: input.catalogVersion,
+    policyHash: input.policyHash,
     leaseEpoch: input.leaseEpoch,
     expiresAt: input.expiresAt,
   });

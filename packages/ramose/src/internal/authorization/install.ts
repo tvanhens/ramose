@@ -156,11 +156,13 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
     );
     const sealed = verifiedInstalledAuthorization(freezePlain(clonePlain(decoded)));
     sealedInstalled.add(sealed);
+    sealedCatalogs.set(sealed, freezePlain(clonePlain(descriptor)));
     return sealed;
   },
 );
 
 const sealedInstalled = new WeakSet<object>();
+const sealedCatalogs = new WeakMap<object, CatalogDescriptor>();
 
 /**
  * Runtime seal check. Structural decode output is not in this set.
@@ -170,6 +172,11 @@ export const isVerifiedInstalledAuthorization = (
   value: unknown,
 ): value is InstalledAuthorizationIRV1Type =>
   typeof value === "object" && value !== null && sealedInstalled.has(value);
+
+/** Catalog descriptor sealed with the installed IR. Caller-supplied catalogs are not this value. */
+export const sealedCatalogOf = (
+  installed: InstalledAuthorizationIRV1Type,
+): CatalogDescriptor | undefined => sealedCatalogs.get(installed);
 
 /**
  * One auditable binder entry point: catalog binding input → installed v1 IR.

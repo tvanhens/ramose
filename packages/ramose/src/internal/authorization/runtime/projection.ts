@@ -15,6 +15,7 @@
 import { Index, type Datom } from "../../core/datom.ts";
 import type { Db } from "../../core/db.ts";
 import { datomJsValue } from "../../core/db.ts";
+import { RAMOSE_TRAIT_IDENT, RAMOSE_TYPE_IDENT } from "../../core/schema.ts";
 import { MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
 import type { FieldDescriptor, FieldRefTarget } from "../catalog.ts";
 import type { FieldId, OwnerRef } from "../identities.ts";
@@ -32,6 +33,8 @@ import {
 import type { AuthorizationPrincipal } from "../principal.ts";
 import {
   fieldDescriptorKey,
+  parsePhysicalComposerIdent,
+  physicalComposerIdent,
   type TraversalCompositions,
 } from "./field-index.ts";
 import type { AuthorizationBudgetState } from "./snapshots.ts";
@@ -122,6 +125,58 @@ const resolveStorageAttr = (db: Db, index: FieldProjectionIndex, field: FieldId)
   return db.attr(ident);
 };
 
+const readMembershipStrings = async (
+  db: Db,
+  eid: number,
+  ident: string,
+): Promise<readonly string[]> => {
+  const attr = db.attr(ident);
+  if (attr === undefined) return [];
+  const values: string[] = [];
+  for await (const chunk of db.datoms(Index.EAVT, { e: eid, a: attr.id })) {
+    for (const datom of chunk) {
+      const value = datomJsValue(datom);
+      if (typeof value === "string") values.push(value);
+    }
+  }
+  return values;
+};
+
+export const startingEidOwnsField = async (
+  db: Db,
+  eid: number,
+  field: FieldDescriptor,
+  compositions: TraversalCompositions,
+  budget: AuthorizationBudgetState,
+): Promise<Projected | undefined> => {
+  if (!chargeBudget(budget)) return BudgetExhaustedProjection;
+  const types = await readMembershipStrings(db, eid, RAMOSE_TYPE_IDENT);
+  const typeIdent = types[0];
+  if (typeIdent === undefined) return InvalidTraversalProjection;
+  const owner = field.id.owner;
+  if (owner.kind === "entity") {
+    const expected = physicalComposerIdent({
+      catalog: field.id.catalog,
+      kind: "entity",
+      name: owner.name,
+    });
+    return typeIdent === expected ? undefined : InvalidTraversalProjection;
+  }
+  const expectedTrait = physicalComposerIdent({
+    catalog: field.id.catalog,
+    kind: "trait",
+    name: owner.name,
+  });
+  if (!chargeBudget(budget)) return BudgetExhaustedProjection;
+  const traits = await readMembershipStrings(db, eid, RAMOSE_TRAIT_IDENT);
+  if (traits.includes(expectedTrait)) return undefined;
+  const parsed = parsePhysicalComposerIdent(typeIdent);
+  if (parsed === undefined || parsed.kind !== "entity" || parsed.catalog !== field.id.catalog) {
+    return InvalidTraversalProjection;
+  }
+  return entityComposes(compositions, parsed.name, owner.name) ? undefined : InvalidTraversalProjection;
+};
+
 const projectBoundField = async (
   db: Db,
   eid: number,
@@ -152,6 +207,8 @@ export const projectFieldFromDb = async (
 ): Promise<Projected> => {
   const descriptor = resolveFieldDescriptor(index.fields, field);
   if (descriptor === undefined) return InvalidTraversalProjection;
+  const ownership = await startingEidOwnsField(db, eid, descriptor, index.compositions, budget);
+  if (ownership !== undefined) return ownership;
   const attr = resolveStorageAttr(db, index, field);
   if (attr === undefined) return NotLoadedProjection;
   return projectBoundField(db, eid, attr.id, descriptor.cardinality === "many", budget);
@@ -173,7 +230,10 @@ export const traverseFieldsFromDb = async (
     const field = steps[i]!;
     const descriptor = resolveFieldDescriptor(index.fields, field);
     if (descriptor === undefined) return InvalidTraversalProjection;
-    if (prior !== undefined && !fieldOwnerMatchesPriorTarget(descriptor, prior, index.compositions)) {
+    if (prior === undefined) {
+      const ownership = await startingEidOwnsField(db, current, descriptor, index.compositions, budget);
+      if (ownership !== undefined) return ownership;
+    } else if (!fieldOwnerMatchesPriorTarget(descriptor, prior, index.compositions)) {
       return InvalidTraversalProjection;
     }
     const last = i === steps.length - 1;
