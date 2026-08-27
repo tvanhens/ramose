@@ -19,6 +19,7 @@ import {
   TraitComposition,
   TraitDescriptor,
   FieldDescriptor,
+  RuleAccessPlan,
   type CatalogDescriptor,
 } from "./catalog.ts";
 import {
@@ -43,10 +44,12 @@ import {
   type InstalledIdentityTable as InstalledIdentityTableType,
 } from "./ir.ts";
 import {
+  normalizeAccessPlans,
   normalizeIdentities,
   normalizeOperations,
   normalizeTraitComposition,
 } from "./install/normalize.ts";
+import { deriveRuleAccessPlan } from "./install/plan.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 import { invalid, mismatch, type ValidateFailure } from "./validation/common.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION, AuthorizationLanguageVersion } from "./version.ts";
@@ -190,6 +193,7 @@ const requirePolicyPresent = (
     yield* requireIdentityTable(policy.identities);
     yield* requirePresent(policy.operations, "policy operations");
     yield* requirePresent(policy.traitComposition, "policy traitComposition");
+    yield* requirePresent(policy.accessPlans, "accessPlans");
   });
 
 type CatalogIdentity = {
@@ -263,6 +267,10 @@ const encodeOperations = (
 const encodeComposition = (rows: ReadonlyArray<TraitComposition>): unknown =>
   rows.map((row) => Schema.encodeUnknownSync(TraitComposition)(row));
 
+const encodeAccessPlans = (
+  plans: InstalledAuthorizationIRType["accessPlans"],
+): unknown => plans.map((plan) => Schema.encodeUnknownSync(RuleAccessPlan)(plan));
+
 const schemaDescriptorFromUnit = (document: InstalledCatalogUnit): CatalogDescriptor => ({
   id: document.catalog,
   database: document.database,
@@ -278,8 +286,8 @@ const schemaDescriptorFromUnit = (document: InstalledCatalogUnit): CatalogDescri
 /**
  * Fail-closed document kernel shared by assemble and verify. Top-level
  * identity, language versions, required tables, and schema-derived
- * identities/operations/traitComposition must agree with both the unit
- * tables and the embedded policy.
+ * identities/operations/traitComposition/accessPlans must agree with
+ * both the unit tables and the embedded policy.
  */
 export const requireUnitCoherence = (
   document: InstalledCatalogUnit,
@@ -299,7 +307,7 @@ export const requireUnitCoherence = (
     }
     yield* requirePolicyPresent(document.policy);
     yield* requireIdentityTable(document.identities);
-    yield* prepareAuthorizationCatalog(
+    const index = yield* prepareAuthorizationCatalog(
       {
         database: document.database,
         catalog: document.catalog,
@@ -352,6 +360,18 @@ export const requireUnitCoherence = (
       encodeComposition(traitComposition),
       encodeComposition(document.policy.traitComposition),
       "traitComposition",
+    );
+
+    const derived = [];
+    for (const rule of document.policy.rules) {
+      const plan = yield* deriveRuleAccessPlan(index, rule, document.policy.principal);
+      derived.push(plan);
+    }
+    const accessPlans = yield* normalizeAccessPlans(derived, document.policy.rules);
+    yield* canonicalEqual(
+      encodeAccessPlans(accessPlans),
+      encodeAccessPlans(document.policy.accessPlans),
+      "accessPlans",
     );
   });
 

@@ -319,6 +319,15 @@ describe("sealInstalledCatalogUnit", () => {
     if (Result.isFailure(missingIdentities)) {
       expect(missingIdentities.failure.message).toMatch(/identity table/);
     }
+    const missingAccessPlans = assembleInstalledCatalogUnit(descriptor, {
+      ...policy,
+      accessPlans: undefined,
+    } as unknown as InstalledAuthorizationIR);
+    expect(Result.isFailure(missingAccessPlans)).toBe(true);
+    if (Result.isFailure(missingAccessPlans)) {
+      expect(missingAccessPlans.failure).toBeInstanceOf(InvalidIR);
+      expect(missingAccessPlans.failure.message).toMatch(/accessPlans/);
+    }
     const corrupt = decodeInstalledCatalogUnitResult("{not-json");
     expect(Result.isFailure(corrupt)).toBe(true);
     const notObject = decodeInstalledCatalogUnitResult("not-an-object");
@@ -460,6 +469,90 @@ describe("sealInstalledCatalogUnit", () => {
         true,
       );
       expect(retargetAssemble.failure.message).toMatch(/missing field ref target/);
+    }
+  });
+
+  test("stale accessPlans fail verify after rehash and fail assemble", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    expect(unit.policy.accessPlans.length).toBeGreaterThan(0);
+    const ownerPlan = unit.policy.accessPlans[0]!;
+    expect(ownerPlan.rule).toBe(unit.policy.rules[0]!.id);
+    expect(ownerPlan.lookups).toEqual(
+      expect.arrayContaining([
+        { _tag: "entity", entity: entity("issue") },
+        { _tag: "field", field: field(issueOwner, "owner") },
+        { _tag: "principal", field: field(userOwner, "authId") },
+      ]),
+    );
+    expect(ownerPlan.lookups.length).toBeGreaterThan(0);
+
+    const emptiedLookups = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        accessPlans: unit.policy.accessPlans.map((plan) => ({ ...plan, lookups: [] })),
+      },
+    } as InstalledCatalogUnit;
+    expect(emptiedLookups.identities).toEqual(unit.identities);
+    expect(emptiedLookups.entities).toEqual(unit.entities);
+    expect(emptiedLookups.fields).toEqual(unit.fields);
+    const emptiedHash = await Effect.runPromise(hashInstalledCatalogUnit(emptiedLookups));
+    const emptiedFail = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...emptiedLookups, unitHash: emptiedHash })),
+    );
+    expect(emptiedFail._tag === "CatalogMismatch" || emptiedFail._tag === "InvalidIR").toBe(true);
+    expect(emptiedFail.message).toMatch(/accessPlans|access plan/);
+
+    const extraLookup = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        accessPlans: unit.policy.accessPlans.map((plan) => ({
+          ...plan,
+          lookups: [...plan.lookups, { _tag: "field" as const, field: field(issueOwner, "title") }],
+        })),
+      },
+    } as InstalledCatalogUnit;
+    const extraHash = await Effect.runPromise(hashInstalledCatalogUnit(extraLookup));
+    const extraFail = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...extraLookup, unitHash: extraHash })),
+    );
+    expect(extraFail._tag === "CatalogMismatch" || extraFail._tag === "InvalidIR").toBe(true);
+    expect(extraFail.message).toMatch(/accessPlans|access plan/);
+
+    const droppedPlan = {
+      ...unit,
+      policy: {
+        ...unit.policy,
+        accessPlans: [],
+      },
+    } as InstalledCatalogUnit;
+    const droppedHash = await Effect.runPromise(hashInstalledCatalogUnit(droppedPlan));
+    const droppedFail = await Effect.runPromise(
+      Effect.flip(verifyInstalledCatalogUnit({ ...droppedPlan, unitHash: droppedHash })),
+    );
+    expect(droppedFail._tag === "CatalogMismatch" || droppedFail._tag === "InvalidIR").toBe(true);
+    expect(droppedFail.message).toMatch(/accessPlans|access plan/);
+
+    const emptiedAssemble = assembleInstalledCatalogUnit(descriptor, emptiedLookups.policy);
+    expect(Result.isFailure(emptiedAssemble)).toBe(true);
+    if (Result.isFailure(emptiedAssemble)) {
+      expect(
+        emptiedAssemble.failure._tag === "CatalogMismatch" || emptiedAssemble.failure._tag === "InvalidIR",
+      ).toBe(true);
+      expect(emptiedAssemble.failure.message).toMatch(/accessPlans|access plan/);
+    }
+    const extraAssemble = assembleInstalledCatalogUnit(descriptor, extraLookup.policy);
+    expect(Result.isFailure(extraAssemble)).toBe(true);
+    if (Result.isFailure(extraAssemble)) {
+      expect(extraAssemble.failure.message).toMatch(/accessPlans|access plan/);
+    }
+    const droppedAssemble = assembleInstalledCatalogUnit(descriptor, droppedPlan.policy);
+    expect(Result.isFailure(droppedAssemble)).toBe(true);
+    if (Result.isFailure(droppedAssemble)) {
+      expect(droppedAssemble.failure.message).toMatch(/accessPlans|access plan/);
     }
   });
 });
