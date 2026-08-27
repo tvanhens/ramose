@@ -16,8 +16,10 @@ import {
   CatalogMismatch,
   CatalogUnitHash,
   SchemaFingerprint,
+  allow,
   assembleDeployedCatalogs,
   callerFromVerified,
+  claim,
   eq,
   executeAuthorizedRequest,
   hashCatalogSchemaFingerprint,
@@ -37,11 +39,13 @@ import { digestHex } from "./fixtures.ts";
 import {
   App,
   Issue,
+  User,
   catalog,
   catalogDescriptor,
   compileRules,
   database,
   expectOk,
+  orgClaim,
   version,
 } from "./semantic-fixtures.ts";
 
@@ -115,7 +119,10 @@ const sealedDescriptor = async () => {
   return { ...base, fingerprint };
 };
 
-const deployOwnerPolicy = async (): Promise<DeployedCatalogs> => {
+const deployPolicy = async (
+  rules: Parameters<typeof compileRules>[0],
+  extras: Parameters<typeof compileRules>[1] = {},
+): Promise<DeployedCatalogs> => {
   const descriptor = await sealedDescriptor();
   return Effect.runPromise(
     assembleDeployedCatalogs({
@@ -126,12 +133,31 @@ const deployOwnerPolicy = async (): Promise<DeployedCatalogs> => {
           database,
           version,
           descriptor,
-          policy: expectOk(compileRules([read(Issue).when(eq(Issue.owner, me))])),
+          policy: expectOk(compileRules(rules, extras)),
         },
       ],
     }),
   );
 };
+
+const deployOwnerPolicy = (): Promise<DeployedCatalogs> =>
+  deployPolicy([read(Issue).when(eq(Issue.owner, me))]);
+
+const signRamose = (over: {
+  readonly sub?: string;
+  readonly db?: string;
+  readonly attrs?: Record<string, unknown>;
+} = {}) =>
+  sign({
+    payload: payload({
+      ...(over.sub === undefined ? {} : { sub: over.sub }),
+      ramose: {
+        db: over.db ?? "todos",
+        class: "member",
+        attrs: over.attrs ?? { org: "acme" },
+      },
+    }),
+  });
 
 const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
   conn.transact(
@@ -268,9 +294,9 @@ describe("executeAuthorizedRequest", () => {
           })),
       );
 
-    const current = await ask({ kind: "current" });
-    const asOf = await ask({ kind: "asOf", t: createdT });
-    const history = await ask({ kind: "history" });
+    const current = await ask({});
+    const asOf = await ask({ asOf: createdT });
+    const history = await ask({ history: true });
     expect(current.title).toBeUndefined();
     expect(asOf.title).toBeUndefined();
     expect(history.title).toBeUndefined();
@@ -517,5 +543,260 @@ describe("executeAuthorizedRequest", () => {
       (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
     );
     expect(title).toBe("Bug");
+  });
+
+  test("JWT sub wins over attrs.sub when the catalog subjectClaim is sub", async () => {
+    const { conn, i1, i2 } = await seedApp();
+    const catalogs = await deployOwnerPolicy();
+    const token = await signRamose({
+      sub: "alice-sub",
+      attrs: { org: "acme", sub: "bob-sub" },
+    });
+    const titles = await run(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => conn.db()),
+      },
+      (filteredDb) =>
+        Effect.promise(async () => ({
+          i1: await visibleTitle(filteredDb, i1),
+          i2: await visibleTitle(filteredDb, i2),
+        })),
+    );
+    expect(titles.i1).toBe("Bug");
+    expect(titles.i2).toBeUndefined();
+  });
+
+  test("subjectClaim other than sub resolves me from that claim, not JWT sub", async () => {
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(App));
+    await installEntityKinds(conn, ["user", "workspace", "tag"]);
+    const report = await conn.transact([
+      { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
+      { ":db/id": "decoy", ":ramose/type": ":user", ":user/authId": "jwt-sub" },
+      { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
+      {
+        ":db/id": "i1",
+        ":ramose/type": ":issue",
+        ":issue/title": "Bug",
+        ":issue/owner": "alice",
+        ":issue/workspace": "ws",
+        ":issue/parent": "i1",
+      },
+      {
+        ":db/id": "i2",
+        ":ramose/type": ":issue",
+        ":issue/title": "Other",
+        ":issue/owner": "decoy",
+        ":issue/workspace": "ws",
+        ":issue/parent": "i1",
+      },
+    ]);
+    const catalogs = await deployPolicy([read(Issue).when(eq(Issue.owner, me))], {
+      principal: { subjectClaim: "authId", entity: User.authId },
+    });
+    const token = await signRamose({
+      sub: "jwt-sub",
+      attrs: { org: "acme", authId: "alice-sub" },
+    });
+    const titles = await run(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => conn.db()),
+      },
+      (filteredDb) =>
+        Effect.promise(async () => ({
+          i1: await visibleTitle(filteredDb, report.tempids["i1"]!),
+          i2: await visibleTitle(filteredDb, report.tempids["i2"]!),
+        })),
+    );
+    expect(titles.i1).toBe("Bug");
+    expect(titles.i2).toBeUndefined();
+  });
+
+  test("wrong-type unique lookup is Unauthorized and execute does not run", async () => {
+    const { conn } = await seedApp();
+    const report = await conn.transact([
+      { ":db/id": "spoof-ws", ":ramose/type": ":workspace", ":user/authId": "spoof-sub" },
+      {
+        ":db/id": "spoof-issue",
+        ":ramose/type": ":issue",
+        ":issue/title": "Spoofed",
+        ":issue/owner": "spoof-ws",
+        ":issue/workspace": "spoof-ws",
+        ":issue/parent": "spoof-issue",
+      },
+    ]);
+    expect(report.tempids["spoof-ws"]).toBeDefined();
+    const catalogs = await deployOwnerPolicy();
+    const token = await signRamose({ sub: "spoof-sub" });
+    let executed = false;
+    const error = await runFail(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => conn.db()),
+      },
+      () =>
+        Effect.sync(() => {
+          executed = true;
+        }),
+    );
+    expect(executed).toBe(false);
+    expectOpaque(error);
+  });
+
+  test("JWT database disagreeing with catalog is Unauthorized before currentDb", async () => {
+    const catalogs = await deployOwnerPolicy();
+    const token = await signRamose({ db: "otherdb" });
+    let acquired = false;
+    let executed = false;
+    const error = await runFail(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => {
+          acquired = true;
+          throw new Error("currentDb must not run");
+        }),
+      },
+      () =>
+        Effect.sync(() => {
+          executed = true;
+        }),
+    );
+    expect(acquired).toBe(false);
+    expect(executed).toBe(false);
+    expectOpaque(error, ["todos", "otherdb"]);
+  });
+
+  test("asOf and history compose as a product (bounded history)", async () => {
+    const { conn, i1, createdT } = await seedApp();
+    const catalogs = await deployOwnerPolicy();
+    const token = await sign();
+    await conn.transact([{ ":db/id": i1, ":issue/title": "Fixed" }]);
+
+    const scan = (view: AuthorizedRequestView) =>
+      run(
+        {
+          authenticate: authenticateToken(token),
+          catalogs,
+          catalogRef: refOf(catalogs),
+          currentDb: Effect.sync(() => conn.db()),
+          view,
+        },
+        (filteredDb) =>
+          Effect.promise(async () => {
+            const datoms = await filteredDb.datomsArray(Index.EAVT, { e: i1 });
+            return {
+              asOfT: filteredDb.asOfT,
+              isHistory: filteredDb.isHistory,
+              later: datoms.filter((datom) => datom.t > createdT),
+            };
+          }),
+      );
+
+    const history = await scan({ history: true });
+    expect(history.isHistory).toBe(true);
+    expect(history.later.length).toBeGreaterThan(0);
+
+    const bounded = await scan({ asOf: createdT, history: true });
+    expect(bounded.isHistory).toBe(true);
+    expect(bounded.asOfT).toBe(createdT);
+    expect(bounded.later).toEqual([]);
+  });
+
+  test("required org missing is Unauthorized before currentDb", async () => {
+    const catalogs = await deployOwnerPolicy();
+    const token = await signRamose({ attrs: {} });
+    let acquired = false;
+    let executed = false;
+    const error = await runFail(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => {
+          acquired = true;
+          throw new Error("currentDb must not run");
+        }),
+      },
+      () =>
+        Effect.sync(() => {
+          executed = true;
+        }),
+    );
+    expect(acquired).toBe(false);
+    expect(executed).toBe(false);
+    expectOpaque(error);
+  });
+
+  test("claim vocabulary rejects missing and mistyped required claims before currentDb", async () => {
+    const { conn, i1 } = await seedApp();
+    const catalogs = await deployPolicy(
+      [read(Issue).when(allow), read(Issue).deny(eq(claim("suspended"), true))],
+      {
+        claims: [
+          orgClaim,
+          { key: "suspended", optional: false, shape: { _tag: "scalar", valueType: "boolean" } },
+        ],
+      },
+    );
+    const askFail = async (attrs: Record<string, unknown>) => {
+      const token = await signRamose({ attrs });
+      let acquired = false;
+      let executed = false;
+      const error = await runFail(
+        {
+          authenticate: authenticateToken(token),
+          catalogs,
+          catalogRef: refOf(catalogs),
+          currentDb: Effect.sync(() => {
+            acquired = true;
+            throw new Error("currentDb must not run");
+          }),
+        },
+        () =>
+          Effect.sync(() => {
+            executed = true;
+          }),
+      );
+      expect(acquired).toBe(false);
+      expect(executed).toBe(false);
+      expectOpaque(error);
+    };
+
+    await askFail({ org: "acme" });
+    await askFail({ org: "acme", suspended: "true" });
+
+    const hidden = await run(
+      {
+        authenticate: authenticateToken(await signRamose({ attrs: { org: "acme", suspended: true } })),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => conn.db()),
+      },
+      (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
+    );
+    expect(hidden).toBeUndefined();
+
+    const visible = await run(
+      {
+        authenticate: authenticateToken(
+          await signRamose({ attrs: { org: "acme", suspended: false } }),
+        ),
+        catalogs,
+        catalogRef: refOf(catalogs),
+        currentDb: Effect.sync(() => conn.db()),
+      },
+      (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
+    );
+    expect(visible).toBe("Bug");
   });
 });
