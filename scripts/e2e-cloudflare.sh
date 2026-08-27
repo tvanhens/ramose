@@ -102,14 +102,12 @@ done
 [ -n "$ok" ] || fail "peer did not become healthy at $URL/health within ~60s."
 echo ">> Peer is healthy."
 
-# /health only exercises the Worker fetch handler. Fresh DO namespaces often
-# answer "Worker not found" for a few seconds after deploy. Admin `/info`
-# now fails closed if either DO is down; a write is the path the suite hits
-# first, so wait for that too — and do it through the same Bun `fetch` the
-# tests use (curl can land on a colo that is already ready).
-echo ">> Waiting for Durable Objects (GET /info + POST /transact) ..."
+# /health only exercises the Worker fetch handler. The data plane is
+# fail-closed: wait until `/db/*` answers 401 through the same Bun `fetch`
+# the suite uses (curl can land on a colo that is still serving a placeholder).
+echo ">> Waiting for fail-closed /db/* ..."
 RAMOSE_URL="$URL" bun scripts/e2e-warmup.ts
-echo ">> Durable Objects ready."
+echo ">> Data plane is closed."
 
 echo ">> Running e2e suite against $URL ..."
 set +e

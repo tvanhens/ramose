@@ -1,27 +1,26 @@
 /**
  * Post-deploy wait used by `scripts/e2e-cloudflare.sh`.
  *
- * `/health` is the Worker fetch handler only. A write creates the
- * genesis root; admin `/info` then fails closed if either DO is down.
- * Both go through the same Bun `fetch` + `Connection: close` ladder
- * the e2e harness uses. A curl `/info` 200 on one colo used to let
- * the suite start while bun's colo still served "Worker not found"
- * on the first transact.
+ * `/health` is the Worker fetch handler. External `/db/*` is fail-closed
+ * until authorized snapshots land — a 401 on that surface means the Worker
+ * is serving the data-plane close, not that Durable Objects are ready.
  */
-import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
-
 const url = process.env.RAMOSE_URL;
 if (url === undefined || url === "") {
   console.error("error: RAMOSE_URL is not set");
   process.exit(1);
 }
 
-const client = new Peer(url, { retryTransientMs: 90_000 });
-const db = client.db("e2e-warmup");
+const base = url.replace(/\/+$/, "");
 
-await client.health();
-// A write creates the genesis root. `/info` fetches a replica basis and
-// 503s "no root yet" on a brand-new name — do the write first.
-await db.transact([attrMap(":e2e/warmup", "string")]);
-await db.info();
-console.log(">> warmup write ok");
+const health = await fetch(`${base}/health`);
+if (!health.ok) {
+  throw new Error(`warmup /health ${health.status}`);
+}
+
+const closed = await fetch(`${base}/db/e2e-warmup/info`);
+if (closed.status !== 401) {
+  throw new Error(`warmup expected /db/*/info 401, got ${closed.status}`);
+}
+
+console.log(">> warmup fail-closed 401 ok");
