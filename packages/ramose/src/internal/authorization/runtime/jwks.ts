@@ -13,6 +13,7 @@ import type { JSONWebKeySet } from "jose";
 import { JwksUnavailable } from "./failures.ts";
 
 export const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+export const JWKS_RETIRED_GRACE_MS = JWKS_CACHE_TTL_MS;
 export const JWKS_FETCH_TIMEOUT_MS = 5_000;
 export const JWKS_REFRESH_COOLDOWN_MS = 30_000;
 export const JWKS_MAX_GENERATIONS = 2;
@@ -83,41 +84,58 @@ type Generation = {
   readonly at: number;
   readonly getKey: JWTVerifyGetKey;
   readonly fingerprint: string;
+  readonly retiredAt?: number;
+};
+
+const PUBLIC_JWK_FIELDS = ["alg", "crv", "e", "kid", "kty", "n", "use", "x", "y"] as const;
+
+const publicField = (key: JSONWebKeySet["keys"][number], field: (typeof PUBLIC_JWK_FIELDS)[number]) => {
+  const value = (key as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : null;
 };
 
 const fingerprintKey = (key: JSONWebKeySet["keys"][number]): string => {
-  if (typeof key.kid === "string" && key.kid.length > 0) return key.kid;
-  return JSON.stringify({
-    kty: key.kty ?? null,
-    crv: key.crv ?? null,
-    x: key.x ?? null,
-    y: key.y ?? null,
-  });
+  const publicFields: Record<string, string | null> = {};
+  for (const field of PUBLIC_JWK_FIELDS) {
+    publicFields[field] = publicField(key, field);
+  }
+  return JSON.stringify(publicFields);
 };
 
-const fingerprintOf = (jwks: JSONWebKeySet): string =>
+export const fingerprintOf = (jwks: JSONWebKeySet): string =>
   jwks.keys.map(fingerprintKey).sort().join("\0");
 
-const combine = (generations: readonly Generation[]): JWTVerifyGetKey => {
+const isLiveRetired = (generation: Generation, now: number): boolean =>
+  generation.retiredAt !== undefined && now - generation.retiredAt < JWKS_RETIRED_GRACE_MS;
+
+const pruneExpiredRetired = (now: number, generations: Generation[]): void => {
+  for (let i = generations.length - 1; i >= 1; i--) {
+    if (!isLiveRetired(generations[i]!, now)) generations.splice(i, 1);
+  }
+};
+
+const combine = (now: number, generations: Generation[]): JWTVerifyGetKey => {
+  pruneExpiredRetired(now, generations);
   const current = generations[0];
   if (current === undefined) {
     return async () => {
       throw unavailable("jwks");
     };
   }
-  if (generations.length === 1) return current.getKey;
+  const live = generations.map((generation) => generation.getKey);
+  if (live.length === 1) return live[0]!;
   return async (header, token) => {
     try {
-      return await current.getKey(header, token);
+      return await live[0]!(header, token);
     } catch (cause) {
       if (
         typeof cause === "object" &&
         cause !== null &&
         (cause as { code?: string }).code === "ERR_JWKS_NO_MATCHING_KEY"
       ) {
-        for (let i = 1; i < generations.length; i++) {
+        for (let i = 1; i < live.length; i++) {
           try {
-            return await generations[i]!.getKey(header, token);
+            return await live[i]!(header, token);
           } catch {
             // try older generation
           }
@@ -196,12 +214,15 @@ export const createJwks = (env: AuthBindings): JwksService => {
     if (current !== undefined && current.fingerprint === fingerprint) {
       generations[0] = { at, getKey: current.getKey, fingerprint };
       stale = false;
-      return combine(generations);
+      return combine(at, generations);
+    }
+    if (current !== undefined) {
+      generations[0] = { ...current, retiredAt: at };
     }
     generations.unshift({ at, getKey: createLocalJWKSet(jwks), fingerprint });
     generations.splice(JWKS_MAX_GENERATIONS);
     stale = false;
-    return combine(generations);
+    return combine(at, generations);
   };
 
   const markLoaded = Effect.withFiber((fiber) =>
@@ -271,11 +292,11 @@ export const createJwks = (env: AuthBindings): JwksService => {
     if (lastRemoteAttemptAt !== 0 && now - lastRemoteAttemptAt < JWKS_REFRESH_COOLDOWN_MS) {
       if (current === undefined) return yield* unavailable("jwks");
       yield* unmarkLoaded;
-      return combine(generations);
+      return combine(now, generations);
     }
     if (!stale && current !== undefined && now - current.at < JWKS_CACHE_TTL_MS) {
       yield* unmarkLoaded;
-      return combine(generations);
+      return combine(now, generations);
     }
     return yield* loadOnce(now);
   }).pipe(Effect.withSpan("Jwks.keySet"));
@@ -298,12 +319,12 @@ export const createJwks = (env: AuthBindings): JwksService => {
     if (alreadyLoaded || (current !== undefined && now - current.at === 0)) {
       if (lastKidRefreshAt === 0) lastKidRefreshAt = now;
       if (current === undefined) return yield* unavailable("jwks");
-      return combine(generations);
+      return combine(now, generations);
     }
 
     if (lastKidRefreshAt !== 0 && now - lastKidRefreshAt < JWKS_REFRESH_COOLDOWN_MS) {
       if (current === undefined) return yield* unavailable("jwks");
-      return combine(generations);
+      return combine(now, generations);
     }
     lastKidRefreshAt = now;
     stale = true;

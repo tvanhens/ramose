@@ -16,7 +16,9 @@ import { JwksUnavailable } from "../../../src/internal/authorization/runtime/fai
 import {
   JWKS_FETCH_TIMEOUT_MS,
   JWKS_REFRESH_COOLDOWN_MS,
+  JWKS_RETIRED_GRACE_MS,
   Jwks,
+  fingerprintOf,
 } from "../../../src/internal/authorization/runtime/jwks.ts";
 import {
   authenticationLayer,
@@ -53,6 +55,23 @@ const admit = (env: object, database: string, token: string) =>
   }).pipe(Effect.provide(withClock(authenticationLayer(env as never))));
 
 const jwk = (kid: string) => ({ ...PUBLIC_JWK, kid });
+
+const NEXT_PRIVATE_JWK = {
+  crv: "P-256",
+  d: "EEDGOYpwRiWfCDUXczEF4lxuS7rQ0kw81o_4RrQ6DsU",
+  kty: "EC",
+  x: "55dblMdJ4FYrk0jrIw8xq740BpsO3SOJICt7ngaJFRA",
+  y: "_muRPmbAkbysyAfSF2LuUThtKG2_46yuqsAkT6Hrb7k",
+} as const;
+
+const NEXT_PUBLIC_JWK = {
+  crv: "P-256",
+  kty: "EC",
+  x: NEXT_PRIVATE_JWK.x,
+  y: NEXT_PRIVATE_JWK.y,
+  alg: "ES256",
+  kid: "test",
+} as const;
 
 describe("Jwks", () => {
   test("local JWKS JSON works", async () => {
@@ -540,6 +559,169 @@ describe("Jwks", () => {
           const keptA = yield* tryAdmit(tokenA);
           const keptB = yield* tryAdmit(tokenB);
           expect(keptA.principal.subject).toBe("user_ada");
+          expect(keptB.principal.subject).toBe("user_ada");
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("retired generation stays trusted for a bounded grace, then is dropped", async () => {
+    let keys: object[] = [jwk("a")];
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const issued = Math.floor(Date.now() / 1000);
+      const tok = (name: string) =>
+        signToken("acme", "member", "user_ada", undefined, {
+          kid: name,
+          iat: issued,
+          exp: issued + 600,
+        });
+      const tokenA = await tok("a");
+      const tokenB = await tok("b");
+      const unknown = await tok("missing");
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          yield* tryAdmit(tokenA);
+          expect(fetches).toBe(1);
+
+          yield* TestClock.adjust(1);
+          keys = [jwk("b")];
+          const rotated = yield* tryAdmit(tokenB);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          const stillA = yield* tryAdmit(tokenA);
+          expect(stillA.principal.subject).toBe("user_ada");
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          const miss = yield* Effect.flip(tryAdmit(unknown));
+          expect(miss._tag === "AuthenticationRejected" || miss._tag === "JwksUnavailable").toBe(true);
+          expect(fetches).toBe(3);
+
+          const keptA = yield* tryAdmit(tokenA);
+          const keptB = yield* tryAdmit(tokenB);
+          expect(keptA.principal.subject).toBe("user_ada");
+          expect(keptB.principal.subject).toBe("user_ada");
+
+          yield* TestClock.adjust(JWKS_RETIRED_GRACE_MS);
+          const expiredA = yield* Effect.flip(tryAdmit(tokenA));
+          expect(expiredA.message).toBe("jwks");
+          const stillB = yield* tryAdmit(tokenB);
+          expect(stillB.principal.subject).toBe("user_ada");
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("fingerprintOf covers full public JWK material, not kid only", () => {
+    const original = fingerprintOf({ keys: [PUBLIC_JWK] });
+    const sameKidNewCoords = fingerprintOf({
+      keys: [{ ...PUBLIC_JWK, x: "changed-x-coordinate-same-kid" }],
+    });
+    expect(original).not.toBe(sameKidNewCoords);
+
+    const rsa = fingerprintOf({ keys: [{ kty: "RSA", n: "abc", e: "AQAB" }] });
+    const rsaOtherN = fingerprintOf({ keys: [{ kty: "RSA", n: "def", e: "AQAB" }] });
+    expect(rsa).not.toBe(rsaOtherN);
+
+    const withPrivate = fingerprintOf({
+      keys: [{ ...PUBLIC_JWK, d: "secret-must-not-fingerprint" }],
+    });
+    expect(withPrivate).toBe(original);
+  });
+
+  test("same kid with different public material is a new generation", async () => {
+    let keys: object[] = [PUBLIC_JWK];
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const issued = Math.floor(Date.now() / 1000);
+      const over = { kid: "test" as const, iat: issued, exp: issued + 600 };
+      const tokenA = await signToken("acme", "member", "user_ada", undefined, over);
+      const tokenB = await signToken("acme", "member", "user_ada", undefined, {
+        ...over,
+        jwk: NEXT_PRIVATE_JWK,
+      });
+      const unknown = await signToken("acme", "member", "user_ada", undefined, {
+        kid: "missing",
+        iat: issued,
+        exp: issued + 600,
+      });
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const jwks = yield* Jwks;
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          const first = yield* tryAdmit(tokenA);
+          expect(first.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(1);
+
+          // Same kid still matches generation A, so a kid-miss refresh will
+          // not run. Invalidate after cooldown to publish new material.
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          keys = [NEXT_PUBLIC_JWK];
+          yield* jwks.invalidate;
+          const rotated = yield* tryAdmit(tokenB);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(2);
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          const miss = yield* Effect.flip(tryAdmit(unknown));
+          expect(miss._tag === "AuthenticationRejected" || miss._tag === "JwksUnavailable").toBe(true);
+          expect(fetches).toBe(3);
+
+          const stillB = yield* tryAdmit(tokenB);
+          expect(stillB.principal.subject).toBe("user_ada");
+
+          yield* TestClock.adjust(JWKS_RETIRED_GRACE_MS);
+          const expiredA = yield* Effect.flip(tryAdmit(tokenA));
+          expect(expiredA.message === "jwks" || expiredA.message === "claims").toBe(true);
+          const keptB = yield* tryAdmit(tokenB);
           expect(keptB.principal.subject).toBe("user_ada");
         }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
       );

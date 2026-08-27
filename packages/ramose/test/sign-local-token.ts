@@ -31,6 +31,13 @@ export type SignOver = {
   readonly alg?: string;
   readonly kid?: string;
   readonly secret?: string;
+  readonly jwk?: {
+    readonly crv: string;
+    readonly d: string;
+    readonly kty: string;
+    readonly x: string;
+    readonly y: string;
+  };
   readonly ramose?: unknown;
 };
 
@@ -74,6 +81,9 @@ export const signToken = async (
   if (over.nbf !== undefined) jwt = jwt.setNotBefore(over.nbf);
   if (alg === "HS256") {
     return jwt.sign(new TextEncoder().encode(over.secret ?? "hs256-test-secret"));
+  }
+  if (over.jwk !== undefined) {
+    return jwt.sign((await importJWK({ ...over.jwk }, alg)) as CryptoKey);
   }
   return jwt.sign(await key());
 };
