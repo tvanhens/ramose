@@ -45,12 +45,18 @@ export function registerPeerContract(target: PeerTarget): void {
         [`/db/${dbName}/info`, "GET", undefined],
       ] as const;
       for (const [path, method, body] of paths) {
-        const res = await fetch(`${base}${path}`, {
-          method,
-          headers,
-          ...(body === undefined ? {} : { body }),
-        });
-        expect(res.status).toBe(401);
+        let status = 0;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const res = await fetch(`${base}${path}`, {
+            method,
+            headers,
+            ...(body === undefined ? {} : { body }),
+          });
+          status = res.status;
+          if (status !== 502) break;
+          await Bun.sleep(50 * (attempt + 1));
+        }
+        expect(status).toBe(401);
       }
     });
 
