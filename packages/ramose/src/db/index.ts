@@ -155,6 +155,7 @@ export {
   type AnyOperations,
   type DefinedOperations,
   type Op,
+  type OpCasField,
   type OpPrincipal,
   type OpReport,
   type OperationCard,

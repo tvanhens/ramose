@@ -10,6 +10,7 @@ import type { AnySchema } from "./Schema.ts";
 import { TxRejected } from "./Errors.ts";
 import type {
   AttrAtIdent,
+  CardAtIdent,
   CatalogIdent,
   EntityRef,
   FieldTargetEntity,
@@ -30,6 +31,29 @@ import type {
 export type TxField<C extends AnySchema> =
   | { readonly ident: CatalogIdent<C> }
   | CatalogIdent<C>;
+
+/**
+ * `true` when `C` is a concrete catalog (keys are entity names). The
+ * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
+ * a non-distributive `CardAtIdent extends "one"` against that bound is
+ * `"one" | "many" extends "one"` → `never`.
+ */
+export type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
+  ? false
+  : true;
+
+/**
+ * Field slot for {@link Tx.cas} / {@link TxHandle.cas}: only cardinality-one
+ * idents. Card-many is a type error on a concrete catalog. Schema-erased
+ * `Tx` / `TxHandle` fall back to {@link TxField} so `cas` stays callable.
+ */
+export type TxCasField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? {
+      [I in CatalogIdent<C>]: CardAtIdent<C, I> extends "one"
+        ? { readonly ident: I } | I
+        : never;
+    }[CatalogIdent<C>]
+  : TxField<C>;
 
 type IdentOfTxField<C extends AnySchema, A> = A extends {
   readonly ident: infer I extends string;
@@ -208,6 +232,7 @@ export type TxOp =
   | readonly [":db/retract", unknown, string]
   | readonly [":db/retract", unknown, string, unknown]
   | readonly [":db/retractEntity", unknown]
+  | readonly [":db/cas", unknown, string, unknown, unknown]
   | TxMap;
 
 export interface TxSpec {
@@ -220,6 +245,7 @@ export const TX_INTERNALS: unique symbol = Symbol.for("ramose.tx.internals");
 export interface TxInternals<C extends AnySchema = AnySchema> {
   readonly schema: C;
   readonly ops: () => readonly TxOp[];
+  readonly generated: () => ReadonlySet<string>;
 }
 
 const internalsOf = (tx: object): TxInternals => {
@@ -236,6 +262,10 @@ export const txOps = (tx: object): readonly TxOp[] => internalsOf(tx).ops();
 /** @internal Catalog the builder was created with. */
 export const txSchema = <C extends AnySchema>(tx: Tx<C>): C =>
   internalsOf(tx).schema as C;
+
+/** @internal Builder-minted `tmp-N` names — provenance, not a string regex. */
+export const txGeneratedTempids = (tx: object): ReadonlySet<string> =>
+  internalsOf(tx).generated();
 
 // ── instance handle (a bag) ────────────────────────────────────────────────
 
@@ -257,6 +287,12 @@ export interface TxHandle<C extends AnySchema = AnySchema> {
   set<const A extends TxField<C>>(
     field: A,
     value: TxValue<C, A, TxHandle<C>>,
+  ): Effect.Effect<void>;
+
+  cas<const A extends TxCasField<C>>(
+    field: A,
+    expected: TxValue<C, A, TxHandle<C>> | null,
+    replacement: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   remove<const A extends TxField<C>>(
@@ -291,6 +327,13 @@ export interface Tx<C extends AnySchema = AnySchema> {
     e: TxEntity<C>,
     field: A,
     value: TxValue<C, A, TxHandle<C>>,
+  ): Effect.Effect<void>;
+
+  cas<const A extends TxCasField<C>>(
+    e: TxEntity<C>,
+    field: A,
+    expected: TxValue<C, A, TxHandle<C>> | null,
+    replacement: TxValue<C, A, TxHandle<C>>,
   ): Effect.Effect<void>;
 
   remove<const A extends TxField<C>>(
@@ -517,6 +560,16 @@ const makeHandle = <C extends AnySchema>(
     Effect.sync(() => {
       ops.push([":db/add", eid, lowerAttr(field), lowerWriteValue(value)]);
     }),
+  cas: (field: unknown, expected: unknown, replacement: unknown) =>
+    Effect.sync(() => {
+      ops.push([
+        ":db/cas",
+        eid,
+        lowerAttr(field),
+        expected == null ? null : lowerWriteValue(expected),
+        lowerWriteValue(replacement),
+      ]);
+    }),
   remove: (field: unknown, value?: unknown) =>
     Effect.sync(() => {
       if (value === undefined) {
@@ -536,13 +589,19 @@ const makeHandle = <C extends AnySchema>(
  */
 export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
   const ops: TxOp[] = [];
+  const generated = new Set<string>();
   let next = 0;
+  const mint = (): Tempid => {
+    const name = `tmp-${++next}`;
+    generated.add(name);
+    return name as Tempid;
+  };
   const builder: Tx<C> = {
     entity: ((id?: TxEntity<C>) =>
       Effect.sync(() => {
         const resolved =
           id === undefined
-            ? (`tmp-${++next}` as Tempid)
+            ? mint()
             : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         return makeHandle(resolved, ops);
       })) as Tx<C>["entity"],
@@ -554,6 +613,16 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
           resolveEntity(e),
           lowerAttr(field),
           lowerWriteValue(value),
+        ]);
+      }),
+    cas: (e: unknown, field: unknown, expected: unknown, replacement: unknown) =>
+      Effect.sync(() => {
+        ops.push([
+          ":db/cas",
+          resolveEntity(e),
+          lowerAttr(field),
+          expected == null ? null : lowerWriteValue(expected),
+          lowerWriteValue(replacement),
         ]);
       }),
     remove: (e: unknown, field: unknown, value?: unknown) =>
@@ -579,7 +648,7 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         const id = b !== undefined ? a : undefined;
         const eid =
           id === undefined
-            ? (`tmp-${++next}` as Tempid)
+            ? mint()
             : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         const { map, extras } = lowerPut(entity, eid, attrs ?? {});
         ops.push(map);
@@ -641,6 +710,7 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
     {
       schema,
       ops: () => ops.slice(),
+      generated: () => generated,
     };
   return builder;
 };

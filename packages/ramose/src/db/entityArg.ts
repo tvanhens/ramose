@@ -19,10 +19,19 @@ declare const TempidBrand: unique symbol;
  */
 export type Tempid = string & { readonly [TempidBrand]: true };
 
-/** Brand a string as a tempid. The wire form is the string itself. */
+/** Builder-minted names (`tmp-${n}` in `Tx.ts`). Caller `tempid()` rejects these. */
+export const isBuilderTempidName = (name: string): boolean => /^tmp-\d+$/.test(name);
+
+/** Brand a string as a tempid. The wire form is the string itself.
+ * Names matching `tmp-<n>` are reserved for builder-minted ids. */
 export const tempid = (name: string): Tempid => {
   if (typeof name !== "string" || name.length === 0) {
     throw new Error("ramose: tempid() needs a non-empty string");
+  }
+  if (isBuilderTempidName(name)) {
+    throw new Error(
+      "ramose: tempid names matching tmp-<n> are reserved for the transaction builder",
+    );
   }
   return name as Tempid;
 };

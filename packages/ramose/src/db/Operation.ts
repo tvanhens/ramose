@@ -23,9 +23,11 @@ import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
+  type ConcreteCatalog,
   type PutAttrs,
   type PutCreateAttrs,
   type PutSubject,
+  type TxCasField,
   type TxEntity,
   type TxField,
   type TxHandle,
@@ -33,15 +35,6 @@ import {
   type TxValue,
   type UpdateMapAttrs,
 } from "./Tx.ts";
-
-/**
- * `true` when `C` is a concrete catalog (keys are entity names). The
- * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
- * `TxValue` against that bound is `never`.
- */
-type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
-  ? false
-  : true;
 
 type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? TxKnownEntity<C>
@@ -70,6 +63,11 @@ type OpUpdateMapAttrs<C extends AnySchema, E extends AnyEntity> =
 export type OpField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? TxField<C>
   : { readonly ident: string } | string;
+
+/** Card-one field slot for {@link Op.cas}. Card-many is a type error on a concrete catalog. */
+export type OpCasField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? TxCasField<C>
+  : OpField<C>;
 
 type FieldRefValue<C extends AnySchema, A> = A extends {
   readonly schema: { readonly Type: infer T };
@@ -220,6 +218,11 @@ export interface OpHandle<
   readonly _tag: "TxHandle";
   readonly eid: Id;
   set<const A extends OpField<C>>(field: A, value: OpValue<C, A>): void;
+  cas<const A extends OpCasField<C>>(
+    field: A,
+    expected: OpValue<C, A> | null,
+    replacement: OpValue<C, A>,
+  ): void;
   remove<const A extends OpField<C>>(field: A, value?: OpValue<C, A>): void;
   delete(): void;
 }
@@ -258,6 +261,12 @@ export interface Op<
     e: OpEntity<C>,
     field: A,
     value: OpValue<C, A>,
+  ): void;
+  cas<const A extends OpCasField<C>>(
+    e: OpEntity<C>,
+    field: A,
+    expected: OpValue<C, A> | null,
+    replacement: OpValue<C, A>,
   ): void;
   remove<const A extends OpField<C>>(
     e: OpEntity<C>,
@@ -354,6 +363,7 @@ export interface RuntimeOpHandle {
   readonly _tag: "TxHandle";
   readonly eid: unknown;
   set(field: unknown, value: unknown): Effect.Effect<void>;
+  cas(field: unknown, expected: unknown, replacement: unknown): Effect.Effect<void>;
   remove(field: unknown, value?: unknown): Effect.Effect<void>;
   readonly delete: Effect.Effect<void>;
 }
@@ -370,6 +380,12 @@ export interface RuntimeOp {
   entity(): Effect.Effect<RuntimeOpHandle>;
   entity(id: unknown): Effect.Effect<RuntimeOpHandle>;
   set(e: unknown, field: unknown, value: unknown): Effect.Effect<void>;
+  cas(
+    e: unknown,
+    field: unknown,
+    expected: unknown,
+    replacement: unknown,
+  ): Effect.Effect<void>;
   remove(e: unknown, field: unknown, value?: unknown): Effect.Effect<void>;
   delete(e: unknown): Effect.Effect<void>;
   put(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
@@ -729,6 +745,12 @@ export interface OperationInvocation {
   readonly entity?: unknown;
   readonly input: unknown;
   readonly clientOpId: string;
+  /**
+   * Named tempids this invocation still refers to, resolved by earlier
+   * acknowledged transactions. The server applies these when re-running
+   * the body (`op.tempid` / entity slots) so a stale name cannot allocate.
+   */
+  readonly tempids?: Readonly<Record<string, number>>;
 }
 
 export { asLookupRef, lowerEntityArg } from "./entityArg.ts";

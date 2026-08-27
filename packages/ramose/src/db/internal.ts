@@ -50,7 +50,7 @@ export {
 } from "./astKey.ts";
 export { shareEqualDeep } from "./shareEqualDeep.ts";
 export * from "./Eid.ts";
-export { tempid, type Tempid } from "./entityArg.ts";
+export { isBuilderTempidName, tempid, type Tempid } from "./entityArg.ts";
 export {
   type Again,
   type AllRow,
