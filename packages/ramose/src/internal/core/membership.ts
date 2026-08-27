@@ -82,6 +82,28 @@ export const fieldOwnerIdent = (ident: string): string | undefined => {
   return slash > 1 ? `:${ident.slice(1, slash)}` : ident;
 };
 
+/**
+ * Fail-closed copy for stores that still have application facts and no
+ * `:ramose/type`. Fresh databases only — this is not a repair path.
+ */
+export const UNSTAMPED_APPLICATION_MESSAGE =
+  "unstamped application entities are unsupported; create a fresh database";
+
+/**
+ * First occupant at or above `minEid` that is not in `typedEids`.
+ * Callers pass the user-eid floor so catalog entities are ignored.
+ */
+export const firstUnstampedEid = (
+  occupantEids: Iterable<number>,
+  typedEids: ReadonlySet<number>,
+  minEid: number,
+): number | undefined => {
+  for (const e of occupantEids) {
+    if (e >= minEid && !typedEids.has(e)) return e;
+  }
+  return undefined;
+};
+
 export const composerIdent = (nsOrIdent: string): string =>
   nsOrIdent.startsWith(":") ? nsOrIdent : `:${nsOrIdent}`;
 

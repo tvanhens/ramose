@@ -13,7 +13,12 @@
 
 import { type Datom, Index, type IndexId, type Prefix, ValueTag, inferTag } from "../datom.ts";
 import { Db, coerceValue, datomJsValue } from "../db.ts";
-import { TX_BASE, txEid } from "../schema.ts";
+import {
+  firstUnstampedEid,
+  fieldOwnerIdent,
+  UNSTAMPED_APPLICATION_MESSAGE,
+} from "../membership.ts";
+import { FIRST_USER_EID, RAMOSE_TYPE_IDENT, TX_BASE, txEid } from "../schema.ts";
 import {
   type Binding,
   type Clause,
@@ -1472,10 +1477,74 @@ export async function query(db: Db, q: Query | string | object, inputs: unknown[
   if (scalarInputs.length) {
     rel = hashJoin(rel, { vars: scalarInputs.map((s) => s.var), rows: [scalarInputs.map((s) => s.value)] }, inputBudget, "inputs");
   }
+  const membershipTypes = membershipTypeScan(ast);
+  if (membershipTypes !== undefined) {
+    await rejectUnstampedApplication(dbIn, membershipTypes === "all" ? undefined : membershipTypes);
+  }
   const ex = new Executor(dbIn, opts);
   ex.rules = compileRules(ast.rules);
   rel = await ex.execClauses(rel, ast.where);
   return shapeResult(dbIn, ast, rel);
+}
+
+/**
+ * `:ramose/type` patterns in `:where` or `:rules`. `"all"` means the type
+ * value is unbound, so every application namespace is in scope.
+ */
+function membershipTypeScan(ast: Query): ReadonlySet<string> | "all" | undefined {
+  let uses = false;
+  let unbound = false;
+  const types = new Set<string>();
+  const walk = (clauses: readonly Clause[]): void => {
+    for (const c of clauses) {
+      switch (c.kind) {
+        case "pattern": {
+          if (c.a.kind !== "const" || c.a.value !== RAMOSE_TYPE_IDENT) break;
+          uses = true;
+          if (c.v.kind === "const" && typeof c.v.value === "string") {
+            types.add(c.v.value);
+          } else {
+            unbound = true;
+          }
+          break;
+        }
+        case "or":
+          for (const branch of c.branches) walk(branch);
+          break;
+        // `not` of a type fact looks for absence — it does not hide rows.
+      }
+    }
+  };
+  walk(ast.where);
+  if (ast.rules) {
+    for (const rule of ast.rules) walk(rule.clauses);
+  }
+  if (!uses) return undefined;
+  return unbound ? "all" : types;
+}
+
+/** Fail closed when membership would hide pre-stamp application rows. */
+async function rejectUnstampedApplication(
+  db: Db,
+  typeIdents: ReadonlySet<string> | undefined,
+): Promise<void> {
+  const typeAttr = db.attr(RAMOSE_TYPE_IDENT);
+  const typed = new Set<number>();
+  if (typeAttr !== undefined) {
+    for (const d of await db.datomsArray(Index.AEVT, { a: typeAttr.id })) {
+      if (d.e >= FIRST_USER_EID) typed.add(d.e);
+    }
+  }
+  for (const attr of db.schema.attributes()) {
+    const owner = fieldOwnerIdent(attr.ident);
+    if (owner === undefined) continue;
+    if (typeIdents !== undefined && !typeIdents.has(owner)) continue;
+    for (const d of await db.datomsArray(Index.AEVT, { a: attr.id })) {
+      if (firstUnstampedEid([d.e], typed, FIRST_USER_EID) !== undefined) {
+        throw new QueryError(UNSTAMPED_APPLICATION_MESSAGE);
+      }
+    }
+  }
 }
 
 function isQueryAst(q: unknown): boolean {

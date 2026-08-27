@@ -11,6 +11,8 @@ import {
   QueryError,
   QueryParseError,
   TxError,
+  UNSTAMPED_APPLICATION_MESSAGE,
+  ValueTag,
   fromJson,
   query,
   toJson,
@@ -20,8 +22,11 @@ import {
   Entity,
   Field,
   IncompatibleSchema,
+  InvalidRequest,
   Long,
+  Query,
   Schema as DbSchema,
+  applicationNamespaces,
   assembleInstalled,
   checkEvolution,
   incompatibleMessage,
@@ -66,6 +71,16 @@ describe("evolution helpers", () => {
     expect(namespaceOf(":db/ident")).toBe("db");
     expect(isSystemIdent(":db/ident")).toBe(true);
     expect(isSystemIdent(":note/title")).toBe(false);
+  });
+
+  test("applicationNamespaces drops system and membership attrs", () => {
+    expect(
+      applicationNamespaces([
+        title,
+        { ident: ":ramose/type", valueType: ":db.type/string", cardinality: ":db.cardinality/one" },
+        { ident: ":db/ident", valueType: ":db.type/string", cardinality: ":db.cardinality/one" },
+      ]),
+    ).toEqual(["note"]);
   });
 
   test("card-many is never required", () => {
@@ -433,6 +448,7 @@ const peer = async () => {
   });
   return {
     ramose: databases,
+    conn,
     dispose: () => close(),
   };
 };
@@ -603,6 +619,37 @@ describe("install() against a live engine", () => {
     );
     expect(err).toBeInstanceOf(TxRejected);
     expect((err as TxRejected).code).toBe("tx/required");
+    await p.dispose();
+  });
+
+  test("install refuses unstamped application rows rather than hiding them", async () => {
+    const Label = Entity("label", { name: Field(Schema.String) });
+    const Catalog = DbSchema({ note: Note, label: Label });
+    const p = await peer();
+    const db = p.ramose.db("notes", Catalog);
+    await db.install();
+    const title = p.conn.schemaView.requireAttr(":note/title");
+    p.conn.applyDatoms([
+      {
+        e: 5000,
+        a: title.id,
+        vt: ValueTag.Str,
+        v: "legacy",
+        t: p.conn.t + 1,
+        op: true,
+      },
+    ]);
+    const refused = await runFail(db.install());
+    expect(refused).toBeInstanceOf(InvalidRequest);
+    expect((refused as InvalidRequest).message).toContain(UNSTAMPED_APPLICATION_MESSAGE);
+    expect((refused as InvalidRequest).message).not.toContain("allowIncompatible");
+
+    const notes = await runFail(db.query(Query.from(Note).select({ title: Note.title })));
+    expect(notes).toBeInstanceOf(InvalidRequest);
+    expect((notes as InvalidRequest).message).toContain(UNSTAMPED_APPLICATION_MESSAGE);
+
+    const labels = await db.query(Query.from(Label).select({ name: Label.name }));
+    expect(labels).toEqual([]);
     await p.dispose();
   });
 

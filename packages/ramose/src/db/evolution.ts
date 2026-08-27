@@ -6,6 +6,7 @@
  * attribute set and names the flips that would split the data model.
  */
 
+import { fieldOwnerIdent, UNSTAMPED_APPLICATION_MESSAGE } from "../internal/core/membership.ts";
 import { isAttributeTx, type SchemaAttrTx, type SchemaTxOp } from "./ensure.ts";
 import type {
   IncompatibleKind,
@@ -105,6 +106,48 @@ export const occupancyQuery = (idents: readonly string[]) => {
     return e;
   }).one();
 };
+
+/**
+ * Occupied application rows that never received `:ramose/type`.
+ * Used to fail closed on `install()` of pre-stamp stores — not a backfill.
+ */
+export const unstampedApplicationQuery = (idents: readonly string[]) => {
+  const listed = idents.filter((ident) => ident.length > 0);
+  return q(function* () {
+    const e = mkVar("entity");
+    if (listed.length === 1) {
+      yield* Q.fact(e, { ident: listed[0]! });
+    } else {
+      yield* Q.or(
+        ...listed.map(
+          (ident) =>
+            function* () {
+              yield* Q.fact(e, { ident });
+            },
+        ),
+      );
+    }
+    yield* Q.not(function* () {
+      yield* Q.fact(e, { ident: ":ramose/type" });
+    });
+    return e;
+  }).one();
+};
+
+/** Application namespaces already in the catalog — not `:db/*` / `:ramose/*`. */
+export const applicationNamespaces = (
+  installed: readonly InstalledAttr[],
+): readonly string[] => {
+  const ns = new Set<string>();
+  for (const attr of installed) {
+    if (fieldOwnerIdent(attr.ident) === undefined) continue;
+    const name = namespaceOf(attr.ident);
+    if (name.length > 0) ns.add(name);
+  }
+  return [...ns];
+};
+
+export { UNSTAMPED_APPLICATION_MESSAGE };
 
 const eidKey = (e: unknown): number => {
   if (typeof e === "number" && Number.isFinite(e)) return e;

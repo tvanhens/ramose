@@ -1,9 +1,11 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { type Db } from "../../../src/internal/core/db.ts";
+import { ValueTag } from "../../../src/internal/core/datom.ts";
 import { QueryError, query } from "../../../src/internal/core/query/engine.ts";
 import { parseQuery } from "../../../src/internal/core/query/parse.ts";
 import { readEdn } from "../../../src/internal/core/query/edn.ts";
+import { UNSTAMPED_APPLICATION_MESSAGE } from "../../../src/internal/core/membership.ts";
 
 const SCHEMA = [
   { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
@@ -268,5 +270,49 @@ describe("datalog basics", () => {
       expect(["eavt", "aevt"]).toContain(c.index);
       expect(c.seeks).toBeGreaterThanOrEqual(1);
     }
+  });
+});
+
+describe("unstamped application membership", () => {
+  const seedUnstamped = async () => {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact(SCHEMA);
+    const name = conn.schemaView.requireAttr(":person/name");
+    conn.applyDatoms([
+      { e: 5000, a: name.id, vt: ValueTag.Str, v: "Legacy", t: conn.t + 1, op: true },
+    ]);
+    return conn;
+  };
+
+  test("a type listing fails closed instead of omitting unstamped rows", async () => {
+    const conn = await seedUnstamped();
+    await expect(
+      query(conn.db(), `[:find ?e :where [?e :ramose/type :person]]`),
+    ).rejects.toMatchObject({
+      message: UNSTAMPED_APPLICATION_MESSAGE,
+    });
+  });
+
+  test("a type rule fails closed the same way", async () => {
+    const conn = await seedUnstamped();
+    await expect(
+      query(conn.db(), {
+        find: ["?e"],
+        where: [["isPerson", "?e"]],
+        rules: [[["isPerson", "?e"], ["?e", ":ramose/type", ":person"]]],
+      }),
+    ).rejects.toBeInstanceOf(QueryError);
+  });
+
+  test("an attribute scan still returns the unstamped row", async () => {
+    const conn = await seedUnstamped();
+    const rows = await query(conn.db(), `[:find ?n :where [?e :person/name ?n]]`);
+    expect(rows).toEqual([["Legacy"]]);
+  });
+
+  test("a listing of another type is unaffected", async () => {
+    const conn = await seedUnstamped();
+    const rows = await query(conn.db(), `[:find ?e :where [?e :ramose/type :note]]`);
+    expect(rows).toEqual([]);
   });
 });

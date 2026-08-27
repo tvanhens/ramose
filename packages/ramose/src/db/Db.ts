@@ -22,10 +22,13 @@ import { lowerEntityArg } from "./entityArg.ts";
 import { schemaTx } from "./ensure.ts";
 import {
   assembleInstalled,
+  applicationNamespaces,
   checkEvolution,
   installTx,
   occupancyIdents,
   occupancyQuery,
+  unstampedApplicationQuery,
+  UNSTAMPED_APPLICATION_MESSAGE,
   installedCoreQuery,
   installedOptionalQuery,
   installedUniqueQuery,
@@ -922,6 +925,17 @@ export const makeDb = <C extends AnySchema>(
           optionals,
         );
         const desired = schemaTx(schema);
+        const unstampedIdents = applicationNamespaces(installed).flatMap((ns) =>
+          occupancyIdents(installed, ns),
+        );
+        if (unstampedIdents.length > 0) {
+          const unstamped = yield* snap.query(unstampedApplicationQuery(unstampedIdents));
+          if (unstamped !== null) {
+            return yield* new InvalidRequest({
+              message: `ramose: install() refused: ${UNSTAMPED_APPLICATION_MESSAGE}`,
+            });
+          }
+        }
         const occupied = new Set<string>();
         for (const ns of namespacesNeedingOccupancy(desired, installed, options)) {
           const idents = occupancyIdents(installed, ns);
