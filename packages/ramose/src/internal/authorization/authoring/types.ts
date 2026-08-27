@@ -19,8 +19,6 @@ export const READ_RULE_TAG = "ReadRule" as const;
 export type AuthPathStep = {
   readonly ident: string;
   readonly localName: string;
-  readonly cardinality: "one" | "many";
-  readonly valueType: string | undefined;
   readonly reverse: boolean;
 };
 
@@ -140,13 +138,10 @@ export const stepFromCarrier = (carrier: PathCarrier): AuthPathStep => {
   const parsed = parseIdent(ident);
   const attrName = (carrier as { readonly attrName?: unknown }).attrName;
   const localName = typeof attrName === "string" ? attrName : (parsed?.localName ?? ident);
-  const valueType = (carrier as { readonly valueType?: unknown }).valueType;
   const revs = carrier.__revs ?? [];
   return {
     ident,
     localName,
-    cardinality: carrier.cardinality === "many" ? "many" : "one",
-    valueType: typeof valueType === "string" ? valueType : undefined,
     reverse: carrier.__reverse === true || revs.some(Boolean),
   };
 };

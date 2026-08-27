@@ -67,8 +67,6 @@ const nextOwner = (field: unknown, current: FieldOwner): FieldOwner | undefined 
 const missingStep = (owner: FieldOwner, name: string): AuthPathStep => ({
   ident: owner.ns !== undefined ? `:${owner.ns}/${name}` : name,
   localName: name,
-  cardinality: "one",
-  valueType: undefined,
   reverse: false,
 });
 
@@ -133,8 +131,6 @@ const hopToSteps = (hop: AuthPathLike | { readonly ident: string }): readonly Au
     {
       ident: "",
       localName: "",
-      cardinality: "one",
-      valueType: undefined,
       reverse: false,
     },
   ];

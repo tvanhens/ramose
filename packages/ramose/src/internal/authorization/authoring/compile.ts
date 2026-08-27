@@ -197,12 +197,9 @@ const readPathSteps = (input: unknown): Result.Result<readonly AuthPathStep[], I
       typeof localNameRaw === "string" && localNameRaw !== ""
         ? localNameRaw
         : (parsed?.localName ?? "");
-    const valueType = (step as { readonly valueType?: unknown }).valueType;
     checked.push({
       ident,
       localName,
-      cardinality: (step as { readonly cardinality?: unknown }).cardinality === "many" ? "many" : "one",
-      valueType: typeof valueType === "string" ? valueType : undefined,
       reverse: (step as { readonly reverse?: unknown }).reverse === true,
     });
   }
