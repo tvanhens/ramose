@@ -9,7 +9,7 @@
  * import `cloudflare:workers`), so the pure mapping is tested directly.
  */
 import { describe, expect, test } from "bun:test";
-import { PolicyBudgetError, QueryBudgetError } from "../../src/internal/core/index.ts";
+import { QueryBudgetError } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, Internal, NotFound, OperationRejected, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
 
@@ -39,16 +39,6 @@ describe("tagged failure → status/body", () => {
     expect(http.body?.limit).toBe(500);
     expect(http.body?.spentBy).toBe("caller");
     expect(String(http.body?.error)).toContain("query aborted");
-  });
-
-  test("PolicyBudgetError → 413 with policy/budget-exceeded", () => {
-    const err = fromThrown(new PolicyBudgetError("policy/doc/owner", new QueryBudgetError("[?e :doc/owner ?me]", 900, 500)));
-    expect(err._tag).toBe("QueryBudgetExceeded");
-    const http = toHttp(err);
-    expect(http.status).toBe(413);
-    expect(http.body?.code).toBe("policy/budget-exceeded");
-    expect(http.body?.spentBy).toBe("policy");
-    expect(String(http.body?.clause)).toContain("policy/doc/owner");
   });
 
   test("Internal → 500 { error, stack? }", () => {

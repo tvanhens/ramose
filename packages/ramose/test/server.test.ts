@@ -241,7 +241,6 @@ describe("escape-hatch wiring", () => {
 describe("the server's auth env", () => {
   test("the key names are the ones the server Worker reads", () => {
     expect(AUTH_ENV_KEYS).toEqual({
-      policy: "RAMOSE_POLICY",
       jwksUrl: "RAMOSE_JWKS_URL",
       jwksJson: "RAMOSE_JWKS_JSON",
       jwksService: "RAMOSE_JWKS_SERVICE",
@@ -257,12 +256,11 @@ describe("the server's auth env", () => {
   test("nothing configured binds nothing — today's server, byte for byte", () => {
     expect(authEnv(undefined)).toEqual({});
     expect(authEnv({})).toEqual({});
-    expect(authEnv({ policy: "" })).toEqual({});
+    expect(authEnv({ jwksUrl: "" })).toEqual({});
   });
 
   test("issuers and origins are comma-separated sets, from a list or a string", () => {
     const { [AUTH_ENV_KEYS.internalSecret]: _secret, ...env } = authEnv({
-      policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: ["https://auth.acme.example", " https://auth.other.example "],
       aud: "ramose:peer:prod",
@@ -270,7 +268,6 @@ describe("the server's auth env", () => {
       allowedOrigins: "https://app.acme.example, ",
     });
     expect(env).toEqual({
-      RAMOSE_POLICY: '{"v":1}',
       RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
       RAMOSE_JWT_ISS: "https://auth.acme.example,https://auth.other.example",
       RAMOSE_JWT_AUD: "ramose:peer:prod",
@@ -286,23 +283,8 @@ describe("the server's auth env", () => {
     expect(Redacted.value(bound as Redacted.Redacted<string>)).toBe("sh4red");
   });
 
-  test("a policy always binds an internal secret, minting one if none was pinned", () => {
+  test("a pinned secret is bound; verifier keys alone do not mint one", () => {
     const env = authEnv({
-      policy: '{"v":1}',
-      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-      issuers: "https://auth.acme.example",
-      aud: "ramose:peer:prod",
-    });
-    const bound = env[AUTH_ENV_KEYS.internalSecret];
-    expect(Redacted.isRedacted(bound)).toBe(true);
-    const minted = Redacted.value(bound as Redacted.Redacted<string>);
-    expect(minted).not.toBe("");
-    expect(minted).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  test("a policy with a pinned secret uses that secret, not a fresh one", () => {
-    const env = authEnv({
-      policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: "https://auth.acme.example",
       aud: "ramose:peer:prod",
@@ -311,15 +293,11 @@ describe("the server's auth env", () => {
     expect(Redacted.value(env[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
       "sh4red",
     );
-  });
-
-  test("no policy and no pinned secret binds no internal secret", () => {
     expect(authEnv({ jwksUrl: "https://auth.acme.example/.well-known/jwks.json" })).toEqual({
       RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
     });
     expect(authEnv({ jwksJson: '{"keys":[]}' })).toEqual({ RAMOSE_JWKS_JSON: '{"keys":[]}' });
     expect(authEnv({})[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
-    expect(authEnv({ policy: "" })[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
   });
 
   test("an unpinned internal secret is minted, and is not the same twice", () => {
@@ -331,8 +309,8 @@ describe("the server's auth env", () => {
   });
 
   test("`auth` is a prop of the server, and the attributes are unchanged", () => {
-    const props: ServerProps = { worker: "https://peer.example.com", auth: { policy: "{}" } };
-    expect(props.auth?.policy).toBe("{}");
+    const props: ServerProps = { worker: "https://peer.example.com", auth: { aud: "ramose:peer" } };
+    expect(props.auth?.aud).toBe("ramose:peer");
     type HasAuth = "auth" extends keyof Server["Attributes"] ? true : false;
     const hasAuth: HasAuth = false;
     expect(hasAuth).toBe(false);
@@ -350,7 +328,6 @@ describe("the server's auth env", () => {
     const jwksUrl = { kind: "Output", value: "https://auth.example/jwks" };
     const allowedOrigins = { kind: "Effect", value: "https://app.example" };
     const env = authEnv({
-      policy: '{"v":1}',
       jwksUrl,
       issuers: "https://auth.example",
       aud: "ramose:peer",
@@ -362,76 +339,62 @@ describe("the server's auth env", () => {
   });
 });
 
-describe("owned form binds auth and token onto the Worker", () => {
+describe("owned form binds auth onto the Worker", () => {
   const auth = {
-    policy: '{"v":1}',
     jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
     issuers: "https://auth.acme.example",
     aud: "ramose:peer:prod",
     internalSecret: "sh4red",
   };
 
-  test("ownedAuthEnv puts RAMOSE_POLICY, RAMOSE_TOKEN, and the rest of authEnv on the bag", () => {
+  test("ownedAuthEnv binds verifier keys and no RAMOSE_TOKEN", () => {
     const bindings = ownedAuthEnv(auth, "s3cret");
-    expect(bindings[AUTH_ENV_KEYS.policy]).toBe(auth.policy);
     expect(bindings[AUTH_ENV_KEYS.jwksUrl]).toBe(auth.jwksUrl);
     expect(bindings[AUTH_ENV_KEYS.issuers]).toBe(auth.issuers);
     expect(bindings[AUTH_ENV_KEYS.aud]).toBe(auth.aud);
-    expect(Redacted.value(bindings[TOKEN_ENV_KEY] as Redacted.Redacted<string>)).toBe("s3cret");
+    expect(bindings[TOKEN_ENV_KEY]).toBeUndefined();
     expect(Redacted.value(bindings[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
       "sh4red",
     );
     expect(ownedAuthEnv(auth, undefined)[TOKEN_ENV_KEY]).toBeUndefined();
-    expect(tokenEnv("s3cret")[TOKEN_ENV_KEY]).not.toBe("s3cret");
+    expect(tokenEnv("s3cret")).toEqual({});
   });
 
-  test("missing verifier fields still fail checkAuth", () => {
-    expect(checkAuth({ policy: '{"v":1}' })).toMatch(/RAMOSE_JWKS_URL.*RAMOSE_JWT_ISS.*RAMOSE_JWT_AUD/);
+  test("checkAuth only rejects a non-positive maxTtl", () => {
+    expect(checkAuth({ maxTtl: 0 })).toMatch(/positive number of seconds/);
     expect(
       checkAuth({
-        policy: '{"v":1}',
         jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
         issuers: "https://auth.acme.example",
         aud: "ramose:peer:prod",
-      }),
-    ).toBeUndefined();
-    expect(
-      checkAuth({
-        policy: '{"v":1}',
-        jwksJson: '{"keys":[]}',
-        issuers: "https://local.test",
-        aud: "ramose:local",
       }),
     ).toBeUndefined();
     expect(checkAuth(undefined)).toBeUndefined();
     expect(checkAuth({})).toBeUndefined();
   });
 
-  test("a bound verifier with no policy fails checkAuth; binding nothing stays open", () => {
+  test("verifier bindings without a compiled policy still pass checkAuth", () => {
     expect(
       checkAuth({
         jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
         issuers: "https://auth.acme.example",
         aud: "ramose:peer:prod",
       }),
-    ).toMatch(/RAMOSE_JWKS_URL.*RAMOSE_JWT_ISS.*RAMOSE_JWT_AUD.*auth\.policy is not/);
+    ).toBeUndefined();
     expect(
       checkAuth({
         jwt: { issuer: "https://auth.acme.example", audience: "ramose:peer:prod", ttl: 900 },
         jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       }),
-    ).toMatch(/set but auth\.policy is not/);
-    expect(checkAuth({ issuers: "https://auth.acme.example" })).toMatch(/RAMOSE_JWT_ISS.*auth\.policy is not/);
-    expect(checkAuth({ jwksJson: '{"keys":[]}' })).toMatch(/RAMOSE_JWKS_JSON.*auth\.policy is not/);
-    expect(checkAuth(undefined)).toBeUndefined();
-    expect(checkAuth({})).toBeUndefined();
+    ).toBeUndefined();
+    expect(checkAuth({ issuers: "https://auth.acme.example" })).toBeUndefined();
+    expect(checkAuth({ jwksJson: '{"keys":[]}' })).toBeUndefined();
     expect(checkAuth({ allowedOrigins: "https://app.acme.example" })).toBeUndefined();
   });
 
   test("an Output-valued jwksUrl counts as present for checkAuth", () => {
     expect(
       checkAuth({
-        policy: '{"v":1}',
         jwksUrl: { interpolate: "https://auth.example/jwks" },
         issuers: "https://auth.example",
         aud: "ramose:peer",
@@ -447,13 +410,11 @@ describe("hatch form compares auth / token against the Worker env", () => {
     REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
   };
   const auth = {
-    policy: '{"v":1}',
     jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
     issuers: "https://auth.acme.example",
     aud: "ramose:peer:prod",
   };
   const matching = {
-    RAMOSE_POLICY: auth.policy,
     RAMOSE_JWKS_URL: auth.jwksUrl,
     RAMOSE_JWT_ISS: auth.issuers,
     RAMOSE_JWT_AUD: auth.aud,
@@ -468,19 +429,15 @@ describe("hatch form compares auth / token against the Worker env", () => {
     expect(compareAuthToWorker(auth, undefined, { url: "https://peer.example.com" })).toBeUndefined();
   });
 
-  test("auth.policy without RAMOSE_POLICY on the Worker is a deploy error", () => {
-    expect(compareAuthToWorker(auth, undefined, hatch({}))).toMatch(
-      /auth\.policy is set but the Worker has no RAMOSE_POLICY/,
-    );
+  test("auth on Server without matching Worker verifier keys is a deploy error", () => {
+    expect(compareAuthToWorker(auth, undefined, hatch({}))).toMatch(/diverge on/);
   });
 
-  test("RAMOSE_POLICY on the Worker without auth.policy is a deploy error", () => {
-    expect(compareAuthToWorker(undefined, undefined, hatch(matching))).toMatch(
-      /Worker has RAMOSE_POLICY but Ramose\.Server was not given auth\.policy/,
-    );
+  test("Worker verifier keys without Server auth is a deploy error", () => {
+    expect(compareAuthToWorker(undefined, undefined, hatch(matching))).toMatch(/diverge on/);
   });
 
-  test("divergence on token / policy / iss / aud / jwks fails", () => {
+  test("divergence on iss / aud / jwks fails", () => {
     expect(compareAuthToWorker(auth, undefined, hatch({ ...matching, RAMOSE_JWT_AUD: "other" }))).toMatch(
       /diverge on RAMOSE_JWT_AUD/,
     );
@@ -491,22 +448,10 @@ describe("hatch form compares auth / token against the Worker env", () => {
         hatch(matching),
       ),
     ).toMatch(/diverge on RAMOSE_JWKS_URL/);
-    expect(compareAuthToWorker(auth, "s3cret", hatch(matching))).toMatch(
-      /Server token does not match the Worker's RAMOSE_TOKEN/,
-    );
-    expect(
-      compareAuthToWorker(auth, "s3cret", hatch({ ...matching, RAMOSE_TOKEN: "other" })),
-    ).toMatch(/Server token does not match the Worker's RAMOSE_TOKEN/);
-    expect(
-      compareAuthToWorker(
-        { ...auth, policy: '{"v":2}' },
-        undefined,
-        hatch(matching),
-      ),
-    ).toMatch(/diverge on RAMOSE_POLICY/);
+    expect(compareAuthToWorker(auth, "s3cret", hatch(matching))).toBeUndefined();
   });
 
-  test("a correctly-wired hatch (policy on both sides, matching) still deploys", () => {
+  test("a correctly-wired hatch still deploys; token is ignored", () => {
     expect(compareAuthToWorker(auth, undefined, hatch(matching))).toBeUndefined();
     expect(
       compareAuthToWorker(auth, "s3cret", hatch({ ...matching, RAMOSE_TOKEN: "s3cret" })),
@@ -519,13 +464,11 @@ describe("hatch form compares auth / token against the Worker env", () => {
   test("hatch RAMOSE_JWKS_JSON matches auth.jwksJson and diverges without it", () => {
     const jwksJson = '{"keys":[]}';
     const jsonAuth = {
-      policy: '{"v":1}',
       jwksJson,
       issuers: "https://local.test",
       aud: "ramose:local",
     };
     const jsonHatch = {
-      RAMOSE_POLICY: jsonAuth.policy,
       RAMOSE_JWKS_JSON: jwksJson,
       RAMOSE_JWT_ISS: jsonAuth.issuers,
       RAMOSE_JWT_AUD: jsonAuth.aud,
@@ -639,38 +582,15 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
     expect(compareWritesToWorker("operations", "https://peer.example.com")).toBeUndefined();
   });
 
-  test("policy + writes: all emits the warning; operations does not", () => {
+  test("writes: all no longer pairs with a policy warning", () => {
     const auth = {
-      policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: "https://auth.acme.example",
       aud: "ramose:peer:prod",
     };
-    expect(writesAllPolicyWarning("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBe(
-      WRITES_ALL_POLICY_WARNING,
-    );
-    expect(writesAllPolicyWarning(undefined, auth, hatch({ RAMOSE_WRITES: "all" }))).toBe(
-      WRITES_ALL_POLICY_WARNING,
-    );
-    const warned: string[] = [];
-    const warn = console.warn;
-    console.warn = (message: unknown) => {
-      if (typeof message === "string") warned.push(message);
-    };
-    try {
-      expect(warnWritesAllPolicy("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBe(
-        WRITES_ALL_POLICY_WARNING,
-      );
-    } finally {
-      console.warn = warn;
-    }
-    expect(warned).toEqual([WRITES_ALL_POLICY_WARNING]);
-    expect(writesAllPolicyWarning("operations", auth, hatch({ RAMOSE_WRITES: "operations" }))).toBeUndefined();
-    expect(writesAllPolicyWarning(undefined, auth, hatch({}))).toBeUndefined();
-    expect(writesAllPolicyWarning("all", undefined, hatch({}))).toBeUndefined();
-    expect(writesAllPolicyWarning("all", undefined, hatch({ RAMOSE_POLICY: '{"v":1}', RAMOSE_WRITES: "all" }))).toBe(
-      WRITES_ALL_POLICY_WARNING,
-    );
+    expect(writesAllPolicyWarning("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
+    expect(warnWritesAllPolicy("all", auth, hatch({ RAMOSE_WRITES: "all" }))).toBeUndefined();
+    expect(WRITES_ALL_POLICY_WARNING).toContain("writes is \"all\"");
   });
 });
 
@@ -716,76 +636,11 @@ describe("operations coverage vs /health", () => {
     expect(error?.missing).toEqual(["user/create", "user/set-name"]);
   });
 
-  test("policy operations coverage: unknown armed name fails; unarmed is fine", () => {
+  test("legacy policy-operations coverage is gone", () => {
     expect(compareOperationsToPolicy(undefined, "{}")).toBeUndefined();
     expect(compareOperationsToPolicy(client, undefined)).toBeUndefined();
     expect(
-      compareOperationsToPolicy(
-        client,
-        JSON.stringify({ operations: { "user/create": [], "user/set-name": [] } }),
-      ),
-    ).toBeUndefined();
-    expect(
-      compareOperationsToPolicy(client, JSON.stringify({ operations: { "user/create": [] } })),
-    ).toBeUndefined();
-    const error = compareOperationsToPolicy(
-      client,
-      JSON.stringify({ operations: { "user/ghost": [] } }),
-    );
-    expect(error).toBeDefined();
-    expect(error?.message).toMatch(/user\/ghost/);
-  });
-
-  test("policy operations: a rule arm on a registry-bare op fails", () => {
-    const error = compareOperationsToPolicy(
-      client,
-      JSON.stringify({
-        operations: {
-          "user/create": [{ _tag: "allow", class: ["member"], rule: "policy/never/0" }],
-        },
-      }),
-    );
-    expect(error).toBeDefined();
-    expect(error?.message).toMatch(/class gate only/);
-    expect(error?.message).toMatch(/user\/create/);
-  });
-
-  test("policy operations: a v1 db-dependent expr on a registry-bare op fails", () => {
-    const error = compareOperationsToPolicy(
-      client,
-      JSON.stringify({
-        operations: {
-          "user/create": [
-            { _tag: "allow", expr: { _tag: "eq", attr: ":user/name", operand: { _tag: "principal" } } },
-          ],
-        },
-      }),
-    );
-    expect(error).toBeDefined();
-    expect(error?.message).toMatch(/class gate only/);
-  });
-
-  test("policy operations: class-only arms on a bare op are fine; a rule on an on: op is fine", () => {
-    expect(
-      compareOperationsToPolicy(
-        client,
-        JSON.stringify({
-          operations: {
-            "user/create": [{ _tag: "allow", class: ["member"], rule: true }],
-            "user/set-name": [{ _tag: "allow", class: ["member"], rule: "policy/own" }],
-          },
-        }),
-      ),
-    ).toBeUndefined();
-    expect(
-      compareOperationsToPolicy(
-        client,
-        JSON.stringify({
-          operations: {
-            "user/create": [{ _tag: "allow", expr: { _tag: "class", class: "member" } }],
-          },
-        }),
-      ),
+      compareOperationsToPolicy(client, JSON.stringify({ operations: { "user/ghost": [] } })),
     ).toBeUndefined();
   });
 

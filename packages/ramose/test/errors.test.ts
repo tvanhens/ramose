@@ -21,7 +21,6 @@ import {
 import {
   IncompatibleSchema,
   isDatabaseError as isDatabaseErrorFromBarrel,
-  PolicyError,
 } from "../src/db/index.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
@@ -90,12 +89,12 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     const e = fromResponse(413, {
       error: "query budget exceeded",
       code: "query/budget-exceeded",
-      clause: "(policy/doc/owner ?me ?e)",
+      clause: "[?e :doc/title ?t]",
       cells: 9,
       limit: 8,
-      spentBy: "policy",
+      spentBy: "caller",
     }) as QueryBudgetExceeded;
-    expect(e.spentBy).toBe("policy");
+    expect(e.spentBy).toBe("caller");
   });
 
   test("500 → InternalError", () => {
@@ -238,10 +237,8 @@ describe("isDatabaseError", () => {
     expect(isDatabaseError("TxRejected")).toBe(false);
   });
 
-  test("isDatabaseError and PolicyError are on the ramose/db barrel", () => {
+  test("isDatabaseError is on the ramose/db barrel", () => {
     expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
-    expect(new PolicyError({ message: "bad rule" })._tag).toBe("PolicyError");
-    expect(isDatabaseError(new PolicyError({ message: "bad rule" }))).toBe(false);
   });
 
   test("IncompatibleSchema is on the barrel and is not a DbError", () => {

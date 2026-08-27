@@ -49,7 +49,6 @@ export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { datas
 
 /** Server auth (https://ramose.ai/reference/server/), all opt-in: nothing set deploys today's peer. */
 const auth: Ramose.ServerAuth = {
-  policy: process.env.RAMOSE_POLICY,
   jwksUrl: process.env.RAMOSE_JWKS_URL,
   issuers: process.env.RAMOSE_JWT_ISS,
   aud: process.env.RAMOSE_JWT_AUD,

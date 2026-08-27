@@ -1,19 +1,14 @@
 /**
  * Socket `{ op: "transact" }` is gated the same way as HTTPS `/transact`.
- * The Worker stamps `x-ramose-writes` on upgrade; QueryReplicaDO.sessionDispatch
- * enforces it — a live frame never goes through Worker `route()`.
- *
- * `mock.module("cloudflare:workers")` imports the DO class so this file
- * can drive `applyDatoms` / session dispatch directly. Public `/transact`
- * vs `/op` policy is `test/contracts/operations.contract.ts`.
+ * Until authorized application access lands, both surfaces fail closed.
  */
 import { describe, expect, mock, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { parsePolicy, type Principal, type RootRecord } from "../../../src/internal/core/index.ts";
+import type { RootRecord } from "../../../src/internal/core/index.ts";
 import type { RamoseEnv } from "../../../src/internal/transactor/index.ts";
 import { MemoryBucket } from "../../../src/internal/storage/memory.ts";
 import { sqliteLike } from "../transactor/harness.ts";
-import { allowsRawTransact } from "../../../src/worker/auth.ts";
+import { allowsRawTransact, type Principal } from "../../../src/worker/auth.ts";
 import { openSession, type SocketLike } from "../../../src/worker/session.ts";
 import type { WritesMode } from "../../../src/writes.ts";
 
@@ -65,31 +60,6 @@ const member: Principal = {
   claims: { sub: "ada" },
   db: "acme",
 };
-/** Open-mode service ingress — display class is a label, not a bypass key. */
-const service: Principal = { kind: "service", class: "admin", claims: {}, db: "acme" };
-/** User token whose class is literally `admin` — ordinary unless named `superuser`. */
-const namedAdmin: Principal = {
-  kind: "user",
-  class: "admin",
-  sub: "ops",
-  claims: { sub: "ops" },
-  db: "acme",
-};
-const owner: Principal = {
-  kind: "user",
-  class: "owner",
-  sub: "ops",
-  claims: { sub: "ops" },
-  db: "acme",
-};
-const seed: Principal = { kind: "service", class: "$token", claims: {}, db: "acme" };
-
-const SESSION_POLICY = JSON.stringify({
-  version: 1,
-  principal: ":user/sub",
-  classes: ["member", "owner", "admin"],
-  superuser: "owner",
-});
 
 const dataTx = [{ ":doc/title": "raw via socket" }];
 
@@ -104,10 +74,7 @@ type ReplicaDispatch = {
   ): Promise<Response>;
 };
 
-async function bootReplica(
-  envWrites?: string,
-  extra: Record<string, string | undefined> = {},
-): Promise<{
+async function bootReplica(): Promise<{
   replica: ReplicaDispatch;
   txBodies: string[];
 }> {
@@ -129,8 +96,6 @@ async function bootReplica(
   };
   const env = {
     STORE: new MemoryBucket(),
-    RAMOSE_WRITES: envWrites,
-    ...extra,
     TRANSACTOR: {
       idFromName: () => ({ toString: () => "tx" }),
       get: () => ({
@@ -161,66 +126,26 @@ const transactInit = (tx: unknown) => ({
 });
 
 describe("allowsRawTransact", () => {
-  const policy = parsePolicy(JSON.parse(SESSION_POLICY));
-  const schemaTx = [{ ":db/ident": ":doc/title", ":db/valueType": ":db.type/string" }];
-
-  test("operations denies an app-class caller; schema, superuser, $token, and writes: all pass", () => {
+  test("every caller is denied until authorized application access lands", () => {
     expect(allowsRawTransact("operations", member, dataTx)).toBe(false);
-    expect(allowsRawTransact("operations", namedAdmin, dataTx)).toBe(false);
-    expect(allowsRawTransact("operations", namedAdmin, dataTx, policy)).toBe(false);
-    expect(allowsRawTransact("operations", owner, dataTx, policy)).toBe(true);
-    expect(allowsRawTransact("operations", seed, dataTx)).toBe(true);
-    expect(allowsRawTransact("operations", service, dataTx)).toBe(true);
-    expect(allowsRawTransact("all", member, dataTx)).toBe(true);
-    expect(allowsRawTransact("operations", member, schemaTx)).toBe(true);
+    expect(allowsRawTransact("all", member, dataTx)).toBe(false);
     expect(
-      allowsRawTransact("operations", member, [{ ...schemaTx[0], ":doc/title": "PWNED" }]),
+      allowsRawTransact("operations", member, [
+        { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string" },
+      ]),
     ).toBe(false);
   });
 });
 
-describe("session { op: transact } is gated like HTTPS /transact", () => {
-  test("app-class token under the default is 403 operations; Transactor is not called", async () => {
+describe("session { op: transact } is fail-closed", () => {
+  test("session HTTP transact is 401 and the Transactor is not called", async () => {
     const { replica, txBodies } = await bootReplica();
     const res = await replica.sessionDispatch("/transact", transactInit(dataTx), member, "operations");
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as { code?: string };
-    expect(body.code).toBe("operations");
+    expect(res.status).toBe(401);
     expect(txBodies).toEqual([]);
   });
 
-  test("unset session writes falls back to env and still denies a member", async () => {
-    const { replica, txBodies } = await bootReplica();
-    const res = await replica.sessionDispatch("/transact", transactInit(dataTx), member);
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as { code?: string }).code).toBe("operations");
-    expect(txBodies).toEqual([]);
-  });
-
-  test("open-mode service, seed, and writes: all reach the Transactor", async () => {
-    const { replica, txBodies } = await bootReplica();
-    for (const [who, writes] of [
-      [service, "operations"],
-      [seed, "operations"],
-      [member, "all"],
-    ] as const) {
-      const res = await replica.sessionDispatch("/transact", transactInit(dataTx), who, writes);
-      expect(res.status).toBe(200);
-    }
-    expect(txBodies).toHaveLength(3);
-  });
-
-  test("a class literally named admin is not a bypass; the named superuser is", async () => {
-    const { replica, txBodies } = await bootReplica(undefined, { RAMOSE_POLICY: SESSION_POLICY });
-    const asAdmin = await replica.sessionDispatch("/transact", transactInit(dataTx), namedAdmin, "operations");
-    expect(asAdmin.status).toBe(403);
-    expect(((await asAdmin.json()) as { code?: string }).code).toBe("operations");
-    const asOwner = await replica.sessionDispatch("/transact", transactInit(dataTx), owner, "operations");
-    expect(asOwner.status).toBe(200);
-    expect(txBodies).toHaveLength(1);
-  });
-
-  test("a live transact frame under operations is denied the same way", async () => {
+  test("a live transact frame is 401 the same way", async () => {
     const { replica, txBodies } = await bootReplica();
     const socket = new FakeSocket();
     const session = openSession(socket, {
@@ -230,18 +155,8 @@ describe("session { op: transact } is gated like HTTPS /transact", () => {
       dispatch: (rest, init, p) => replica.sessionDispatch(rest, init, p, "operations"),
     });
     await session.onMessage(JSON.stringify({ id: 1, op: "transact", tx: dataTx }));
-    expect(socket.replies()).toEqual([
-      { id: 1, status: 403, body: { error: "raw transact is disabled; use operations", code: "operations" } },
-    ]);
+    expect(socket.replies()).toEqual([{ id: 1, status: 401, body: { error: "unauthorized" } }]);
     expect(txBodies).toEqual([]);
     session.close();
-  });
-
-  test("schema-only tx is exempt — member ensure reaches the Transactor", async () => {
-    const { replica, txBodies } = await bootReplica();
-    const schemaTx = [{ ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/optional": true }];
-    const res = await replica.sessionDispatch("/transact", transactInit(schemaTx), member, "operations");
-    expect(res.status).toBe(200);
-    expect(txBodies).toHaveLength(1);
   });
 });

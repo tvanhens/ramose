@@ -19,10 +19,6 @@ export interface RamoseEnv {
   ANALYTICS?: AnalyticsEngineDatasetLike;
   /** stage name (dev / prod) */
   RAMOSE_STAGE?: string;
-  /** shared bearer token: with no policy, unset = open and a match = admin; under a policy it is not a data-plane principal */
-  RAMOSE_TOKEN?: string;
-  /** compiled policy JSON (`Ramose.Policy.compile`). Its presence arms enforcement (fail closed). */
-  RAMOSE_POLICY?: string;
   /** JWKS endpoint for the issuer's public keys */
   RAMOSE_JWKS_URL?: string;
   /**

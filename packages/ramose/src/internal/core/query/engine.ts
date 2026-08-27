@@ -32,7 +32,6 @@ import {
 import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, type SortKey, compareCells, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
-import { conjoinPolicy, type PushdownView } from "../policy/pushdown.ts";
 
 export class QueryError extends Error {
   readonly code: string = "query/error";
@@ -43,8 +42,8 @@ export class QueryError extends Error {
  * budget allows. Tagged (`code`) so peers can map it to a clear 4xx instead
  * of dying with an OOM inside the 128 MB Worker limit.
  */
-/** Who spent the cells that tripped the budget — the caller's clauses or policy's. */
-export type BudgetSpentBy = "caller" | "policy";
+/** Who spent the cells that tripped the budget. Policy attribution is gone with the legacy pipeline. */
+export type BudgetSpentBy = "caller";
 
 export class QueryBudgetError extends QueryError {
   override readonly code: string = "query/budget-exceeded";
@@ -56,8 +55,7 @@ export class QueryBudgetError extends QueryError {
     spentBy: BudgetSpentBy = "caller",
   ) {
     super(
-      `query aborted: intermediate relation for ${clause} would exceed the memory budget (${cells.toLocaleString()} cells > ${limit.toLocaleString()} cells; ~${Math.round(limit / CELLS_PER_MB)} MB)` +
-        (spentBy === "policy" ? "; spent by policy clauses" : ""),
+      `query aborted: intermediate relation for ${clause} would exceed the memory budget (${cells.toLocaleString()} cells > ${limit.toLocaleString()} cells; ~${Math.round(limit / CELLS_PER_MB)} MB)`,
     );
     this.spentBy = spentBy;
   }
@@ -111,12 +109,6 @@ export interface QueryOptions {
   maxRows?: number;
   /** collect planner/executor statistics */
   stats?: QueryStats;
-  /**
-   * Conjoin namespace read rules into the plan before execution (clause-level
-   * pushdown). Default true when `db` is a filtered policy view. `false` is
-   * the filtered-only path (#154 / #156) — used to prove equivalence.
-   */
-  pushdown?: boolean;
 }
 
 export interface QueryStats {
@@ -462,8 +454,6 @@ class Executor {
   private readonly maxRows: number;
   private readonly stats: QueryStats | undefined;
   readonly budget: QueryBudget;
-  /** Unfiltered rule db; equals `db` when there is no policy view. */
-  readonly ruleDb: Db;
   /** Named rules callable from :where; set once per query. */
   rules: Map<string, CompiledRule> = new Map();
   /** Memoized full extensions of recursive rules (rows over head args). */
@@ -473,18 +463,17 @@ class Executor {
   /** Fresh-name counter for hygienic inline rule expansion. */
   private expansions = 0;
 
-  constructor(readonly db: Db, opts: QueryOptions, ruleDb?: Db) {
+  constructor(readonly db: Db, opts: QueryOptions) {
     this.fns = { ...opts.functions };
     this.maxRows = opts.maxRows ?? Infinity;
     this.budget = new QueryBudget(opts.maxCells ?? DEFAULT_QUERY_MAX_CELLS);
     this.stats = opts.stats;
-    this.ruleDb = ruleDb ?? db;
     if (this.stats) this.stats.budget = { maxCells: this.budget.maxCells, peakCells: 0 };
   }
 
-  /** Rule-originated clauses bind unfiltered; caller clauses bind the filtered view. */
-  private view(c: { origin?: ClauseOrigin }): Db {
-    return c.origin === "rule" ? this.ruleDb : this.db;
+  /** Physical db only. Authorization is not a query-engine concern (CUR-1, OPT-4). */
+  private view(_c: { origin?: ClauseOrigin }): Db {
+    return this.db;
   }
 
   /** Account a materialised relation against the budget (throws QueryBudgetError). */
@@ -622,8 +611,7 @@ class Executor {
 
   async exec(rel: Rel, c: Clause): Promise<Rel> {
     const prev = this.budget.spentBy;
-    if (c.origin === "rule") this.budget.spentBy = "policy";
-    else if (c.origin === "caller") this.budget.spentBy = "caller";
+    this.budget.spentBy = "caller";
     try {
       switch (c.kind) {
         case "pattern":
@@ -699,7 +687,7 @@ class Executor {
     const cacheKey = `${rule.name}:${origin}`;
     const cached = this.extensions.get(cacheKey);
     if (cached) return cached;
-    const spentBy: BudgetSpentBy = origin === "rule" ? "policy" : "caller";
+    const spentBy: BudgetSpentBy = "caller";
     const prevSpent = this.budget.spentBy;
     this.budget.spentBy = spentBy;
     const scc = rule.scc;
@@ -1438,12 +1426,6 @@ function termStr(t: Term | undefined): string {
  * Run a query. `inputs` correspond to the `:in` spec (default `$`). The db is
  * either the first `$` input or the `db` argument (used when :in has no `$`).
  */
-function asPushdownView(db: Db): PushdownView | undefined {
-  const v = (db as Db & { view?: PushdownView }).view;
-  if (!v || !v.policy || !v.principal || !v.ruleDb || !v.memo) return undefined;
-  return v;
-}
-
 export async function query(db: Db, q: Query | string | object, inputs: unknown[] = [], opts: QueryOptions = {}): Promise<any> {
   let ast = isQueryAst(q) ? (q as Query) : parseQuery(q);
   // bind inputs
@@ -1490,27 +1472,10 @@ export async function query(db: Db, q: Query | string | object, inputs: unknown[
   if (scalarInputs.length) {
     rel = hashJoin(rel, { vars: scalarInputs.map((s) => s.var), rows: [scalarInputs.map((s) => s.value)] }, inputBudget, "inputs");
   }
-  // Conjunction before planning — and before aggregation in shapeResult — so
-  // a count cannot include rows the caller could not see.
-  const view = opts.pushdown === false ? undefined : asPushdownView(dbIn);
-  let covered: readonly string[] = [];
-  if (view) {
-    const pd = conjoinPolicy(ast, view);
-    ast = pd.query;
-    covered = pd.covered;
-    if (pd.meVar !== undefined && pd.meValue !== undefined) {
-      rel = hashJoin(rel, { vars: [pd.meVar], rows: [[pd.meValue]] }, inputBudget, "policy-me");
-    }
-  }
-  const ex = new Executor(dbIn, opts, view?.ruleDb);
+  const ex = new Executor(dbIn, opts);
   ex.rules = compileRules(ast.rules);
-  if (covered.length > 0) view!.memo.enterPushdown(covered);
-  try {
-    rel = await ex.execClauses(rel, ast.where);
-    return shapeResult(dbIn, ast, rel);
-  } finally {
-    if (covered.length > 0) view!.memo.exitPushdown(covered);
-  }
+  rel = await ex.execClauses(rel, ast.where);
+  return shapeResult(dbIn, ast, rel);
 }
 
 function isQueryAst(q: unknown): boolean {

@@ -13,7 +13,6 @@
  * whatever it has (Better Auth's `auth.api.signJWT`, `jose`, …).
  */
 
-import type { CompiledPolicy } from "./internal/core/policy/ast.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./db/DatabaseName.ts";
 import { InvalidRequest } from "./db/Errors.ts";
 import type { Claims } from "./db/token.ts";
@@ -53,26 +52,11 @@ export interface ClaimsInput {
   readonly now?: Date | undefined;
 }
 
-/** A policy value or compiled AST — anything that carries `classes`. */
+/** Declared class vocabulary used to reject undeclared mint classes. */
 export type ClaimsPolicy = { readonly classes: readonly string[] };
 
-/** `classes` out of a policy value, compiled AST, or still the wire JSON. */
-const declaredClasses = (policy: ClaimsPolicy | string): readonly string[] => {
-  let parsed: unknown = policy;
-  if (typeof policy === "string") {
-    try {
-      parsed = JSON.parse(policy);
-    } catch {
-      throw new InvalidRequest({
-        message: "ramose: claims() was given a policy that is not valid JSON",
-      });
-    }
-  }
-  const classes = (parsed as { classes?: unknown } | null)?.classes;
-  return Array.isArray(classes)
-    ? classes.filter((c): c is string => typeof c === "string")
-    : [];
-};
+const declaredClasses = (policy: ClaimsPolicy): readonly string[] =>
+  policy.classes.filter((c): c is string => typeof c === "string");
 
 /**
  * Build the claim set the peer verifies. Pure: no signing, no I/O.
@@ -87,12 +71,12 @@ const declaredClasses = (policy: ClaimsPolicy | string): readonly string[] => {
  * const payload = Ramose.claims(
  *   AUTH,
  *   { sub: user.id, db: workspace, class: role },
- *   policy, // or compiled JSON; a policy value narrows `class`
+ *   { classes: ["member"] },
  * );
  * const { token } = await auth.api.signJWT({ body: { payload } });
  * ```
  */
-export function claims<P extends ClaimsPolicy | CompiledPolicy | string | undefined = undefined>(
+export function claims<P extends ClaimsPolicy | undefined = undefined>(
   auth: AuthConfig,
   input: [P] extends [string | undefined]
     ? ClaimsInput

@@ -44,32 +44,43 @@ import {
   FIRST_USER_EID,
   Histogram,
   type Logger,
-  type Principal,
   type WireDatom,
   RateMeter,
-  TxError,
-  checkTx,
-  publicPolicyOp,
   componentLogger,
-  filterDb,
-  canChangeSchema,
-  isSchemaTx,
-  isSuperuser,
-  provisionTx,
-  resolveProvisionedEid,
-  shouldProvision,
   toWireDatom,
 } from "../core/index.ts";
-import { FilteredDb } from "../core/policy/filter.ts";
+import type { Principal } from "../../worker/auth.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
-import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";
+import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
-import { asPrincipal } from "./policy.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 
 export { TransactorDeadError };
+
+/** Reshape Worker-verified caller metadata. Not an authorization decision. */
+function asPrincipal(x: unknown): Principal | undefined {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return undefined;
+  const o = x as Record<string, unknown>;
+  if (o.kind !== "user" || typeof o.class !== "string" || typeof o.db !== "string") return undefined;
+  const claims =
+    typeof o.claims === "object" && o.claims !== null
+      ? (o.claims as Principal["claims"])
+      : {};
+  const classes = Array.isArray(o.classes)
+    ? o.classes.filter((c): c is string => typeof c === "string")
+    : undefined;
+  return {
+    kind: "user",
+    class: o.class,
+    db: o.db,
+    claims,
+    ...(typeof o.sub === "string" ? { sub: o.sub } : {}),
+    ...(typeof o.eid === "number" ? { eid: o.eid } : {}),
+    ...(classes !== undefined && classes.length > 0 ? { classes } : {}),
+  };
+}
 
 export interface TxAck {
   t: number;
@@ -359,19 +370,11 @@ export class Transactor {
     });
   }
 
-  /**
-   * Upsert the caller's principal row (and role fact) and return the resolved
-   * eid. Idempotent. Anonymous / service principals stay `{ eid: null }`.
-   */
+  /** Principal-row provisioning is closed until #344. */
   async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
     await this.init();
-    if (!principal) return { eid: null, class: "anonymous" };
-    const policy = this.host.policy;
-    if (!policy || !shouldProvision(principal)) return { eid: principal.eid ?? null, class: principal.class };
-    const ops = await provisionTx(policy, principal, this.conn.db());
-    if (ops !== undefined) await this.transact(ops, principal, undefined, { system: true });
-    const eid = await resolveProvisionedEid(policy, principal, this.conn.db());
-    return { eid: eid ?? null, class: principal.class };
+    if (!principal) return { eid: null, class: "" };
+    return { eid: principal.eid ?? null, class: principal.class };
   }
 
   private rememberAck(id: string, ack: TxAck, persist: boolean): void {
@@ -545,61 +548,21 @@ export class Transactor {
    * Peer-owned upsert of the caller's row, committed on this writer *before*
    * the client tx is authorized. Same group-commit batch; earlier `t`.
    */
-  private async applyProvision(p: Pending, entries: LogEntry[]): Promise<void> {
-    const policy = this.host.policy;
-    const who = p.principal;
-    if (!policy || !who || !shouldProvision(who)) return;
-    const ops = await provisionTx(policy, who, this.conn.db());
-    if (ops !== undefined) {
-      const rep = await this.conn.transact(ops);
-      entries.push({ t: rep.t, txInstant: rep.txData[0]?.v as number, datoms: rep.txData });
-    }
-    const eid = await resolveProvisionedEid(policy, who, this.conn.db());
-    if (eid !== undefined) p.principal = { ...who, eid };
+  private async applyProvision(_p: Pending, _entries: LogEntry[]): Promise<void> {
+    return;
   }
 
-  /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact. */
+  /** Writes are raw storage. Operation authorization is #345. */
   private async authorize(p: Pending): Promise<TxData> {
-    const policy = this.host.policy;
-    if (!policy) return p.tx;
-    if (p.system) return p.tx;
-    if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
-    if (isSuperuser(p.principal, policy)) return p.tx;
-    if (p.fromOperation) return p.tx;
-    if (isSchemaTx(p.tx) && canChangeSchema(p.principal, policy)) return p.tx;
-    const db = this.conn.db();
-    // the Worker usually resolved it already; when its pre-check was skipped, do it here
-    let who = p.principal;
-    if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await resolveProvisionedEid(policy, who, db);
-      if (eid !== undefined) who = { ...who, eid };
-    }
-    const res = await checkTx(p.tx, db, policy, who);
-    if (!res.ok) throw new TxRejected({ message: `${publicPolicyOp(res.op)} denied on ${res.attr}`, code: res.code, attr: res.attr });
-    return res.ops as TxData;
+    return p.tx;
   }
 
-  /** Ack facts the writer may read, judged against the post-commit unfiltered db. */
-  private async ackDatoms(datoms: Datom[], principal?: Principal): Promise<WireDatom[]> {
-    const policy = this.host.policy;
-    if (!policy || !principal || isSuperuser(principal, policy)) return datoms.map(toWireDatom);
-    const db = this.conn.db();
-    let who = principal;
-    if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await resolveProvisionedEid(policy, who, db);
-      if (eid !== undefined) who = { ...who, eid };
-    }
-    const view = filterDb(db, db, policy, who);
-    if (!(view instanceof FilteredDb)) return datoms.map(toWireDatom);
-    const kept: WireDatom[] = [];
-    for (const d of datoms) if (await view.visible(d)) kept.push(toWireDatom(d));
-    return kept;
+  /** Application acks are not filtered here. Authorized cursors land in #343. */
+  private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
+    return datoms.map(toWireDatom);
   }
 
-  /** A unique conflict names the entity and value it collided with — a read leak under a policy. */
-  private scrub(err: unknown, p: Pending): unknown {
-    if (!this.host.policy || !p.principal || isSuperuser(p.principal, this.host.policy)) return err;
-    if (err instanceof TxError && err.code === "tx/unique-conflict") return new TxRejected({ message: "unique conflict", code: err.code });
+  private scrub(err: unknown, _p: Pending): unknown {
     return err;
   }
 

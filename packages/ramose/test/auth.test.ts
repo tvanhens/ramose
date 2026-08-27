@@ -16,13 +16,8 @@ const AUTH: AuthConfig = {
   ttl: 900,
 };
 
-/** A minimal compiled policy — only `classes` matters to `claims`. */
-const POLICY = JSON.stringify({
-  version: 1,
-  principal: ":user/sub",
-  classes: ["admin", "member", "viewer"],
-  attrs: {},
-});
+/** Declared class vocabulary — only `classes` matters to `claims`. */
+const POLICY = { classes: ["admin", "member", "viewer"] as const };
 
 describe("claims", () => {
   test("builds the exact payload the peer verifies; exp - iat === ttl", () => {
@@ -71,11 +66,8 @@ describe("claims", () => {
 
   test("an undeclared class throws when a policy is given…", () => {
     expect(() =>
+      // @ts-expect-error — "superuser" is not in POLICY.classes
       claims(AUTH, { sub: "u", db: "acme", class: "superuser" }, POLICY),
-    ).toThrow(/"superuser" is not declared/);
-    // …whether the policy arrives as wire JSON or already parsed
-    expect(() =>
-      claims(AUTH, { sub: "u", db: "acme", class: "superuser" }, JSON.parse(POLICY)),
     ).toThrow(/"superuser" is not declared/);
   });
 
@@ -110,7 +102,6 @@ describe("claims", () => {
 
 describe("authEnv accepts the AuthConfig as `jwt`", () => {
   const loose = {
-    policy: POLICY,
     jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
     issuers: AUTH.issuer,
     aud: AUTH.audience,
@@ -121,7 +112,6 @@ describe("authEnv accepts the AuthConfig as `jwt`", () => {
 
   test("`{ jwt }` produces exactly the loose form's env", () => {
     const fromConfig = authEnv({
-      policy: POLICY,
       jwksUrl: loose.jwksUrl,
       jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
@@ -132,14 +122,12 @@ describe("authEnv accepts the AuthConfig as `jwt`", () => {
 
   test("the env keys and values, pinned", () => {
     const { [AUTH_ENV_KEYS.internalSecret]: secret, ...env } = authEnv({
-      policy: POLICY,
       jwksUrl: loose.jwksUrl,
       jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
       internalSecret: loose.internalSecret,
     });
     expect(env).toEqual({
-      RAMOSE_POLICY: POLICY,
       RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
       RAMOSE_JWT_ISS: "https://auth.acme.example",
       RAMOSE_JWT_AUD: "ramose:peer:prod",

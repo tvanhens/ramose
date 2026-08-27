@@ -259,7 +259,6 @@ describe("the `/db` barrel's public names", () => {
         "InternalError",
         "NetworkError",
         "isDatabaseError",
-        "PolicyError",
         "IncompatibleSchema",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
@@ -318,19 +317,19 @@ describe("the root `browser` condition is portable", () => {
     assertPortable(graph, allowed, effectBare);
   });
 
-  test("the browser module is db + policy/claims, not Server", async () => {
+  test("the browser module is db + claims, not Server", async () => {
     const browser = await import("../src/browser.ts");
     const deploy = await import("../src/index.ts");
     expect("connect" in browser).toBe(true);
-    expect("policy" in browser).toBe(true);
-    expect("Policy" in browser).toBe(true);
+    expect("policy" in browser).toBe(false);
+    expect("Policy" in browser).toBe(false);
     expect("claims" in browser).toBe(true);
     expect("Server" in browser).toBe(false);
     expect("Database" in browser).toBe(false);
     expect("providers" in browser).toBe(false);
     expect("authEnv" in browser).toBe(false);
     expect("Server" in deploy).toBe(true);
-    expect("policy" in deploy).toBe(true);
+    expect("policy" in deploy).toBe(false);
   });
 
   test("it bundles for the browser without alchemy", async () => {

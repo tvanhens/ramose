@@ -7,7 +7,7 @@
  *
  * Client bundlers that honor the `browser` export condition resolve this
  * specifier to `dist/browser.js` — `ramose/db` plus the alchemy-free
- * shared names (`policy` / `Policy` / `claims`) — so they do not pull
+ * shared names (`claims`) — so they do not pull
  * Alchemy. App code should import `ramose/db` directly. Types stay on
  * this file so `import type { AuthConfig } from "ramose"` still works.
  *
@@ -37,10 +37,6 @@
 
 // ── the portable half, verbatim ────────────────────────────────────────────
 export * from "./db/index.ts";
-
-// ── typed policy: deploy-time, so it is not on `/db` ────────────────────────
-export { policy } from "./db/Policy.ts";
-export * as Policy from "./db/Policy.ts";
 
 // ── the verifier/minter contract ─────────────────────────────────────────
 export { type AuthConfig, claims, type ClaimsInput, type ClaimsPolicy } from "./Auth.ts";

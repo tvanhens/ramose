@@ -19,13 +19,10 @@ import { Database } from "../src/Database.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
 import { workerEntry } from "../src/workerEntry.ts";
-import { Movie, Movies, User } from "./db/fixture.ts";
+import { Movies } from "./db/fixture.ts";
 import {
-  Field,
   Operation,
-  Schema as DbSchema,
   defineOperations,
-  Entity,
 } from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 
@@ -110,10 +107,6 @@ const actions = (plan: { resources: Record<string, { action: string }> }) =>
   Object.keys(plan.resources)
     .sort()
     .map((fqn) => plan.resources[fqn].action);
-
-/** The idents a schema install asserts, in order. */
-const idents = (tx: readonly any[]): string[] =>
-  tx.map((op) => (op as { ":db/ident"?: string })[":db/ident"]).filter((i) => i !== undefined);
 
 const { test } = Test.make({
   providers: providers(),
@@ -223,46 +216,17 @@ describe("Ramose.Server", () => {
     }),
   );
 
-  test.provider("a verifier with no policy fails the deploy; binding nothing stays open", (stack) =>
+  test.provider("binding nothing still deploys; a hatch must match Server auth", (stack) =>
     Effect.gen(function* () {
-      const result = yield* Effect.result(
-        stack.deploy(
-          Server("Ramose", {
-            worker: peerUrl,
-            probe: false,
-            auth: {
-              jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-              issuers: "https://auth.acme.example",
-              aud: "ramose:peer:test",
-            },
-          }),
-        ),
-      );
-      expect(result._tag).toBe("Failure");
-      expect(String(result)).toMatch(/auth\.policy is not/);
-
       const open = yield* stack.deploy(Server("Ramose", { worker: peerUrl, probe: false }));
       expect(open.url).toBe(peerUrl);
       yield* stack.destroy();
-    }),
-  );
 
-  test.provider("a policy with no verifier configured fails the deploy, not the first read", (stack) =>
-    Effect.gen(function* () {
-      const result = yield* Effect.result(
-        stack.deploy(
-          Server("Ramose", { worker: peerUrl, probe: false, auth: { policy: '{"v":1}' } }),
-        ),
-      );
-      expect(result._tag).toBe("Failure");
-
-      // the same policy with a complete verifier deploys
       const server = yield* stack.deploy(
         Server("Ramose", {
           worker: peerUrl,
           probe: false,
           auth: {
-            policy: '{"v":1}',
             jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
             issuers: "https://auth.acme.example",
             aud: "ramose:peer:test",
@@ -274,7 +238,7 @@ describe("Ramose.Server", () => {
     }),
   );
 
-  test.provider("a hatch Worker missing RAMOSE_POLICY fails the deploy when auth.policy is set", (stack) =>
+  test.provider("a hatch Worker missing verifier keys fails the deploy when auth is set", (stack) =>
     Effect.gen(function* () {
       const hatch = (env: Record<string, unknown>) => ({
         Type: "Cloudflare.Worker",
@@ -291,7 +255,6 @@ describe("Ramose.Server", () => {
         },
       });
       const auth = {
-        policy: '{"v":1}',
         jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
         issuers: "https://auth.acme.example",
         aud: "ramose:peer:test",
@@ -300,13 +263,12 @@ describe("Ramose.Server", () => {
         stack.deploy(Server("Ramose", { worker: hatch({}), probe: false, auth })),
       );
       expect(missing._tag).toBe("Failure");
-      expect(String(missing)).toMatch(/Worker has no RAMOSE_POLICY/);
+      expect(String(missing)).toMatch(/diverge on/);
 
       const diverged = yield* Effect.result(
         stack.deploy(
           Server("Ramose", {
             worker: hatch({
-              RAMOSE_POLICY: auth.policy,
               RAMOSE_JWKS_URL: auth.jwksUrl,
               RAMOSE_JWT_ISS: auth.issuers,
               RAMOSE_JWT_AUD: "other-aud",
@@ -322,7 +284,6 @@ describe("Ramose.Server", () => {
       const matched = yield* stack.deploy(
         Server("Ramose", {
           worker: hatch({
-            RAMOSE_POLICY: auth.policy,
             RAMOSE_JWKS_URL: auth.jwksUrl,
             RAMOSE_JWT_ISS: auth.issuers,
             RAMOSE_JWT_AUD: auth.aud,
@@ -386,36 +347,24 @@ describe("Ramose.Server", () => {
       expect(matched.url).toBe(peerUrl);
       yield* stack.destroy();
 
-      const warned: string[] = [];
-      const warn = console.warn;
-      console.warn = (message: unknown) => {
-        if (typeof message === "string") warned.push(message);
-      };
-      try {
-        const open = yield* stack.deploy(
-          Server("Ramose", {
-            worker: hatch({
-              RAMOSE_POLICY: '{"v":1}',
-              RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
-              RAMOSE_JWT_ISS: "https://auth.acme.example",
-              RAMOSE_JWT_AUD: "ramose:peer:test",
-              RAMOSE_WRITES: "all",
-            }),
-            probe: false,
-            writes: "all",
-            auth: {
-              policy: '{"v":1}',
-              jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-              issuers: "https://auth.acme.example",
-              aud: "ramose:peer:test",
-            },
+      const open = yield* stack.deploy(
+        Server("Ramose", {
+          worker: hatch({
+            RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+            RAMOSE_JWT_ISS: "https://auth.acme.example",
+            RAMOSE_JWT_AUD: "ramose:peer:test",
+            RAMOSE_WRITES: "all",
           }),
-        );
-        expect(open.url).toBe(peerUrl);
-      } finally {
-        console.warn = warn;
-      }
-      expect(warned.some((line) => line.includes('writes is "all" while a policy is installed'))).toBe(true);
+          probe: false,
+          writes: "all",
+          auth: {
+            jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+            issuers: "https://auth.acme.example",
+            aud: "ramose:peer:test",
+          },
+        }),
+      );
+      expect(open.url).toBe(peerUrl);
       yield* stack.destroy();
     }),
   );
@@ -508,7 +457,7 @@ describe("under `alchemy dev`", () => {
 });
 
 describe("Ramose.Server databases: seeder", () => {
-  test.provider("installs each catalog on its name at deploy", (stack) =>
+  test.provider("does not install catalogs until authorized publication is wired", (stack) =>
     Effect.gen(function* () {
       const server = yield* stack.deploy(
         Server("Ramose", {
@@ -517,11 +466,8 @@ describe("Ramose.Server databases: seeder", () => {
           databases: { movies: Movies, extras: { schema: Movies, doc: "the extras list" } },
         }),
       );
-      expect(server.seeded).toEqual([
-        { name: "movies", t: expect.any(Number) },
-        { name: "extras", t: expect.any(Number), doc: "the extras list" },
-      ]);
-      expect(transactions.map((c) => c.name).sort()).toEqual(["extras", "movies"]);
+      expect(server.seeded).toEqual([]);
+      expect(transactions).toEqual([]);
       yield* stack.destroy();
     }),
   );
@@ -530,92 +476,48 @@ describe("Ramose.Server databases: seeder", () => {
 describe("Ramose.Database", () => {
   const server = () => Server("Ramose", { worker: peerUrl, probe: false });
 
-  test.provider("installs the catalog on the name, at deploy", (stack) =>
+  test.provider("catalog install is closed until authorized publication is wired", (stack) =>
     Effect.gen(function* () {
-      const db = yield* stack.deploy(
-        Database("movies", { server: server(), schema: Movies }),
+      const result = yield* Effect.result(
+        stack.deploy(Database("movies", { server: server(), schema: Movies })),
       );
-
-      expect(db.name).toBe("movies");
-      expect(db.server).toBe(peerUrl);
-      expect(db.t).toBeGreaterThan(0);
-
-      // exactly one transaction, on this name, and it is the catalog
-      expect(transactions).toHaveLength(1);
-      expect(transactions[0].name).toBe("movies");
-      expect(idents(transactions[0].tx)).toEqual(
-        expect.arrayContaining([User.name.ident, Movie.title.ident]),
-      );
-
+      expect(result._tag).toBe("Failure");
+      expect(String(result)).toMatch(/catalog install/);
+      expect(transactions).toEqual([]);
       yield* stack.destroy();
     }),
   );
 
-  test.provider("the name defaults to the logical id, and `name` overrides it", (stack) =>
+  test.provider("a named Database is refused the same way", (stack) =>
     Effect.gen(function* () {
-      const db = yield* stack.deploy(
-        Database("Todos", { server: server(), schema: Movies, name: "todos-prod" }),
+      const result = yield* Effect.result(
+        stack.deploy(
+          Database("Todos", { server: server(), schema: Movies, name: "todos-prod" }),
+        ),
       );
-      expect(db.name).toBe("todos-prod");
-      expect(transactions.map((c) => c.name)).toEqual(["todos-prod"]);
+      expect(result._tag).toBe("Failure");
+      expect(transactions).toEqual([]);
       yield* stack.destroy();
     }),
   );
 
-  test.provider("carries the server's token, so a peer with RAMOSE_TOKEN accepts it", (stack) =>
+  test.provider("a server token does not reopen catalog install", (stack) =>
     Effect.gen(function* () {
-      yield* stack.deploy(
-        Database("movies", {
-          server: Server("Ramose", {
-            worker: peerUrl,
-            probe: false,
-            token: Redacted.make("s3cret"),
+      const result = yield* Effect.result(
+        stack.deploy(
+          Database("movies", {
+            server: Server("Ramose", {
+              worker: peerUrl,
+              probe: false,
+              token: Redacted.make("s3cret"),
+            }),
+            schema: Movies,
           }),
-          schema: Movies,
-        }),
+        ),
       );
-      expect(transactions[0].authorization).toBe("Bearer s3cret");
+      expect(result._tag).toBe("Failure");
+      expect(transactions).toEqual([]);
       yield* stack.destroy();
-    }),
-  );
-
-  test.provider("a redeploy is a no-op, and an update re-installs idempotently", (stack) =>
-    Effect.gen(function* () {
-      const declare = (schema: typeof Movies) =>
-        Effect.gen(function* () {
-          const s = yield* server();
-          return yield* Database("movies", { server: s, schema });
-        });
-
-      yield* stack.deploy(declare(Movies));
-      expect(transactions).toHaveLength(1);
-
-      // same catalog, same name → nothing to do
-      const plan = yield* stack.plan(declare(Movies));
-      expect(actions(plan)).toEqual(["noop", "noop"]);
-
-      yield* stack.deploy(declare(Movies));
-      expect(transactions).toHaveLength(1);
-
-      // a grown catalog is an ordinary update: install() upserts it
-      const Extra = Entity("extra", { note: Field(Schema.String) });
-      const grown = DbSchema({ ...Movies.entities, extra: Extra }) as typeof Movies;
-      yield* stack.deploy(declare(grown));
-      expect(transactions).toHaveLength(2);
-      expect(idents(transactions[1].tx)).toContain(":extra/note");
-
-      yield* stack.destroy();
-    }),
-  );
-
-  test.provider("destroying it writes nothing — a database is a name", (stack) =>
-    Effect.gen(function* () {
-      yield* stack.deploy(Database("movies", { server: server(), schema: Movies }));
-      expect(transactions).toHaveLength(1);
-
-      yield* stack.destroy();
-      // no retraction, no drop, no delete request of any kind
-      expect(transactions).toHaveLength(1);
     }),
   );
 

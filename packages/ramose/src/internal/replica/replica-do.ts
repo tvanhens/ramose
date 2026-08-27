@@ -19,19 +19,16 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   DEFAULT_QUERY_MAX_CELLS,
-  type Principal,
-  type QueryStats,
-  anonymousPrincipal,
-  componentLogger,
   type LogEntry,
+  type QueryStats,
   type RootRecord,
   type WireDatom,
   type WireFrame,
+  componentLogger,
   decodeLogChunk,
   encodeLogChunk,
   entryFromFrame,
   fromJson,
-  fromWireDatom,
   gzipCodec,
   query as runQuery,
   pull as runPull,
@@ -41,10 +38,11 @@ import {
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
 import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
-import { allowsRawTransact, authState, describePrincipal, principalForToken, rememberProvisioned, shouldProvision, viewDb, withEid } from "../../worker/auth.ts";
+import type { Principal } from "../../worker/auth.ts";
+import { principalForToken } from "../../worker/auth.ts";
 import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, WRITES_HEADER } from "../../worker/session.ts";
-import { type WritesMode, parseWritesHeader, resolveWrites } from "../../writes.ts";
-import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
+import { type WritesMode, parseWritesHeader } from "../../writes.ts";
+import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 
@@ -441,31 +439,20 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     if (!this.root || !this.dbName) return { kind: "skip" };
     const basis = makeBasis(this.dbName, this.root, this.entries);
     const raw = await dbFromBasis(this.store, basis);
-    const after = raw.asOf(entry.t);
-    const before = raw.asOf(Math.max(0, entry.t - 1));
-    const st = authState(this.env);
-    let who = p;
-    if (st.policy && who) who = await withEid(st.policy, who, after);
     return decideSessionTx({
-      datoms: entry.datoms.map(fromWireDatom),
-      ...(st.policy !== undefined && { policy: st.policy }),
-      ...(who !== undefined && { principal: who }),
-      ruleDbAfter: after,
-      ruleDbBefore: before,
+      datoms: [],
+      ...(p !== undefined ? { principal: p } : {}),
+      ruleDbAfter: raw,
+      ruleDbBefore: raw,
     });
   }
 
-  private async snapshotView(p?: Principal): Promise<{ t: number; datoms: WireDatom[] }> {
-    if (!this.root || !this.dbName) return { t: 0, datoms: [] };
-    const basis = makeBasis(this.dbName, this.root, this.entries);
-    const who = p ?? anonymousPrincipal(this.dbName);
-    const dbv = await viewDb(this.env, who, this.store, basis);
-    return { t: basis.t, datoms: await currentViewDatoms(dbv) };
+  private async snapshotView(_p?: Principal): Promise<{ t: number; datoms: WireDatom[] }> {
+    return { t: this.basisT, datoms: [] };
   }
 
-  /** Upsert the caller's row on the writer and attach the eid. */
   private async provisionPrincipal(p: Principal): Promise<Principal> {
-    if (!shouldProvision(p) || this.dbName === undefined) return p;
+    if (this.dbName === undefined) return p;
     const dbName = this.dbName;
     try {
       const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));
@@ -477,7 +464,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       if (!res.ok) return p;
       const body = (await res.json()) as { eid?: unknown };
       if (typeof body.eid !== "number") return p;
-      return rememberProvisioned(p, body.eid);
+      return { ...p, eid: body.eid };
     } catch {
       return p;
     }
@@ -492,12 +479,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
       authenticate: (token) => principalForToken(this.env, token.length === 0 ? undefined : token, dbName),
       provision: (p) => this.provisionPrincipal(p),
-      describe: async (p) => {
-        if (p.eid !== undefined) return { eid: p.eid, class: p.class };
-        await this.sync();
-        if (!this.root) return { eid: null, class: p.class };
-        return describePrincipal(this.env, p, this.store, makeBasis(dbName, this.root, this.entries));
-      },
+      describe: async (p) => ({ eid: p.eid ?? null, class: p.class }),
       readLog: async () => {
         await this.sync();
         return this.sessionLog();
@@ -553,78 +535,24 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   ): Promise<Response> {
     await this.sync();
     await this.catchUpTo(requestedMinT(init.headers["x-ramose-min-t"]));
-    const dbName = this.dbName as string;
     if (!this.root) return json({ error: "database has no root yet" }, 503);
     if (rest === "/op" && init.method === "POST") {
       return json({ error: "operations must be POSTed to /db/:name/op" }, 400);
     }
     if (rest === "/transact" && init.method === "POST") {
-      let tx: unknown = [];
-      let clientTxId: string | undefined;
-      if (init.body) {
-        const raw = JSON.parse(init.body) as { tx?: unknown; clientTxId?: unknown };
-        tx = raw.tx;
-        if (typeof raw.clientTxId === "string" && raw.clientTxId.length > 0) clientTxId = raw.clientTxId;
-      }
-      const mode = writes ?? resolveWrites(undefined, this.env.RAMOSE_WRITES);
-      if (!allowsRawTransact(mode, principal, tx, authState(this.env).policy)) {
-        return json({ error: "raw transact is disabled; use operations", code: "operations" }, 403);
-      }
-      const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));
-      return stub.fetch(`https://transactor/transact?db=${encodeURIComponent(dbName)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...internalHeaders(this.env) },
-        body: JSON.stringify({ tx, principal, ...(clientTxId !== undefined ? { clientTxId } : {}) }),
-      });
+      return json({ error: "unauthorized" }, 401);
     }
-    const basis = makeBasis(dbName, this.root, this.entries);
-    const who = principal ?? anonymousPrincipal(dbName);
-    const hdrs = { "x-ramose-basis-t": String(basis.t) };
     if (rest === "/info" && init.method === "GET") {
-      const described = await describePrincipal(this.env, who, this.store, basis);
-      return json({ db: dbName, t: basis.t, principal: described }, 200, hdrs);
+      return json({ error: "unauthorized" }, 401);
     }
     if (rest === "/query" && init.method === "POST") {
-      const body = fromJson(init.body ? JSON.parse(init.body) : {}) as {
-        query?: unknown;
-        inputs?: unknown[];
-        asOf?: number;
-        history?: boolean;
-        explain?: boolean;
-      };
-      if (!body?.query) return json({ error: "body must be { query, inputs? }" }, 400);
-      const dbv = await viewDb(this.env, who, this.store, basis, {
-        ...(typeof body.asOf === "number" && { asOf: body.asOf }),
-        history: !!body.history,
-      });
-      const stats: QueryStats = { clauses: [] };
-      const result = await runQuery(dbv, body.query as never, body.inputs ?? [], { stats, maxCells: envInt(this.env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-      return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs);
+      return json({ error: "unauthorized" }, 401);
     }
     if (rest === "/pull" && init.method === "POST") {
-      const body = fromJson(init.body ? JSON.parse(init.body) : {}) as {
-        eid?: number | string | [string, unknown];
-        pattern?: unknown;
-        asOf?: number;
-        history?: boolean;
-      };
-      const dbv = await viewDb(this.env, who, this.store, basis, {
-        ...(typeof body.asOf === "number" && { asOf: body.asOf }),
-        history: !!body.history,
-      });
-      if (body.eid === undefined || body.pattern === undefined) return json({ error: "body must be { eid, pattern }" }, 400);
-      const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as never);
-      if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs);
-      return json({ t: basis.t, result: await runPull(dbv, eid, body.pattern as never) }, 200, hdrs);
+      return json({ error: "unauthorized" }, 401);
     }
-    const em = /^\/entity\/(\d+)$/.exec(rest.split("?")[0] ?? "");
-    if (em && init.method === "GET") {
-      const asOfRaw = new URL(`https://replica${rest}`).searchParams.get("asOf");
-      const asOf = asOfRaw !== null ? Number(asOfRaw) : undefined;
-      const dbv = await viewDb(this.env, who, this.store, basis, {
-        ...(Number.isFinite(asOf as number) && { asOf: asOf as number }),
-      });
-      return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, hdrs);
+    if (/^\/entity\/(\d+)$/.exec(rest.split("?")[0] ?? "") && init.method === "GET") {
+      return json({ error: "unauthorized" }, 401);
     }
     return json({ error: "not found" }, 404);
   }

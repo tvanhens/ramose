@@ -1,25 +1,8 @@
-/** Schema-layer tagged failures: a policy that did not compile, or
- * `install()` refused a data-model split. Lives here so the client `.d.ts`
- * hop is the allowlisted `Errors` module — not a new Effect import. */
+/** Schema-layer tagged failures: `install()` refused a data-model split.
+ * Lives here so the client `.d.ts` hop is the allowlisted `Errors` module —
+ * not a new Effect import. */
 
 import * as Data from "effect/Data";
-
-/**
- * A policy did not compile against its catalog — an ident the schema does not
- * declare, a rule body the query validator rejects, a read-masked attribute a
- * pull pattern requires. Deploy/compile time only; a policy never throws into a
- * query.
- *
- * Provisioning mistakes elsewhere are defects, not failures: a malformed URL,
- * a missing binding, a `db.install()` that cannot reach the peer all surface
- * as `Effect.die` or one of the nine `DbError`s.
- */
-export class PolicyError extends Data.TaggedError("PolicyError")<{
-  readonly message: string;
-  /** The attribute or namespace ident the rule named, when there is one. */
-  readonly ident?: string;
-  readonly cause?: unknown;
-}> {}
 
 /** Opt-in listed on `db.install({ allowIncompatible })`. */
 export interface InstallOptions {

@@ -27,17 +27,12 @@ const AUTH: AuthConfig = {
   ttl: 900,
 };
 
-/** A minimal compiled policy — only `classes` matters to the mint. */
-const POLICY = JSON.stringify({
-  version: 1,
-  principal: ":user/sub",
-  classes: ["owner", "member", "viewer"],
-  attrs: {},
-});
+/** Declared class vocabulary — only `classes` matters to the mint. */
+const POLICY = { classes: ["owner", "member", "viewer"] as const };
 
 const makeAuth = (options?: {
   readonly classOf?: ClassOf;
-  readonly policy?: string;
+  readonly policy?: { readonly classes: readonly string[] };
   readonly path?: string;
   readonly withJwt?: boolean;
 }) =>

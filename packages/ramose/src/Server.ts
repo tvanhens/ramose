@@ -44,13 +44,11 @@ import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
-import { installCatalog } from "./Database.ts";
-import { InvalidRequest, NetworkError, OperationsCoverageError, PolicyError } from "./db/Errors.ts";
+import { InvalidRequest, NetworkError, OperationsCoverageError } from "./db/Errors.ts";
 import {
   type AnyOperations,
   checkOperationsCoverage,
 } from "./db/Operation.ts";
-import { checkOperationsPolicyCoverage } from "./db/Policy.ts";
 import { trimSlashes } from "./db/http.ts";
 import type { Schema } from "./db/index.ts";
 import {
@@ -152,21 +150,14 @@ export type AuthEnvValue = string | object;
  */
 export interface ServerAuth {
   /**
-   * Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is
-   * what arms enforcement. A verifier without this fails the deploy.
-   */
-  readonly policy?: string | undefined;
-  /**
-   * Where the issuer's public keys live. Required once `policy` is set
-   * unless {@link jwksJson} is set; setting it without a policy fails
-   * the deploy.
+   * Where the issuer's public keys live. Reserved for #344 verified
+   * principals. External `/db/*` is fail-closed until that lands.
    */
   readonly jwksUrl?: AuthEnvValue | undefined;
   /**
    * Literal JWK Set for offline / test verification. Used when
    * {@link jwksUrl} is unset (the Worker prefers the URL if both are
-   * bound). Lowers onto `RAMOSE_JWKS_JSON`. Setting it without a policy
-   * fails the deploy.
+   * bound). Lowers onto `RAMOSE_JWKS_JSON`.
    */
   readonly jwksJson?: AuthEnvValue | undefined;
   /**
@@ -175,13 +166,11 @@ export interface ServerAuth {
    */
   readonly jwksService?: string | undefined;
   /**
-   * Accepted `iss` values — one, or a comma-separated set. Required once
-   * `policy` is set; setting it without a policy fails the deploy.
+   * Accepted `iss` values — one, or a comma-separated set.
    */
   readonly issuers?: readonly string[] | AuthEnvValue | undefined;
   /**
-   * The `aud` every token must carry. Required once `policy` is set;
-   * setting it without a policy fails the deploy.
+   * The `aud` every token must carry.
    */
   readonly aud?: string | undefined;
   /** Cap on `exp - iat`, in seconds. @default 900 */
@@ -189,7 +178,7 @@ export interface ServerAuth {
   /**
    * The pinned verifier/minter contract ({@link import("./Auth.ts").claims}
    * builds the matching payload). Stands in for `issuers`, `aud` and
-   * `maxTtl`. Setting it without a policy fails the deploy.
+   * `maxTtl`.
    */
   readonly jwt?: AuthConfig | undefined;
   /** Origins the server answers CORS for once a policy narrows it. */
@@ -267,7 +256,6 @@ export type ServerProps = {
  * @internal Env keys the auth fields lower onto. Values are `keyof RamoseEnv`.
  */
 export const AUTH_ENV_KEYS = {
-  policy: "RAMOSE_POLICY",
   jwksUrl: "RAMOSE_JWKS_URL",
   jwksJson: "RAMOSE_JWKS_JSON",
   jwksService: "RAMOSE_JWKS_SERVICE",
@@ -281,11 +269,10 @@ export const AUTH_ENV_KEYS = {
   keyof RamoseEnv
 >;
 
-/** @internal Env key `token` lowers onto. */
-export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const satisfies keyof RamoseEnv;
+/** @internal Removed seed-token env key (AUTH-1). Kept as a name so tests can assert it is gone. */
+export const TOKEN_ENV_KEY = "RAMOSE_TOKEN" as const;
 
 const AUTH_COMPARE_KEYS = [
-  AUTH_ENV_KEYS.policy,
   AUTH_ENV_KEYS.jwksUrl,
   AUTH_ENV_KEYS.jwksJson,
   AUTH_ENV_KEYS.jwksService,
@@ -337,13 +324,11 @@ export const internalSecret = (
 /**
  * @internal The server Worker's auth env, as bindings. Unset fields emit no
  * key. Output / Effect values pass through (Reef's JWKS URL and origins).
- * A set `policy` also binds {@link internalSecret} unless `mintSecret` is
- * false (hatch compare — an unpinned secret is minted per call and would
- * never match).
+ * A pinned `internalSecret` is bound; otherwise no Worker→DO secret is
+ * emitted.
  */
 const bindAuthFields = (
   peerAuth: ServerAuth | undefined,
-  mintSecret: boolean,
 ): Record<string, unknown> => {
   if (peerAuth === undefined) return {};
   const auth = withAuthConfig(peerAuth);
@@ -352,7 +337,6 @@ const bindAuthFields = (
   const set = (key: string, value: unknown) => {
     if (isBound(value)) env[key] = value;
   };
-  set(k.policy, auth.policy);
   set(k.jwksUrl, auth.jwksUrl);
   set(k.jwksJson, auth.jwksJson);
   set(k.jwksService, auth.jwksService);
@@ -361,8 +345,7 @@ const bindAuthFields = (
   set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
   set(k.allowedOrigins, list(auth.allowedOrigins));
   const secret = auth.internalSecret;
-  const pinned = isBound(secret);
-  if (pinned || (mintSecret && isBound(auth.policy))) {
+  if (isBound(secret)) {
     env[k.internalSecret] = internalSecret(secret as Redacted.Redacted<string> | string | undefined);
   }
   return env;
@@ -370,34 +353,28 @@ const bindAuthFields = (
 
 /**
  * @internal The server Worker's auth env, as bindings. Unset fields emit no
- * key. A set `policy` also binds {@link internalSecret}.
+ * key. A pinned `internalSecret` is bound.
  */
 export const authEnv = (
   peerAuth: ServerAuth | undefined,
-): Record<string, unknown> => bindAuthFields(peerAuth, true);
+): Record<string, unknown> => bindAuthFields(peerAuth);
 
 /**
  * @internal `RAMOSE_TOKEN` from `Server({ token })`. Owned form binds it;
  * hatch form compares it.
  */
 export const tokenEnv = (
-  token: Redacted.Redacted<string> | string | undefined,
-): Record<string, Redacted.Redacted<string>> => {
-  if (token === undefined || token === "") return {};
-  return {
-    [TOKEN_ENV_KEY]: typeof token === "string" ? Redacted.make(token) : token,
-  };
-};
+  _token: Redacted.Redacted<string> | string | undefined,
+): Record<string, never> => ({});
 
 /**
  * @internal What the owned Worker receives: `authEnv` plus `RAMOSE_TOKEN`.
  */
 export const ownedAuthEnv = (
   peerAuth: ServerAuth | undefined,
-  token: Redacted.Redacted<string> | string | undefined,
+  _token?: Redacted.Redacted<string> | string | undefined,
 ): Record<string, unknown> => ({
   ...authEnv(peerAuth),
-  ...tokenEnv(token),
 });
 
 /**
@@ -421,29 +398,11 @@ export const ownedPeerEnv = (
 });
 
 /**
- * @internal Completeness: policy implies jwksUrl or jwksJson + issuers +
- * aud, and a bound verifier implies policy. Binding nothing stays open.
+ * @internal Completeness: `maxTtl` must be a positive number of seconds.
  */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
   if (peerAuth === undefined) return undefined;
   const auth = withAuthConfig(peerAuth);
-  const verifier: string[] = [];
-  if (isBound(auth.jwksUrl)) verifier.push(AUTH_ENV_KEYS.jwksUrl);
-  if (isBound(auth.jwksJson)) verifier.push(AUTH_ENV_KEYS.jwksJson);
-  if (isBound(auth.jwksService)) verifier.push(AUTH_ENV_KEYS.jwksService);
-  if (list(auth.issuers) !== undefined) verifier.push(AUTH_ENV_KEYS.issuers);
-  if (isBound(auth.aud)) verifier.push(AUTH_ENV_KEYS.aud);
-  if (!isBound(peerAuth.policy)) {
-    if (verifier.length === 0) return undefined;
-    return `ramose: ${verifier.join(", ")} ${verifier.length === 1 ? "is" : "are"} set but auth.policy is not — a bound verifier without a policy leaves the server open to everyone`;
-  }
-  const missing: string[] = [];
-  if (!isBound(auth.jwksUrl) && !isBound(auth.jwksJson)) missing.push(AUTH_ENV_KEYS.jwksUrl);
-  if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
-  if (!isBound(auth.aud)) missing.push(AUTH_ENV_KEYS.aud);
-  if (missing.length > 0) {
-    return `ramose: auth.policy is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not — a configured policy makes JWT verification mandatory, and an incomplete verifier denies every /db/*`;
-  }
   if (auth.maxTtl !== undefined && (!Number.isFinite(auth.maxTtl) || auth.maxTtl <= 0)) {
     return `ramose: auth.maxTtl must be a positive number of seconds (default ${DEFAULT_JWT_MAX_TTL})`;
   }
@@ -485,9 +444,6 @@ const sameBinding = (expected: unknown, actual: unknown): boolean => {
 
 /**
  * @internal Hatch form: `auth` / `token` must match the Worker env.
- * A policy on Server with no `RAMOSE_POLICY` on the Worker is a deploy
- * error (fail closed). A policy on the Worker with no `auth.policy` is
- * the same — the Worker env is not a second configuration path.
  * URL workers have no env and are skipped.
  */
 export const compareAuthToWorker = (
@@ -499,24 +455,13 @@ export const compareAuthToWorker = (
   const env = workerEnvOf(worker);
   if (env === undefined) return undefined;
 
-  const hasAuthPolicy = isBound(peerAuth?.policy);
-  const hasWorkerPolicy = isBound(env[AUTH_ENV_KEYS.policy]);
-  if (hasAuthPolicy && !hasWorkerPolicy) {
-    return "ramose: auth.policy is set but the Worker has no RAMOSE_POLICY — a configured policy that never reaches the Worker leaves the server open to everyone";
-  }
-  if (hasWorkerPolicy && !hasAuthPolicy) {
-    return "ramose: the Worker has RAMOSE_POLICY but Ramose.Server was not given auth.policy — pass auth on Server; do not configure the policy only on the Worker";
-  }
+  const expected = bindAuthFields(peerAuth);
 
-  const expected = bindAuthFields(peerAuth, false);
-  if (isBound(token)) Object.assign(expected, tokenEnv(token));
-
-  const keys = new Set<string>([...AUTH_COMPARE_KEYS, TOKEN_ENV_KEY, ...Object.keys(expected)]);
+  const keys = new Set<string>([...AUTH_COMPARE_KEYS, ...Object.keys(expected)]);
   const diverged: string[] = [];
   const pinnedSecret = isBound(peerAuth?.internalSecret);
   for (const key of keys) {
     if (key === AUTH_ENV_KEYS.internalSecret && !pinnedSecret) continue;
-    if (key === TOKEN_ENV_KEY && !isBound(token)) continue;
     const want = expected[key];
     const got = env[key];
     if (isBound(want) !== isBound(got) || (isBound(want) && isBound(got) && !sameBinding(want, got))) {
@@ -524,10 +469,7 @@ export const compareAuthToWorker = (
     }
   }
   if (diverged.length === 0) return undefined;
-  if (diverged.length === 1 && diverged[0] === TOKEN_ENV_KEY) {
-    return "ramose: Server token does not match the Worker's RAMOSE_TOKEN — Server({ token }) is the seed credential and must be the same secret the Worker enforces";
-  }
-  return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth, token }) is the source of truth`;
+  return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth }) is the source of truth`;
 };
 
 /**
@@ -568,25 +510,14 @@ const workerWritesOf = (worker: unknown): unknown => {
   return workerEnvOf(worker)?.[WRITES_ENV_KEY];
 };
 
-const workerPolicyOf = (worker: unknown): unknown => {
-  if (typeof worker === "string") return undefined;
-  return workerEnvOf(worker)?.[AUTH_ENV_KEYS.policy];
-};
-
 /**
- * @internal Warning (not a deploy error) when a policy is installed and
- * `writes: "all"` is set — that flag is ignored for data txs.
+ * @internal Legacy pairing. Policy env is gone; this never warns.
  */
 export const writesAllPolicyWarning = (
-  writes: WritesMode | undefined,
-  peerAuth: ServerAuth | undefined,
-  worker: unknown,
-): string | undefined => {
-  const policy = isBound(peerAuth?.policy) ? peerAuth?.policy : workerPolicyOf(worker);
-  if (!isBound(policy)) return undefined;
-  if (resolveWrites(writes, workerWritesOf(worker)) !== "all") return undefined;
-  return WRITES_ALL_POLICY_WARNING;
-};
+  _writes: WritesMode | undefined,
+  _peerAuth: ServerAuth | undefined,
+  _worker: unknown,
+): string | undefined => undefined;
 
 /** @internal Emit {@link writesAllPolicyWarning} at deploy. */
 export const warnWritesAllPolicy = (
@@ -646,27 +577,9 @@ export const compareOperationsToHealth = (
  * skips.
  */
 export const compareOperationsToPolicy = (
-  operations: AnyOperations | undefined,
-  policyJson: string | undefined,
-): PolicyError | undefined => {
-  if (operations === undefined || policyJson === undefined || !isBound(policyJson)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(policyJson);
-  } catch {
-    return undefined;
-  }
-  if (parsed == null || typeof parsed !== "object") return undefined;
-  const armed = (parsed as { operations?: unknown }).operations;
-  if (armed == null || typeof armed !== "object" || Array.isArray(armed)) return undefined;
-  try {
-    checkOperationsPolicyCoverage(operations, armed as Record<string, unknown>);
-    return undefined;
-  } catch (error) {
-    if (error instanceof PolicyError) return error;
-    throw error;
-  }
-};
+  _operations: AnyOperations | undefined,
+  _policyJson: string | undefined,
+): undefined => undefined;
 
 /**
  * @internal One attempt's budget for the coverage `GET /health`.
@@ -898,25 +811,11 @@ export const probeHealth = (
 };
 
 const seedDatabases = (
-  url: string,
-  token: Redacted.Redacted<string> | undefined,
-  databases: Record<string, DatabaseSeed> | undefined,
+  _url: string,
+  _token: Redacted.Redacted<string> | undefined,
+  _databases: Record<string, DatabaseSeed> | undefined,
 ) =>
-  Effect.gen(function* () {
-    if (databases === undefined) return [] as Server["Attributes"]["seeded"];
-    const seeded: { name: string; t: number; doc?: string }[] = [];
-    for (const [name, seed] of Object.entries(databases)) {
-      const report = yield* installCatalog({
-        name,
-        url,
-        token,
-        schema: schemaOf(seed),
-      });
-      const doc = docOf(seed);
-      seeded.push(doc === undefined ? { name: report.name, t: report.t } : { name: report.name, t: report.t, doc });
-    }
-    return seeded;
-  });
+  Effect.succeed([] as Server["Attributes"]["seeded"]);
 
 const attributes = Effect.fn(function* (
   props: ServerProps,
@@ -961,12 +860,6 @@ const attributes = Effect.fn(function* (
     const badOps = compareOperationsToHealth(props.operations, body);
     if (badOps !== undefined) {
       return yield* badOps;
-    }
-    const authPolicy = props.auth?.policy;
-    const policyJson = isBound(authPolicy) ? authPolicy : undefined;
-    const badPolicyOps = compareOperationsToPolicy(props.operations, policyJson);
-    if (badPolicyOps !== undefined) {
-      return yield* badPolicyOps;
     }
   }
   const token = redact(props.token);

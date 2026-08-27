@@ -35,10 +35,9 @@
  * | `OperationRejected`   | named operation refused (409)              |
  *
  * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link PolicyError} (policy failed to compile — deploy time),
  * {@link IncompatibleSchema} (`install()` refused a data-model split).
- * A runtime policy denial is {@link Unauthorized} or {@link TxRejected} with
- * `code: "policy"`. A query that cannot lower is {@link InvalidRequest}.
+ * A runtime authorization denial is {@link Unauthorized}. A query that
+ * cannot lower is {@link InvalidRequest}.
  *
  * Wire shapes the classifier understands:
  *
@@ -53,7 +52,6 @@
 import * as Data from "effect/Data";
 export {
   IncompatibleSchema,
-  PolicyError,
   type IncompatibleKind,
   type InstallOptions,
   type SchemaChange,
@@ -110,8 +108,7 @@ export class QueryBudgetExceeded extends Data.TaggedError(
   readonly clause: string;
   readonly cells: number;
   readonly limit: number;
-  /** `policy` when a conjoined rule spent the budget, else `caller`. */
-  readonly spentBy?: "caller" | "policy";
+  readonly spentBy?: "caller";
 }> {}
 
 /** Anything else the server reported (500). */
@@ -237,7 +234,7 @@ export const fromResponse = (
       clause: str(b.clause, ""),
       cells: num(b.cells, 0),
       limit: num(b.limit, 0),
-      ...(b.spentBy === "policy" || b.spentBy === "caller" ? { spentBy: b.spentBy } : {}),
+      ...(b.spentBy === "caller" ? { spentBy: "caller" as const } : {}),
     });
 
   switch (b.tag) {

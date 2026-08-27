@@ -10,7 +10,7 @@ import * as Data from "effect/Data";
 import { QueryBudgetError } from "../core/index.ts";
 
 /** Intermediate relation would blow the memory budget → 413. */
-export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number; spentBy?: "caller" | "policy" }> {}
+export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number; spentBy?: "caller" }> {}
 /** Malformed query / unknown attribute / unbound variable → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}
 /** Anything else → 500. */

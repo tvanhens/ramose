@@ -17,10 +17,9 @@ export interface Blank {
 export type Term = Var | Const | Blank;
 
 /**
- * Who introduced a clause into the plan. Caller clauses bind against the
- * filtered view; rule-originated clauses (policy pushdown) bind against the
- * unfiltered rule db. Carried on the clause — never inferred — because both
- * failure directions are security bugs.
+ * Who introduced a clause into the plan. Ordinary Datalog rule expansion
+ * may stamp `"rule"`. This is not an authorization boundary — the query
+ * engine binds every clause against the physical db it was given (CUR-1).
  */
 export type ClauseOrigin = "caller" | "rule";
 

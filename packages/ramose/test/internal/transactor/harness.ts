@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import { type R2Like, dbPrefix, prefixedBucket } from "../../../src/internal/storage/index.ts";
 import { MemoryBucket } from "../../../src/internal/storage/memory.ts";
 export { MemoryBucket };
-import { type CompiledPolicy, type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "../../../src/internal/core/index.ts";
+import { type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "../../../src/internal/core/index.ts";
 import { type AnalyticsEngineDatasetLike, DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../../../src/internal/transactor/index.ts";
 
 /** Captured structured events (all levels) instead of console noise. */
@@ -68,8 +68,6 @@ export interface HarnessOptions {
   now?: () => number;
   /** fake Analytics Engine dataset (see FakeAnalytics) */
   analytics?: AnalyticsEngineDatasetLike;
-  /** deployed policy: the commit loop then checks every non-admin tx */
-  policy?: CompiledPolicy;
 }
 
 /** Collects Analytics Engine data points; `fail` makes writeDataPoint throw. */
@@ -95,7 +93,6 @@ export class Harness implements TransactorHost {
   readonly bucket: R2Like;
   readonly config: TransactorConfig;
   readonly analytics?: AnalyticsEngineDatasetLike;
-  readonly policy?: CompiledPolicy;
   readonly subscribers = new Set<FakeSocket>();
   alarm: number | null = null;
   aborted: string | undefined;
@@ -115,7 +112,6 @@ export class Harness implements TransactorHost {
     this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
     if (opts.analytics !== undefined) this.analytics = opts.analytics;
-    if (opts.policy !== undefined) this.policy = opts.policy;
     this.failAt = opts.failWriteAt;
     this.clock = opts.now ?? (() => Date.now());
     this.transactor = new Transactor(this);

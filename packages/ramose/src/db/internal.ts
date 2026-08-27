@@ -81,7 +81,6 @@ export {
   pullDefault,
   reshapePullResult,
 } from "./Pull.ts";
-export * as Policy from "./Policy.ts";
 export * as Query from "./query/surface.ts";
 export {
   Q,

@@ -10,7 +10,7 @@
  * browser-safe without a
  * bundler alias, and `test/db-portable.test.ts` fails the build if it ever
  * stops being true. The deploy-time surface (`Server`, the capability, the
- * transport layers, `Policy`) lives in `ramose`.
+ * transport layers) lives in `ramose`.
  *
  * ```typescript
  * import * as Ramose from "ramose/db";
@@ -174,7 +174,6 @@ export {
   OperationRejected,
   OperationsCoverageError,
   IncompatibleSchema,
-  PolicyError,
   QueryBudgetExceeded,
   TxRejected,
   Unauthorized,

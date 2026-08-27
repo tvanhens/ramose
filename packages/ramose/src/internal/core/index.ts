@@ -14,7 +14,6 @@ export * from "./store.ts";
 export * from "./db.ts";
 export * from "./tx.ts";
 export * from "./conn.ts";
-export * from "./policy/index.ts";
 export * from "./query/ast.ts";
 export * from "./query/edn.ts";
 export * from "./query/parse.ts";

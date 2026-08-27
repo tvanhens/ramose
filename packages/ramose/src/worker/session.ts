@@ -1,6 +1,7 @@
 /** Session socket protocol: inbound frames + the apply-then-push walk. */
 
-import type { Principal, WireDatom } from "../internal/core/index.ts";
+import type { WireDatom } from "../internal/core/index.ts";
+import type { Principal } from "./auth.ts";
 import type { WritesMode } from "../writes.ts";
 import { WRITES_HEADER } from "../writes.ts";
 import type { SessionLog, SessionLogEntry, SessionTxDecision } from "./session-sync.ts";
@@ -243,7 +244,7 @@ export function parsePrincipalHeader(raw: string | null): Principal | undefined 
   if (raw === null || raw === "") return undefined;
   try {
     const p = JSON.parse(raw) as Principal;
-    if (typeof p !== "object" || p === null || typeof p.class !== "string" || typeof p.db !== "string") return undefined;
+    if (typeof p !== "object" || p === null || p.kind !== "user" || typeof p.class !== "string" || typeof p.db !== "string") return undefined;
     return p;
   } catch {
     return undefined;

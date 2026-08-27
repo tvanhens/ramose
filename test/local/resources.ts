@@ -2,21 +2,13 @@
  * Owned Ramose peers for the local integration stack.
  *
  * Each Server has its own storage and Worker logical ids so they do not
- * collide. Auth peers share the checked-in JWKS; the open peer is the
- * default target for the behavioral contract.
+ * collide. Auth peers share the checked-in JWKS; every data plane is
+ * fail-closed until #344 / #339 / #343.
  */
 
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
-import {
-  AUD,
-  ISS,
-  JWKS,
-  POLICY_CLOSED_JSON,
-  POLICY_JSON,
-  POLICY_SCHEMA_JSON,
-  SHARED_TOKEN,
-} from "./auth-keys.ts";
+import { AUD, ISS, JWKS, SHARED_TOKEN } from "./auth-keys.ts";
 import { Open } from "./open.ts";
 import { Movies, operations } from "./ops.ts";
 
@@ -25,9 +17,8 @@ export { Open };
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
 
-const jwtAuth = (policy: string) =>
+const jwtAuth = () =>
   ({
-    policy,
     jwksJson: JWKS,
     issuers: ISS,
     aud: AUD,
@@ -40,7 +31,7 @@ export const Empty = Ramose.Server("Empty", {
   main: empty,
 });
 
-/** Shared-token peer (`RAMOSE_TOKEN`). */
+/** Extra peer — token is no longer a data-plane credential. */
 export const Token = Ramose.Server("Token", {
   peer: "TokenPeer",
   storage: "TokenStore",
@@ -48,7 +39,7 @@ export const Token = Ramose.Server("Token", {
   token: SHARED_TOKEN,
 });
 
-/** JWT + policy (anonymous class, CORS, shared token is not a principal). */
+/** JWT verifier bindings reserved for #344. Data plane is still 401. */
 export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",
   storage: "PolicyStore",
@@ -56,28 +47,28 @@ export const Policy = Ramose.Server("Policy", {
   operations,
   token: SHARED_TOKEN,
   auth: {
-    ...jwtAuth(POLICY_JSON),
+    ...jwtAuth(),
     allowedOrigins: ["https://app.acme.test"],
   },
 });
 
-/** Policy with no anonymous class — a missing token is 401. */
+/** Same fail-closed data plane, no anonymous class leftover. */
 export const PolicyClosed = Ramose.Server("PolicyClosed", {
   peer: "PolicyClosedPeer",
   storage: "PolicyClosedStore",
   main: empty,
-  auth: jwtAuth(POLICY_CLOSED_JSON),
+  auth: jwtAuth(),
 });
 
-/** Policy that lets `member` install schema (smuggled-write regression). */
+/** Same fail-closed data plane as Policy. */
 export const PolicySchema = Ramose.Server("PolicySchema", {
   peer: "PolicySchemaPeer",
   storage: "PolicySchemaStore",
   main: empty,
-  auth: jwtAuth(POLICY_SCHEMA_JSON),
+  auth: jwtAuth(),
 });
 
-/** Catalog seeded at deploy (`databases:`). */
+/** Catalog seed is closed until authorized catalog publication. */
 export const Seeded = Ramose.Server("Seeded", {
   peer: "SeededPeer",
   storage: "SeededStore",
@@ -91,7 +82,7 @@ export const Jwks = Cloudflare.Worker("Jwks", {
 });
 
 /**
- * Policy peer whose keys come from a sibling Worker. `jwksUrl` is a dummy
+ * Peer whose keys come from a sibling Worker. `jwksUrl` is a dummy
  * host — without the binding a local `fetch` of it 401s.
  */
 export const JwksBound = Ramose.Server("JwksBound", {
@@ -99,7 +90,6 @@ export const JwksBound = Ramose.Server("JwksBound", {
   storage: "JwksBoundStore",
   main: empty,
   auth: {
-    policy: POLICY_JSON,
     jwksUrl: "https://jwks.invalid/jwks",
     jwksService: "JWKS",
     issuers: ISS,
@@ -114,7 +104,6 @@ export const JwksUrlOnly = Ramose.Server("JwksUrlOnly", {
   storage: "JwksUrlOnlyStore",
   main: empty,
   auth: {
-    policy: POLICY_JSON,
     jwksUrl: "https://jwks.invalid/jwks",
     issuers: ISS,
     aud: AUD,

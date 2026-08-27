@@ -35,7 +35,7 @@
 // Server, which pulls `alchemy/*` into every auth Worker that adds this plugin.
 import { type AuthConfig, claims } from "../Auth.ts";
 import { isDatabaseName } from "../db/index.ts";
-import type { CompiledPolicy } from "../internal/core/policy/ast.ts";
+import type { ClaimsPolicy } from "../Auth.ts";
 import {
   BetterAuthError,
   type BetterAuthPlugin,
@@ -100,7 +100,7 @@ export interface RamoseTokenOptions {
    * instead of minting a token that grants nothing. Passing the policy
    * value also narrows `Ramose.claims`' `class`.
    */
-  readonly policy?: CompiledPolicy | string | { readonly classes: readonly string[] };
+  readonly policy?: ClaimsPolicy;
   /**
    * Where the route lives under Better Auth's `basePath`.
    * @default "/ramose/token" — which Better Auth's client proxy exposes as

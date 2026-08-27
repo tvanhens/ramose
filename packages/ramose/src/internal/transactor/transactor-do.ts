@@ -16,7 +16,6 @@ import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
-import { enforcedPolicy } from "./policy.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
 
 export type { TxAck };
@@ -45,7 +44,6 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
     const self = this;
-    const policy = enforcedPolicy(env);
     const host: TransactorHost = {
       get dbName() {
         if (!self.dbName) throw new Error("transactor has no database assigned (pass ?db=<name>)");
@@ -64,8 +62,6 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
       config: configFromEnv(env),
       // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
       ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
-      // parsed once per isolate; present = the commit loop enforces it
-      ...(policy !== undefined && { policy }),
     };
     this.core = new Transactor(host);
   }

@@ -36,9 +36,7 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import type { Schema } from "./db/index.ts";
-import { InvalidRequest, NetworkError } from "./db/Errors.ts";
-import { globalFetch, makeDatabases } from "./db/internal.ts";
-import { trimSlashes } from "./db/http.ts";
+import { InvalidRequest } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
 import type { Server } from "./Server.ts";
 
@@ -155,33 +153,15 @@ export const installCatalog = Effect.fn(function* (args: {
   readonly schema: Schema.Any;
   readonly timeoutMs?: number | undefined;
 }) {
-  const { name, url, token, schema } = args;
+  const { name, url } = args;
   if (url === undefined || url === "") {
     return yield* new InvalidRequest({
       message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
     });
   }
-  const timeoutMs = Math.max(1, args.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
-  const { databases, close } = makeDatabases({
-    url: Effect.succeed(trimSlashes(url)),
-    token: token === undefined ? undefined : Effect.succeed(token),
-    fetch: globalFetch,
+  return yield* new InvalidRequest({
+    message: `ramose: catalog install on ${JSON.stringify(name)} is closed until authorized catalog publication is wired`,
   });
-  const report = yield* Effect.ensuring(
-    databases.db(name, schema).effect.install(),
-    Effect.sync(close),
-  ).pipe(
-    Effect.timeoutOrElse({
-      duration: `${timeoutMs} millis`,
-      orElse: () =>
-        Effect.fail(
-          new NetworkError({
-            message: `ramose: installing the schema on ${JSON.stringify(name)} at ${url} did not finish within ${timeoutMs}ms — the server accepted the connection but never answered. Check that the Worker serving it is actually running (under \`alchemy dev\`, a Worker whose bundle failed still binds its port and answers nothing).`,
-          }),
-        ),
-    }),
-  );
-  return { name, server: url, t: report.t };
 });
 
 const install = Effect.fn(function* (id: string, props: DatabaseProps) {
