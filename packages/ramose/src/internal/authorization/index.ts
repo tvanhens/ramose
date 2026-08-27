@@ -31,6 +31,8 @@ export * from "./install.ts";
 export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./principal.ts";
+export * from "./publish.ts";
+export * from "./schema-tx.ts";
 export * from "./truth.ts";
 export * from "./validate.ts";
 export * from "./version.ts";

@@ -94,6 +94,13 @@ const KILLED = [
   "hashInstalledCatalogUnit",
   "hashCatalogSchemaFingerprint",
   "catalogUnitCanonicalBytes",
+  "publishCatalogUnit",
+  "assembleCatalogPublicationTx",
+  "resolveCatalogHead",
+  "resolveInstalledCatalogUnit",
+  "schemaTxFromCatalog",
+  "catalogPublicationOf",
+  "catalogPublicationFromUnit",
 ];
 
 describe("the `ramose` barrel", () => {

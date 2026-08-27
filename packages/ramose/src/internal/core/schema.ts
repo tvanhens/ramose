@@ -32,7 +32,16 @@ export const RAMOSE_TRAIT = 47;
 export const RAMOSE_KIND = 48;
 export const RAMOSE_COMPOSES = 49;
 export const DB_TX_INSTANT = 50;
+/** Current installed catalog-unit entity (ref). */
+export const RAMOSE_CATALOG_HEAD = 51;
+/** 64-hex unit hash (unique identity). */
+export const RAMOSE_CATALOG_UNIT_HASH = 52;
+/** Canonical UTF-8 bytes of the sealed unit. */
+export const RAMOSE_CATALOG_UNIT_BYTES = 53;
 export const DB_DOC = 62;
+
+/** Reserved singleton that holds `:ramose.catalog/head`. CAS subject; never a tempid. */
+export const RAMOSE_CATALOG = 21;
 
 export const RAMOSE_TYPE_IDENT = ":ramose/type";
 export const RAMOSE_TRAIT_IDENT = ":ramose/trait";
@@ -40,6 +49,17 @@ export const RAMOSE_KIND_IDENT = ":ramose/kind";
 export const RAMOSE_COMPOSES_IDENT = ":ramose/composes";
 export const RAMOSE_KIND_ENTITY = ":ramose.kind/entity";
 export const RAMOSE_KIND_TRAIT = ":ramose.kind/trait";
+export const RAMOSE_CATALOG_IDENT = ":ramose.catalog";
+export const RAMOSE_CATALOG_HEAD_IDENT = ":ramose.catalog/head";
+export const RAMOSE_CATALOG_UNIT_HASH_IDENT = ":ramose.catalog/unitHash";
+export const RAMOSE_CATALOG_UNIT_BYTES_IDENT = ":ramose.catalog/unitBytes";
+
+/** Engine-owned catalog-head / unit-document attributes. */
+export const isCatalogControlIdent = (ident: string): boolean =>
+  ident === RAMOSE_CATALOG_HEAD_IDENT ||
+  ident === RAMOSE_CATALOG_UNIT_HASH_IDENT ||
+  ident === RAMOSE_CATALOG_UNIT_BYTES_IDENT ||
+  ident.startsWith(":ramose.catalog/");
 
 /** First entity id handed out to user entities. */
 export const FIRST_USER_EID = 1000;
@@ -110,6 +130,9 @@ const BOOTSTRAP_SPECS: (AttributeSpec & { id: number })[] = [
   { id: RAMOSE_KIND, ident: RAMOSE_KIND_IDENT, valueType: ":db.type/string", cardinality: "one", doc: "Ident is an entity type or a trait" },
   { id: RAMOSE_COMPOSES, ident: RAMOSE_COMPOSES_IDENT, valueType: ":db.type/string", cardinality: "many", doc: "Direct trait composition" },
   { id: DB_TX_INSTANT, ident: ":db/txInstant", valueType: ":db.type/instant", cardinality: "one", index: true },
+  { id: RAMOSE_CATALOG_HEAD, ident: RAMOSE_CATALOG_HEAD_IDENT, valueType: ":db.type/ref", cardinality: "one", doc: "Installed catalog-unit entity" },
+  { id: RAMOSE_CATALOG_UNIT_HASH, ident: RAMOSE_CATALOG_UNIT_HASH_IDENT, valueType: ":db.type/string", cardinality: "one", unique: "identity", doc: "Installed catalog-unit hash" },
+  { id: RAMOSE_CATALOG_UNIT_BYTES, ident: RAMOSE_CATALOG_UNIT_BYTES_IDENT, valueType: ":db.type/bytes", cardinality: "one", doc: "Canonical catalog-unit bytes" },
   { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
 ];
 
@@ -135,6 +158,7 @@ export function bootstrapDatoms(): Datom[] {
   const t = 1;
   const out: Datom[] = [];
   for (const s of BOOTSTRAP_SPECS) out.push(...attributeDatoms(s.id, s, t));
+  out.push({ e: RAMOSE_CATALOG, a: DB_IDENT, vt: ValueTag.Str, v: RAMOSE_CATALOG_IDENT, t, op: true });
   out.push({ e: txEid(t), a: DB_TX_INSTANT, vt: ValueTag.Inst, v: 0, t, op: true });
   return out;
 }

@@ -46,10 +46,13 @@ import {
   DB_TX_INSTANT,
   DB_UNIQUE,
   DB_VALUE_TYPE,
+  RAMOSE_CATALOG,
+  RAMOSE_CATALOG_IDENT,
   RAMOSE_KIND,
   RAMOSE_TRAIT_IDENT,
   RAMOSE_TYPE_IDENT,
   VALUE_TYPE_IDENTS,
+  isCatalogControlIdent,
   isTxEid,
   txEid,
 } from "./schema.ts";
@@ -106,9 +109,30 @@ export interface TxExpansion extends TxResult {
   ops: ExpandedOp[];
 }
 
+/**
+ * Privilege payload for catalog publication. Built from a verified unit's
+ * catalog — core does not import the authorization brand.
+ */
+export interface CatalogPublication {
+  /** Entity type names in the incoming catalog (`issue`, not `:issue`). */
+  readonly entityNames: readonly string[];
+  /** Type ident (`:issue`) → sorted transitive trait idents. */
+  readonly traitClosures: Readonly<Record<string, readonly string[]>>;
+}
+
 export interface ExpandOptions {
   /** max datoms a :db/retractEntity closure may produce before throwing */
   closureCap?: number;
+  /**
+   * When set, catalog-control attrs and the catalog singleton may be written
+   * and occupied trait-closure rejection runs against db-before.
+   */
+  catalogPublication?: CatalogPublication;
+  /**
+   * Named-operation body. Catalog / control-plane writes stay `tx/system`
+   * even if `catalogPublication` is also present (WR-5).
+   */
+  fromOperation?: boolean;
 }
 
 /** Prefix of tempids generated for map forms without an explicit `:db/id`. */
@@ -230,6 +254,58 @@ function isTempid(x: unknown): x is string {
   return typeof x === "string" && x[0] !== ":";
 }
 
+const catalogAttrIdent = (a: string | number | undefined, db: Db): string | undefined => {
+  if (typeof a === "string") return a;
+  if (typeof a === "number") return db.attr(a)?.ident;
+  return undefined;
+};
+
+const isCatalogSingletonForm = (form: unknown): boolean => {
+  if (form === RAMOSE_CATALOG || form === RAMOSE_CATALOG_IDENT) return true;
+  return isLookupRef(form) && form[0] === ":db/ident" && form[1] === RAMOSE_CATALOG_IDENT;
+};
+
+const sameIdentList = (left: readonly string[], right: readonly string[]): boolean => {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+};
+
+const typeIdentOfName = (name: string): string => (name.startsWith(":") ? name : `:${name}`);
+
+/**
+ * CAT-6: a type whose transitive closure would change may not have instances
+ * in db-before. Unoccupied types may evolve; an empty db always succeeds.
+ */
+const rejectOccupiedTraitClosureChanges = async (
+  db: Db,
+  publication: CatalogPublication,
+): Promise<void> => {
+  const typeAttr = db.attr(RAMOSE_TYPE_IDENT);
+  if (typeAttr === undefined) return;
+  const occupied = new Set<string>();
+  for (const d of await db.datomsArray(Index.AEVT, { a: typeAttr.id })) {
+    if (typeof d.v === "string") occupied.add(d.v);
+  }
+  if (occupied.size === 0) return;
+
+  const types = new Set<string>([
+    ...publication.entityNames.map(typeIdentOfName),
+    ...Object.keys(publication.traitClosures),
+    ...occupied,
+  ]);
+  for (const typeIdent of types) {
+    const before = db.schema.transitiveTraits(typeIdent);
+    const next = publication.traitClosures[typeIdent] ?? [];
+    if (sameIdentList(before, next)) continue;
+    if (!occupied.has(typeIdent)) continue;
+    throw new TxError(
+      `cannot change trait composition of occupied type ${typeIdent}`,
+      "tx/occupied-type",
+    );
+  }
+};
+
 /**
  * Process a transaction against `db`, producing the datoms for tx `t`.
  * `nextEid` is the first free entity id; the returned `nextEid` accounts for
@@ -241,8 +317,16 @@ export async function processTx(
   t: number,
   nextEid: number,
   txInstant: number,
+  options: ExpandOptions = {},
 ): Promise<TxResult> {
-  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(db, txData, t, nextEid, txInstant);
+  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(
+    db,
+    txData,
+    t,
+    nextEid,
+    txInstant,
+    options,
+  );
   return res;
 }
 
@@ -259,6 +343,30 @@ export async function expandTx(
   options: ExpandOptions = {},
 ): Promise<TxExpansion> {
   const ops = flattenTxData(txData);
+  const catalogPrivilege =
+    options.catalogPublication !== undefined && options.fromOperation !== true;
+  if (options.catalogPublication !== undefined && options.fromOperation !== true) {
+    await rejectOccupiedTraitClosureChanges(db, options.catalogPublication);
+  }
+  const rejectCatalogControlWrite = (ident: string | undefined, subject: unknown): void => {
+    const control = ident !== undefined && isCatalogControlIdent(ident);
+    const singleton = isCatalogSingletonForm(subject);
+    if (!control && !singleton) return;
+    if (catalogPrivilege && control) return;
+    throw new TxError(
+      `cannot write system fact ${ident ?? RAMOSE_CATALOG_IDENT}`,
+      "tx/system",
+    );
+  };
+  for (const op of ops) {
+    if (op.kind === "retractEntity") {
+      if (isCatalogSingletonForm(op.e)) {
+        throw new TxError(`cannot write system fact ${RAMOSE_CATALOG_IDENT}`, "tx/system");
+      }
+      continue;
+    }
+    rejectCatalogControlWrite(catalogAttrIdent(op.a, db), op.e);
+  }
   const txe = txEid(t);
   const tempids = new Map<string, number>();
   const claims = new Map<string, string>(); // "attr|valueKey" → tempid
@@ -641,7 +749,7 @@ export async function expandTx(
   };
 
   const isSystemIdent = (ident: string): boolean =>
-    ident.startsWith(":db/") || ident.startsWith(":ramose/");
+    ident.startsWith(":db/") || ident.startsWith(":ramose/") || ident.startsWith(":ramose.");
 
   const isMembershipIdent = (ident: string): boolean =>
     ident === RAMOSE_TYPE_IDENT || ident === RAMOSE_TRAIT_IDENT;
@@ -859,6 +967,9 @@ export async function expandTx(
     if (op.kind === "retractEntity") {
       const e = await resolveEntity(op.e, false);
       if (e === undefined) continue; // unresolved tempid → nothing to retract
+      if (e === RAMOSE_CATALOG) {
+        throw new TxError(`cannot write system fact ${RAMOSE_CATALOG_IDENT}`, "tx/system");
+      }
       inRetractEntity = true;
       try {
         await retractEntity(e);

@@ -451,7 +451,10 @@ export class Transactor {
           try {
             if (!p.system) await this.applyProvision(p, entries);
             const tx = await this.authorize(p);
-            const rep = await this.conn.transact(tx);
+            const rep = await this.conn.transact(
+              tx,
+              p.fromOperation === true ? { fromOperation: true } : {},
+            );
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
             const ack: TxAck = {

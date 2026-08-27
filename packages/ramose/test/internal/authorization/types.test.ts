@@ -137,6 +137,13 @@ export type _noPublicAuthorization = Expect<
       | "hashInstalledCatalogUnit"
       | "hashCatalogSchemaFingerprint"
       | "catalogUnitCanonicalBytes"
+      | "publishCatalogUnit"
+      | "assembleCatalogPublicationTx"
+      | "resolveCatalogHead"
+      | "resolveInstalledCatalogUnit"
+      | "schemaTxFromCatalog"
+      | "catalogPublicationOf"
+      | "catalogPublicationFromUnit"
     >,
     never
   >
@@ -336,6 +343,10 @@ export type _noPureAssembleExport = Expect<
 >;
 export type _catalogUnitOnBarrel = Expect<Extends<"InstalledCatalogUnit", keyof AuthExports>>;
 export type _sealCatalogUnitOnBarrel = Expect<Extends<"sealInstalledCatalogUnit", keyof AuthExports>>;
+export type _publishCatalogUnitOnBarrel = Expect<Extends<"publishCatalogUnit", keyof AuthExports>>;
+export type _assemblePublicationOnBarrel = Expect<
+  Extends<"assembleCatalogPublicationTx", keyof AuthExports>
+>;
 export type _partialBoundNotTemplate = Expect<
   Equal<Extends<PartialBound, PolicyTemplateIR>, false>
 >;
@@ -1036,6 +1047,11 @@ describe("legacy authorization names cannot be imported", () => {
     expect("sealInstalledCatalogUnit" in ir).toBe(true);
     expect("hashCatalogSchemaFingerprint" in ir).toBe(true);
     expect("CatalogUnitCorrupt" in ir).toBe(true);
+    expect("publishCatalogUnit" in ir).toBe(true);
+    expect("assembleCatalogPublicationTx" in ir).toBe(true);
+    expect("resolveCatalogHead" in ir).toBe(true);
+    expect("resolveInstalledCatalogUnit" in ir).toBe(true);
+    expect("schemaTxFromCatalog" in ir).toBe(true);
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
     expect("CatalogCasConflict" in ir).toBe(false);
@@ -1045,6 +1061,11 @@ describe("legacy authorization names cannot be imported", () => {
     expect("sealInstalledCatalogUnit" in root).toBe(false);
     expect("normalizeAndValidateCatalogUnit" in root).toBe(false);
     expect("catalogUnitCanonicalBytes" in root).toBe(false);
+    expect("publishCatalogUnit" in root).toBe(false);
+    expect("assembleCatalogPublicationTx" in root).toBe(false);
+    expect("resolveCatalogHead" in root).toBe(false);
+    expect("resolveInstalledCatalogUnit" in root).toBe(false);
+    expect("schemaTxFromCatalog" in root).toBe(false);
     expect("hashInstalledCatalogUnit" in root).toBe(false);
     expect("hashCatalogSchemaFingerprint" in root).toBe(false);
     expect("CatalogUnitCorrupt" in root).toBe(false);
