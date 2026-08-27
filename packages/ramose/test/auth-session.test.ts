@@ -102,7 +102,7 @@ describe("a token swap is not a reconnect", () => {
   test("db.live keeps its stream and socket across an overlay tx; asOf still re-auths in place", async () => {
     const { catalogWorld, snapshotOf, txSnap } = await import("./overlay-seed.ts");
     const conn = await catalogWorld(Movies);
-    await conn.transact([{ ":user/name": "Ada" }]);
+    await conn.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     const snap = await snapshotOf(conn);
     let issued = 0;
     let refuse = false;
@@ -134,7 +134,7 @@ describe("a token swap is not a reconnect", () => {
     await until(() => seen.length >= 1);
     expect(seen).toEqual([[{ name: "Ada" }]]);
 
-    const bob = txSnap(await conn.transact([{ ":user/name": "Bob" }]));
+    const bob = txSnap(await conn.transact([{ ":ramose/type": ":user", ":user/name": "Bob" }]));
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await until(() => seen.length >= 2);
     expect(seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);

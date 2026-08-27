@@ -9,6 +9,7 @@ const SCHEMA = [
   { ":db/ident": ":person/age", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":person/score", ":db/valueType": ":db.type/double", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person", ":ramose/kind": ":ramose.kind/entity" },
 ];
 
 let db: Db;
@@ -18,10 +19,10 @@ beforeAll(async () => {
   const conn = await Connection.create({ now: () => 1_700_000_000_000 });
   await conn.transact(SCHEMA);
   const rep = await conn.transact([
-    { ":db/id": "alice", ":person/name": "Alice", ":person/age": 30, ":person/score": 1.5, ":person/city": "Berlin" },
-    { ":db/id": "bob", ":person/name": "Bob", ":person/age": 25, ":person/score": 2.5, ":person/city": "Berlin" },
-    { ":db/id": "carol", ":person/name": "Carol", ":person/age": 35, ":person/score": 0.5, ":person/city": "Oslo" },
-    { ":db/id": "dave", ":person/name": "Dave", ":person/age": 25, ":person/city": "Oslo" },
+    { ":db/id": "alice", ":ramose/type": ":person", ":person/name": "Alice", ":person/age": 30, ":person/score": 1.5, ":person/city": "Berlin" },
+    { ":db/id": "bob", ":ramose/type": ":person", ":person/name": "Bob", ":person/age": 25, ":person/score": 2.5, ":person/city": "Berlin" },
+    { ":db/id": "carol", ":ramose/type": ":person", ":person/name": "Carol", ":person/age": 35, ":person/score": 0.5, ":person/city": "Oslo" },
+    { ":db/id": "dave", ":ramose/type": ":person", ":person/name": "Dave", ":person/age": 25, ":person/city": "Oslo" },
   ]);
   ids = rep.tempids;
   db = conn.db();

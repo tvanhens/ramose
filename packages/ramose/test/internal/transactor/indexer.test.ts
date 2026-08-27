@@ -16,6 +16,10 @@ import {
   type Datom,
   ValueTag,
   FIRST_USER_EID,
+  DB_IDENT,
+  RAMOSE_KIND,
+  RAMOSE_KIND_ENTITY,
+  RAMOSE_TYPE,
   attributeDatoms,
   bootstrapDatoms,
   buildRoots,
@@ -30,6 +34,7 @@ import { MemoryBucket } from "../../../src/internal/storage/memory.ts";
 import { Harness } from "./harness.ts";
 
 const NAME = FIRST_USER_EID, AGE = FIRST_USER_EID + 1, CITY = FIRST_USER_EID + 2;
+const P_IDENT = FIRST_USER_EID + 3;
 const FIRST_PERSON = FIRST_USER_EID + 100;
 
 function people(n: number): Datom[] {
@@ -37,9 +42,12 @@ function people(n: number): Datom[] {
     ...attributeDatoms(NAME, { ident: ":p/name", valueType: ":db.type/string", index: true }, 2),
     ...attributeDatoms(AGE, { ident: ":p/age", valueType: ":db.type/long" }, 2),
     ...attributeDatoms(CITY, { ident: ":p/city", valueType: ":db.type/string", index: true }, 2),
+    { e: P_IDENT, a: DB_IDENT, vt: ValueTag.Str, v: ":p", t: 2, op: true },
+    { e: P_IDENT, a: RAMOSE_KIND, vt: ValueTag.Str, v: RAMOSE_KIND_ENTITY, t: 2, op: true },
   ];
   for (let i = 0; i < n; i++) {
     const e = FIRST_PERSON + i;
+    out.push({ e, a: RAMOSE_TYPE, vt: ValueTag.Str, v: ":p", t: 3, op: true });
     out.push({ e, a: NAME, vt: ValueTag.Str, v: `n${i}`, t: 3, op: true });
     out.push({ e, a: AGE, vt: ValueTag.Long, v: i % 90, t: 3, op: true });
     out.push({ e, a: CITY, vt: ValueTag.Str, v: `c${i % 50}`, t: 3, op: true });
@@ -84,7 +92,7 @@ describe("indexer (M4)", () => {
         touchedE.add(e);
         return tx.transact([[":db/add", e, ":p/age", 200 + i]]);
       }),
-      ...Array.from({ length: 20 }, (_, i) => tx.transact([{ ":p/name": `new${i}`, ":p/age": 1, ":p/city": "c0" }])),
+      ...Array.from({ length: 20 }, (_, i) => tx.transact([{ ":ramose/type": ":p", ":p/name": `new${i}`, ":p/age": 1, ":p/city": "c0" }])),
     ]);
     const tBefore = tx.t;
     expect(acks.length).toBe(60);
@@ -136,7 +144,7 @@ describe("indexer (M4)", () => {
     const h = new Harness({ config: { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000, indexMaxTxsPerRun: 40, logKeepTxs: 1000 }, now: () => clock }, raw);
     const tx = h.transactor;
     await tx.init();
-    await Promise.all(Array.from({ length: 100 }, (_, i) => tx.transact([{ ":p/name": `x${i}`, ":p/age": i, ":p/city": "z" }])));
+    await Promise.all(Array.from({ length: 100 }, (_, i) => tx.transact([{ ":ramose/type": ":p", ":p/name": `x${i}`, ":p/age": i, ":p/city": "z" }])));
     const t1 = tx.t;
     const before = tx.connection.db();
     const countQ = `[:find (count ?e) . :where [?e :p/city "z"]]`;
@@ -150,7 +158,7 @@ describe("indexer (M4)", () => {
     const dCount = await query(during, countQ);
     expect(dCount).toBe(100);
     // and writes keep flowing during the run
-    await tx.transact([{ ":p/name": "late", ":p/age": 1, ":p/city": "z" }]);
+    await tx.transact([{ ":ramose/type": ":p", ":p/name": "late", ":p/age": 1, ":p/city": "z" }]);
     await run;
     expect(tx.currentRootRecord.t).toBeLessThan(t1);
     expect(h.alarm).not.toBeNull(); // remaining txs → re-armed

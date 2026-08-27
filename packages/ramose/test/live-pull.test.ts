@@ -63,7 +63,7 @@ const adaWorld = async (age = 36) => {
   const conn = await catalogWorld(Movies);
   const added = txSnap(
     await conn.transact([
-      { ":db/id": "ada", ":user/name": "Ada", ":user/age": age },
+      { ":db/id": "ada", ":ramose/type": ":user", ":user/name": "Ada", ":user/age": age },
     ]),
   );
   const snap = await snapshotOf(conn);

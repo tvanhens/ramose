@@ -169,7 +169,7 @@ describe("useLiveQuery (query form)", () => {
       const { result } = renderHook(() => useLiveQuery(db, allTodos));
       await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
 
-      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(result.current.data).toEqual(ids(world.eids[0]!, two.tempids.t1)),
@@ -193,7 +193,7 @@ describe("useLiveQuery (query form)", () => {
       await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
 
       const extra = txSnap(
-        await world.conn.transact([{ ":db/id": "t2", ":todo/title": "t2" }]),
+        await world.conn.transact([{ ":db/id": "t2", ":ramose/type": ":todo", ":todo/title": "t2" }]),
       );
       peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
       await waitFor(() => expect(result.current.t).toBe(extra.t));
@@ -405,7 +405,7 @@ describe("useLiveQuery (query form)", () => {
       const { result } = renderHook(() => useLiveQuery(db, allTodos));
       await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
 
-      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(result.current.data).toEqual(ids(world.eids[0]!, two.tempids.t1)),
@@ -426,7 +426,7 @@ describe("useLiveQuery (query form)", () => {
       await waitFor(() => expect(result.current.data).toEqual(ids(...world.eids)));
       await settle();
 
-      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(result.current.data).toEqual(ids(world.eids[0]!, two.tempids.t1)),
@@ -592,7 +592,7 @@ describe("useLiveQuery shared subscription cache", () => {
       expect(spy.calls).toBe(1);
       expect(a.result.current.data).toEqual(b.result.current.data);
 
-      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(a.result.current.data).toEqual(ids(world.eids[0]!, two.tempids.t1)),
@@ -623,7 +623,7 @@ describe("useLiveQuery shared subscription cache", () => {
       expect(spy.closed).toBe(1);
 
       const extra = txSnap(
-        await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]),
+        await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]),
       );
       peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
       await waitFor(() =>
@@ -653,7 +653,7 @@ describe("useLiveQuery shared subscription cache", () => {
       await settle();
       expect(spy.closed).toBe(0);
 
-      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "t1" }]));
       peer.push({ op: "tx", t: two.t, datoms: two.datoms });
       await waitFor(() =>
         expect(b.result.current.data).toEqual(ids(world.eids[0]!, two.tempids.t1)),

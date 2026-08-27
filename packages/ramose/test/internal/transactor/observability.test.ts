@@ -4,10 +4,10 @@
  * hard rule that a failing sink can never fail a transaction.
  */
 import { describe, expect, test } from "bun:test";
-import { FakeAnalytics, Harness, attribute } from "./harness.ts";
+import { FakeAnalytics, Harness, attribute, entityKind } from "./harness.ts";
 import { TxMetrics } from "../../../src/internal/transactor/index.ts";
 
-const SCHEMA = [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")];
+const SCHEMA = [entityKind("k"), attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")];
 
 async function fresh(analytics?: FakeAnalytics, config = {}) {
   const h = new Harness({ ...(analytics !== undefined && { analytics }), config });
@@ -22,7 +22,7 @@ describe("observability: analytics engine data points", () => {
     const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 });
     const batchesBefore = h.transactor.stats.batches;
     const N = 200;
-    await Promise.all(Array.from({ length: N }, (_, i) => h.transactor.transact([{ ":k/id": i, ":k/v": `v${i}` }])));
+    await Promise.all(Array.from({ length: N }, (_, i) => h.transactor.transact([{ ":ramose/type": ":k", ":k/id": i, ":k/v": `v${i}` }])));
 
     const batchPoints = ae.ofStage("batch");
     // exactly one point per commit batch — far fewer than N
@@ -55,7 +55,7 @@ describe("observability: analytics engine data points", () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae);
     await Promise.allSettled([
-      h.transactor.transact([{ ":k/id": 1, ":k/v": "a" }]),
+      h.transactor.transact([{ ":ramose/type": ":k", ":k/id": 1, ":k/v": "a" }]),
       h.transactor.transact([[":db/add", "x", ":k/nope", 1]]), // unknown attribute
     ]);
     const errs = ae.ofStage("batch").reduce((n, p) => n + p.doubles![6], 0);
@@ -65,7 +65,7 @@ describe("observability: analytics engine data points", () => {
   test("indexer run emits its own point (stage 'index'; double5 = novelty before the merge)", async () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 });
-    await Promise.all(Array.from({ length: 20 }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    await Promise.all(Array.from({ length: 20 }, (_, i) => h.transactor.transact([{ ":ramose/type": ":k", ":k/id": i }])));
     const noveltyBefore = h.transactor.connection.noveltyCount;
     await h.transactor.handleRequest(new Request("https://t/admin/index", { method: "POST" }));
 
@@ -87,7 +87,7 @@ describe("observability: analytics engine data points", () => {
   test("a throwing sink is counted, never propagated to the transaction", async () => {
     const ae = new FakeAnalytics(true);
     const h = await fresh(ae);
-    const ack = await h.transactor.transact([{ ":k/id": 7, ":k/v": "still committed" }]);
+    const ack = await h.transactor.transact([{ ":ramose/type": ":k", ":k/id": 7, ":k/v": "still committed" }]);
     expect(ack.t).toBe(h.transactor.t);
     expect(h.transactor.metrics.errors).toBeGreaterThan(0);
     expect(h.transactor.metrics.writes).toBe(0);
@@ -97,7 +97,7 @@ describe("observability: analytics engine data points", () => {
   test("no dataset bound = no-op sink (default harness)", async () => {
     const h = await fresh();
     expect(h.transactor.metrics.enabled).toBe(false);
-    await h.transactor.transact([{ ":k/id": 1 }]);
+    await h.transactor.transact([{ ":ramose/type": ":k", ":k/id": 1 }]);
     expect(h.transactor.metrics.writes).toBe(0);
     expect(h.transactor.metrics.errors).toBe(0);
   });
@@ -105,7 +105,7 @@ describe("observability: analytics engine data points", () => {
   test("colo is learned from request.cf and tags later points", async () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae);
-    const req = new Request("https://t/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 42 }] }) });
+    const req = new Request("https://t/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":ramose/type": ":k", ":k/id": 42 }] }) });
     Object.defineProperty(req, "cf", { value: { colo: "IAD" } });
     const res = await h.transactor.handleRequest(req);
     expect(res.status).toBe(200);
@@ -135,7 +135,7 @@ describe("observability: timing fences (config.timingYields)", () => {
   test("off by default: no fence samples, fence columns zero", async () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 });
-    await Promise.all(Array.from({ length: 20 }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    await Promise.all(Array.from({ length: 20 }, (_, i) => h.transactor.transact([{ ":ramose/type": ":k", ":k/id": i }])));
     expect(h.transactor.info().opts.timingYields).toBe(false);
     expect(h.transactor.stats.fenceMs).toBe(0);
     expect(h.transactor.info().metrics.fenceMs.count).toBe(0);
@@ -146,7 +146,7 @@ describe("observability: timing fences (config.timingYields)", () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000, timingYields: true });
     const N = 50;
-    const acks = await Promise.all(Array.from({ length: N }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    const acks = await Promise.all(Array.from({ length: N }, (_, i) => h.transactor.transact([{ ":ramose/type": ":k", ":k/id": i }])));
     expect(acks).toHaveLength(N); // acks still only resolve after the storage write
     expect(h.transactor.t).toBe(acks.at(-1)!.t);
 
@@ -169,7 +169,7 @@ describe("observability: /info counters", () => {
   test("cumulative resolve/commit/loop counters plus per-batch distributions and AE counters", async () => {
     const ae = new FakeAnalytics();
     const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 });
-    await Promise.all(Array.from({ length: 50 }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    await Promise.all(Array.from({ length: 50 }, (_, i) => h.transactor.transact([{ ":ramose/type": ":k", ":k/id": i }])));
     const info = h.transactor.info();
 
     // the pre-existing cumulative counters are still wired the same way

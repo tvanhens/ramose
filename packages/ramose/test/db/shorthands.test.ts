@@ -24,7 +24,7 @@ import {
   uuid,
 } from "../../src/db/internal.ts";
 import { query } from "../../src/internal/core/index.ts";
-import { attribute, Harness } from "../internal/transactor/harness.ts";
+import { attribute, entityKind, Harness } from "../internal/transactor/harness.ts";
 
 const User = Entity("user", {
   name: Field.unique(string({ doc: "display name" }), "upsert"),
@@ -135,6 +135,9 @@ describe("shorthand schemaTx", () => {
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/one",
       },
+      { ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/entity" },
+      { ":db/ident": ":label", ":ramose/kind": ":ramose.kind/entity" },
+      { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
     ]);
   });
 });
@@ -162,6 +165,7 @@ describe("advanced Field(schema)", () => {
         ":db/valueType": ":db.type/boolean",
         ":db/cardinality": ":db.cardinality/one",
       },
+      { ":db/ident": ":note", ":ramose/kind": ":ramose.kind/entity" },
     ]);
   });
 
@@ -301,9 +305,9 @@ describe("uuid through the server", () => {
   test("a plain string writes and a string comes back from query", async () => {
     const h = new Harness();
     await h.transactor.init();
-    await h.transactor.transact([attribute(":item/uid", "uuid")]);
+    await h.transactor.transact([entityKind("item"), attribute(":item/uid", "uuid")]);
     const ack = await h.transactor.transact([
-      { ":db/id": "item", ":item/uid": "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" },
+      { ":db/id": "item", ":ramose/type": ":item", ":item/uid": "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" },
     ]);
     const uid = await query(
       h.transactor.connection.db(),

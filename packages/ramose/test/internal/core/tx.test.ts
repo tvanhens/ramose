@@ -14,6 +14,8 @@ const SCHEMA = [
   { ":db/ident": ":address/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":user/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":color/red" },
+  { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":address", ":ramose/kind": ":ramose.kind/entity" },
 ];
 
 async function setup() {
@@ -39,9 +41,9 @@ describe("transact", () => {
   test("map form with tempids, refs, nested components, reverse refs", async () => {
     const conn = await setup();
     const rep = await conn.transact([
-      { ":db/id": "alice", ":user/name": "Alice", ":user/email": "a@x", ":user/tags": ["a", "b"], ":user/address": { ":address/city": "Berlin" } },
-      { ":db/id": "bob", ":user/name": "Bob", ":user/friends": ["alice"], ":user/joined": new Date("2020-01-01T00:00:00Z") },
-      { ":db/id": "carol", ":user/name": "Carol", ":user/_friends": ["bob"] },
+      { ":db/id": "alice", ":ramose/type": ":user", ":user/name": "Alice", ":user/email": "a@x", ":user/tags": ["a", "b"], ":user/address": { ":ramose/type": ":address", ":address/city": "Berlin" } },
+      { ":db/id": "bob", ":ramose/type": ":user", ":user/name": "Bob", ":user/friends": ["alice"], ":user/joined": new Date("2020-01-01T00:00:00Z") },
+      { ":db/id": "carol", ":ramose/type": ":user", ":user/name": "Carol", ":user/_friends": ["bob"] },
     ]);
     const { alice, bob, carol } = rep.tempids;
     expect(alice).toBeGreaterThanOrEqual(1000);
@@ -62,7 +64,7 @@ describe("transact", () => {
 
   test("cardinality-one replaces (implicit retract), redundant asserts elided", async () => {
     const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const r1 = await conn.transact([{ ":db/id": "u", ":ramose/type": ":user", ":user/name": "A", ":user/age": 30 }]);
     const u = r1.tempids.u;
     const r2 = await conn.transact([[":db/add", u, ":user/age", 31]]);
     const ops = r2.txData.filter((d) => d.a === conn.db().attr(":user/age")!.id).map((d) => [d.v, d.op]);
@@ -79,15 +81,15 @@ describe("transact", () => {
 
   test("unique identity upserts; unique value conflicts throw", async () => {
     const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/email": "a@x", ":user/name": "A", ":user/handle": "aa" }]);
+    const r1 = await conn.transact([{ ":db/id": "u", ":ramose/type": ":user", ":user/email": "a@x", ":user/name": "A", ":user/handle": "aa" }]);
     const u = r1.tempids.u;
-    const r2 = await conn.transact([{ ":db/id": "again", ":user/email": "a@x", ":user/age": 5 }]);
+    const r2 = await conn.transact([{ ":db/id": "again", ":ramose/type": ":user", ":user/email": "a@x", ":user/age": 5 }]);
     expect(r2.tempids.again).toBe(u);
     expect((await conn.db().entity(u))![":user/age"]).toBe(5);
-    await expect(conn.transact([{ ":user/name": "B", ":user/handle": "aa" }])).rejects.toBeInstanceOf(TxError);
-    await expect(conn.transact([{ ":user/name": "B", ":user/email": "b@x" }, { ":user/name": "C", ":user/email": "b@x", ":user/age": 1 }])).resolves.toBeDefined();
+    await expect(conn.transact([{ ":ramose/type": ":user", ":user/name": "B", ":user/handle": "aa" }])).rejects.toBeInstanceOf(TxError);
+    await expect(conn.transact([{ ":ramose/type": ":user", ":user/name": "B", ":user/email": "b@x" }, { ":ramose/type": ":user", ":user/name": "C", ":user/email": "b@x", ":user/age": 1 }])).resolves.toBeDefined();
     // moving a unique value between entities within one tx via retract works
-    const rb = await conn.transact([{ ":db/id": "b", ":user/email": "b@x" }]);
+    const rb = await conn.transact([{ ":db/id": "b", ":ramose/type": ":user", ":user/email": "b@x" }]);
     const b = rb.tempids.b;
     await expect(conn.transact([[":db/add", u, ":user/handle", "aa"], [":db/add", b, ":user/handle", "aa"]])).rejects.toBeInstanceOf(TxError);
     await conn.transact([[":db/retract", u, ":user/handle", "aa"], [":db/add", b, ":user/handle", "aa"]]);
@@ -97,7 +99,7 @@ describe("transact", () => {
 
   test("lookup refs and idents as entity/value forms", async () => {
     const conn = await setup();
-    const r = await conn.transact([{ ":db/id": "u", ":user/email": "a@x", ":user/name": "A" }]);
+    const r = await conn.transact([{ ":db/id": "u", ":ramose/type": ":user", ":user/email": "a@x", ":user/name": "A" }]);
     const u = r.tempids.u;
     await conn.transact([[":db/add", [":user/email", "a@x"], ":user/age", 9]]);
     expect((await conn.db().entity(u))![":user/age"]).toBe(9);
@@ -113,8 +115,8 @@ describe("transact", () => {
   test("retract, retract-all, retractEntity (with components and incoming refs)", async () => {
     const conn = await setup();
     const r = await conn.transact([
-      { ":db/id": "a", ":user/name": "A", ":user/tags": ["x", "y", "z"], ":user/address": { ":db/id": "addr", ":address/city": "Oslo" } },
-      { ":db/id": "b", ":user/name": "B", ":user/friends": ["a"] },
+      { ":db/id": "a", ":ramose/type": ":user", ":user/name": "A", ":user/tags": ["x", "y", "z"], ":user/address": { ":db/id": "addr", ":ramose/type": ":address", ":address/city": "Oslo" } },
+      { ":db/id": "b", ":ramose/type": ":user", ":user/name": "B", ":user/friends": ["a"] },
     ]);
     const { a, b, addr } = r.tempids;
     await conn.transact([[":db/retract", a, ":user/tags", "x"]]);
@@ -134,7 +136,7 @@ describe("transact", () => {
   test("validation errors", async () => {
     const conn = await setup();
     await expect(conn.transact([[":db/add", "x", ":nope/attr", 1]])).rejects.toThrow(/unknown attribute/);
-    await expect(conn.transact([[":db/add", "x", ":user/age", "notanumber"]])).rejects.toThrow(/user\/age/);
+    await expect(conn.transact([[":db/add", "x", ":ramose/type", ":user"], [":db/add", "x", ":user/age", "notanumber"]])).rejects.toThrow(/user\/age/);
     await expect(conn.transact([{ ":db/ident": ":bad", ":db/valueType": ":db.type/nope", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }])).rejects.toThrow(/valueType/);
     await expect(conn.transact([[":db/frob", 1, 2, 3]])).rejects.toThrow(/unknown tx op/);
     await expect(conn.transact([[":db/add", "x", ":user/friends", "danglingtempid"]])).rejects.toMatchObject({
@@ -144,7 +146,7 @@ describe("transact", () => {
 
   test("concurrent transacts are serialized with monotonic t and no id reuse", async () => {
     const conn = await setup();
-    const reps = await Promise.all(Array.from({ length: 50 }, (_, i) => conn.transact([{ ":user/name": "n" + i, ":user/age": i }])));
+    const reps = await Promise.all(Array.from({ length: 50 }, (_, i) => conn.transact([{ ":ramose/type": ":user", ":user/name": "n" + i, ":user/age": i }])));
     const ts = reps.map((r) => r.t);
     for (let i = 1; i < ts.length; i++) expect(ts[i]).toBe(ts[i - 1] + 1);
     const ids = new Set(reps.flatMap((r) => Object.values(r.tempids)));
@@ -154,7 +156,7 @@ describe("transact", () => {
 
   test("index() merges novelty into trees; snapshots stay stable; as-of via old roots", async () => {
     const conn = await setup();
-    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 1 }]);
+    const r1 = await conn.transact([{ ":db/id": "u", ":ramose/type": ":user", ":user/name": "A", ":user/age": 1 }]);
     const u = r1.tempids.u;
     const dbBefore = conn.db();
     const roots1 = await conn.index();
@@ -172,7 +174,7 @@ describe("transact", () => {
     const restored = await Connection.restore(conn.store, roots2, [], conn.nextEntityId);
     expect(restored.db().attr(":user/friends")!.cardinality).toBe("many");
     expect((await restored.db().entity(u))![":user/age"]).toBe(2);
-    const r3 = await restored.transact([{ ":user/name": "new" }]);
+    const r3 = await restored.transact([{ ":ramose/type": ":user", ":user/name": "new" }]);
     expect(Object.values(r3.tempids)[0]).toBeGreaterThan(u);
   });
 });

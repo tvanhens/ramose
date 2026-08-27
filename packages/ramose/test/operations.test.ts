@@ -146,6 +146,8 @@ const moviesWorld = async () => {
       ":db/cardinality": ":db.cardinality/one",
       ":db/index": true,
     },
+    { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
+    { ":db/ident": ":movie", ":ramose/kind": ":ramose.kind/entity" },
   ]);
   return conn;
 };
@@ -258,7 +260,7 @@ describe("optimistic prefix", () => {
       if (!call.url.endsWith("/op")) return { body: { t: server.t } };
       await gate;
       const rep = await server.transact([
-        { ":user/name": call.body.input.name },
+        { ":ramose/type": ":user", ":user/name": call.body.input.name },
       ]);
       ack = {
         t: rep.t,
@@ -456,7 +458,10 @@ describe("PrefixHalt is out-of-band", () => {
     const result = await Effect.runPromise(runBody(swallow, built.op, {}));
     expect(result.halted).toBe(true);
     expect(result.output).toBeUndefined();
-    expect(built.ops()).toEqual([[":db/add", "tmp-1", ":user/name", "Ada"]]);
+    expect(built.ops()).toEqual([
+      [":db/add", "tmp-1", ":ramose/type", ":user"],
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+    ]);
   });
 
   test("PrefixHalt is exported so a caller can rethrow", () => {
@@ -666,7 +671,7 @@ describe("lookup-shaped entity args", () => {
 
   test("db.run looks up [attr, value] on the overlay and posts the lookup", async () => {
     const server = await moviesWorld();
-    await server.transact([{ ":user/name": "Ada" }]);
+    await server.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     const opBodies: { entity?: unknown }[] = [];
     const peer = scriptedPeer({
       http: async (call) => {
@@ -732,8 +737,10 @@ describe("ref tempid create-and-link", () => {
     const bea = op.entity(op.tempid("bea"));
     bea.set(User.name, "Bea");
     expect(built.ops()).toEqual([
+      [":db/add", "tmp-1", ":ramose/type", ":user"],
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/bestFriend", "bea"],
+      [":db/add", "bea", ":ramose/type", ":user"],
       [":db/add", "bea", ":user/name", "Bea"],
     ]);
 
@@ -752,7 +759,7 @@ describe("ref tempid create-and-link", () => {
   test("a handle in a ref value slot lowers to its eid", async () => {
     const conn = await Connection.create();
     await conn.transact(schemaTx(Movies) as unknown[]);
-    const seeded = await conn.transact([{ ":db/id": "ada", ":user/name": "Ada" }]);
+    const seeded = await conn.transact([{ ":db/id": "ada", ":ramose/type": ":user", ":user/name": "Ada" }]);
     const adaEid = seeded.tempids.ada!;
 
     const built = buildOp({
@@ -786,6 +793,7 @@ describe("optional add", () => {
     Effect.runSync(e.set(User.age, undefined as never));
     Effect.runSync(e.set(User.age, null as never));
     expect(txOps(tx)).toEqual([
+      [":db/add", "tmp-1", ":ramose/type", ":user"],
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", undefined],
       [":db/add", "tmp-1", ":user/age", null],
@@ -822,13 +830,15 @@ describe("put", () => {
     });
     op.put(User, 1001, { age: 36 });
     expect(built.ops()).toEqual([
+      [":db/add", "tmp-1", ":ramose/type", ":user"],
       [":db/add", "tmp-1", ":user/name", "Bea"],
       {
         ":db/id": "tmp-2",
+        ":ramose/type": ":user",
         ":user/name": "Ada",
         ":user/friends": ["tmp-1"],
       },
-      { ":db/id": 1001, ":user/age": 36 },
+      { ":db/id": 1001, ":ramose/type": ":user", ":user/age": 36 },
     ]);
   });
 
@@ -882,7 +892,7 @@ describe("put", () => {
       if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
       if (!call.url.endsWith("/op")) return { body: { t: server.t } };
       await gate;
-      const rep = await server.transact([{ ":user/name": call.body.input.name }]);
+      const rep = await server.transact([{ ":ramose/type": ":user", ":user/name": call.body.input.name }]);
       return {
         body: {
           t: rep.t,
@@ -921,7 +931,7 @@ describe("put", () => {
       if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
       if (!call.url.endsWith("/op")) return { body: { t: server.t } };
       const rep = await server.transact([
-        { ":user/name": call.body.input.name, ":user/age": call.body.input.age },
+        { ":ramose/type": ":user", ":user/name": call.body.input.name, ":user/age": call.body.input.age },
       ]);
       return {
         body: {

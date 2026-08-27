@@ -18,7 +18,7 @@ import {
   statusOf,
   toHttpError,
 } from "../../../src/internal/transactor/errors.ts";
-import { Harness, attribute } from "./harness.ts";
+import { Harness, attribute, entityKind } from "./harness.ts";
 
 const body = async (r: Response) => (await r.json()) as Record<string, unknown>;
 
@@ -84,7 +84,7 @@ describe("transactor errors: tag → status/body", () => {
 });
 
 describe("transactor errors: handleRequest keeps the HTTP contract", () => {
-  const SCHEMA = [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" })];
+  const SCHEMA = [entityKind("k"), attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" })];
   async function fresh() {
     const h = new Harness();
     await h.transactor.init();
@@ -95,7 +95,7 @@ describe("transactor errors: handleRequest keeps the HTTP contract", () => {
 
   test("happy path is untouched", async () => {
     const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 1 }] }) }));
+    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":ramose/type": ":k", ":k/id": 1 }] }) }));
     expect(r.status).toBe(200);
     expect((await body(r)).t).toBe(h.transactor.t);
   });
@@ -130,9 +130,9 @@ describe("transactor errors: handleRequest keeps the HTTP contract", () => {
     const h = new Harness({ failWriteAt: 3 });
     await h.transactor.init();
     await h.transactor.transact(SCHEMA).catch(() => undefined);
-    await h.transactor.transact([{ ":k/id": 1 }]).catch(() => undefined);
+    await h.transactor.transact([{ ":ramose/type": ":k", ":k/id": 1 }]).catch(() => undefined);
     expect(h.transactor.isDead).toBe(true);
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 2 }] }) }));
+    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":ramose/type": ":k", ":k/id": 2 }] }) }));
     expect(r.status).toBe(503);
     expect(r.headers.get("retry-after")).toBe("0");
     const b = await body(r);

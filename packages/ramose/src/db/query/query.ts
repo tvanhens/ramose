@@ -17,7 +17,6 @@
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
-import { traitsOf } from "../compose.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
 import type { AnyEntity } from "../Entity.ts";
@@ -1169,17 +1168,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    // Composed entities share trait idents with other composers. Membership
-    // is the engine-owned type fact, not an `or` over flattened fields.
-    if (traitsOf(ns).length > 0) {
-      ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
-    } else {
-      const prefix = `:${ns.ns}/`;
-      const idents = Object.values(ns.fields)
-        .map((a) => (a as { ident: string }).ident)
-        .filter((ident) => ident.startsWith(prefix));
-      ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
-    }
+    // Membership is the engine-owned type fact (ID-1, ID-3). Field
+    // prefixes never decide identity.
+    ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
     return entry;
   };
 
@@ -1263,21 +1254,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           ]);
           break;
         case "memberOf": {
-          // entailment skip: a sibling fact already constrains this var
-          // through one of the namespace's attrs, so membership is implied
-          const prefix = `:${c.ns.ns}/`;
-          const entailed = list.some(
-            (s) =>
-              s !== c &&
-              s._tag === "fact" &&
-              s.attr !== undefined &&
-              s.attr.ident.startsWith(prefix) &&
-              (s.eVar ?? s.e0) === c.v,
-          );
-          if (!entailed) {
-            const entry = registerMembership(c.ns);
-            out.push([entry.wireName, nameOf(c.v)]);
-          }
+          const entry = registerMembership(c.ns);
+          out.push([entry.wireName, nameOf(c.v)]);
           break;
         }
         case "ruleCall": {

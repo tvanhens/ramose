@@ -35,19 +35,9 @@ const rows = (result: unknown[], t = 2) => ({ body: { t, root: t, result } });
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 const eids = Query.q(() => Query.entities(User));
 
-/** The namespace scope both lower to: the `isUser` rule — `?e` has some
- * `:user/*` attribute. */
+/** Membership is the engine-owned `:ramose/type` fact (ID-1, ID-3). */
 const userRules = [
-  [
-    ["isUser", "?qm0"],
-    [
-      "or",
-      ["?qm0", ":user/name", "_"],
-      ["?qm0", ":user/age", "_"],
-      ["?qm0", ":user/friends", "_"],
-      ["?qm0", ":user/bestFriend", "_"],
-    ],
-  ],
+  [["isUser", "?qm0"], ["?qm0", ":ramose/type", ":user"]],
 ];
 
 describe("the handshake", () => {

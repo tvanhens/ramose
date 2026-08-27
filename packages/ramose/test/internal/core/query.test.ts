@@ -16,6 +16,7 @@ const SCHEMA = [
   { ":db/ident": ":person/tags", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
   { ":db/ident": ":person/joined", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":person/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":person", ":ramose/kind": ":ramose.kind/entity" },
 ];
 
 let conn: Connection;
@@ -26,10 +27,10 @@ beforeAll(async () => {
   conn = await Connection.create({ now: () => 1_700_000_000_000 });
   await conn.transact(SCHEMA);
   const rep = await conn.transact([
-    { ":db/id": "alice", ":person/name": "Alice", ":person/email": "alice@x", ":person/age": 30, ":person/score": 1.5, ":person/active": true, ":person/tags": ["admin", "dev"], ":person/joined": new Date("2020-01-01Z"), ":person/city": "Berlin" },
-    { ":db/id": "bob", ":person/name": "Bob", ":person/email": "bob@x", ":person/age": 25, ":person/score": 2.5, ":person/active": false, ":person/friends": ["alice"], ":person/boss": "alice", ":person/tags": ["dev"], ":person/city": "Berlin" },
-    { ":db/id": "carol", ":person/name": "Carol", ":person/email": "carol@x", ":person/age": 35, ":person/score": 0.5, ":person/active": true, ":person/friends": ["alice", "bob"], ":person/boss": "alice", ":person/city": "Oslo" },
-    { ":db/id": "dave", ":person/name": "Dave", ":person/email": "dave@x", ":person/age": 25, ":person/active": true, ":person/friends": ["carol"], ":person/boss": "carol" },
+    { ":db/id": "alice", ":ramose/type": ":person", ":person/name": "Alice", ":person/email": "alice@x", ":person/age": 30, ":person/score": 1.5, ":person/active": true, ":person/tags": ["admin", "dev"], ":person/joined": new Date("2020-01-01Z"), ":person/city": "Berlin" },
+    { ":db/id": "bob", ":ramose/type": ":person", ":person/name": "Bob", ":person/email": "bob@x", ":person/age": 25, ":person/score": 2.5, ":person/active": false, ":person/friends": ["alice"], ":person/boss": "alice", ":person/tags": ["dev"], ":person/city": "Berlin" },
+    { ":db/id": "carol", ":ramose/type": ":person", ":person/name": "Carol", ":person/email": "carol@x", ":person/age": 35, ":person/score": 0.5, ":person/active": true, ":person/friends": ["alice", "bob"], ":person/boss": "alice", ":person/city": "Oslo" },
+    { ":db/id": "dave", ":ramose/type": ":person", ":person/name": "Dave", ":person/email": "dave@x", ":person/age": 25, ":person/active": true, ":person/friends": ["carol"], ":person/boss": "carol" },
   ]);
   ids = rep.tempids;
   db = conn.db();

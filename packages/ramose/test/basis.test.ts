@@ -129,7 +129,7 @@ describe("db.basis()", () => {
   test("a standing live wakes after basis() observes a newer t", async () => {
     const { catalogWorld, snapshotOf } = await import("./overlay-seed.ts");
     const conn = await catalogWorld(Movies);
-    await conn.transact([{ ":user/name": "Ada" }]);
+    await conn.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     const snap = await snapshotOf(conn);
     const state = { t: snap.t, rows: [row("Ada")] };
     const peer = scriptedPeer({

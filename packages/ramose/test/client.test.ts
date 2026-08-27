@@ -137,6 +137,7 @@ describe("writes are HTTPS, reads are not", () => {
     expect(peer.calls[0].url).toBe("https://peer.example.com/db/movies/transact");
     expect(peer.calls[0].method).toBe("POST");
     expect(peer.calls[0].body.tx).toEqual([
+      [":db/add", "tmp-1", ":ramose/type", ":user"],
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", 36],
     ]);

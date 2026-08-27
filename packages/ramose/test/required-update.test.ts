@@ -74,10 +74,10 @@ describe("required-at-transact", () => {
     });
 
     await expect(
-      conn.transact([{ ":db/id": "x", ":person/handle": "bea" }]),
+      conn.transact([{ ":db/id": "x", ":ramose/type": ":person", ":person/handle": "bea" }]),
     ).rejects.toMatchObject({ code: "tx/required" });
     await expect(
-      conn.transact([[":db/add", "y", ":person/handle", "cam"]]),
+      conn.transact([[":db/add", "y", ":ramose/type", ":person"], [":db/add", "y", ":person/handle", "cam"]]),
     ).rejects.toMatchObject({ code: "tx/required" });
   });
 
@@ -111,7 +111,7 @@ describe("required-at-transact", () => {
     const conn = await setup(Staffs);
     await expect(
       conn.transact([
-        { ":db/id": "s", ":staff/handle": "ada", ":staff/title": "Eng" },
+        { ":db/id": "s", ":ramose/type": ":staff", ":staff/handle": "ada", ":staff/title": "Eng" },
       ]),
     ).rejects.toMatchObject({ code: "tx/required" });
 
@@ -151,7 +151,7 @@ describe("required-at-transact", () => {
       code: "tx/required",
     });
     await expect(
-      conn.transact([[":db/add", 10, ":person/title", "no handle"]]),
+      conn.transact([[":db/add", 10, ":ramose/type", ":person"], [":db/add", 10, ":person/title", "no handle"]]),
     ).rejects.toMatchObject({ code: "tx/required" });
   });
 
@@ -230,6 +230,7 @@ describe("required-at-transact", () => {
       conn.transact([
         {
           ":db/id": "m",
+          ":ramose/type": ":member",
           ":member/nick": "bob",
           ":member/team": "ghost-string",
         },
@@ -238,13 +239,13 @@ describe("required-at-transact", () => {
 
     await expect(
       conn.transact([
-        { ":db/id": "m", ":member/nick": "bob", ":member/team": 888888 },
+        { ":db/id": "m", ":ramose/type": ":member", ":member/nick": "bob", ":member/team": 888888 },
       ]),
     ).rejects.toMatchObject({ code: "tx/missing-entity" });
 
     const linked = await conn.transact([
-      { ":db/id": "t", ":team/name": "eng" },
-      { ":db/id": "m", ":member/nick": "bob", ":member/team": "t" },
+      { ":db/id": "t", ":ramose/type": ":team", ":team/name": "eng" },
+      { ":db/id": "m", ":ramose/type": ":member", ":member/nick": "bob", ":member/team": "t" },
     ]);
     expect((await conn.db().entity(linked.tempids.m!))?.[":member/team"]).toBe(
       linked.tempids.t,
@@ -318,6 +319,7 @@ describe("required-at-transact", () => {
           ":db/valueType": ":db.type/string",
           ":db/cardinality": ":db.cardinality/one",
         },
+        { ":db/ident": ":heal", ":ramose/kind": ":ramose.kind/entity" },
       ]),
     ).resolves.toMatchObject({ t: expect.any(Number) });
     await expect(
@@ -331,7 +333,7 @@ describe("required-at-transact", () => {
       ]),
     ).resolves.toMatchObject({ t: expect.any(Number) });
     await expect(
-      conn.transact([{ ":db/id": "row", ":heal/title": "ok" }]),
+      conn.transact([{ ":db/id": "row", ":ramose/type": ":heal", ":heal/title": "ok" }]),
     ).resolves.toMatchObject({ t: expect.any(Number) });
   });
 });
@@ -741,7 +743,7 @@ describe("both write paths reject identically", () => {
 
   test("overlay: H2 put onto another namespace is TxRejected tx/wrong-entity", async () => {
     const { c, db, peer, server } = await overlayOf(Films, "films");
-    const film = await server.transact([{ ":film/title": "Heat" }]);
+    const film = await server.transact([{ ":ramose/type": ":film", ":film/title": "Heat" }]);
     const filmEid = film.tempids[Object.keys(film.tempids)[0]!]!;
     await db.query(Query.from(Person).select({ handle: Person.handle }));
     const snap = await snapshotOf(server);
@@ -809,7 +811,7 @@ describe("both write paths reject identically", () => {
       }
       if (!call.url.endsWith("/op")) return { body: { t: server.t } };
       await gate;
-      const rep = await server.transact([{ ":user/name": call.body.input.name }]);
+      const rep = await server.transact([{ ":ramose/type": ":user", ":user/name": call.body.input.name }]);
       return {
         body: {
           t: rep.t,

@@ -390,7 +390,7 @@ describe("failure typing on the wire", () => {
     });
     const { catalogWorld, snapshotOf } = await import("./overlay-seed.ts");
     const world = await catalogWorld(Movies);
-    await world.transact([{ ":user/name": "Ada" }]);
+    await world.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     const snap = await snapshotOf(world);
     const peer = scriptedPeer({
       answer: (frame) =>

@@ -16,6 +16,9 @@ const SCHEMA = [
   { ":db/ident": ":todo/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":todo/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":project/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":todo", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":project", ":ramose/kind": ":ramose.kind/entity" },
 ];
 
 let db: Db;
@@ -33,21 +36,21 @@ beforeAll(async () => {
   const conn = await Connection.create();
   await conn.transact(SCHEMA);
   const rep = await conn.transact([
-    { ":db/id": "ada", ":user/name": "Ada", ":user/tags": ["zeta", "alpha", "mid", "beta"] },
-    { ":db/id": "bob", ":user/name": "Bob" },
-    { ":db/id": "cy", ":user/name": "Cy" },
-    { ":db/id": "work", ":project/name": "Work" },
-    { ":db/id": "home", ":project/name": "Home" },
+    { ":db/id": "ada", ":ramose/type": ":user", ":user/name": "Ada", ":user/tags": ["zeta", "alpha", "mid", "beta"] },
+    { ":db/id": "bob", ":ramose/type": ":user", ":user/name": "Bob" },
+    { ":db/id": "cy", ":ramose/type": ":user", ":user/name": "Cy" },
+    { ":db/id": "work", ":ramose/type": ":project", ":project/name": "Work" },
+    { ":db/id": "home", ":ramose/type": ":project", ":project/name": "Home" },
     // Ada: a mix of done/open, ranks deliberately out of index order
-    { ":db/id": "t1", ":todo/title": "a-open", ":todo/done": false, ":todo/rank": 5, ":todo/owner": "ada", ":todo/project": "work" },
-    { ":db/id": "t2", ":todo/title": "b-done", ":todo/done": true, ":todo/rank": 1, ":todo/owner": "ada", ":todo/project": "home" },
-    { ":db/id": "t3", ":todo/title": "c-open", ":todo/done": false, ":todo/rank": 3, ":todo/owner": "ada", ":todo/project": "home" },
-    { ":db/id": "t4", ":todo/title": "d-open", ":todo/done": false, ":todo/owner": "ada", ":todo/project": "work" }, // no rank
-    { ":db/id": "t5", ":todo/title": "e-open", ":todo/done": false, ":todo/rank": 2, ":todo/owner": "ada", ":todo/project": "work" },
+    { ":db/id": "t1", ":ramose/type": ":todo", ":todo/title": "a-open", ":todo/done": false, ":todo/rank": 5, ":todo/owner": "ada", ":todo/project": "work" },
+    { ":db/id": "t2", ":ramose/type": ":todo", ":todo/title": "b-done", ":todo/done": true, ":todo/rank": 1, ":todo/owner": "ada", ":todo/project": "home" },
+    { ":db/id": "t3", ":ramose/type": ":todo", ":todo/title": "c-open", ":todo/done": false, ":todo/rank": 3, ":todo/owner": "ada", ":todo/project": "home" },
+    { ":db/id": "t4", ":ramose/type": ":todo", ":todo/title": "d-open", ":todo/done": false, ":todo/owner": "ada", ":todo/project": "work" }, // no rank
+    { ":db/id": "t5", ":ramose/type": ":todo", ":todo/title": "e-open", ":todo/done": false, ":todo/rank": 2, ":todo/owner": "ada", ":todo/project": "work" },
     // Bob: everything done
-    { ":db/id": "t6", ":todo/title": "f-done", ":todo/done": true, ":todo/rank": 9, ":todo/owner": "bob", ":todo/project": "work" },
+    { ":db/id": "t6", ":ramose/type": ":todo", ":todo/title": "f-done", ":todo/done": true, ":todo/rank": 9, ":todo/owner": "bob", ":todo/project": "work" },
     // Cy: one open todo
-    { ":db/id": "t7", ":todo/title": "g-open", ":todo/done": false, ":todo/rank": 4, ":todo/owner": "cy", ":todo/project": "home" },
+    { ":db/id": "t7", ":ramose/type": ":todo", ":todo/title": "g-open", ":todo/done": false, ":todo/rank": 4, ":todo/owner": "cy", ":todo/project": "home" },
   ]);
   ids = rep.tempids;
   await conn.transact([{ ":db/id": ids.ada, ":user/starred": [ids.t4, ids.t2, ids.t3, ids.t1] }]);

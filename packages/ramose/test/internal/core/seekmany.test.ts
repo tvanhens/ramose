@@ -12,9 +12,10 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
   await conn.transact([
     { ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many", ":db/index": true },
     { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    { ":db/ident": ":p", ":ramose/kind": ":ramose.kind/entity" },
   ]);
   const eids: number[] = [];
-  for (let i = 0; i < 60; i++) eids.push((await conn.transact([{ ":db/id": "x", ":p/tag": pick(r, ["x","y","z"]) }])).tempids.x);
+  for (let i = 0; i < 60; i++) eids.push((await conn.transact([{ ":db/id": "x", ":ramose/type": ":p", ":p/tag": pick(r, ["x","y","z"]) }])).tempids.x);
   for (let i = 0; i < 200; i++) {
     if (eids.length === 0) break;
     const e = pick(r, eids);
@@ -55,8 +56,11 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
 
 test("seekMany over an empty tree (all novelty) works", async () => {
   const conn = await Connection.create();
-  await conn.transact([{ ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" }]);
-  const r = await conn.transact([{ ":db/id": "x", ":p/tag": "a" }]);
+  await conn.transact([
+    { ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
+    { ":db/ident": ":p", ":ramose/kind": ":ramose.kind/entity" },
+  ]);
+  const r = await conn.transact([{ ":db/id": "x", ":ramose/type": ":p", ":p/tag": "a" }]);
   const db = conn.db();
   const tag = db.schema.entid(":p/tag")!;
   const res = await db.seekMany(Index.EAVT, [{ e: r.tempids.x, a: tag }, { e: 5, a: tag }]);

@@ -18,6 +18,7 @@ const SCHEMA = [
   { ":db/ident": ":p/friend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
   { ":db/ident": ":p/boss", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":p/flag", ":db/valueType": ":db.type/boolean", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+  { ":db/ident": ":p", ":ramose/kind": ":ramose.kind/entity" },
 ];
 const ATTRS = [":p/name", ":p/age", ":p/tag", ":p/friend", ":p/boss", ":p/flag"];
 const NAMES = ["ann", "bo", "cy", "di", "ed"];
@@ -70,7 +71,7 @@ describe("query ≡ naive reference on random data", () => {
     const eids: number[] = [];
     // build entities in several txs; some retracts/updates for history
     for (let i = 0; i < N; i++) {
-      const rep = await conn.transact([{ ":db/id": "x", ":p/name": pick(r, NAMES), ":p/age": randInt(r, 1, 6), ":p/flag": r() < 0.5 }]);
+      const rep = await conn.transact([{ ":db/id": "x", ":ramose/type": ":p", ":p/name": pick(r, NAMES), ":p/age": randInt(r, 1, 6), ":p/flag": r() < 0.5 }]);
       eids.push(rep.tempids.x);
     }
     const live: number[] = eids.slice();

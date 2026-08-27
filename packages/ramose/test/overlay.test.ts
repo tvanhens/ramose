@@ -96,6 +96,9 @@ const moviesWorld = async () => {
     { ":db/ident": ":movie/year", ":db/valueType": ":db.type/long", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     { ":db/ident": ":movie/released", ":db/valueType": ":db.type/instant", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
     { ":db/ident": ":meta/source", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+    { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
+    { ":db/ident": ":movie", ":ramose/kind": ":ramose.kind/entity" },
+    { ":db/ident": ":meta", ":ramose/kind": ":ramose.kind/entity" },
   ]);
   return conn;
 };
@@ -265,7 +268,7 @@ describe("optimistic transact", () => {
 
   test("a 409 drops only that pending layer; live reverts without remount", async () => {
     const server = await moviesWorld();
-    await server.transact([{ ":user/name": "Ada" }]);
+    await server.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     let releaseFail!: () => void;
     let releaseKeep!: () => void;
     const failGate = new Promise<void>((r) => {
@@ -347,8 +350,9 @@ describe("optimistic transact", () => {
     const server = await moviesWorld();
     await server.transact([
       { ":db/ident": ":doc/slug", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value", ":db/optional": true },
+      { ":db/ident": ":doc", ":ramose/kind": ":ramose.kind/entity" },
     ]);
-    await server.transact([{ ":doc/slug": "ada" }]);
+    await server.transact([{ ":ramose/type": ":doc", ":doc/slug": "ada" }]);
     const posts: Call[] = [];
     const peer = scriptedPeer({
       http: (call) => {
@@ -669,7 +673,7 @@ describe("confirmed follower", () => {
 
   test("{ op: sync } / resync rebuilds confirmed from the snapshot", async () => {
     const server = await moviesWorld();
-    await server.transact([{ ":user/name": "Ada" }]);
+    await server.transact([{ ":ramose/type": ":user", ":user/name": "Ada" }]);
     const peer = scriptedPeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -677,7 +681,7 @@ describe("confirmed follower", () => {
     expect(await db.query(names)).toEqual([{ name: "Ada" }]);
 
     const other = await moviesWorld();
-    await other.transact([{ ":user/name": "Bea" }]);
+    await other.transact([{ ":ramose/type": ":user", ":user/name": "Bea" }]);
     const snap = await snapshotOf(other);
     peer.push({ op: "resync", t: snap.t, datoms: snap.datoms });
     await settle();
@@ -768,7 +772,7 @@ describe("two-writer races", () => {
     await run(overlay.ready());
     expect(overlay.confirmedT).toBe(39);
 
-    await run(overlay.transact([{ ":user/name": "Browser" }]));
+    await run(overlay.transact([{ ":ramose/type": ":user", ":user/name": "Browser" }]));
     // Ack painted the writer’s facts but must not jump the prefix. Own echo
     // and inbound tx paint; they do not claim the follow cursor.
     expect(overlay.confirmedT).toBe(39);
@@ -916,7 +920,7 @@ describe("two-writer races", () => {
     await run(overlay.ready());
     expect(overlay.confirmedT).toBe(39);
 
-    await run(overlay.transact([{ ":user/name": "Browser" }]));
+    await run(overlay.transact([{ ":ramose/type": ":user", ":user/name": "Browser" }]));
     await overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
     await overlay.handlePush({ op: "tx", t: 41, datoms: [browser], clientTxId: "c-browser" });
     const body = (await run(
@@ -937,6 +941,7 @@ describe("two-writer races", () => {
     await server.transact([
       { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
       { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":note", ":ramose/kind": ":ramose.kind/entity" },
     ]);
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -1061,6 +1066,7 @@ describe("two-writer races", () => {
     const server = await moviesWorld();
     await server.transact([
       { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":secret", ":ramose/kind": ":ramose.kind/entity" },
     ]);
     const peer = scriptedPeer({
       http: (call) => {
@@ -1113,6 +1119,7 @@ describe("two-writer races", () => {
     const server = await moviesWorld();
     await server.transact([
       { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":secret", ":ramose/kind": ":ramose.kind/entity" },
     ]);
     const peer = scriptedPeer({
       http: (call) => {
@@ -1169,6 +1176,7 @@ describe("filtered tx frames (#112 sieve)", () => {
     await server.transact([
       { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
       { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
+      { ":db/ident": ":note", ":ramose/kind": ":ramose.kind/entity" },
     ]);
 
     let release!: () => void;

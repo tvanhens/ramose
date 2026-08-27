@@ -180,3 +180,8 @@ export const attribute = (ident: string, type: string, extra: Record<string, unk
   ...(extra[":db/cardinality"] === ":db.cardinality/many" ? {} : { ":db/optional": true }),
   ...extra,
 });
+
+export const entityKind = (ns: string) => ({
+  ":db/ident": `:${ns}`,
+  ":ramose/kind": ":ramose.kind/entity",
+});

@@ -12,6 +12,8 @@ const SCHEMA = [
   { ":db/ident": ":user/address", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/isComponent": true, ":db/optional": true },
   { ":db/ident": ":address/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/optional": true },
   { ":db/ident": ":user/tags", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" },
+  { ":db/ident": ":user", ":ramose/kind": ":ramose.kind/entity" },
+  { ":db/ident": ":address", ":ramose/kind": ":ramose.kind/entity" },
 ];
 
 let db: Db;
@@ -21,9 +23,9 @@ beforeAll(async () => {
   const conn = await Connection.create();
   await conn.transact(SCHEMA);
   const rep = await conn.transact([
-    { ":db/id": "a", ":user/name": "A", ":user/age": 1, ":user/friends": ["b", "c"], ":user/address": { ":db/id": "addr", ":address/city": "Rome" }, ":user/tags": ["t1", "t2", "t3"] },
-    { ":db/id": "b", ":user/name": "B", ":user/friends": ["a"] },
-    { ":db/id": "c", ":user/name": "C" },
+    { ":db/id": "a", ":ramose/type": ":user", ":user/name": "A", ":user/age": 1, ":user/friends": ["b", "c"], ":user/address": { ":db/id": "addr", ":ramose/type": ":address", ":address/city": "Rome" }, ":user/tags": ["t1", "t2", "t3"] },
+    { ":db/id": "b", ":ramose/type": ":user", ":user/name": "B", ":user/friends": ["a"] },
+    { ":db/id": "c", ":ramose/type": ":user", ":user/name": "C" },
   ]);
   ids = rep.tempids;
   db = conn.db();

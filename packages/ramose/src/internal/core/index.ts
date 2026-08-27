@@ -10,6 +10,7 @@ export * from "./segment.ts";
 export * from "./tree.ts";
 export * from "./novelty.ts";
 export * from "./schema.ts";
+export * from "./membership.ts";
 export * from "./store.ts";
 export * from "./db.ts";
 export * from "./tx.ts";

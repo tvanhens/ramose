@@ -26,6 +26,7 @@ export * from "./identities.ts";
 export * from "./install.ts";
 export * from "./ir.ts";
 export * from "./json.ts";
+export * from "./membership.ts";
 export * from "./principal.ts";
 export * from "./truth.ts";
 export * from "./validate.ts";

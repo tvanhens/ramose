@@ -87,7 +87,6 @@ const compositionMaps = (schema: AnySchema): SchemaCompositionTx[] => {
   const traits = reachableTraits(
     Object.values(schema.entities) as import("./compose.ts").ComposerLike[],
   );
-  if (traits.size === 0) return [];
   const out: SchemaCompositionTx[] = [];
   const traitNss = [...traits.keys()].sort();
   for (const ns of traitNss) {
@@ -112,7 +111,6 @@ const compositionMaps = (schema: AnySchema): SchemaCompositionTx[] => {
     const composed = [...((entity as { traits?: readonly { ns: string }[] }).traits ?? [])]
       .map((t) => composerIdent(t.ns))
       .sort();
-    if (composed.length === 0) continue;
     out.push({
       ":db/ident": composerIdent(ns),
       ":ramose/kind": RAMOSE_KIND_ENTITY,
@@ -129,10 +127,9 @@ const compositionMaps = (schema: AnySchema): SchemaCompositionTx[] => {
 
 /**
  * One map form per field, in schema / entity / key order, then
- * composition metadata when any entity composes a trait.
+ * catalog identity and composition metadata for every entity and trait.
  */
-export const schemaTx = (schema: AnySchema): SchemaTxOp[] => {
-  const attrs = attributeMaps(schema);
-  const meta = compositionMaps(schema);
-  return meta.length === 0 ? attrs : [...attrs, ...meta];
-};
+export const schemaTx = (schema: AnySchema): SchemaTxOp[] => [
+  ...attributeMaps(schema),
+  ...compositionMaps(schema),
+];

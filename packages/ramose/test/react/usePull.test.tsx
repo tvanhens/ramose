@@ -21,12 +21,12 @@ const todoWorld = async () => {
   const conn = await catalogWorld(Todos);
   const a = txSnap(
     await conn.transact([
-      { ":db/id": "a", ":todo/title": "A", ":todo/slug": "a" },
+      { ":db/id": "a", ":ramose/type": ":todo", ":todo/title": "A", ":todo/slug": "a" },
     ]),
   );
   const b = txSnap(
     await conn.transact([
-      { ":db/id": "b", ":todo/title": "other", ":todo/slug": "b" },
+      { ":db/id": "b", ":ramose/type": ":todo", ":todo/title": "other", ":todo/slug": "b" },
     ]),
   );
   return {

@@ -66,7 +66,7 @@ const users = async (...who: string[]) => {
   const conn = await catalogWorld(Movies);
   const snaps = [];
   for (const name of who) {
-    snaps.push(txSnap(await conn.transact([{ ":user/name": name }])));
+    snaps.push(txSnap(await conn.transact([{ ":ramose/type": ":user", ":user/name": name }])));
   }
   return { conn, snaps, ...(await snapshotOf(conn)) };
 };
@@ -152,7 +152,7 @@ describe("paint is the wake", () => {
     await until(() => live.seen.length >= 1);
     expect(live.seen).toHaveLength(1);
 
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    const bob = txSnap(await world.conn.transact([{ ":ramose/type": ":user", ":user/name": "Bob" }]));
     state.t = bob.t;
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await until(() => live.seen.length >= 2);
@@ -220,7 +220,7 @@ describe("live survives the network", () => {
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    const bob = txSnap(await world.conn.transact([{ ":ramose/type": ":user", ":user/name": "Bob" }]));
     state.t = bob.t;
     state.datoms = (await snapshotOf(world.conn)).datoms;
     peer.drop();
@@ -378,7 +378,7 @@ describe("structural sharing across emissions", () => {
     expect(live.seen).toHaveLength(1);
     const first = live.seen[0] as readonly { name: string }[];
 
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    const bob = txSnap(await world.conn.transact([{ ":ramose/type": ":user", ":user/name": "Bob" }]));
     state.t = bob.t;
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await until(() => live.seen.length >= 2);
@@ -395,8 +395,8 @@ describe("structural sharing across emissions", () => {
 
   test("a single-row change keeps Object.is identity on the other row", async () => {
     const conn = await catalogWorld(Movies);
-    const ada = txSnap(await conn.transact([{ ":db/id": "ada", ":user/name": "Ada" }]));
-    const cy = txSnap(await conn.transact([{ ":db/id": "cy", ":user/name": "Cy" }]));
+    const ada = txSnap(await conn.transact([{ ":db/id": "ada", ":ramose/type": ":user", ":user/name": "Ada" }]));
+    const cy = txSnap(await conn.transact([{ ":db/id": "cy", ":ramose/type": ":user", ":user/name": "Cy" }]));
     const snap = await snapshotOf(conn);
     const state = { t: snap.t, datoms: snap.datoms };
     const peer = peerAt(state);

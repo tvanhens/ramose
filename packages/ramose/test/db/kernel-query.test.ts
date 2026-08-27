@@ -344,10 +344,7 @@ describe("lowering", () => {
     const rules = query.rules as unknown[][];
     expect(rules).toHaveLength(1);
     expect(rules[0]![0]).toEqual(["isIssue", "?qm0"]);
-    const or = rules[0]![1] as unknown[];
-    expect(or[0]).toBe("or");
-    expect(or).toContainEqual(["?qm0", ":issue/title", "_"]);
-    expect(or).toContainEqual(["?qm0", ":issue/owner", "_"]);
+    expect(rules[0]![1]).toEqual(["?qm0", ":ramose/type", ":issue"]);
   });
 
   test("open refuses a cursor; logic() strips it", () => {

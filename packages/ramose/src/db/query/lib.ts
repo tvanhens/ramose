@@ -70,11 +70,9 @@ const makePipeline = <Row, N extends AnyEntity>(
 export type IdRow<N extends AnyEntity = AnyEntity> = { readonly id: Eid<N> };
 
 /**
- * The source stage: the entities of one namespace. There is no entity
- * table — membership means "has at least one fact in the namespace", named
- * as a catalog-generated rule so the planner can treat it as a scan; when
- * the pipeline already constrains the focus through a namespace attr, the
- * rule is entailed and lowering emits nothing.
+ * The source stage: the entities of one namespace. Membership is the
+ * engine-owned `:ramose/type` fact, named as a catalog-generated rule so
+ * the planner can treat it as a scan.
  */
 export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {

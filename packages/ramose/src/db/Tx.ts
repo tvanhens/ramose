@@ -2,7 +2,9 @@
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
-import { composerIdent, traitsOf } from "./compose.ts";
+import { composerIdent } from "./compose.ts";
+import { fieldOwnerIdent } from "../internal/core/membership.ts";
+import { RAMOSE_TYPE_IDENT } from "../internal/core/schema.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
@@ -423,18 +425,16 @@ const lowerPut = (
   attrs: Record<string, unknown>,
 ): { readonly map: TxMap; readonly extras: TxOp[] } => {
   const map: Record<string, unknown> = { ":db/id": eid };
-  // Composed creates can carry only trait attrs. Thread the composer so
-  // processTx does not treat a typed put as a raw trait-only write.
-  if (traitsOf(entity).length > 0) {
-    const ns =
-      typeof entity === "object" &&
-      entity !== null &&
-      "ns" in entity &&
-      typeof (entity as { ns: unknown }).ns === "string"
-        ? (entity as { ns: string }).ns
-        : "";
-    if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
-  }
+  // Typed put declares the composer. The transactor consumes this as a
+  // create hint and writes the engine-owned stamps itself (ID-2).
+  const ns =
+    typeof entity === "object" &&
+    entity !== null &&
+    "ns" in entity &&
+    typeof (entity as { ns: unknown }).ns === "string"
+      ? (entity as { ns: string }).ns
+      : "";
+  if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;
@@ -507,6 +507,24 @@ const lowerUpdate = (
   return ops;
 };
 
+const declareType = (ops: TxOp[], eid: unknown, fieldIdent: string): void => {
+  const owner = fieldOwnerIdent(fieldIdent);
+  if (owner === undefined) return;
+  if (
+    ops.some(
+      (op) =>
+        Array.isArray(op) &&
+        op[0] === ":db/add" &&
+        op[1] === eid &&
+        op[2] === RAMOSE_TYPE_IDENT &&
+        op[3] === owner,
+    )
+  ) {
+    return;
+  }
+  ops.push([":db/add", eid, RAMOSE_TYPE_IDENT, owner]);
+};
+
 const makeHandle = <C extends AnySchema>(
   eid: UnbrandedId | Tempid | LookupRef<C>,
   ops: TxOp[],
@@ -515,7 +533,9 @@ const makeHandle = <C extends AnySchema>(
   eid,
   set: (field: unknown, value: unknown) =>
     Effect.sync(() => {
-      ops.push([":db/add", eid, lowerAttr(field), lowerWriteValue(value)]);
+      const ident = lowerAttr(field);
+      declareType(ops, eid, ident);
+      ops.push([":db/add", eid, ident, lowerWriteValue(value)]);
     }),
   remove: (field: unknown, value?: unknown) =>
     Effect.sync(() => {
@@ -549,12 +569,10 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
     tempid,
     set: (e: unknown, field: unknown, value: unknown) =>
       Effect.sync(() => {
-        ops.push([
-          ":db/add",
-          resolveEntity(e),
-          lowerAttr(field),
-          lowerWriteValue(value),
-        ]);
+        const eid = resolveEntity(e);
+        const ident = lowerAttr(field);
+        declareType(ops, eid, ident);
+        ops.push([":db/add", eid, ident, lowerWriteValue(value)]);
       }),
     remove: (e: unknown, field: unknown, value?: unknown) =>
       Effect.sync(() => {

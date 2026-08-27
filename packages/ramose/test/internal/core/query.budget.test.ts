@@ -14,9 +14,10 @@ async function setup(n = 2000) {
     { ":db/ident": ":p/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
     { ":db/ident": ":p/city", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/index": true, ":db/optional": true },
     { ":db/ident": ":p/friend", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
+    { ":db/ident": ":p", ":ramose/kind": ":ramose.kind/entity" },
   ]);
   const tx: unknown[] = [];
-  for (let i = 0; i < n; i++) tx.push({ ":db/id": `p${i}`, ":p/name": `n${i}`, ":p/city": `c${i % 10}`, ":p/friend": [`p${(i + 1) % n}`, `p${(i + 2) % n}`] });
+  for (let i = 0; i < n; i++) tx.push({ ":db/id": `p${i}`, ":ramose/type": ":p", ":p/name": `n${i}`, ":p/city": `c${i % 10}`, ":p/friend": [`p${(i + 1) % n}`, `p${(i + 2) % n}`] });
   await conn.transact(tx);
   return conn.db();
 }

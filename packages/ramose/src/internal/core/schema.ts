@@ -319,6 +319,26 @@ export class Schema {
     return this.kindOf(ident) === RAMOSE_KIND_ENTITY;
   }
 
+  /** Installed `:ramose.kind/entity` idents, sorted. */
+  entityIdents(): readonly string[] {
+    return this.identsOfKind(RAMOSE_KIND_ENTITY);
+  }
+
+  /** Installed `:ramose.kind/trait` idents, sorted. */
+  traitIdents(): readonly string[] {
+    return this.identsOfKind(RAMOSE_KIND_TRAIT);
+  }
+
+  private identsOfKind(kind: string): readonly string[] {
+    const out: string[] = [];
+    for (const [e, value] of this.kinds) {
+      if (value !== kind) continue;
+      const ident = this.identOf.get(e);
+      if (ident !== undefined) out.push(ident);
+    }
+    return out.sort();
+  }
+
   /** Direct `:ramose/composes` targets of `ident`. */
   composesOf(ident: string): readonly string[] {
     const e = this.idents.get(ident);
