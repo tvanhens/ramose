@@ -25,7 +25,8 @@ export interface PeerOptions {
   /**
    * How long (ms) to keep retrying transient Cloudflare platform errors
    * (workers.dev HTML 404, 1042/1104, "Worker not found", 503, empty-body
-   * 502 from workerd/miniflare, Durable Object storage timeout reset). A
+   * 502 from workerd/miniflare, Durable Object storage timeout reset,
+   * fetch-level ECONNRESET). A
    * fresh workers.dev hostname is eventually
    * consistent across the edge, so a colo can serve the placeholder well after
    * /health passes; this is the budget for waiting that out. Application
@@ -151,7 +152,14 @@ function httpErrorMessage(
   return { message: typeof parsed?.error === "string" ? parsed.error : `HTTP ${status}`, code };
 }
 
+const isTransientSocketReset = (e: unknown): boolean => {
+  if (typeof e !== "object" || e === null) return false;
+  if ("code" in e && e.code === "ECONNRESET") return true;
+  return e instanceof Error && /socket connection was closed unexpectedly/i.test(e.message);
+};
+
 export function isTransientCf(e: unknown): boolean {
+  if (isTransientSocketReset(e)) return true;
   if (!(e instanceof HttpError)) return false;
   if (e.status === 503 || e.status === 429) return true;
   // Empty / gateway 502 from workerd, miniflare, or the edge. Application 502s

@@ -38,6 +38,26 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(connectionHeaders).toEqual([undefined, "close", "close"]);
   });
 
+  test("retries fetch-level ECONNRESET then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          const err = new TypeError(
+            "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+          );
+          (err as TypeError & { code: string }).code = "ECONNRESET";
+          throw err;
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
   test("retries Durable Object storage timeout reset then succeeds", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
