@@ -431,4 +431,18 @@ describe("plain entity-ident resolution honors the filtered view", () => {
     expect(await query(db, q)).toEqual([[":x/hidden"]]);
     expect(await query(filtered, q)).toEqual([]);
   });
+
+  test("hidden ident in attribute position is unknown, not an empty scan", async () => {
+    const filtered = db.filter((_u, d) => !(d.a === DB_IDENT && d.v === ":x/hidden"));
+    const qHidden = `[:find ?e :where [?e :x/hidden ?v]]`;
+    const qMissing = `[:find ?e :where [?e :x/does-not-exist ?v]]`;
+    expect(await query(db, qHidden)).toEqual([]); // ident exists, no attr datoms
+    await expect(query(filtered, qHidden)).rejects.toThrow(/unknown attribute/);
+    await expect(query(filtered, qMissing)).rejects.toThrow(/unknown attribute/);
+    await expect(query(db, qMissing)).rejects.toThrow(/unknown attribute/);
+    // still a real attribute
+    expect((await query(filtered, `[:find [?n ...] :where [?e :person/name ?n]]`) as string[]).sort()).toEqual([
+      "Alice", "Bob", "Carol", "Dave", "Eve",
+    ]);
+  });
 });
