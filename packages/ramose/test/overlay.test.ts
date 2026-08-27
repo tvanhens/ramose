@@ -633,6 +633,214 @@ describe("optimistic transact", () => {
     await c.dispose();
   });
 
+  test("ackedNamed does not rewrite a later unrelated tempid(\"new\") after the queue drains", async () => {
+    const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const posts: unknown[][] = [];
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        if (posts.length === 0) await gate;
+        posts.push(call.body.tx as unknown[]);
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const first = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Ada");
+      }),
+    );
+    await settle();
+    const second = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.cas(User.age, null, 42);
+      }),
+    );
+    await settle();
+    release();
+    await first;
+    await second;
+    expect(posts).toHaveLength(2);
+    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(42);
+
+    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
+
+    const third = await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Bea");
+        yield* tx.cas(adaEid, User.age, 31, 32);
+      }),
+    );
+    expect(third.t).toBeGreaterThan(0);
+    expect(posts).toHaveLength(3);
+    const thirdTx = posts[2] ?? [];
+    const beaAdds = thirdTx.filter(
+      (op): op is unknown[] =>
+        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Bea",
+    );
+    expect(beaAdds).toHaveLength(1);
+    expect(beaAdds[0]![1]).toBe("new");
+
+    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
+    const beaEid = await server.db().entid([":user/name", "Bea"]);
+    expect(beaEid).toBeDefined();
+    expect(beaEid).not.toBe(adaEid);
+    const nameAttr = server.db().attr(":user/name")!.id;
+    const named = await server.db().datomsArray(Index.AVET, { a: nameAttr });
+    expect(named.filter((d) => d.op).map((d) => d.e).sort()).toEqual(
+      [adaEid, beaEid!].sort(),
+    );
+
+    await c.dispose();
+  });
+
+  test("in-flight no-layer post still rewrites a named tempid after the earlier ack", async () => {
+    const server = await moviesWorld();
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const adaEid = seeded.tempids.u!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const posts: unknown[][] = [];
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        if (posts.length === 0) await gate;
+        posts.push(call.body.tx as unknown[]);
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
+
+    const first = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Cal");
+      }),
+    );
+    await settle();
+    const second = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Bea");
+        yield* tx.cas(adaEid, User.age, 31, 32);
+      }),
+    );
+    await settle();
+    release();
+    await first;
+    await second;
+    expect(posts).toHaveLength(2);
+    const secondTx = posts[1] ?? [];
+    const beaAdds = secondTx.filter(
+      (op): op is unknown[] =>
+        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Bea",
+    );
+    expect(beaAdds).toHaveLength(1);
+    expect(typeof beaAdds[0]![1]).toBe("number");
+    expect(beaAdds[0]![1]).not.toBe(adaEid);
+    expect(beaAdds[0]![1]).not.toBe("new");
+
+    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
+    const beaEid = await server.db().entid([":user/name", "Bea"]);
+    expect(beaEid).toBeDefined();
+    expect(beaEid).not.toBe(adaEid);
+    expect(await server.db().entid([":user/name", "Cal"])).toBeUndefined();
+
+    await c.dispose();
+  });
+
+  test("resync after a named-tempid ack does not keep the mapping if nothing is queued", async () => {
+    const server = await moviesWorld();
+    const posts: unknown[][] = [];
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posts.push(call.body.tx as unknown[]);
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Ada");
+        yield* e.set(User.age, 30);
+      }),
+    );
+    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
+    const snap = await snapshotOf(server);
+    peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
+    await settle();
+
+    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
+
+    await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Bea");
+        yield* tx.cas(adaEid, User.age, 31, 32);
+      }),
+    );
+    expect((await server.db().entity(adaEid))![":user/name"]).toBe("Ada");
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
+    const beaEid = await server.db().entid([":user/name", "Bea"]);
+    expect(beaEid).toBeDefined();
+    expect(beaEid).not.toBe(adaEid);
+
+    await c.dispose();
+  });
+
   test("stale replica CAS still POSTs and succeeds without optimistic paint", async () => {
     const server = await moviesWorld();
     const seeded = await server.transact([

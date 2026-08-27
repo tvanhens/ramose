@@ -55,6 +55,9 @@ const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<u
 const names = Query.q(() =>
   pipe(Query.entities(User), Query.select({ name: User.name })),
 );
+const ages = Query.q(() =>
+  pipe(Query.entities(User), Query.select({ name: User.name, age: User.age })),
+);
 
 describe("materializeOutput", () => {
   test("resolves a returned handle through the writer's tempids", () => {
@@ -422,6 +425,61 @@ describe("optimistic prefix", () => {
     expect(opBodies[0]!.entity).not.toBe("new");
     expect(created.t).toBeLessThanOrEqual(renamed.t);
     expect(await db.query(names)).toEqual([{ name: "Ada Lovelace" }]);
+
+    await c.dispose();
+  });
+
+  test("stale replica CAS then op.query / op.pull still reaches /op", async () => {
+    const server = await moviesWorld();
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const eid = seeded.tempids.u!;
+    let postedOp = 0;
+    const staleCasThenRead = Operation(
+      "user/stale-cas-then-read",
+      {
+        input: Schema.Struct({ eid: Schema.Finite }),
+        output: Schema.Struct({}),
+      },
+      async (op, input) => {
+        op.cas(input.eid, User.age, 31, 32);
+        await op.query(ages);
+        await op.pull(input.eid, { name: User.name, age: User.age });
+        return {};
+      },
+    );
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        if (!call.url.endsWith("/op")) return { body: { t: server.t } };
+        postedOp += 1;
+        const rep = await server.transact([
+          [":db/cas", call.body.input.eid, ":user/age", 31, 32],
+        ]);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientOpId: call.body.clientOpId,
+            output: {},
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    await server.transact([[":db/add", eid, ":user/age", 31]]);
+
+    const report = await db.run(staleCasThenRead, { eid });
+    expect(postedOp).toBe(1);
+    expect(peer.calls.some((call) => call.url.endsWith("/op"))).toBe(true);
+    expect(report.output).toEqual({});
+    expect((await server.db().entity(eid))![":user/age"]).toBe(32);
 
     await c.dispose();
   });

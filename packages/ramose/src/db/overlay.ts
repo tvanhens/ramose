@@ -25,7 +25,7 @@ import {
   normalizePullPattern,
   pull as enginePull,
 } from "../internal/core/query/pull.ts";
-import { processTx, TxError } from "../internal/core/tx.ts";
+import { processTx, TxError, type TxResult } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
 import type { AnySchema } from "./Schema.ts";
 import { schemaTx } from "./ensure.ts";
@@ -336,11 +336,80 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
 
 const isGeneratedTempid = (tmp: string): boolean => /^tmp-\d+$/.test(tmp);
 
+const isNamedTempid = (value: unknown): value is string =>
+  typeof value === "string" && !value.startsWith(":") && !isGeneratedTempid(value);
+
+const collectNamedFromValue = (
+  value: unknown,
+  names: Set<string>,
+  schema: Schema | undefined,
+  asRef: boolean,
+): void => {
+  if (isLookupRef(value)) return;
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    collectNamedFromMap(value as Record<string, unknown>, names, schema);
+    return;
+  }
+  if (Array.isArray(value) && asRef) {
+    for (const x of value) collectNamedFromValue(x, names, schema, true);
+    return;
+  }
+  if (asRef && isNamedTempid(value)) names.add(value);
+};
+
+const collectNamedFromMap = (
+  m: Record<string, unknown>,
+  names: Set<string>,
+  schema: Schema | undefined,
+): void => {
+  for (const [k, v] of Object.entries(m)) {
+    if (k === ":db/id" || isRefAttr(schema, k)) {
+      collectNamedFromValue(v, names, schema, true);
+    }
+  }
+};
+
+/** Named tempids a tx still refers to — subjects, CAS value slots, ref values. */
+const collectNamedTempids = (
+  tx: readonly unknown[],
+  schema: Schema | undefined,
+  extra?: { readonly tempids?: Record<string, number>; readonly entity?: unknown },
+): Set<string> => {
+  const names = new Set<string>();
+  for (const item of tx) {
+    if (Array.isArray(item)) {
+      const [op, e, a, ...values] = item as unknown[];
+      if (op === ":db/retractEntity") {
+        collectNamedFromValue(e, names, schema, true);
+        continue;
+      }
+      if (typeof op === "string" && ATTR_OPS.has(op)) {
+        collectNamedFromValue(e, names, schema, true);
+        const asRef = op === ":db/cas" || isRefAttr(schema, a);
+        for (const v of values) collectNamedFromValue(v, names, schema, asRef);
+      }
+      continue;
+    }
+    if (item !== null && typeof item === "object") {
+      collectNamedFromMap(item as Record<string, unknown>, names, schema);
+    }
+  }
+  if (extra?.tempids !== undefined) {
+    for (const k of Object.keys(extra.tempids)) {
+      if (isNamedTempid(k)) names.add(k);
+    }
+  }
+  if (isNamedTempid(extra?.entity)) names.add(extra.entity);
+  return names;
+};
+
 export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
   /** Named tempids acked by earlier posts — used to rewrite a CAS that
    * submitted without a pending layer (local `tx/cas-conflict`). */
   const ackedNamed: Record<string, number> = {};
+  /** No-layer posts (local CAS-bypass) still in the outbox. */
+  const inFlightNamed: { names: Set<string> }[] = [];
   let conn: Connection | undefined;
   let confirmedT = 0;
   /** `t` values whose facts are already in the follower. Used so a late
@@ -449,6 +518,33 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     options.session.bump(t);
   };
 
+  // Named tempids are tx-local once nothing queued needs them.
+  const pruneAckedNamed = (): void => {
+    const schema = conn?.db().schema;
+    const needed = new Set<string>();
+    for (const layer of pending) {
+      for (const name of collectNamedTempids(layer.tx, schema, {
+        tempids: layer.tempids,
+        entity: layer.invocation?.entity,
+      })) {
+        needed.add(name);
+      }
+    }
+    for (const rec of inFlightNamed) {
+      for (const name of rec.names) needed.add(name);
+    }
+    for (const name of Object.keys(ackedNamed)) {
+      if (!needed.has(name)) delete ackedNamed[name];
+    }
+  };
+
+  const dropInFlight = (rec: { names: Set<string> } | undefined): void => {
+    if (rec === undefined) return;
+    const i = inFlightNamed.indexOf(rec);
+    if (i >= 0) inFlightNamed.splice(i, 1);
+    pruneAckedNamed();
+  };
+
   const remapQueued = (
     acked: Record<string, number>,
     local: Record<string, number>,
@@ -489,12 +585,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         layer.tempids[tmp] = eids.get(e) ?? e;
       }
     }
+    pruneAckedNamed();
   };
 
   const dropLayer = (clientTxId: string): PendingLayer | undefined => {
     const i = pending.findIndex((l) => l.clientTxId === clientTxId);
     if (i < 0) return undefined;
-    return pending.splice(i, 1)[0];
+    const layer = pending.splice(i, 1)[0];
+    pruneAckedNamed();
+    return layer;
   };
 
   const remapDropped = (layer: PendingLayer, incoming: readonly Datom[]): void => {
@@ -655,29 +754,33 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
-  // CAS is the only TxError that must still submit: local db-before can
-  // be stale vs the server. Do not paint a pending layer — the ack decides.
+  // CAS is the only local error that must not abort.
+  const expandLocally = async (
+    txData: readonly unknown[],
+  ): Promise<TxResult | undefined> => {
+    try {
+      return await processTx(
+        view(),
+        [...txData],
+        // Fake local `t` only — not a dense log assignment. Must sit
+        // above painted server facts (`factTs`) as well as `confirmedT`,
+        // or a later pending layer collides with an ack we did not
+        // stamp as prefix.
+        Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
+        nextEid(),
+        Date.now(),
+      );
+    } catch (err) {
+      if (err instanceof TxError && err.code === "tx/cas-conflict") return undefined;
+      throw err;
+    }
+  };
+
   const tryLocalExpand = (txData: readonly unknown[]) =>
     Effect.tryPromise({
-      try: () =>
-        processTx(
-          view(),
-          txData as unknown[],
-          // Fake local `t` only — not a dense log assignment. Must sit
-          // above painted server facts (`factTs`) as well as `confirmedT`,
-          // or a later pending layer collides with an ack we did not
-          // stamp as prefix.
-          Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-          nextEid(),
-          Date.now(),
-        ),
+      try: () => expandLocally(txData),
       catch: classifyTx,
-    }).pipe(
-      Effect.catchIf(
-        (e): e is TxRejected => e instanceof TxRejected && e.code === "tx/cas-conflict",
-        () => Effect.void,
-      ),
-    );
+    });
 
   const transact: Overlay["transact"] = (tx) =>
     ready(false).pipe(
@@ -700,6 +803,15 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             // `options.post` is `Effect<unknown, DbError>` — requirements
             // channel `never` — so there are no surrounding services for a
             // child Effect to inherit and `runPromiseWith` would add nothing.
+            const layerAtSubmit = pending.find((l) => l.clientTxId === id);
+            let inFlight: { names: Set<string> } | undefined;
+            if (layerAtSubmit === undefined) {
+              const names = collectNamedTempids(tx, conn?.db().schema);
+              if (names.size > 0) {
+                inFlight = { names };
+                inFlightNamed.push(inFlight);
+              }
+            }
             const run = () =>
               // @effect-diagnostics-next-line runEffectInsideEffect:off
               Effect.runPromise(
@@ -725,6 +837,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                     const layer = dropLayer(id);
                     if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
                     if (layer !== undefined) remapQueued(tempids, layer.tempids);
+                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -747,6 +860,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 .catch(async (err) => {
                   await enqueueApply(() => {
                     dropLayer(id);
+                    dropInFlight(inFlight);
                     notify();
                   });
                   resume(
@@ -763,15 +877,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const speculative = async (extra: readonly unknown[]): Promise<EngineDb> => {
+    if (extra.length === 0) return view();
     const base = view();
-    if (extra.length === 0) return base;
-    const expansion = await processTx(
-      base,
-      [...extra],
-      Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
-      nextEid(),
-      Date.now(),
-    );
+    const expansion = await expandLocally(extra);
+    if (expansion === undefined) return base;
     return overlayDb(base, expansion.datoms);
   };
 
@@ -946,6 +1055,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
     if (frame.op === "resync") {
       pending.length = 0;
+      pruneAckedNamed();
       const t = typeof frame.t === "number" ? frame.t : 0;
       return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
         () => {
