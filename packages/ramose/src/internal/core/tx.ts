@@ -447,6 +447,16 @@ export async function expandTx(
     return m;
   };
 
+  // Same-t facts asserted by :db/cas — retracting them is tx/invalid, not last-wins.
+  const casFacts = new Set<string>();
+  const casFactKey = (e: number, a: number, vt: ValueTag, v: DatomValue): string =>
+    e + ":" + a + ":" + valueKey(vt, v);
+  const rejectIfCasFact = (e: number, a: number, vt: ValueTag, v: DatomValue): void => {
+    if (casFacts.has(casFactKey(e, a, vt, v))) {
+      throw new TxError("cannot retract a :db/cas assertion in the same transaction");
+    }
+  };
+
   const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
@@ -469,6 +479,7 @@ export async function expandTx(
     }
     if (attr.cardinality === "one" && vals.size > 0) {
       for (const [ok, od] of vals) {
+        rejectIfCasFact(e, attr.id, od.vt, od.v);
         const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
         out.push(r);
         record("retract", e, attr, r, true);
@@ -479,16 +490,6 @@ export async function expandTx(
     out.push(d);
     record("add", e, attr, d);
     vals.set(vk, d);
-  };
-
-  // Same-t facts asserted by :db/cas — retracting them is tx/invalid, not last-wins.
-  const casFacts = new Set<string>();
-  const casFactKey = (e: number, a: number, vt: ValueTag, v: DatomValue): string =>
-    e + ":" + a + ":" + valueKey(vt, v);
-  const rejectIfCasFact = (e: number, a: number, vt: ValueTag, v: DatomValue): void => {
-    if (casFacts.has(casFactKey(e, a, vt, v))) {
-      throw new TxError("cannot retract a :db/cas assertion in the same transaction");
-    }
   };
 
   const emitRetract = async (e: number, attr: Attribute, tv: TaggedValue | undefined): Promise<void> => {
@@ -809,6 +810,14 @@ export async function expandTx(
   const casPairs = new Set<string>();
   const casSubjects = new Set<number>();
   const pairKey = (e: number, a: number): string => e + ":" + a;
+  /** Non-CAS mutation of a CAS (e, a) pair — including subjects only resolvable after a same-tx unique add. */
+  const rejectIfCasPair = (kind: string, e: number, attr: Attribute): void => {
+    if (casPairs.has(pairKey(e, attr.id))) {
+      throw new TxError(
+        `cannot ${kind} the same (${e}, ${attr.ident}) as a :db/cas in the same transaction`,
+      );
+    }
+  };
   for (const op of ops) {
     if (op.kind !== "cas") continue;
     const attr = attrOf(op.a);
@@ -841,11 +850,7 @@ export async function expandTx(
       const attr = attrOf(op.a);
       const e = await resolveEntityPreflight(op.e);
       if (e === undefined) continue;
-      if (casPairs.has(pairKey(e, attr.id))) {
-        throw new TxError(
-          `cannot ${op.kind} the same (${e}, ${attr.ident}) as a :db/cas in the same transaction`,
-        );
-      }
+      rejectIfCasPair(op.kind, e, attr);
     }
   }
 
@@ -888,6 +893,7 @@ export async function expandTx(
         continue;
       }
       const attr = attrOf(op.a);
+      rejectIfCasPair(op.kind, e, attr);
       await assertWriteTarget(e, attr, false);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
@@ -943,6 +949,7 @@ export async function expandTx(
     const attr = attrOf(op.a);
     const e = await resolveEntity(op.e, op.kind === "add");
     if (e === undefined) continue;
+    rejectIfCasPair(op.kind, e, attr);
     if (op.kind === "add") {
       await assertWriteTarget(e, attr, true);
       const tv = await valueFor(attr, op.v, true);

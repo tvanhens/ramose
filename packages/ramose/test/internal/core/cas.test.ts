@@ -431,6 +431,54 @@ describe("db/cas", () => {
     expect((await conn.db().entity(u))![":user/age"]).toBe(30);
   });
 
+  test("CAS then same-tx unique add then update of the CAS attr via the new lookup is tx/invalid", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/add", u, ":user/email", "n2@x"],
+        [":db/update", [":user/email", "n2@x"], ":user/age", 32],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    const row = await conn.db().entity(u);
+    expect(row![":user/age"]).toBe(30);
+    expect(row![":user/email"]).toBeUndefined();
+  });
+
+  test("CAS then same-tx unique add then add of the CAS attr via the new lookup is tx/invalid", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/add", u, ":user/email", "n2@x"],
+        [":db/add", [":user/email", "n2@x"], ":user/age", 32],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    const row = await conn.db().entity(u);
+    expect(row![":user/age"]).toBe(30);
+    expect(row![":user/email"]).toBeUndefined();
+  });
+
+  test("CAS then same-tx unique add then retract of the CAS attr via the new lookup is tx/invalid", async () => {
+    const conn = await setup();
+    const r1 = await conn.transact([{ ":db/id": "u", ":user/name": "A", ":user/age": 30 }]);
+    const u = r1.tempids.u;
+    await expect(
+      conn.transact([
+        [":db/cas", u, ":user/age", 30, 31],
+        [":db/add", u, ":user/email", "n2@x"],
+        [":db/retract", [":user/email", "n2@x"], ":user/age"],
+      ]),
+    ).rejects.toMatchObject({ code: "tx/invalid" });
+    const row = await conn.db().entity(u);
+    expect(row![":user/age"]).toBe(30);
+    expect(row![":user/email"]).toBeUndefined();
+  });
+
   test("malformed CAS lookup subjects are TxError, not a raw Error", async () => {
     const conn = await setup();
     const t = conn.t;
