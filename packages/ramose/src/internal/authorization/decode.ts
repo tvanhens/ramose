@@ -150,7 +150,11 @@ export const hashDomainSeparatedCanonicalText = Effect.fn(
 export const hashDomainSeparatedCanonicalJson = Effect.fn(
   "Authorization.hashDomainSeparatedCanonicalJson",
 )(function* (domain: string, json: JsonValue) {
-  return yield* hashDomainSeparatedCanonicalText(domain, canonicalizeJson(json));
+  const canonicalText = yield* Effect.try({
+    try: () => canonicalizeJson(json),
+    catch: digestFailure,
+  });
+  return yield* hashDomainSeparatedCanonicalText(domain, canonicalText);
 });
 
 export const hashPolicyTemplate = Effect.fn("Authorization.hashPolicyTemplate")(function* (

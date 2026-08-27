@@ -908,6 +908,31 @@ describe("canonical serialization", () => {
     );
   });
 
+  test("domain-separated hashing rejects lone surrogates as InvalidIR", async () => {
+    await expect(
+      Effect.runPromise(
+        hashDomainSeparatedCanonicalJson(AUTHORIZATION_RULE_HASH_DOMAIN_V1, "abc\uD800"),
+      ),
+    ).rejects.toBeInstanceOf(InvalidIR);
+    const template = {
+      ...Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded))),
+      classes: ["member\uD800"],
+    };
+    await expect(Effect.runPromise(hashPolicyTemplate(template))).rejects.toBeInstanceOf(InvalidIR);
+    const installed = {
+      ...Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded))),
+      classes: ["member\uD800"],
+    };
+    await expect(Effect.runPromise(hashInstalledAuthorization(installed))).rejects.toBeInstanceOf(
+      InvalidIR,
+    );
+    const rule = {
+      ...Effect.runSync(decodePolicyTemplate(clone(templateEncoded))).rules[0]!,
+      expr: { _tag: "hasClass" as const, class: "member\uD800" },
+    };
+    await expect(Effect.runPromise(hashRelativeRule(rule))).rejects.toBeInstanceOf(InvalidIR);
+  });
+
   test("key order does not change the canonical document", async () => {
     const a = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const reordered = {
