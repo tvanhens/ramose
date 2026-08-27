@@ -198,6 +198,44 @@ describe("typed create", () => {
     ]);
   });
 
+  test("set stamps the composer once even when a trait field is written first", async () => {
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Board) as unknown[]);
+    const tx = txBuilder(Board);
+    Effect.runSync(
+      Effect.gen(function* () {
+        const issue = yield* tx.entity();
+        yield* issue.set(Issue.tag, "urgent");
+        yield* issue.set(Issue.title, "Fix login");
+        const diamond = yield* tx.entity();
+        yield* diamond.set(Diamond.title, "D");
+        yield* diamond.set(Diamond.tag, "t");
+        yield* diamond.set(Diamond.createdAt, "now");
+      }),
+    );
+    expect(txOps(tx)).toEqual([
+      [":db/add", "tmp-1", ":taggable/tag", "urgent"],
+      [":db/add", "tmp-1", ":ramose/type", ":issue"],
+      [":db/add", "tmp-1", ":issue/title", "Fix login"],
+      [":db/add", "tmp-2", ":ramose/type", ":diamond"],
+      [":db/add", "tmp-2", ":diamond/title", "D"],
+      [":db/add", "tmp-2", ":taggable/tag", "t"],
+      [":db/add", "tmp-2", ":timestamped/createdAt", "now"],
+    ]);
+    const { tempids } = await conn.transact([...txOps(tx)]);
+    expect(await conn.db().entity(tempids["tmp-1"]!)).toMatchObject({
+      ":ramose/type": ":issue",
+      ":ramose/trait": [":taggable"],
+      ":issue/title": "Fix login",
+      ":taggable/tag": "urgent",
+    });
+    expect(await conn.db().entity(tempids["tmp-2"]!)).toMatchObject({
+      ":ramose/type": ":diamond",
+      ":ramose/trait": [":annotated", ":taggable", ":timestamped"],
+      ":diamond/title": "D",
+    });
+  });
+
   test("optional and card-many trait fields are omitted on create", () => {
     const tx = txBuilder(Board);
     Effect.runSync(tx.put(Note, { title: "n" }));

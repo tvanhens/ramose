@@ -511,35 +511,56 @@ const lowerUpdate = (
 
 const isTempidSubject = (eid: unknown): boolean => typeof eid === "string";
 
-const declareType = (ops: TxOp[], eid: unknown, fieldIdent: string): void => {
+const entityIdentsOf = (schema: AnySchema): ReadonlySet<string> => {
+  const out = new Set<string>();
+  for (const entity of Object.values(schema.entities)) {
+    const ns = (entity as { ns?: unknown }).ns;
+    if (typeof ns === "string" && ns.length > 0) out.add(composerIdent(ns));
+  }
+  return out;
+};
+
+const hasTypeStamp = (ops: readonly TxOp[], eid: unknown): boolean =>
+  ops.some((op) => {
+    if (Array.isArray(op)) {
+      return op[0] === ":db/add" && op[1] === eid && op[2] === RAMOSE_TYPE_IDENT;
+    }
+    return (
+      op !== null &&
+      typeof op === "object" &&
+      (op as TxMap)[":db/id"] === eid &&
+      RAMOSE_TYPE_IDENT in (op as TxMap)
+    );
+  });
+
+/**
+ * Client create hint: one composer type, never a trait owner (ID-2).
+ * Trait fields stay on the same tempid without declaring a second type.
+ */
+const declareType = (
+  ops: TxOp[],
+  eid: unknown,
+  fieldIdent: string,
+  entityIdents: ReadonlySet<string>,
+): void => {
   if (!isTempidSubject(eid)) return;
   const owner = fieldOwnerIdent(fieldIdent);
-  if (owner === undefined) return;
-  if (
-    ops.some(
-      (op) =>
-        Array.isArray(op) &&
-        op[0] === ":db/add" &&
-        op[1] === eid &&
-        op[2] === RAMOSE_TYPE_IDENT &&
-        op[3] === owner,
-    )
-  ) {
-    return;
-  }
+  if (owner === undefined || !entityIdents.has(owner)) return;
+  if (hasTypeStamp(ops, eid)) return;
   ops.push([":db/add", eid, RAMOSE_TYPE_IDENT, owner]);
 };
 
 const makeHandle = <C extends AnySchema>(
   eid: UnbrandedId | Tempid | LookupRef<C>,
   ops: TxOp[],
+  entityIdents: ReadonlySet<string>,
 ): TxHandle<C> => ({
   _tag: "TxHandle",
   eid,
   set: (field: unknown, value: unknown) =>
     Effect.sync(() => {
       const ident = lowerAttr(field);
-      declareType(ops, eid, ident);
+      declareType(ops, eid, ident, entityIdents);
       ops.push([":db/add", eid, ident, lowerWriteValue(value)]);
     }),
   remove: (field: unknown, value?: unknown) =>
@@ -562,6 +583,7 @@ const makeHandle = <C extends AnySchema>(
 export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
   const ops: TxOp[] = [];
   let next = 0;
+  const entityIdents = entityIdentsOf(schema);
   const builder: Tx<C> = {
     entity: ((id?: TxEntity<C>) =>
       Effect.sync(() => {
@@ -569,14 +591,14 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
           id === undefined
             ? (`tmp-${++next}` as Tempid)
             : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
-        return makeHandle(resolved, ops);
+        return makeHandle(resolved, ops, entityIdents);
       })) as Tx<C>["entity"],
     tempid,
     set: (e: unknown, field: unknown, value: unknown) =>
       Effect.sync(() => {
         const eid = resolveEntity(e);
         const ident = lowerAttr(field);
-        declareType(ops, eid, ident);
+        declareType(ops, eid, ident, entityIdents);
         ops.push([":db/add", eid, ident, lowerWriteValue(value)]);
       }),
     remove: (e: unknown, field: unknown, value?: unknown) =>
@@ -607,7 +629,7 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         const { map, extras } = lowerPut(entity, eid, attrs ?? {});
         ops.push(map);
         ops.push(...extras);
-        return makeHandle(eid, ops);
+        return makeHandle(eid, ops, entityIdents);
       })) as Tx<C>["put"],
     update: ((entity: unknown, a: unknown, b?: unknown) =>
       Effect.sync(() => {
@@ -657,7 +679,7 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
         } else {
           ops.push(...written);
         }
-        return makeHandle(eid, ops);
+        return makeHandle(eid, ops, entityIdents);
       })) as Tx<C>["update"],
   };
   (builder as Tx<C> & Record<typeof TX_INTERNALS, TxInternals<C>>)[TX_INTERNALS] =

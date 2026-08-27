@@ -93,7 +93,6 @@ describe("transaction builder", () => {
       [":db/add", "tmp-1", ":ramose/type", ":user"],
       [":db/add", "tmp-1", ":user/name", "Ada"],
       [":db/add", "tmp-1", ":user/age", 36],
-      [":db/add", "tmp-1", ":ramose/type", ":meta"],
       [":db/add", "tmp-1", ":meta/source", "import"],
       [":db/retract", "tmp-1", ":user/age", 35],
       [":db/add", 1001, ":user/friends", 1002],
