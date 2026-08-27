@@ -119,6 +119,8 @@ interface PendingLayer {
   generated: Set<string>;
   /** Named tempids this payload treats as entity refs (tx, entity, op.tempid). */
   usedTempids: Set<string>;
+  /** Input paths the body read as tempid / entity values. */
+  inputPaths: (readonly (string | number)[])[];
   invocation?: OperationInvocation;
 }
 
@@ -126,6 +128,7 @@ interface PendingLayer {
 interface InFlightNamed {
   names: Set<string>;
   usedTempids: Set<string>;
+  inputPaths: (readonly (string | number)[])[];
   tx: unknown[];
   invocation?: OperationInvocation;
 }
@@ -337,25 +340,100 @@ const collectNamedTempids = (
   return names;
 };
 
-/**
- * Rewrite strings in `input` that this invocation treated as tempids.
- * Lookup refs stay identity-valued. Other nested objects/arrays recurse.
- */
-const rewriteUsedInInput = (
+const getAtPath = (
   value: unknown,
-  ids: Record<string, number>,
+  path: readonly (string | number)[],
 ): unknown => {
-  if (isLookupRef(value)) return value;
-  if (typeof value === "string" && ids[value] !== undefined) return ids[value];
-  if (Array.isArray(value)) return value.map((x) => rewriteUsedInInput(x, ids));
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = rewriteUsedInInput(v, ids);
-    }
+  let cur = value;
+  for (const key of path) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string | number, unknown>)[key];
+  }
+  return cur;
+};
+
+const setAtPath = (
+  value: unknown,
+  path: readonly (string | number)[],
+  next: unknown,
+): unknown => {
+  if (path.length === 0) return next;
+  const [head, ...rest] = path;
+  if (Array.isArray(value)) {
+    const out = value.slice();
+    const i = Number(head);
+    out[i] = setAtPath(out[i], rest, next);
     return out;
   }
+  if (value !== null && typeof value === "object") {
+    return {
+      ...(value as Record<string, unknown>),
+      [head as string]: setAtPath(
+        (value as Record<string, unknown>)[head as string],
+        rest,
+        next,
+      ),
+    };
+  }
   return value;
+};
+
+/** Rewrite only the input paths the body treated as tempids / entity refs. */
+const rewriteInputPaths = (
+  input: unknown,
+  paths: readonly (readonly (string | number)[])[],
+  ids: Record<string, number>,
+): unknown => {
+  let out = input;
+  for (const path of paths) {
+    const cur = getAtPath(out, path);
+    if (typeof cur === "string" && ids[cur] !== undefined) {
+      out = setAtPath(out, path, ids[cur]);
+    }
+  }
+  return out;
+};
+
+/**
+ * Deep proxy that records every string leaf the body reads. Those paths
+ * are the only input slots that may be remapped — a title that equals a
+ * tempid name is left alone if the body never used it as an entity.
+ */
+const trackInputReads = (
+  value: unknown,
+  onRead: (path: readonly (string | number)[], leaf: unknown) => void,
+  path: readonly (string | number)[] = [],
+): unknown => {
+  if (value === null || typeof value !== "object") return value;
+  if (isLookupRef(value)) return value;
+  if (Array.isArray(value)) {
+    return new Proxy(value, {
+      get(target, prop, recv) {
+        if (typeof prop === "symbol" || prop === "length") {
+          return Reflect.get(target, prop, recv);
+        }
+        const i = Number(prop);
+        if (!Number.isInteger(i)) return Reflect.get(target, prop, recv);
+        const item = target[i];
+        if (item === null || typeof item !== "object") {
+          onRead([...path, i], item);
+          return item;
+        }
+        return trackInputReads(item, onRead, [...path, i]);
+      },
+    });
+  }
+  return new Proxy(value as object, {
+    get(target, prop, recv) {
+      if (typeof prop === "symbol") return Reflect.get(target, prop, recv);
+      const item = Reflect.get(target, prop, recv);
+      if (item === null || typeof item !== "object") {
+        onRead([...path, prop], item);
+        return item;
+      }
+      return trackInputReads(item, onRead, [...path, prop]);
+    },
+  });
 };
 
 const usedIds = (
@@ -374,6 +452,7 @@ const rewriteInvocation = (
   ids: Record<string, number>,
   eids: Map<number, number>,
   used: Set<string>,
+  inputPaths: readonly (readonly (string | number)[])[] = [],
 ): OperationInvocation => {
   const relevant = usedIds(ids, used);
   const entity =
@@ -381,8 +460,8 @@ const rewriteInvocation = (
       ? remapEntityRef(invocation.entity, eids, ids)
       : invocation.entity;
   const input =
-    Object.keys(relevant).length > 0
-      ? rewriteUsedInInput(invocation.input, relevant)
+    Object.keys(relevant).length > 0 && inputPaths.length > 0
+      ? rewriteInputPaths(invocation.input, inputPaths, relevant)
       : invocation.input;
   const nextTempids: Record<string, number> = {
     ...(invocation.tempids ?? {}),
@@ -671,6 +750,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           foreign,
           eids,
           layer.usedTempids,
+          layer.inputPaths,
         );
       }
       layer.datoms = rewriteDatoms(layer.datoms, eids);
@@ -686,6 +766,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           referred,
           eids,
           rec.usedTempids,
+          rec.inputPaths,
         );
       }
     }
@@ -926,6 +1007,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               tempids: expansion.tempids,
               generated,
               usedTempids,
+              inputPaths: [],
             });
             notify();
           }
@@ -939,7 +1021,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             if (layerAtSubmit === undefined) {
               const names = collectNamedTempids(tx, conn?.db().schema);
               if (names.size > 0) {
-                inFlight = { names, usedTempids, tx: tx as unknown[] };
+                inFlight = { names, usedTempids, inputPaths: [], tx: tx as unknown[] };
                 inFlightNamed.push(inFlight);
               }
             }
@@ -1070,12 +1152,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           collected = built.ops;
 
           const usedFromTempid = new Set<string>();
+          const inputPaths: (readonly (string | number)[])[] = [];
+          const trackedInput = trackInputReads(
+            args.invocation.input,
+            (path, leaf) => {
+              if (isNamedTempid(leaf)) inputPaths.push(path);
+            },
+          );
           yield* runBody(
             args.operation,
             built.op,
-            args.invocation.input,
+            trackedInput,
             {
-              resolved: args.invocation.tempids,
+              ...(args.invocation.tempids !== undefined
+                ? { resolved: args.invocation.tempids }
+                : {}),
               onTempid: (name) => {
                 if (isNamedTempid(name)) usedFromTempid.add(name);
               },
@@ -1108,6 +1199,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 tempids: expansion.tempids,
                 generated,
                 usedTempids,
+                inputPaths,
                 invocation,
               });
               notify();
@@ -1137,7 +1229,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               });
               for (const name of usedTempids) names.add(name);
               if (names.size > 0) {
-                inFlight = { names, usedTempids, tx, invocation };
+                inFlight = { names, usedTempids, inputPaths, tx, invocation };
                 inFlightNamed.push(inFlight);
               }
             }
@@ -1150,6 +1242,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 ackedNamed,
                 new Map(),
                 usedTempids,
+                inputPaths,
               );
             };
             const runPost = () =>

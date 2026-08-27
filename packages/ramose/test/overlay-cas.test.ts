@@ -117,14 +117,19 @@ const rerunPostedOp = async (
     schema: Movies,
     db: "movies",
     principal: { eid: null, class: "admin", claims: {} },
-    self: body.entity,
+    ...(body.entity !== undefined ? { self: body.entity } : {}),
     effects: "run",
-    resolvedTempids: body.tempids,
+    ...(body.tempids !== undefined ? { resolvedTempids: body.tempids } : {}),
     q: () => Effect.succeed([]),
     pull: () => Effect.succeed(null),
   });
   await Effect.runPromise(
-    runBody(operation, built.op, body.input, { resolved: body.tempids }),
+    runBody(
+      operation,
+      built.op,
+      body.input,
+      body.tempids !== undefined ? { resolved: body.tempids } : {},
+    ),
   );
   return server.transact([...built.ops()]);
 };
@@ -792,11 +797,12 @@ describe("overlay CAS /op remapping", () => {
     expect(input.target).not.toBe("new");
     expect(input.title).toBe("new");
     const postedTempids = posted.tempids as Record<string, number> | undefined;
-    expect(postedTempids?.new).toBe(input.target);
+    const targetEid = input.target as number;
+    expect(postedTempids?.new).toBe(targetEid);
 
-    const adaEid = await server.db().entid([":user/name", "Ada"]);
-    expect(adaEid).toBe(input.target);
-    expect((await server.db().entity(adaEid!))![":user/age"]).toBe(42);
+    const adaEid = (await server.db().entid([":user/name", "Ada"]))!;
+    expect(adaEid).toBe(targetEid);
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(42);
     const nameAttr = server.db().attr(":user/name")!.id;
     const named = await server.db().datomsArray(Index.AVET, { a: nameAttr });
     expect(named.filter((d) => d.op).map((d) => d.e)).toEqual([adaEid]);
