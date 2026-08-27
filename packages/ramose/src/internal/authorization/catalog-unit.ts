@@ -41,6 +41,7 @@ import {
 } from "./identities.ts";
 import {
   BOUND_AUTHORIZATION_IR_VERSION,
+  CanonicalAuthorizationDecisions,
   CanonicalAuthorizationRule,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InstalledAuthorizationIR,
@@ -52,13 +53,18 @@ import {
 } from "./ir.ts";
 import {
   normalizeAccessPlans,
+  normalizeClasses,
+  normalizeClaims,
+  normalizeDecisions,
   normalizeEntities,
   normalizeFields,
   normalizeIdentities,
   normalizeOperations,
+  normalizeRules,
   normalizeTraitComposition,
   normalizeTraits,
 } from "./install/normalize.ts";
+import { ClaimDescriptor, ClassVocabulary } from "./principal.ts";
 import { deriveRuleAccessPlan } from "./install/plan.ts";
 import { validateBoundAuthorizationResult } from "./validate.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
@@ -308,6 +314,18 @@ const encodeRules = (
   rules: ReadonlyArray<CanonicalAuthorizationRule>,
 ): unknown => rules.map((rule) => Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule));
 
+const encodeClasses = (
+  classes: ReadonlyArray<string>,
+): unknown => Schema.encodeUnknownSync(ClassVocabulary)(classes);
+
+const encodeClaims = (
+  claims: ReadonlyArray<ClaimDescriptor>,
+): unknown => claims.map((claim) => Schema.encodeUnknownSync(ClaimDescriptor)(claim));
+
+const encodeDecisions = (
+  decisions: CanonicalAuthorizationDecisions,
+): unknown => Schema.encodeUnknownSync(CanonicalAuthorizationDecisions)(decisions);
+
 const boundAuthorizationFromPolicy = (policy: InstalledAuthorizationIRType): BoundAuthorizationIR => ({
   _tag: "BoundAuthorizationIR",
   version: BOUND_AUTHORIZATION_IR_VERSION,
@@ -326,7 +344,8 @@ const boundAuthorizationFromPolicy = (policy: InstalledAuthorizationIRType): Bou
 /**
  * Revalidate the embedded policy against the unit descriptor. Coherence
  * checks identity tables and re-derives access plans; this recomputes
- * rule/decision semantics and usage flags.
+ * rule/decision semantics and usage flags. Stored classes, claims, rules,
+ * and decisions must already be in install-canonical order.
  */
 const requireEmbeddedPolicySemantics = (
   document: InstalledCatalogUnit,
@@ -336,10 +355,29 @@ const requireEmbeddedPolicySemantics = (
       bound: boundAuthorizationFromPolicy(document.policy),
       descriptor: schemaDescriptorFromUnit(document),
     });
+    const rules = yield* normalizeRules(validated.rules);
     yield* canonicalEqual(
-      encodeRules(validated.rules),
+      encodeRules(rules),
       encodeRules(document.policy.rules),
       "rules",
+    );
+    const classes = yield* normalizeClasses(document.policy.classes);
+    yield* canonicalEqual(
+      encodeClasses(classes),
+      encodeClasses(document.policy.classes),
+      "classes",
+    );
+    const claims = yield* normalizeClaims(document.policy.claims);
+    yield* canonicalEqual(
+      encodeClaims(claims),
+      encodeClaims(document.policy.claims),
+      "claims",
+    );
+    const decisions = yield* normalizeDecisions(document.policy.decisions);
+    yield* canonicalEqual(
+      encodeDecisions(decisions),
+      encodeDecisions(document.policy.decisions),
+      "decisions",
     );
   });
 
