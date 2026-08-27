@@ -420,7 +420,9 @@ The read-authorization authoring API (`read`, `.when` / `.deny`, `any` /
 `hasClass`, `$` / `path`) is a compile-time macro. It lowers to
 catalog-relative, data-only `PolicyTemplateIR`. Runtime evaluates that
 IR. Authoring callbacks receive a proxied schema only — never a `Db` or
-an Effect environment.
+an Effect environment. Semantic compatibility (trait composition, self-ref
+and ref-target, equality and membership, path reachability) is decided at
+authoritative installation, not by a second compiler kernel.
 
 - `read(T).when(expr)` is an allow rule. Multiple `.when` on the same
   target OR together (**POL-4**).

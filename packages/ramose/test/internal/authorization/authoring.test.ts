@@ -1,23 +1,16 @@
 /**
- * Read-authorization authoring language (#406).
+ * Read-authorization authoring language (#406 / #431).
  *
- * Compile lowers `read` / `$` / `path` into Schema-decoded PolicyTemplateIR
- * and reuses the core-v1 bind → validate → install pipeline.
+ * Compile lowers `read` / `$` / `path` into Schema-decoded PolicyTemplateIR.
+ * Semantic compatibility is asserted via shared fixtures against bind →
+ * validate — not by a second compiler kernel.
  */
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
-  CatalogId,
-  CatalogVersion,
-  DatabaseId,
-  EntityId,
-  FieldId,
   InvalidIR,
-  OperationId,
-  SchemaFingerprint,
-  TraitId,
   bindPolicyTemplateResult,
   compileReadAuthorization,
   compileReadAuthorizationResult,
@@ -44,69 +37,36 @@ import {
   read,
   subject,
   type AuthExpr,
-  type CatalogBindingTarget,
-  type CatalogDescriptor,
-  type FieldRefTarget,
-  type OwnerRef,
   type PolicyTemplateIR,
   type ReadRule,
 } from "../../../src/internal/authorization/index.ts";
-import { Entity, Field, Ref, Schema, Trait, string } from "../../../src/db/internal.ts";
+import { Entity, Schema, string } from "../../../src/db/internal.ts";
 import "./authoring-types.ts";
+import {
+  App,
+  External,
+  Issue,
+  OrphanResource,
+  OrphanResources,
+  Taggable,
+  User,
+  Workspace,
+  bindAndValidate,
+  catalogDescriptor,
+  compileRules,
+  expectInvalid,
+  expectOk,
+  issueOwner,
+  orgClaim,
+  semanticAccepts,
+  semanticRejects,
+  taggableOwner,
+  target,
+  userOwner,
+  workspaceOwner,
+} from "./semantic-fixtures.ts";
 
-const User = Entity("user", {
-  authId: Field.unique(string(), "upsert"),
-});
-const Workspace = Entity("workspace", {
-  members: Field.many(Ref(User)),
-});
-const Tag = Entity("tag", { name: string() });
-const Taggable = Trait("taggable", { tags: Field.many(Ref(User)) });
-const Issue = Entity(
-  "issue",
-  {
-    owner: Ref(User),
-    workspace: Ref(Workspace),
-    title: string(),
-    parent: Ref.self,
-  },
-  { traits: [Taggable] },
-);
-const App = Schema({ user: User, workspace: Workspace, tag: Tag, issue: Issue });
-
-const orgClaim = {
-  key: "org",
-  optional: false,
-  shape: { _tag: "scalar" as const, valueType: "string" as const },
-};
-
-const compile = (
-  rules: readonly ReadRule[],
-  extras: Omit<Partial<Parameters<typeof compileReadAuthorizationResult>[0]>, "rules"> = {},
-) =>
-  compileReadAuthorizationResult({
-    schema: extras.schema ?? App,
-    rules,
-    claims: extras.claims ?? [orgClaim],
-    principal: extras.principal ?? { entity: User.authId },
-    ...(extras.classes === undefined ? {} : { classes: extras.classes }),
-  });
-
-const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegExp) => {
-  expect(Result.isFailure(result)).toBe(true);
-  if (Result.isFailure(result)) {
-    expect(result.failure).toBeInstanceOf(InvalidIR);
-    expect(result.failure._tag).toBe("InvalidIR");
-    expect(result.failure.message).toMatch(pattern);
-  }
-};
-
-const expectOk = (result: Result.Result<PolicyTemplateIR, InvalidIR>): PolicyTemplateIR => {
-  if (Result.isFailure(result)) {
-    throw new Error(`expected success, got ${result.failure.message}`);
-  }
-  return result.success;
-};
+const compile = compileRules;
 
 const assertInert = (value: unknown, seen = new WeakSet<object>()): void => {
   if (value === null || typeof value !== "object") {
@@ -130,95 +90,6 @@ const assertInert = (value: unknown, seen = new WeakSet<object>()): void => {
     assertInert(child, seen);
   }
 };
-
-const catalog = CatalogId.make("app");
-const database = DatabaseId.make("todos");
-const version = CatalogVersion.make("1");
-const fingerprint = SchemaFingerprint.make("schema");
-const issueOwner = { kind: "entity" as const, name: "issue" };
-const userOwner = { kind: "entity" as const, name: "user" };
-const taggableOwner = { kind: "trait" as const, name: "taggable" };
-const workspaceOwner = { kind: "entity" as const, name: "workspace" };
-
-const target: CatalogBindingTarget = {
-  database,
-  catalog,
-  catalogVersion: version,
-  schemaFingerprint: fingerprint,
-};
-
-const entityId = (name: string) => EntityId.make({ catalog, name });
-const traitId = (name: string) => TraitId.make({ catalog, name });
-const fieldId = (owner: OwnerRef, localName: string) => FieldId.make({ catalog, owner, localName });
-
-const scalarField = (
-  owner: OwnerRef,
-  localName: string,
-  options: { readonly unique?: "upsert" | "strict" } = {},
-): CatalogDescriptor["fields"][number] => ({
-  id: fieldId(owner, localName),
-  valueType: "string",
-  cardinality: "one",
-  ...(options.unique === undefined ? {} : { unique: options.unique }),
-  index: options.unique !== undefined,
-  optional: false,
-  owned: false,
-});
-
-const refField = (
-  owner: OwnerRef,
-  localName: string,
-  refTarget: FieldRefTarget,
-  cardinality: "one" | "many" = "one",
-): CatalogDescriptor["fields"][number] => ({
-  id: fieldId(owner, localName),
-  valueType: "ref",
-  refTarget,
-  cardinality,
-  index: false,
-  optional: false,
-  owned: false,
-});
-
-const catalogDescriptor = (): CatalogDescriptor => ({
-  id: catalog,
-  database,
-  version,
-  fingerprint,
-  entities: [
-    { id: entityId("user"), traits: [] },
-    { id: entityId("workspace"), traits: [] },
-    { id: entityId("issue"), traits: [traitId("taggable")] },
-    { id: entityId("tag"), traits: [] },
-  ],
-  traits: [{ id: traitId("taggable"), traits: [] }],
-  fields: [
-    scalarField(userOwner, "authId", { unique: "upsert" }),
-    refField(issueOwner, "owner", { _tag: "entity", entity: entityId("user") }),
-    refField(issueOwner, "workspace", { _tag: "entity", entity: entityId("workspace") }),
-    scalarField(issueOwner, "title"),
-    refField(issueOwner, "parent", { _tag: "self" }),
-    refField(workspaceOwner, "members", { _tag: "entity", entity: entityId("user") }, "many"),
-    refField(taggableOwner, "tags", { _tag: "entity", entity: entityId("user") }, "many"),
-    scalarField({ kind: "entity", name: "tag" }, "name"),
-  ],
-  operations: [
-    {
-      id: OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
-      input: {
-        _tag: "struct",
-        fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
-      },
-    },
-  ],
-  traitComposition: [
-    {
-      composer: entityId("issue"),
-      trait: traitId("taggable"),
-      transitive: [traitId("taggable")],
-    },
-  ],
-});
 
 describe("compile common rules", () => {
   test("owner eq(me), workspace contains, hasClass, claim+subject, trait, field-narrow", () => {
@@ -327,6 +198,14 @@ describe("compile common rules", () => {
       right: { _tag: "lit", value: "hello" },
     });
   });
+
+  test("composed trait fields and entity self-ref compile", () => {
+    const issueTags = expectOk(compile([read(Issue).when(contains(Issue.tags, me))]));
+    const traitTags = expectOk(compile([read(Issue).when(contains(Taggable.tags, me))]));
+    expect(issueTags.rules[0]?.expr).toEqual(traitTags.rules[0]?.expr);
+    expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
+    expectOk(compile([read(Issue).when(eq(path(Issue.parent, Issue.owner), me))]));
+  });
 });
 
 describe("callback and $() match eq/path/contains", () => {
@@ -416,7 +295,7 @@ describe("artifact inertness", () => {
   });
 });
 
-describe("InvalidIR failures", () => {
+describe("structural InvalidIR", () => {
   test("unknown field path", () => {
     expectInvalid(
       compile([read(Issue).when(eq({ ident: ":issue/missing", cardinality: "one" }, me))]),
@@ -429,15 +308,6 @@ describe("InvalidIR failures", () => {
     expectInvalid(compile([read(Issue).when(eq(Outsider.name, "x"))]), /not in this catalog/);
     const OtherIssue = Entity("issue", { secret: string() });
     expectInvalid(compile([read(Issue).when(eq(OtherIssue.secret, "x"))]), /not in this catalog/);
-  });
-
-  test("eq on card-many", () => {
-    expectInvalid(compile([read(Workspace).when(eq(Workspace.members, me))]), /card-many|contains/);
-    expectInvalid(compile([read(Issue).when(eq(Issue.tags, me))]), /card-many|contains/);
-  });
-
-  test("contains on card-one", () => {
-    expectInvalid(compile([read(Issue).when(contains(Issue.owner, me))]), /card-many|card-one/);
   });
 
   test("reverse path", () => {
@@ -497,25 +367,6 @@ describe("InvalidIR failures", () => {
     );
   });
 
-  test("principal field must be entity-owned, unique, and string-compatible", () => {
-    expectInvalid(
-      compileReadAuthorizationResult({
-        schema: App,
-        rules: [read(Issue).when(allow)],
-        principal: { entity: Taggable.tags },
-      }),
-      /principal field must be entity-owned/,
-    );
-    expectInvalid(
-      compileReadAuthorizationResult({
-        schema: App,
-        rules: [read(Issue).when(allow)],
-        principal: { entity: Issue.title },
-      }),
-      /principal field is not unique/,
-    );
-  });
-
   test("deny callback form compiles", () => {
     const template = expectOk(
       compile([read(Issue).deny((issue) => eq(issue.owner, me))]),
@@ -549,29 +400,6 @@ describe("InvalidIR failures", () => {
     );
   });
 
-  test("rejects paths unreachable from the rule focus", () => {
-    expectInvalid(
-      compile([read(Issue).when(eq(User.authId, "x"))]),
-      /wrong owner for field 'entity:user\.authId'/,
-    );
-    expectInvalid(
-      compile([read(Issue).when(contains(path(Issue.owner, Workspace.members), me))]),
-      /wrong owner for field 'entity:workspace\.members'/,
-    );
-    expectInvalid(
-      compile([read(Issue.title).when(eq(User.authId, "x"))]),
-      /wrong owner/,
-    );
-  });
-
-  test("composed trait fields stay reachable from the entity focus", () => {
-    const issueTags = expectOk(compile([read(Issue).when(contains(Issue.tags, me))]));
-    const traitTags = expectOk(compile([read(Issue).when(contains(Taggable.tags, me))]));
-    expect(issueTags.rules[0]?.expr).toEqual(traitTags.rules[0]?.expr);
-    expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
-    expectOk(compile([read(Issue).when(eq(path(Issue.parent, Issue.owner), me))]));
-  });
-
   test("malformed operand payloads return InvalidIR", () => {
     expectInvalid(compile([read(Issue).when(eq({ _tag: "claim" }, me))]), /malformed claim/);
     expectInvalid(
@@ -591,66 +419,6 @@ describe("InvalidIR failures", () => {
       compile([read(Issue).when(eq({ _tag: "lit", value: { nested: true } }, me))]),
       /JSON scalar/,
     );
-  });
-
-  test("rejects incompatible equality operands at compile", () => {
-    expectInvalid(compile([read(Issue).when(eq(Issue.title, me))]), /incompatible equality/);
-    expectInvalid(compile([read(Issue).when(eq(Issue.title, 1))]), /incompatible equality/);
-    expectOk(compile([read(Issue).when(eq(Issue.owner, me))]));
-    expectOk(compile([read(Issue).when(eq(subject, claim("org")))]));
-    expectOk(compile([read(Issue).when(eq(Issue.title, "hello"))]));
-  });
-
-  test("rejects incompatible membership operands at compile", () => {
-    const Labeled = Trait("labeled", { labels: Field.many(Ref(Tag)) });
-    const Note = Entity("note", { title: string() }, { traits: [Labeled] });
-    const LabeledApp = Schema({ user: User, tag: Tag, note: Note });
-    expectInvalid(
-      compileReadAuthorizationResult({
-        schema: LabeledApp,
-        rules: [read(Labeled).when(contains(Labeled.labels, me))],
-        claims: [],
-        principal: { entity: User.authId },
-      }),
-      /incompatible membership/,
-    );
-    expectInvalid(compile([read(Issue).when(contains(me, Issue.owner))]), /membership requires a collection/);
-    expectInvalid(compile([read(Workspace).when(contains(Workspace.members, "x"))]), /incompatible membership/);
-    expectInvalid(compile([read(Issue).when(contains(claim("org"), "x"))]), /membership requires a collection/);
-    expectInvalid(
-      compileReadAuthorizationResult({
-        schema: App,
-        rules: [read(Issue).when(contains(claim("teams"), me))],
-        claims: [
-          orgClaim,
-          {
-            key: "teams",
-            optional: true,
-            shape: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
-          },
-        ],
-        principal: { entity: User.authId },
-      }),
-      /incompatible membership/,
-    );
-    expectOk(
-      compileReadAuthorizationResult({
-        schema: App,
-        rules: [read(Issue).when(contains(claim("teams"), "admin"))],
-        claims: [
-          orgClaim,
-          {
-            key: "teams",
-            optional: true,
-            shape: { _tag: "array", items: { _tag: "scalar", valueType: "string" } },
-          },
-        ],
-        principal: { entity: User.authId },
-      }),
-    );
-    expectOk(compile([read(Workspace).when(contains(Workspace.members, me))]));
-    expectOk(compile([read(Issue).when(contains(path(Issue.workspace, Workspace.members), me))]));
-    expectOk(compile([read(Taggable).when(contains(Taggable.tags, me))]));
   });
 
   test("malformed recognized tags return InvalidIR and do not throw", () => {
@@ -695,6 +463,17 @@ describe("InvalidIR failures", () => {
     let tooDeep: AuthExpr = allow;
     for (let i = 0; i < 65; i++) tooDeep = not(tooDeep);
     expectInvalid(compile([read(Issue).when(all(allow, tooDeep))]), /expression depth .* exceeds 64/);
+  });
+
+  test("intermediate hop through an out-of-schema ref target field is InvalidIR", () => {
+    expectInvalid(
+      compileRules([read(OrphanResource).when(eq(path(OrphanResource.external, External.name), "x"))], {
+        schema: OrphanResources,
+        claims: [],
+        principal: { entity: User.authId },
+      }),
+      /invalid path: 'external' is not in this catalog/,
+    );
   });
 });
 
@@ -837,263 +616,27 @@ describe("core-v1 integration", () => {
   });
 });
 
-describe("self-ref hops from the field owner", () => {
-  const Linkable = Trait("linkable", {
-    parent: Ref.self,
-    label: string(),
-  });
-  const LinkedIssue = Entity("issue", { owner: Ref(User) }, { traits: [Linkable] });
-  const LinkedApp = Schema({ user: User, issue: LinkedIssue });
+describe("installation owns semantic compatibility", () => {
+  test.each(semanticRejects.map((scenario) => [scenario.name, scenario] as const))(
+    "%s: compile succeeds, bind/validate fails",
+    (_name, scenario) => {
+      const template = expectOk(scenario.compile());
+      const installed = bindAndValidate(template, scenario.descriptor());
+      expect(Result.isFailure(installed)).toBe(true);
+      if (Result.isFailure(installed)) {
+        expect(installed.failure.message).toMatch(scenario.installFails);
+      }
+    },
+  );
 
-  test("trait self-ref then entity field is the wrong owner", () => {
-    expectInvalid(
-      compileReadAuthorizationResult({
-        schema: LinkedApp,
-        rules: [read(LinkedIssue).when(eq(path(Linkable.parent, LinkedIssue.owner), me))],
-        claims: [],
-        principal: { entity: User.authId },
-      }),
-      /wrong owner/,
-    );
-  });
-
-  test("entity self-ref stays on the entity", () => {
-    expectOk(compile([read(Issue).when(eq(path(Issue.parent, Issue.owner), me))]));
-  });
-
-  test("after a trait self-ref, a trait-owned field stays reachable", () => {
-    expectOk(
-      compileReadAuthorizationResult({
-        schema: LinkedApp,
-        rules: [read(LinkedIssue).when(eq(path(Linkable.parent, Linkable.label), "x"))],
-        claims: [],
-        principal: { entity: User.authId },
-      }),
-    );
-  });
-});
-
-describe("trait composition in principal-ref / ref-ref equality", () => {
-  const Member = Trait("member", {});
-  const Base = Trait("base", {});
-  const Extra = Trait("extra", {}, { traits: [Base] });
-  const Person = Entity("person", { authId: Field.unique(string(), "upsert") }, { traits: [Member] });
-  const Guest = Entity("guest", { authId: Field.unique(string(), "upsert") });
-  const Holder = Entity("holder", { authId: Field.unique(string(), "upsert") }, { traits: [Extra] });
-  const Bag = Entity("bag", {
-    holder: Ref(Member),
-    owner: Ref(Person),
-    guest: Ref(Guest),
-    base: Ref(Base),
-    extra: Ref(Extra),
-  });
-  const Bags = Schema({ person: Person, guest: Guest, holder: Holder, bag: Bag });
-
-  const compileBag = (
-    rules: readonly ReadRule[],
-    principal: { readonly entity: typeof Person.authId | typeof Guest.authId | typeof Holder.authId },
-  ) =>
-    compileReadAuthorizationResult({
-      schema: Bags,
-      rules,
-      claims: [],
-      principal,
-    });
-
-  test("me matches a ref to a trait the principal entity composes", () => {
-    expectOk(compileBag([read(Bag).when(eq(Bag.holder, me))], { entity: Person.authId }));
-  });
-
-  test("me does not match a trait the principal entity does not compose", () => {
-    expectInvalid(
-      compileBag([read(Bag).when(eq(Bag.holder, me))], { entity: Guest.authId }),
-      /incompatible equality/,
-    );
-  });
-
-  test("two refs are compatible when an entity composes the trait target", () => {
-    expectOk(compileBag([read(Bag).when(eq(Bag.holder, Bag.owner))], { entity: Person.authId }));
-    expectInvalid(
-      compileBag([read(Bag).when(eq(Bag.holder, Bag.guest))], { entity: Person.authId }),
-      /incompatible equality/,
-    );
-  });
-
-  test("two trait refs are compatible when one trait composes the other", () => {
-    expectOk(compileBag([read(Bag).when(eq(Bag.base, Bag.extra))], { entity: Holder.authId }));
-  });
-
-  test("two distinct entity refs stay incompatible", () => {
-    expectInvalid(compile([read(Issue).when(eq(Issue.owner, Issue.workspace))]), /incompatible equality/);
-  });
-});
-
-describe("entity vs composed-trait ref targets (Resource.userRef / actorRef)", () => {
-  const Actor = Trait("actor", {});
-  const User = Entity("user", { authId: Field.unique(string(), "upsert") }, { traits: [Actor] });
-  const Stranger = Entity("stranger", { authId: Field.unique(string(), "upsert") });
-  const Resource = Entity("resource", {
-    userRef: Ref(User),
-    actorRef: Ref(Actor),
-    manyActorRefs: Field.many(Ref(Actor)),
-    strangerRef: Ref(Stranger),
-  });
-  const Resources = Schema({ user: User, stranger: Stranger, resource: Resource });
-  const compileResource = (rules: readonly ReadRule[]) =>
-    compileReadAuthorizationResult({
-      schema: Resources,
-      rules,
-      claims: [],
-      principal: { entity: User.authId },
-    });
-
-  test("eq(userRef, actorRef) compiles in both directions when User composes Actor", () => {
-    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.actorRef))]));
-    expectOk(compileResource([read(Resource).when(eq(Resource.actorRef, Resource.userRef))]));
-  });
-
-  test("contains(manyActorRefs, userRef) is compatible via eqCompatible", () => {
-    expectOk(compileResource([read(Resource).when(contains(Resource.manyActorRefs, Resource.userRef))]));
-  });
-
-  test("eq fails when the entity does not compose the trait", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.strangerRef, Resource.actorRef))]),
-      /incompatible equality/,
-    );
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.actorRef, Resource.strangerRef))]),
-      /incompatible equality/,
-    );
-  });
-});
-
-describe("targeted vs untargeted refs", () => {
-  const Resource = Entity("resource", {
-    userRef: Ref(User),
-    looseRef: Field(Ref),
-    otherLoose: Field(Ref),
-  });
-  const Resources = Schema({ user: User, resource: Resource });
-  const compileResource = (rules: readonly ReadRule[]) =>
-    compileReadAuthorizationResult({
-      schema: Resources,
-      rules,
-      claims: [],
-      principal: { entity: User.authId },
-    });
-
-  test("exactly one untargeted ref is incompatible", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.looseRef, Resource.userRef))]),
-      /incompatible equality/,
-    );
-  });
-
-  test("two untargeted refs are compatible", () => {
-    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.looseRef))]));
-    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.otherLoose))]));
-  });
-
-  test("two targeted refs to the same entity are compatible", () => {
-    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.userRef))]));
-  });
-
-  test("untargeted ref is incompatible with me", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.looseRef, me))]),
-      /incompatible equality/,
-    );
-  });
-});
-
-describe("ref targets must be in the catalog", () => {
-  const External = Entity("external", { name: string() });
-  const OrphanTrait = Trait("orphan", {});
-  const Resource = Entity("resource", {
-    userRef: Ref(User),
-    external: Ref(External),
-    externals: Field.many(Ref(External)),
-    orphan: Ref(OrphanTrait),
-    looseRef: Field(Ref),
-    parent: Ref.self,
-  });
-  const Resources = Schema({ user: User, resource: Resource });
-  const compileResource = (rules: readonly ReadRule[]) =>
-    compileReadAuthorizationResult({
-      schema: Resources,
-      rules,
-      claims: [],
-      principal: { entity: User.authId },
-    });
-
-  test("terminal ref to an entity outside the schema is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.external, Resource.external))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.external, me))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-  });
-
-  test("contains of an out-of-catalog collection is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(contains(Resource.externals, Resource.userRef))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-    expectInvalid(
-      compileResource([read(Resource).when(contains(Resource.externals, me))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-  });
-
-  test("$() terminal to an out-of-catalog ref is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource).when($(Resource).external.eq(me))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-    expectInvalid(
-      compileResource([read(Resource).when($(Resource).external.eq($(Resource).external))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-  });
-
-  test("field-target read(Resource.external) is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource.external).when((external) => external(me))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-    expectInvalid(
-      compileResource([read(Resource.external).when(eq(Resource.external, me))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-  });
-
-  test("trait ref target omitted from the schema is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.orphan, Resource.orphan))]),
-      /invalid path: 'orphan' is not in this catalog/,
-    );
-    expectInvalid(
-      compileResource([read(Resource).when(eq(Resource.orphan, me))]),
-      /invalid path: 'orphan' is not in this catalog/,
-    );
-  });
-
-  test("intermediate hop through an out-of-schema ref is InvalidIR", () => {
-    expectInvalid(
-      compileResource([read(Resource).when(eq(path(Resource.external, External.name), "x"))]),
-      /invalid path: 'external' is not in this catalog/,
-    );
-  });
-
-  test("self-ref and untargeted Field(Ref) stay in-schema", () => {
-    expectOk(compileResource([read(Resource).when(eq(Resource.parent, Resource.parent))]));
-    expectOk(compileResource([read(Resource).when(eq(Resource.looseRef, Resource.looseRef))]));
-    expectOk(compileResource([read(Resource).when(eq(Resource.userRef, Resource.userRef))]));
-  });
+  test.each(semanticAccepts.map((scenario) => [scenario.name, scenario] as const))(
+    "%s: compile and bind/validate succeed",
+    (_name, scenario) => {
+      const template = expectOk(scenario.compile());
+      const installed = bindAndValidate(template, scenario.descriptor());
+      if (Result.isFailure(installed)) throw new Error(installed.failure.message);
+    },
+  );
 });
 
 describe("field-target callbacks use the same proxy", () => {
@@ -1132,23 +675,6 @@ describe("field-target callbacks use the same proxy", () => {
     const viaPath = expectOk(compile([read(Issue.parent).when(eq(path(Issue.parent, Issue.title), "x"))]));
     expect(viaCallback.rules[0]?.expr).toEqual(viaPath.rules[0]?.expr);
     expectOk(compile([read(Issue.parent).when((parent) => parent.parent.title.eq("x"))]));
-  });
-
-  test("trait-owned self-ref callback stays on the trait row", () => {
-    const Linkable = Trait("linkable", {
-      parent: Ref.self,
-      label: string(),
-    });
-    const LinkedIssue = Entity("issue", { owner: Ref(User) }, { traits: [Linkable] });
-    const LinkedApp = Schema({ user: User, issue: LinkedIssue });
-    expectOk(
-      compileReadAuthorizationResult({
-        schema: LinkedApp,
-        rules: [read(Linkable.parent).when((p) => p.label.eq("x"))],
-        claims: [],
-        principal: { entity: User.authId },
-      }),
-    );
   });
 });
 
