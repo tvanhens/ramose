@@ -40,10 +40,8 @@ export const toWirePrincipal = (p: VerifiedPrincipal): Principal => ({
 /** `Authorization: Bearer …`, else `?token=` (a browser cannot set headers on an upgrade). */
 export function bearerOf(request: Request): string | undefined {
   const header = request.headers.get("authorization") ?? "";
-  if (header.startsWith("Bearer ")) {
-    const t = header.slice(7).trim();
-    if (t.length > 0) return t;
-  }
+  const match = /^Bearer\s+(\S+)/i.exec(header.trim());
+  if (match !== null) return match[1];
   try {
     const t = new URL(request.url).searchParams.get("token");
     if (t !== null && t.length > 0) return t;

@@ -20,7 +20,13 @@ const layer = localAuthenticationLayer({ jwksJson: JWKS, issuers: ISS, aud: AUD 
 const testLayer = Layer.mergeAll(layer, TestClock.layer());
 
 const run = <A, E>(effect: Effect.Effect<A, E, AuthenticationAdmission>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(testLayer)));
+  Effect.runPromise(
+    Effect.gen(function* () {
+      // Default-signed tokens use wall-clock iat; TestClock starts at epoch 0.
+      yield* TestClock.setTime(Date.now());
+      return yield* effect;
+    }).pipe(Effect.provide(testLayer)),
+  );
 
 const admitOf = (database: string, token: string, route: "http" | "websocket" = "http") =>
   Effect.gen(function* () {
@@ -193,6 +199,28 @@ describe("AuthenticationAdmission", () => {
     expect(failure.message).toBe("ttl");
   });
 
+  test("iat in the future is rejected as ttl", async () => {
+    const token = await signToken("acme", "member", "user_ada", undefined, { iat: 1_000, exp: 1_010 });
+    const failure = await run(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(0);
+        return yield* failAdmit("acme", token);
+      }),
+    );
+    expect(failure.message).toBe("ttl");
+  });
+
+  test("exp <= iat is rejected as ttl", async () => {
+    const token = await signToken("acme", "member", "user_ada", undefined, { iat: 10, exp: 10 });
+    const failure = await run(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(0);
+        return yield* failAdmit("acme", token);
+      }),
+    );
+    expect(failure.message).toBe("ttl");
+  });
+
   test("missing iat with far-future exp is rejected as ttl", async () => {
     const token = await signToken("acme", "member", "user_ada", undefined, {
       iat: null,
@@ -234,6 +262,32 @@ describe("AuthenticationAdmission", () => {
     expect(Object.isFrozen(principal.classes)).toBe(true);
     expect(() => {
       (principal as { subject: string }).subject = "mutated";
+    }).toThrow();
+  });
+
+  test("nested ramose.attrs are deep-frozen", async () => {
+    const token = await signToken("acme", "member", "user_ada", {
+      org: { id: "t1", tags: ["a", "b"] },
+      roles: ["admin", { name: "ops" }],
+    });
+    const { principal } = await run(admitOf("acme", token));
+    const attrs = principal.claims.attrs as {
+      org: { id: string; tags: string[] };
+      roles: Array<string | { name: string }>;
+    };
+    expect(Object.isFrozen(attrs)).toBe(true);
+    expect(Object.isFrozen(attrs.org)).toBe(true);
+    expect(Object.isFrozen(attrs.org.tags)).toBe(true);
+    expect(Object.isFrozen(attrs.roles)).toBe(true);
+    expect(Object.isFrozen(attrs.roles[1])).toBe(true);
+    expect(() => {
+      attrs.org.id = "mutated";
+    }).toThrow();
+    expect(() => {
+      attrs.org.tags.push("c");
+    }).toThrow();
+    expect(() => {
+      (attrs.roles[1] as { name: string }).name = "mutated";
     }).toThrow();
   });
 

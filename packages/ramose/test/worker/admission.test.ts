@@ -40,6 +40,16 @@ describe("bearerOf", () => {
     expect(
       bearerOf(new Request("https://peer.example/db/acme/info", { headers: { authorization: "Bearer abc" } })),
     ).toBe("abc");
+    expect(
+      bearerOf(
+        new Request("https://peer.example/db/acme/info", { headers: { authorization: "bearer SecretToken" } }),
+      ),
+    ).toBe("SecretToken");
+    expect(
+      bearerOf(
+        new Request("https://peer.example/db/acme/info", { headers: { authorization: "BEARER SecretToken" } }),
+      ),
+    ).toBe("SecretToken");
     expect(bearerOf(new Request("https://peer.example/db/acme/session?token=xyz"))).toBe("xyz");
     expect(bearerOf(new Request("https://peer.example/db/acme/info"))).toBeUndefined();
   });

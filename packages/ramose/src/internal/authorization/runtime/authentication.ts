@@ -107,6 +107,8 @@ const validateClaims = (
       return yield* Result.fail(rejected("claims"));
     }
     if (typeof payload.iat !== "number") return yield* Result.fail(rejected("ttl"));
+    if (payload.iat * 1000 > now) return yield* Result.fail(rejected("ttl"));
+    if (payload.exp <= payload.iat) return yield* Result.fail(rejected("ttl"));
     if (payload.exp - payload.iat > maxTtl) return yield* Result.fail(rejected("ttl"));
     if (typeof payload.iss !== "string" || payload.iss.length === 0) {
       return yield* Result.fail(rejected("iss"));
@@ -161,8 +163,7 @@ export const createAuthentication = (
     const keys = yield* jwks.keySet;
     let payload = yield* verifyOnce(token, keys, now, issuers, aud).pipe(Effect.result);
     if (Result.isFailure(payload) && payload.failure.message === "kid") {
-      yield* jwks.invalidate;
-      const rotated = yield* jwks.keySet;
+      const rotated = yield* jwks.refresh;
       payload = yield* verifyOnce(token, rotated, now, issuers, aud).pipe(Effect.result);
     }
     if (Result.isFailure(payload)) {

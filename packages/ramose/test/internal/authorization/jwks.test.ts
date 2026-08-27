@@ -13,7 +13,11 @@ import { TestClock } from "effect/testing";
 import { AUD, ISS, JWKS, PUBLIC_JWK } from "../../../../../test/local/auth-keys.ts";
 import { AuthenticationAdmission } from "../../../src/internal/authorization/runtime/authentication.ts";
 import { JwksUnavailable } from "../../../src/internal/authorization/runtime/failures.ts";
-import { Jwks } from "../../../src/internal/authorization/runtime/jwks.ts";
+import {
+  JWKS_FETCH_TIMEOUT_MS,
+  JWKS_REFRESH_COOLDOWN_MS,
+  Jwks,
+} from "../../../src/internal/authorization/runtime/jwks.ts";
 import {
   authenticationLayer,
   jwksLayer,
@@ -38,6 +42,8 @@ const withClock = <A>(layer: Layer.Layer<A>) => Layer.mergeAll(layer, TestClock.
 
 const admit = (env: object, database: string, token: string) =>
   Effect.gen(function* () {
+    // Default-signed tokens use wall-clock iat; TestClock starts at epoch 0.
+    yield* TestClock.setTime(Date.now());
     const admission = yield* AuthenticationAdmission;
     return yield* admission.admit({
       database,
@@ -161,6 +167,113 @@ describe("Jwks", () => {
     }
   });
 
+  test("silent issuer times out JWKS fetch as JwksUnavailable without leaking the token", async () => {
+    let started!: () => void;
+    const startedP = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const server = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        started();
+        await Bun.sleep(10_000);
+        return Response.json({ keys: [PUBLIC_JWK] });
+      },
+    });
+    const token = await signToken("acme", "member");
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const startedAt = performance.now();
+      const failed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(
+            Effect.gen(function* () {
+              const admission = yield* AuthenticationAdmission;
+              return yield* admission.admit({
+                database: "acme",
+                token: Redacted.make(token),
+                route: "http",
+              });
+            }),
+          );
+          yield* Effect.promise(() => startedP);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(`${JWKS_FETCH_TIMEOUT_MS} millis`);
+          return yield* Effect.flip(Fiber.join(fiber));
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+      expect(failed).toBeInstanceOf(JwksUnavailable);
+      expect(failed.message).toBe("jwks");
+      const dumped = leak(failed);
+      expect(dumped).not.toContain(token);
+      expect(dumped).not.toContain("cancelled");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("unknown-kid JWKS refresh is cooled down; rotation still works after cooldown", async () => {
+    let keys: object[] = [jwk("test")];
+    let fetches = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        fetches += 1;
+        return Response.json({ keys });
+      },
+    });
+    try {
+      const env = {
+        RAMOSE_JWKS_URL: `http://127.0.0.1:${server.port}/jwks`,
+        RAMOSE_JWT_ISS: ISS,
+        RAMOSE_JWT_AUD: AUD,
+      };
+      const good = await signToken("acme", "member", "user_ada", undefined, { kid: "test" });
+      const unknownA = await signToken("acme", "member", "user_ada", undefined, { kid: "rand-a" });
+      const unknownB = await signToken("acme", "member", "user_ada", undefined, { kid: "rand-b" });
+      const nextTok = await signToken("acme", "member", "user_ada", undefined, { kid: "next" });
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
+          const admission = yield* AuthenticationAdmission;
+          const tryAdmit = (tok: string) =>
+            admission.admit({
+              database: "acme",
+              token: Redacted.make(tok),
+              route: "http",
+            });
+
+          yield* tryAdmit(good);
+          expect(fetches).toBe(1);
+
+          const firstMiss = yield* Effect.flip(tryAdmit(unknownA));
+          expect(firstMiss._tag === "AuthenticationRejected" || firstMiss._tag === "JwksUnavailable").toBe(
+            true,
+          );
+          expect(fetches).toBe(2);
+
+          const secondMiss = yield* Effect.flip(tryAdmit(unknownB));
+          expect(secondMiss.message).toBe("jwks");
+          expect(fetches).toBe(2);
+
+          yield* TestClock.adjust(JWKS_REFRESH_COOLDOWN_MS);
+          keys = [jwk("test"), jwk("next")];
+          const rotated = yield* tryAdmit(nextTok);
+          expect(rotated.principal.subject).toBe("user_ada");
+          expect(fetches).toBe(3);
+        }).pipe(Effect.provide(withClock(authenticationLayer(env)))),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("cancellation aborts the JWKS fetch without leaking the token", async () => {
     let clientSignal: AbortSignal | null | undefined;
     let started!: () => void;
@@ -261,8 +374,13 @@ describe("Jwks", () => {
         RAMOSE_JWT_ISS: ISS,
         RAMOSE_JWT_AUD: AUD,
       };
+      const issued = Math.floor(Date.now() / 1000);
       const tok = (name: string) =>
-        signToken("acme", "member", "user_ada", undefined, { kid: name, iat: 0, exp: 100 });
+        signToken("acme", "member", "user_ada", undefined, {
+          kid: name,
+          iat: issued,
+          exp: issued + 100,
+        });
       const tokenA = await tok("a");
       const tokenB = await tok("b");
       const tokenC = await tok("c");
@@ -272,6 +390,7 @@ describe("Jwks", () => {
       kid = "b";
       await Effect.runPromise(
         Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
           const jwks = yield* Jwks;
           yield* jwks.invalidate;
           const admission = yield* AuthenticationAdmission;
@@ -285,6 +404,7 @@ describe("Jwks", () => {
       kid = "c";
       await Effect.runPromise(
         Effect.gen(function* () {
+          yield* TestClock.setTime(Date.now());
           const jwks = yield* Jwks;
           yield* jwks.invalidate;
           const admission = yield* AuthenticationAdmission;
@@ -361,6 +481,7 @@ describe("Jwks", () => {
 
 const admitOfLayer = (layer: ReturnType<typeof localAuthenticationLayer>, token: string) =>
   Effect.gen(function* () {
+    yield* TestClock.setTime(Date.now());
     const admission = yield* AuthenticationAdmission;
     return yield* admission.admit({
       database: "acme",

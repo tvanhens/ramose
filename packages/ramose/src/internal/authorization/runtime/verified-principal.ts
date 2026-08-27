@@ -27,6 +27,16 @@ export interface VerifiedPrincipal {
 
 const freeze = <T>(value: T): T => Object.freeze(value);
 
+const freezeJson = <T>(value: T): T => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return freeze(value.map((item) => freezeJson(item))) as T;
+  }
+  return freeze(
+    Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, freezeJson(nested)])),
+  ) as T;
+};
+
 export const makeVerifiedPrincipal = (input: {
   readonly subject: string;
   readonly database: string;
@@ -45,7 +55,7 @@ export const makeVerifiedPrincipal = (input: {
     exp: input.exp,
     ...(input.iat === undefined ? {} : { iat: input.iat }),
     ...(input.nbf === undefined ? {} : { nbf: input.nbf }),
-    ...(input.attrs === undefined ? {} : { attrs: freeze({ ...input.attrs }) }),
+    ...(input.attrs === undefined ? {} : { attrs: freezeJson({ ...input.attrs }) }),
   });
   return freeze({
     subject: input.subject,

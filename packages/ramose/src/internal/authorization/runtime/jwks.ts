@@ -12,6 +12,8 @@ import type { JSONWebKeySet } from "jose";
 import { JwksUnavailable } from "./failures.ts";
 
 export const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+export const JWKS_FETCH_TIMEOUT_MS = 5_000;
+export const JWKS_REFRESH_COOLDOWN_MS = 30_000;
 export const JWKS_MAX_GENERATIONS = 2;
 
 export type AuthBindings = {
@@ -26,6 +28,7 @@ export type AuthBindings = {
 export interface JwksService {
   readonly keySet: Effect.Effect<JWTVerifyGetKey, JwksUnavailable>;
   readonly invalidate: Effect.Effect<void>;
+  readonly refresh: Effect.Effect<JWTVerifyGetKey, JwksUnavailable>;
 }
 
 export class Jwks extends Context.Service<Jwks, JwksService>()(
@@ -121,11 +124,16 @@ const loadRemote = (
         ? Effect.fail(unavailable("jwks"))
         : Effect.succeed(parsed);
     }),
+    Effect.timeoutOrElse({
+      duration: `${JWKS_FETCH_TIMEOUT_MS} millis`,
+      orElse: () => Effect.fail(unavailable("jwks")),
+    }),
   );
 
 export const createJwks = (env: AuthBindings): JwksService => {
   const generations: Generation[] = [];
   let stale = false;
+  let lastKidRefreshAt = 0;
   let fetchImpl: Fetcher["fetch"] | undefined;
   let fetchError: JwksUnavailable | undefined;
   try {
@@ -171,5 +179,16 @@ export const createJwks = (env: AuthBindings): JwksService => {
     stale = true;
   });
 
-  return { keySet, invalidate };
+  const refresh = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (lastKidRefreshAt !== 0 && now - lastKidRefreshAt < JWKS_REFRESH_COOLDOWN_MS) {
+      if (generations[0] === undefined) return yield* unavailable("jwks");
+      return combine(generations);
+    }
+    lastKidRefreshAt = now;
+    stale = true;
+    return yield* keySet;
+  }).pipe(Effect.withSpan("Jwks.refresh"));
+
+  return { keySet, invalidate, refresh };
 };
