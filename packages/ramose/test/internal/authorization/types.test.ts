@@ -137,6 +137,16 @@ export type _noPublicAuthorization = Expect<
       | "hashInstalledCatalogUnit"
       | "hashCatalogSchemaFingerprint"
       | "catalogUnitCanonicalBytes"
+      | "assembleDeployedCatalogs"
+      | "DeployedCatalogs"
+      | "CatalogVersionMismatch"
+      | "requireUnitHash"
+      | "opaqueCatalogDenial"
+      | "compareAndSwapCatalogUnit"
+      | "loadCatalogUnitAtBasis"
+      | "CatalogCasConflict"
+      | "publishCatalog"
+      | "schemaTxFromCatalog"
     >,
     never
   >
@@ -336,6 +346,14 @@ export type _noPureAssembleExport = Expect<
 >;
 export type _catalogUnitOnBarrel = Expect<Extends<"InstalledCatalogUnit", keyof AuthExports>>;
 export type _sealCatalogUnitOnBarrel = Expect<Extends<"sealInstalledCatalogUnit", keyof AuthExports>>;
+export type _assembleDeployedOnBarrel = Expect<Extends<"assembleDeployedCatalogs", keyof AuthExports>>;
+export type _requireUnitHashOnBarrel = Expect<Extends<"requireUnitHash", keyof AuthExports>>;
+export type _catalogVersionMismatchOnBarrel = Expect<
+  Extends<"CatalogVersionMismatch", keyof AuthExports>
+>;
+export type _deployedCatalogsServiceOffBarrel = Expect<
+  Equal<Extends<"DeployedCatalogsService", keyof AuthExports>, false>
+>;
 export type _partialBoundNotTemplate = Expect<
   Equal<Extends<PartialBound, PolicyTemplateIR>, false>
 >;
@@ -530,6 +548,9 @@ export type _allFailures = Expect<
 >;
 export type _catalogUnitCorruptNotAuthorizationFailure = Expect<
   Equal<Extends<"CatalogUnitCorrupt", FailureTags>, false>
+>;
+export type _catalogVersionMismatchNotAuthorizationFailure = Expect<
+  Equal<Extends<"CatalogVersionMismatch", FailureTags>, false>
 >;
 
 const templateFixture: PolicyTemplateIR = {
@@ -1036,9 +1057,16 @@ describe("legacy authorization names cannot be imported", () => {
     expect("sealInstalledCatalogUnit" in ir).toBe(true);
     expect("hashCatalogSchemaFingerprint" in ir).toBe(true);
     expect("CatalogUnitCorrupt" in ir).toBe(true);
+    expect("assembleDeployedCatalogs" in ir).toBe(true);
+    expect("requireUnitHash" in ir).toBe(true);
+    expect("CatalogVersionMismatch" in ir).toBe(true);
+    expect("opaqueCatalogDenial" in ir).toBe(true);
+    expect("DeployedCatalogsService" in ir).toBe(false);
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
     expect("CatalogCasConflict" in ir).toBe(false);
+    expect("publishCatalog" in ir).toBe(false);
+    expect("schemaTxFromCatalog" in ir).toBe(false);
     expect("InstalledIdentityTable" in ir).toBe(false);
     expect("normalizeIdentities" in ir).toBe(false);
     expect("InstalledCatalogUnit" in root).toBe(false);
@@ -1048,6 +1076,12 @@ describe("legacy authorization names cannot be imported", () => {
     expect("hashInstalledCatalogUnit" in root).toBe(false);
     expect("hashCatalogSchemaFingerprint" in root).toBe(false);
     expect("CatalogUnitCorrupt" in root).toBe(false);
+    expect("assembleDeployedCatalogs" in root).toBe(false);
+    expect("DeployedCatalogs" in root).toBe(false);
+    expect("CatalogVersionMismatch" in root).toBe(false);
+    expect("requireUnitHash" in root).toBe(false);
+    expect("opaqueCatalogDenial" in root).toBe(false);
+    expect("sealInstalledCatalogUnit" in root).toBe(false);
     expect("InstalledCatalogUnit" in db).toBe(false);
     expect("sealInstalledCatalogUnit" in db).toBe(false);
   });

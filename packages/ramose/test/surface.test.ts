@@ -93,6 +93,16 @@ const KILLED = [
   "hashInstalledCatalogUnit",
   "hashCatalogSchemaFingerprint",
   "catalogUnitCanonicalBytes",
+  "assembleDeployedCatalogs",
+  "DeployedCatalogs",
+  "CatalogVersionMismatch",
+  "requireUnitHash",
+  "opaqueCatalogDenial",
+  "compareAndSwapCatalogUnit",
+  "loadCatalogUnitAtBasis",
+  "CatalogCasConflict",
+  "publishCatalog",
+  "schemaTxFromCatalog",
 ];
 
 describe("the `ramose` barrel", () => {

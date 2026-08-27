@@ -5,7 +5,13 @@
  */
 
 import * as Data from "effect/Data";
-import type { CatalogId, CatalogVersion, DatabaseId, SchemaFingerprint } from "./identities.ts";
+import type {
+  CatalogId,
+  CatalogUnitHash,
+  CatalogVersion,
+  DatabaseId,
+  SchemaFingerprint,
+} from "./identities.ts";
 
 /**
  * Why a three-valued result is Incomplete — never JavaScript `undefined`.
@@ -76,4 +82,15 @@ export type AuthorizationFailure =
 export class CatalogUnitCorrupt extends Data.TaggedError("CatalogUnitCorrupt")<{
   readonly message: string;
   readonly catalog: CatalogId;
+}> {}
+
+/**
+ * Requested unit hash is not the currently deployed unit.
+ * Internal diagnostic only — not an {@link AuthorizationFailure}.
+ * Later HTTP mappers collapse this to opaque {@link import("../../db/Errors.ts").Unauthorized}.
+ */
+export class CatalogVersionMismatch extends Data.TaggedError("CatalogVersionMismatch")<{
+  readonly catalog: CatalogId;
+  readonly expected?: CatalogUnitHash;
+  readonly actual?: CatalogUnitHash;
 }> {}

@@ -173,12 +173,13 @@ MUST NOT invoke, authorize, or read another.
 catalog. Cross-catalog handles, stale catalog versions, and identity
 collisions fail closed.
 
-**CAT-4.** Catalog data, compiled policy IR, operation tables, membership
-constraints, and related metadata commit atomically against one
-authoritative basis. A failed install leaves no partial state.
+**CAT-4.** Catalogs are assembled and validated at deployment from
+reachable code definitions into immutable `InstalledCatalogUnit`s. They
+are not published as database-resident units. A failed assembly leaves no
+partial registry.
 
-**CAT-5.** Policy and operation state MUST NOT be observed without the
-exact catalog version they were validated against.
+**CAT-5.** Policy and operation state MUST NOT be observed without exact
+catalog-key and unit-hash agreement with the currently deployed unit.
 
 **CAT-6.** Client-side occupancy or install checks are diagnostic only.
 The transactor repeats every security-relevant check.
