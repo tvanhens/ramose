@@ -488,7 +488,7 @@ class Executor {
 
   private async resolveEntityConst(v: unknown): Promise<number | undefined> {
     if (typeof v === "number") return v;
-    if (typeof v === "string") return this.db.schema.entid(v);
+    if (typeof v === "string") return this.db.entid(v);
     if (Array.isArray(v) && v.length === 2 && typeof v[0] === "string") return this.db.entid(v as [string, unknown]);
     if (v && typeof v === "object" && (v as any).vt === ValueTag.Ref) return (v as any).v as number;
     throw new QueryError(`bad entity constant ${JSON.stringify(v)}`);

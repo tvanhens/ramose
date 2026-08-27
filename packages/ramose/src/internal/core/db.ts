@@ -23,7 +23,7 @@ import {
   normalizeValue,
 } from "./datom.ts";
 import { Novelty, collapseCurrent, currentView, filterAsOf, mergeChunks, rawView } from "./novelty.ts";
-import { type Attribute, Schema, isTxEid } from "./schema.ts";
+import { type Attribute, DB_IDENT, Schema, isTxEid } from "./schema.ts";
 import { type NodeRef, type NodeSource, estimateCount, scan, scanMany, sortedUnion } from "./tree.ts";
 import { COMPARATORS } from "./datom.ts";
 
@@ -93,7 +93,7 @@ export class Db {
     this.nextEid = o.nextEid;
     this.asOfT = o.asOfT;
     this.isHistory = !!o.history;
-    this.filters = o.filters ?? [];
+    this.filters = Object.freeze([...(o.filters ?? [])]);
   }
 
   /** Effective upper bound on visible t. */
@@ -256,7 +256,14 @@ export class Db {
   /** Resolve an entity reference to an eid (undefined if it does not exist). */
   async entid(ref: EntityRef): Promise<number | undefined> {
     if (typeof ref === "number") return ref;
-    if (typeof ref === "string") return this.schema.entid(ref);
+    if (typeof ref === "string") {
+      const d = await this.first(Index.AVET, {
+        a: DB_IDENT,
+        vt: ValueTag.Str,
+        v: ref,
+      });
+      return d?.e;
+    }
     if (Array.isArray(ref) && ref.length === 2) {
       const attr = this.attr(ref[0]);
       if (!attr) throw new Error(`lookup ref: unknown attribute ${ref[0]}`);
@@ -291,8 +298,9 @@ export class Db {
   }
 
   /** ident of an entity, if it has one */
-  identOf(e: number): string | undefined {
-    return this.schema.ident(e);
+  async identOf(e: number): Promise<string | undefined> {
+    const d = await this.first(Index.EAVT, { e, a: DB_IDENT });
+    return d === undefined ? undefined : (d.v as string);
   }
 
   isTx(e: number): boolean {

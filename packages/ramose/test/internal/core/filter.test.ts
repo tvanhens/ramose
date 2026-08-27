@@ -5,9 +5,10 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index, ValueTag } from "../../../src/internal/core/datom.ts";
-import { type DatomPredicate, type Db } from "../../../src/internal/core/db.ts";
+import { type DatomPredicate, Db } from "../../../src/internal/core/db.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
+import { DB_IDENT } from "../../../src/internal/core/schema.ts";
 
 const SCHEMA = [
   { ":db/ident": ":person/name", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity", ":db/optional": true },
@@ -24,6 +25,8 @@ let nameA: number;
 let emailA: number;
 let friendA: number;
 let secretA: number;
+let hiddenEid: number;
+let visibleEid: number;
 
 const sortRows = (rows: unknown[][]) => rows.map((r) => JSON.stringify(r)).sort();
 
@@ -49,11 +52,17 @@ beforeAll(async () => {
     { ":db/id": "eve", ":person/name": "Eve", ":person/email": "eve@x", ":person/age": 20 },
   ]);
   ids = rep.tempids;
+  await conn.transact([
+    { ":db/ident": ":x/hidden" },
+    { ":db/ident": ":x/visible" },
+  ]);
   db = conn.db();
   nameA = db.requireAttr(":person/name").id;
   emailA = db.requireAttr(":person/email").id;
   friendA = db.requireAttr(":person/friend").id;
   secretA = db.requireAttr(":person/secret").id;
+  hiddenEid = (await db.entid(":x/hidden"))!;
+  visibleEid = (await db.entid(":x/visible"))!;
 });
 
 describe("visibility", () => {
@@ -373,5 +382,53 @@ describe("index candidates, seekMany, estimate, async, immutability, schema", ()
     expect(filtered.requireAttr(":person/friend").valueType).toBe(5);
     const names = await query(filtered, `[:find [?n ...] :where [?e :person/name ?n]]`);
     expect((names as string[]).sort()).toEqual(["Alice", "Bob", "Dave", "Eve"]);
+  });
+
+  test("constructor copies filters so later mutation of the input array is ignored", async () => {
+    const hideCarol: DatomPredicate = (_u, d) => d.e !== ids.carol;
+    const mutable: DatomPredicate[] = [hideCarol];
+    const constructed = new Db({
+      store: db.store,
+      roots: db.roots,
+      novelty: db.novelty,
+      basisT: db.basisT,
+      schema: db.schema,
+      nextEid: db.nextEid,
+      filters: mutable,
+    });
+    const namesOf = (view: Db) =>
+      query(view, `[:find [?n ...] :where [?e :person/name ?n]]`) as Promise<string[]>;
+    expect((await namesOf(constructed)).sort()).toEqual(["Alice", "Bob", "Dave", "Eve"]);
+    mutable.push((_u, d) => d.e !== ids.alice);
+    mutable.length = 0;
+    expect(constructed.filters).not.toBe(mutable);
+    expect(constructed.filters).toHaveLength(1);
+    expect((await namesOf(constructed)).sort()).toEqual(["Alice", "Bob", "Dave", "Eve"]);
+  });
+});
+
+describe("plain entity-ident resolution honors the filtered view", () => {
+  test("unfiltered entid / identOf resolve a plain ident", async () => {
+    expect(hiddenEid).toBeDefined();
+    expect(await db.entid(":x/hidden")).toBe(hiddenEid);
+    expect(await db.identOf(hiddenEid)).toBe(":x/hidden");
+    expect(await db.entid(":x/visible")).toBe(visibleEid);
+  });
+
+  test("filter hiding :x/hidden ident datom hides entid and identOf", async () => {
+    const filtered = db.filter((_u, d) => !(d.a === DB_IDENT && d.v === ":x/hidden"));
+    expect(await filtered.entid(":x/hidden")).toBeUndefined();
+    expect(await filtered.identOf(hiddenEid)).toBeUndefined();
+    expect(await filtered.entid(":x/visible")).toBe(visibleEid);
+    expect(filtered.attr(":person/name")?.ident).toBe(":person/name");
+    expect(filtered.requireAttr(":person/friend").valueType).toBe(5);
+    expect(db.schema.entid(":x/hidden")).toBe(hiddenEid);
+  });
+
+  test("query entity-ident constant is empty on the filtered db", async () => {
+    const q = `[:find ?i :where [:x/hidden :db/ident ?i]]`;
+    const filtered = db.filter((_u, d) => !(d.a === DB_IDENT && d.v === ":x/hidden"));
+    expect(await query(db, q)).toEqual([[":x/hidden"]]);
+    expect(await query(filtered, q)).toEqual([]);
   });
 });
