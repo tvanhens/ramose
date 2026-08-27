@@ -216,7 +216,7 @@ export type _renamed = Expect<
   Equal<typeof renamed, Promise<OpReport<{}, typeof Movies>>>
 >;
 db.run(setUserName, 1001, { name: "Ada" });
-db.run(setUserName, tempid("tmp-1"), { name: "Ada" });
+db.run(setUserName, tempid("new"), { name: "Ada" });
 // @ts-expect-error a bare string is not a tempid
 db.run(setUserName, "tmp-1", { name: "Ada" });
 db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
@@ -280,7 +280,7 @@ const issueOp = Operation(
 declare const boardDb: Db<typeof Board>;
 boardDb.run(issueOp, [Issue.key, "i-1"], {});
 boardDb.run(issueOp, [":issue/key", "i-1"] as const, {});
-boardDb.run(issueOp, tempid("tmp-1"), {});
+boardDb.run(issueOp, tempid("new"), {});
 declare const issueRow: { readonly id: Eid<typeof Issue> };
 boardDb.run(issueOp, issueRow, {});
 declare const commentRow: { readonly id: Eid<typeof Comment> };

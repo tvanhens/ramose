@@ -904,6 +904,126 @@ describe("optimistic transact", () => {
     await c.dispose();
   });
 
+  test("CAS-only on a server-only numeric eid still POSTs", async () => {
+    const server = await moviesWorld();
+    let posted = 0;
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posted += 1;
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const eid = seeded.tempids.u!;
+
+    const report = await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        yield* tx.cas(eid, User.age, 30, 31);
+      }),
+    );
+    expect(posted).toBe(1);
+    expect(report.t).toBeGreaterThan(0);
+    expect((await server.db().entity(eid))![":user/age"]).toBe(31);
+
+    await c.dispose();
+  });
+
+  test("CAS-only on a server-only lookup subject still POSTs", async () => {
+    const server = await moviesWorld();
+    let posted = 0;
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posted += 1;
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const eid = seeded.tempids.u!;
+
+    const report = await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        yield* tx.cas([":user/name", "Ada"], User.age, 30, 31);
+      }),
+    );
+    expect(posted).toBe(1);
+    expect(report.t).toBeGreaterThan(0);
+    expect((await server.db().entity(eid))![":user/age"]).toBe(31);
+
+    await c.dispose();
+  });
+
+  test("CAS ref replacement of a server-only eid still POSTs", async () => {
+    const server = await moviesWorld();
+    const ada = await server.transact([{ ":db/id": "a", ":user/name": "Ada" }]);
+    const adaEid = ada.tempids.a!;
+    let posted = 0;
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posted += 1;
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const bea = await server.transact([{ ":db/id": "b", ":user/name": "Bea" }]);
+    const beaEid = bea.tempids.b!;
+
+    const report = await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        yield* tx.cas(adaEid, User.bestFriend, null, beaEid);
+      }),
+    );
+    expect(posted).toBe(1);
+    expect(report.t).toBeGreaterThan(0);
+    expect((await server.db().entity(adaEid))![":user/bestFriend"]).toBe(beaEid);
+
+    await c.dispose();
+  });
+
   test("genuine CAS conflict still POSTs and fails without leftover overlay", async () => {
     const server = await moviesWorld();
     const seeded = await server.transact([

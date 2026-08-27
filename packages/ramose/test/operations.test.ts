@@ -429,6 +429,196 @@ describe("optimistic prefix", () => {
     await c.dispose();
   });
 
+  test("no-layer run rewrites a queued contextual entity after the tempid ack", async () => {
+    const server = await moviesWorld();
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const adaEid = seeded.tempids.u!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const opBodies: { entity?: unknown; name?: unknown }[] = [];
+    const staleCas = Operation(
+      "user/stale-cas",
+      {
+        on: User,
+        input: Schema.Struct({ eid: Schema.Finite }),
+        output: Schema.Struct({}),
+      },
+      (op, input) => {
+        op.cas(input.eid, User.age, 31, 32);
+        return {};
+      },
+    );
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        if (call.url.endsWith("/transact")) {
+          await gate;
+          const rep = await server.transact(call.body.tx);
+          return {
+            body: {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: rep.txData.map(toWireDatom),
+              clientTxId: call.body.clientTxId,
+            },
+          };
+        }
+        if (call.url.endsWith("/op")) {
+          opBodies.push({ entity: call.body.entity, name: call.body.name });
+          const rep = await server.transact([
+            [":db/cas", call.body.input.eid, ":user/age", 31, 32],
+          ]);
+          return {
+            body: {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: rep.txData.map(toWireDatom),
+              clientOpId: call.body.clientOpId,
+              output: {},
+            },
+          };
+        }
+        return { body: { t: server.t } };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
+
+    const first = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Cal");
+      }),
+    );
+    await settle();
+    const second = db.run(staleCas, tempid("new"), { eid: adaEid });
+    await settle();
+    expect(opBodies).toHaveLength(0);
+
+    release();
+    await first;
+    await second;
+    const calEid = await server.db().entid([":user/name", "Cal"]);
+    expect(opBodies).toHaveLength(1);
+    expect(opBodies[0]!.name).toBe("user/stale-cas");
+    expect(typeof opBodies[0]!.entity).toBe("number");
+    expect(opBodies[0]!.entity).toBe(calEid);
+    expect(opBodies[0]!.entity).not.toBe("new");
+    expect((await server.db().entity(adaEid))![":user/age"]).toBe(32);
+
+    await c.dispose();
+  });
+
+  test("no-layer run does not rewrite a later unrelated tempid(\"new\") after the queue drains", async () => {
+    const server = await moviesWorld();
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const adaEid = seeded.tempids.u!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const posts: unknown[][] = [];
+    const staleCas = Operation(
+      "user/stale-cas-expire",
+      {
+        on: User,
+        input: Schema.Struct({ eid: Schema.Finite }),
+        output: Schema.Struct({}),
+      },
+      (op, input) => {
+        op.cas(input.eid, User.age, 31, 32);
+        return {};
+      },
+    );
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        if (call.url.endsWith("/transact")) {
+          if (posts.length === 0) await gate;
+          posts.push(call.body.tx as unknown[]);
+          const rep = await server.transact(call.body.tx);
+          return {
+            body: {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: rep.txData.map(toWireDatom),
+              clientTxId: call.body.clientTxId,
+            },
+          };
+        }
+        if (call.url.endsWith("/op")) {
+          const rep = await server.transact([
+            [":db/cas", call.body.input.eid, ":user/age", 31, 32],
+          ]);
+          return {
+            body: {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: rep.txData.map(toWireDatom),
+              clientOpId: call.body.clientOpId,
+              output: {},
+            },
+          };
+        }
+        return { body: { t: server.t } };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+    await server.transact([[":db/add", adaEid, ":user/age", 31]]);
+
+    const first = Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Cal");
+      }),
+    );
+    await settle();
+    const second = db.run(staleCas, tempid("new"), { eid: adaEid });
+    await settle();
+    release();
+    await first;
+    await second;
+    const calEid = (await server.db().entid([":user/name", "Cal"]))!;
+
+    await server.transact([[":db/add", adaEid, ":user/age", 33]]);
+    const third = await Effect.runPromise(
+      seedWrite(db, function* (tx) {
+        const e = yield* tx.entity(tx.tempid("new"));
+        yield* e.set(User.name, "Dot");
+        yield* tx.cas(adaEid, User.age, 33, 34);
+      }),
+    );
+    expect(third.t).toBeGreaterThan(0);
+    expect(posts).toHaveLength(2);
+    const thirdTx = posts[1] ?? [];
+    const dotAdds = thirdTx.filter(
+      (op): op is unknown[] =>
+        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":user/name" && op[3] === "Dot",
+    );
+    expect(dotAdds).toHaveLength(1);
+    expect(dotAdds[0]![1]).toBe("new");
+    expect(dotAdds[0]![1]).not.toBe(calEid);
+    const dotEid = await server.db().entid([":user/name", "Dot"]);
+    expect(dotEid).toBeDefined();
+    expect(dotEid).not.toBe(calEid);
+
+    await c.dispose();
+  });
+
   test("stale replica CAS then op.query / op.pull still reaches /op", async () => {
     const server = await moviesWorld();
     const seeded = await server.transact([
@@ -480,6 +670,59 @@ describe("optimistic prefix", () => {
     expect(peer.calls.some((call) => call.url.endsWith("/op"))).toBe(true);
     expect(report.output).toEqual({});
     expect((await server.db().entity(eid))![":user/age"]).toBe(32);
+
+    await c.dispose();
+  });
+
+  test("op.cas on a server-only eid then op.query still reaches /op", async () => {
+    const server = await moviesWorld();
+    let postedOp = 0;
+    const serverOnlyCasThenRead = Operation(
+      "user/server-only-cas-then-read",
+      {
+        input: Schema.Struct({ eid: Schema.Finite }),
+        output: Schema.Struct({}),
+      },
+      async (op, input) => {
+        op.cas(input.eid, User.age, 30, 31);
+        await op.query(ages);
+        return {};
+      },
+    );
+    const peer = scriptedPeer({
+      http: async (call) => {
+        if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+        if (!call.url.endsWith("/op")) return { body: { t: server.t } };
+        postedOp += 1;
+        const rep = await server.transact([
+          [":db/cas", call.body.input.eid, ":user/age", 30, 31],
+        ]);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientOpId: call.body.clientOpId,
+            output: {},
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const seeded = await server.transact([
+      { ":db/id": "u", ":user/name": "Ada", ":user/age": 30 },
+    ]);
+    const eid = seeded.tempids.u!;
+
+    const report = await db.run(serverOnlyCasThenRead, { eid });
+    expect(postedOp).toBe(1);
+    expect(peer.calls.some((call) => call.url.endsWith("/op"))).toBe(true);
+    expect(report.output).toEqual({});
+    expect((await server.db().entity(eid))![":user/age"]).toBe(31);
 
     await c.dispose();
   });
