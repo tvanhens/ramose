@@ -128,7 +128,7 @@ const attrsWithinBounds = (attrs: unknown): boolean => {
     const { value, depth } = stack.pop()!;
     if (typeof value === "string") {
       if (value.length > MAX_STRING_LENGTH) return false;
-      if (!charge(1, UTF8.encode(value).byteLength)) return false;
+      if (!charge(1, UTF8.encode(JSON.stringify(value)).byteLength)) return false;
       continue;
     }
     if (typeof value === "boolean") {
@@ -157,7 +157,7 @@ const attrsWithinBounds = (attrs: unknown): boolean => {
     for (let index = keys.length - 1; index >= 0; index--) {
       const key = keys[index]!;
       if (key.length > MAX_STRING_LENGTH) return false;
-      if (!charge(1, UTF8.encode(key).byteLength)) return false;
+      if (!charge(1, UTF8.encode(JSON.stringify(key)).byteLength)) return false;
       stack.push({
         value: (value as Record<string, unknown>)[key],
         depth: depth + 1,

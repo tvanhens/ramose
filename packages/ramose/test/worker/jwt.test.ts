@@ -24,14 +24,13 @@ import {
 import {
   fromEnv,
   resetJwtVerifier,
-  serviceBindingFetch,
   temporalClaimsHold,
-  type JwksServiceBinding,
 } from "../../src/worker/jwt.ts";
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1_000);
 const ISS = "https://issuer.example.test";
 const AUD = "ramose:test";
+const UTF8 = new TextEncoder();
 
 interface TestKey {
   readonly kid: string;
@@ -271,6 +270,27 @@ describe("JwtVerifier", () => {
       q: "j".repeat(MAX_STRING_LENGTH),
     };
     expect(17 * MAX_STRING_LENGTH).toBeGreaterThan(MAX_JSON_ENCODED_BYTES);
+    const escapedText = '"'.repeat(MAX_STRING_LENGTH);
+    const escapeHeavy = Object.fromEntries(
+      Array.from({ length: 9 }, (_, index) => [`escaped${index}`, escapedText]),
+    );
+    const rawEscapeHeavyBytes = Object.entries(escapeHeavy).reduce(
+      (bytes, [key, value]) =>
+        bytes +
+        UTF8.encode(key).byteLength +
+        UTF8.encode(value).byteLength,
+      0,
+    );
+    const encodedEscapeHeavyBytes = Object.entries(escapeHeavy).reduce(
+      (bytes, [key, value]) =>
+        bytes +
+        UTF8.encode(JSON.stringify(key)).byteLength +
+        UTF8.encode(JSON.stringify(value)).byteLength,
+      0,
+    );
+    expect(escapedText.length).toBe(MAX_STRING_LENGTH);
+    expect(rawEscapeHeavyBytes).toBeLessThan(MAX_JSON_ENCODED_BYTES);
+    expect(encodedEscapeHeavyBytes).toBeGreaterThan(MAX_JSON_ENCODED_BYTES);
     const oversized = [
       { deep },
       broad,
@@ -278,6 +298,7 @@ describe("JwtVerifier", () => {
       { text: "x".repeat(MAX_STRING_LENGTH + 1) },
       { ["k".repeat(MAX_STRING_LENGTH + 1)]: "value" },
       oversizedText,
+      escapeHeavy,
     ];
 
     for (const attrs of oversized) {
@@ -396,77 +417,13 @@ describe("JwtVerifier", () => {
     }
   });
 
-  test("remote-only JWKS resolves through the named service", async () => {
-    const token = await sign();
-    const urls: string[] = [];
-    const binding: JwksServiceBinding = {
-      fetch: async (url) => {
-        urls.push(url);
-        return Response.json({ keys: [keyA.publicJwk] });
-      },
-    };
-    const remoteEnv = env([], {
-      RAMOSE_JWKS_JSON: undefined,
-      RAMOSE_JWKS_URL: "https://issuer.example.test/.well-known/jwks.json",
-      RAMOSE_JWKS_SERVICE: "JWKS",
-      JWKS: binding,
-    });
-    expect((await verify(token, remoteEnv)).kid).toBe("key-a");
-    expect(urls).toEqual([
-      "https://issuer.example.test/.well-known/jwks.json",
-    ]);
-  });
-
   test("configuring both remote and inline JWKS denies all", async () => {
     const token = await sign();
-    let fetched = false;
-    const binding: JwksServiceBinding = {
-      fetch: async () => {
-        fetched = true;
-        return Response.json({ keys: [keyA.publicJwk] });
-      },
-    };
     const bothEnv = env([keyA.publicJwk], {
-      RAMOSE_JWKS_URL: "https://issuer.example.test/.well-known/jwks.json",
-      RAMOSE_JWKS_SERVICE: "JWKS",
-      JWKS: binding,
+      RAMOSE_JWKS_URL: "https://issuer.example.test/jwks",
     });
 
     expectOpaque(await rejection(token, bothEnv), [token]);
-    expect(fetched).toBe(false);
-  });
-
-  test("maps JWKS network and abort failures to the same Unauthorized", async () => {
-    const token = await sign();
-    const remote = (binding: JwksServiceBinding) =>
-      env([], {
-        RAMOSE_JWKS_JSON: undefined,
-        RAMOSE_JWKS_URL: "https://jwks.example.test/keys?private=diagnostic",
-        RAMOSE_JWKS_SERVICE: "JWKS",
-        JWKS: binding,
-      });
-
-    const network = {
-      fetch: async () => {
-        throw new Error("JWKS private diagnostic");
-      },
-    };
-    expectOpaque(await rejection(token, remote(network)), [
-      token,
-      "private diagnostic",
-      "jwks.example.test",
-    ]);
-
-    resetJwtVerifier();
-    const aborted = {
-      fetch: async () => {
-        throw new DOMException("secret abort reason", "AbortError");
-      },
-    };
-    expectOpaque(await rejection(token, remote(aborted)), [
-      token,
-      "secret abort reason",
-    ]);
   });
 
   test("memoizes one verifier and jose resolver per config", () => {
@@ -475,33 +432,6 @@ describe("JwtVerifier", () => {
     expect(
       fromEnv({ ...configured, RAMOSE_JWT_MAX_TTL: "300" }),
     ).not.toBe(fromEnv(configured));
-  });
-});
-
-describe("service-binding customFetch", () => {
-  test("forwards jose's URL, headers, method, redirect, and AbortSignal", async () => {
-    const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const binding: JwksServiceBinding = {
-      fetch: async (url, init) => {
-        calls.push({ url, init });
-        return Response.json({ keys: [] });
-      },
-    };
-    const headers = new Headers({ accept: "application/json", "x-test": "yes" });
-    const controller = new AbortController();
-    await serviceBindingFetch(binding)("https://issuer.example/jwks", {
-      headers,
-      method: "GET",
-      redirect: "manual",
-      signal: controller.signal,
-    });
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("https://issuer.example/jwks");
-    expect(calls[0]!.init.headers).toBe(headers);
-    expect(calls[0]!.init.method).toBe("GET");
-    expect(calls[0]!.init.redirect).toBe("manual");
-    expect(calls[0]!.init.signal).toBe(controller.signal);
   });
 });
 

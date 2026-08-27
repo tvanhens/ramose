@@ -59,8 +59,102 @@ export function registerAuthContract(target: AuthTarget): void {
       expect((await json(policyUrl, "/db/-invalid/info")).status).toBe(401);
       expect((await json(policyUrl, `/db/-invalid/info?token=${encodeURIComponent(jwt)}`)).status).toBe(401);
       expect((await json(policyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(400);
-      expect((await json(jwksBoundUrl, "/db/-invalid/info", { token: jwt })).status).toBe(400);
+      const bound = await json(jwksBoundUrl, "/db/-invalid/info", {
+        token: jwt,
+      });
+      expect(bound.status).toBe(400);
+      expect(bound.body).toMatchObject({ error: "invalid database name" });
       expect((await json(jwksUrlOnlyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(401);
+    });
+
+    test("a principal is bound to the database named in its JWT", async () => {
+      const { policyUrl } = target.urls();
+      const jwt = await signToken("acme", "member");
+      const response = await json(policyUrl, "/db/other/info", { token: jwt });
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: "unauthorized" });
+    });
+
+    test("HTTP rejects query credentials even with Bearer or a spoofed upgrade", async () => {
+      const { policyUrl } = target.urls();
+      const jwt = await signToken("acme", "member");
+      const path = `/db/-invalid/info?token=${encodeURIComponent(jwt)}`;
+
+      expect((await json(policyUrl, path)).status).toBe(401);
+      expect((await json(policyUrl, path, { token: jwt })).status).toBe(401);
+      expect(
+        (await json(policyUrl, path, { headers: { upgrade: "websocket" } }))
+          .status,
+      ).toBe(401);
+    });
+
+    test("authentication denial has one opaque response body", async () => {
+      const { policyUrl } = target.urls();
+      const diagnosticToken = "not.a.jwt-with-private-diagnostic";
+      const response = await fetch(
+        `${policyUrl.replace(/\/+$/, "")}/db/-invalid/info`,
+        { headers: { authorization: `Bearer ${diagnosticToken}` } },
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(401);
+      expect(text).toBe('{"error":"unauthorized"}');
+      expect(text).not.toContain(diagnosticToken);
+      expect(text).not.toContain("JWT");
+      expect(text).not.toContain("claim");
+    });
+
+    test("malformed database encoding is hidden until JWT admission", async () => {
+      const { policyUrl } = target.urls();
+      const path = "/db/%E0%A4%A/info";
+      expect((await json(policyUrl, path)).status).toBe(401);
+
+      const jwt = await signToken("acme", "member");
+      const admitted = await json(policyUrl, path, { token: jwt });
+      expect(admitted.status).toBe(400);
+      expect(admitted.body).toMatchObject({ error: "invalid database name" });
+    });
+
+    test("WebSocket query and Bearer credentials cross real admission", async () => {
+      const { policyUrl } = target.urls();
+      const jwt = await signToken("acme", "member");
+      const queryHeaders = { upgrade: "websocket" };
+
+      expect(
+        (
+          await json(
+            policyUrl,
+            `/db/-invalid/session?token=${encodeURIComponent(jwt)}`,
+            { headers: queryHeaders },
+          )
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await json(policyUrl, "/db/-invalid/session", {
+            headers: queryHeaders,
+            token: jwt,
+          })
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await json(
+            policyUrl,
+            `/db/acme/session?token=${encodeURIComponent(jwt)}`,
+            { headers: queryHeaders },
+          )
+        ).status,
+      ).toBe(401);
+    });
+
+    test("remote JWKS without its service binding fails closed but keeps health open", async () => {
+      const { jwksUrlOnlyUrl } = target.urls();
+      const jwt = await signToken("acme", "member");
+      expect((await json(jwksUrlOnlyUrl, "/health")).status).toBe(200);
+      expect(
+        (await json(jwksUrlOnlyUrl, "/db/acme/info", { token: jwt })).status,
+      ).toBe(401);
     });
   });
 }
