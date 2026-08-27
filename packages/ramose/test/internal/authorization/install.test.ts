@@ -1023,6 +1023,30 @@ describe("installAuthorization", () => {
     expect(failure.message).toMatch(/canonical hash failed|lone surrogate|class/);
   });
 
+  test("install snapshots the catalog before the first Effectful yield", async () => {
+    const descriptor = catalogDescriptor();
+    const template = templateOf(
+      [ownsIssue()],
+      { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] },
+    );
+    const installed = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(installAuthorization(bindingInput(template, descriptor)));
+        yield* Effect.yieldNow;
+        (descriptor.fields as Array<(typeof descriptor.fields)[number]>).push(
+          scalarField(issueOwner, "injected"),
+        );
+        (descriptor.entities as Array<(typeof descriptor.entities)[number]>).push({
+          id: entity("injected"),
+          traits: [],
+        });
+        return yield* Fiber.join(fiber);
+      }),
+    );
+    expect(installed.identities.entities.map((item) => item.name)).toEqual(["issue", "tag", "user"]);
+    expect(installed.identities.fields.some((item) => item.localName === "injected")).toBe(false);
+  });
+
   test("install is interruptible at the catalog boundary", async () => {
     const exit = await Effect.runPromise(
       Effect.gen(function* () {

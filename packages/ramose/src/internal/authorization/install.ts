@@ -11,6 +11,9 @@
  * Unhashed tables never leave this module and are not
  * {@link InstalledAuthorizationIR}. Structural decode output is not
  * {@link InstalledAuthorizationIRV1}; only this module seals the brand.
+ * The catalog binding input is cloned and frozen before the first
+ * Effectful yield so bind, validate, assemble, and hash share one
+ * snapshot.
  */
 
 import * as Brand from "effect/Brand";
@@ -76,6 +79,9 @@ const freezePlain = <T>(value: T): T => {
   }
   return Object.freeze(value);
 };
+
+const snapshotBindingInput = (input: CatalogBindingInput): CatalogBindingInput =>
+  freezePlain(clonePlain(input));
 
 const requireLanguageVersion = (
   version: string,
@@ -171,26 +177,33 @@ export const installAuthorization = Effect.fn("Authorization.installAuthorizatio
   function* (
     input: CatalogBindingInput,
   ): Effect.fn.Return<InstalledAuthorizationIRV1Type, InstallFailure> {
+    const snapshot = snapshotBindingInput(input);
     const templateVersion = requireLanguageVersion(
-      input.template.languageVersion,
+      snapshot.template.languageVersion,
       "policy template",
     );
     if (Result.isFailure(templateVersion)) return yield* templateVersion.failure;
-    const bound = yield* bindPolicyTemplate(input);
+    const bound = yield* bindPolicyTemplate(snapshot);
     const boundVersion = requireLanguageVersion(bound.languageVersion, "bound IR");
     if (Result.isFailure(boundVersion)) return yield* boundVersion.failure;
     const validated = yield* validateBoundAuthorization({
       bound,
-      descriptor: input.descriptor,
+      descriptor: snapshot.descriptor,
     });
-    return yield* sealInstalledAuthorization(validated, input.descriptor);
+    return yield* sealInstalledAuthorization(validated, snapshot.descriptor);
   },
 );
 
 export const installAgainstAuthoritativeCatalog = Effect.fn(
   "Authorization.installAgainstAuthoritativeCatalog",
 )(function* (target: CatalogBindingTarget, template: PolicyTemplateIR) {
+  const snapshotTarget = freezePlain(clonePlain(target));
+  const snapshotTemplate = freezePlain(clonePlain(template));
   const catalogs = yield* AuthoritativeCatalog;
-  const descriptor = yield* catalogs.resolve(target);
-  return yield* installAuthorization({ target, descriptor, template });
+  const descriptor = yield* catalogs.resolve(snapshotTarget);
+  return yield* installAuthorization({
+    target: snapshotTarget,
+    descriptor,
+    template: snapshotTemplate,
+  });
 });
