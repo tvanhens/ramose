@@ -32,6 +32,7 @@
 
 import {
   type Datom,
+  type DatomValue,
   type TaggedValue,
   Index,
   ValueTag,
@@ -291,7 +292,7 @@ export async function expandTx(
   }
 
   /** `db.entid` for a lookup ref — wrap unknown/non-unique/uncoercible as TxError (409), never a raw Error (500). */
-  const lookupEntid = async (form: readonly [string, unknown]): Promise<number | undefined> => {
+  const lookupEntid = async (form: [string, unknown]): Promise<number | undefined> => {
     try {
       return await db.entid(form);
     } catch (err) {
@@ -482,9 +483,9 @@ export async function expandTx(
 
   // Same-t facts asserted by :db/cas — retracting them is tx/invalid, not last-wins.
   const casFacts = new Set<string>();
-  const casFactKey = (e: number, a: number, vt: ValueTag, v: unknown): string =>
+  const casFactKey = (e: number, a: number, vt: ValueTag, v: DatomValue): string =>
     e + ":" + a + ":" + valueKey(vt, v);
-  const rejectIfCasFact = (e: number, a: number, vt: ValueTag, v: unknown): void => {
+  const rejectIfCasFact = (e: number, a: number, vt: ValueTag, v: DatomValue): void => {
     if (casFacts.has(casFactKey(e, a, vt, v))) {
       throw new TxError("cannot retract a :db/cas assertion in the same transaction");
     }
