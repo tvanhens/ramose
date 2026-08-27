@@ -17,7 +17,6 @@ import * as Effect from "effect/Effect";
 import type { Db } from "../../core/db.ts";
 import type { DatabaseId } from "../identities.ts";
 import type { RawStorageFailure } from "./failures.ts";
-import * as Result from "effect/Result";
 import { mintRawSnapshot, type RawSnapshot } from "./snapshots.ts";
 
 export interface RawSnapshotRequest {
@@ -49,15 +48,15 @@ export const openRawSnapshot = Effect.fn("Authorization.openRawSnapshot")(functi
   request: RawSnapshotRequest,
 ) {
   const current = yield* physical.open(request);
-  const minted = mintRawSnapshot({
-    database: request.database,
-    current,
-    basisT: request.basisT,
-    leaseEpoch: request.leaseEpoch ?? 0,
-    ...(request.asOfT === undefined ? {} : { asOfT: request.asOfT }),
-    ...(request.history === undefined ? {} : { history: request.history }),
-    ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
-  });
-  if (Result.isFailure(minted)) return yield* minted.failure;
-  return minted.success;
+  return yield* Effect.fromResult(
+    mintRawSnapshot({
+      database: request.database,
+      current,
+      basisT: request.basisT,
+      leaseEpoch: request.leaseEpoch ?? 0,
+      ...(request.asOfT === undefined ? {} : { asOfT: request.asOfT }),
+      ...(request.history === undefined ? {} : { history: request.history }),
+      ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
+    }),
+  );
 });

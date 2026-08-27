@@ -18,7 +18,6 @@ import type { CatalogId, CatalogVersion, DatabaseId } from "../identities.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
 import type { AuthorizationPrincipal } from "../principal.ts";
 import { type ApplicationSnapshotFailure } from "./failures.ts";
-import * as Result from "effect/Result";
 import {
   mintAuthorizedSnapshot,
   type AuthorizedSnapshot,
@@ -53,8 +52,6 @@ export class AuthorizedApplicationAccess extends Context.Service<
 
 export const openAuthorizedSnapshot = Effect.fn("Authorization.openAuthorizedSnapshot")(
   function* (request: AuthorizedSnapshotRequest) {
-    const minted = mintAuthorizedSnapshot(request);
-    if (Result.isFailure(minted)) return yield* minted.failure;
-    return minted.success;
+    return yield* Effect.fromResult(mintAuthorizedSnapshot(request));
   },
 );

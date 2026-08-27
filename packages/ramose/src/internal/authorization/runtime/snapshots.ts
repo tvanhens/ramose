@@ -497,52 +497,51 @@ export const mintRuleSnapshot = (input: {
   readonly leaseEpoch?: number | undefined;
   readonly budgetLimit?: number | undefined;
   readonly expiresAt?: number | undefined;
-}): Result.Result<RuleSnapshot, RuleSnapshotFailure> => {
-  if (!isVerifiedInstalledAuthorization(input.installed)) {
-    return Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
-  }
-  if (input.principal.subject.length === 0) {
-    return Result.fail(new RuleSnapshotUnavailable({ message: "verified principal is required" }));
-  }
-  if (
-    input.catalog.id !== input.installed.catalog ||
-    input.catalog.version !== input.installed.catalogVersion ||
-    input.catalog.database !== input.installed.database ||
-    input.catalog.fingerprint !== input.installed.schemaFingerprint
-  ) {
-    return Result.fail(
-      new CatalogMismatch({
-        message: "catalog identity does not match installed policy",
-        expected: input.installed.catalog,
-        actual: input.catalog.id,
-        expectedVersion: input.installed.catalogVersion,
-        actualVersion: input.catalog.version,
-        expectedFingerprint: input.installed.schemaFingerprint,
-        actualFingerprint: input.catalog.fingerprint,
-        expectedDatabase: input.installed.database,
-        actualDatabase: input.catalog.database,
-      }),
-    );
-  }
-  const rawLive = checkRawSnapshot(input.raw);
-  if (Result.isFailure(rawLive)) return Result.fail(rawLive.failure);
-  const rawState = liveRawState(input.raw);
-  if (rawState === undefined) return Result.fail(notLive());
-  if (rawState.database !== input.installed.database) {
-    return Result.fail(
-      new CatalogMismatch({
-        message: "raw snapshot database does not match installed policy",
-        expectedDatabase: input.installed.database,
-        actualDatabase: rawState.database,
-      }),
-    );
-  }
-  if (input.basisT > rawState.current.basisT) {
-    return Result.fail(new RuleSnapshotUnavailable({ message: "rule basis is ahead of storage" }));
-  }
-  const view = input.basisT < rawState.current.basisT ? rawState.current.asOf(input.basisT) : rawState.current;
-  return Result.succeed(
-    createRuleSnapshot({
+}): Result.Result<RuleSnapshot, RuleSnapshotFailure> =>
+  Result.gen(function* () {
+    if (!isVerifiedInstalledAuthorization(input.installed)) {
+      return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
+    }
+    if (input.principal.subject.length === 0) {
+      return yield* Result.fail(new RuleSnapshotUnavailable({ message: "verified principal is required" }));
+    }
+    if (
+      input.catalog.id !== input.installed.catalog ||
+      input.catalog.version !== input.installed.catalogVersion ||
+      input.catalog.database !== input.installed.database ||
+      input.catalog.fingerprint !== input.installed.schemaFingerprint
+    ) {
+      return yield* Result.fail(
+        new CatalogMismatch({
+          message: "catalog identity does not match installed policy",
+          expected: input.installed.catalog,
+          actual: input.catalog.id,
+          expectedVersion: input.installed.catalogVersion,
+          actualVersion: input.catalog.version,
+          expectedFingerprint: input.installed.schemaFingerprint,
+          actualFingerprint: input.catalog.fingerprint,
+          expectedDatabase: input.installed.database,
+          actualDatabase: input.catalog.database,
+        }),
+      );
+    }
+    yield* checkRawSnapshot(input.raw);
+    const rawState = liveRawState(input.raw);
+    if (rawState === undefined) return yield* Result.fail(notLive());
+    if (rawState.database !== input.installed.database) {
+      return yield* Result.fail(
+        new CatalogMismatch({
+          message: "raw snapshot database does not match installed policy",
+          expectedDatabase: input.installed.database,
+          actualDatabase: rawState.database,
+        }),
+      );
+    }
+    if (input.basisT > rawState.current.basisT) {
+      return yield* Result.fail(new RuleSnapshotUnavailable({ message: "rule basis is ahead of storage" }));
+    }
+    const view = input.basisT < rawState.current.basisT ? rawState.current.asOf(input.basisT) : rawState.current;
+    return createRuleSnapshot({
       database: input.installed.database,
       catalog: input.catalog,
       installed: input.installed,
@@ -552,9 +551,8 @@ export const mintRuleSnapshot = (input: {
       leaseEpoch: input.leaseEpoch ?? input.raw.leaseEpoch,
       budgetLimit: input.budgetLimit ?? DEFAULT_AUTHORIZATION_BUDGET,
       ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-    }),
-  );
-};
+    });
+  });
 
 export const mintAuthorizedSnapshot = (input: {
   readonly raw: RawSnapshot;
@@ -569,62 +567,65 @@ export const mintAuthorizedSnapshot = (input: {
   readonly asOfT?: number | undefined;
   readonly history?: boolean | undefined;
   readonly expiresAt?: number | undefined;
-}): Result.Result<AuthorizedSnapshot, ApplicationSnapshotFailure> => {
-  if (input.principal === undefined || input.principal.subject.length === 0) {
-    return Result.fail(new ApplicationSnapshotUnavailable({ message: "verified principal is required" }));
-  }
-  if (!isVerifiedInstalledAuthorization(input.installed)) {
-    return Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
-  }
-  if (input.catalog === undefined || input.catalogVersion === undefined) {
-    return Result.fail(new ApplicationSnapshotUnavailable({ message: "catalog identity is required" }));
-  }
-  if (
-    input.catalog !== input.installed.catalog ||
-    input.catalogVersion !== input.installed.catalogVersion ||
-    input.database !== input.installed.database
-  ) {
-    return Result.fail(
-      new CatalogMismatch({
-        message: "catalog identity does not match installed policy",
-        expected: input.installed.catalog,
-        actual: input.catalog,
-        expectedVersion: input.installed.catalogVersion,
-        actualVersion: input.catalogVersion,
-        expectedDatabase: input.installed.database,
-        actualDatabase: input.database,
-      }),
-    );
-  }
-  const rawLive = checkRawSnapshot(input.raw);
-  if (Result.isFailure(rawLive)) return Result.fail(rawLive.failure);
-  const rawState = liveRawState(input.raw);
-  if (rawState === undefined) {
-    return Result.fail(new ApplicationSnapshotUnavailable({ message: "raw snapshot is not a live capability" }));
-  }
-  if (rawState.database !== input.installed.database) {
-    return Result.fail(
-      new CatalogMismatch({
-        message: "raw snapshot database does not match installed policy",
-        expectedDatabase: input.installed.database,
-        actualDatabase: rawState.database,
-      }),
-    );
-  }
-  if (input.applicationBasisT > rawState.current.basisT || input.ruleBasisT > rawState.current.basisT) {
-    return Result.fail(new ApplicationSnapshotUnavailable({ message: "basis is ahead of storage" }));
-  }
-  if (
-    input.applicationBasisT !== rawState.application.basisT ||
-    (input.asOfT === undefined ? undefined : input.asOfT) !== rawState.application.asOfT ||
-    (input.history === true) !== rawState.application.history
-  ) {
-    return Result.fail(
-      new ApplicationSnapshotUnavailable({ message: "application basis does not match raw snapshot" }),
-    );
-  }
-  return Result.succeed(
-    createAuthorizedSnapshot({
+}): Result.Result<AuthorizedSnapshot, ApplicationSnapshotFailure> =>
+  Result.gen(function* () {
+    if (input.principal === undefined || input.principal.subject.length === 0) {
+      return yield* Result.fail(
+        new ApplicationSnapshotUnavailable({ message: "verified principal is required" }),
+      );
+    }
+    if (!isVerifiedInstalledAuthorization(input.installed)) {
+      return yield* Result.fail(new InvalidIR({ message: "compiled policy is not sealed installed IR" }));
+    }
+    if (input.catalog === undefined || input.catalogVersion === undefined) {
+      return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "catalog identity is required" }));
+    }
+    if (
+      input.catalog !== input.installed.catalog ||
+      input.catalogVersion !== input.installed.catalogVersion ||
+      input.database !== input.installed.database
+    ) {
+      return yield* Result.fail(
+        new CatalogMismatch({
+          message: "catalog identity does not match installed policy",
+          expected: input.installed.catalog,
+          actual: input.catalog,
+          expectedVersion: input.installed.catalogVersion,
+          actualVersion: input.catalogVersion,
+          expectedDatabase: input.installed.database,
+          actualDatabase: input.database,
+        }),
+      );
+    }
+    yield* checkRawSnapshot(input.raw);
+    const rawState = liveRawState(input.raw);
+    if (rawState === undefined) {
+      return yield* Result.fail(
+        new ApplicationSnapshotUnavailable({ message: "raw snapshot is not a live capability" }),
+      );
+    }
+    if (rawState.database !== input.installed.database) {
+      return yield* Result.fail(
+        new CatalogMismatch({
+          message: "raw snapshot database does not match installed policy",
+          expectedDatabase: input.installed.database,
+          actualDatabase: rawState.database,
+        }),
+      );
+    }
+    if (input.applicationBasisT > rawState.current.basisT || input.ruleBasisT > rawState.current.basisT) {
+      return yield* Result.fail(new ApplicationSnapshotUnavailable({ message: "basis is ahead of storage" }));
+    }
+    if (
+      input.applicationBasisT !== rawState.application.basisT ||
+      (input.asOfT === undefined ? undefined : input.asOfT) !== rawState.application.asOfT ||
+      (input.history === true) !== rawState.application.history
+    ) {
+      return yield* Result.fail(
+        new ApplicationSnapshotUnavailable({ message: "application basis does not match raw snapshot" }),
+      );
+    }
+    return createAuthorizedSnapshot({
       database: input.database,
       catalog: input.catalog,
       catalogVersion: input.catalogVersion,
@@ -636,8 +637,7 @@ export const mintAuthorizedSnapshot = (input: {
       ...(input.asOfT === undefined ? {} : { asOfT: input.asOfT }),
       ...(input.history === undefined ? {} : { history: input.history }),
       ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-    }),
-  );
-};
+    });
+  });
 
 export { fieldDescriptorKey, fieldStorageIndex, physicalStorageIdent, traversalCompositionsOf };

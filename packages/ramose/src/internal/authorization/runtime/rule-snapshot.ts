@@ -14,7 +14,6 @@
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import type { CatalogDescriptor } from "../catalog.ts";
 import type { FieldId } from "../identities.ts";
 import type { InstalledAuthorizationIRV1 } from "../ir.ts";
@@ -90,15 +89,15 @@ export class RuleSnapshotAccess extends Context.Service<
   RuleSnapshotAccessService
 >()("ramose/authorization/runtime/RuleSnapshotAccess") {}
 
-const requireLiveRule = (snapshot: RuleSnapshot) => {
-  const checked = checkRuleSnapshot(snapshot);
-  if (Result.isFailure(checked)) return Effect.fail(checked.failure);
-  const state = ruleProjectionState(snapshot);
-  if (state === undefined) {
-    return Effect.fail(new SnapshotCancelled({ message: "snapshot is not a live capability" }));
-  }
-  return Effect.succeed(state);
-};
+const requireLiveRule = (snapshot: RuleSnapshot) =>
+  Effect.gen(function* () {
+    yield* Effect.fromResult(checkRuleSnapshot(snapshot));
+    const state = ruleProjectionState(snapshot);
+    if (state === undefined) {
+      return yield* new SnapshotCancelled({ message: "snapshot is not a live capability" });
+    }
+    return state;
+  });
 
 const projectedToFailure = (
   projected: IncompleteProjected,
@@ -129,9 +128,7 @@ const requireComplete = (projected: Projected): Effect.Effect<Projected, RuleSna
 
 export const projectRuleSnapshot = Effect.fn("Authorization.projectRuleSnapshot")(
   function* (request: RuleSnapshotRequest) {
-    const minted = mintRuleSnapshot(request);
-    if (Result.isFailure(minted)) return yield* minted.failure;
-    return minted.success;
+    return yield* Effect.fromResult(mintRuleSnapshot(request));
   },
 );
 

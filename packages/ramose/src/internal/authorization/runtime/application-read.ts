@@ -13,7 +13,6 @@
  */
 
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import type { ApplicationSnapshotFailure } from "./failures.ts";
 import { SnapshotCancelled } from "./failures.ts";
 import {
@@ -27,11 +26,8 @@ export type ApplicationReadFailure = ApplicationSnapshotFailure;
 
 const requireAuthorized = (
   snapshot: AuthorizedSnapshot,
-): Effect.Effect<void, ApplicationReadFailure> => {
-  const checked = checkAuthorizedSnapshot(snapshot);
-  if (Result.isFailure(checked)) return Effect.fail(checked.failure);
-  return Effect.void;
-};
+): Effect.Effect<void, ApplicationReadFailure> =>
+  Effect.fromResult(checkAuthorizedSnapshot(snapshot));
 
 /**
  * External application query. Only an authorized snapshot is accepted.
