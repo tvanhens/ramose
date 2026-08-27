@@ -44,7 +44,6 @@ import {
   type CatalogBindingTarget,
   type CatalogDescriptor,
   type FieldRefTarget,
-  type InstalledAuthorizationIR,
   type InstalledAuthorizationIRV1,
   type OwnerRef,
   type PolicyTemplateIR,
@@ -386,7 +385,7 @@ const entityDecision = (id: string) => ({
   decision: { allow: [RuleId.make(id)], deny: [] as const },
 });
 
-const requireInstalled = (_ir: InstalledAuthorizationIR): void => undefined;
+const requireInstalled = (_ir: InstalledAuthorizationIRV1): void => undefined;
 
 describe("installAuthorization", () => {
   test("one binder entry point produces InstalledAuthorizationIRV1", async () => {
@@ -442,7 +441,7 @@ describe("installAuthorization", () => {
     );
   });
 
-  test("terminal many-ref membership plan includes the field and an index", async () => {
+  test("terminal many-ref membership plan includes the field and a refIndex", async () => {
     const installed = await install(
       templateOf(
         [terminalMembership()],
@@ -463,10 +462,15 @@ describe("installAuthorization", () => {
       expect.arrayContaining([
         { _tag: "trait", trait: trait("taggable") },
         { _tag: "field", field: field(taggableOwner, "tags") },
-        { _tag: "index", field: field(taggableOwner, "tags") },
+        { _tag: "refIndex", field: field(taggableOwner, "tags") },
         { _tag: "principal", field: field(userOwner, "authId") },
       ]),
     );
+    expect(
+      plan.lookups.some(
+        (lookup) => lookup._tag === "index" && lookup.field.localName === "tags",
+      ),
+    ).toBe(false);
   });
 
   test("principal-row, subject, claim, class-only, entity, trait, and field plans", async () => {
@@ -773,6 +777,117 @@ describe("installAuthorization", () => {
     expect(first.accessPlans.map((item) => item.rule)).toEqual(first.rules.map((item) => item.id));
   });
 
+  test("nested operation input field permutations produce identical installed bytes and hashes", async () => {
+    const nestedInput = (
+      fields: CatalogDescriptor["operations"][number]["input"],
+    ): CatalogDescriptor["operations"][number] => ({
+      id: operation(issueOwner, "create", "none"),
+      input: fields,
+    });
+    const rename = catalogDescriptor().operations[0]!;
+    const firstShape = {
+      _tag: "struct" as const,
+      fields: [
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct" as const,
+            fields: [
+              { key: "title", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+            ],
+          },
+        },
+        {
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array" as const,
+            items: {
+              _tag: "struct" as const,
+              fields: [
+                { key: "color", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+                { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const permutedShape = {
+      _tag: "struct" as const,
+      fields: [
+        {
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array" as const,
+            items: {
+              _tag: "struct" as const,
+              fields: [
+                { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+                { key: "color", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              ],
+            },
+          },
+        },
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct" as const,
+            fields: [
+              { key: "name", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+              { key: "title", optional: false, shape: { _tag: "scalar" as const, valueType: "string" as const } },
+            ],
+          },
+        },
+      ],
+    };
+    const first = await install(templateOf([], emptyDecisions()), {
+      ...catalogDescriptor(),
+      operations: [rename, nestedInput(firstShape)],
+    });
+    const second = await install(templateOf([], emptyDecisions()), {
+      ...catalogDescriptor(),
+      operations: [rename, nestedInput(permutedShape)],
+    });
+    expect(canonicalizeInstalledAuthorization(first)).toBe(canonicalizeInstalledAuthorization(second));
+    expect(first.policyHash).toBe(second.policyHash);
+    const create = first.operations.find((entry) => entry.id.localName === "create");
+    expect(create?.input).toEqual({
+      _tag: "struct",
+      fields: [
+        {
+          key: "labels",
+          optional: false,
+          shape: {
+            _tag: "array",
+            items: {
+              _tag: "struct",
+              fields: [
+                { key: "color", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+                { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              ],
+            },
+          },
+        },
+        {
+          key: "meta",
+          optional: false,
+          shape: {
+            _tag: "struct",
+            fields: [
+              { key: "name", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+              { key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
   test("encode/decode/hash round trip preserves canonical bytes", async () => {
     const installed = await install(
       templateOf(
@@ -793,6 +908,8 @@ describe("installAuthorization", () => {
     const decoded = decodeInstalledAuthorizationResult(encoded);
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
+    // @ts-expect-error — structural decode is not verified installed v1
+    requireInstalled(decoded.success);
     expect(canonicalizeInstalledAuthorization(decoded.success)).toBe(
       canonicalizeInstalledAuthorization(installed),
     );

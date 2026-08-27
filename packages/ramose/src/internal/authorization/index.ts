@@ -8,7 +8,8 @@
  * (#384) resolves relative identities against one authoritative descriptor.
  * Semantic validation recomputes rule metadata from the bound expression.
  * Install assembles {@link InstalledAuthorizationIRV1} from that verified
- * path. Runtime enforcement (#343) will import installed types from here
+ * path. Structural decode of {@link InstalledAuthorizationIR} is not
+ * that brand. Runtime enforcement (#343) will import installed types from here
  * without importing authoring. Executable policy is authorization language v1.
  *
  * Contract: `src/internal/design/authorization.md`.

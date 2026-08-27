@@ -8,7 +8,8 @@
  * Decode, encode, and canonicalization are pure. Cryptographic hashing
  * lives in the Effect orchestration shell via the Web Crypto API
  * (`crypto.subtle.digest`), matching #337. Structural success is not
- * runtime acceptance — binding is #384.
+ * runtime acceptance — template binding is #384; installed decode is
+ * not {@link InstalledAuthorizationIRV1}. Revalidation is #368.
  */
 
 import * as Effect from "effect/Effect";
@@ -59,6 +60,7 @@ export const decodePolicyTemplateResult = (
     input,
   );
 
+/** Structural document only. Not {@link InstalledAuthorizationIRV1}. */
 export const decodeInstalledAuthorizationResult = (
   input: unknown,
 ): Result.Result<InstalledAuthorizationIRType, InvalidIR> =>

@@ -5,13 +5,16 @@
  * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
  * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
  * post-validation form with recomputed metadata for access-plan derivation
- * (#386). {@link InstalledAuthorizationIR} / {@link InstalledAuthorizationIRV1}
- * is the sealed form runtime accepts. The four types are distinct: a template,
- * bound, or validated document is not assignable where installed IR is required.
+ * (#386). {@link InstalledAuthorizationIR} is the Schema-decoded structural
+ * document. {@link InstalledAuthorizationIRV1} is the verified/sealed brand
+ * runtime accepts. The four pipeline types are distinct: a template, bound,
+ * validated, or structural installed document is not assignable where
+ * verified installed IR is required.
  *
  * Effect Schema is the source of truth. Binding lives in `bind.ts`.
  */
 
+import type * as Brand from "effect/Brand";
 import * as Schema from "effect/Schema";
 import {
   CatalogDescriptor,
@@ -204,11 +207,11 @@ export const AuthorizationValidationInput = Schema.Struct({
 export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
 
 /**
- * Bound, sealed installed v1 artifact. Runtime accepts only this form.
- * Catalog identity, version, schema fingerprint, language version, and
- * policy hash are mandatory so a template, bound, or unhashed intermediate
- * cannot be passed in their place. The only production constructor is the
- * Effectful bind → validate → assemble entry point.
+ * Schema-decoded structural installed document. Decode checks shape and
+ * identity collisions only — not policy hash, rule hashes, decision
+ * semantics, or access-plan completeness. This is not runtime authority.
+ * Stored-document revalidation belongs to #368; until then, only
+ * {@link installAuthorization} may seal {@link InstalledAuthorizationIRV1}.
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
@@ -231,12 +234,13 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
 
 /**
- * Semantics-versioned name for the runtime-acceptable v1 artifact.
- * Language version is already a `v1` literal on the schema; this alias
- * is the type the installer and later read-authorizer stages consume.
+ * Verified/sealed runtime-acceptable v1 artifact. Distinct from the
+ * Schema-decoded structural document: #361 must consume this brand, not
+ * decoder output. Only {@link installAuthorization} produces it today.
+ * #368's authoritative load/revalidate path will be the other producer.
  */
-export const InstalledAuthorizationIRV1 = InstalledAuthorizationIR;
-export type InstalledAuthorizationIRV1 = InstalledAuthorizationIR;
+export type InstalledAuthorizationIRV1 = InstalledAuthorizationIR &
+  Brand.Brand<"InstalledAuthorizationIRV1">;
 
 /**
  * Requested install identity the binder must match against the descriptor.

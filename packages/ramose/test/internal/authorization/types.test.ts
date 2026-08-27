@@ -72,8 +72,9 @@ import {
   FieldDescriptor,
   type IncompleteProjected,
   JsonScalar,
+  decodeInstalledAuthorizationResult,
   InstalledAuthorizationIR,
-  InstalledAuthorizationIRV1,
+  type InstalledAuthorizationIRV1,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
   OperationInputShape,
@@ -145,10 +146,18 @@ export type _validatedFromSchema = Expect<
   Equal<ValidatedAuthorizationIR, typeof ValidatedAuthorizationIR.Type>
 >;
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
-export type _installedV1FromSchema = Expect<
-  Equal<InstalledAuthorizationIRV1, typeof InstalledAuthorizationIRV1.Type>
+export type _structuralNotVerified = Expect<
+  Equal<Extends<InstalledAuthorizationIR, InstalledAuthorizationIRV1>, false>
 >;
-export type _installedV1IsInstalled = Expect<Equal<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
+export type _verifiedIsStructural = Expect<Extends<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
+type DecodedInstalled = Extract<
+  ReturnType<typeof decodeInstalledAuthorizationResult>,
+  { readonly _tag: "Success" }
+>["success"];
+export type _decodeIsStructural = Expect<Equal<DecodedInstalled, InstalledAuthorizationIR>>;
+export type _decodeNotVerified = Expect<
+  Equal<Extends<DecodedInstalled, InstalledAuthorizationIRV1>, false>
+>;
 export type _validationInputFromSchema = Expect<
   Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
 >;
@@ -715,6 +724,9 @@ const _operationFixtures = () => {
   // @ts-expect-error — a template is not installed IR
   const asInstalled: InstalledAuthorizationIR = templateFixture;
 
+  // @ts-expect-error — structural document is not verified installed v1
+  const structuralAsVerified: InstalledAuthorizationIRV1 = installedFixture;
+
   // @ts-expect-error — installed IR is not a template
   const asTemplate: PolicyTemplateIR = installedFixture;
 
@@ -872,6 +884,7 @@ const _operationFixtures = () => {
     noOwner,
     noTarget,
     asInstalled,
+    structuralAsVerified,
     asTemplate,
     boundAsInstalled,
     validatedAsInstalled,

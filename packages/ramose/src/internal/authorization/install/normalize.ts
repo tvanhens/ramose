@@ -13,6 +13,7 @@ import {
   OperationDescriptor,
   TraitComposition,
   type CatalogDescriptor,
+  type OperationInputShape,
   type RuleAccessPlan,
 } from "../catalog.ts";
 import type {
@@ -180,10 +181,39 @@ export const normalizeTraitComposition = (
   return encoded;
 };
 
+const canonicalizeInputShape = (shape: OperationInputShape): OperationInputShape => {
+  switch (shape._tag) {
+    case "scalar":
+    case "ref":
+    case "opaque":
+      return shape;
+    case "array":
+      return { _tag: "array", items: canonicalizeInputShape(shape.items) };
+    case "struct":
+      return {
+        _tag: "struct",
+        fields: [...shape.fields]
+          .sort((left, right) => compareCanonicalKeys(left.key, right.key))
+          .map((field) => ({
+            key: field.key,
+            optional: field.optional,
+            shape: canonicalizeInputShape(field.shape),
+          })),
+      };
+  }
+};
+
 export const normalizeOperations = (
   operations: CatalogDescriptor["operations"],
 ): Result.Result<ReadonlyArray<CatalogDescriptor["operations"][number]>, ValidateFailure> =>
-  uniqueSorted(operations, encodeOperation, "operation identity");
+  uniqueSorted(
+    operations.map((operation) => ({
+      ...operation,
+      input: canonicalizeInputShape(operation.input),
+    })),
+    encodeOperation,
+    "operation identity",
+  );
 
 export const normalizeRules = (
   rules: ReadonlyArray<CanonicalAuthorizationRule>,

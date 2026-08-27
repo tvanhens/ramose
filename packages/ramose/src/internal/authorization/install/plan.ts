@@ -3,7 +3,8 @@
  *
  * Walks a semantically validated rule and emits exactly one complete
  * {@link RuleAccessPlan}: field facts, entity/trait membership, card-one
- * hops, terminal membership indexes, and principal-row resolution.
+ * hops, terminal membership (`index` for indexed many-scalars,
+ * `refIndex` for many-refs), and principal-row resolution.
  * Database-wide `exists` lookups are not representable. Effect and
  * service lookup do not occur here.
  */
@@ -71,6 +72,9 @@ const addField = (builder: PlanBuilder, field: FieldId): Result.Result<void, Val
 const addIndex = (builder: PlanBuilder, field: FieldId): Result.Result<void, ValidateFailure> =>
   addLookup(builder, { _tag: "index", field });
 
+const addRefIndex = (builder: PlanBuilder, field: FieldId): Result.Result<void, ValidateFailure> =>
+  addLookup(builder, { _tag: "refIndex", field });
+
 const addPrincipal = (builder: PlanBuilder, field: FieldId): Result.Result<void, ValidateFailure> =>
   addLookup(builder, { _tag: "principal", field });
 
@@ -92,10 +96,11 @@ const addTerminalMembership = (
   builder: PlanBuilder,
   field: FieldDescriptor,
 ): Result.Result<void, ValidateFailure> => {
-  if (field.valueType !== "ref") {
-    const indexed = requireIndexed(field);
-    if (Result.isFailure(indexed)) return Result.fail(indexed.failure);
+  if (field.valueType === "ref") {
+    return addRefIndex(builder, field.id);
   }
+  const indexed = requireIndexed(field);
+  if (Result.isFailure(indexed)) return Result.fail(indexed.failure);
   return addIndex(builder, field.id);
 };
 

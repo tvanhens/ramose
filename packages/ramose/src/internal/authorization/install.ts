@@ -9,9 +9,11 @@
  * by authorization language version.
  *
  * Unhashed tables never leave this module and are not
- * {@link InstalledAuthorizationIR}.
+ * {@link InstalledAuthorizationIR}. Structural decode output is not
+ * {@link InstalledAuthorizationIRV1}; only this module seals the brand.
  */
 
+import * as Brand from "effect/Brand";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
@@ -45,6 +47,8 @@ import { invalid, type ValidateFailure } from "./validation/common.ts";
 export type InstallFailure = BindFailure;
 
 const PLACEHOLDER_POLICY_HASH = PolicyHash.make("0".repeat(64));
+
+const verifiedInstalledAuthorization = Brand.nominal<InstalledAuthorizationIRV1Type>();
 
 type UnhashedInstalledTables = Omit<
   InstalledAuthorizationIRType,
@@ -154,7 +158,7 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
     };
     const decoded = decodeInstalledAuthorizationResult(encodeInstalledAuthorization(installed));
     if (Result.isFailure(decoded)) return yield* decoded.failure;
-    return freezePlain(clonePlain(decoded.success));
+    return verifiedInstalledAuthorization(freezePlain(clonePlain(decoded.success)));
   },
 );
 

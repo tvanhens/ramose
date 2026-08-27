@@ -228,12 +228,22 @@ export type CatalogDescriptor = typeof CatalogDescriptor.Type;
 /**
  * Facts and index lookups a v1 rule requires. Derived during install —
  * never taken from a template. Database-wide `exists` scans are not v1.
+ *
+ * `index` is the optional AVET membership catalog flag
+ * (`FieldDescriptor.index === true`). Use it for many-scalar `in`/`has`
+ * and unique principal-row resolution.
+ *
+ * `refIndex` is the mandatory implicit reverse / VAET-style membership
+ * index for cardinality-many ref fields. It is independent of
+ * `FieldDescriptor.index` and is the #361 contract for `me in tags` /
+ * `has tags`. Do not reuse `_tag: "index"` for that path.
  */
 export const RuleAccessLookup = Schema.Union([
   Schema.TaggedStruct("field", { field: FieldId }),
   Schema.TaggedStruct("entity", { entity: EntityId }),
   Schema.TaggedStruct("trait", { trait: TraitId }),
   Schema.TaggedStruct("index", { field: FieldId }),
+  Schema.TaggedStruct("refIndex", { field: FieldId }),
   Schema.TaggedStruct("principal", { field: FieldId }),
 ]);
 export type RuleAccessLookup = typeof RuleAccessLookup.Type;
