@@ -61,6 +61,7 @@ import {
   True,
   type AuthorizationFailure,
   AuthorizationPrincipal,
+  AuthorizationAssemblyInput,
   AuthorizationValidationInput,
   BoundAuthorizationIR,
   CatalogBindingInput,
@@ -112,6 +113,9 @@ export type _noPublicAuthorization = Expect<
       | "bindPolicyTemplate"
       | "bindAgainstAuthoritativeCatalog"
       | "validateBoundAuthorization"
+      | "assembleInstalledAuthorization"
+      | "bindInstalledAuthorization"
+      | "bindInstalledAgainstAuthoritativeCatalog"
     >,
     never
   >
@@ -142,6 +146,9 @@ export type _validatedFromSchema = Expect<
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
 export type _validationInputFromSchema = Expect<
   Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
+>;
+export type _assemblyInputFromSchema = Expect<
+  Equal<AuthorizationAssemblyInput, typeof AuthorizationAssemblyInput.Type>
 >;
 export type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
 export type _bindingTargetFromSchema = Expect<

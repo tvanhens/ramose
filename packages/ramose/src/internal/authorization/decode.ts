@@ -126,14 +126,48 @@ export const hashPolicyTemplate = Effect.fn("Authorization.hashPolicyTemplate")(
   return PolicyHash.make(digest);
 });
 
+/**
+ * Canonical installed-IR body for {@link PolicyHash}: schema-encoded JSON
+ * minus `policyHash`, RFC 8785 JCS. Shared by the Effect hash shell and
+ * the sync assembler.
+ */
+export const installedAuthorizationHashJson = (
+  document: InstalledAuthorizationIRType,
+): JsonValue => omitKey(encodedJson(encodeInstalledAuthorization(document)), "policyHash");
+
 export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalledAuthorization")(
   function* (document: InstalledAuthorizationIRType) {
-    const digest = yield* hashCanonicalJson(
-      omitKey(encodedJson(encodeInstalledAuthorization(document)), "policyHash"),
-    );
+    const digest = yield* hashCanonicalJson(installedAuthorizationHashJson(document));
     return PolicyHash.make(digest);
   },
 );
+
+/**
+ * Pure SHA-256 of the #357 installed-IR body. Same digest as
+ * {@link hashInstalledAuthorization}; no Effect, Web Crypto, or service lookup.
+ */
+export const hashInstalledAuthorizationSync = (document: InstalledAuthorizationIRType): PolicyHash =>
+  PolicyHash.make(
+    sha256HexSync(UTF8.encode(canonicalizeJson(installedAuthorizationHashJson(document)))),
+  );
+
+/**
+ * Same digest as {@link hashInstalledAuthorizationSync}, as `Result`.
+ * JCS-invalid strings become {@link InvalidIR} instead of throwing.
+ */
+export const hashInstalledAuthorizationResult = (
+  document: InstalledAuthorizationIRType,
+): Result.Result<PolicyHash, InvalidIR> => {
+  try {
+    return Result.succeed(hashInstalledAuthorizationSync(document));
+  } catch (cause) {
+    return Result.fail(
+      new InvalidIR({
+        message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+    );
+  }
+};
 
 export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(function* (
   rule: RelativeAuthorizationRuleType,

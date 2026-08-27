@@ -121,9 +121,9 @@ const validateBoundAuthorizationWithLimits = (
 };
 
 /**
- * Pure semantic kernel. Recomputes rule hashes and derived flags. Does not
- * derive access plans or assemble {@link import("../ir.ts").InstalledAuthorizationIR}.
- * Production entry: hard validation limits only.
+ * Pure semantic kernel. Recomputes rule hashes and derived flags. Access
+ * plans and {@link import("../ir.ts").InstalledAuthorizationIR} assembly
+ * live in `assemble.ts`. Production entry: hard validation limits only.
  */
 export const validateBoundAuthorizationResult = (
   input: AuthorizationValidationInput,

@@ -226,8 +226,8 @@ export const CatalogDescriptor = Schema.Struct({
 export type CatalogDescriptor = typeof CatalogDescriptor.Type;
 
 /**
- * Facts and index lookups a decision requires. Computed in #358; this is
- * the type shape installed IR will carry.
+ * Facts and index lookups a rule requires. Derived from the validated
+ * expression during installed-IR assembly — never taken from a template.
  */
 export const RuleAccessLookup = Schema.Union([
   Schema.TaggedStruct("field", { field: FieldId }),

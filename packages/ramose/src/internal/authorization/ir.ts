@@ -4,8 +4,8 @@
  * {@link PolicyTemplateIR} is catalog-relative compiler output. It is not
  * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
  * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
- * post-validation form with recomputed metadata for access-plan derivation
- * (#386). {@link InstalledAuthorizationIR} is the sealed form runtime accepts.
+ * post-validation form with recomputed metadata for access-plan derivation.
+ * {@link InstalledAuthorizationIR} is the sealed form runtime accepts.
  * The four types are distinct: a template, bound, or validated document is not
  * assignable where installed IR is required.
  *
@@ -201,6 +201,13 @@ export const AuthorizationValidationInput = Schema.Struct({
   descriptor: CatalogDescriptor,
 });
 export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
+
+/** Input the access-plan / installed-IR assembler consumes. */
+export const AuthorizationAssemblyInput = Schema.Struct({
+  validated: ValidatedAuthorizationIR,
+  descriptor: CatalogDescriptor,
+});
+export type AuthorizationAssemblyInput = typeof AuthorizationAssemblyInput.Type;
 
 /**
  * Bound, sealed installed artifact. Runtime accepts only this form.

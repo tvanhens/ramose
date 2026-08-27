@@ -14,6 +14,7 @@
  * The result is {@link BoundAuthorizationIR}: non-executable, not
  * accepted by runtime authorization, and structurally distinct from
  * {@link PolicyTemplateIR} and {@link InstalledAuthorizationIR}.
+ * Installed-IR assembly lives in `assemble.ts`.
  */
 
 import * as Context from "effect/Context";
@@ -762,8 +763,7 @@ const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
  * Pure catalog-binding kernel. Resolves every relative identity in the
  * template against `input.descriptor`, then re-keys each rule ID from the
  * catalog-qualified body and remaps decision references. Does not
- * recompute derived flags or assemble
- * {@link import("./ir.ts").InstalledAuthorizationIR}.
+ * recompute derived flags. Installed-IR assembly is `assemble.ts`.
  */
 export const bindPolicyTemplateResult = (
   input: CatalogBindingInput,
