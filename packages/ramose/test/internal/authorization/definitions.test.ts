@@ -157,11 +157,12 @@ describe("catalog definition assembly", () => {
       "entity:rootNode.audit",
       "trait:graph.inspect",
     ]);
-    expect(installedRoot.operations.map((entry) => entry.localName)).toEqual([
-      "audit",
-      "inspect",
-    ]);
-    expect(installedRoot.operations[0]!.writes.map((entry) => entry.name))
+    expect(installedRoot.operations.map((entry) =>
+      entry.descriptor.id.localName
+    )).toEqual(["audit", "inspect"]);
+    expect(installedRoot.operations[0]!.descriptor.writes.map((entry) =>
+      entry.name
+    ))
       .toEqual(["audit"]);
     expect(installedRoot.resolveCreationValues(
       "rootNode",
@@ -524,7 +525,7 @@ describe("catalog definition assembly", () => {
     expect(JSON.stringify(installed.unit)).not.toContain(trustedPrefix);
   });
 
-  test("compiled boundary ignores every original authoring mutation", async () => {
+  test("assembly isolates inert state and retains the original live operation callback", async () => {
     const fieldInputs = { value: "field-original" };
     const bindingInputs = { value: "binding-original" };
     const typedInputs = {
@@ -617,7 +618,9 @@ describe("catalog definition assembly", () => {
     const sealedHash = installed.unitHash;
     const sealedUnit = JSON.stringify(installed.unit);
     const operation = Item[OwnedOperations].check;
-    const capturedBodySource = installed.operations[0]!.bodySource;
+    const installedOperation = installed.operations[0]!;
+    const capturedDescriptor = installedOperation.descriptor;
+    const capturedRun = installedOperation.run;
 
     fieldInputs.value = "field-mutated";
     bindingInputs.value = "binding-mutated";
@@ -666,18 +669,24 @@ describe("catalog definition assembly", () => {
     expect(JSON.stringify(installed.unit)).toBe(sealedUnit);
     expect("schema" in installed).toBe(false);
     expect("definition" in installed).toBe(false);
-    expect("run" in installed.operations[0]!).toBe(false);
-    expect(installed.operations[0]!.bodySource).toBe(capturedBodySource);
-    expect(installed.operations[0]!.owner).toEqual({
+    expect(installedOperation.descriptor).toBe(
+      installed.unit.catalog.operations[0]!,
+    );
+    expect(installedOperation.descriptor).toBe(capturedDescriptor);
+    expect(installedOperation.run).toBe(capturedRun);
+    expect(installedOperation.run).not.toBe(operation.run);
+    expect(await installedOperation.run({}, {})).toEqual({ ok: false });
+    expect("run" in installedOperation.descriptor).toBe(false);
+    expect(installedOperation.descriptor.id.owner).toEqual({
       kind: "entity",
       name: "boundaryItem",
     });
-    expect(installed.operations[0]!.writes.map((entry) => entry.name))
+    expect(installedOperation.descriptor.writes.map((entry) => entry.name))
       .toEqual(["boundaryAudit"]);
-    expect(installed.operations[0]!.input.decode({ value: "stable" }))
+    expect(installedOperation.input.decode({ value: "stable" }))
       .toEqual({ value: "stable" });
-    expect(() => installed.operations[0]!.input.decode({ value: 1 })).toThrow();
-    expect(installed.operations[0]!.output.encode({ ok: true }))
+    expect(() => installedOperation.input.decode({ value: 1 })).toThrow();
+    expect(installedOperation.output.encode({ ok: true }))
       .toEqual({ ok: true });
     expect(installed.resolveCreationValues(
       "boundaryItem",

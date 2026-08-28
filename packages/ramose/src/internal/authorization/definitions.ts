@@ -69,9 +69,9 @@ import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { JsonValue } from "./json.ts";
 import {
   lowerOwnedOperationSnapshots,
-  pairDeployedOperationSchemas,
+  pairDeployedOperations,
   snapshotOwnedOperations,
-  type DeployedOperationDefinition,
+  type DeployedOperationBinding,
   type OwnedOperationSnapshot,
 } from "./authoring/operations.ts";
 import { requireUnitHash } from "./deployed.ts";
@@ -81,8 +81,8 @@ export type InstalledCatalogDefinition = {
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
   readonly composition: CompositionIndex;
-  /** Compiled codecs and frozen body source retained for #417. */
-  readonly operations: readonly DeployedOperationDefinition[];
+  /** Sealed descriptors paired with private native codecs and executables. */
+  readonly operations: readonly DeployedOperationBinding[];
   readonly path: readonly string[];
   /** Resolve authoritative creation values from assembly's binding snapshot. */
   readonly resolveCreationValues: (
@@ -462,7 +462,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     });
     const unit = yield* sealInstalledCatalogUnit(descriptor, policy);
     const operations = yield* Effect.fromResult(
-      pairDeployedOperationSchemas(unit.catalog.operations, lowered.definitions),
+      pairDeployedOperations(unit.catalog.operations, lowered.definitions),
     );
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
     const creationByEntity = new Map(

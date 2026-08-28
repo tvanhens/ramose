@@ -26,8 +26,10 @@ export { compileReadAuthorization, compileReadAuthorizationResult } from "./comp
 export {
   lowerOperationSchema,
   lowerOwnedOperations,
-  pairDeployedOperationSchemas,
+  pairDeployedOperations,
+  type DeployedOperationBinding,
   type DeployedOperationDefinition,
+  type DeployedOperationRun,
   type LoweredOwnedOperations,
 } from "./operations.ts";
 export type {

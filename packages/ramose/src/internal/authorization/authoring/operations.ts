@@ -1,9 +1,9 @@
 /**
  * Lower public entity/trait-owned operations into catalog-local data.
  *
- * One synchronous snapshot captures inert descriptor material and compiles
- * authoritative codecs from the original deployed schemas before hashing
- * yields. No mutable authoring schema object survives lowering.
+ * One synchronous snapshot captures inert descriptor material, compiles
+ * authoritative codecs, and retains the original deployed run function before
+ * hashing yields. Executable code remains a private in-memory binding.
  */
 
 import * as Effect from "effect/Effect";
@@ -55,9 +55,15 @@ import {
 import type { JsonValue } from "../json.ts";
 
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
-const OPERATION_BODY_HASH_DOMAIN_V1 = "ramose/operation-body/v1\0";
+const OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1 =
+  "ramose/operation-implementation/v1\0";
 
 export type DeployedOperationCodec = DeployedSchemaCodec;
+
+export type DeployedOperationRun = (
+  op: unknown,
+  input: unknown,
+) => unknown | Promise<unknown>;
 
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
@@ -70,8 +76,18 @@ export type DeployedOperationDefinition = {
   readonly inputSchemaHash: DigestHex;
   readonly outputSchemaHash: DigestHex;
   readonly doc: string | undefined;
-  /** Frozen source retained for #417 compilation; never invoked by this plan. */
-  readonly bodySource: string;
+  /** Build-artifact identity of the executable paired during assembly. */
+  readonly implementationHash: DigestHex;
+  /** Original function from the deployed application module. Never serialized. */
+  readonly run: DeployedOperationRun;
+};
+
+/** One sealed inert descriptor paired with its private deployed capabilities. */
+export type DeployedOperationBinding = {
+  readonly descriptor: OperationDescriptorType;
+  readonly input: DeployedOperationCodec;
+  readonly output: DeployedOperationCodec;
+  readonly run: DeployedOperationRun;
 };
 
 export type LoweredOwnedOperations = {
@@ -101,8 +117,8 @@ export type OwnedOperationSnapshot = {
   readonly inputCodec: DeployedOperationCodec;
   readonly outputCodec: DeployedOperationCodec;
   readonly doc: string | undefined;
-  readonly bodySource: string;
-  readonly bodyHashMaterial: JsonValue;
+  readonly run: DeployedOperationRun;
+  readonly implementationHashMaterial: JsonValue;
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -127,27 +143,35 @@ const hasCodec = (value: unknown): value is DeployedOperationCodec =>
   typeof (value as { readonly encode?: unknown }).encode === "function";
 
 /**
- * Pair private codecs with the exact inert descriptors sealed into a unit.
- * Missing, duplicate, or cross-build schema bindings fail startup.
+ * Pair private codecs and executables with the exact inert descriptors sealed
+ * into a unit. Missing, duplicate, non-executable, or cross-build bindings fail
+ * startup.
  */
-export const pairDeployedOperationSchemas = (
+export const pairDeployedOperations = (
   descriptors: readonly OperationDescriptorType[],
   definitions: readonly DeployedOperationDefinition[],
-): Result.Result<readonly DeployedOperationDefinition[], InvalidIR> =>
+): Result.Result<readonly DeployedOperationBinding[], InvalidIR> =>
   Result.gen(function* () {
     const byKey = new Map<string, DeployedOperationDefinition>();
     for (const definition of definitions) {
       const key = definitionKey(definition.owner, definition.localName);
       if (byKey.has(key)) {
         return yield* Result.fail(invalid(
-          `duplicate deployed schema binding for ${
+          `duplicate deployed operation binding for ${
             operationLabel(definition.owner, definition.localName)
           }`,
         ));
       }
       if (!hasCodec(definition.input) || !hasCodec(definition.output)) {
         return yield* Result.fail(invalid(
-          `missing deployed schema codec for ${
+          `missing deployed operation codec for ${
+            operationLabel(definition.owner, definition.localName)
+          }`,
+        ));
+      }
+      if (typeof definition.run !== "function") {
+        return yield* Result.fail(invalid(
+          `missing deployed operation executable for ${
             operationLabel(definition.owner, definition.localName)
           }`,
         ));
@@ -155,7 +179,7 @@ export const pairDeployedOperationSchemas = (
       byKey.set(key, definition);
     }
 
-    const paired: DeployedOperationDefinition[] = [];
+    const paired: DeployedOperationBinding[] = [];
     const descriptorKeys = new Set<string>();
     for (const descriptor of descriptors) {
       const key = definitionKey(descriptor.id.owner, descriptor.id.localName);
@@ -170,7 +194,7 @@ export const pairDeployedOperationSchemas = (
       const definition = byKey.get(key);
       if (definition === undefined) {
         return yield* Result.fail(invalid(
-          `missing deployed schema binding for ${
+          `missing deployed operation binding for ${
             operationLabel(descriptor.id.owner, descriptor.id.localName)
           }`,
         ));
@@ -183,22 +207,28 @@ export const pairDeployedOperationSchemas = (
         definition.id.target !== descriptor.id.target ||
         (definition.self ? "required" : "none") !== descriptor.id.target ||
         definition.inputSchemaHash !== descriptor.inputSchemaHash ||
-        definition.outputSchemaHash !== descriptor.outputSchemaHash
+        definition.outputSchemaHash !== descriptor.outputSchemaHash ||
+        definition.implementationHash !== descriptor.bodyHash
       ) {
         return yield* Result.fail(invalid(
-          `mismatched deployed schema binding for ${
+          `mismatched deployed operation binding for ${
             operationLabel(descriptor.id.owner, descriptor.id.localName)
           }`,
         ));
       }
       byKey.delete(key);
-      paired.push(definition);
+      paired.push(Object.freeze({
+        descriptor,
+        input: definition.input,
+        output: definition.output,
+        run: definition.run,
+      }));
     }
 
     const extra = byKey.values().next().value;
     if (extra !== undefined) {
       return yield* Result.fail(invalid(
-        `deployed schema binding has no descriptor for ${
+        `deployed operation binding has no descriptor for ${
           operationLabel(extra.owner, extra.localName)
         }`,
       ));
@@ -591,16 +621,6 @@ const hashOperationSchema = Effect.fn("Authorization.hashOperationSchema")(
   },
 );
 
-const bodySource = (run: AnyOwnedOperation["run"]): Result.Result<string, InvalidIR> => {
-  try {
-    return Result.succeed(Function.prototype.toString.call(run));
-  } catch (cause) {
-    return Result.fail(
-      invalid(`operation body lowering failed: ${cause instanceof Error ? cause.message : String(cause)}`),
-    );
-  }
-};
-
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
@@ -664,8 +684,7 @@ export const snapshotOwnedOperations = (
           `targetless operation '${draft.owner.ns}.${draft.localName}' cannot reference self`,
         ));
       }
-      const capturedBodySource = yield* bodySource(operation.run);
-      snapshots.push(deepFreeze({
+      snapshots.push(freeze({
         id: deepFreeze(id),
         owner: deepFreeze({ ...draft.ownerRef }),
         localName: draft.localName,
@@ -684,13 +703,13 @@ export const snapshotOwnedOperations = (
         outputShape: deepFreeze(outputShape),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
         outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
-        inputCodec: inputSchemaBinding.codec,
-        outputCodec: outputSchemaBinding.codec,
+        inputCodec: deepFreeze(inputSchemaBinding.codec),
+        outputCodec: deepFreeze(outputSchemaBinding.codec),
         doc: operation.doc,
-        bodySource: capturedBodySource,
-        bodyHashMaterial: deepFreeze({
+        run: operation.run as DeployedOperationRun,
+        implementationHashMaterial: deepFreeze({
           artifactHash,
-          source: capturedBodySource,
+          operation: id,
         }),
       }));
     }
@@ -714,21 +733,22 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
     const definitions: DeployedOperationDefinition[] = [];
 
     for (const snapshot of snapshots) {
-      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
-        hashOperationSchema(snapshot.inputSchemaMaterial),
-        hashOperationSchema(snapshot.outputSchemaMaterial),
-        hashDomainSeparatedCanonicalJson(
-          OPERATION_BODY_HASH_DOMAIN_V1,
-          snapshot.bodyHashMaterial,
-        ),
-      ]);
+      const [inputSchemaHash, outputSchemaHash, implementationHash] =
+        yield* Effect.all([
+          hashOperationSchema(snapshot.inputSchemaMaterial),
+          hashOperationSchema(snapshot.outputSchemaMaterial),
+          hashDomainSeparatedCanonicalJson(
+            OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1,
+            snapshot.implementationHashMaterial,
+          ),
+        ]);
       const descriptorInput = {
         id: snapshot.id,
         input: snapshot.inputShape,
         output: snapshot.outputShape,
         inputSchemaHash,
         outputSchemaHash,
-        bodyHash,
+        bodyHash: implementationHash,
         composers: snapshot.composers,
         writes: snapshot.writes,
         ...(snapshot.doc === undefined ? {} : { doc: snapshot.doc }),
@@ -752,7 +772,8 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           inputSchemaHash,
           outputSchemaHash,
           doc: snapshot.doc,
-          bodySource: snapshot.bodySource,
+          implementationHash,
+          run: snapshot.run,
         }) as DeployedOperationDefinition,
       );
     }

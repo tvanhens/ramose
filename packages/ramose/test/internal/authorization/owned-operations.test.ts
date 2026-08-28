@@ -19,13 +19,14 @@ import { Ref as RefSchema } from "../../../src/db/valueTypes.ts";
 import {
   lowerOperationSchema,
   lowerOwnedOperations,
-  pairDeployedOperationSchemas,
+  pairDeployedOperations,
 } from "../../../src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
   DigestHex,
   EntityId,
 } from "../../../src/internal/authorization/identities.ts";
+import { formatNativeOperation } from "./native-operation-helper.ts";
 
 const catalog = CatalogId.make("app");
 const artifactHash = DigestHex.make("a".repeat(64));
@@ -223,9 +224,10 @@ describe("owned operation lowering", () => {
       slug: "t",
     });
     expect(definition.output.encode({ id: 1 })).toEqual({ id: 1 });
-    expect(definition.bodySource).toBe(
-      Function.prototype.toString.call(Issue[OwnedOperations].create.run),
+    expect(definition.run as unknown).toBe(
+      Issue[OwnedOperations].create.run as unknown,
     );
+    expect(definition.implementationHash).toBe(create.bodyHash);
     expect(definition.writes.map((entry) => entry.name)).toEqual(["audit"]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
@@ -315,6 +317,48 @@ describe("owned operation lowering", () => {
     expect(JSON.stringify(lowered.descriptors)).not.toContain(trustedPrefix);
   });
 
+  test("pairs and executes the original body with native JavaScript semantics", async () => {
+    let suffix = "closure";
+    const Worker = Entity("nativeWorker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Schema.Struct({ values: Schema.Array(Schema.String) }),
+          output: Schema.Struct({ formatted: Schema.String }),
+          async run(_op, input) {
+            await Promise.resolve();
+            return {
+              formatted: formatNativeOperation([...input.values, suffix]),
+            };
+          },
+        }),
+      }),
+    });
+    const originalRun = Worker[OwnedOperations].run.run;
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ nativeWorker: Worker }),
+        artifactHash,
+      ),
+    );
+    const binding = Result.getOrThrow(
+      pairDeployedOperations(lowered.descriptors, lowered.definitions),
+    )[0]!;
+
+    expect(binding.descriptor).toBe(lowered.descriptors[0]!);
+    expect(binding.run as unknown).toBe(originalRun as unknown);
+    expect(Object.isFrozen(binding.run)).toBe(false);
+    expect(await binding.run({}, { values: [" one ", "one"] })).toEqual({
+      formatted: "NATIVE:ONE:CLOSURE",
+    });
+    suffix = "changed";
+    expect(await binding.run({}, { values: ["two"] })).toEqual({
+      formatted: "NATIVE:TWO:CHANGED",
+    });
+    expect("run" in binding.descriptor).toBe(false);
+  });
+
   test("fails clearly when a public wire contract has no structural projection", async () => {
     const Opaque = Schema.declare<string>(
       (value): value is string => typeof value === "string",
@@ -343,7 +387,7 @@ describe("owned operation lowering", () => {
     );
   });
 
-  test("fails closed when sealed descriptors and private codecs do not pair exactly", async () => {
+  test("fails closed when sealed descriptors and private bindings do not pair exactly", async () => {
     const { App } = fixture();
     const lowered = await Effect.runPromise(
       lowerOwnedOperations(catalog, App, artifactHash),
@@ -355,28 +399,51 @@ describe("owned operation lowering", () => {
       entry.id.localName === definition.localName
     )!;
 
-    const missing = pairDeployedOperationSchemas([descriptor], []);
+    const paired = Result.getOrThrow(
+      pairDeployedOperations([descriptor], [definition]),
+    );
+    expect(paired[0]!.descriptor).toBe(descriptor);
+    expect(paired[0]!.run).toBe(definition.run);
+
+    const missing = pairDeployedOperations([descriptor], []);
     expect(Result.isFailure(missing)).toBe(true);
     if (Result.isFailure(missing)) {
-      expect(missing.failure.message).toMatch(/missing deployed schema binding/);
+      expect(missing.failure.message).toMatch(
+        /missing deployed operation binding/,
+      );
     }
 
-    const duplicate = pairDeployedOperationSchemas(
+    const duplicate = pairDeployedOperations(
       [descriptor],
       [definition, definition],
     );
     expect(Result.isFailure(duplicate)).toBe(true);
     if (Result.isFailure(duplicate)) {
-      expect(duplicate.failure.message).toMatch(/duplicate deployed schema binding/);
+      expect(duplicate.failure.message).toMatch(
+        /duplicate deployed operation binding/,
+      );
     }
 
-    const mismatch = pairDeployedOperationSchemas([descriptor], [{
+    const missingExecutable = pairDeployedOperations([descriptor], [{
       ...definition,
-      inputSchemaHash: DigestHex.make("f".repeat(64)),
+      run: undefined as never,
+    }]);
+    expect(Result.isFailure(missingExecutable)).toBe(true);
+    if (Result.isFailure(missingExecutable)) {
+      expect(missingExecutable.failure.message).toMatch(
+        /missing deployed operation executable/,
+      );
+    }
+
+    const mismatch = pairDeployedOperations([descriptor], [{
+      ...definition,
+      implementationHash: DigestHex.make("f".repeat(64)),
     }]);
     expect(Result.isFailure(mismatch)).toBe(true);
     if (Result.isFailure(mismatch)) {
-      expect(mismatch.failure.message).toMatch(/mismatched deployed schema binding/);
+      expect(mismatch.failure.message).toMatch(
+        /mismatched deployed operation binding/,
+      );
     }
   });
 
