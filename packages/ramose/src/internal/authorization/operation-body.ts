@@ -5,6 +5,8 @@ import type {
   CatalogDescriptor,
   FieldDescriptor,
   OperationDescriptor,
+  OperationInputScalarShape,
+  OperationInputShape,
 } from "./catalog.ts";
 import { InvalidIR } from "./failures.ts";
 import type { EntityId, TraitId } from "./identities.ts";
@@ -455,6 +457,122 @@ const validate = (
   }
 };
 
+type StaticValueShape = OperationInputShape | undefined;
+
+const scalarShape = (valueType: OperationInputScalarShape["valueType"]): OperationInputScalarShape => ({
+  _tag: "scalar",
+  valueType,
+});
+
+const bindStaticShape = (
+  pattern: AstNode,
+  shape: StaticValueShape,
+  shapes: Map<string, StaticValueShape>,
+): void => {
+  if (pattern.type === "Identifier") {
+    shapes.set(String(pattern.name), shape);
+    return;
+  }
+  if (pattern.type === "ObjectPattern") {
+    for (const raw of pattern.properties as readonly unknown[]) {
+      const property = ast(raw, "object binding property");
+      const key = String(propertyName({ ...property, property: property.key }));
+      const field = shape?._tag === "struct"
+        ? shape.fields.find((candidate) => candidate.key === key)
+        : undefined;
+      bindStaticShape(ast(property.value, "object binding value"), field?.shape, shapes);
+    }
+    return;
+  }
+  if (pattern.type === "ArrayPattern") {
+    for (const raw of pattern.elements as readonly unknown[]) {
+      if (raw !== null) {
+        bindStaticShape(
+          ast(raw, "array binding value"),
+          shape?._tag === "array" ? shape.items : undefined,
+          shapes,
+        );
+      }
+    }
+  }
+};
+
+const staticShape = (
+  current: AstNode,
+  shapes: ReadonlyMap<string, StaticValueShape>,
+): StaticValueShape => {
+  if (current.type === "Identifier") return shapes.get(String(current.name));
+  if (current.type === "Literal") {
+    if (typeof current.value === "string") return scalarShape("string");
+    if (typeof current.value === "number") return scalarShape("double");
+    if (typeof current.value === "boolean") return scalarShape("boolean");
+    return undefined;
+  }
+  if (current.type === "TemplateLiteral") return scalarShape("string");
+  if (current.type !== "MemberExpression") return undefined;
+
+  const target = staticShape(ast(current.object, "member target"), shapes);
+  if (target === undefined) return undefined;
+  const key = propertyName(current);
+  switch (target._tag) {
+    case "struct": {
+      const field = target.fields.find((candidate) => candidate.key === String(key));
+      if (field === undefined) {
+        throw invalid(`references unknown input member '${String(key)}'`);
+      }
+      return field.shape;
+    }
+    case "array":
+      if (key === "length") return scalarShape("long");
+      if (typeof key === "number" || /^(0|[1-9][0-9]*)$/.test(String(key))) {
+        return target.items;
+      }
+      throw invalid(`does not support inherited array member '${String(key)}'`);
+    case "scalar":
+    case "ref":
+      throw invalid(`does not support member '${String(key)}' on ${target._tag} input values`);
+    case "opaque":
+      throw invalid(`cannot validate member '${String(key)}' on opaque input values`);
+  }
+};
+
+/** Reject member access whose runtime support cannot follow from the installed input shape. */
+const validateStaticMemberAccess = (
+  body: AstNode,
+  inputPattern: AstNode | undefined,
+  input: OperationInputShape,
+): void => {
+  const shapes = new Map<string, StaticValueShape>();
+  if (inputPattern !== undefined) bindStaticShape(inputPattern, input, shapes);
+  const visit = (current: AstNode): void => {
+    if (current.type === "VariableDeclaration") {
+      for (const raw of current.declarations as readonly unknown[]) {
+        const declaration = ast(raw, "variable declaration");
+        const initializer = ast(declaration.init, "variable initializer");
+        visit(initializer);
+        bindStaticShape(
+          ast(declaration.id, "variable binding"),
+          staticShape(initializer, shapes),
+          shapes,
+        );
+      }
+      return;
+    }
+    if (current.type === "MemberExpression") staticShape(current, shapes);
+    for (const [key, raw] of Object.entries(current)) {
+      if (["start", "end", "loc", "type"].includes(key) || raw === null) continue;
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (typeof item === "object" && item !== null && "type" in item) visit(item as AstNode);
+        }
+      } else if (typeof raw === "object" && "type" in raw) {
+        visit(raw as AstNode);
+      }
+    }
+  };
+  visit(body);
+};
+
 class Environment {
   readonly #values = new Map<string, unknown>();
   constructor(
@@ -520,9 +638,7 @@ const binary = (operator: string, left: unknown, right: unknown): unknown => {
   switch (operator) {
     case "===": return left === right;
     case "!==": return left !== right;
-    case "+": return typeof left === "string" && typeof right === "string"
-      ? left + right
-      : Number(left) + Number(right);
+    case "+": return (left as never) + (right as never);
     case "-": return Number(left) - Number(right);
     case "*": return Number(left) * Number(right);
     case "/": return Number(left) / Number(right);
@@ -732,6 +848,7 @@ export const compileOperationBody = (
   for (const name of declaredNames(ast(fn.body, "function body"))) locals.add(name);
   const scope = catalogScope(catalog, operation, ast(fn.body, "function body"), locals);
   validate(ast(fn.body, "function body"), locals, scope);
+  validateStaticMemberAccess(ast(fn.body, "function body"), patterns[1], operation.input);
 
   return Object.freeze(async (op: unknown, input: unknown): Promise<unknown> => {
     const environment = new Environment(scope);

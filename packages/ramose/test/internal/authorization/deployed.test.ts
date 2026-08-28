@@ -138,6 +138,50 @@ describe("assembleDeployedCatalogs", () => {
     const operation = [...deployed.operations.values()][0]!;
     expect(await operation.body({}, {})).toEqual({});
   });
+
+  test("operation-body addition preserves ordinary JavaScript coercion", async () => {
+    const descriptor = catalogDescriptor();
+    const runtime = runtimeOperationsFor(descriptor);
+    const concatenated = {
+      ...runtime,
+      definitions: runtime.definitions.map((entry) => ({
+        ...entry,
+        bodySource: "(_op, input) => `issue-` + input.title",
+      })),
+    };
+    const installed = await installedDefinitionFor(
+      descriptor,
+      templateOf(),
+      concatenated,
+    );
+    const catalogs = await assemble([{ database, definition: installed }]);
+    const operation = [...Result.getOrThrow(catalogs.requireDatabase(database)).operations.values()][0]!;
+
+    expect(await operation.body({}, { title: 42 })).toBe("issue-42");
+  });
+
+  test("unsupported primitive member access fails during deployment", async () => {
+    const descriptor = catalogDescriptor();
+    const runtime = runtimeOperationsFor(descriptor);
+    const unsupported = {
+      ...runtime,
+      definitions: runtime.definitions.map((entry) => ({
+        ...entry,
+        bodySource: "(_op, input) => input.title.length",
+      })),
+    };
+    const installed = await installedDefinitionFor(
+      descriptor,
+      templateOf(),
+      unsupported,
+    );
+    const failure = await Effect.runPromise(Effect.flip(
+      assembleDeployedCatalogs({ units: [{ database, definition: installed }] }),
+    ));
+
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain("does not support member 'length' on scalar input values");
+  });
 });
 
 describe("deployed lookup", () => {

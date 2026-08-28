@@ -37,6 +37,14 @@ export const OperationUser = Db.Entity(
           return {};
         },
       }),
+      changeIdentityMap: Operation({
+        input: Schema.Struct({ authId: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, input) {
+          op.update(OperationUser, op.self.eid, { authId: input.authId });
+          return {};
+        },
+      }),
     }),
   },
 );
@@ -134,7 +142,7 @@ const mutableOperationBinding = {
 
 export const OperationComponent = Db.Entity(
   "operation-component",
-  { value: Db.string() },
+  { value: Db.Field.unique(Db.string(), "upsert") },
 );
 
 export const OperationCreatedOther = Db.Entity(
@@ -228,6 +236,21 @@ export const OperationCreated = Db.Entity(
           return { ok: true };
         },
       }),
+      createThenUpdateByLookup: Operation({
+        self: false,
+        writes: [OperationComponent],
+        input: Schema.Struct({}),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run(op) {
+          op.put(OperationComponent, { value: "lookup-before" });
+          op.update(
+            OperationComponent,
+            [OperationComponent.value, "lookup-before"],
+            { value: "lookup-after" },
+          );
+          return { ok: true };
+        },
+      }),
       mutateCatalog: Operation({
         self: false,
         writes: [OperationMutable],
@@ -283,6 +306,7 @@ const rename = OperationIssue[Db.OwnedOperations].rename;
 const changeType = OperationIssue[Db.OwnedOperations].changeType;
 const clearTitle = OperationIssue[Db.OwnedOperations].clearTitle;
 const changeIdentity = OperationUser[Db.OwnedOperations].changeIdentity;
+const changeIdentityMap = OperationUser[Db.OwnedOperations].changeIdentityMap;
 const create = OperationCreated[Db.OwnedOperations].create;
 const rawTempid = OperationCreated[Db.OwnedOperations].rawTempid;
 const forgeFixed = OperationCreated[Db.OwnedOperations].forgeFixed;
@@ -290,6 +314,7 @@ const inspectBound = OperationBound[Db.OwnedOperations].inspect;
 const destroyBound = OperationBound[Db.OwnedOperations].destroy;
 const createBoth = OperationCreated[Db.OwnedOperations].createBoth;
 const createWithComponent = OperationCreated[Db.OwnedOperations].createWithComponent;
+const createThenUpdateByLookup = OperationCreated[Db.OwnedOperations].createThenUpdateByLookup;
 const mutateCatalog = OperationCreated[Db.OwnedOperations].mutateCatalog;
 const seedMutableCatalog = OperationCreated[Db.OwnedOperations].seedMutableCatalog;
 const seedUndeclaredCatalog = OperationCreated[Db.OwnedOperations].seedUndeclaredCatalog;
@@ -310,6 +335,7 @@ const policy = Result.getOrThrow(
       invoke(changeType).when(allow),
       invoke(clearTitle).when(allow),
       invoke(changeIdentity).when(allow),
+      invoke(changeIdentityMap).when(allow),
       invoke(create).when(allow),
       invoke(rawTempid).when(allow),
       invoke(forgeFixed).when(allow),
@@ -317,6 +343,7 @@ const policy = Result.getOrThrow(
       invoke(destroyBound).when(allow),
       invoke(createBoth).when(allow),
       invoke(createWithComponent).when(allow),
+      invoke(createThenUpdateByLookup).when(allow),
       invoke(mutateCatalog).when(allow),
       invoke(seedMutableCatalog).when(allow),
       invoke(seedUndeclaredCatalog).when(allow),
@@ -348,6 +375,7 @@ export const RENAME_OPERATION_ID = idOf("rename");
 export const CHANGE_TYPE_OPERATION_ID = idOf("changeType");
 export const CLEAR_TITLE_OPERATION_ID = idOf("clearTitle");
 export const CHANGE_IDENTITY_OPERATION_ID = idOf("changeIdentity");
+export const CHANGE_IDENTITY_MAP_OPERATION_ID = idOf("changeIdentityMap");
 export const UNGRANTED_OPERATION_ID = idOf("ungrantedRename");
 export const CREATE_OPERATION_ID = idOf("create");
 export const RAW_TEMPID_OPERATION_ID = idOf("rawTempid");
@@ -356,6 +384,7 @@ export const INSPECT_BOUND_OPERATION_ID = idOf("inspect");
 export const DESTROY_BOUND_OPERATION_ID = idOf("destroy");
 export const CREATE_BOTH_OPERATION_ID = idOf("createBoth");
 export const CREATE_WITH_COMPONENT_OPERATION_ID = idOf("createWithComponent");
+export const CREATE_THEN_UPDATE_BY_LOOKUP_OPERATION_ID = idOf("createThenUpdateByLookup");
 export const MUTATE_CATALOG_OPERATION_ID = idOf("mutateCatalog");
 export const SEED_MUTABLE_CATALOG_OPERATION_ID = idOf("seedMutableCatalog");
 export const SEED_UNDECLARED_CATALOG_OPERATION_ID = idOf("seedUndeclaredCatalog");

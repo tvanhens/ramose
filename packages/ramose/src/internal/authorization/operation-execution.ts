@@ -466,6 +466,9 @@ const explicitEffects = (
     if (field.fixed !== undefined) {
       throw new InvalidRequest({ message: `operation cannot mutate fixed field ${field.ident}` });
     }
+    if (principalIdent(deployed) === field.ident) {
+      throw new InvalidRequest({ message: "operation cannot mutate principal identity" });
+    }
     out.push(Object.freeze({
       entity: type,
       key,
@@ -680,12 +683,52 @@ const buildPlan = async (
     putState.set(intent, { explicit, existing });
   }
   const plannedTypes = new Map<string, string>();
+  const plannedLookups: {
+    readonly field: string;
+    readonly value: unknown;
+    readonly entity: string;
+    readonly type: string;
+  }[] = [];
   for (const [intent, state] of putState) {
     const lowered = lowerSubject(intent.entity);
     if (state.existing === undefined && typeof lowered === "string") {
       plannedTypes.set(lowered, intent.type);
+      for (const effect of state.explicit) {
+        const descriptor = deployed.unit.catalog.fields.find((field) =>
+          fieldIdent(field) === effect.ident
+        );
+        if (descriptor?.unique !== undefined) {
+          plannedLookups.push({
+            field: effect.ident,
+            value: lowerWriteValue(effect.value),
+            entity: lowered,
+            type: intent.type,
+          });
+        }
+      }
     }
   }
+
+  const plannedLookupEntity = (subject: unknown): string | undefined => {
+    let lowered: unknown;
+    try {
+      lowered = lowerSubject(subject);
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(lowered) || lowered.length !== 2 || typeof lowered[0] !== "string") {
+      return undefined;
+    }
+    const matches = plannedLookups.filter((candidate) =>
+      candidate.field === lowered[0] && sameAtom(candidate.value, lowered[1])
+    );
+    if (matches.length === 0) return undefined;
+    const first = matches[0]!;
+    if (matches.some((candidate) => candidate.type !== first.type)) {
+      throw new InvalidRequest({ message: "operation lookup matches conflicting planned row types" });
+    }
+    return first.entity;
+  };
 
   const tx: TxOp[] = [];
   const engineDefaults: PlannedFieldEffect[] = [];
@@ -725,7 +768,7 @@ const buildPlan = async (
     const loweredSubject = lowerSubject(intent.entity);
     const subject = typeof loweredSubject === "string"
       ? aliases.get(loweredSubject) ?? loweredSubject
-      : loweredSubject;
+      : plannedLookupEntity(loweredSubject) ?? loweredSubject;
     if (intent._tag === "field") {
       const concreteType = await requireConcreteType(intent, subject);
       ensureBodyField(deployed, operation, concreteType, intent.field, intent.source);

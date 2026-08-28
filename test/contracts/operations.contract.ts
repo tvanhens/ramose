@@ -8,10 +8,12 @@ import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import {
   CHANGE_IDENTITY_OPERATION_ID,
+  CHANGE_IDENTITY_MAP_OPERATION_ID,
   CHANGE_TYPE_OPERATION_ID,
   CLEAR_TITLE_OPERATION_ID,
   CREATE_BOTH_OPERATION_ID,
   CREATE_OPERATION_ID,
+  CREATE_THEN_UPDATE_BY_LOOKUP_OPERATION_ID,
   CREATE_WITH_COMPONENT_OPERATION_ID,
   DESTROY_BOUND_OPERATION_ID,
   FORGE_FIXED_OPERATION_ID,
@@ -244,6 +246,22 @@ export function registerOperationsContract(target: OperationsTarget): void {
       expect(principal.body.entity[":operation-user/authId"]).toBe("user_ada");
     });
 
+    test("map writes cannot mutate principal identity", async () => {
+      const { policyUrl } = target.urls();
+      const rejected = await invokeOperation(
+        policyUrl,
+        CHANGE_IDENTITY_MAP_OPERATION_ID,
+        alice,
+        { authId: "map-hijacked" },
+      );
+      expect(rejected.status).toBe(400);
+
+      const principal = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: alice,
+      });
+      expect(principal.body.entity[":operation-user/authId"]).toBe("user_ada");
+    });
+
     test("operation bodies cannot supply engine-owned fixed fields", async () => {
       const { policyUrl } = target.urls();
       const rejected = await invokeOperation(
@@ -347,6 +365,23 @@ export function registerOperationsContract(target: OperationsTarget): void {
         ":operation-created-other",
         "other-authoritative",
       ]);
+    });
+
+    test("a lookup can address a unique row created earlier in the operation", async () => {
+      const { policyUrl } = target.urls();
+      const response = await invokeOperation(
+        policyUrl,
+        CREATE_THEN_UPDATE_BY_LOOKUP_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(response.status).toBe(200);
+      expect(response.body.result).toEqual({ ok: true });
+
+      const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :operation-component/value "lookup-after"]]',
+      }, { "x-ramose-min-t": String(response.body.t) });
+      expect(rows.body.result).toHaveLength(1);
     });
 
     test("field writes use the concrete row type for fixed and write-scope checks", async () => {
