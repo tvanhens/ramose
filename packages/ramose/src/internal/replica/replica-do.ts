@@ -55,6 +55,26 @@ const LIVE_DEPLOYMENT_INTERVAL_MS = 2_000;
 const LIVE_DEPLOYMENT_TIMEOUT_MS = 2_000;
 const LIVE_UPSTREAM_WATCH_INTERVAL_MS = 1_000;
 const LIVE_UPSTREAM_STALE_MS = 3_500;
+const LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS = 2_000;
+
+const withAbortTimeout = async <A>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<A>,
+): Promise<A> => {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`operation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+};
 
 type BasisWatchAttachment = {
   readonly kind: "basis-watch";
@@ -206,7 +226,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       case "gap":
         this.stats.gaps++;
         this.log.warn("replica.gap", { db: this.dbName, from: frame.from, basisT: this.basisT });
-        await this.catchUpFromR2(frame.from);
+        await withAbortTimeout(
+          LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+          async (signal) => {
+            await this.catchUpFromR2(frame.from);
+            if (signal.aborted) throw new Error("upstream catch-up timed out");
+          },
+        );
         break;
       case "tx": {
         const e = entryFromFrame(frame);
@@ -216,7 +242,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
           // gap: fill from the transactor's log (or R2), then apply this frame
           this.stats.gaps++;
           this.log.warn("replica.gap", { db: this.dbName, expected, got: e.t });
-          await this.fillGap(this.basisT, e.t - 1);
+          await withAbortTimeout(
+            LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+            (signal) => this.fillGap(this.basisT, e.t - 1, signal),
+          );
           if (e.t !== this.basisT + 1) return; // still inconsistent; a resume will fix it
         }
         if (!this.root || e.t > this.root.t) await this.applyDatoms(e);
@@ -226,15 +255,19 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   /** Fetch (from, to] from the transactor's HTTP /log, falling back to R2 chunks. */
-  private async fillGap(from: number, to: number): Promise<void> {
+  private async fillGap(from: number, to: number, signal?: AbortSignal): Promise<void> {
     if (!this.dbName) return;
     try {
       const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-      const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, { headers: internalHeaders(this.env) });
+      const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, {
+        headers: internalHeaders(this.env),
+        ...(signal === undefined ? {} : { signal }),
+      });
       if (res.ok) {
         const body = (await res.json()) as { earliestLogT: number; entries: any[] };
         if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
           for (const f of body.entries) {
+            if (signal?.aborted) throw new Error("upstream catch-up timed out");
             const e = entryFromFrame(f);
             if (e.t === this.basisT + 1) await this.applyDatoms(e);
           }
@@ -242,9 +275,12 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         }
       }
     } catch (err) {
+      if (signal?.aborted) throw err;
       this.log.warn("replica.log.fetch.failed", { db: this.dbName, error: String(err), from, to });
     }
+    if (signal?.aborted) throw new Error("upstream catch-up timed out");
     await this.catchUpFromR2(from, to);
+    if (signal?.aborted) throw new Error("upstream catch-up timed out");
   }
 
   /** Read log/ chunks from R2 for t in (from, to] and apply in order. */
@@ -400,7 +436,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       const t = (raw as { t?: unknown }).t;
       if (typeof t === "number") {
         try {
-          await this.catchUpTo(t);
+          await withAbortTimeout(
+            LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+            (signal) => this.catchUpTo(t, signal),
+          );
         } catch (err) {
           this.log.warn("replica.watch.catchup.failed", { db: this.dbName, error: String(err), basisT: this.basisT, targetT: t });
           this.closeBasisWatches("upstream catch-up failed");
@@ -429,12 +468,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
    * Fenced HTTP reads and upstream `pong` (live-session watch) both call this.
    */
-  private async catchUpTo(minT: number | undefined): Promise<void> {
+  private async catchUpTo(minT: number | undefined, signal?: AbortSignal): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
     const target = minT;
     await this.enqueue(async () => {
+      if (signal?.aborted) throw new Error("upstream catch-up timed out");
       if (this.basisT >= target) return;
-      await this.fillGap(this.basisT, target);
+      await this.fillGap(this.basisT, target, signal);
     });
   }
 
@@ -776,36 +816,44 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       this.closeBasisWatches("upstream freshness lost");
       return;
     }
-    let currentDeployment: string | undefined;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LIVE_DEPLOYMENT_TIMEOUT_MS);
-    try {
-      // Every accepted origin routes this same Worker. One public probe fences
-      // every co-located watcher and keeps the alarm invocation at one
-      // subrequest regardless of subscriber count.
-      const health = new URL(watches[0]![1].healthUrl);
-      health.searchParams.set("live-renew", crypto.randomUUID());
-      const response = await fetch(health, {
-        method: "GET",
-        headers: { "cache-control": "no-cache" },
-        redirect: "error",
-        signal: controller.signal,
-      });
-      const value = response.headers.get(DEPLOYMENT_HEADER);
-      if (response.ok && value !== null && value.length > 0) currentDeployment = value;
-    } catch {
-      /* an ambiguous deployment probe fails every watch closed */
-    } finally {
-      clearTimeout(timeout);
+    const byHealthUrl = new Map<string, [WebSocket, BasisWatchAttachment][]>();
+    for (const item of watches) {
+      const group = byHealthUrl.get(item[1].healthUrl);
+      if (group === undefined) byHealthUrl.set(item[1].healthUrl, [item]);
+      else group.push(item);
     }
-    for (const [ws, watch] of watches) {
-      if (currentDeployment === watch.expectedDeployment) continue;
+    await Promise.all([...byHealthUrl].map(async ([healthUrl, group]) => {
+      let currentDeployment: string | undefined;
       try {
-        ws.close(1000, "deployment changed");
+        // One bounded probe per distinct public route fences every subscriber
+        // on that route without charging the long-lived Worker invocation.
+        currentDeployment = await withAbortTimeout(
+          LIVE_DEPLOYMENT_TIMEOUT_MS,
+          async (signal) => {
+            const health = new URL(healthUrl);
+            health.searchParams.set("live-renew", crypto.randomUUID());
+            const response = await fetch(health, {
+              method: "GET",
+              headers: { "cache-control": "no-cache" },
+              redirect: "error",
+              signal,
+            });
+            const value = response.headers.get(DEPLOYMENT_HEADER);
+            return response.ok && value !== null && value.length > 0 ? value : undefined;
+          },
+        );
       } catch {
-        /* already gone */
+        /* an ambiguous deployment probe fails this route's watches closed */
       }
-    }
+      for (const [ws, watch] of group) {
+        if (currentDeployment === watch.expectedDeployment) continue;
+        try {
+          ws.close(1000, "deployment changed");
+        } catch {
+          /* already gone */
+        }
+      }
+    }));
     if (this.basisWatches().length > 0) await this.armDeploymentWatch();
   }
 
