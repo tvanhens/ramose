@@ -49,8 +49,11 @@ export const TRAIT_BIND_FACTORY: unique symbol = Symbol.for(
 );
 
 type SpecOf<B> = B extends (...args: infer _Args) => infer S ? S : never;
-type ValuesOf<B> = SpecOf<B> extends { readonly values: infer V } ? V : {};
-type DefaultsOf<B> = SpecOf<B> extends { readonly defaults: infer D } ? D : {};
+type SelectedOf<S, K extends PropertyKey> = K extends keyof S
+  ? Exclude<S[K], undefined>
+  : {};
+type ValuesOf<B> = SelectedOf<SpecOf<B>, "values">;
+type DefaultsOf<B> = SelectedOf<SpecOf<B>, "defaults">;
 
 type BoundField<F, K extends PropertyKey, B> = K extends keyof ValuesOf<B>
   ? F & { readonly fixed: true }

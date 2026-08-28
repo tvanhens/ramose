@@ -4,6 +4,8 @@ import {
   CreationValueError,
   Entity,
   Field,
+  Query,
+  Ref,
   ReachabilityConflictError,
   Schema,
   Trait,
@@ -11,6 +13,7 @@ import {
   collectCodeReachability,
   compositionValueMetadata,
   resolveCreationValues,
+  refTargetOf,
   string,
   timestamp,
   type CodeDefinition,
@@ -102,6 +105,18 @@ describe("creation defaults", () => {
     });
   });
 
+  test("converting a defaulted scalar to many requires an array default", () => {
+    const scalar = string({ default: () => "new" });
+    expect(() => Field.many(scalar as never)).toThrow(
+      /requires a new array default/,
+    );
+    const tags = Field.many(scalar, { default: () => ["new"] });
+    const Tagged = Entity("convertedTags", { tags });
+    expect(resolveCreationValues(Tagged, {}, { now: fixedNow })).toEqual({
+      tags: ["new"],
+    });
+  });
+
   test("resolved explicit, default, and fixed values are schema validated", () => {
     const Bound = Trait("boundValue", { catalog: string() }, {
       bind: () => ({ values: { catalog: 42 as unknown as string } }),
@@ -170,6 +185,17 @@ describe("trait binding values", () => {
     expect(Workspace.traits[0]!.ns).toBe("graph");
     expect(resolveCreationValues(Workspace, { name: "acme" }, { now: fixedNow }))
       .toEqual({ catalog: "workspace", name: "acme" });
+  });
+
+  test("the bindable trait remains a query and reference root", () => {
+    const Graph = Trait("composerGraph", { catalog: string() }, {
+      bind: (catalog) => ({ values: { catalog: catalog.key } }),
+    });
+
+    expect(Query.from(Graph)._tag).toBe("Query");
+    const target = refTargetOf(Ref(Graph).schema)?.();
+    expect(target?.ns).toBe("composerGraph");
+    expect(target?.fields).toBe(Graph.fields);
   });
 
   test("different fixed bindings on one reachable field fail with both paths", () => {

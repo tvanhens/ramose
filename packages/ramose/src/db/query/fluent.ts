@@ -8,7 +8,7 @@
  */
 
 import type { Eid } from "../Eid.ts";
-import type { AnyComposer } from "../Composer.ts";
+import { isComposer, type AnyComposer } from "../Composer.ts";
 import type { FocusAttr } from "./focus.ts";
 import type {
   AttrValue,
@@ -114,14 +114,7 @@ const refTargetEntity = (
   const resolve = schema?._resolve;
   if (typeof resolve !== "function") return source;
   const target = resolve();
-  if (
-    typeof target === "object" &&
-    target !== null &&
-    ((target as { _tag?: unknown })._tag === "Entity" ||
-      (target as { _tag?: unknown })._tag === "Trait")
-  ) {
-    return target as AnyComposer;
-  }
+  if (isComposer(target)) return target;
   return source;
 };
 
@@ -348,12 +341,7 @@ const makeFluent = <N extends AnyComposer, Row>(
  * built queries with the same literals share a live subscription.
  */
 export const from = <N extends AnyComposer>(ns: N): FluentQuery<N, EntityRow<N>> => {
-  if (
-    typeof ns !== "object" ||
-    ns === null ||
-    ((ns as { _tag?: unknown })._tag !== "Entity" &&
-      (ns as { _tag?: unknown })._tag !== "Trait")
-  ) {
+  if (!isComposer(ns)) {
     throw new Error("ramose/query: Query.from(...) takes an entity or trait");
   }
   return makeFluent(ns, entities(ns), false);

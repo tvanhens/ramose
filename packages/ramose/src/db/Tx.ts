@@ -138,11 +138,17 @@ type PutFieldValue<
  * Partial attrs — every key optional. Used by `put(Entity, subject, {…})`
  * and `update`. Cardinality-many is an array; `undefined` is omitted.
  */
+type FixedPutAttrs<N extends AnyEntity> = {
+  [K in keyof N["fields"] & string as N["fields"][K] extends {
+    readonly fixed: true;
+  } ? K : never]?: never;
+};
+
 export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> = {
   [K in keyof WriteAtEntity<C, N> & string as N["fields"][K] extends {
     readonly fixed: true;
   } ? never : K]?: PutFieldValue<C, N, K, H> | undefined;
-};
+} & FixedPutAttrs<N>;
 
 type FieldIsOptional<F> = F extends { readonly cardinality: "many" }
   ? true
@@ -188,7 +194,7 @@ export type PutCreateAttrs<
   [K in RequiredPutKeys<N>]: PutFieldValue<C, N, K, H>;
 } & {
   [K in OptionalPutKeys<N>]?: PutFieldValue<C, N, K, H> | undefined;
-};
+} & FixedPutAttrs<N>;
 
 type UpsertKeys<N extends AnyEntity> = {
   [K in keyof N["fields"] & string]: N["fields"][K] extends { readonly fixed: true }

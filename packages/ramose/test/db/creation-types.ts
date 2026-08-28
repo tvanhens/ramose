@@ -4,10 +4,13 @@
 
 import {
   Entity,
+  Field,
   Schema,
   Trait,
   txBuilder,
   string,
+  type CodeDefinition,
+  type TraitBindingSpec,
 } from "../../src/db/internal.ts";
 
 const Bound = Trait("typedBound", {
@@ -45,3 +48,24 @@ Trait("badFixed", { value: string() }, {
   // @ts-expect-error fixed binding values must match their field type
   bind: () => ({ values: { value: 42 } }),
 });
+
+const defaultedScalar = string({ default: () => "scalar" });
+// @ts-expect-error changing cardinality requires replacing the scalar default
+Field.many(defaultedScalar);
+Field.many(defaultedScalar, { default: () => ["many"] });
+
+const annotatedFields = { catalog: string(), label: string() };
+const widenedBind: (
+  definition: CodeDefinition,
+) => TraitBindingSpec<typeof annotatedFields> = (definition) => ({
+  values: { catalog: definition.key },
+});
+const Widened = Trait("widenedBinding", annotatedFields, { bind: widenedBind });
+const WidenedEntity = Entity("widenedEntity", {}, { traits: [Widened(child)] });
+const WidenedSchema = Schema({ widenedEntity: WidenedEntity });
+const widenedTx = txBuilder(WidenedSchema);
+// A widened annotation conservatively retains every potentially fixed key.
+// @ts-expect-error catalog remains engine-owned under a widened binding spec
+widenedTx.put(WidenedEntity, { catalog: "forged" });
+// @ts-expect-error label may be fixed under the widened binding spec
+widenedTx.update(WidenedEntity, 1, { label: "forged" });

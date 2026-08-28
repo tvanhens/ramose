@@ -101,6 +101,20 @@ type FieldDefaultValue<S extends SchemaNS.Top, Card extends Cardinality> =
     ? readonly SchemaNS.Schema.Type<S>[]
     : SchemaNS.Schema.Type<S>;
 
+type ValidManyConversion<
+  Card extends Cardinality,
+  Def extends boolean,
+  O = undefined,
+> = Card extends "many"
+  ? unknown
+  : Def extends true
+    ? O extends { readonly default: CreationDefault<readonly unknown[]> }
+      ? unknown
+      : {
+        readonly "Field.many(defaultedField) requires a new array default": true;
+      }
+    : unknown;
+
 /**
  * Fail-closed argument for `Field(schema)` when inference cannot name
  * `:db.type/*`. The brand key is the instruction — wrap with
@@ -265,6 +279,23 @@ const applyField = (
 ): AnyField =>
   makeField(fieldSchema(input), mergeFieldOptions(input, options), mergeFlags(input, flags));
 
+const applyManyField = (
+  input: AnyField | SchemaNS.Top,
+  options?: FieldOptions<unknown>,
+): AnyField => {
+  if (
+    isField(input) &&
+    input.cardinality !== "many" &&
+    input.default !== undefined &&
+    options?.default === undefined
+  ) {
+    throw new Error(
+      "ramose/schema: Field.many(defaultedField) requires a new array default",
+    );
+  }
+  return applyField(input, options, { cardinality: "many" });
+};
+
 type FieldMany = {
   <S extends SchemaNS.Top>(
     schema: InferableSchema<S>,
@@ -274,11 +305,12 @@ type FieldMany = {
     options: O & ValidDefault<O, readonly SchemaNS.Schema.Type<S>[]>,
   ): Field<S, "many", undefined, InferDbValueType<S>, false, OptionalOf<O>, HasDefaultOf<O>>;
   <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, Def extends boolean>(
-    field: Field<S, C, U, VT, Own, Opt, Def>,
+    field: Field<S, C, U, VT, Own, Opt, Def> & ValidManyConversion<C, Def>,
   ): Field<S, "many", U, VT, Own, Opt, Def>;
   <S extends SchemaNS.Top, C extends Cardinality, U extends Uniqueness | undefined, VT extends DbValueType | undefined, Own extends boolean, Opt extends boolean, Def extends boolean, const O extends FieldOptions>(
     field: Field<S, C, U, VT, Own, Opt, Def>,
-    options: O & ValidDefault<O, readonly SchemaNS.Schema.Type<S>[]>,
+    options: O & ValidDefault<O, readonly SchemaNS.Schema.Type<S>[]> &
+      ValidManyConversion<C, Def, O>,
   ): Field<S, "many", U, VT, Own, MergeOptional<Opt, O>, MergeDefault<Def, O>>;
 };
 
@@ -380,7 +412,7 @@ export const Field: {
   },
   {
     many: ((input: AnyField | SchemaNS.Top, options?: FieldOptions) =>
-      applyField(input, options, { cardinality: "many" })) as FieldMany,
+      applyManyField(input, options)) as FieldMany,
     unique: ((
       input: AnyField | SchemaNS.Top,
       uniqueness: Uniqueness,
@@ -488,10 +520,25 @@ type EntityLike = { readonly fields: object; readonly ns: string };
 
 type RefShorthand = {
   <const N extends EntityLike>(
-    target: N | (() => N),
+    target: N,
+  ): Field<TargetedRef<N["fields"], N["ns"], N>, "one", undefined, "ref", false, false, false>;
+  <const N extends EntityLike>(
+    target: () => N,
   ): Field<TargetedRef<N["fields"], N["ns"], N>, "one", undefined, "ref", false, false, false>;
   <const N extends EntityLike, const O extends FieldOptions<number>>(
-    target: N | (() => N),
+    target: N,
+    options: O & ValidDefault<O, SchemaNS.Schema.Type<TargetedRef<N["fields"], N["ns"], N>>>,
+  ): Field<
+    TargetedRef<N["fields"], N["ns"], N>,
+    "one",
+    undefined,
+    "ref",
+    false,
+    OptionalOf<O>,
+    HasDefaultOf<O>
+  >;
+  <const N extends EntityLike, const O extends FieldOptions<number>>(
+    target: () => N,
     options: O & ValidDefault<O, SchemaNS.Schema.Type<TargetedRef<N["fields"], N["ns"], N>>>,
   ): Field<
     TargetedRef<N["fields"], N["ns"], N>,

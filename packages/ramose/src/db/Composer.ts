@@ -5,7 +5,7 @@ import type { AnyTrait } from "./Trait.ts";
 export type AnyComposer = AnyEntity | AnyTrait;
 
 export const isComposer = (value: unknown): value is AnyComposer =>
-  typeof value === "object" &&
+  (typeof value === "object" || typeof value === "function") &&
   value !== null &&
   ((value as { readonly _tag?: unknown })._tag === "Entity" ||
     (value as { readonly _tag?: unknown })._tag === "Trait");

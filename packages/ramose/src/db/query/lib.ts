@@ -13,7 +13,7 @@
  */
 
 import type { Eid } from "../Eid.ts";
-import type { AnyComposer } from "../Composer.ts";
+import { isComposer, type AnyComposer } from "../Composer.ts";
 import type { UnbrandedId } from "../idents.ts";
 import type {
   AttrValue,
@@ -75,12 +75,7 @@ export type IdRow<N extends AnyComposer = AnyComposer> = { readonly id: Eid<N> }
  * and current deployed composition through a catalog-generated rule.
  */
 export const entities = <N extends AnyComposer>(ns: N): Pipeline<IdRow<N>, N> => {
-  if (
-    typeof ns !== "object" ||
-    ns === null ||
-    ((ns as { _tag?: unknown })._tag !== "Entity" &&
-      (ns as { _tag?: unknown })._tag !== "Trait")
-  ) {
+  if (!isComposer(ns)) {
     throw new Error("ramose/query: entities(...) takes an entity or trait");
   }
   return makePipeline(ns, []);

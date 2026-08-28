@@ -2,6 +2,7 @@
 
 import type * as SchemaNS from "effect/Schema";
 import * as Schema from "effect/Schema";
+import { isComposer } from "./Composer.ts";
 
 export type DbValueType =
   | "string"
@@ -159,7 +160,9 @@ type EntityLike = { readonly fields: object; readonly ns: string };
 
 const resolveRefTarget = <const N extends EntityLike>(
   target: N | (() => N),
-): (() => N) => (typeof target === "function" ? target : () => target);
+): (() => N) => isComposer(target)
+  ? () => target as N
+  : target as () => N;
 
 type RefFn = {
   /**
@@ -167,7 +170,10 @@ type RefFn = {
    * when the target is declared later (`Ref(() => Other)`).
    */
   <const N extends EntityLike>(
-    target: N | (() => N),
+    target: N,
+  ): TargetedRef<N["fields"], N["ns"], N>;
+  <const N extends EntityLike>(
+    target: () => N,
   ): TargetedRef<N["fields"], N["ns"], N>;
   /** Self-ref; `Entity` substitutes the enclosing field map. */
   readonly self: TargetedRef<SelfMarker>;
