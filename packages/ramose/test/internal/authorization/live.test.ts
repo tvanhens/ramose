@@ -15,7 +15,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
-import { schemaTx } from "../../../src/db/internal.ts";
+import { compositionFromSchema, schemaTx } from "../../../src/db/internal.ts";
 import { Unauthorized } from "../../../src/db/Errors.ts";
 import {
   DatabaseId,
@@ -36,11 +36,7 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { stringifyJson } from "../../../src/internal/core/json.ts";
-import {
-  RAMOSE_COMPOSES,
-  RAMOSE_KIND,
-  attributeDatoms,
-} from "../../../src/internal/core/schema.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 import {
   armCheckpoint,
   checkpointStatus,
@@ -168,30 +164,12 @@ const membershipPolicy = (): Promise<DeployedCatalogs> =>
     read(Workspace).when(contains(Workspace.members, me)),
   ]);
 
-const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
-  conn.transact(
-    namespaces.map((ns) => ({
-      ":db/ident": `:${ns}`,
-      ":ramose/kind": ":ramose.kind/entity",
-    })),
-  );
-
 const seedWorld = async () => {
-  const conn = await Connection.fromDatoms([
-    ...attributeDatoms(RAMOSE_KIND, {
-      ident: ":ramose/kind",
-      valueType: ":db.type/string",
-      cardinality: "one",
-    }, 1),
-    ...attributeDatoms(RAMOSE_COMPOSES, {
-      ident: ":ramose/composes",
-      valueType: ":db.type/string",
-      cardinality: "many",
-    }, 1),
-  ]);
+  const conn = await Connection.create({
+    composition: compositionFromSchema(App),
+  });
   await conn.transact(schemaTx(App));
-  await installEntityKinds(conn, ["user", "workspace", "tag"]);
-  const report = await conn.transact([
+  const tx = [
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
     { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
@@ -219,7 +197,9 @@ const seedWorld = async () => {
       ":issue/workspace": "ws",
       ":issue/parent": "i1",
     },
-  ]);
+  ];
+  restoreEngineTypeAssertions(tx);
+  const report = await conn.transact(tx);
   return {
     conn,
     aliceEid: report.tempids["alice"]!,
