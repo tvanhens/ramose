@@ -4,10 +4,15 @@
  * (https://ramose.ai/guides/sign-in/).
  *
  * Ramose verifies tokens and never issues them, so every app repeats the
- * same mint route: read the Better Auth session, decide the caller's policy
- * class (POST `{ db }` is classOf input, not a JWT claim), build the payload
- * with `Ramose.claims`, sign it with `signJWT`. {@link ramoseToken} is that
- * route as a plugin — the app keeps exactly one decision, {@link ClassOf}.
+ * same mint route: read the Better Auth session, decide the caller's
+ * deployment-global policy class, build the payload with `Ramose.claims`,
+ * sign it with `signJWT`. {@link ramoseToken} is that route as a plugin —
+ * the app keeps exactly one decision, {@link ClassOf}.
+ *
+ * Minting does not take a database, route, or org slug. A JWT is identity
+ * and global claims only. Database-specific owner/member status is a
+ * protected membership fact in that database, resolved through its
+ * deployed policy and `me`. Do not emit `ramose.db`.
  *
  * It requires Better Auth's `jwt` plugin and signs with the same JWKS key,
  * so the peer's `RAMOSE_JWKS_URL` (the jwt plugin's `/jwks` endpoint) reads
@@ -16,15 +21,14 @@
  * ```typescript
  * betterAuth({
  *   plugins: [
- *     organization(),
  *     jwt({ jwt: { issuer: AUTH.issuer, audience: AUTH.audience,
  *                  expirationTime: `${AUTH.ttl}s` } }),
- *     ramoseToken({ auth: AUTH, policy: compiledPolicy, classOf: orgClassOf() }),
+ *     ramoseToken({ auth: AUTH, policy: compiledPolicy, classOf }),
  *   ],
  * });
  * ```
  *
- * The route is `POST {basePath}/ramose/token { db } → { token, class, exp }`
+ * The route is `POST {basePath}/ramose/token → { token, class, exp }`
  * — the shape `Ramose.token.jwt` accepts unchanged.
  *
  *
@@ -34,7 +38,6 @@
 // Auth.ts is alchemy-free. The deploy barrel (`../index.ts`) value-exports
 // Server, which pulls `alchemy/*` into every auth Worker that adds this plugin.
 import { type AuthConfig, claims } from "../Auth.ts";
-import { isDatabaseName } from "../db/index.ts";
 import type { ClaimsPolicy } from "../Auth.ts";
 import {
   BetterAuthError,
@@ -62,12 +65,10 @@ export interface ClassGrant {
   readonly attrs?: Readonly<Record<string, unknown>> | undefined;
 }
 
-/** What {@link ClassOf} receives: the caller, the org-slug lookup, the endpoint. */
+/** What {@link ClassOf} receives: the caller and the endpoint. */
 export interface ClassOfInput {
   /** The authenticated Better Auth session (the mint route requires one). */
   readonly session: SessionInfo;
-  /** Org slug for classOf lookup (already a valid name). Not written into the JWT. */
-  readonly db: string;
   /**
    * The Better Auth endpoint context — `ctx.context.adapter` for lookups,
    * `ctx.headers` / `ctx.request` for anything request-scoped.
@@ -76,11 +77,11 @@ export interface ClassOfInput {
 }
 
 /**
- * The one decision the app owns: the caller's policy class for the
- * requested org slug, or `null` for no access (a 403 that leaks nothing —
- * "no org with that slug" and "not a member of it" are the same answer).
- * Return a {@link ClassGrant} to also carry `ramose.attrs`. The slug is
- * not written into the JWT.
+ * The one decision the app owns: the caller's deployment-global policy
+ * class, or `null` for no access (a 403). Return a {@link ClassGrant} to
+ * also carry `ramose.attrs`. Classes and attributes must be genuinely
+ * global — not derived from a requested route, database, or org slug.
+ * Database-local roles stay out of the JWT.
  */
 export type ClassOf = (
   input: ClassOfInput,
@@ -93,7 +94,10 @@ export interface RamoseTokenOptions {
    * the verifier's cap.
    */
   readonly auth: AuthConfig;
-  /** Resolves the caller's class for the requested database; see {@link ClassOf}. */
+  /**
+   * Resolves the caller's deployment-global class from the session.
+   * Must not depend on a requested database; see {@link ClassOf}.
+   */
   readonly classOf: ClassOf;
   /**
    * The policy value, its compiled JSON, or the parsed AST.
@@ -165,10 +169,11 @@ export const ensureDecryptableJwks = async (
 };
 
 /**
- * The mint-route server plugin. `POST {path} { db }` with a session cookie
- * answers `{ token, class, exp }`; `classOf` returning `null` is a 403 and a
+ * The mint-route server plugin. `POST {path}` with a session cookie answers
+ * `{ token, class, exp }`; `classOf` returning `null` is a 403 and a
  * missing session a 401. Requires the `jwt` plugin (checked at init) and
  * signs with its JWKS via the same server-only path as `auth.api.signJWT`.
+ * The request body is not a database selector — leftover `{ db }` is ignored.
  *
  * JWKS private keys are encrypted with Better Auth's signing secret. If that
  * secret is reminted (Alchemy `Random` lives only in stack state; a cache
@@ -212,11 +217,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
         mintPath,
         {
           method: "POST",
-          body: z.object({
-            db: z.string().meta({
-              description: "Org slug for classOf lookup; not written into the JWT",
-            }),
-          }),
+          body: z.object({}).optional(),
           use: [sessionMiddleware],
           metadata: {
             openapi: {
@@ -246,20 +247,12 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
         },
         async (ctx) => {
           const session = ctx.context.session;
-          const db = ctx.body.db;
-          // Mint-body org slug check for classOf. Not a JWT database claim.
-          if (!isDatabaseName(db)) {
-            throw new APIError("BAD_REQUEST", {
-              message: `ramose: ${JSON.stringify(db)} is not a valid database name`,
-            });
-          }
-          const granted = await options.classOf({ session, db, ctx });
+          const granted = await options.classOf({ session, ctx });
           const grant: ClassGrant | null =
             typeof granted === "string" ? { class: granted } : granted;
           if (grant === null) {
-            // One answer for "no such database" and "not a member of it".
             throw new APIError("FORBIDDEN", {
-              message: "ramose: no access to this database",
+              message: "ramose: no access",
             });
           }
           let payload: ReturnType<typeof claims>;
@@ -300,7 +293,14 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
   } satisfies BetterAuthPlugin;
 };
 
-// ── the organization-plugin default, opt-in ────────────────────────────────
+// ── leftover role mapping; not a mint default ─────────────────────────────
+// classOfRole stays as a pure role→class helper. It is not a mint default.
+// Do not feed a Better Auth organization membership through it and emit
+// the result as an unscoped JWT class — that is the cross-database
+// escalation hole. Database-local owner/member status belongs in that
+// database as protected facts, resolved by its deployed policy and `me`.
+// A later scoped-proof mechanism may reintroduce org membership; do not
+// smuggle it into the initial global class vocabulary.
 
 /**
  * The org-role → policy-class mapping Reef established: `owner` and `admin`
@@ -320,50 +320,4 @@ export const classOfRole = (role: string): "owner" | "member" | "viewer" => {
     default:
       return "viewer";
   }
-};
-
-export interface OrgClassOfOptions {
-  /**
-   * Role → class. Return `null` to deny a role outright.
-   * @default {@link classOfRole}
-   */
-  readonly map?: (role: string) => string | null;
-}
-
-/** Display fields the peer stamps onto the principal row from `ramose.attrs`. */
-const profileAttrs = (user: { name?: unknown; email?: unknown }): Record<string, string> | undefined => {
-  const attrs: Record<string, string> = {};
-  if (typeof user.name === "string") attrs.name = user.name;
-  if (typeof user.email === "string") attrs.email = user.email;
-  return Object.keys(attrs).length === 0 ? undefined : attrs;
-};
-
-/**
- * A {@link ClassOf} for the `organization` plugin's tables, for apps where
- * an organization's slug *is* the Ramose database name: the caller's member
- * row in the org whose slug is `db` decides the class ({@link classOfRole}
- * by default); no such org or no membership is `null` → 403. Name and email
- * from the Better Auth user ride under `ramose.attrs` so the peer can stamp
- * them on the principal row — the app never writes that row.
- */
-export const orgClassOf = (options?: OrgClassOfOptions): ClassOf => {
-  const map = options?.map ?? classOfRole;
-  return async ({ session, db, ctx }) => {
-    const org = await ctx.context.adapter.findOne<{ id: string }>({
-      model: "organization",
-      where: [{ field: "slug", value: db }],
-    });
-    if (org === null) return null;
-    const member = await ctx.context.adapter.findOne<{ role: string }>({
-      model: "member",
-      where: [
-        { field: "organizationId", value: org.id },
-        { field: "userId", value: session.user.id },
-      ],
-    });
-    if (member === null) return null;
-    const cls = map(member.role);
-    if (cls === null) return null;
-    return { class: cls, attrs: profileAttrs(session.user) };
-  };
 };

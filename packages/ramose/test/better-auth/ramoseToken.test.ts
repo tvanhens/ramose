@@ -3,6 +3,9 @@
  * adapter: session in, `{ token, class, exp }` out, signature verifiable
  * with the JWKS the jwt plugin's own /jwks endpoint publishes — the exact
  * key the peer's `RAMOSE_JWKS_URL` would read.
+ *
+ * Minting has no database input. The class is deployment-global identity,
+ * not a role derived from a requested org or route.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -11,12 +14,10 @@ import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { APIError } from "better-auth/api";
 import { jwt } from "better-auth/plugins/jwt";
-import { organization } from "better-auth/plugins/organization";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import {
   type ClassOf,
   classOfRole,
-  orgClassOf,
   ramoseToken,
 } from "../../src/better-auth/index.ts";
 import { memoryDb } from "./support.ts";
@@ -28,7 +29,15 @@ const AUTH: AuthConfig = {
 };
 
 /** Declared class vocabulary — only `classes` matters to the mint. */
-const POLICY = { classes: ["owner", "member", "viewer"] as const };
+const POLICY = { classes: ["authenticated", "member", "viewer"] as const };
+
+const globalClassOf: ClassOf = ({ session }) => ({
+  class: "authenticated",
+  attrs: {
+    ...(typeof session.user.name === "string" ? { name: session.user.name } : {}),
+    ...(typeof session.user.email === "string" ? { email: session.user.email } : {}),
+  },
+});
 
 const makeAuth = (options?: {
   readonly classOf?: ClassOf;
@@ -42,7 +51,6 @@ const makeAuth = (options?: {
     baseURL: "http://localhost:3000",
     emailAndPassword: { enabled: true },
     plugins: [
-      organization(),
       ...(options?.withJwt === false
         ? []
         : [
@@ -57,7 +65,7 @@ const makeAuth = (options?: {
       ramoseToken({
         auth: AUTH,
         policy: options?.policy ?? POLICY,
-        classOf: options?.classOf ?? orgClassOf(),
+        classOf: options?.classOf ?? globalClassOf,
         ...(options?.path === undefined ? {} : { path: options.path }),
       }),
     ],
@@ -97,138 +105,110 @@ const statusOf = async (attempt: Promise<unknown>): Promise<number> => {
 };
 
 describe("ramoseToken", () => {
-  test("mints a verifiable token for an org owner: class owner, exp - iat = ttl", async () => {
+  test("mints without a database input: global class, no ramose.db, exp - iat = ttl", async () => {
     const auth = makeAuth();
-    const owner = await signUp(auth, "owner@acme.test");
-    await auth.api.createOrganization({
-      body: { name: "Acme", slug: "acme" },
-      headers: owner.headers,
-    });
+    const user = await signUp(auth, "alice@acme.test");
 
-    const minted = await auth.api.ramoseToken({
-      body: { db: "acme" },
-      headers: owner.headers,
-    });
-    expect(minted.class).toBe("owner");
+    const minted = await auth.api.ramoseToken({ headers: user.headers });
+    expect(minted.class).toBe("authenticated");
     expect(typeof minted.token).toBe("string");
 
-    // Verify against the jwt plugin's own JWKS — the peer's exact procedure.
     const jwks = createLocalJWKSet(await auth.api.getJwks());
     const { payload } = await jwtVerify(minted.token, jwks, {
       issuer: AUTH.issuer,
       audience: AUTH.audience,
     });
-    expect(payload.sub).toBe(owner.userId);
+    expect(payload.sub).toBe(user.userId);
     expect(payload.ramose).toEqual({
-      class: "owner",
-      attrs: { name: "owner@acme.test", email: "owner@acme.test" },
+      class: "authenticated",
+      attrs: { name: "alice@acme.test", email: "alice@acme.test" },
     });
+    expect(payload.ramose).not.toHaveProperty("db");
+    expect(payload).not.toHaveProperty("db");
     expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
     expect(payload.exp).toBe(minted.exp);
   });
 
-  test("an added member mints class member; a non-member is 403", async () => {
+  test("leftover body.db is ignored; the same session mints the same global class", async () => {
     const auth = makeAuth();
-    const owner = await signUp(auth, "owner@acme.test");
-    const member = await signUp(auth, "member@acme.test");
-    const outsider = await signUp(auth, "outsider@acme.test");
-    const org = await auth.api.createOrganization({
-      body: { name: "Acme", slug: "acme" },
-      headers: owner.headers,
+    const user = await signUp(auth, "alice@acme.test");
+    const without = await auth.api.ramoseToken({ headers: user.headers });
+    const withAcme = await auth.api.ramoseToken({
+      body: { db: "acme" } as never,
+      headers: user.headers,
     });
-    // addMember is server-only: no invitation dance needed in tests.
-    await auth.api.addMember({
-      body: { userId: member.userId, organizationId: org!.id, role: "member" },
+    const withOther = await auth.api.ramoseToken({
+      body: { db: "other" } as never,
+      headers: user.headers,
     });
+    expect(without.class).toBe("authenticated");
+    expect(withAcme.class).toBe("authenticated");
+    expect(withOther.class).toBe("authenticated");
 
-    const minted = await auth.api.ramoseToken({
-      body: { db: "acme" },
-      headers: member.headers,
-    });
-    expect(minted.class).toBe("member");
-
-    expect(
-      await statusOf(
-        auth.api.ramoseToken({ body: { db: "acme" }, headers: outsider.headers }),
-      ),
-    ).toBe(403);
+    const jwks = createLocalJWKSet(await auth.api.getJwks());
+    for (const minted of [without, withAcme, withOther]) {
+      const { payload } = await jwtVerify(minted.token, jwks);
+      expect(payload.ramose).toEqual({
+        class: "authenticated",
+        attrs: { name: "alice@acme.test", email: "alice@acme.test" },
+      });
+      expect(payload.ramose).not.toHaveProperty("db");
+    }
   });
 
-  test("no such org and not-a-member are the same 403 — existence never leaks", async () => {
-    const auth = makeAuth();
+  test("classOf returning null is 403 — no database is named", async () => {
+    const auth = makeAuth({ classOf: () => null });
     const user = await signUp(auth, "user@acme.test");
-    expect(
-      await statusOf(
-        auth.api.ramoseToken({ body: { db: "ghost" }, headers: user.headers }),
-      ),
-    ).toBe(403);
+    try {
+      await auth.api.ramoseToken({ headers: user.headers });
+      expect(true).toBe(false);
+    } catch (error) {
+      expect(error).toBeInstanceOf(APIError);
+      expect((error as APIError).statusCode).toBe(403);
+      expect((error as APIError).message).not.toMatch(/acme|ghost|database/i);
+    }
   });
 
   test("no session is 401", async () => {
     const auth = makeAuth();
-    expect(await statusOf(auth.api.ramoseToken({ body: { db: "acme" } }))).toBe(
-      401,
-    );
-  });
-
-  test("an invalid database name is 400, before classOf runs", async () => {
-    let ran = false;
-    const auth = makeAuth({
-      classOf: () => {
-        ran = true;
-        return "member";
-      },
-    });
-    const user = await signUp(auth, "user@acme.test");
-    for (const bad of ["has/slash", "has space", "-leading", ""]) {
-      expect(
-        await statusOf(
-          auth.api.ramoseToken({ body: { db: bad }, headers: user.headers }),
-        ),
-      ).toBe(400);
-    }
-    expect(ran).toBe(false);
+    expect(await statusOf(auth.api.ramoseToken({}))).toBe(401);
   });
 
   test("a class the policy does not declare is a 500 config error, not a mint", async () => {
     const auth = makeAuth({ classOf: () => "superuser" });
     const user = await signUp(auth, "user@acme.test");
-    expect(
-      await statusOf(
-        auth.api.ramoseToken({ body: { db: "acme" }, headers: user.headers }),
-      ),
-    ).toBe(500);
+    expect(await statusOf(auth.api.ramoseToken({ headers: user.headers }))).toBe(
+      500,
+    );
   });
 
-  test("classOf may grant attrs; they ride under ramose.attrs", async () => {
+  test("classOf may grant global attrs; they ride under ramose.attrs", async () => {
     const auth = makeAuth({
-      classOf: ({ session, db }) => ({
-        class: "member",
-        attrs: { org: `org-of-${db}`, email: session.user.email },
+      classOf: ({ session }) => ({
+        class: "authenticated",
+        attrs: { email: session.user.email, locale: "en" },
       }),
     });
     const user = await signUp(auth, "user@acme.test");
-    const minted = await auth.api.ramoseToken({
-      body: { db: "acme" },
-      headers: user.headers,
-    });
+    const minted = await auth.api.ramoseToken({ headers: user.headers });
     const jwks = createLocalJWKSet(await auth.api.getJwks());
     const { payload } = await jwtVerify(minted.token, jwks);
     expect(payload.ramose).toEqual({
-      class: "member",
-      attrs: { org: "org-of-acme", email: "user@acme.test" },
+      class: "authenticated",
+      attrs: { email: "user@acme.test", locale: "en" },
     });
+    expect(payload.ramose).not.toHaveProperty("db");
   });
 
   test("without the jwt plugin, init fails with a pointed error", async () => {
     const auth = makeAuth({ withJwt: false });
-    await expect(
-      auth.api.ramoseToken({ body: { db: "acme" } }),
-    ).rejects.toThrow(/requires Better Auth's jwt plugin/);
+    await expect(auth.api.ramoseToken({})).rejects.toThrow(
+      /requires Better Auth's jwt plugin/,
+    );
   });
 
-  test("a custom path serves the same endpoint over HTTP", async () => {
-    const auth = makeAuth({ path: "/ramose-token", classOf: () => "member" });
+  test("a custom path serves the same endpoint over HTTP without a database body", async () => {
+    const auth = makeAuth({ path: "/ramose-token", classOf: () => "authenticated" });
     const user = await signUp(auth, "user@acme.test");
     const response = await auth.handler(
       new Request("http://localhost:3000/api/auth/ramose-token", {
@@ -237,12 +217,12 @@ describe("ramoseToken", () => {
           "content-type": "application/json",
           cookie: user.headers.get("cookie")!,
         },
-        body: JSON.stringify({ db: "acme" }),
+        body: JSON.stringify({}),
       }),
     );
     expect(response.status).toBe(200);
     const body = (await response.json()) as { token: string; class: string };
-    expect(body.class).toBe("member");
+    expect(body.class).toBe("authenticated");
     expect(body.token.split(".")).toHaveLength(3);
   });
 });
@@ -320,7 +300,6 @@ describe("JWKS secret rotation", () => {
         baseURL: "http://localhost:3000",
         emailAndPassword: { enabled: true },
         plugins: [
-          organization(),
           jwt({
             jwt: {
               issuer: AUTH.issuer,
@@ -328,20 +307,13 @@ describe("JWKS secret rotation", () => {
               expirationTime: `${AUTH.ttl}s`,
             },
           }),
-          ramoseToken({ auth: AUTH, policy: POLICY, classOf: orgClassOf() }),
+          ramoseToken({ auth: AUTH, policy: POLICY, classOf: globalClassOf }),
         ],
       });
 
     const authA = withMint(SECRET_A);
     const owner = await signUp(authA, "owner@acme.test");
-    await authA.api.createOrganization({
-      body: { name: "Acme", slug: "acme" },
-      headers: owner.headers,
-    });
-    const first = await authA.api.ramoseToken({
-      body: { db: "acme" },
-      headers: owner.headers,
-    });
+    const first = await authA.api.ramoseToken({ headers: owner.headers });
     const keysBefore = (await authA.api.getJwks()).keys;
     expect(keysBefore.length).toBe(1);
 
@@ -357,10 +329,9 @@ describe("JWKS secret rotation", () => {
     expect(sessionBody.user.email).toBe("owner@acme.test");
 
     const minted = await authB.api.ramoseToken({
-      body: { db: "acme" },
       headers: new Headers({ cookie }),
     });
-    expect(minted.class).toBe("owner");
+    expect(minted.class).toBe("authenticated");
     const keysAfter = (await authB.api.getJwks()).keys;
     expect(keysAfter.length).toBe(2);
     expect(keysAfter.map((k) => k.kid).sort()).not.toEqual(
@@ -373,16 +344,17 @@ describe("JWKS secret rotation", () => {
       audience: AUTH.audience,
     });
     expect(payload.ramose).toEqual({
-      class: "owner",
+      class: "authenticated",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
+    expect(payload.ramose).not.toHaveProperty("db");
     // The token minted under secret A still verifies — old public key stayed.
     const old = await jwtVerify(first.token, jwks, {
       issuer: AUTH.issuer,
       audience: AUTH.audience,
     });
     expect(old.payload.ramose).toEqual({
-      class: "owner",
+      class: "authenticated",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
   });
