@@ -224,7 +224,7 @@ const catalogUnitComposition = [
 
 export const catalogUnitEncoded = {
   _tag: "InstalledCatalogUnit",
-  version: 1,
+  version: 2,
   catalog: {
     id: "app",
     database: "todos",

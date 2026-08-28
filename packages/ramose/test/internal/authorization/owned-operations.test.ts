@@ -293,4 +293,22 @@ describe("owned operation lowering", () => {
       "targetless operation 'invalid.inspect' cannot reference self",
     );
   });
+
+  test("rejects entity-trait namespace clashes across schema components", async () => {
+    const FooEntity = Entity("foo", {});
+    const FooTrait = Trait("foo", {});
+    const BarEntity = Entity("bar", {}, { traits: [FooTrait] });
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        lowerOwnedOperations(
+          catalog,
+          [CatalogSchema({ foo: FooEntity }), CatalogSchema({ bar: BarEntity })],
+          artifactHash,
+        ),
+      ),
+    );
+    expect(failure.message).toBe(
+      'ramose/schema: "foo" is both an entity and a trait',
+    );
+  });
 });

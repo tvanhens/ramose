@@ -79,7 +79,7 @@ import {
   InstalledAuthorizationIR,
   InstalledCatalogUnit,
   type InstalledAuthorizationIRV1,
-  type InstalledCatalogUnitV1,
+  type InstalledCatalogUnitV2,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
   OperationInputShape,
@@ -129,7 +129,7 @@ export type _noPublicAuthorization = Expect<
       | "installAgainstAuthoritativeCatalog"
       | "InstalledAuthorizationIRV1"
       | "InstalledCatalogUnit"
-      | "InstalledCatalogUnitV1"
+      | "InstalledCatalogUnitV2"
       | "sealInstalledCatalogUnit"
       | "assembleInstalledCatalogUnit"
       | "verifyInstalledCatalogUnit"
@@ -193,10 +193,10 @@ export type _structuralNotVerified = Expect<
 >;
 export type _verifiedIsStructural = Expect<Extends<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
 export type _catalogUnitStructuralNotVerified = Expect<
-  Equal<Extends<InstalledCatalogUnit, InstalledCatalogUnitV1>, false>
+  Equal<Extends<InstalledCatalogUnit, InstalledCatalogUnitV2>, false>
 >;
 export type _catalogUnitVerifiedIsStructural = Expect<
-  Extends<InstalledCatalogUnitV1, InstalledCatalogUnit>
+  Extends<InstalledCatalogUnitV2, InstalledCatalogUnit>
 >;
 type DecodedInstalled = Extract<
   ReturnType<typeof decodeInstalledAuthorizationResult>,
@@ -212,7 +212,7 @@ type DecodedCatalogUnit = Extract<
 >["success"];
 export type _decodeUnitIsStructural = Expect<Equal<DecodedCatalogUnit, InstalledCatalogUnit>>;
 export type _decodeUnitNotVerified = Expect<
-  Equal<Extends<DecodedCatalogUnit, InstalledCatalogUnitV1>, false>
+  Equal<Extends<DecodedCatalogUnit, InstalledCatalogUnitV2>, false>
 >;
 export type _validationInputFromSchema = Expect<
   Equal<AuthorizationValidationInput, typeof AuthorizationValidationInput.Type>
@@ -838,8 +838,8 @@ const _operationFixtures = () => {
   // @ts-expect-error — structural document is not verified installed v1
   const structuralAsVerified: InstalledAuthorizationIRV1 = installedFixture;
 
-  // @ts-expect-error — structural catalog unit is not verified installed catalog unit v1
-  const structuralUnitAsVerified: InstalledCatalogUnitV1 = catalogUnitFixture;
+  // @ts-expect-error — structural catalog unit is not verified installed catalog unit v2
+  const structuralUnitAsVerified: InstalledCatalogUnitV2 = catalogUnitFixture;
 
   // @ts-expect-error — installed IR is not a template
   const asTemplate: PolicyTemplateIR = installedFixture;
@@ -1053,7 +1053,7 @@ test("authorization type fixtures compile", () => {
   expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");
   expect(Schema.is(CatalogUnitHash)(POLICY_HASH_PLACEHOLDER)).toBe(true);
   expect(catalogUnitFixture._tag).toBe("InstalledCatalogUnit");
-  expect(INSTALLED_CATALOG_UNIT_VERSION).toBe(1);
+  expect(INSTALLED_CATALOG_UNIT_VERSION).toBe(2);
   expect(new CatalogUnitCorrupt({ message: "bad", catalog })._tag).toBe("CatalogUnitCorrupt");
   expect(
     new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,

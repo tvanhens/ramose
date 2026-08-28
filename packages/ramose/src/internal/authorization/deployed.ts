@@ -3,7 +3,7 @@
  *
  * Assembled once at startup from reachable code definitions. The registry
  * is `DatabaseId -> DeployedCatalog`: each database has exactly one
- * request-addressable sealed {@link InstalledCatalogUnitV1}. Lookup starts
+ * request-addressable sealed {@link InstalledCatalogUnitV2}. Lookup starts
  * from the trusted database; a request may then prove catalog-key and
  * unit-hash agreement with that unit. Not a module-global mutable map and
  * not import-order registration.
@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { Unauthorized } from "../../db/Errors.ts";
 import type { CatalogDescriptor } from "./catalog.ts";
-import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import { compositionFromUnit } from "./composition.ts";
 import type { CompositionIndex } from "../core/composition.ts";
 import {
@@ -35,7 +35,7 @@ export type DeployedCatalog = {
   readonly database: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
-  readonly unit: InstalledCatalogUnitV1;
+  readonly unit: InstalledCatalogUnitV2;
   /** Frozen type-to-trait lookup derived from the sealed unit. */
   readonly composition: CompositionIndex;
 };

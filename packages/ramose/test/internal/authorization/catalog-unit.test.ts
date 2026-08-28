@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
-  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
+  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   CatalogId,
   CatalogMismatch,
@@ -43,7 +43,7 @@ import {
   type InstalledAuthorizationIR,
   type InstalledAuthorizationIRV1,
   type InstalledCatalogUnit,
-  type InstalledCatalogUnitV1,
+  type InstalledCatalogUnitV2,
   type JsonValue,
   type OwnerRef,
   type PolicyTemplateIR,
@@ -335,7 +335,7 @@ const seal = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV1)
 const sealFail = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV1) =>
   Effect.runPromise(Effect.flip(sealInstalledCatalogUnit(descriptor, policy)));
 
-const requireSealed = (_unit: InstalledCatalogUnitV1): void => undefined;
+const requireSealed = (_unit: InstalledCatalogUnitV2): void => undefined;
 
 const rehashPolicyAndUnit = async (document: InstalledCatalogUnit): Promise<InstalledCatalogUnit> => {
   const policyHash = await Effect.runPromise(hashInstalledAuthorization(document.policy));
@@ -379,7 +379,7 @@ const expectClosed = (
 };
 
 describe("sealInstalledCatalogUnit", () => {
-  test("seal produces InstalledCatalogUnitV1 with nested catalog and lean policy", async () => {
+  test("seal produces InstalledCatalogUnitV2 with nested catalog and lean policy", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
@@ -423,7 +423,7 @@ describe("sealInstalledCatalogUnit", () => {
     const body = { ...encoded } as Record<string, unknown>;
     delete body.unitHash;
     const expected = await Effect.runPromise(
-      hashDomainSeparatedCanonicalJson(AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1, body as JsonValue),
+      hashDomainSeparatedCanonicalJson(AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2, body as JsonValue),
     );
     expect(String(unit.unitHash)).toBe(expected);
     const unprefixed = await Effect.runPromise(
@@ -434,28 +434,49 @@ describe("sealInstalledCatalogUnit", () => {
       hashDomainSeparatedCanonicalJson(AUTHORIZATION_POLICY_HASH_DOMAIN_V1, body as JsonValue),
     );
     expect(String(unit.unitHash)).not.toBe(policyDomain);
-    expect(AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1.endsWith("\0")).toBe(true);
+    expect(AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2.endsWith("\0")).toBe(true);
     const decoded = decodeInstalledCatalogUnitResult(encoded);
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
-    // @ts-expect-error — structural decode is not verified catalog unit v1
+    // @ts-expect-error — structural decode is not verified catalog unit v2
     requireSealed(decoded.success);
     const verified = await Effect.runPromise(verifyInstalledCatalogUnit(decoded.success));
     requireSealed(verified);
     expect(verified.unitHash).toBe(unit.unitHash);
   });
 
-  test("structural decode is not InstalledCatalogUnitV1", async () => {
+  test("structural decode is not InstalledCatalogUnitV2", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
     const unit = await seal(descriptor, policy);
     const decoded = decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(unit));
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
-    // @ts-expect-error — structural decode is not verified catalog unit v1
+    // @ts-expect-error — structural decode is not verified catalog unit v2
     requireSealed(decoded.success);
     const structural: InstalledCatalogUnit = decoded.success;
     expect(structural._tag).toBe("InstalledCatalogUnit");
+  });
+
+  test("recognizes persisted v1 operation rows and requires redeployment", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const encoded = encodeInstalledCatalogUnit(unit);
+    const legacy = {
+      ...encoded,
+      version: 1,
+      catalog: {
+        ...encoded.catalog,
+        operations: encoded.catalog.operations.map(({ id, input }) => ({ id, input })),
+      },
+    };
+    const decoded = decodeInstalledCatalogUnitResult(legacy);
+    expect(Result.isFailure(decoded)).toBe(true);
+    if (!Result.isFailure(decoded)) return;
+    expect(decoded.failure.message).toMatch(
+      /legacy catalog unit v1.*cannot be migrated.*redeploy/,
+    );
   });
 
   test("pre-contraction flattened unit fails structural decode", async () => {
@@ -913,7 +934,7 @@ describe("corruption", () => {
       name: "unsupported unit version",
       fixture: "simple" as const,
       mutate: (unit: InstalledCatalogUnit) =>
-        ({ ...unit, version: 2 }) as unknown as InstalledCatalogUnit,
+        ({ ...unit, version: 3 }) as unknown as InstalledCatalogUnit,
       rehash: false,
       pattern: /catalog unit version/,
       tag: "InvalidIR",
@@ -1118,7 +1139,7 @@ describe("corruption", () => {
     const unit = await seal(descriptor, policy);
     const coherent = normalizeAndValidateCatalogUnit(unit.catalog, unit.policy, unit.version);
     expect(Result.isSuccess(coherent)).toBe(true);
-    const unitVersion = normalizeAndValidateCatalogUnit(unit.catalog, unit.policy, 2);
+    const unitVersion = normalizeAndValidateCatalogUnit(unit.catalog, unit.policy, 3);
     expect(Result.isFailure(unitVersion)).toBe(true);
     if (Result.isFailure(unitVersion)) {
       expect(unitVersion.failure.message).toMatch(/catalog unit version/);

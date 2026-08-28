@@ -6,7 +6,7 @@
  * trait composition live only on the descriptor. Type-to-trait lookup
  * indexes are derived at validation and assembly — they are not persisted
  * as application datoms. Structural decode of {@link InstalledCatalogUnit}
- * is not {@link InstalledCatalogUnitV1}; only {@link sealInstalledCatalogUnit}
+ * is not {@link InstalledCatalogUnitV2}; only {@link sealInstalledCatalogUnit}
  * and verified load may produce the brand.
  */
 
@@ -19,6 +19,7 @@ import {
   EntityDescriptor,
   FieldDescriptor,
   OperationDescriptor,
+  OperationInputShape,
   TraitComposition,
   TraitDescriptor,
   RuleAccessPlan,
@@ -34,7 +35,14 @@ import {
   hashInstalledCatalogUnit,
 } from "./decode.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "./failures.ts";
-import { CatalogId, CatalogUnitHash } from "./identities.ts";
+import {
+  CatalogId,
+  CatalogUnitHash,
+  CatalogVersion,
+  DatabaseId,
+  OperationId,
+  SchemaFingerprint,
+} from "./identities.ts";
 import {
   BOUND_AUTHORIZATION_IR_VERSION,
   CanonicalAuthorizationDecisions,
@@ -66,7 +74,7 @@ import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
 import type { JsonValue } from "./json.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
 
-export const INSTALLED_CATALOG_UNIT_VERSION = 1 as const;
+export const INSTALLED_CATALOG_UNIT_VERSION = 2 as const;
 export const InstalledCatalogUnitVersion = Schema.Literal(INSTALLED_CATALOG_UNIT_VERSION);
 export type InstalledCatalogUnitVersion = typeof InstalledCatalogUnitVersion.Type;
 
@@ -84,17 +92,52 @@ export const InstalledCatalogUnit = Schema.TaggedStruct("InstalledCatalogUnit", 
 export type InstalledCatalogUnit = typeof InstalledCatalogUnit.Type;
 
 /**
- * Verified/sealed v1 catalog unit. Distinct from Schema-decoded
+ * Read-only decoder shape for persisted v1 units. V1 operation rows carried
+ * only identity and input shape, so a nonempty v1 table cannot be upgraded
+ * without the deployed definitions and must be rebuilt by deployment.
+ */
+const LegacyOperationDescriptorV1 = Schema.Struct({
+  id: OperationId,
+  input: OperationInputShape,
+});
+
+const LegacyCatalogDescriptorV1 = Schema.Struct({
+  id: CatalogId,
+  database: DatabaseId,
+  version: CatalogVersion,
+  fingerprint: SchemaFingerprint,
+  entities: Schema.Array(EntityDescriptor),
+  traits: Schema.Array(TraitDescriptor),
+  fields: Schema.Array(FieldDescriptor),
+  operations: Schema.Array(LegacyOperationDescriptorV1),
+  traitComposition: Schema.Array(TraitComposition),
+});
+
+export const LegacyInstalledCatalogUnitV1 = Schema.TaggedStruct(
+  "InstalledCatalogUnit",
+  {
+    version: Schema.Literal(1),
+    catalog: LegacyCatalogDescriptorV1,
+    policy: InstalledAuthorizationIR,
+    unitHash: CatalogUnitHash,
+  },
+);
+export type LegacyInstalledCatalogUnitV1 =
+  typeof LegacyInstalledCatalogUnitV1.Type;
+
+/**
+ * Verified/sealed v2 catalog unit. Distinct from Schema-decoded
  * structural output. Only {@link sealInstalledCatalogUnit} and the
  * hash-verified load path produce this brand.
  */
-export type InstalledCatalogUnitV1 = InstalledCatalogUnit & Brand.Brand<"InstalledCatalogUnitV1">;
+export type InstalledCatalogUnitV2 = InstalledCatalogUnit &
+  Brand.Brand<"InstalledCatalogUnitV2">;
 
 export type AssembleCatalogUnitFailure = ValidateFailure;
 
 const PLACEHOLDER_UNIT_HASH = CatalogUnitHash.make("0".repeat(64));
 
-const verifiedInstalledCatalogUnit = Brand.nominal<InstalledCatalogUnitV1>();
+const verifiedInstalledCatalogUnit = Brand.nominal<InstalledCatalogUnitV2>();
 
 type UnhashedCatalogUnitTables = Omit<InstalledCatalogUnit, "_tag" | "unitHash">;
 
@@ -489,7 +532,7 @@ const requireCatalogUnitDigests = Effect.fn("Authorization.requireCatalogUnitDig
 );
 
 /**
- * The only producer of {@link InstalledCatalogUnitV1} besides verified
+ * The only producer of {@link InstalledCatalogUnitV2} besides verified
  * load. Bind the complete descriptor to a sealed policy, hash the
  * canonical document minus `unitHash`, and freeze the brand.
  */
@@ -497,7 +540,7 @@ export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCa
   function* (
     descriptor: CatalogDescriptorType,
     policy: InstalledAuthorizationIRV1Type,
-  ): Effect.fn.Return<InstalledCatalogUnitV1, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
+  ): Effect.fn.Return<InstalledCatalogUnitV2, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
     const tables = yield* Effect.fromResult(assembleInstalledCatalogUnit(descriptor, policy));
     const snapshot = freezePlain(clonePlain(tables));
     yield* requireCatalogUnitDigests(snapshot);
@@ -521,13 +564,13 @@ export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCa
 
 /**
  * Hash-verify a structural catalog unit and brand it. Structural decode
- * alone is not {@link InstalledCatalogUnitV1}. The shared kernel, hash,
+ * alone is not {@link InstalledCatalogUnitV2}. The shared kernel, hash,
  * and an encode/decode round-trip must all succeed before the brand.
  */
 export const verifyInstalledCatalogUnit = Effect.fn("Authorization.verifyInstalledCatalogUnit")(
   function* (
     document: InstalledCatalogUnit,
-  ): Effect.fn.Return<InstalledCatalogUnitV1, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
+  ): Effect.fn.Return<InstalledCatalogUnitV2, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
     const snapshot = freezePlain(clonePlain(document));
     const tables = yield* Effect.fromResult(
       normalizeAndValidateCatalogUnit(snapshot.catalog, snapshot.policy, snapshot.version, {

@@ -14,7 +14,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Result from "effect/Result";
 import {
   compositionFromUnit,
-  type InstalledCatalogUnitV1,
+  type InstalledCatalogUnitV2,
 } from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
 import { restoreEngineTypeAssertions } from "../core/tx-provenance.ts";
@@ -90,7 +90,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
   transact(
     db: string,
     tx: unknown[],
-    unit: InstalledCatalogUnitV1,
+    unit: InstalledCatalogUnitV2,
   ): Promise<TxAck> {
     this.assign(db);
     const composition = Result.getOrThrow(compositionFromUnit(unit));

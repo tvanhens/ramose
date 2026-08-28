@@ -4,6 +4,7 @@
  */
 
 import * as Schema from "effect/Schema";
+import type { Eid } from "../../src/db/Eid.ts";
 import type { Equal, Expect, Extends } from "../../src/db/equal.ts";
 import {
   Entity,
@@ -11,13 +12,17 @@ import {
   Field,
   Operation,
   OwnedOperations,
+  Ref,
   Trait,
   string,
 } from "../../src/db/internal.ts";
 import { Ref as RefSchema } from "../../src/db/valueTypes.ts";
 
 const Slugged = Trait("slugged", { slug: string() });
+const User = Entity("user", { name: string() });
 const Other = Entity("other", { note: string() });
+declare const userId: Eid<typeof User>;
+declare const otherId: Eid<typeof Other>;
 const BoundOperations = Trait(
   "boundOperations",
   { catalog: string() },
@@ -67,7 +72,7 @@ const Taggable = Trait(
 
 const Issue = Entity(
   "issue",
-  { title: string() },
+  { title: string(), assignee: Ref(User, { optional: true }) },
   {
     traits: [Taggable],
     operations: (Operation) => ({
@@ -86,6 +91,9 @@ const Issue = Entity(
         output: Schema.Struct({}),
         run(op, { title }) {
           op.self.set(Issue.title, title);
+          op.self.set(Issue.assignee, userId);
+          // @ts-expect-error targeted refs reject a branded eid of another entity
+          op.self.set(Issue.assignee, otherId);
           // @ts-expect-error entity operations cannot write an unrelated owner field
           op.self.set(Other.note, title);
           return {};

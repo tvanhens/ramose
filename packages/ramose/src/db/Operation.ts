@@ -232,15 +232,32 @@ type OwnerField<Owner extends OperationOwnerShape> = Extract<
   { readonly ident: string }
 >;
 
+type OwnedFieldValue<
+  Owner extends OperationOwnerShape,
+  A,
+> = A extends {
+  readonly valueType: "ref";
+  readonly schema: { readonly _target?: infer Target };
+}
+  ? Exclude<Target, undefined> extends infer Declared extends AnyEntity
+    ? EntityRef<AnySchema, Declared, AnyOpHandle>
+    : Owner extends AnyEntity
+      ? EntityRef<AnySchema, Owner, AnyOpHandle>
+      : EntityRef<AnySchema, AnyEntity, AnyOpHandle>
+  : OpValue<AnySchema, A>;
+
 /** A targeted handle only accepts fields carried by its canonical owner. */
 export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
   OpHandle<AnySchema>,
   "set" | "remove"
 > & {
-  set<const A extends OwnerField<Owner>>(field: A, value: OpValue<AnySchema, A>): void;
+  set<const A extends OwnerField<Owner>>(
+    field: A,
+    value: OwnedFieldValue<Owner, A>,
+  ): void;
   remove<const A extends OwnerField<Owner>>(
     field: A,
-    value?: OpValue<AnySchema, A>,
+    value?: OwnedFieldValue<Owner, A>,
   ): void;
 };
 

@@ -28,7 +28,7 @@ import {
   subject,
   uniqueCanonicalTypeName,
   type AuthorizationPrincipal,
-  type InstalledCatalogUnitV1,
+  type InstalledCatalogUnitV2,
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
@@ -67,7 +67,7 @@ const sealedDescriptor = async () => {
 
 const installUnit = async (
   template: PolicyTemplateIR,
-): Promise<InstalledCatalogUnitV1> => {
+): Promise<InstalledCatalogUnitV2> => {
   const descriptor = await sealedDescriptor();
   const policy = await Effect.runPromise(
     installAuthorization({

@@ -21,7 +21,7 @@ import { Index } from "../core/datom.ts";
 import type { Db } from "../core/db.ts";
 import { RAMOSE_TYPE } from "../core/schema.ts";
 import { MAX_READ_LEASE_MS } from "./bounds.ts";
-import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import { compositionFromUnit } from "./composition.ts";
 import {
   opaqueCatalogDenial,
@@ -109,7 +109,7 @@ const leaseDuration = (
 
 const selectSubject = (
   caller: AuthenticatedCaller,
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
 ): Result.Result<string, Unauthorized> => {
   const value = caller.claims[unit.policy.principal.subjectClaim];
   if (typeof value !== "string" || value.trim().length === 0) return Result.fail(deny());
@@ -151,7 +151,7 @@ const validateCallerClaims = (
 };
 
 const resolveMe = async (
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
   subject: string,
   caller: AuthenticatedCaller,
   currentDb: Db,
@@ -188,7 +188,7 @@ const requestedView = (current: Db, view: AuthorizedRequestView | undefined): Db
   return db;
 };
 
-const catalogTargetOf = (unit: InstalledCatalogUnitV1) => ({
+const catalogTargetOf = (unit: InstalledCatalogUnitV2) => ({
   database: unit.catalog.database,
   catalog: unit.catalog.id,
   catalogVersion: unit.catalog.version,
@@ -196,7 +196,7 @@ const catalogTargetOf = (unit: InstalledCatalogUnitV1) => ({
 });
 
 const requirePreparedUnit = (
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
 ): Result.Result<void, Unauthorized> => {
   try {
     if (unit.policy == null) return Result.fail(deny());
@@ -209,7 +209,7 @@ const requirePreparedUnit = (
 };
 
 const compilePredicate = (
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
   principal: AuthorizationPrincipal,
   currentDb: Db,
 ): Result.Result<ReturnType<typeof compileReadFilter>, Unauthorized> => {
@@ -221,7 +221,7 @@ const compilePredicate = (
 };
 
 type AdmittedCaller = {
-  readonly unit: InstalledCatalogUnitV1;
+  readonly unit: InstalledCatalogUnitV2;
   readonly subject: string;
 };
 
@@ -246,7 +246,7 @@ const admitDeployedCaller = <R, EDb>(
 
 /** Principal bind + predicate compile. Defects collapse to Unauthorized. */
 const bindReadPredicate = (
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
   subject: string,
   caller: AuthenticatedCaller,
   current: Db,

@@ -10,7 +10,7 @@
 
 import * as Result from "effect/Result";
 import type { FieldDescriptor } from "./catalog.ts";
-import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import type {
   CanonicalAuthorizationExpr,
   CanonicalRefTerm,
@@ -47,7 +47,7 @@ import type { Db, DatomPredicate } from "../core/db.ts";
 import { RAMOSE_TYPE } from "../core/schema.ts";
 
 export type CompileReadFilterInput = {
-  readonly unit: InstalledCatalogUnitV1;
+  readonly unit: InstalledCatalogUnitV2;
   readonly principal: AuthorizationPrincipal;
   readonly currentDb: Db;
 };

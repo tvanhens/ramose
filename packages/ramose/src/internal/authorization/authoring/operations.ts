@@ -18,6 +18,7 @@ import {
   type OperationOwner,
 } from "../../../db/Operation.ts";
 import {
+  assertEntityTraitNames,
   reachableTraits,
   walkTraits,
   type ComposerLike,
@@ -114,13 +115,18 @@ const collectOwners = (
     }
   }
   try {
+    const traits = reachableTraits(
+      entities.values() as Iterable<ComposerLike>,
+    ) as unknown as ReadonlyMap<string, AnyTrait>;
+    assertEntityTraitNames(
+      entities.keys(),
+      traits as unknown as ReadonlyMap<string, ComposerLike>,
+    );
     return Result.succeed({
       entities: [...entities.values()].sort((left, right) =>
         compareText(left.ns, right.ns)
       ),
-      traits: reachableTraits(
-        entities.values() as Iterable<ComposerLike>,
-      ) as unknown as ReadonlyMap<string, AnyTrait>,
+      traits,
     });
   } catch (cause) {
     return Result.fail(

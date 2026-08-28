@@ -83,7 +83,7 @@ const KILLED = [
   "seedWrite",
   "submitRaw",
   "InstalledCatalogUnit",
-  "InstalledCatalogUnitV1",
+  "InstalledCatalogUnitV2",
   "sealInstalledCatalogUnit",
   "assembleInstalledCatalogUnit",
   "verifyInstalledCatalogUnit",

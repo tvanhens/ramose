@@ -11,7 +11,7 @@ import {
   type CompositionIndex,
 } from "../core/composition.ts";
 import type { CatalogDescriptor } from "./catalog.ts";
-import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import { prepareAuthorizationCatalog, type PreparedAuthorizationCatalog } from "./validation/catalog.ts";
 import type { ValidateFailure } from "./validation/common.ts";
 
@@ -60,6 +60,6 @@ export const compositionFromDescriptor = (
 
 /** Same lookup as {@link compositionFromDescriptor} for a sealed unit. */
 export const compositionFromUnit = (
-  unit: InstalledCatalogUnitV1,
+  unit: InstalledCatalogUnitV2,
 ): Result.Result<CompositionIndex, ValidateFailure> =>
   compositionFromDescriptor(unit.catalog);

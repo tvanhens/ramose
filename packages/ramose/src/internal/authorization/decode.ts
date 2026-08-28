@@ -33,7 +33,9 @@ import {
 } from "./catalog.ts";
 import {
   InstalledCatalogUnit,
+  LegacyInstalledCatalogUnitV1,
   type InstalledCatalogUnit as InstalledCatalogUnitType,
+  type LegacyInstalledCatalogUnitV1 as LegacyInstalledCatalogUnitV1Type,
 } from "./catalog-unit.ts";
 import { InvalidIR } from "./failures.ts";
 import {
@@ -66,7 +68,7 @@ import {
 import type { JsonValue } from "./json.ts";
 import {
   AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
-  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
+  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
 } from "./version.ts";
@@ -100,15 +102,39 @@ export const decodeInstalledAuthorizationResult = (
     input,
   );
 
-/** Structural document only. Not {@link InstalledCatalogUnitV1}. */
+/** Decode the persisted v1 shape so upgrades fail with a migration diagnostic. */
+export const decodeLegacyInstalledCatalogUnitV1Result = (
+  input: unknown,
+): Result.Result<LegacyInstalledCatalogUnitV1Type, InvalidIR> =>
+  decodeDocument(
+    Schema.decodeUnknownResult(LegacyInstalledCatalogUnitV1, STRICT),
+    (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
+    input,
+  );
+
+/** Structural v2 document only. Not {@link InstalledCatalogUnitV2}. */
 export const decodeInstalledCatalogUnitResult = (
   input: unknown,
-): Result.Result<InstalledCatalogUnitType, InvalidIR> =>
-  decodeDocument(
+): Result.Result<InstalledCatalogUnitType, InvalidIR> => {
+  const current = decodeDocument(
     Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
   );
+  if (Result.isSuccess(current)) return current;
+  const legacy = decodeLegacyInstalledCatalogUnitV1Result(input);
+  if (Result.isSuccess(legacy)) {
+    return Result.fail(
+      new InvalidIR({
+        message:
+          legacy.success.catalog.operations.length === 0
+            ? "legacy catalog unit v1 requires resealing by deployment"
+            : "legacy catalog unit v1 has operation descriptors that cannot be migrated; redeploy the catalog",
+      }),
+    );
+  }
+  return current;
+};
 
 export const decodePolicyTemplate = Effect.fn("decodePolicyTemplate")(function* (
   input: unknown,
@@ -241,7 +267,7 @@ export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalled
 export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCatalogUnit")(
   function* (document: InstalledCatalogUnitType) {
     const digest = yield* hashDomainSeparatedCanonicalJson(
-      AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
+      AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
       omitKey(encodedJson(encodeInstalledCatalogUnit(document)), "unitHash"),
     );
     return CatalogUnitHash.make(digest);
@@ -467,11 +493,14 @@ const fieldDescriptorCollisions = (
   );
 
 const operationDescriptorCollisions = (
-  operations: CatalogDescriptor["operations"],
+  operations: ReadonlyArray<{ readonly id: OperationId }>,
 ): InvalidIR | undefined =>
   internByIdentity(
     operations.map((operation) => {
-      const encoded = encodedJson(Schema.encodeUnknownSync(OperationDescriptor)(operation));
+      // Both persisted v1 rows and current rows have already crossed a strict
+      // schema decode, so canonicalize the decoded row without forcing the v2
+      // operation codec onto the legacy shape.
+      const encoded = encodedJson(operation);
       return {
         id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(OperationId)(operation.id))),
         body: canonicalizeJson(omitKey(encoded, "id")),
