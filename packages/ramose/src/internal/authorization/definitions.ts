@@ -7,6 +7,7 @@ import {
   type CatalogDefinition,
 } from "../../Catalog.ts";
 import {
+  bindingOf,
   traitDefinitionOf,
   type TraitLike,
 } from "../../db/Binding.ts";
@@ -26,6 +27,7 @@ import {
   collectDefinitionEntities,
   type ReachableCodeDefinition,
 } from "../../db/reachability.ts";
+import { OwnedOperations } from "../../db/Operation.ts";
 import { schemaTraits, type AnySchema } from "../../db/Schema.ts";
 import type { AnyTrait } from "../../db/Trait.ts";
 import { traitsOf, walkTraits, type ComposerLike } from "../../db/compose.ts";
@@ -215,11 +217,58 @@ const completeSchema = (definition: CatalogDefinition): AnySchema => {
   });
 };
 
+const freezeAuthoringComposer = (
+  composer: ComposerLike,
+  seen: WeakSet<object>,
+): void => {
+  const object = composer as object;
+  if (seen.has(object)) return;
+  seen.add(object);
+  for (const trait of traitsOf(composer)) {
+    const stable = traitDefinitionOf(trait as unknown as TraitLike);
+    freezeAuthoringComposer(stable as unknown as ComposerLike, seen);
+    const runtime = bindingOf(trait);
+    if (runtime !== undefined) Object.freeze(runtime);
+    Object.freeze(trait);
+  }
+  for (const field of Object.values(composer.fields)) {
+    if (typeof field === "object" && field !== null) Object.freeze(field);
+  }
+  const operations = (composer as {
+    readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
+  })[OwnedOperations];
+  if (operations !== undefined) {
+    for (const operation of Object.values(operations)) {
+      if (typeof operation !== "object" || operation === null) continue;
+      const writes = (operation as { readonly writes?: unknown }).writes;
+      if (Array.isArray(writes)) Object.freeze(writes);
+      Object.freeze(operation);
+    }
+    Object.freeze(operations);
+  }
+  Object.freeze(composer.fields);
+  const traits = traitsOf(composer);
+  if (Array.isArray(traits)) Object.freeze(traits);
+  Object.freeze(composer);
+};
+
+/** Freeze the exact authoring graph retained after its bindings are resolved. */
+const freezeDefinitionAuthoring = (definition: CatalogDefinition): void => {
+  const seen = new WeakSet<object>();
+  for (const reachable of collectDefinitionEntities(definition)) {
+    freezeAuthoringComposer(reachable.entity as ComposerLike, seen);
+  }
+  Object.freeze(definition.schema.entities);
+  Object.freeze(definition.schema);
+};
+
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
   }
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Object.is(value, -0) ? 0 : value;
+  }
   if (value instanceof Date && Number.isFinite(value.getTime())) {
     return { _tag: "instant", value: value.toISOString() };
   }
@@ -476,6 +525,16 @@ export const assembleCatalogDefinitions = Effect.fn(
   const reachability = yield* fromPure(
     "catalog definition reachability failed",
     () => collectCodeReachability(input.root),
+  );
+  yield* fromPure(
+    "catalog definition authoring snapshot failed",
+    () => {
+      for (const reachable of reachability.definitions) {
+        if (isCatalogDefinition(reachable.definition)) {
+          freezeDefinitionAuthoring(reachable.definition);
+        }
+      }
+    },
   );
   const byKey = new Map<CatalogId, InstalledCatalogDefinition>();
   for (const reachable of reachability.definitions) {

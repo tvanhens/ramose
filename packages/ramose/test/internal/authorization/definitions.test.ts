@@ -14,6 +14,7 @@ import {
   Trait,
   bytes,
   creationDefault,
+  float,
   resolveCreationValues,
   string,
   timestamp,
@@ -279,6 +280,31 @@ describe("catalog definition assembly", () => {
       });
   });
 
+  test("freezes retained entity and field authoring state", async () => {
+    const Item = Entity("item", {
+      value: string({
+        default: creationDefault({ value: "sealed" }, (inputs) => inputs.value),
+      }),
+    });
+    const App = Schema({ item: Item });
+    const installed = Result.getOrThrow(
+      (await assemble(Catalog("frozen-authoring", {
+        schema: App,
+        policy: await policy(App),
+      }))).require(CatalogId.make("frozen-authoring")),
+    );
+
+    expect(Object.isFrozen(Item)).toBe(true);
+    expect(Object.isFrozen(Item.value)).toBe(true);
+    expect(Reflect.set(
+      Item.value,
+      "default",
+      creationDefault({ value: "mutated" }, (inputs) => inputs.value),
+    )).toBe(false);
+    expect(installed.resolveCreationValues("item", {}, { now: new Date(0) }))
+      .toEqual({ value: "sealed" });
+  });
+
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
     const Empty = Schema({});
     const left = Catalog("left-child", { schema: Empty, policy: await policy(Empty) });
@@ -399,6 +425,57 @@ describe("catalog definition assembly", () => {
     expect(left.resolveCreationValues("item", {}, { now: new Date(0) }))
       .toEqual({ value: "left" });
     expect(right.unitHash).not.toBe(left.unitHash);
+  });
+
+  test("normalizes negative zero in defaults and fixed bindings", async () => {
+    const defaultSchema = (value: number) => Schema({
+      item: Entity("item", {
+        sign: string({
+          default: creationDefault(
+            { value },
+            (inputs) => Object.is(inputs.value, -0) ? "negative" : "positive",
+          ),
+        }),
+      }),
+    });
+    const NegativeSchema = defaultSchema(-0);
+    const PositiveSchema = defaultSchema(0);
+    const negative = Result.getOrThrow(
+      (await assemble(Catalog("zero", {
+        schema: NegativeSchema,
+        policy: await policy(NegativeSchema),
+      }))).require(CatalogId.make("zero")),
+    );
+    const positive = Result.getOrThrow(
+      (await assemble(Catalog("zero", {
+        schema: PositiveSchema,
+        policy: await policy(PositiveSchema),
+      }))).require(CatalogId.make("zero")),
+    );
+    expect(negative.unitHash).toBe(positive.unitHash);
+    expect(negative.resolveCreationValues("item", {}, { now: new Date(0) }))
+      .toEqual({ sign: "positive" });
+
+    const Fixed = Trait("zeroFixed", { value: float() }, {
+      bind: () => ({ values: { value: -0 } }),
+    });
+    const FixedSchema = Schema({
+      fixed: Entity("fixed", {}, {
+        traits: [Fixed({ key: "zero-fixed", schema: Schema({}) })],
+      }),
+    });
+    const fixed = Result.getOrThrow(
+      (await assemble(Catalog("fixed-zero", {
+        schema: FixedSchema,
+        policy: await policy(FixedSchema),
+      }))).require(CatalogId.make("fixed-zero")),
+    );
+    expect(fixed.resolveCreationValues("fixed", {}, { now: new Date(0) }))
+      .toEqual({ value: 0 });
+    expect(Object.is(
+      fixed.resolveCreationValues("fixed", {}, { now: new Date(0) }).value,
+      -0,
+    )).toBe(false);
   });
 
   test("rejects duplicate permanent keys with both internal reachability paths", async () => {

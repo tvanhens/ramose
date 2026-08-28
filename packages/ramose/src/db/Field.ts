@@ -76,7 +76,7 @@ const snapshotInputs = (
     if (!Number.isFinite(value)) {
       throw new Error("ramose/default: inputs must contain only finite numbers");
     }
-    return value;
+    return Object.is(value, -0) ? 0 : value;
   }
   if (seen.has(value)) {
     throw new Error("ramose/default: inputs must not contain cycles");

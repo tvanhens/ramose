@@ -114,6 +114,7 @@ export interface ResolvedTraitBinding {
 
 /** @internal Copy the mutable stored-value forms retained by bindings. */
 export const cloneBindingValue = (value: unknown): unknown => {
+  if (typeof value === "number" && Object.is(value, -0)) return 0;
   if (value instanceof Date) return new Date(value.getTime());
   if (value instanceof Uint8Array) return new Uint8Array(value);
   if (Array.isArray(value)) {
