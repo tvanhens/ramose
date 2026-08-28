@@ -62,8 +62,15 @@ const BoundEntity = Entity(
         output: Schema.Struct({}),
         run(op, { title }) {
           op.self.set(BoundEntity.title, title);
+          op.set(op.self, BoundEntity.title, title);
+          op.put(BoundEntity, { title });
+          op.update(BoundEntity, op.self.eid, { title });
           // @ts-expect-error engine-owned binding fields are not mutable
           op.self.set(BoundEntity.catalog, "forged");
+          // @ts-expect-error inherited update cannot bypass fixed fields
+          op.update(BoundEntity, op.self.eid, { catalog: "forged" });
+          // @ts-expect-error inherited put cannot supply fixed fields
+          op.put(BoundEntity, { title, catalog: "forged" });
           return {};
         },
       }),
@@ -214,7 +221,11 @@ const Issue = Entity(
         run(op, input) {
           // @ts-expect-error targetless create requires every entity field
           op.create({ slug: input.slug });
-          return { id: op.create({ title: input.title, slug: input.slug }) };
+          const issue = op.create({ title: input.title, slug: input.slug });
+          issue.set(Issue.title, input.title);
+          // @ts-expect-error an Issue handle cannot fill a User ref slot
+          issue.set(Issue.assignee, issue);
+          return { id: issue };
         },
       }),
       rename: Operation({

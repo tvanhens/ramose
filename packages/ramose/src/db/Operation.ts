@@ -244,6 +244,18 @@ type TraitComposerEntity<Target extends AnyTrait> = AnyEntity & {
   };
 };
 
+type OwnedInvocationEntity<Owner extends OperationOwnerShape> =
+  Owner extends { readonly _tag: "Entity" }
+    ? Owner & AnyEntity
+    : Owner extends { readonly _tag: "Trait" }
+      ? TraitComposerEntity<Owner & AnyTrait>
+      : never;
+
+type OwnedHandleRef<Target extends AnyEntity> = {
+  readonly _tag: "TxHandle";
+  readonly eid: Eid<Target> | Tempid;
+};
+
 type OwnedFieldValue<
   Owner extends OperationOwnerShape,
   A,
@@ -253,16 +265,24 @@ type OwnedFieldValue<
 }
   ? Exclude<Target, undefined> extends infer Declared
     ? Declared extends AnyEntity
-      ? EntityRef<AnySchema, Declared, AnyOpHandle>
+      ? EntityRef<AnySchema, Declared, OwnedHandleRef<Declared>>
       : Declared extends AnyTrait
-        ? EntityRef<AnySchema, TraitComposerEntity<Declared>, AnyOpHandle>
+        ? EntityRef<
+            AnySchema,
+            TraitComposerEntity<Declared>,
+            OwnedHandleRef<TraitComposerEntity<Declared>>
+          >
         : Owner extends { readonly _tag: "Entity" }
-          ? EntityRef<AnySchema, Owner & AnyEntity, AnyOpHandle>
+          ? EntityRef<
+              AnySchema,
+              OwnedInvocationEntity<Owner>,
+              OwnedHandleRef<OwnedInvocationEntity<Owner>>
+            >
           : Owner extends { readonly _tag: "Trait" }
             ? EntityRef<
                 AnySchema,
-                TraitComposerEntity<Owner & AnyTrait>,
-                AnyOpHandle
+                OwnedInvocationEntity<Owner>,
+                OwnedHandleRef<OwnedInvocationEntity<Owner>>
               >
             : EntityRef<AnySchema, AnyEntity, AnyOpHandle>
     : never
@@ -271,8 +291,9 @@ type OwnedFieldValue<
 /** A targeted handle only accepts fields carried by its canonical owner. */
 export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
   OpHandle<AnySchema>,
-  "set" | "remove"
+  "eid" | "set" | "remove"
 > & {
+  readonly eid: Eid<OwnedInvocationEntity<Owner>> | Tempid;
   set<const A extends OwnerField<Owner>>(
     field: A,
     value: OwnedFieldValue<Owner, A>,
@@ -294,14 +315,42 @@ type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
           Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>;
       }>,
       Owner & Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>,
-      AnyOpHandle<
-        CatalogSchema<{
-          readonly [K in Owner["ns"]]: Owner &
-            Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>;
-        }>
-      >
+      never
     >
   : never;
+
+type OwnerEntity<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+  readonly fields: AnyEntity["fields"];
+}
+  ? Owner &
+      Pick<
+        AnyEntity,
+        "id" | typeof COMPOSED_TRAITS | typeof OwnedOperations
+      >
+  : never;
+
+type OwnerCatalog<Owner extends OperationOwnerShape> = CatalogSchema<{
+  readonly [K in Owner["ns"]]: OwnerEntity<Owner>;
+}>;
+
+type OwnerPutAttrs<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+}
+  ? PutAttrs<OwnerCatalog<Owner>, OwnerEntity<Owner>, never>
+  : never;
+
+type OwnerUpdateMapAttrs<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+}
+  ? UpdateMapAttrs<OwnerCatalog<Owner>, OwnerEntity<Owner>, never>
+  : never;
+
+type OwnedEntityRef<Owner extends OperationOwnerShape> = EntityRef<
+  AnySchema,
+  OwnedInvocationEntity<Owner>,
+  OwnedHandleRef<OwnedInvocationEntity<Owner>>
+>;
 
 /**
  * Operation body surface after an owner map binds the definition.
@@ -310,11 +359,45 @@ type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
 export type OwnedOp<
   Owner extends OperationOwnerShape,
   Self extends boolean,
-> = Omit<Op<AnySchema, undefined>, "self"> & {
+> = Omit<
+  Op<AnySchema, undefined>,
+  "self" | "entity" | "set" | "remove" | "delete" | "put" | "update"
+> & {
   readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
+  entity(): OwnedTargetHandle<Owner>;
+  entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
+  set<const A extends OwnerField<Owner>>(
+    entity: OwnedEntityRef<Owner>,
+    field: A,
+    value: OwnedFieldValue<Owner, A>,
+  ): void;
+  remove<const A extends OwnerField<Owner>>(
+    entity: OwnedEntityRef<Owner>,
+    field: A,
+    value?: OwnedFieldValue<Owner, A>,
+  ): void;
+  delete(entity: OwnedEntityRef<Owner>): void;
+  put(
+    entity: OwnerEntity<Owner>,
+    attrs: OwnerCreateAttrs<Owner>,
+  ): OwnedTargetHandle<Owner>;
+  put(
+    entity: OwnerEntity<Owner>,
+    id: OwnedEntityRef<Owner>,
+    attrs: OwnerPutAttrs<Owner>,
+  ): OwnedTargetHandle<Owner>;
+  update(
+    entity: OwnerEntity<Owner>,
+    attrs: OwnerUpdateMapAttrs<Owner>,
+  ): OwnedTargetHandle<Owner>;
+  update(
+    entity: OwnerEntity<Owner>,
+    id: OwnedEntityRef<Owner>,
+    attrs: OwnerPutAttrs<Owner>,
+  ): OwnedTargetHandle<Owner>;
   readonly create: Self extends false
     ? Owner extends { readonly _tag: "Entity" }
-      ? (attrs: OwnerCreateAttrs<Owner>) => OpHandle<AnySchema>
+      ? (attrs: OwnerCreateAttrs<Owner>) => OwnedTargetHandle<Owner>
       : undefined
     : undefined;
 };
