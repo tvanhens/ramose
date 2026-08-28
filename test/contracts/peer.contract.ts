@@ -53,7 +53,9 @@ export function registerPeerContract(target: PeerTarget): void {
             ...(body === undefined ? {} : { body }),
           });
           status = res.status;
-          if (status !== 502) break;
+          // Fresh workers.dev hosts can briefly serve the platform's 404
+          // placeholder from a colo that has not received the script yet.
+          if (status !== 502 && status !== 404) break;
           await Bun.sleep(50 * (attempt + 1));
         }
         expect(status).toBe(401);
