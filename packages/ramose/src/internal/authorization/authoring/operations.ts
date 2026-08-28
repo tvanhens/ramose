@@ -13,6 +13,7 @@ import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaRepresentation from "effect/SchemaRepresentation";
 import {
   isOwnedOperation,
+  OwnedOperations,
   type AnyOwnedOperation,
   type OperationOwner,
 } from "../../../db/Operation.ts";
@@ -91,7 +92,7 @@ const definitionKey = (owner: OwnerRef, localName: string): string =>
 
 const operationsOf = (
   owner: OperationOwner,
-): Readonly<Record<string, unknown>> => owner.operations ?? {};
+): Readonly<Record<string, unknown>> => owner[OwnedOperations] ?? {};
 
 const collectOwners = (
   schemas: readonly AnySchema[],

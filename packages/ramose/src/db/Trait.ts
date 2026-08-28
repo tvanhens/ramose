@@ -30,6 +30,7 @@ import {
 } from "./IdentName.ts";
 import {
   bindOwnedOperations,
+  OwnedOperations,
   ownedOperationAuthor,
   type AnyUnboundOperation,
   type BoundOwnerOperations,
@@ -80,8 +81,8 @@ export type Trait<
       readonly _ns?: Trait<Name, Fields>;
     } & PathCarrier
   >;
-  /** Operations canonically owned by this trait. Never copied to composers. */
-  readonly operations: BoundOwnerOperations<Trait<Name, Fields, Ops>, Ops>;
+  /** Symbol-keyed operations canonically owned by this trait. */
+  readonly [OwnedOperations]: BoundOwnerOperations<Trait<Name, Fields, Ops>, Ops>;
 } & StampedMap<Name, Fields>;
 
 /**
@@ -105,7 +106,7 @@ export type AnyTrait = {
       readonly cardinality: "one";
     } & PathCarrier
   >;
-  readonly operations?: Readonly<Record<string, unknown>>;
+  readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
 };
 
 export declare namespace Trait {
@@ -133,7 +134,7 @@ type TraitWithTraits<
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
-    readonly operations: BoundOwnerOperations<
+    readonly [OwnedOperations]: BoundOwnerOperations<
       Trait<Name, Fields, Ops> & {
         readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
         readonly traits: Traits;
@@ -269,7 +270,7 @@ export function Trait<
     fields: merged,
     traits: direct,
     id: idField,
-    operations: {},
+    [OwnedOperations]: {},
     ...merged,
   };
   const operationSpecs =
@@ -280,7 +281,7 @@ export function Trait<
           >(),
         )
       : options?.operations;
-  (trait as { operations: unknown }).operations = bindOwnedOperations(
+  (trait as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
     trait as unknown as Trait<Name, Fields, Ops> & {
       readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
       readonly traits: Traits;

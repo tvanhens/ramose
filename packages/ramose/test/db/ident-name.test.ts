@@ -10,8 +10,10 @@ import { describe, expect, test } from "bun:test";
 import {
   Entity,
   IDENT_NAME_RE,
+  OwnedOperations,
   RESERVED_FIELD_KEYS,
   Schema,
+  Trait,
   isIdentName,
   isReservedFieldKey,
   string,
@@ -53,7 +55,6 @@ describe("ident names", () => {
       "fields",
       "_tag",
       "traits",
-      "operations",
     ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
@@ -77,10 +78,19 @@ describe("Entity()", () => {
     expect(Post.fields.title).toBe(Post.title);
   });
 
+  test("keeps operations available as an ordinary field", () => {
+    const Post = Entity("post", { operations: string() });
+    const Group = Trait("group", { operations: string() });
+    expect(Post.operations.ident).toBe(":post/operations");
+    expect(Group.operations.ident).toBe(":group/operations");
+    expect(Post[OwnedOperations]).toEqual({});
+    expect(Group[OwnedOperations]).toEqual({});
+  });
+
   test("rejects a reserved field key before it can overwrite metadata", () => {
     for (const key of RESERVED_FIELD_KEYS) {
       expect(() => Entity("post", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, _tag, traits, and operations are Entity \/ Trait metadata/,
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
       );
     }
     const Post = Entity("post", { title: string() });

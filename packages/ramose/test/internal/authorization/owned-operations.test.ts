@@ -8,6 +8,7 @@ import {
   EntityId as OperationEntityId,
   Field,
   Operation,
+  OwnedOperations,
   Schema as CatalogSchema,
   Trait,
   string,
@@ -102,13 +103,13 @@ const fixture = () => {
 describe("owned operation authoring", () => {
   test("binds owner and local key without copying trait operations", () => {
     const { Taggable, Issue } = fixture();
-    expect(Issue.operations.create.owner).toBe(Issue);
-    expect(Issue.operations.create.localName).toBe("create");
-    expect(Issue.operations.create.self).toBe(false);
-    expect(Issue.operations.assign.self).toBe(true);
-    expect(Taggable.operations.addTag.owner).toBe(Taggable);
-    expect((Issue.operations as { addTag?: unknown }).addTag).toBeUndefined();
-    expect(Object.keys(Issue.operations)).toEqual(["create", "assign"]);
+    expect(Issue[OwnedOperations].create.owner).toBe(Issue);
+    expect(Issue[OwnedOperations].create.localName).toBe("create");
+    expect(Issue[OwnedOperations].create.self).toBe(false);
+    expect(Issue[OwnedOperations].assign.self).toBe(true);
+    expect(Taggable[OwnedOperations].addTag.owner).toBe(Taggable);
+    expect((Issue[OwnedOperations] as { addTag?: unknown }).addTag).toBeUndefined();
+    expect(Object.keys(Issue[OwnedOperations])).toEqual(["create", "assign"]);
   });
 
   test("rejects invalid operation map keys and values", () => {
@@ -170,9 +171,9 @@ describe("owned operation lowering", () => {
 
     const definition = first.definitions.find((entry) => entry.localName === "create")!;
     expect(definition.owner).toBe(Issue);
-    expect(definition.input).toBe(Issue.operations.create.input);
-    expect(definition.output).toBe(Issue.operations.create.output);
-    expect(definition.run as unknown).toBe(Issue.operations.create.run);
+    expect(definition.input).toBe(Issue[OwnedOperations].create.input);
+    expect(definition.output).toBe(Issue[OwnedOperations].create.output);
+    expect(definition.run as unknown).toBe(Issue[OwnedOperations].create.run);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
   });

@@ -28,6 +28,7 @@ import {
 import type { AnyTrait } from "./Trait.ts";
 import {
   bindOwnedOperations,
+  OwnedOperations,
   ownedOperationAuthor,
   type AnyUnboundOperation,
   type BoundOwnerOperations,
@@ -150,8 +151,8 @@ export type Entity<
    * composes none.
    */
   readonly traits: readonly { readonly ns: string }[];
-  /** Operations canonically owned by this entity, keyed by local name. */
-  readonly operations: BoundOwnerOperations<Entity<Name, Fields, Ops>, Ops>;
+  /** Symbol-keyed operations canonically owned by this entity. */
+  readonly [OwnedOperations]: BoundOwnerOperations<Entity<Name, Fields, Ops>, Ops>;
   /**
    * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
    * field so it is a valid shape field, and
@@ -192,7 +193,7 @@ export type AnyEntity = {
       readonly cardinality: "one";
     } & PathCarrier
   >;
-  readonly operations?: Readonly<Record<string, unknown>>;
+  readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
 };
 
 export type EntityOptions<
@@ -298,7 +299,7 @@ type EntityWithTraits<
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
-    readonly operations: BoundOwnerOperations<
+    readonly [OwnedOperations]: BoundOwnerOperations<
       Entity<Name, Fields, Ops> & {
         readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
         readonly traits: Traits;
@@ -389,7 +390,7 @@ export function Entity<
     ns: name,
     fields: merged,
     traits: direct,
-    operations: {},
+    [OwnedOperations]: {},
     id: idField,
     ...merged,
   };
@@ -401,7 +402,7 @@ export function Entity<
           >(),
         )
       : options?.operations;
-  (entity as { operations: unknown }).operations = bindOwnedOperations(
+  (entity as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
     entity as unknown as Entity<Name, Fields, Ops> & {
       readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
       readonly traits: Traits;

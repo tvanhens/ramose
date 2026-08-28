@@ -10,6 +10,7 @@ import {
   EntityId,
   Field,
   Operation,
+  OwnedOperations,
   Trait,
   string,
 } from "../../src/db/internal.ts";
@@ -103,7 +104,7 @@ const Issue = Entity(
   },
 );
 
-type AddTag = typeof Taggable.operations.addTag;
+type AddTag = typeof Taggable[typeof OwnedOperations]["addTag"];
 type AddTagContext = Parameters<AddTag["run"]>[0];
 type AddTagInput = Parameters<AddTag["run"]>[1];
 export type _traitOwner = Expect<Extends<typeof Taggable, AddTag["owner"]>>;
@@ -114,13 +115,13 @@ export type _traitHasSelf = Expect<
   Extends<AddTagContext["self"], { readonly _tag: "TxHandle" }>
 >;
 
-type Rebuild = typeof Taggable.operations.rebuild;
+type Rebuild = typeof Taggable[typeof OwnedOperations]["rebuild"];
 type RebuildContext = Parameters<Rebuild["run"]>[0];
 export type _targetlessTrait = Expect<Equal<Rebuild["self"], false>>;
 export type _targetlessTraitNoSelf = Expect<Equal<RebuildContext["self"], undefined>>;
 export type _targetlessTraitNoCreate = Expect<Equal<RebuildContext["create"], undefined>>;
 
-type Create = typeof Issue.operations.create;
+type Create = typeof Issue[typeof OwnedOperations]["create"];
 type CreateContext = Parameters<Create["run"]>[0];
 type CreateAttrs = Parameters<NonNullable<CreateContext["create"]>>[0];
 export type _entityOwner = Expect<Extends<typeof Issue, Create["owner"]>>;
@@ -133,12 +134,12 @@ const _missingEntityField: CreateAttrs = { slug: "fix-auth" };
 // @ts-expect-error slug is a required transitive-trait field
 const _missingTraitField: CreateAttrs = { title: "Fix auth" };
 
-type Rename = typeof Issue.operations.rename;
+type Rename = typeof Issue[typeof OwnedOperations]["rename"];
 type RenameContext = Parameters<Rename["run"]>[0];
 export type _entityTargeted = Expect<Equal<Rename["self"], true>>;
 export type _targetedNoCreate = Expect<Equal<RenameContext["create"], undefined>>;
 
-type Dynamic = typeof Issue.operations.dynamic;
+type Dynamic = typeof Issue[typeof OwnedOperations]["dynamic"];
 type DynamicContext = Parameters<Dynamic["run"]>[0];
 export type _dynamicSelfFlag = Expect<Equal<Dynamic["self"], boolean>>;
 export type _dynamicSelfHandle = Expect<

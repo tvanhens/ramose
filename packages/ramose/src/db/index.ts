@@ -144,6 +144,7 @@ export {
   EntityId,
   Operation,
   Operations,
+  OwnedOperations,
   checkOperationsCoverage,
   defineOperations,
   operationCards,

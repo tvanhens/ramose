@@ -213,6 +213,14 @@ export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
 /** Entity or trait that canonically owns an operation. */
 export type OperationOwner = AnyEntity | AnyTrait;
 
+/**
+ * Symbol-keyed operation metadata. A symbol preserves the long-standing right
+ * to declare an ordinary schema field named `operations`.
+ */
+export const OwnedOperations: unique symbol = Symbol.for(
+  "ramose/owned-operations",
+);
+
 type OperationOwnerShape = {
   readonly _tag: "Entity" | "Trait";
   readonly ns: string;
