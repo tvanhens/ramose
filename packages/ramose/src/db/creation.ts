@@ -50,11 +50,16 @@ type DefaultEntry = {
 
 type CreationFieldEncoder = (value: unknown) => unknown;
 
+type CreationFieldCodec = {
+  readonly encode: CreationFieldEncoder;
+  readonly representation: Schema.Json;
+};
+
 export interface CompositionValueMetadata {
   readonly bindings: readonly ResolvedBindingUse[];
   readonly fixed: ReadonlyMap<string, FixedEntry>;
   readonly defaults: ReadonlyMap<string, readonly DefaultEntry[]>;
-  readonly encoders: ReadonlyMap<string, CreationFieldEncoder>;
+  readonly encoders: ReadonlyMap<string, CreationFieldCodec>;
 }
 
 export type CompiledCreationDefault = {
@@ -70,6 +75,7 @@ export type CompiledCreationField = {
   readonly cardinality: "one" | "many";
   readonly optional: boolean;
   readonly encoder: CreationFieldEncoder;
+  readonly schemaRepresentation: Schema.Json;
   readonly fixed: unknown | undefined;
   readonly defaults: readonly CompiledCreationDefault[];
   readonly fieldDefault: CompiledCreationDefault | undefined;
@@ -207,12 +213,13 @@ export const compositionValueMetadataFromBindings = (
 ): CompositionValueMetadata => {
   const fixed = new Map<string, FixedEntry>();
   const defaults = new Map<string, DefaultEntry[]>();
-  const encoders = new Map<string, CreationFieldEncoder>();
+  const encoders = new Map<string, CreationFieldCodec>();
   for (const field of Object.values(entity.fields)) {
-    encoders.set(
-      field.ident,
-      snapshotSchema(field.schema).codec.encode,
-    );
+    const snapshot = snapshotSchema(field.schema);
+    encoders.set(field.ident, Object.freeze({
+      encode: snapshot.codec.encode,
+      representation: snapshot.representation,
+    }));
   }
 
   for (const use of bindings) {
@@ -229,7 +236,7 @@ export const compositionValueMetadataFromBindings = (
         field,
         value,
         "fixed value",
-        encoders.get(field.ident),
+        encoders.get(field.ident)?.encode,
       );
       if (defaults.has(field.ident)) {
         const prior = defaults.get(field.ident)![0]!;
@@ -278,8 +285,8 @@ export const compileCreationPlan = (
   metadata: CompositionValueMetadata,
 ): CompiledCreationPlan => {
   const fields = Object.entries(entity.fields).map(([key, field]) => {
-    const encoder = metadata.encoders.get(field.ident);
-    if (encoder === undefined) {
+    const codec = metadata.encoders.get(field.ident);
+    if (codec === undefined) {
       throw new CreationValueError(
         `ramose/create: no snapshotted codec for ${field.ident}`,
       );
@@ -304,7 +311,8 @@ export const compileCreationPlan = (
       ident: field.ident,
       cardinality: field.cardinality,
       optional: isOptionalField(field),
-      encoder,
+      encoder: codec.encode,
+      schemaRepresentation: codec.representation,
       fixed: fixed === undefined ? undefined : cloneBindingValue(fixed.value),
       defaults: Object.freeze(defaults),
       fieldDefault,
@@ -517,7 +525,7 @@ export const resolveCreationValues = (
 
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(entity.fields)) {
-    const encoder = metadata.encoders.get(field.ident);
+    const encoder = metadata.encoders.get(field.ident)?.encode;
     if (encoder === undefined) {
       throw new CreationValueError(
         `ramose/create: no snapshotted codec for ${field.ident}`,

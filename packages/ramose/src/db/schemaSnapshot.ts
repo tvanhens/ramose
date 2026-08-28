@@ -31,6 +31,12 @@ const trustedRevivers = Object.freeze(
     }),
 );
 
+const freezeJson = <T>(value: T): T => {
+  if (value === null || typeof value !== "object") return value;
+  for (const child of Object.values(value)) freezeJson(child);
+  return Object.isFrozen(value) ? value : Object.freeze(value);
+};
+
 /**
  * Serialize and reconstruct a schema using only Effect-owned revivers, then
  * compile codecs from that reconstruction. Opaque/custom callbacks cannot
@@ -38,9 +44,9 @@ const trustedRevivers = Object.freeze(
  */
 export const snapshotSchema = (schema: Schema.Top): SnapshottedSchema => {
   try {
-    const representation = SchemaRepresentation.toJson(
+    const representation = freezeJson(SchemaRepresentation.toJson(
       SchemaRepresentation.toRepresentation(schema.ast),
-    );
+    ));
     const restored = SchemaRepresentation.fromRepresentation(
       SchemaRepresentation.fromJson(representation),
       { revivers: trustedRevivers },

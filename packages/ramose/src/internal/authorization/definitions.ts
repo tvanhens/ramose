@@ -290,6 +290,12 @@ const creationHashMaterial = (
   entities: [...plans].sort((left, right) => compareText(left.entity, right.entity))
     .map((plan) => ({
       name: plan.entity,
+      fieldSchemas: [...plan.fields]
+        .sort((left, right) => compareText(left.ident, right.ident))
+        .map((field) => ({
+          field: field.ident,
+          representation: field.schemaRepresentation as JsonValue,
+        })),
       fieldDefaults: plan.fields
         .filter((field) => field.fieldDefault !== undefined)
         .sort((left, right) => compareText(left.ident, right.ident))

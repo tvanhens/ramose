@@ -18,6 +18,7 @@ import {
   creationDefault,
   float,
   resolveCreationValues,
+  stored,
   string,
   timestamp,
   type AnySchema,
@@ -336,6 +337,45 @@ describe("catalog definition assembly", () => {
       { value: 42 },
       { now: new Date(0) },
     )).toThrow(/invalid explicit value/);
+  });
+
+  test("binds trusted field schema representations into the unit hash", async () => {
+    const schemaFor = (values: readonly [string, ...string[]]) => Schema({
+      item: Entity("item", {
+        value: Field(stored(EffectSchema.Literals(values), "string")),
+      }),
+    });
+    const LeftSchema = schemaFor(["left"]);
+    const RightSchema = schemaFor(["right"]);
+    const left = Result.getOrThrow(
+      (await assemble(Catalog("configured-codec", {
+        schema: LeftSchema,
+        policy: await policy(LeftSchema),
+      }))).require(CatalogId.make("configured-codec")),
+    );
+    const right = Result.getOrThrow(
+      (await assemble(Catalog("configured-codec", {
+        schema: RightSchema,
+        policy: await policy(RightSchema),
+      }))).require(CatalogId.make("configured-codec")),
+    );
+
+    expect(left.unitHash).not.toBe(right.unitHash);
+    expect(left.resolveCreationValues(
+      "item",
+      { value: "left" },
+      { now: new Date(0) },
+    )).toEqual({ value: "left" });
+    expect(() => left.resolveCreationValues(
+      "item",
+      { value: "right" },
+      { now: new Date(0) },
+    )).toThrow(/invalid explicit value/);
+    expect(right.resolveCreationValues(
+      "item",
+      { value: "right" },
+      { now: new Date(0) },
+    )).toEqual({ value: "right" });
   });
 
   test("rejects field codecs with caller-owned callback captures", async () => {
