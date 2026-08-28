@@ -51,6 +51,7 @@ import {
   type RuleAccessLookup,
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 const catalog = CatalogId.make("app");
 const database = DatabaseId.make("todos");
@@ -135,6 +136,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
   operations: [
     {
       id: operation(issueOwner, "rename", "required"),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
@@ -142,6 +144,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
     },
     {
       id: operation(issueOwner, "create", "none"),
+      ...operationMetadata(),
       input: { _tag: "opaque" },
     },
   ],
@@ -770,6 +773,7 @@ describe("installAuthorization", () => {
       fields: CatalogDescriptor["operations"][number]["input"],
     ): CatalogDescriptor["operations"][number] => ({
       id: operation(issueOwner, "create", "none"),
+      ...operationMetadata(),
       input: fields,
     });
     const rename = catalogDescriptor().operations[0]!;

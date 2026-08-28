@@ -49,6 +49,7 @@ import {
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 const catalog = CatalogId.make("app");
 const database = DatabaseId.make("todos");
@@ -117,6 +118,7 @@ const catalogSchemaTables = (): Omit<CatalogDescriptor, "fingerprint"> => ({
   operations: [
     {
       id: operation(issueOwner, "rename", "required"),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
@@ -581,6 +583,7 @@ describe("canonicalization", () => {
       fields: CatalogDescriptor["operations"][number]["input"],
     ): CatalogDescriptor["operations"][number] => ({
       id: operation(issueOwner, "create", "none"),
+      ...operationMetadata(),
       input: fields,
     });
     const rename = catalogSchemaTables().operations[0]!;
@@ -1041,6 +1044,7 @@ describe("corruption", () => {
           operations: [
             {
               id: operation(issueOwner, "", "required"),
+              ...operationMetadata(),
               input: { _tag: "scalar", valueType: "string" },
             },
             ...unit.catalog.operations,

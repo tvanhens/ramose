@@ -22,6 +22,12 @@ export {
 export { $, path, seededPath } from "./path.ts";
 export { read, type ReadBuilder } from "./read.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
+export {
+  lowerOperationSchema,
+  lowerOwnedOperations,
+  type DeployedOperationDefinition,
+  type LoweredOwnedOperations,
+} from "./operations.ts";
 export type {
   AuthExpr,
   AuthOperandInput,

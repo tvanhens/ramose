@@ -12,7 +12,6 @@ import { compareCanonicalKeys, canonicalizeJson } from "../canonical-json.ts";
 import {
   EntityDescriptor,
   FieldDescriptor,
-  OperationDescriptor,
   TraitComposition,
   TraitDescriptor,
   type CatalogDescriptor,
@@ -86,8 +85,6 @@ const encodeTrait = (id: TraitId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.trait)(id);
 const encodeField = (id: FieldId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.field)(id);
-const encodeOperation = (operation: CatalogDescriptor["operations"][number]): unknown =>
-  Schema.encodeUnknownSync(OperationDescriptor)(operation);
 const encodeComposition = (row: TraitComposition): unknown =>
   Schema.encodeUnknownSync(TraitComposition)(row);
 
@@ -201,14 +198,28 @@ const canonicalizeInputShape = (shape: OperationInputShape): OperationInputShape
 export const normalizeOperations = (
   operations: CatalogDescriptor["operations"],
 ): Result.Result<ReadonlyArray<CatalogDescriptor["operations"][number]>, ValidateFailure> =>
-  uniqueSorted(
-    operations.map((operation) => ({
-      ...operation,
-      input: canonicalizeInputShape(operation.input),
-    })),
-    encodeOperation,
-    "operation identity",
-  );
+  Result.gen(function* () {
+    const normalized: CatalogDescriptor["operations"][number][] = [];
+    for (const operation of operations) {
+      const composers = yield* uniqueSorted(
+        operation.composers,
+        encodeEntity,
+        "operation composer",
+      );
+      normalized.push({
+        ...operation,
+        input: canonicalizeInputShape(operation.input),
+        output: canonicalizeInputShape(operation.output),
+        composers,
+      });
+    }
+    return yield* uniqueSorted(
+      normalized,
+      (operation) =>
+        Schema.encodeUnknownSync(CanonicalIdentitySchemas.operation)(operation.id),
+      "operation identity",
+    );
+  });
 
 export const normalizeRules = (
   rules: ReadonlyArray<CanonicalAuthorizationRule>,

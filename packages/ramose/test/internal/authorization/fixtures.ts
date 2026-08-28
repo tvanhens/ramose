@@ -207,6 +207,11 @@ const catalogUnitOperation = {
       },
     ],
   },
+  output: { _tag: "struct", fields: [] },
+  inputSchemaHash: digestHex(0x91),
+  outputSchemaHash: digestHex(0x92),
+  bodyHash: digestHex(0x93),
+  composers: [],
 } as const;
 
 const catalogUnitComposition = [

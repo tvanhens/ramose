@@ -42,6 +42,7 @@ import {
   type ValidatedAuthorizationIR,
 } from "../../../src/internal/authorization/index.ts";
 import { Entity, Field, Ref, Schema, Trait, string, type AnySchema } from "../../../src/db/internal.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 export const User = Entity("user", {
   authId: Field.unique(string(), "upsert"),
@@ -180,6 +181,7 @@ export const catalogDescriptor = (): CatalogDescriptor => ({
   operations: [
     {
       id: OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],

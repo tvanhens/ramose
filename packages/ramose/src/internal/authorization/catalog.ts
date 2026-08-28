@@ -12,6 +12,7 @@ import {
   CatalogId,
   CatalogVersion,
   DatabaseId,
+  DigestHex,
   EntityId,
   FieldId,
   OperationId,
@@ -196,6 +197,16 @@ export type OperationInputDescriptor = OperationInputShape;
 export const OperationDescriptor = Schema.Struct({
   id: OperationId,
   input: OperationInputShape,
+  output: OperationInputShape,
+  /** Hashes of the exact Effect Schema definitions retained by deployed code. */
+  inputSchemaHash: DigestHex,
+  outputSchemaHash: DigestHex,
+  /** Hash of the deployed operation body source. The executable function is never serialized. */
+  bodyHash: DigestHex,
+  /** Canonical composer entity types for a targeted trait operation; empty otherwise. */
+  composers: Schema.Array(EntityId),
+  /** Optional operation documentation. */
+  doc: Schema.optionalKey(Schema.String),
 });
 export type OperationDescriptor = typeof OperationDescriptor.Type;
 

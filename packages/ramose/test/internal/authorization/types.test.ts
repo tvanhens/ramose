@@ -99,6 +99,7 @@ import {
   RULE_OWNS_ISSUE,
   RULE_TENANT,
 } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 // @ts-expect-error — not a public package export yet
 import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
@@ -738,6 +739,7 @@ const catalogDescriptor: CatalogDescriptor = {
   operations: [
     {
       id: OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [
@@ -751,6 +753,7 @@ const catalogDescriptor: CatalogDescriptor = {
     },
     {
       id: OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
+      ...operationMetadata(),
       input: {
         _tag: "array",
         items: {

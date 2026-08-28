@@ -17,6 +17,7 @@ import type {
   FieldDescriptor,
   FieldRefTarget,
   OperationDescriptor,
+  OperationInputShape,
 } from "../catalog.ts";
 import type { EntityId, FieldId, OwnerRef, TraitId } from "../identities.ts";
 import type { CatalogBindingTarget } from "../ir.ts";
@@ -168,6 +169,56 @@ const validateFieldRefTarget = (
     }
   });
 
+const validateOperationShape = (
+  shape: OperationInputShape,
+  target: CatalogBindingTarget,
+  entities: ReadonlyMap<string, EntityId>,
+  traits: ReadonlyMap<string, TraitId>,
+  allowSelf: boolean,
+  operationName: string,
+): Result.Result<void, ValidateFailure> =>
+  Result.gen(function* () {
+    switch (shape._tag) {
+      case "scalar":
+      case "opaque":
+        return;
+      case "ref":
+        if (shape.refTarget._tag === "self" && !allowSelf) {
+          return yield* invalid(
+            `targetless operation '${operationName}' cannot reference self`,
+          );
+        }
+        return yield* validateFieldRefTarget(
+          shape.refTarget,
+          target,
+          entities,
+          traits,
+        );
+      case "array":
+        return yield* validateOperationShape(
+          shape.items,
+          target,
+          entities,
+          traits,
+          allowSelf,
+          operationName,
+        );
+      case "struct":
+        yield* Result.all(
+          shape.fields.map((field) =>
+            validateOperationShape(
+              field.shape,
+              target,
+              entities,
+              traits,
+              allowSelf,
+              operationName,
+            )
+          ),
+        );
+    }
+  });
+
 export const prepareAuthorizationCatalog = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
@@ -252,7 +303,50 @@ export const prepareAuthorizationCatalog = (
       } else if (!traits.has(owner.name)) {
         return yield* invalid(`missing operation owner trait '${owner.name}'`);
       }
+      if (operation.doc !== undefined && isBlank(operation.doc)) {
+        return yield* invalid(`blank operation doc for '${owner.name}.${operation.id.localName}'`);
+      }
       yield* validateInputShapeKeys(operation.input);
+      yield* validateInputShapeKeys(operation.output);
+      yield* Result.all([
+        validateOperationShape(
+          operation.input,
+          target,
+          entities,
+          traits,
+          operation.id.target === "required",
+          `${owner.name}.${operation.id.localName}`,
+        ),
+        validateOperationShape(
+          operation.output,
+          target,
+          entities,
+          traits,
+          operation.id.target === "required",
+          `${owner.name}.${operation.id.localName}`,
+        ),
+      ]);
+      const declaredComposers = new Set<string>();
+      for (const composer of operation.composers) {
+        yield* catalogOfIdentity(composer, target, "operation composer");
+        if (!entities.has(composer.name)) {
+          return yield* invalid(`missing operation composer entity '${composer.name}'`);
+        }
+        if (declaredComposers.has(composer.name)) {
+          return yield* invalid(`duplicate operation composer '${composer.name}'`);
+        }
+        declaredComposers.add(composer.name);
+      }
+      if (
+        operation.id.target === "none" ||
+        operation.id.owner.kind === "entity"
+      ) {
+        if (operation.composers.length !== 0) {
+          return yield* invalid(
+            `operation '${owner.name}.${operation.id.localName}' cannot declare composers`,
+          );
+        }
+      }
       operations.set(key, operation);
     }
 
@@ -268,6 +362,30 @@ export const prepareAuthorizationCatalog = (
         }
       }
       entityTraits.set(name, seen);
+    }
+
+    for (const operation of operations.values()) {
+      if (operation.id.owner.kind !== "trait") continue;
+      const ownerName = operation.id.owner.name;
+      const expected = [...entityTraits]
+        .filter(([, composed]) => composed.has(ownerName))
+        .map(([entityName]) => entityName)
+        .sort();
+      if (expected.length === 0) {
+        return yield* invalid(
+          `unreachable trait operation owner '${ownerName}' for '${operation.id.localName}'`,
+        );
+      }
+      if (operation.id.target === "none") continue;
+      const declared = operation.composers.map((composer) => composer.name).sort();
+      if (
+        declared.length !== expected.length ||
+        expected.some((name, index) => declared[index] !== name)
+      ) {
+        return yield* invalid(
+          `contradictory operation composers for '${ownerName}.${operation.id.localName}'`,
+        );
+      }
     }
 
     const seenComposition = new Set<string>();

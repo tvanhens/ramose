@@ -47,6 +47,7 @@ import {
   RULE_TENANT,
   digestHex,
 } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 const RULE_FIELD = digestHex(0xaa);
 
@@ -128,6 +129,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
   operations: [
     {
       id: operation(issueOwner, "rename", "required"),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [
@@ -141,6 +143,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
     },
     {
       id: operation(issueOwner, "create", "none"),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [
@@ -154,6 +157,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
     },
     {
       id: operation(taggableOwner, "addTag", "required"),
+      ...operationMetadata([entity("issue")]),
       input: {
         _tag: "ref",
         refTarget: { _tag: "entity", entity: entity("tag") },
@@ -161,6 +165,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
     },
     {
       id: operation(taggableOwner, "reindex", "none"),
+      ...operationMetadata(),
       input: { _tag: "opaque" },
     },
   ],

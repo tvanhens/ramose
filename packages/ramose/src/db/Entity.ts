@@ -26,6 +26,12 @@ import {
   type PathCarrier,
 } from "./shapes.ts";
 import type { AnyTrait } from "./Trait.ts";
+import {
+  bindOwnedOperations,
+  type AnyUnboundOperation,
+  type BoundOwnerOperations,
+  type ValidOwnedOperationMap,
+} from "./Operation.ts";
 
 export type FieldMap = Record<string, AnyField>;
 
@@ -128,6 +134,7 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
 export type Entity<
   Name extends string = string,
   Fields extends FieldMap = FieldMap,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 > = {
   readonly _tag: "Entity";
   readonly ns: Name;
@@ -141,6 +148,8 @@ export type Entity<
    * composes none.
    */
   readonly traits: readonly { readonly ns: string }[];
+  /** Operations canonically owned by this entity, keyed by local name. */
+  readonly operations: BoundOwnerOperations<Entity<Name, Fields, Ops>, Ops>;
   /**
    * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
    * field so it is a valid shape field, and
@@ -181,12 +190,17 @@ export type AnyEntity = {
       readonly cardinality: "one";
     } & PathCarrier
   >;
+  readonly operations?: Readonly<Record<string, unknown>>;
 };
 
 export type EntityOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
+  Ops extends Readonly<Record<string, AnyUnboundOperation>> = Readonly<
+    Record<string, AnyUnboundOperation>
+  >,
 > = {
   readonly traits?: Traits;
+  readonly operations?: ValidOwnedOperationMap<Ops> & Ops;
 };
 
 export declare namespace Entity {
@@ -272,10 +286,18 @@ type EntityWithTraits<
   Name extends string,
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
-> = Entity<Name, Fields> &
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = Entity<Name, Fields, Ops> &
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
+    readonly operations: BoundOwnerOperations<
+      Entity<Name, Fields, Ops> & {
+        readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+        readonly traits: Traits;
+      },
+      Ops
+    >;
   };
 
 /** Group fields under one ident prefix. */
@@ -287,20 +309,22 @@ export function Entity<
   const Name extends string,
   Fields extends FieldMap,
   const Traits extends readonly AnyTrait[],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): EntityWithTraits<Name, Fields, Traits>;
+  options: EntityOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+): EntityWithTraits<Name, Fields, Traits, Ops>;
 export function Entity<
   const Name extends string,
   Fields extends FieldMap,
   const Traits extends readonly AnyTrait[],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: EntityOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits> {
+  options?: EntityOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+): Entity<Name, Fields, Ops> | EntityWithTraits<Name, Fields, Traits, Ops> {
   assertEntityName(name);
   assertFieldKeys(fields);
   const direct = (options?.traits ?? []) as readonly ComposerLike[];
@@ -325,14 +349,25 @@ export function Entity<
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
-  return {
+  const entity = {
     _tag: "Entity" as const,
     ns: name,
     fields: merged,
     traits: direct,
+    operations: {},
     id: idField,
     ...merged,
-  } as unknown as Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits>;
+  };
+  (entity as { operations: unknown }).operations = bindOwnedOperations(
+    entity as unknown as Entity<Name, Fields, Ops> & {
+      readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+      readonly traits: Traits;
+    },
+    options?.operations,
+  );
+  return entity as unknown as
+    | Entity<Name, Fields, Ops>
+    | EntityWithTraits<Name, Fields, Traits, Ops>;
 }
 
 export type FieldOf<

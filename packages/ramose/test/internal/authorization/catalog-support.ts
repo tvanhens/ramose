@@ -23,6 +23,7 @@ import {
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 export const catalog = CatalogId.make("app");
 export const database = DatabaseId.make("todos");
@@ -91,6 +92,7 @@ export const catalogSchemaTables = (): Omit<CatalogDescriptor, "fingerprint"> =>
   operations: [
     {
       id: operation(issueOwner, "rename", "required"),
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],

@@ -35,6 +35,7 @@ export const RESERVED_FIELD_KEYS = [
   "fields",
   "_tag",
   "traits",
+  "operations",
 ] as const;
 
 /** A field key that collides with {@link Entity} metadata. */
@@ -126,7 +127,7 @@ type NameError<S, Msg extends string> = S & {
 const IDENT_NAME_MSG =
   "invalid name — must match IDENT_NAME_RE" as const;
 const RESERVED_FIELD_MSG =
-  "reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata" as const;
+  "reserved field name — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata" as const;
 const TRAIT_COLLISION_MSG = "conflicting flattened field names" as const;
 const SCHEMA_KEY_MSG =
   "Schema key must equal the Entity name" as const;
@@ -231,7 +232,7 @@ export type ValidMerge<
 // ── runtime failures (definition time — throws, not DbError) ───────────────
 
 export const invalidIdentName = (
-  kind: "entity" | "field" | "trait",
+  kind: "entity" | "field" | "trait" | "operation",
   name: string,
 ): Error =>
   new Error(
@@ -240,7 +241,7 @@ export const invalidIdentName = (
 
 export const reservedFieldName = (name: string): Error =>
   new Error(
-    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, and traits are Entity / Trait metadata`,
+    `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, traits, and operations are Entity / Trait metadata`,
   );
 
 // ── trait composition (type-level) ─────────────────────────────────────────

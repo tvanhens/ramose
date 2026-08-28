@@ -44,6 +44,7 @@ import {
   type ValidatedAuthorizationIR,
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
+import { operationMetadata } from "./operation-support.ts";
 
 const catalog = CatalogId.make("app");
 const database = DatabaseId.make("todos");
@@ -125,6 +126,7 @@ const catalogDescriptor = (): CatalogDescriptor => ({
         localName: "rename",
         target: "required",
       },
+      ...operationMetadata(),
       input: {
         _tag: "struct",
         fields: [{ key: "title", optional: false, shape: { _tag: "scalar", valueType: "string" } }],
@@ -404,6 +406,95 @@ describe("tampered derived metadata", () => {
     );
     expect(failure).toBeInstanceOf(InvalidIR);
     expect(failure.message).toMatch(/tampered rule id/);
+  });
+});
+
+describe("owned operation descriptors", () => {
+  test("rejects nested self references on a targetless operation", () => {
+    const operation = descriptor.operations[0]!;
+    const patched: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        {
+          ...operation,
+          id: { ...operation.id, target: "none" },
+          input: {
+            _tag: "struct",
+            fields: [
+              {
+                key: "nested",
+                optional: false,
+                shape: {
+                  _tag: "array",
+                  items: { _tag: "ref", refTarget: { _tag: "self" } },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([]), descriptor: patched }),
+      "InvalidIR",
+      /targetless operation 'issue\.rename' cannot reference self/,
+    );
+  });
+
+  test("rejects operation schema refs to missing catalog types", () => {
+    const operation = descriptor.operations[0]!;
+    const patched: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        {
+          ...operation,
+          input: {
+            _tag: "ref",
+            refTarget: { _tag: "entity", entity: entity("missing") },
+          },
+        },
+      ],
+    };
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([]), descriptor: patched }),
+      "InvalidIR",
+      /missing field ref target entity 'missing'/,
+    );
+  });
+
+  test("rejects targetless operations owned by unreachable traits", () => {
+    const operation = descriptor.operations[0]!;
+    const patched: CatalogDescriptor = {
+      ...descriptor,
+      operations: [
+        {
+          ...operation,
+          id: {
+            ...operation.id,
+            owner: { kind: "trait", name: "orphaned" },
+            target: "none",
+          },
+        },
+      ],
+    };
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([]), descriptor: patched }),
+      "InvalidIR",
+      /unreachable trait operation owner 'orphaned'/,
+    );
+  });
+
+  test("rejects blank operation documentation", () => {
+    const operation = descriptor.operations[0]!;
+    const patched: CatalogDescriptor = {
+      ...descriptor,
+      operations: [{ ...operation, doc: "" }],
+    };
+    expectFailure(
+      validateBoundAuthorizationResult({ bound: boundDocument([]), descriptor: patched }),
+      "InvalidIR",
+      /blank operation doc/,
+    );
   });
 });
 

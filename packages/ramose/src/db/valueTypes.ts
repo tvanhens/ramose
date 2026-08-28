@@ -156,7 +156,11 @@ export type TargetedRef<
 
 export type SelfMarker = { readonly [SelfRef]: true };
 
-type EntityLike = { readonly fields: object; readonly ns: string };
+type EntityLike = {
+  readonly _tag?: "Entity" | "Trait";
+  readonly fields: object;
+  readonly ns: string;
+};
 
 const resolveRefTarget = <const N extends EntityLike>(
   target: N | (() => N),
@@ -231,7 +235,13 @@ export const isSelfRefSchema = (schema: unknown): boolean =>
 
 export const refTargetOf = (
   schema: unknown,
-): (() => { readonly fields: object; readonly ns?: string }) | undefined => {
+):
+  | (() => {
+      readonly _tag?: "Entity" | "Trait";
+      readonly fields: object;
+      readonly ns?: string;
+    })
+  | undefined => {
   // Effect Schemas are often functions (`typeof` !== "object").
   if ((typeof schema !== "object" && typeof schema !== "function") || schema === null) {
     return undefined;
@@ -243,6 +253,9 @@ export const refTargetOf = (
   return () => {
     const target = resolve();
     return {
+      ...((target as { readonly _tag?: "Entity" | "Trait" })._tag !== undefined
+        ? { _tag: (target as { readonly _tag: "Entity" | "Trait" })._tag }
+        : {}),
       fields: target.fields ?? {},
       ...(target.ns !== undefined && { ns: target.ns }),
     };

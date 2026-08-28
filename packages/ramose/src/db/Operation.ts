@@ -12,12 +12,15 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { Eid } from "./Eid.ts";
-import type { AnySchema } from "./Schema.ts";
+import type { AnySchema, Schema as CatalogSchema } from "./Schema.ts";
 import { InvalidRequest, OperationsCoverageError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AnyTrait } from "./Trait.ts";
 import type { Tempid } from "./entityArg.ts";
+import { invalidIdentName, isIdentName, type ValidIdentName } from "./IdentName.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
+import { untargetedRef } from "./valueTypes.ts";
 import {
   type PutAttrs,
   type PutCreateAttrs,
@@ -145,7 +148,7 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * `{ id: handle }`) in an `EntityId` slot; authoritative execution resolves
  * it after the writer assigns eids.
  */
-export const EntityId: typeof Schema.Finite = Schema.Finite;
+export const EntityId: typeof untargetedRef = untargetedRef;
 
 /**
  * What a body may return for output type `O`: a handle is legal
@@ -206,6 +209,42 @@ export interface OpHandle<
 
 /** Any handle, including contextual `self`. */
 export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
+
+/** Entity or trait that canonically owns an operation. */
+export type OperationOwner = AnyEntity | AnyTrait;
+
+/** Complete create input for an entity owner, including flattened trait fields. */
+type OwnerCreateAttrs<Owner extends OperationOwner> = Owner extends AnyEntity
+  ? PutCreateAttrs<
+      CatalogSchema<{ readonly [K in Owner["ns"]]: Owner }>,
+      Owner,
+      AnyOpHandle<CatalogSchema<{ readonly [K in Owner["ns"]]: Owner }>>
+    >
+  : never;
+
+/**
+ * Operation body surface after an owner map binds the definition.
+ * Targetless entity operations gain `create`; targeted operations gain `self`.
+ */
+export type OwnedOp<
+  Owner extends OperationOwner,
+  Self extends boolean,
+> = Omit<Op<AnySchema, undefined>, "self"> & {
+  readonly self: Self extends true ? OpHandle<AnySchema> : undefined;
+  readonly create: Self extends false
+    ? Owner extends AnyEntity
+      ? (attrs: OwnerCreateAttrs<Owner>) => OpHandle<AnySchema>
+      : undefined
+    : undefined;
+};
+
+/** Context available while an operation is still waiting for its owner map. */
+type UnboundOwnedOp<Self extends boolean> = Omit<Op<AnySchema, undefined>, "self"> & {
+  readonly self: Self extends true ? OpHandle<AnySchema> : undefined;
+  readonly create: Self extends false
+    ? (attrs: Record<string, unknown>) => OpHandle<AnySchema>
+    : undefined;
+};
 
 /**
  * The handle an authoritative operation body uses. Transaction verbs
@@ -322,6 +361,92 @@ export interface Operation<
 
 export type AnyOperation = Operation<string, any, any, any, any>;
 
+type CodecType<S> = S extends { readonly Type: infer T } ? T : unknown;
+
+/** Owner-map authoring form before Entity/Trait supplies canonical ownership. */
+export interface UnboundOperation<
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+> {
+  readonly _tag: "UnboundOperation";
+  readonly input: ICodec;
+  readonly output: OCodec;
+  /** `true` by default; `false` removes both the invocation target and `op.self`. */
+  readonly self: Self;
+  readonly doc: string | undefined;
+  readonly run: (
+    op: UnboundOwnedOp<Self>,
+    input: CodecType<ICodec>,
+  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+}
+
+export type AnyUnboundOperation = UnboundOperation<Schema.Top, Schema.Top, boolean>;
+
+/** Public operation value after its enclosing owner and local map key bind it. */
+export interface OwnedOperation<
+  Owner extends OperationOwner = OperationOwner,
+  LocalName extends string = string,
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+> {
+  readonly _tag: "OwnedOperation";
+  readonly owner: Owner;
+  readonly localName: LocalName;
+  readonly input: ICodec;
+  readonly output: OCodec;
+  readonly self: Self;
+  readonly doc: string | undefined;
+  readonly run: (
+    op: OwnedOp<Owner, Self>,
+    input: CodecType<ICodec>,
+  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+}
+
+export type AnyOwnedOperation = OwnedOperation<
+  OperationOwner,
+  string,
+  Schema.Top,
+  Schema.Top,
+  boolean
+>;
+
+type BoundOwnedOperation<
+  Owner extends OperationOwner,
+  LocalName extends string,
+  Spec,
+> = Spec extends UnboundOperation<
+  infer ICodec,
+  infer OCodec,
+  infer Self
+>
+  ? OwnedOperation<Owner, LocalName, ICodec, OCodec, Self>
+  : never;
+
+/** Owner-map values after their enclosing Entity/Trait binds them. */
+export type BoundOwnerOperations<
+  Owner extends OperationOwner,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = {
+  readonly [K in keyof Ops]: BoundOwnedOperation<Owner, K & string, Ops[K]>;
+};
+
+type InvalidOperationName<K extends string> = {
+  readonly [P in `invalid operation name ${K}`]: true;
+};
+
+/** Type-level operation-key and value validation for Entity/Trait options. */
+export type ValidOwnedOperationMap<
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = {
+  readonly [K in keyof Ops]: K extends string
+    ? K extends ValidIdentName<K>
+      ? Ops[K]
+      : Ops[K] & InvalidOperationName<K>
+    : Ops[K];
+};
+
 export interface Operations<
   M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
 > {
@@ -391,8 +516,8 @@ const emptyOutput = Schema.Struct({});
 const docOf = (doc: string | undefined): string | undefined =>
   doc === undefined || doc === "" ? undefined : doc;
 
-/** Define one named operation. */
-const defineOperation = <
+/** Define one legacy standalone named operation. */
+const defineNamedOperation = <
   Name extends string,
   I,
   O = {},
@@ -411,6 +536,70 @@ const defineOperation = <
   doc: docOf(schemas.doc),
   body,
 });
+
+type OwnedOperationSpec<
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+> = {
+  readonly input: ICodec;
+  readonly output: OCodec;
+  readonly self?: Self;
+  readonly doc?: string;
+  readonly run: (
+    op: UnboundOwnedOp<Self extends false ? false : true>,
+    input: CodecType<ICodec>,
+  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+};
+
+/** Owner-map form. Identity and exact owner context are supplied by Entity/Trait. */
+function defineOperation<
+  const ICodec extends Schema.Top,
+  const OCodec extends Schema.Top,
+  const Self extends boolean = true,
+>(
+  spec: OwnedOperationSpec<ICodec, OCodec, Self>,
+): UnboundOperation<ICodec, OCodec, Self extends false ? false : true>;
+/** Standalone form retained for the pre-authoritative local peer fixtures. */
+function defineOperation<
+  Name extends string,
+  I,
+  O = {},
+  C extends AnySchema = AnySchema,
+  N extends OnEntity<C> = undefined,
+>(
+  name: Name,
+  schemas: OperationSchemas<I, O, N, C>,
+  body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
+): Operation<Name, I, O, N, C>;
+function defineOperation(
+  nameOrSpec: string | OwnedOperationSpec<Schema.Top, Schema.Top, boolean>,
+  schemas?: OperationSchemas<unknown, unknown, AnyEntity | undefined, AnySchema>,
+  body?: (op: Op<AnySchema, AnyEntity | undefined>, input: unknown) => unknown,
+): AnyOperation | AnyUnboundOperation {
+  if (typeof nameOrSpec === "string") {
+    if (schemas === undefined || body === undefined) {
+      throw new Error("ramose: Operation(name, schemas, body) needs schemas and a body");
+    }
+    return defineNamedOperation(
+      nameOrSpec,
+      schemas,
+      body as (
+        op: Op<AnySchema, AnyEntity | undefined>,
+        input: unknown,
+      ) => OutputDraft<unknown> | Promise<OutputDraft<unknown>>,
+    );
+  }
+  const self = nameOrSpec.self !== false;
+  return {
+    _tag: "UnboundOperation",
+    input: nameOrSpec.input,
+    output: nameOrSpec.output,
+    self,
+    doc: docOf(nameOrSpec.doc),
+    run: nameOrSpec.run,
+  } as AnyUnboundOperation;
+}
 
 type FieldSchemaType<E extends AnyEntity, K extends string> = E["fields"][K] extends {
   readonly schema: { readonly Type: infer T };
@@ -451,7 +640,7 @@ const definePatch = <
   keys: Keys,
   options?: { readonly doc?: string; readonly schema?: C },
 ): Operation<Name, PatchInput<E, Keys>, {}, E, C> => {
-  const operation = defineOperation(
+  const operation = defineNamedOperation(
     name,
     {
       on: entity as never,
@@ -511,6 +700,48 @@ const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
         definePatch(name, entity, keys, { ...options, schema })) as OperationPatch<C>,
     },
   );
+
+/** Bind one owner-local map without registering anything globally. */
+export const bindOwnedOperations = <
+  Owner extends OperationOwner,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+>(
+  owner: Owner,
+  operations: Ops | undefined,
+): BoundOwnerOperations<Owner, Ops> => {
+  const out: Record<string, AnyOwnedOperation> = {};
+  if (operations === undefined) {
+    return out as BoundOwnerOperations<Owner, Ops>;
+  }
+  for (const [localName, operation] of Object.entries(operations)) {
+    if (!isIdentName(localName)) throw invalidIdentName("operation", localName);
+    if (
+      typeof operation !== "object" ||
+      operation === null ||
+      operation._tag !== "UnboundOperation"
+    ) {
+      throw new Error(
+        `ramose/schema: ${owner.ns}.${localName} must be Ramose.Operation({ input, output, run })`,
+      );
+    }
+    out[localName] = {
+      _tag: "OwnedOperation",
+      owner,
+      localName,
+      input: operation.input,
+      output: operation.output,
+      self: operation.self,
+      doc: operation.doc,
+      run: operation.run,
+    } as AnyOwnedOperation;
+  }
+  return out as BoundOwnerOperations<Owner, Ops>;
+};
+
+export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { readonly _tag?: unknown })._tag === "OwnedOperation";
 
 /** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
 export const Operation: typeof defineOperation & {
