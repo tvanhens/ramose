@@ -187,6 +187,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
             target: body.target,
             input: body.input,
             now,
+            env: this.env,
           })
         );
         return new Response(JSON.stringify(toJson({ t: ack.t, result: ack.output })), {

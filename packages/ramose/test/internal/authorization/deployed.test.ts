@@ -52,8 +52,8 @@ describe("assembleDeployedCatalogs", () => {
     const operation = installed.operations[0]!;
     const executable = deployed.operations.get(deployedOperationKey(operation.id));
     expect(executable?.descriptor).toBe(operation.descriptor);
-    expect(executable?.bodySource).toBe(operation.bodySource);
-    expect(typeof executable?.body).toBe("function");
+    expect(executable?.implementationHash).toBe(operation.descriptor.bodyHash);
+    expect(executable?.run).toBe(operation.run);
   });
 
   test("the same immutable definition may bind many concrete databases", async () => {
@@ -94,131 +94,70 @@ describe("assembleDeployedCatalogs", () => {
     expect(failure.message).toContain("distinct catalog definitions");
   });
 
-  test("closure captures and ambient globals fail at deployment compilation", async () => {
+  test("executes the exact deployed function with native JavaScript semantics", async () => {
     const descriptor = catalogDescriptor();
     const runtime = runtimeOperationsFor(descriptor);
-    const captured = {
+    const prefix = "native";
+    class Formatter {
+      readonly #suffix = "runtime";
+      format(value: unknown): string {
+        const pieces = [...new Set([prefix, String(value ?? "missing"), this.#suffix])];
+        return pieces.map((piece) => piece.toUpperCase()).join(":");
+      }
+    }
+    const formatter = new Formatter();
+    const run = async (_op: unknown, input: unknown) => {
+      const title = (input as { readonly title?: unknown })?.title;
+      return { value: formatter.format(title) };
+    };
+    const native = {
       ...runtime,
       definitions: runtime.definitions.map((entry) => ({
         ...entry,
-        bodySource: "() => ambientSecret",
+        run,
       })),
     };
     const installed = await installedDefinitionFor(
       descriptor,
       templateOf(),
-      captured,
-    );
-    const failure = await Effect.runPromise(Effect.flip(
-      assembleDeployedCatalogs({ units: [{ database, definition: installed }] }),
-    ));
-    expect(failure._tag).toBe("InvalidIR");
-    expect(failure.message).toContain("undeclared identifier 'ambientSecret'");
-  });
-
-  test("bundled sequence expressions compile deterministically", async () => {
-    const descriptor = catalogDescriptor();
-    const runtime = runtimeOperationsFor(descriptor);
-    const sequenced = {
-      ...runtime,
-      definitions: runtime.definitions.map((entry) => ({
-        ...entry,
-        bodySource: "() => (1, {})",
-      })),
-    };
-    const installed = await installedDefinitionFor(
-      descriptor,
-      templateOf(),
-      sequenced,
-    );
-    const catalogs = await assemble([
-      { database, definition: installed },
-    ]);
-    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
-    const operation = [...deployed.operations.values()][0]!;
-    expect(await operation.body({}, {})).toEqual({});
-  });
-
-  test("operation-body addition preserves ordinary JavaScript coercion", async () => {
-    const descriptor = catalogDescriptor();
-    const runtime = runtimeOperationsFor(descriptor);
-    const concatenated = {
-      ...runtime,
-      definitions: runtime.definitions.map((entry) => ({
-        ...entry,
-        bodySource: "(_op, input) => `issue-` + input.title",
-      })),
-    };
-    const installed = await installedDefinitionFor(
-      descriptor,
-      templateOf(),
-      concatenated,
+      native,
     );
     const catalogs = await assemble([{ database, definition: installed }]);
     const operation = [...Result.getOrThrow(catalogs.requireDatabase(database)).operations.values()][0]!;
 
-    expect(await operation.body({}, { title: 42 })).toBe("issue-42");
+    expect(operation.run).toBe(run);
+    expect(await operation.run({}, { title: 42 })).toEqual({
+      value: "NATIVE:42:RUNTIME",
+    });
   });
 
-  test("unsupported primitive member access fails during deployment", async () => {
+  test("fails closed on missing, duplicate, and mismatched executable bindings", async () => {
     const descriptor = catalogDescriptor();
-    const runtime = runtimeOperationsFor(descriptor);
-    const unsupported = {
-      ...runtime,
-      definitions: runtime.definitions.map((entry) => ({
-        ...entry,
-        bodySource: "(_op, input) => input.title.length",
-      })),
-    };
-    const installed = await installedDefinitionFor(
-      descriptor,
-      templateOf(),
-      unsupported,
-    );
-    const failure = await Effect.runPromise(Effect.flip(
-      assembleDeployedCatalogs({ units: [{ database, definition: installed }] }),
-    ));
+    const installed = await installedDefinitionFor(descriptor, templateOf());
+    const operation = installed.operations[0]!;
+    const cases = [
+      { ...installed, operations: Object.freeze([]) },
+      { ...installed, operations: Object.freeze([operation, operation]) },
+      {
+        ...installed,
+        operations: Object.freeze([{
+          ...operation,
+          implementationHash: digestHex(0xee),
+        }]),
+      },
+    ];
 
-    expect(failure._tag).toBe("InvalidIR");
-    expect(failure.message).toContain("does not support member 'length' on scalar input values");
-  });
-
-  test("nested block locals are validated in their lexical scope", async () => {
-    const descriptor = catalogDescriptor();
-    const runtime = runtimeOperationsFor(descriptor);
-    const nested = {
-      ...runtime,
-      definitions: runtime.definitions.map((entry) => ({
-        ...entry,
-        bodySource: "() => { { const row = { id: 'nested' }; return row; } }",
-      })),
-    };
-    const installed = await installedDefinitionFor(
-      descriptor,
-      templateOf(),
-      nested,
-    );
-    const catalogs = await assemble([{ database, definition: installed }]);
-    const operation = [...Result.getOrThrow(catalogs.requireDatabase(database)).operations.values()][0]!;
-
-    expect(await operation.body({}, {})).toEqual({ id: "nested" });
-
-    const leaked = {
-      ...runtime,
-      definitions: runtime.definitions.map((entry) => ({
-        ...entry,
-        bodySource: "() => { { const row = {}; } return row; }",
-      })),
-    };
-    const leakedDefinition = await installedDefinitionFor(
-      descriptor,
-      templateOf(),
-      leaked,
-    );
-    const failure = await Effect.runPromise(Effect.flip(
-      assembleDeployedCatalogs({ units: [{ database, definition: leakedDefinition }] }),
-    ));
-    expect(failure.message).toContain("undeclared identifier 'row'");
+    for (const candidate of cases) {
+      const failure = await Effect.runPromise(Effect.flip(
+        assembleDeployedCatalogs({
+          units: [{
+            database,
+            definition: candidate as typeof installed,
+          }],
+        }),
+      ));
+      expect(failure._tag).toBe("InvalidIR");
+    }
   });
 });
 

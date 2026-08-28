@@ -1,9 +1,9 @@
 /**
  * Lower public entity/trait-owned operations into catalog-local data.
  *
- * One synchronous snapshot captures descriptor material and compiled runtime
- * codecs before hashing yields. No caller-owned owner, schema, write entity,
- * or operation callback survives lowering.
+ * One synchronous snapshot captures descriptor material, compiled runtime
+ * codecs, and the original deployed callback before hashing yields. The
+ * descriptor remains inert; the callback remains trusted in-memory code.
  */
 
 import * as Effect from "effect/Effect";
@@ -52,12 +52,18 @@ import {
 import type { JsonValue } from "../json.ts";
 
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
-const OPERATION_BODY_HASH_DOMAIN_V1 = "ramose/operation-body/v1\0";
+const OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1 =
+  "ramose/operation-implementation/v1\0";
 
 export type DeployedOperationCodec = {
   readonly decode: (value: unknown) => unknown;
   readonly encode: (value: unknown) => unknown;
 };
+
+export type DeployedOperationRun = (
+  op: unknown,
+  input: unknown,
+) => unknown | Promise<unknown>;
 
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
@@ -68,8 +74,10 @@ export type DeployedOperationDefinition = {
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly doc: string | undefined;
-  /** Frozen source retained for #417 compilation; never invoked by this plan. */
-  readonly bodySource: string;
+  /** Build-generated identity of the trusted executable paired at assembly. */
+  readonly implementationHash: DigestHex;
+  /** Original function from the deployed application module. Never serialized. */
+  readonly run: DeployedOperationRun;
 };
 
 export type LoweredOwnedOperations = {
@@ -99,8 +107,8 @@ export type OwnedOperationSnapshot = {
   readonly inputCodec: DeployedOperationCodec;
   readonly outputCodec: DeployedOperationCodec;
   readonly doc: string | undefined;
-  readonly bodySource: string;
-  readonly bodyHashMaterial: JsonValue;
+  readonly run: DeployedOperationRun;
+  readonly implementationHashMaterial: JsonValue;
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -501,20 +509,10 @@ const hashOperationSchema = Effect.fn("Authorization.hashOperationSchema")(
   },
 );
 
-const bodySource = (run: AnyOwnedOperation["run"]): Result.Result<string, InvalidIR> => {
-  try {
-    return Result.succeed(Function.prototype.toString.call(run));
-  } catch (cause) {
-    return Result.fail(
-      invalid(`operation body lowering failed: ${cause instanceof Error ? cause.message : String(cause)}`),
-    );
-  }
-};
-
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
-  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+  if (typeof value !== "object" || value === null) {
     return value;
   }
   const object = value as object;
@@ -574,7 +572,6 @@ export const snapshotOwnedOperations = (
           `targetless operation '${draft.owner.ns}.${draft.localName}' cannot reference self`,
         ));
       }
-      const capturedBodySource = yield* bodySource(operation.run);
       snapshots.push(deepFreeze({
         id: deepFreeze(id),
         owner: deepFreeze({ ...draft.ownerRef }),
@@ -597,10 +594,10 @@ export const snapshotOwnedOperations = (
         inputCodec: inputSchemaSnapshot.codec,
         outputCodec: outputSchemaSnapshot.codec,
         doc: operation.doc,
-        bodySource: capturedBodySource,
-        bodyHashMaterial: deepFreeze({
+        run: operation.run as DeployedOperationRun,
+        implementationHashMaterial: deepFreeze({
           artifactHash,
-          source: capturedBodySource,
+          operation: id,
         }),
       }));
     }
@@ -624,12 +621,12 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
     const definitions: DeployedOperationDefinition[] = [];
 
     for (const snapshot of snapshots) {
-      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
+      const [inputSchemaHash, outputSchemaHash, implementationHash] = yield* Effect.all([
         hashOperationSchema(snapshot.inputSchemaMaterial),
         hashOperationSchema(snapshot.outputSchemaMaterial),
         hashDomainSeparatedCanonicalJson(
-          OPERATION_BODY_HASH_DOMAIN_V1,
-          snapshot.bodyHashMaterial,
+          OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1,
+          snapshot.implementationHashMaterial,
         ),
       ]);
       const descriptorInput = {
@@ -638,7 +635,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
         output: snapshot.outputShape,
         inputSchemaHash,
         outputSchemaHash,
-        bodyHash,
+        bodyHash: implementationHash,
         composers: snapshot.composers,
         writes: snapshot.writes,
         ...(snapshot.doc === undefined ? {} : { doc: snapshot.doc }),
@@ -660,7 +657,8 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           input: snapshot.inputCodec,
           output: snapshot.outputCodec,
           doc: snapshot.doc,
-          bodySource: snapshot.bodySource,
+          implementationHash,
+          run: snapshot.run,
         }) as DeployedOperationDefinition,
       );
     }

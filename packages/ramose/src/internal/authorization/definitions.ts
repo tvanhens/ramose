@@ -502,6 +502,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       if (
         paired === undefined ||
         paired.descriptor.bodyHash !== descriptor.bodyHash ||
+        paired.definition.implementationHash !== descriptor.bodyHash ||
         paired.descriptor.inputSchemaHash !== descriptor.inputSchemaHash ||
         paired.descriptor.outputSchemaHash !== descriptor.outputSchemaHash
       ) {

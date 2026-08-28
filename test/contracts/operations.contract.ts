@@ -19,6 +19,7 @@ import {
   FORGE_FIXED_OPERATION_ID,
   INSPECT_BOUND_OPERATION_ID,
   MUTATE_CATALOG_OPERATION_ID,
+  NATIVE_RUNTIME_OPERATION_ID,
   OP_DATABASE,
   OperationSchema,
   RAW_TEMPID_OPERATION_ID,
@@ -157,6 +158,23 @@ export function registerOperationsContract(target: OperationsTarget): void {
         entity: aliceIssue,
       }, { "x-ramose-min-t": String(response.body.t) });
       expect(current.body.entity[":operation-issue/title"]).toBe("Alice renamed");
+    });
+
+    test("deployed functions use imports, closures, native syntax, and platform effects", async () => {
+      const { policyUrl } = target.urls();
+      const response = await invokeOperation(
+        policyUrl,
+        NATIVE_RUNTIME_OPERATION_ID,
+        undefined,
+        { values: [" alpha ", "beta", "alpha"] },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body.result).toEqual({
+        formatted: "NATIVE:ALPHA:BETA",
+        stage: expect.any(String),
+        subject: "user_ada",
+      });
     });
 
     test("a static operation needs no target and stamps defaults, fixed values, and type", async () => {

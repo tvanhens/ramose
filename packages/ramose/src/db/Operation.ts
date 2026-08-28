@@ -2,8 +2,9 @@
  * Explicitly defined, schema-checked operations — the typed write path.
  *
  * An operation is a named value: input/output are `effect/Schema`, the body
- * is an async function. Transaction verbs accumulate one authoritative
- * commit; `op.effect` is a server-side side-effect step.
+ * is an async function executed directly as trusted deployed code. Transaction
+ * verbs accumulate one authoritative commit; `op.effect` is a server-side
+ * side-effect step.
  *
  * Portable: this module is on `ramose/db` and must not import the Worker
  * or the engine barrel.
@@ -644,7 +645,8 @@ export interface Op<
 
   /**
    * A named authoritative side-effect step, executed with
-   * {@link OperationEffectContext}.
+   * {@link OperationEffectContext}. It runs immediately and is not rolled back
+   * if later database planning or commit validation rejects the operation.
    */
   effect<A>(name: string, run: EffectThunk<A>): Promise<A>;
 }

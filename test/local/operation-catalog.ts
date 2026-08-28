@@ -19,6 +19,7 @@ import {
   read,
   subject,
 } from "../../packages/ramose/src/internal/authorization/index.ts";
+import { formatNativeOperation } from "./native-operation-helper.ts";
 
 export const OP_DATABASE = DatabaseId.make("operations");
 export const OP_CATALOG = CatalogId.make("operation-test");
@@ -288,6 +289,25 @@ export const OperationCreated = Db.Entity(
           return {};
         },
       }),
+      nativeRuntime: Operation({
+        self: false,
+        input: Schema.Struct({ values: Schema.Array(Schema.String) }),
+        output: Schema.Struct({
+          formatted: Schema.String,
+          stage: Schema.String,
+          subject: Schema.String,
+        }),
+        async run(op, input) {
+          const runtime = await op.effect("runtime", ({ env, principal }) => ({
+            stage: (env as { readonly RAMOSE_STAGE?: string }).RAMOSE_STAGE ?? "unknown",
+            subject: principal.sub ?? "anonymous",
+          }));
+          return {
+            formatted: formatNativeOperation(input.values),
+            ...runtime,
+          };
+        },
+      }),
     }),
   },
 );
@@ -318,6 +338,7 @@ const createThenUpdateByLookup = OperationCreated[Db.OwnedOperations].createThen
 const mutateCatalog = OperationCreated[Db.OwnedOperations].mutateCatalog;
 const seedMutableCatalog = OperationCreated[Db.OwnedOperations].seedMutableCatalog;
 const seedUndeclaredCatalog = OperationCreated[Db.OwnedOperations].seedUndeclaredCatalog;
+const nativeRuntime = OperationCreated[Db.OwnedOperations].nativeRuntime;
 const policy = Result.getOrThrow(
   compileReadAuthorizationResult({
     schema: OperationSchema,
@@ -347,6 +368,7 @@ const policy = Result.getOrThrow(
       invoke(mutateCatalog).when(allow),
       invoke(seedMutableCatalog).when(allow),
       invoke(seedUndeclaredCatalog).when(allow),
+      invoke(nativeRuntime).when(allow),
     ],
   }),
 );
@@ -388,3 +410,4 @@ export const CREATE_THEN_UPDATE_BY_LOOKUP_OPERATION_ID = idOf("createThenUpdateB
 export const MUTATE_CATALOG_OPERATION_ID = idOf("mutateCatalog");
 export const SEED_MUTABLE_CATALOG_OPERATION_ID = idOf("seedMutableCatalog");
 export const SEED_UNDECLARED_CATALOG_OPERATION_ID = idOf("seedUndeclaredCatalog");
+export const NATIVE_RUNTIME_OPERATION_ID = idOf("nativeRuntime");

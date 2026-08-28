@@ -142,7 +142,8 @@ export const runtimeOperationsFor = (
     input: Object.freeze({ decode: (value: unknown) => value, encode: (value: unknown) => value }),
     output: Object.freeze({ decode: (value: unknown) => value, encode: (value: unknown) => value }),
     doc: operation.doc,
-    bodySource: "() => undefined",
+    implementationHash: operation.bodyHash,
+    run: () => undefined,
   })),
 });
 

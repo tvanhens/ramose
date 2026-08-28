@@ -45,10 +45,6 @@ import type { AuthenticatedCaller } from "./request.ts";
 import { authorizeCurrentDb } from "./request.ts";
 import { compileReadFilter, uniqueCanonicalTypeName } from "./read-filter.ts";
 import type { AuthorizationPrincipal } from "./principal.ts";
-import {
-  catalogSymbolOf,
-  fieldSymbolOf,
-} from "./operation-body.ts";
 
 const policyDenied = (): Unauthorized =>
   new Unauthorized({ status: 403, code: "policy" });
@@ -291,22 +287,52 @@ const principalIdent = (deployed: DeployedCatalog): string | undefined => {
   return field === undefined ? undefined : `:${field.owner.name}/${field.localName}`;
 };
 
-const definitionType = (value: unknown): string => {
-  const symbol = catalogSymbolOf(value);
-  if (symbol?.kind !== "entity") {
+const deployedEntityName = (
+  value: unknown,
+  deployed: DeployedCatalog,
+): string | undefined => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    (value as { readonly _tag?: unknown })._tag !== "Entity" ||
+    typeof (value as { readonly ns?: unknown }).ns !== "string"
+  ) return undefined;
+  const name = (value as { readonly ns: string }).ns;
+  return deployed.unit.catalog.entities.some((entity) => entity.id.name === name)
+    ? name
+    : undefined;
+};
+
+const definitionType = (
+  value: unknown,
+  deployed: DeployedCatalog,
+): string => {
+  const name = deployedEntityName(value, deployed);
+  if (name === undefined) {
     throw new InvalidRequest({ message: "operation requires a deployed entity definition" });
   }
-  return symbol.id.name;
+  return name;
 };
 
 const definitionField = (
   value: unknown,
+  deployed: DeployedCatalog,
   operation: DeployedOperation,
 ): FieldDescriptor => {
-  const field = fieldSymbolOf(value);
+  const ident = typeof value === "string"
+    ? value
+    : typeof value === "object" && value !== null &&
+        typeof (value as { readonly ident?: unknown }).ident === "string"
+    ? (value as { readonly ident: string }).ident
+    : undefined;
+  const field = ident === undefined
+    ? undefined
+    : deployed.unit.catalog.fields.find((candidate) =>
+      fieldIdent(candidate) === ident
+    );
   if (field !== undefined) return field;
-  if (typeof value === "string" && /^:[^/]+\/[^/]+$/.test(value)) {
-    if (value === ":ramose/type" || value.startsWith(":db/") || value.startsWith(":ramose/")) {
+  if (ident !== undefined && /^:[^/]+\/[^/]+$/.test(ident)) {
+    if (ident === ":ramose/type" || ident.startsWith(":db/") || ident.startsWith(":ramose/")) {
       throw new OperationRejected({
         message: "operation cannot mutate control-plane data",
         operation: operationLabel(operation.id),
@@ -314,7 +340,7 @@ const definitionField = (
         reason: "protected-type",
       });
     }
-    throw new InvalidRequest({ message: `operation field ${value} is not from the deployed catalog plan` });
+    throw new InvalidRequest({ message: `operation field ${ident} is not from the deployed catalog plan` });
   }
   throw new InvalidRequest({ message: "operation requires a deployed field definition" });
 };
@@ -368,7 +394,7 @@ const makeHandle = (
     _tag: "TxHandle",
     eid: eid as never,
     set: (fieldValue, value) => {
-      const field = definitionField(fieldValue, operation);
+      const field = definitionField(fieldValue, deployed, operation);
       ensureBodyField(deployed, operation, metadata.type, field, metadata.source);
       intents.push({
         _tag: "field",
@@ -381,7 +407,7 @@ const makeHandle = (
       });
     },
     remove: (fieldValue, value) => {
-      const field = definitionField(fieldValue, operation);
+      const field = definitionField(fieldValue, deployed, operation);
       ensureBodyField(deployed, operation, metadata.type, field, metadata.source);
       intents.push({
         _tag: "field",
@@ -916,6 +942,7 @@ const makeBodyOp = (args: {
   readonly target: number | undefined;
   readonly targetType: string | undefined;
   readonly now: number;
+  readonly env: unknown;
 }): {
   readonly op: Op<any, any>;
   readonly intents: readonly BodyIntent[];
@@ -962,7 +989,7 @@ const makeBodyOp = (args: {
     db: args.dbName,
     entity: ((first?: unknown, second?: unknown) => {
       if (second !== undefined) {
-        return declaredHandle(definitionType(first), second);
+        return declaredHandle(definitionType(first, args.deployed), second);
       }
       const metadata = subjectMetadata(first);
       if (metadata !== undefined) {
@@ -981,12 +1008,16 @@ const makeBodyOp = (args: {
     }) as Op<any, any>["entity"],
     tempid,
     set: ((...values: unknown[]) => {
-      const withDefinition = catalogSymbolOf(values[0])?.kind === "entity";
+      const withDefinition = deployedEntityName(values[0], args.deployed) !== undefined;
       const subject = values[withDefinition ? 1 : 0];
-      const field = definitionField(values[withDefinition ? 2 : 1], args.definition);
+      const field = definitionField(
+        values[withDefinition ? 2 : 1],
+        args.deployed,
+        args.definition,
+      );
       const value = values[withDefinition ? 3 : 2];
       const metadata = withDefinition
-        ? { type: definitionType(values[0]), source: "declared" as const }
+        ? { type: definitionType(values[0], args.deployed), source: "declared" as const }
         : subjectMetadata(subject) ?? (
           args.targetType === undefined
             ? undefined
@@ -1005,12 +1036,16 @@ const makeBodyOp = (args: {
       });
     }) as Op<any, any>["set"],
     remove: ((...values: unknown[]) => {
-      const withDefinition = catalogSymbolOf(values[0])?.kind === "entity";
+      const withDefinition = deployedEntityName(values[0], args.deployed) !== undefined;
       const subject = values[withDefinition ? 1 : 0];
-      const field = definitionField(values[withDefinition ? 2 : 1], args.definition);
+      const field = definitionField(
+        values[withDefinition ? 2 : 1],
+        args.deployed,
+        args.definition,
+      );
       const value = values[withDefinition ? 3 : 2];
       const metadata = withDefinition
-        ? { type: definitionType(values[0]), source: "declared" as const }
+        ? { type: definitionType(values[0], args.deployed), source: "declared" as const }
         : subjectMetadata(subject) ?? (
           args.targetType === undefined
             ? undefined
@@ -1029,10 +1064,10 @@ const makeBodyOp = (args: {
       });
     }) as Op<any, any>["remove"],
     delete: ((...values: unknown[]) => {
-      const withDefinition = catalogSymbolOf(values[0])?.kind === "entity";
+      const withDefinition = deployedEntityName(values[0], args.deployed) !== undefined;
       const subject = values[withDefinition ? 1 : 0];
       const metadata = withDefinition
-        ? { type: definitionType(values[0]), source: "declared" as const }
+        ? { type: definitionType(values[0], args.deployed), source: "declared" as const }
         : subjectMetadata(subject) ?? (
           args.targetType === undefined
             ? undefined
@@ -1043,7 +1078,7 @@ const makeBodyOp = (args: {
       intents.push({ _tag: "delete", entity: subject, ...metadata });
     }) as Op<any, any>["delete"],
     put: ((definition: unknown, first: unknown, second?: unknown) => {
-      const type = definitionType(definition);
+      const type = definitionType(definition, args.deployed);
       ensureDeclaredType(args.definition, type);
       const entity = second === undefined ? `op-${++nextTempid}` : first;
       const input = asRecord(second === undefined ? first : second);
@@ -1052,7 +1087,7 @@ const makeBodyOp = (args: {
       return declaredHandle(type, entity);
     }) as Op<any, any>["put"],
     update: ((definition: unknown, first: unknown, second?: unknown) => {
-      const type = definitionType(definition);
+      const type = definitionType(definition, args.deployed);
       ensureDeclaredType(args.definition, type);
       const input = asRecord(second === undefined ? first : second);
       const explicit = explicitEffects(args.deployed, type, input);
@@ -1084,13 +1119,14 @@ const makeBodyOp = (args: {
       if (eid === undefined) return null;
       return pull(db, eid, normalizePullPattern(lowerPullPattern(pattern)));
     },
-    effect: async () => {
-      throw new OperationRejected({
-        message: "authoritative operations must be deterministic",
-        operation: operationLabel(args.definition.id),
-        step: "body",
-        reason: "effect",
-      });
+    effect: async (name, run) => {
+      if (typeof name !== "string" || name.length === 0 || typeof run !== "function") {
+        throw new InvalidRequest({ message: "operation effect needs a name and function" });
+      }
+      return await run(Object.freeze({
+        env: args.env,
+        principal: opPrincipal,
+      }));
     },
   };
   if (!args.definition.self && args.definition.owner.kind === "entity") {
@@ -1210,6 +1246,7 @@ export const prepareAuthorizedOperation = async (args: {
   readonly target: unknown;
   readonly input: unknown;
   readonly now: number;
+  readonly env: unknown;
 }): Promise<PreparedOperation> => {
   const current = await authorizeCurrentDb(
     args.deployed.unit,
@@ -1260,10 +1297,11 @@ export const prepareAuthorizedOperation = async (args: {
     target,
     targetType: concreteTargetType,
     now: args.now,
+    env: args.env,
   });
   let output: unknown;
   try {
-    output = await args.definition.body(built.op, decoded);
+    output = await args.definition.run(built.op, decoded);
   } catch (cause) {
     if (
       cause instanceof OperationRejected ||

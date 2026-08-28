@@ -513,7 +513,7 @@ describe("catalog definition assembly", () => {
     allow = false;
   });
 
-  test("compiled boundary ignores every original authoring mutation", async () => {
+  test("assembly isolates inert state while retaining the original live callback", async () => {
     const fieldInputs = { value: "field-original" };
     const bindingInputs = { value: "binding-original" };
     const typedInputs = {
@@ -606,7 +606,7 @@ describe("catalog definition assembly", () => {
     const sealedHash = installed.unitHash;
     const sealedUnit = JSON.stringify(installed.unit);
     const operation = Item[OwnedOperations].check;
-    const capturedBodySource = installed.operations[0]!.bodySource;
+    const capturedRun = installed.operations[0]!.run;
 
     fieldInputs.value = "field-mutated";
     bindingInputs.value = "binding-mutated";
@@ -655,8 +655,8 @@ describe("catalog definition assembly", () => {
     expect(JSON.stringify(installed.unit)).toBe(sealedUnit);
     expect("schema" in installed).toBe(false);
     expect("definition" in installed).toBe(false);
-    expect("run" in installed.operations[0]!).toBe(false);
-    expect(installed.operations[0]!.bodySource).toBe(capturedBodySource);
+    expect(installed.operations[0]!.run).toBe(capturedRun);
+    expect(await installed.operations[0]!.run({}, {})).toEqual({ ok: false });
     expect(installed.operations[0]!.owner).toEqual({
       kind: "entity",
       name: "boundaryItem",

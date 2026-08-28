@@ -22,10 +22,6 @@ import type {
   DatabaseId,
   OperationId,
 } from "./identities.ts";
-import {
-  compileOperationBody,
-  type CompiledOperationBody,
-} from "./operation-body.ts";
 
 export type CatalogBoundRef = {
   readonly database: DatabaseId;
@@ -33,10 +29,8 @@ export type CatalogBoundRef = {
   readonly unitHash: CatalogUnitHash;
 };
 
-export type DeployedOperation = InstalledOperationDefinition & {
-  /** Closure-free executable compiled from the exact sealed body source. */
-  readonly body: CompiledOperationBody;
-};
+/** Inseparable inert descriptor and original trusted deployed executable. */
+export type DeployedOperation = InstalledOperationDefinition;
 
 export type DeployedCatalog = {
   readonly database: DatabaseId;
@@ -76,10 +70,29 @@ const compareDatabaseId = (left: DatabaseId, right: DatabaseId): number =>
 export const deployedOperationKey = (id: OperationId): string =>
   `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}\0${id.target}`;
 
-const compileOperations = (
+const sameEntityIds = (
+  left: InstalledOperationDefinition["writes"],
+  right: InstalledOperationDefinition["descriptor"]["writes"],
+): boolean => left.length === right.length && left.every((entity, index) => {
+  const expected = right[index];
+  return expected !== undefined &&
+    entity.catalog === expected.catalog &&
+    entity.name === expected.name;
+});
+
+const bindOperations = (
   definition: InstalledCatalogDefinition,
 ): ReadonlyMap<string, DeployedOperation> => {
   const operations = new Map<string, DeployedOperation>();
+  const sealed = new Map(
+    definition.unit.catalog.operations.map((descriptor) => [
+      deployedOperationKey(descriptor.id),
+      descriptor,
+    ] as const),
+  );
+  if (sealed.size !== definition.unit.catalog.operations.length) {
+    throw new InvalidIR({ message: "duplicate sealed operation identity" });
+  }
   for (const installed of definition.operations) {
     const key = deployedOperationKey(installed.id);
     if (operations.has(key)) {
@@ -87,14 +100,30 @@ const compileOperations = (
         message: `duplicate installed operation '${installed.localName}'`,
       });
     }
-    operations.set(key, Object.freeze({
-      ...installed,
-      body: compileOperationBody(
-        installed.bodySource,
-        definition.unit.catalog,
-        installed.descriptor,
-      ),
-    }));
+    const descriptor = sealed.get(key);
+    if (
+      descriptor === undefined ||
+      installed.descriptor !== descriptor ||
+      deployedOperationKey(installed.descriptor.id) !== key ||
+      installed.owner.kind !== descriptor.id.owner.kind ||
+      installed.owner.name !== descriptor.id.owner.name ||
+      installed.localName !== descriptor.id.localName ||
+      installed.self !== (descriptor.id.target === "required") ||
+      !sameEntityIds(installed.writes, descriptor.writes) ||
+      installed.descriptor.bodyHash !== descriptor.bodyHash ||
+      installed.descriptor.inputSchemaHash !== descriptor.inputSchemaHash ||
+      installed.descriptor.outputSchemaHash !== descriptor.outputSchemaHash ||
+      installed.implementationHash !== descriptor.bodyHash ||
+      typeof installed.run !== "function"
+    ) {
+      throw new InvalidIR({
+        message: `mismatched installed operation '${installed.localName}'`,
+      });
+    }
+    operations.set(key, installed);
+  }
+  if (operations.size !== sealed.size) {
+    throw new InvalidIR({ message: "missing installed operation executable" });
   }
   return Object.freeze(operations);
 };
@@ -109,7 +138,7 @@ const deploy = (
     unitHash: definition.unitHash,
     unit: definition.unit,
     composition: definition.composition,
-    operations: compileOperations(definition),
+    operations: bindOperations(definition),
     creationPlans: definition.creationPlans,
     resolveCreationValues: definition.resolveCreationValues,
   });

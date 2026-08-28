@@ -220,9 +220,10 @@ describe("owned operation lowering", () => {
       slug: "t",
     });
     expect(definition.output.encode({ id: 1 })).toEqual({ id: 1 });
-    expect(definition.bodySource).toBe(
-      Function.prototype.toString.call(Issue[OwnedOperations].create.run),
+    expect(definition.run as unknown).toBe(
+      Issue[OwnedOperations].create.run as unknown,
     );
+    expect(definition.implementationHash).toBe(create.bodyHash);
     expect(definition.writes.map((entry) => entry.name)).toEqual(["audit"]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
