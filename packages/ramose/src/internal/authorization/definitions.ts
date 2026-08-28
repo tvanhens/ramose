@@ -35,7 +35,11 @@ import {
   refTargetOf,
 } from "../../db/valueTypes.ts";
 import type { CompositionIndex } from "../core/composition.ts";
-import type { CatalogDescriptor, FieldRefTarget } from "./catalog.ts";
+import type {
+  CatalogDescriptor,
+  FieldRefTarget,
+  OperationDescriptor,
+} from "./catalog.ts";
 import {
   type AssembleCatalogUnitFailure,
   type InstalledCatalogUnitV2,
@@ -75,13 +79,20 @@ import {
 } from "./authoring/operations.ts";
 import { requireUnitHash } from "./deployed.ts";
 
+/** Descriptor and executable plan produced from one normalized snapshot. */
+export type InstalledOperationDefinition = DeployedOperationDefinition & {
+  readonly descriptor: OperationDescriptor;
+};
+
 export type InstalledCatalogDefinition = {
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
   readonly composition: CompositionIndex;
-  /** Compiled codecs and frozen body source retained for #417. */
-  readonly operations: readonly DeployedOperationDefinition[];
+  /** Inseparable descriptor/runtime pairs produced by the assembly boundary. */
+  readonly operations: readonly InstalledOperationDefinition[];
+  /** Caller-free authoritative creation plans used by operation execution. */
+  readonly creationPlans: readonly CompiledCreationPlan[];
   readonly path: readonly string[];
   /** Resolve authoritative creation values from assembly's binding snapshot. */
   readonly resolveCreationValues: (
@@ -90,6 +101,9 @@ export type InstalledCatalogDefinition = {
     context: CreationDefaultContext,
   ) => Readonly<Record<string, unknown>>;
 };
+
+const installedOperationKey = (id: OperationDescriptor["id"]): string =>
+  `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}\0${id.target}`;
 
 export type CatalogDefinitions = {
   readonly root: CatalogId;
@@ -461,6 +475,43 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     });
     const unit = yield* sealInstalledCatalogUnit(descriptor, policy);
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
+    if (
+      unit.catalog.operations.length !== lowered.definitions.length ||
+      lowered.descriptors.length !== lowered.definitions.length
+    ) {
+      return yield* invalid("catalog operation assembly lost descriptor/runtime correlation");
+    }
+    const runtimeById = new Map<string, {
+      readonly definition: DeployedOperationDefinition;
+      readonly descriptor: OperationDescriptor;
+    }>();
+    for (let index = 0; index < lowered.definitions.length; index++) {
+      const definition = lowered.definitions[index]!;
+      const descriptor = lowered.descriptors[index]!;
+      if (installedOperationKey(definition.id) !== installedOperationKey(descriptor.id)) {
+        return yield* invalid("catalog operation snapshot lost descriptor/runtime correlation");
+      }
+      runtimeById.set(installedOperationKey(definition.id), { definition, descriptor });
+    }
+    if (runtimeById.size !== lowered.definitions.length) {
+      return yield* invalid("catalog operation assembly contains duplicate runtime identities");
+    }
+    const operations: InstalledOperationDefinition[] = [];
+    for (const descriptor of unit.catalog.operations) {
+      const paired = runtimeById.get(installedOperationKey(descriptor.id));
+      if (
+        paired === undefined ||
+        paired.descriptor.bodyHash !== descriptor.bodyHash ||
+        paired.descriptor.inputSchemaHash !== descriptor.inputSchemaHash ||
+        paired.descriptor.outputSchemaHash !== descriptor.outputSchemaHash
+      ) {
+        return yield* invalid("catalog operation assembly lost sealed runtime identity");
+      }
+      operations.push(Object.freeze({
+        ...paired.definition,
+        descriptor,
+      }));
+    }
     const creationByEntity = new Map(
       snapshot.creationPlans.map((plan) => [plan.entity, plan] as const),
     );
@@ -483,7 +534,8 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       unitHash: unit.unitHash,
       unit,
       composition,
-      operations: Object.freeze([...lowered.definitions]),
+      operations: Object.freeze(operations),
+      creationPlans: snapshot.creationPlans,
       path: snapshot.path,
       resolveCreationValues,
     });

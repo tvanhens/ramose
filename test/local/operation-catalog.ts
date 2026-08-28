@@ -4,31 +4,24 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Db from "ramose/db";
+import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   CatalogId,
-  CatalogVersion,
   DatabaseId,
   DigestHex,
-  EntityId,
-  FieldId,
-  SchemaFingerprint,
-  TraitId,
   allow,
+  assembleCatalogDefinitions,
   assembleDeployedCatalogs,
   compileReadAuthorizationResult,
   eq,
-  hashCatalogSchemaFingerprint,
   invoke,
-  lowerOwnedOperations,
   me,
   read,
   subject,
-  type CatalogDescriptor,
 } from "../../packages/ramose/src/internal/authorization/index.ts";
 
 export const OP_DATABASE = DatabaseId.make("operations");
 export const OP_CATALOG = CatalogId.make("operation-test");
-const version = CatalogVersion.make("1");
 const artifact = DigestHex.make("417".padEnd(64, "0"));
 
 export const OperationUser = Db.Entity(
@@ -146,7 +139,14 @@ export const OperationComponent = Db.Entity(
 
 export const OperationCreatedOther = Db.Entity(
   "operation-created-other",
-  { title: Db.string({ default: () => "other default" }) },
+  {
+    title: Db.string({
+      default: Db.creationDefault(
+        { value: "other default" },
+        (inputs) => inputs.value,
+      ),
+    }),
+  },
   { traits: [OperationBound(otherOperationBinding)] },
 );
 
@@ -165,7 +165,12 @@ export const OperationUndeclared = Db.Entity(
 export const OperationCreated = Db.Entity(
   "operation-created",
   {
-    title: Db.string({ default: () => "created by default" }),
+    title: Db.string({
+      default: Db.creationDefault(
+        { value: "created by default" },
+        (inputs) => inputs.value,
+      ),
+    }),
     child: Db.Field.owned(Db.Ref(OperationComponent), { optional: true }),
   },
   {
@@ -264,184 +269,6 @@ export const OperationSchema = Db.Schema({
   "operation-undeclared": OperationUndeclared,
 });
 
-const entity = (name: string) => EntityId.make({ catalog: OP_CATALOG, name });
-const owner = (name: string) => ({ kind: "entity" as const, name });
-const field = (name: string, localName: string) =>
-  FieldId.make({ catalog: OP_CATALOG, owner: owner(name), localName });
-const operationBoundId = TraitId.make({
-  catalog: OP_CATALOG,
-  name: OperationBound.ns,
-});
-const createdTitleId = FieldId.make({
-  catalog: OP_CATALOG,
-  owner: owner(OperationCreated.ns),
-  localName: "title",
-});
-const boundCatalogId = FieldId.make({
-  catalog: OP_CATALOG,
-  owner: { kind: "trait", name: OperationBound.ns },
-  localName: "catalog",
-});
-const boundInstantsId = FieldId.make({
-  catalog: OP_CATALOG,
-  owner: { kind: "trait", name: OperationBound.ns },
-  localName: "instants",
-});
-
-const lowered = await Effect.runPromise(
-  lowerOwnedOperations(OP_CATALOG, OperationSchema, artifact),
-);
-
-const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
-  id: OP_CATALOG,
-  database: OP_DATABASE,
-  version,
-  entities: [
-    { id: entity(OperationIssue.ns), traits: [] },
-    { id: entity(OperationComponent.ns), traits: [] },
-    { id: entity(OperationMutable.ns), traits: [operationBoundId] },
-    { id: entity(OperationUndeclared.ns), traits: [operationBoundId] },
-    {
-      id: entity(OperationCreated.ns),
-      traits: [operationBoundId],
-    },
-    {
-      id: entity(OperationCreatedOther.ns),
-      traits: [operationBoundId],
-    },
-    { id: entity(OperationUser.ns), traits: [] },
-  ],
-  traits: [
-    {
-      id: operationBoundId,
-      traits: [],
-    },
-  ],
-  fields: [
-    {
-      id: createdTitleId,
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationCreated.ns, "child"),
-      valueType: "ref",
-      refTarget: { _tag: "entity", entity: entity(OperationComponent.ns) },
-      cardinality: "one",
-      index: false,
-      optional: true,
-      owned: true,
-    },
-    {
-      id: field(OperationComponent.ns, "value"),
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationMutable.ns, "title"),
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationUndeclared.ns, "title"),
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationCreatedOther.ns, "title"),
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: boundCatalogId,
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: true,
-      owned: false,
-    },
-    {
-      id: boundInstantsId,
-      valueType: "instant",
-      cardinality: "many",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationIssue.ns, "owner"),
-      valueType: "ref",
-      refTarget: { _tag: "entity", entity: entity(OperationUser.ns) },
-      cardinality: "one",
-      index: false,
-      optional: false,
-      owned: false,
-    },
-    {
-      id: field(OperationIssue.ns, "title"),
-      valueType: "string",
-      cardinality: "one",
-      index: false,
-      optional: true,
-      owned: false,
-    },
-    {
-      id: field(OperationUser.ns, "authId"),
-      valueType: "string",
-      cardinality: "one",
-      unique: "upsert",
-      index: true,
-      optional: false,
-      owned: false,
-    },
-  ],
-  operations: lowered.descriptors,
-  traitComposition: [
-    {
-      composer: entity(OperationCreated.ns),
-      trait: operationBoundId,
-      transitive: [operationBoundId],
-    },
-    {
-      composer: entity(OperationCreatedOther.ns),
-      trait: operationBoundId,
-      transitive: [operationBoundId],
-    },
-    {
-      composer: entity(OperationMutable.ns),
-      trait: operationBoundId,
-      transitive: [operationBoundId],
-    },
-    {
-      composer: entity(OperationUndeclared.ns),
-      trait: operationBoundId,
-      transitive: [operationBoundId],
-    },
-  ],
-};
-
-const descriptor: CatalogDescriptor = {
-  ...descriptorTables,
-  fingerprint: SchemaFingerprint.make(
-    await Effect.runPromise(hashCatalogSchemaFingerprint(descriptorTables)),
-  ),
-};
-
 const rename = OperationIssue[Db.OwnedOperations].rename;
 const changeType = OperationIssue[Db.OwnedOperations].changeType;
 const clearTitle = OperationIssue[Db.OwnedOperations].clearTitle;
@@ -486,23 +313,25 @@ const policy = Result.getOrThrow(
 );
 
 export const operationCatalogs = await Effect.runPromise(
-  assembleDeployedCatalogs({
-    root: OP_CATALOG,
-    units: [
-      {
-        catalog: OP_CATALOG,
-        database: OP_DATABASE,
-        version,
-        descriptor,
+  Effect.gen(function* () {
+    const definitions = yield* assembleCatalogDefinitions({
+      root: Catalog("operation-test", {
+        schema: OperationSchema,
         policy,
-        operations: lowered,
-      },
-    ],
+      }),
+      artifactHash: artifact,
+    });
+    const definition = yield* Effect.fromResult(definitions.require(OP_CATALOG));
+    return yield* assembleDeployedCatalogs({
+      units: [{ database: OP_DATABASE, definition }],
+    });
   }),
 );
 
 const idOf = (localName: string) =>
-  lowered.definitions.find((definition) => definition.localName === localName)!.id;
+  [...Result.getOrThrow(operationCatalogs.requireDatabase(OP_DATABASE)).operations
+    .values()]
+    .find((definition) => definition.localName === localName)!.id;
 export const RENAME_OPERATION_ID = idOf("rename");
 export const CHANGE_TYPE_OPERATION_ID = idOf("changeType");
 export const CLEAR_TITLE_OPERATION_ID = idOf("clearTitle");

@@ -46,18 +46,16 @@ import {
 import { authorizedLiveResponse } from "../../../src/worker/authorized-live.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
 import { applyLiveDiffs, collectLive } from "../../../../../test/support/live-query.ts";
-import { runtimeOperationsFor } from "./catalog-support.ts";
+import { installedDefinitionFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
   User,
   Workspace,
-  catalog,
   catalogDescriptor,
   compileRules,
   database,
   expectOk,
-  version,
 } from "./semantic-fixtures.ts";
 
 const ISS = "https://issuer.example.test";
@@ -139,17 +137,16 @@ const deployPolicy = async (
   db: DatabaseId = database,
 ): Promise<DeployedCatalogs> => {
   const descriptor = await sealedDescriptor(db);
+  const definition = await installedDefinitionFor(
+    descriptor,
+    expectOk(compileRules(rules, extras)),
+  );
   return Effect.runPromise(
     assembleDeployedCatalogs({
-      root: catalog,
       units: [
         {
-          catalog,
           database: db,
-          version,
-          descriptor,
-          policy: expectOk(compileRules(rules, extras)),
-          operations: runtimeOperationsFor(descriptor),
+          definition,
         },
       ],
     }),

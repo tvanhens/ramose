@@ -94,6 +94,21 @@ export type CompiledCreationPlan = {
   readonly bindings: readonly CompiledBindingIdentity[];
 };
 
+export type CompiledCreationValueSource =
+  | "explicit"
+  | "fixed"
+  | "composition-default"
+  | "field-default";
+
+/** One concrete field effect produced by the immutable creation plan. */
+export type CompiledCreationEffect = {
+  readonly entity: string;
+  readonly key: string;
+  readonly ident: string;
+  readonly value: unknown;
+  readonly source: CompiledCreationValueSource;
+};
+
 const formatPath = (path: readonly string[]): string => path.join(" → ");
 
 const declaredDefault = (
@@ -356,12 +371,12 @@ const decodeCompiledField = (
   }
 };
 
-/** Resolve creation values without consulting an authoring entity or binding. */
-export const resolveCompiledCreationValues = (
+/** Resolve creation effects with their authoritative provenance. */
+export const resolveCompiledCreationEffects = (
   plan: CompiledCreationPlan,
   input: Readonly<Record<string, unknown>>,
   context: CreationDefaultContext,
-): Readonly<Record<string, unknown>> => {
+): readonly CompiledCreationEffect[] => {
   if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
     throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
   }
@@ -383,19 +398,34 @@ export const resolveCompiledCreationValues = (
     }
   }
 
-  const out = Object.create(null) as Record<string, unknown>;
+  const out: CompiledCreationEffect[] = [];
+  const append = (
+    field: CompiledCreationField,
+    value: unknown,
+    source: CompiledCreationValueSource,
+    label: string,
+  ): void => {
+    out.push(Object.freeze({
+      entity: plan.entity,
+      key: field.key,
+      ident: field.ident,
+      value: decodeCompiledField(field, value, label),
+      source,
+    }));
+  };
   for (const field of plan.fields) {
     if (field.fixed !== undefined) {
-      out[field.key] = decodeCompiledField(
+      append(
         field,
         field.fixed,
+        "fixed",
         "fixed value",
       );
       continue;
     }
     const explicit = Object.hasOwn(input, field.key) ? input[field.key] : undefined;
     if (explicit !== undefined) {
-      out[field.key] = decodeCompiledField(field, explicit, "explicit value");
+      append(field, explicit, "explicit", "explicit value");
       continue;
     }
 
@@ -414,9 +444,10 @@ export const resolveCompiledCreationValues = (
       defaultPath = entry.path;
     }
     if (defaultPath !== undefined) {
-      out[field.key] = decodeCompiledField(
+      append(
         field,
         defaultValue,
+        "composition-default",
         "composition default",
       );
       continue;
@@ -424,7 +455,7 @@ export const resolveCompiledCreationValues = (
     if (field.fieldDefault !== undefined) {
       const value = field.fieldDefault.evaluate(defaultContext());
       if (value !== undefined) {
-        out[field.key] = decodeCompiledField(field, value, "field default");
+        append(field, value, "field-default", "field default");
         continue;
       }
     }
@@ -432,6 +463,19 @@ export const resolveCompiledCreationValues = (
     throw new CreationValueError(
       `ramose/create: entity ${plan.entity} is missing required field ${field.ident}`,
     );
+  }
+  return Object.freeze(out);
+};
+
+/** Resolve creation values without consulting an authoring entity or binding. */
+export const resolveCompiledCreationValues = (
+  plan: CompiledCreationPlan,
+  input: Readonly<Record<string, unknown>>,
+  context: CreationDefaultContext,
+): Readonly<Record<string, unknown>> => {
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const effect of resolveCompiledCreationEffects(plan, input, context)) {
+    out[effect.key] = effect.value;
   }
   return Object.freeze(out);
 };

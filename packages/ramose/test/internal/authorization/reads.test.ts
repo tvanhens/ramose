@@ -35,7 +35,7 @@ import type { Db } from "../../../src/internal/core/db.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
-import { runtimeOperationsFor } from "./catalog-support.ts";
+import { installedDefinitionFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
@@ -43,12 +43,10 @@ import {
   Taggable,
   User,
   Workspace,
-  catalog,
   catalogDescriptor,
   compileRules,
   database,
   expectOk,
-  version,
 } from "./semantic-fixtures.ts";
 
 const ISS = "https://issuer.example.test";
@@ -125,17 +123,16 @@ const deployPolicy = async (
   db: DatabaseId = database,
 ): Promise<DeployedCatalogs> => {
   const descriptor = await sealedDescriptor(db);
+  const definition = await installedDefinitionFor(
+    descriptor,
+    expectOk(compileRules(rules, extras)),
+  );
   return Effect.runPromise(
     assembleDeployedCatalogs({
-      root: catalog,
       units: [
         {
-          catalog,
           database: db,
-          version,
-          descriptor,
-          policy: expectOk(compileRules(rules, extras)),
-          operations: runtimeOperationsFor(descriptor),
+          definition,
         },
       ],
     }),

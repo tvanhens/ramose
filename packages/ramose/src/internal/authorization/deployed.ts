@@ -1,37 +1,31 @@
-/**
- * Immutable deployed-catalog registry.
- *
- * Assembled once at startup from reachable code definitions. The registry
- * is `DatabaseId -> DeployedCatalog`: each database has exactly one
- * request-addressable sealed {@link InstalledCatalogUnitV2}. Lookup starts
- * from the trusted database; a request may then prove catalog-key and
- * unit-hash agreement with that unit. Not a module-global mutable map and
- * not import-order registration.
- */
+/** Concrete database bindings for atomic installed catalog definitions. */
 
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { Unauthorized } from "../../db/Errors.ts";
-import type { CatalogDescriptor } from "./catalog.ts";
-import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
-import { compositionFromUnit } from "./composition.ts";
+import type { CompiledCreationPlan } from "../../db/creation.ts";
+import type { CreationDefaultContext } from "../../db/Field.ts";
 import type { CompositionIndex } from "../core/composition.ts";
-import {
-  type AssembleCatalogUnitFailure,
-  sealInstalledCatalogUnit,
-} from "./catalog-unit.ts";
-import { CatalogMismatch, CatalogUnitCorrupt, CatalogVersionMismatch, InvalidIR } from "./failures.ts";
-import type { CatalogId, CatalogUnitHash, CatalogVersion, DatabaseId } from "./identities.ts";
-import { installAuthorization, type InstallFailure } from "./install.ts";
-import type { CatalogBindingTarget, PolicyTemplateIR } from "./ir.ts";
+import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import type {
-  DeployedOperationDefinition,
-  LoweredOwnedOperations,
-} from "./authoring/operations.ts";
-import type { OperationId } from "./identities.ts";
-import * as Schema from "effect/Schema";
-import { OperationDescriptor } from "./catalog.ts";
-import { canonicalizeJson } from "./canonical-json.ts";
+  InstalledCatalogDefinition,
+  InstalledOperationDefinition,
+} from "./definitions.ts";
+import {
+  CatalogMismatch,
+  CatalogVersionMismatch,
+  InvalidIR,
+} from "./failures.ts";
+import type {
+  CatalogId,
+  CatalogUnitHash,
+  DatabaseId,
+  OperationId,
+} from "./identities.ts";
+import {
+  compileOperationBody,
+  type CompiledOperationBody,
+} from "./operation-body.ts";
 
 export type CatalogBoundRef = {
   readonly database: DatabaseId;
@@ -39,15 +33,24 @@ export type CatalogBoundRef = {
   readonly unitHash: CatalogUnitHash;
 };
 
+export type DeployedOperation = InstalledOperationDefinition & {
+  /** Closure-free executable compiled from the exact sealed body source. */
+  readonly body: CompiledOperationBody;
+};
+
 export type DeployedCatalog = {
   readonly database: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
-  /** Frozen type-to-trait lookup derived from the sealed unit. */
   readonly composition: CompositionIndex;
-  /** Runtime bodies proven to match the operation rows sealed into `unit`. */
-  readonly operations: ReadonlyMap<string, DeployedOperationDefinition>;
+  readonly operations: ReadonlyMap<string, DeployedOperation>;
+  readonly creationPlans: readonly CompiledCreationPlan[];
+  readonly resolveCreationValues: (
+    entityName: string,
+    input: Readonly<Record<string, unknown>>,
+    context: CreationDefaultContext,
+  ) => Readonly<Record<string, unknown>>;
 };
 
 export type DeployedCatalogs = {
@@ -57,175 +60,77 @@ export type DeployedCatalogs = {
   readonly databases: () => readonly DatabaseId[];
 };
 
+/** One concrete database address bound to one atomic #471 artifact. */
 export type CatalogAssemblyUnit = {
-  readonly catalog: CatalogId;
   readonly database: DatabaseId;
-  readonly version: CatalogVersion;
-  /** Reachable child catalog keys. Missing child fails assembly. */
-  readonly children?: readonly CatalogId[];
-  readonly descriptor: CatalogDescriptor;
-  readonly policy: PolicyTemplateIR;
-  /** Reachable runtime definitions and their deterministically lowered rows. */
-  readonly operations?: LoweredOwnedOperations;
+  readonly definition: InstalledCatalogDefinition;
 };
 
 export type CatalogAssemblyInput = {
-  readonly root: CatalogId;
   readonly units: readonly CatalogAssemblyUnit[];
 };
-
-const freezePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  if (Array.isArray(value)) {
-    for (const item of value) freezePlain(item);
-  } else {
-    for (const key of Object.keys(value)) {
-      freezePlain((value as Record<string, unknown>)[key]);
-    }
-  }
-  return Object.freeze(value);
-};
-
-const invalid = (message: string): Result.Result<never, InvalidIR> =>
-  Result.fail(new InvalidIR({ message }));
-
-const formatPath = (path: readonly CatalogId[]): string => path.join(" → ");
-
-const compareCatalogId = (left: CatalogId, right: CatalogId): number =>
-  left < right ? -1 : left > right ? 1 : 0;
 
 const compareDatabaseId = (left: DatabaseId, right: DatabaseId): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
-const catalogTargetOf = (descriptor: CatalogDescriptor): CatalogBindingTarget => ({
-  database: descriptor.database,
-  catalog: descriptor.id,
-  catalogVersion: descriptor.version,
-  schemaFingerprint: descriptor.fingerprint,
-});
-
 export const deployedOperationKey = (id: OperationId): string =>
   `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}\0${id.target}`;
 
-const encodedOperation = (value: CatalogDescriptor["operations"][number]): string =>
-  canonicalizeJson(
-    Schema.encodeUnknownSync(OperationDescriptor)(value) as never,
-  );
-
-const bindRuntimeOperations = (
-  descriptor: CatalogDescriptor,
-  lowered: LoweredOwnedOperations | undefined,
-): Result.Result<ReadonlyMap<string, DeployedOperationDefinition>, InvalidIR> => {
-  if (lowered === undefined) {
-    return descriptor.operations.length === 0
-      ? Result.succeed(new Map())
-      : invalid("deployed operation definition coverage is incomplete");
-  }
-  const expected = descriptor.operations.map(encodedOperation).sort();
-  const actual = lowered.descriptors.map(encodedOperation).sort();
-  if (expected.length !== actual.length || expected.some((row, index) => row !== actual[index])) {
-    return invalid("deployed operation definitions do not exactly match the sealed catalog descriptor");
-  }
-  const definitions = lowered.definitions;
-  if (definitions.length !== expected.length) {
-    return invalid("deployed operation definition coverage is incomplete");
-  }
-  const byId = new Map<string, DeployedOperationDefinition>();
-  const descriptorsById = new Map(
-    descriptor.operations.map((operation) =>
-      [deployedOperationKey(operation.id), operation] as const
-    ),
-  );
-  for (const definition of definitions) {
-    const key = deployedOperationKey(definition.id);
-    if (byId.has(key)) return invalid(`duplicate deployed operation '${definition.localName}'`);
-    const sealedDescriptor = descriptorsById.get(key);
-    if (
-      sealedDescriptor === undefined ||
-      encodedOperation(definition.descriptor) !== encodedOperation(sealedDescriptor)
-    ) {
-      return invalid(
-        `deployed operation definition '${definition.localName}' does not match its descriptor`,
-      );
+const compileOperations = (
+  definition: InstalledCatalogDefinition,
+): ReadonlyMap<string, DeployedOperation> => {
+  const operations = new Map<string, DeployedOperation>();
+  for (const installed of definition.operations) {
+    const key = deployedOperationKey(installed.id);
+    if (operations.has(key)) {
+      throw new InvalidIR({
+        message: `duplicate installed operation '${installed.localName}'`,
+      });
     }
-    byId.set(key, definition);
+    operations.set(key, Object.freeze({
+      ...installed,
+      body: compileOperationBody(
+        installed.bodySource,
+        definition.unit.catalog,
+        installed.descriptor,
+      ),
+    }));
   }
-  for (const operation of descriptor.operations) {
-    if (!byId.has(deployedOperationKey(operation.id))) {
-      return invalid(`missing deployed operation definition '${operation.id.localName}'`);
-    }
-  }
-  return Result.succeed(byId);
+  return Object.freeze(operations);
 };
 
-const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
-  function* (
-    unit: CatalogAssemblyUnit,
-  ): Effect.fn.Return<
-    DeployedCatalog,
-    AssembleCatalogUnitFailure | CatalogUnitCorrupt | InstallFailure | InvalidIR
-  > {
-    const descriptor = unit.descriptor;
-    if (descriptor.id !== unit.catalog) {
-      return yield* new InvalidIR({
-        message: `catalog '${unit.catalog}' descriptor id '${descriptor.id}' does not match the assembly key`,
-      });
-    }
-    if (descriptor.database !== unit.database) {
-      return yield* new InvalidIR({
-        message: `catalog '${unit.catalog}' descriptor database does not match the assembly key`,
-      });
-    }
-    if (descriptor.version !== unit.version) {
-      return yield* new InvalidIR({
-        message: `catalog '${unit.catalog}' descriptor version does not match the assembly key`,
-      });
-    }
-    const policy = yield* installAuthorization({
-      target: catalogTargetOf(descriptor),
-      descriptor,
-      template: unit.policy,
-    });
-    const sealed = yield* sealInstalledCatalogUnit(descriptor, policy);
-    const composition = yield* Effect.fromResult(compositionFromUnit(sealed));
-    const operations = yield* Effect.fromResult(bindRuntimeOperations(descriptor, unit.operations));
-    const deployed = freezePlain({
-      database: unit.database,
-      catalogKey: unit.catalog,
-      unitHash: sealed.unitHash,
-      unit: sealed,
-      composition,
-    });
-    return Object.freeze({ ...deployed, operations });
-  },
-);
+const deploy = (
+  unit: CatalogAssemblyUnit,
+): DeployedCatalog => {
+  const definition = unit.definition;
+  return Object.freeze({
+    database: unit.database,
+    catalogKey: definition.catalogKey,
+    unitHash: definition.unitHash,
+    unit: definition.unit,
+    composition: definition.composition,
+    operations: compileOperations(definition),
+    creationPlans: definition.creationPlans,
+    resolveCreationValues: definition.resolveCreationValues,
+  });
+};
 
 const buildRegistry = (
   byDatabase: ReadonlyMap<DatabaseId, DeployedCatalog>,
-): DeployedCatalogs => {
-  const requireDatabase = (
-    database: DatabaseId,
-  ): Result.Result<DeployedCatalog, CatalogMismatch> => {
+): DeployedCatalogs => Object.freeze({
+  requireDatabase: (database: DatabaseId) => {
     const deployed = byDatabase.get(database);
-    if (deployed === undefined) {
-      return Result.fail(
-        new CatalogMismatch({
+    return deployed === undefined
+      ? Result.fail(new CatalogMismatch({
           message: "catalog mismatch",
           expectedDatabase: database,
-        }),
-      );
-    }
-    return Result.succeed(deployed);
-  };
-
-  const databases = (): readonly DatabaseId[] =>
-    Object.freeze([...byDatabase.keys()].sort(compareDatabaseId));
-
-  return Object.freeze({
-    requireDatabase,
-    databases,
-  });
-};
+        }))
+      : Result.succeed(deployed);
+  },
+  databases: () => Object.freeze(
+    [...byDatabase.keys()].sort(compareDatabaseId),
+  ),
+});
 
 /** Exact catalog-key agreement with a database-selected unit. Pure Result. */
 export const requireCatalogKey = (
@@ -252,10 +157,7 @@ export const requireUnitHash = (
   return Result.fail(new CatalogVersionMismatch({ catalog, expected, actual }));
 };
 
-/**
- * Database-first contract: `requireDatabase` then catalog-key and unit-hash
- * agreement with that unit. Composes the primitives; does not allocate Effects.
- */
+/** Resolve only after the trusted route database selects the installed unit. */
 export const resolveDeployedCatalog = (
   catalogs: DeployedCatalogs,
   ref: CatalogBoundRef,
@@ -267,113 +169,42 @@ export const resolveDeployedCatalog = (
     return deployed;
   });
 
-/** Collapse internal mismatch/missing failures to opaque Unauthorized. No catalog/version details. */
+/** Collapse internal mismatch/missing failures to one opaque denial. */
 export const opaqueCatalogDenial = (
   _error: CatalogMismatch | CatalogVersionMismatch,
 ): Unauthorized => new Unauthorized({});
 
-export const assembleDeployedCatalogs = Effect.fn("Authorization.assembleDeployedCatalogs")(
-  function* (
-    input: CatalogAssemblyInput,
-  ): Effect.fn.Return<
-    DeployedCatalogs,
-    AssembleCatalogUnitFailure | CatalogUnitCorrupt | InstallFailure | InvalidIR
-  > {
-    const sources = new Map<CatalogId, CatalogAssemblyUnit[]>();
-    for (const unit of input.units) {
-      const existing = sources.get(unit.catalog);
-      if (existing === undefined) sources.set(unit.catalog, [unit]);
-      else existing.push(unit);
+/** Bind concrete database addresses directly to atomic installed definitions. */
+export const assembleDeployedCatalogs = Effect.fn(
+  "Authorization.assembleDeployedCatalogs",
+)(function* (
+  input: CatalogAssemblyInput,
+): Effect.fn.Return<DeployedCatalogs, InvalidIR> {
+  const byDatabase = new Map<DatabaseId, DeployedCatalog>();
+  for (const unit of input.units) {
+    const deployed = yield* Effect.try({
+      try: () => deploy(unit),
+      catch: (cause) => cause instanceof InvalidIR
+        ? cause
+        : new InvalidIR({
+            message: `catalog deployment failed: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }),
+    });
+    const prior = byDatabase.get(deployed.database);
+    if (prior === undefined) {
+      byDatabase.set(deployed.database, deployed);
+      continue;
     }
-
-    const reachable = new Map<CatalogId, readonly CatalogId[][]>();
-    const visit = (
-      key: CatalogId,
-      path: readonly CatalogId[],
-    ): Result.Result<void, InvalidIR> =>
-      Result.gen(function* () {
-        if (path.includes(key)) {
-          return yield* invalid(
-            `catalog reachability cycle: ${formatPath([...path, key])}`,
-          );
-        }
-        const listed = sources.get(key);
-        if (listed === undefined) {
-          return yield* invalid(
-            `missing child catalog '${key}' (path: ${formatPath([...path, key])})`,
-          );
-        }
-        const nextPath = [...path, key];
-        const paths = reachable.get(key);
-        if (paths === undefined) reachable.set(key, [nextPath]);
-        else reachable.set(key, [...paths, nextPath]);
-        if (paths !== undefined) return;
-
-        const children = [...new Set(listed.flatMap((unit) => unit.children ?? []))].sort(
-          compareCatalogId,
-        );
-        for (const child of children) {
-          yield* visit(child, nextPath);
-        }
-      });
-
-    yield* Effect.fromResult(visit(input.root, []));
-
-    for (const key of sources.keys()) {
-      if (!reachable.has(key)) {
-        return yield* new InvalidIR({
-          message: `unused catalog '${key}' is not reachable from root '${input.root}'`,
-        });
-      }
-    }
-
-    const byKey = new Map<CatalogId, DeployedCatalog>();
-    const ordered = [...reachable.keys()].sort(compareCatalogId);
-    for (const key of ordered) {
-      const listed = sources.get(key);
-      if (listed === undefined) {
-        return yield* new InvalidIR({
-          message: `missing child catalog '${key}'`,
-        });
-      }
-      const assembled: DeployedCatalog[] = [];
-      for (const unit of listed) {
-        assembled.push(yield* assembleOne(unit));
-      }
-      const hashes = new Set(assembled.map((item) => item.unitHash));
-      if (hashes.size > 1) {
-        const paths = (reachable.get(key) ?? []).map(formatPath).join("; ");
-        return yield* new InvalidIR({
-          message: `duplicate catalog '${key}' with conflicting unit hashes (paths: ${paths})`,
-        });
-      }
-      byKey.set(key, assembled[0]!);
-    }
-
-    const byDatabase = new Map<DatabaseId, DeployedCatalog>();
-    const deployedUnits = [...byKey.values()].sort((left, right) =>
-      compareCatalogId(left.catalogKey, right.catalogKey),
-    );
-    for (const deployed of deployedUnits) {
-      const existing = byDatabase.get(deployed.database);
-      if (existing === undefined) {
-        byDatabase.set(deployed.database, deployed);
-        continue;
-      }
-      if (
-        existing.catalogKey === deployed.catalogKey &&
-        existing.unitHash === deployed.unitHash
-      ) {
-        continue;
-      }
-      const catalogPaths = [existing.catalogKey, deployed.catalogKey]
-        .map((key) => (reachable.get(key) ?? []).map(formatPath).join("; "))
-        .join("; ");
+    if (
+      prior.catalogKey !== deployed.catalogKey ||
+      prior.unitHash !== deployed.unitHash
+    ) {
       return yield* new InvalidIR({
-        message: `distinct catalog units '${existing.catalogKey}' and '${deployed.catalogKey}' claim database '${deployed.database}' (paths: ${catalogPaths})`,
+        message: `distinct catalog definitions claim database '${deployed.database}'`,
       });
     }
-
-    return buildRegistry(Object.freeze(byDatabase));
-  },
-);
+  }
+  return buildRegistry(Object.freeze(byDatabase));
+});

@@ -4,7 +4,7 @@
  */
 
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
 import {
   CatalogId,
   CatalogVersion,
@@ -18,8 +18,12 @@ import {
   SchemaFingerprint,
   TraitId,
   hashCatalogSchemaFingerprint,
+  installAuthorization,
+  sealInstalledCatalogUnit,
+  compositionFromUnit,
   type CatalogDescriptor,
   type FieldRefTarget,
+  type InstalledCatalogDefinition,
   type LoweredOwnedOperations,
   type OwnerRef,
   type PolicyTemplateIR,
@@ -131,22 +135,50 @@ export const runtimeOperationsFor = (
   descriptors: descriptor.operations,
   definitions: descriptor.operations.map((operation) => ({
     id: operation.id,
-    descriptor: operation,
-    owner: {
-      _tag: operation.id.owner.kind === "entity" ? "Entity" : "Trait",
-      ns: operation.id.owner.name,
-      fields: {},
-    } as never,
-    composers: [],
+    owner: operation.id.owner,
     localName: operation.id.localName,
     self: operation.id.target === "required",
-    writes: [],
-    input: Schema.Unknown,
-    output: Schema.Unknown,
+    writes: operation.writes,
+    input: Object.freeze({ decode: (value: unknown) => value, encode: (value: unknown) => value }),
+    output: Object.freeze({ decode: (value: unknown) => value, encode: (value: unknown) => value }),
     doc: operation.doc,
-    run: (() => undefined) as never,
+    bodySource: "() => undefined",
   })),
 });
+
+/** Test-only producer of the same atomic shape returned by #471 assembly. */
+export const installedDefinitionFor = async (
+  descriptor: CatalogDescriptor,
+  template: PolicyTemplateIR,
+  runtime: LoweredOwnedOperations = runtimeOperationsFor(descriptor),
+): Promise<InstalledCatalogDefinition> => {
+  const policy = await Effect.runPromise(installAuthorization({
+    target: {
+      database: descriptor.database,
+      catalog: descriptor.id,
+      catalogVersion: descriptor.version,
+      schemaFingerprint: descriptor.fingerprint,
+    },
+    descriptor,
+    template,
+  }));
+  const unit = await Effect.runPromise(sealInstalledCatalogUnit(descriptor, policy));
+  const composition = Result.getOrThrow(compositionFromUnit(unit));
+  return Object.freeze({
+    catalogKey: descriptor.id,
+    unitHash: unit.unitHash,
+    unit,
+    composition,
+    operations: Object.freeze(runtime.definitions.map((definition, index) =>
+      Object.freeze({ ...definition, descriptor: unit.catalog.operations[index]! })
+    )),
+    creationPlans: Object.freeze([]),
+    path: Object.freeze([descriptor.id]),
+    resolveCreationValues: () => {
+      throw new Error("read-only test catalog has no creation plan");
+    },
+  });
+};
 
 export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
   _tag: "PolicyTemplateIR",

@@ -39,7 +39,7 @@ import type { Db } from "../../../src/internal/core/db.ts";
 import { UpstreamError } from "../../../src/worker/errors.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
 import { digestHex } from "./fixtures.ts";
-import { runtimeOperationsFor } from "./catalog-support.ts";
+import { installedDefinitionFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
@@ -51,7 +51,6 @@ import {
   database,
   expectOk,
   orgClaim,
-  version,
 } from "./semantic-fixtures.ts";
 
 const typedTx = <T extends unknown[]>(tx: T): T => {
@@ -135,17 +134,16 @@ const deployPolicy = async (
   db: DatabaseId = database,
 ): Promise<DeployedCatalogs> => {
   const descriptor = await sealedDescriptor(db);
+  const definition = await installedDefinitionFor(
+    descriptor,
+    expectOk(compileRules(rules, extras)),
+  );
   return Effect.runPromise(
     assembleDeployedCatalogs({
-      root: catalog,
       units: [
         {
-          catalog,
           database: db,
-          version,
-          descriptor,
-          policy: expectOk(compileRules(rules, extras)),
-          operations: runtimeOperationsFor(descriptor),
+          definition,
         },
       ],
     }),
