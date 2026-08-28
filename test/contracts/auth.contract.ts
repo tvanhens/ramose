@@ -18,6 +18,17 @@ const everyDbSurface = (base: string, db: string, token?: string) => [
   json(base, `/db/${encodeURIComponent(db)}/query`, post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, token)),
   json(base, `/db/${encodeURIComponent(db)}/info`, token === undefined ? {} : { token }),
   json(base, `/db/${encodeURIComponent(db)}/transact`, post({ tx: [{ ":doc/title": "x" }] }, token)),
+  json(
+    base,
+    `/db/${encodeURIComponent(db)}/op`,
+    post(
+      {
+        operation: { owner: { kind: "entity", name: "issue" }, localName: "rename", target: "required" },
+        input: { title: "x" },
+      },
+      token,
+    ),
+  ),
 ];
 
 export function registerAuthContract(target: AuthTarget): void {

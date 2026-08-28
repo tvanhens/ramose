@@ -524,7 +524,32 @@ describe("schema shape rejections", () => {
     expectInvalid(decodePolicyTemplateResult(untagged), /_tag|PolicyTemplateIR/);
   });
 
-  test("rejects an operation decision as an excess property", () => {
+  test("accepts an optional operations decision", () => {
+    const result = decodePolicyTemplateResult({
+      ...emptyTemplateEncoded,
+      decisions: {
+        entities: [],
+        traits: [],
+        fields: [],
+        operations: [
+          {
+            target: {
+              _tag: "RelativeOperationId",
+              owner: { kind: "entity", name: "issue" },
+              localName: "rename",
+              target: "required",
+            },
+            decision: { allow: [RULE_LIT], deny: [] },
+          },
+        ],
+      },
+    });
+    expect(Result.isSuccess(result)).toBe(true);
+    if (!Result.isSuccess(result)) return;
+    expect(result.success.decisions.operations).toHaveLength(1);
+  });
+
+  test("rejects an unknown key on an operations decision", () => {
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
@@ -532,10 +557,21 @@ describe("schema shape rejections", () => {
           entities: [],
           traits: [],
           fields: [],
-          operations: [],
+          operations: [
+            {
+              target: {
+                _tag: "RelativeOperationId",
+                owner: { kind: "entity", name: "issue" },
+                localName: "rename",
+                target: "required",
+              },
+              decision: { allow: [RULE_LIT], deny: [] },
+              extra: true,
+            },
+          ],
         },
       }),
-      /extra|unexpected|excess|Key|operations/i,
+      /extra|unexpected|excess|Key/i,
     );
   });
 
@@ -608,7 +644,35 @@ describe("schema shape rejections", () => {
     }
   });
 
-  test("rejects an operation-focused rule at Schema decode", () => {
+  test("accepts an operation-focused rule at Schema decode", () => {
+    const result = decodePolicyTemplateResult({
+      ...emptyTemplateEncoded,
+      rules: [
+        {
+          id: RULE_LIT,
+          focus: {
+            _tag: "operation",
+            operation: {
+              _tag: "RelativeOperationId",
+              owner: { kind: "entity", name: "issue" },
+              localName: "rename",
+              target: "required",
+            },
+          },
+          expr: { _tag: "const", value: true },
+          usesResource: false,
+          usesMe: false,
+          usesSubject: false,
+          traversalDepth: 0,
+        },
+      ],
+    });
+    expect(Result.isSuccess(result)).toBe(true);
+    if (!Result.isSuccess(result)) return;
+    expect(result.success.rules[0]?.focus._tag).toBe("operation");
+  });
+
+  test("rejects a malformed operation focus at Schema decode", () => {
     expectInvalid(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
@@ -621,7 +685,7 @@ describe("schema shape rejections", () => {
                 _tag: "RelativeOperationId",
                 owner: { kind: "entity", name: "issue" },
                 localName: "rename",
-                target: "required",
+                target: "sometimes",
               },
             },
             expr: { _tag: "const", value: true },
@@ -632,7 +696,7 @@ describe("schema shape rejections", () => {
           },
         ],
       }),
-      /operation|_tag|Union|focus/i,
+      /target|_tag|Union|Literal|operation/i,
     );
   });
 

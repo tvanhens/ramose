@@ -5,7 +5,8 @@
  *   POST /__test__/db/:name/* test-only (RAMOSE_TEST_HOOKS=1; 404 otherwise)
  *   *    /db/:name/*          verified JWT + deployed catalog → filtered Db;
  *                             one-shot query/pull/entity run on that value only.
- *                             writes, info, and sessions stay fail-closed.
+ *                             POST /op is the catalog-bound write path.
+ *                             raw /transact, info, and sessions stay fail-closed.
  *
  * `/health` is the only unauthenticated public route (AUTH-1, AUTH-6).
  * `/__test__/*` is gated local instrumentation, not an external database path.
