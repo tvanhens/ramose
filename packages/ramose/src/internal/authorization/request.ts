@@ -6,7 +6,9 @@
  *
  * Catalog lookup is DatabaseId-first (#453). `Db.filter` is the sole
  * authorization primitive. The `execute` callback is the only sanctioned
- * consumer of the request `Db`.
+ * consumer of the request `Db`. JWT, catalog proof, and predicate
+ * compile stay fail-closed. `currentDb` failures are infrastructure and
+ * pass through so retryable replica/storage errors keep their status.
  */
 
 import * as Cause from "effect/Cause";
@@ -48,13 +50,14 @@ export type AuthorizedRequestView = {
   readonly history?: boolean;
 };
 
-export type AuthorizedRequestInput<R = never> = {
+export type AuthorizedRequestInput<R = never, EDb = unknown> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly catalogs: DeployedCatalogs;
   readonly routeDatabase: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
-  readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, unknown, R>;
+  /** Trusted route-database snapshot. Failures stay infrastructure errors. */
+  readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
 };
@@ -216,10 +219,16 @@ const compilePredicate = (
   }
 };
 
-const constructFilteredDb = <R>(
-  input: AuthorizedRequestInput<R>,
+type AdmittedCaller = {
+  readonly unit: InstalledCatalogUnitV1;
+  readonly subject: string;
+};
+
+/** Catalog proof and caller claims. Defects collapse to Unauthorized. */
+const admitDeployedCaller = <R, EDb>(
+  input: AuthorizedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,
-): Effect.Effect<Db, Unauthorized, R> =>
+): Effect.Effect<AdmittedCaller, Unauthorized, R> =>
   Effect.gen(function* () {
     const deployed = yield* Effect.fromResult(
       resolveDeployedCatalog(input.catalogs, {
@@ -231,32 +240,57 @@ const constructFilteredDb = <R>(
     yield* Effect.fromResult(requirePreparedUnit(deployed.unit));
     const subject = yield* Effect.fromResult(selectSubject(caller, deployed.unit));
     yield* Effect.fromResult(validateCallerClaims(caller.claims, deployed.unit.policy.claims));
-    const current = yield* input.currentDb(input.routeDatabase).pipe(Effect.mapError(() => deny()));
+    return { unit: deployed.unit, subject };
+  }).pipe(Effect.catchCause(() => Effect.fail(deny())));
+
+/** Principal bind + predicate compile. Defects collapse to Unauthorized. */
+const bindReadPredicate = (
+  unit: InstalledCatalogUnitV1,
+  subject: string,
+  caller: AuthenticatedCaller,
+  current: Db,
+): Effect.Effect<ReturnType<typeof compileReadFilter>, Unauthorized> =>
+  Effect.gen(function* () {
     const resolved = yield* Effect.tryPromise({
-      try: () => resolveMe(deployed.unit, subject, caller, current),
+      try: () => resolveMe(unit, subject, caller, current),
       catch: () => deny(),
     });
     const principal = yield* Effect.fromResult(resolved);
-    const predicate = yield* Effect.fromResult(
-      compilePredicate(deployed.unit, principal, current),
+    return yield* Effect.fromResult(compilePredicate(unit, principal, current));
+  }).pipe(Effect.catchCause(() => Effect.fail(deny())));
+
+/**
+ * Admit the caller, acquire the route database, then filter that value.
+ * `currentDb` errors are infrastructure and pass through unchanged.
+ */
+const constructFilteredDb = <R, EDb>(
+  input: AuthorizedRequestInput<R, EDb>,
+  caller: AuthenticatedCaller,
+): Effect.Effect<Db, Unauthorized | EDb, R> =>
+  Effect.gen(function* () {
+    const admitted = yield* admitDeployedCaller(input, caller);
+    const current = yield* input.currentDb(input.routeDatabase);
+    const predicate = yield* bindReadPredicate(
+      admitted.unit,
+      admitted.subject,
+      caller,
+      current,
     );
     return requestedView(current, input.view).filter(predicate);
   });
 
 export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthorizedRequest")(
-  function* <A, E, R>(
-    input: AuthorizedRequestInput<R>,
+  function* <A, E, R, EDb = unknown>(
+    input: AuthorizedRequestInput<R, EDb>,
     execute: (filteredDb: Db) => Effect.Effect<A, E, R>,
-  ): Effect.fn.Return<A, Unauthorized | E, R> {
+  ): Effect.fn.Return<A, Unauthorized | E | EDb, R> {
     const limit = Duration.fromInputUnsafe(input.interruptAfter ?? MAX_READ_LEASE_MS);
     const program = Effect.gen(function* () {
       const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
       const nowMs = yield* Clock.currentTimeMillis;
       const duration = yield* Effect.fromResult(leaseDuration(caller.exp, nowMs, limit));
       const rest = Effect.gen(function* () {
-        const filteredDb = yield* constructFilteredDb(input, caller).pipe(
-          Effect.catchCause(() => Effect.fail(deny())),
-        );
+        const filteredDb = yield* constructFilteredDb(input, caller);
         return yield* execute(filteredDb);
       });
       return yield* rest.pipe(

@@ -45,6 +45,7 @@ import {
   Unauthorized,
   type UpstreamError,
   fromThrown,
+  isRamoseError,
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
@@ -274,6 +275,7 @@ export const handle = (
     ).pipe(
       Effect.mapError((error) => {
         if (error instanceof Unauthorized) return error;
+        if (isRamoseError(error)) return error;
         if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
         return fromThrown(error, { stacks });
       }),

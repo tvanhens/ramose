@@ -22,6 +22,7 @@ import {
   claim,
   contains,
   eq,
+  executeAuthorizedRead,
   executeAuthorizedRequest,
   hashCatalogSchemaFingerprint,
   me,
@@ -34,6 +35,7 @@ import {
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index } from "../../../src/internal/core/datom.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
+import { UpstreamError } from "../../../src/worker/errors.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
 import { digestHex } from "./fixtures.ts";
 import {
@@ -430,17 +432,18 @@ describe("executeAuthorizedRequest", () => {
     expectOpaque(error);
   });
 
-  test("database acquisition failure is Unauthorized; execute is not called", async () => {
+  test("database acquisition failure is the currentDb error; execute is not called", async () => {
     const catalogs = await deployOwnerPolicy();
     const token = await sign();
     let executed = false;
+    const acquisition = { _tag: "UpstreamError" as const, status: 503, body: "database has no root yet" };
     const error = await runFail(
       {
         authenticate: authenticateToken(token),
         catalogs,
         routeDatabase: database,
         ...proofOf(catalogs),
-        currentDb: () => Effect.fail({ _tag: "AcquisitionFailed" as const }),
+        currentDb: () => Effect.fail(acquisition),
       },
       () =>
         Effect.sync(() => {
@@ -448,7 +451,27 @@ describe("executeAuthorizedRequest", () => {
         }),
     );
     expect(executed).toBe(false);
-    expectOpaque(error, ["AcquisitionFailed"]);
+    expect(error).toBe(acquisition);
+    expect((error as { readonly _tag?: unknown })._tag).not.toBe("Unauthorized");
+
+    const upstream = new UpstreamError({ status: 503, body: "database has no root yet" });
+    const readError = await Effect.runPromise(
+      Effect.flip(
+        executeAuthorizedRead(
+          {
+            authenticate: authenticateToken(token),
+            catalogs,
+            routeDatabase: database,
+            ...proofOf(catalogs),
+            currentDb: () => Effect.fail(upstream),
+          },
+          { kind: "query", query: "[:find ?e :where [?e :issue/title]]" },
+        ),
+      ),
+    );
+    expect(readError).toBe(upstream);
+    expect(readError).toBeInstanceOf(UpstreamError);
+    expect((readError as UpstreamError).status).toBe(503);
   });
 
   test("timeout of the whole operation is Unauthorized", async () => {

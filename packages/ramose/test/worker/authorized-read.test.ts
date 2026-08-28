@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { CatalogId, CatalogUnitHash } from "../../src/internal/authorization/index.ts";
+import { stringifyJson } from "../../src/internal/core/json.ts";
 import { parseOneShotReadRequest } from "../../src/worker/authorized-read.ts";
 import { digestHex } from "../internal/authorization/fixtures.ts";
 
@@ -93,6 +94,57 @@ describe("parseOneShotReadRequest", () => {
       "/query",
     );
     expect(error._tag).toBe("Unauthorized");
+  });
+
+  test("query inputs, lookup values, and pull refs decode $inst / $bytes / $uuid", async () => {
+    const at = new Date(1_700_000_000_000);
+    const blob = new Uint8Array([1, 2, 3]);
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    const query = await runParse(
+      new Request("https://peer.test/db/todos/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: stringifyJson({
+          catalog,
+          unitHash,
+          query: { find: ["?e"], where: [["?e", ":issue/at", at]] },
+          inputs: [at, blob, { $uuid: "550E8400-E29B-41D4-A716-446655440000" }],
+        }),
+      }),
+      "/query",
+    );
+    expect(query.read.kind).toBe("query");
+    if (query.read.kind === "query") {
+      const where = (query.read.query as { where: unknown[][] }).where[0]![2];
+      expect(where).toEqual(at);
+      expect(query.read.inputs).toEqual([at, blob, uuid]);
+    }
+
+    const lookup = await runParse(
+      new Request("https://peer.test/db/todos/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: stringifyJson({ catalog, unitHash, lookup: [":issue/blob", blob] }),
+      }),
+      "/query",
+    );
+    expect(lookup.read).toEqual({ kind: "lookup", ref: [":issue/blob", blob] });
+
+    const pull = await runParse(
+      new Request("https://peer.test/db/todos/pull", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: stringifyJson({
+          catalog,
+          unitHash,
+          eid: [":issue/id", { $uuid: "550E8400-E29B-41D4-A716-446655440000" }],
+          pattern: ["*"],
+        }),
+      }),
+      "/pull",
+    );
+    expect(pull.read).toEqual({ kind: "pull", eid: [":issue/id", uuid], pattern: ["*"] });
   });
 
   test("malformed query body is BadRequest after proof", async () => {

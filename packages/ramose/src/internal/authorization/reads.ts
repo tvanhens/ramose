@@ -90,11 +90,11 @@ export const runOneShotRead = async (
  * Construct the request {@link Db}, then run one ordinary read against
  * only that value. Same constructor, same filtered database, every shape.
  */
-export const executeAuthorizedRead = <R>(
-  input: AuthorizedRequestInput<R>,
+export const executeAuthorizedRead = <R, EDb = unknown>(
+  input: AuthorizedRequestInput<R, EDb>,
   read: OneShotRead,
   opts: OneShotReadOptions = {},
-): ReturnType<typeof executeAuthorizedRequest<unknown, OneShotReadError, R>> =>
+) =>
   executeAuthorizedRequest(input, (filteredDb) =>
     Effect.tryPromise({
       try: () => runOneShotRead(filteredDb, read, opts),

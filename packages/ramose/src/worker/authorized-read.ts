@@ -16,11 +16,12 @@ import {
 } from "../internal/authorization/index.ts";
 import type { EntityRef } from "../internal/core/db.ts";
 import type { Db } from "../internal/core/db.ts";
+import { parseJson } from "../internal/core/json.ts";
 import { dbFromBasis } from "../internal/replica/basis.ts";
 import { envInt } from "../internal/transactor/env.ts";
 import { DEFAULT_QUERY_MAX_CELLS } from "../internal/core/query/engine.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { BadRequest, Unauthorized } from "./errors.ts";
+import { BadRequest, Unauthorized, fromThrown, type RamoseError } from "./errors.ts";
 import { fetchBasis, segmentSource } from "./peer.ts";
 
 const deny = (): Unauthorized => new Unauthorized({});
@@ -157,6 +158,7 @@ const entityFromPath = (rest: string): Result.Result<OneShotRead, Unauthorized> 
   return Result.succeed({ kind: "entity", ref: Number(match[1]) });
 };
 
+/** Decode the HTTP body with the established `$inst` / `$bytes` / `$uuid` wire contract. */
 const readJsonObject = (
   request: Request,
 ): Effect.Effect<Record<string, unknown>, BadRequest> =>
@@ -166,7 +168,7 @@ const readJsonObject = (
       if (text.trim().length === 0) {
         throw new BadRequest({ message: "body must be a JSON object" });
       }
-      return JSON.parse(text) as unknown;
+      return parseJson(text);
     },
     catch: (cause) =>
       cause instanceof BadRequest ? cause : new BadRequest({ message: "body must be a JSON object" }),
@@ -187,18 +189,19 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
   return { read, view: viewOf(body, url.searchParams), ...proof };
 });
 
+/** Fetch the route-database snapshot. Replica 503 and other storage
+ *  failures stay classified; they are not rewritten as Unauthorized. */
 export const acquireCurrentDb = (
   env: RamoseEnv,
   request: Request,
-): ((database: DatabaseId) => Effect.Effect<Db, unknown>) =>
+): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
   (database) =>
     Effect.tryPromise({
       try: async () => {
-        const name = database;
-        const basis = await fetchBasis(env, name, request);
-        return dbFromBasis(segmentSource(env, name), basis);
+        const basis = await fetchBasis(env, database, request);
+        return dbFromBasis(segmentSource(env, database), basis);
       },
-      catch: () => new Unauthorized({}),
+      catch: (cause) => fromThrown(cause),
     });
 
 export const queryMaxCells = (env: RamoseEnv): number =>
