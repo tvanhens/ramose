@@ -2,7 +2,7 @@
  * Lower public entity/trait-owned operations into catalog-local data.
  *
  * The descriptor side is inert, canonical hash material. The definition side
- * retains the trusted Effect Schemas and executable body for the later #417
+ * retains compiled schema codecs and the executable body for the later #417
  * authoritative boundary. Nothing is registered globally or by import order.
  */
 
@@ -54,14 +54,19 @@ import type { JsonValue } from "../json.ts";
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
 const OPERATION_BODY_HASH_DOMAIN_V1 = "ramose/operation-body/v1\0";
 
+export type DeployedOperationCodec = {
+  readonly decode: (value: unknown) => unknown;
+  readonly encode: (value: unknown) => unknown;
+};
+
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
   readonly owner: OperationOwner;
   readonly localName: string;
   readonly self: boolean;
   readonly writes: readonly AnyEntity[];
-  readonly input: Schema.Top;
-  readonly output: Schema.Top;
+  readonly input: DeployedOperationCodec;
+  readonly output: DeployedOperationCodec;
   readonly doc: string | undefined;
   readonly run: AnyOwnedOperation["run"];
 };
@@ -489,10 +494,7 @@ const schemaHashMaterial = (
 };
 
 const hashOperationSchema = Effect.fn("Authorization.hashOperationSchema")(
-  function* (catalog: CatalogId, schema: Schema.Top, artifactHash: DigestHex) {
-    const material = yield* Effect.fromResult(
-      schemaHashMaterial(catalog, schema, artifactHash),
-    );
+  function* (material: JsonValue) {
     return yield* hashDomainSeparatedCanonicalJson(
       OPERATION_SCHEMA_HASH_DOMAIN_V1,
       material,
@@ -511,6 +513,25 @@ const bodySource = (run: AnyOwnedOperation["run"]): Result.Result<string, Invali
 };
 
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
+
+const snapshotOperationCodec = (
+  schema: Schema.Top,
+): Result.Result<DeployedOperationCodec, InvalidIR> => {
+  try {
+    return Result.succeed(freeze({
+      decode: Schema.decodeUnknownSync(schema as Schema.Decoder<unknown>),
+      encode: Schema.encodeUnknownSync(schema as Schema.Encoder<unknown>),
+    }));
+  } catch (cause) {
+    return Result.fail(
+      invalid(
+        `operation codec compilation failed: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      ),
+    );
+  }
+};
 
 /**
  * Deterministically lower every operation reachable from one catalog's schema
@@ -538,20 +559,29 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
         localName: draft.localName,
         target: operation.self ? "required" : "none",
       });
-      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
-        hashOperationSchema(catalog, operation.input, artifactHash),
-        hashOperationSchema(catalog, operation.output, artifactHash),
-        Effect.flatMap(
-          Effect.fromResult(bodySource(operation.run)),
-          (source) =>
-            hashDomainSeparatedCanonicalJson(OPERATION_BODY_HASH_DOMAIN_V1, {
-              artifactHash,
-              source,
-            }),
-        ),
-      ]);
+      const inputSchemaMaterial = yield* Effect.fromResult(
+        schemaHashMaterial(catalog, operation.input, artifactHash),
+      );
+      const outputSchemaMaterial = yield* Effect.fromResult(
+        schemaHashMaterial(catalog, operation.output, artifactHash),
+      );
       const inputShape = lowerOperationSchema(catalog, operation.input);
       const outputShape = lowerOperationSchema(catalog, operation.output);
+      const inputCodec = yield* Effect.fromResult(
+        snapshotOperationCodec(operation.input),
+      );
+      const outputCodec = yield* Effect.fromResult(
+        snapshotOperationCodec(operation.output),
+      );
+      const source = yield* Effect.fromResult(bodySource(operation.run));
+      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
+        hashOperationSchema(inputSchemaMaterial),
+        hashOperationSchema(outputSchemaMaterial),
+        hashDomainSeparatedCanonicalJson(OPERATION_BODY_HASH_DOMAIN_V1, {
+          artifactHash,
+          source,
+        }),
+      ]);
       if (
         !operation.self &&
         (shapeContainsSelf(inputShape) || shapeContainsSelf(outputShape))
@@ -590,8 +620,8 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
           localName: draft.localName,
           self: operation.self,
           writes: operation.writes,
-          input: operation.input,
-          output: operation.output,
+          input: inputCodec,
+          output: outputCodec,
           doc: operation.doc,
           run: operation.run,
         }) as DeployedOperationDefinition,

@@ -214,12 +214,58 @@ describe("owned operation lowering", () => {
 
     const definition = first.definitions.find((entry) => entry.localName === "create")!;
     expect(definition.owner).toBe(Issue);
-    expect(definition.input).toBe(Issue[OwnedOperations].create.input);
-    expect(definition.output).toBe(Issue[OwnedOperations].create.output);
+    expect(definition.input).not.toBe(Issue[OwnedOperations].create.input);
+    expect(definition.input.decode({ title: "T", slug: "t" })).toEqual({
+      title: "T",
+      slug: "t",
+    });
+    expect(definition.output.encode({ id: 1 })).toEqual({ id: 1 });
     expect(definition.run as unknown).toBe(Issue[OwnedOperations].create.run);
     expect(definition.writes).toEqual([Audit]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
+  });
+
+  test("retains compiled operation codecs instead of mutable schemas", async () => {
+    const Input = Schema.Struct({ value: Schema.String });
+    const Output = Schema.Struct({ ok: Schema.Boolean });
+    const Worker = Entity("worker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Input,
+          output: Output,
+          run: () => ({ ok: true }),
+        }),
+      }),
+    });
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ worker: Worker }),
+        artifactHash,
+      ),
+    );
+    const definition = lowered.definitions[0]!;
+
+    expect(Reflect.set(
+      Input,
+      "ast",
+      Schema.Struct({ value: Schema.Finite }).ast,
+    )).toBe(true);
+    expect(Reflect.set(
+      Output,
+      "ast",
+      Schema.Struct({ ok: Schema.String }).ast,
+    )).toBe(true);
+    expect(definition.input.decode({ value: "stable" }))
+      .toEqual({ value: "stable" });
+    expect(() => definition.input.decode({ value: 1 }))
+      .toThrow();
+    expect(definition.output.encode({ ok: true }))
+      .toEqual({ ok: true });
+    expect(() => definition.output.encode({ ok: "changed" }))
+      .toThrow();
   });
 
   test("keeps trait ownership once and derives direct plus transitive composers", async () => {
