@@ -225,6 +225,45 @@ type AdmittedCaller = {
   readonly subject: string;
 };
 
+export type AuthorizedCurrentDb = {
+  readonly principal: AuthorizationPrincipal;
+  readonly db: Db;
+};
+
+/**
+ * Bind one already-authenticated caller to the ordinary filtered current Db.
+ * Operations use this inside the writer so target admission and body reads
+ * share the same committing basis as one-shot reads.
+ */
+export const authorizeCurrentDb = async (
+  unit: InstalledCatalogUnitV2,
+  caller: AuthenticatedCaller,
+  current: Db,
+  nowMs: number,
+): Promise<Result.Result<AuthorizedCurrentDb, Unauthorized>> => {
+  try {
+    if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= nowMs) {
+      return Result.fail(deny());
+    }
+    const prepared = requirePreparedUnit(unit);
+    if (Result.isFailure(prepared)) return Result.fail(prepared.failure);
+    const subject = selectSubject(caller, unit);
+    if (Result.isFailure(subject)) return Result.fail(subject.failure);
+    const claims = validateCallerClaims(caller.claims, unit.policy.claims);
+    if (Result.isFailure(claims)) return Result.fail(claims.failure);
+    const resolved = await resolveMe(unit, subject.success, caller, current);
+    if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+    const predicate = compilePredicate(unit, resolved.success, current);
+    if (Result.isFailure(predicate)) return Result.fail(predicate.failure);
+    return Result.succeed({
+      principal: resolved.success,
+      db: current.filter(predicate.success),
+    });
+  } catch {
+    return Result.fail(deny());
+  }
+};
+
 /** Catalog proof and caller claims. Defects collapse to Unauthorized. */
 const admitDeployedCaller = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,

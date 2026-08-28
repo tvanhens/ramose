@@ -2,9 +2,13 @@ import { isDatabaseName } from "../db/DatabaseName.ts";
 import { type AnyOperations, operationNames } from "../db/Operation.ts";
 import {
   callerFromVerified,
+  deployedOperationKey,
   DatabaseId,
   executeAuthorizedRead,
   OneShotReadError,
+  OperationId,
+  opaqueCatalogDenial,
+  resolveDeployedCatalog,
   type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
 import {
@@ -20,10 +24,12 @@ import { isUnrecognizedWrites } from "../writes.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { authenticateRequest } from "./admit.ts";
 import {
   acquireCurrentDb,
   acquireWatchedDb,
+  parseCatalogProof,
   parseOneShotReadRequest,
   queryMaxCells,
 } from "./authorized-read.ts";
@@ -52,6 +58,8 @@ import {
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
 import { watchBasisChanges } from "./peer.ts";
+import { internalHeaders } from "../internal/transactor/index.ts";
+import { parseJson } from "../internal/core/json.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
@@ -189,6 +197,22 @@ const decodeDatabaseName = (
     catch: () => new BadRequest({ message: "invalid database name" }),
   });
 
+const operationBody = (
+  request: Request,
+): Effect.Effect<Record<string, unknown>, BadRequest> =>
+  Effect.tryPromise({
+    try: async () => {
+      const value = parseJson(await request.text());
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new BadRequest({ message: "body must be a JSON object" });
+      }
+      return value as Record<string, unknown>;
+    },
+    catch: (cause) => cause instanceof BadRequest
+      ? cause
+      : new BadRequest({ message: "body must be a JSON object" }),
+  });
+
 export const handle = (
   request: Request,
   env: RamoseEnv,
@@ -239,6 +263,20 @@ export const handle = (
         }
       }
       const version = deploymentVersion(env);
+      const testCatalogs =
+        env.RAMOSE_TEST_HOOKS === "1" && env.RAMOSE_STAGE !== "prod" &&
+          peer.catalogs !== undefined
+          ? peer.catalogs.databases().flatMap((database) => {
+            const found = peer.catalogs!.requireDatabase(database);
+            return Result.isSuccess(found)
+              ? [{
+                database,
+                catalog: found.success.catalogKey,
+                unitHash: found.success.unitHash,
+              }]
+              : [];
+          })
+          : undefined;
       return json(
         {
           ok: true,
@@ -246,6 +284,7 @@ export const handle = (
           stage: env.RAMOSE_STAGE ?? "dev",
           time: Date.now(),
           operations: operationNames(peer.operations),
+          ...(testCatalogs === undefined ? {} : { catalogs: testCatalogs }),
         },
         200,
         {
@@ -269,6 +308,48 @@ export const handle = (
       return yield* new BadRequest({ message: "invalid database name" });
     }
     if (peer.catalogs === undefined) return yield* new Unauthorized({});
+    if (rest === "/op" && request.method === "POST") {
+      const body = yield* operationBody(request);
+      const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers));
+      const operationResult = Schema.decodeUnknownResult(OperationId)(body.operation);
+      if (Result.isFailure(operationResult)) return yield* new Unauthorized({});
+      const operation = operationResult.success;
+      const deployed = yield* Effect.fromResult(resolveDeployedCatalog(peer.catalogs, {
+        database: DatabaseId.make(db),
+        catalogKey: proof.catalogKey,
+        unitHash: proof.unitHash,
+      })).pipe(Effect.mapError(opaqueCatalogDenial));
+      if (
+        operation.catalog !== proof.catalogKey ||
+        !deployed.operations.has(deployedOperationKey(operation))
+      ) return yield* new Unauthorized({});
+      const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const response = await stub.fetch(
+            `https://transactor/operation?db=${encodeURIComponent(db)}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json", ...internalHeaders(env) },
+              body: JSON.stringify(toJson({
+                catalogKey: proof.catalogKey,
+                unitHash: proof.unitHash,
+                operation,
+                caller: callerFromVerified(verified),
+                principal: verified.principal,
+                ...(body.target === undefined ? {} : { target: body.target }),
+                input: body.input,
+              })),
+            },
+          );
+          return new Response(response.body, {
+            status: response.status,
+            headers: { ...Object.fromEntries(response.headers), ...CORS },
+          });
+        },
+        catch: (cause) => fromThrown(cause, { stacks: env.RAMOSE_STAGE !== "prod" }),
+      });
+    }
     if (
       !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")

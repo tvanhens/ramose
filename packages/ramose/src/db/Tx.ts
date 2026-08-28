@@ -6,6 +6,8 @@ import { lowerAttr } from "./attrRef.ts";
 import { composerIdent } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { Db } from "../internal/core/db.ts";
+import { assertNoFixedValues, resolveCreationValues } from "./creation.ts";
 import type { AnyField, CreationDefault, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import { TxRejected } from "./Errors.ts";
@@ -246,6 +248,14 @@ export type TxOp =
   | readonly [":db/retract", unknown, string, unknown]
   | readonly [":db/retractEntity", unknown]
   | TxMap;
+
+type OperationCreation = {
+  readonly entity: AnyEntity;
+  readonly eid: unknown;
+  readonly input: Readonly<Record<string, unknown>>;
+};
+
+const operationCreations = new WeakMap<object, OperationCreation>();
 
 export interface TxSpec {
   readonly ops: readonly TxOp[];
@@ -620,6 +630,13 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
             ? (`tmp-${++next}` as Tempid)
             : (resolveEntity(id) as UnbrandedId | Tempid | LookupRef<C>);
         const { map, extras } = lowerPut(entity, eid, attrs ?? {});
+        if (typeof entity === "object" && entity !== null) {
+          operationCreations.set(map, {
+            entity: entity as AnyEntity,
+            eid,
+            input: { ...attrs },
+          });
+        }
         ops.push(map);
         ops.push(...extras);
         return makeHandle(eid, ops);
@@ -681,4 +698,50 @@ export const txBuilder = <C extends AnySchema>(schema: C): Tx<C> => {
       ops: () => ops.slice(),
     };
   return builder;
+};
+
+/**
+ * Apply fixed/default creation values only after the operation body has
+ * finished and only when the committing database does not already contain
+ * the row named by an upsert value.
+ *
+ * @internal Authoritative operation execution only.
+ */
+export const prepareOperationTx = async (
+  ops: readonly TxOp[],
+  db: Db,
+  now: Date,
+): Promise<readonly TxOp[]> => {
+  const out: TxOp[] = [];
+  for (const op of ops) {
+    const creation =
+      typeof op === "object" && op !== null && !Array.isArray(op)
+        ? operationCreations.get(op)
+        : undefined;
+    if (creation === undefined) {
+      out.push(op);
+      continue;
+    }
+    assertNoFixedValues(creation.entity, creation.input);
+    let existing = typeof creation.eid === "number"
+      ? await db.exists(creation.eid)
+      : Array.isArray(creation.eid)
+      ? (await db.entid(creation.eid as never)) !== undefined
+      : false;
+    for (const lookup of upsertIdents(creation.entity, creation.input)) {
+      if ((await db.entid([lookup[0], lookup[1]])) !== undefined) {
+        existing = true;
+        break;
+      }
+    }
+    if (existing) {
+      out.push(op);
+      continue;
+    }
+    const values = resolveCreationValues(creation.entity, creation.input, { now });
+    const eid = (op as TxMap)[":db/id"];
+    const lowered = lowerPut(creation.entity, eid, values as Record<string, unknown>);
+    out.push(lowered.map, ...lowered.extras);
+  }
+  return out;
 };

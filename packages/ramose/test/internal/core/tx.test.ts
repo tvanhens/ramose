@@ -23,6 +23,34 @@ async function setup() {
 }
 
 describe("transact", () => {
+  test("beforeCommit observes the tentative report and rejection leaves no mutation", async () => {
+    const conn = await setup();
+    const beforeT = conn.t;
+    let candidate: number | undefined;
+
+    await expect(
+      conn.transact(
+        [{ ":db/id": "rejected", ":user/email": "rejected@x", ":user/name": "Rejected" }],
+        {
+          beforeCommit: async (report) => {
+            candidate = report.tempids.rejected;
+            expect(await report.dbBefore.entid([":user/email", "rejected@x"])).toBeUndefined();
+            expect(await report.dbAfter.entid([":user/email", "rejected@x"])).toBe(candidate);
+            throw new Error("precommit denied");
+          },
+        },
+      ),
+    ).rejects.toThrow("precommit denied");
+
+    expect(conn.t).toBe(beforeT);
+    expect(await conn.db().entid([":user/email", "rejected@x"])).toBeUndefined();
+    const accepted = await conn.transact([
+      { ":db/id": "accepted", ":user/email": "accepted@x", ":user/name": "Accepted" },
+    ]);
+    expect(candidate).toBeNumber();
+    expect(accepted.tempids.accepted).toBe(candidate!);
+  });
+
   test("installs schema and exposes attributes", async () => {
     const conn = await setup();
     const db = conn.db();

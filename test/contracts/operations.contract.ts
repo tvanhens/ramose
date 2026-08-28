@@ -1,11 +1,23 @@
 /**
- * Public `/op` and `/health` operations listing against a real peer.
- *
- * `/db/:name/op` is fail-closed with the rest of the data plane.
+ * Public deployed-catalog operation execution and `/health` operation listing
+ * against a real peer.
  */
 
-import { describe, expect, test } from "bun:test";
-import { json, post, uniqueDb, type LocalUrls } from "../local/fixtures.ts";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
+import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
+import {
+  CHANGE_IDENTITY_OPERATION_ID,
+  CHANGE_TYPE_OPERATION_ID,
+  CREATE_OPERATION_ID,
+  FORGE_FIXED_OPERATION_ID,
+  INSPECT_BOUND_OPERATION_ID,
+  OP_DATABASE,
+  OperationSchema,
+  RENAME_OPERATION_ID,
+  UNGRANTED_OPERATION_ID,
+} from "../local/operation-catalog.ts";
+import { json, post, testAdmin, uniqueDb, type LocalUrls } from "../local/fixtures.ts";
 import { OPERATION_IDS } from "../local/ops.ts";
 
 export interface OperationsTarget {
@@ -29,8 +41,234 @@ export function registerOperationsContract(target: OperationsTarget): void {
     });
   });
 
-  describe("POST /db/:name/op is fail-closed", () => {
-    test("unknown and registered names are both 401", async () => {
+  describe("POST /db/:name/op", () => {
+    let alice: number;
+    let aliceIssue: number;
+    let bobIssue: number;
+    let token: string;
+    let proof: { catalog: string; unitHash: string };
+
+    beforeAll(async () => {
+      const { policyUrl } = target.urls();
+      const health = await json(policyUrl, "/health");
+      proof = health.body.catalogs.find(
+        (candidate: { database?: unknown }) => candidate.database === OP_DATABASE,
+      );
+      expect(proof).toBeDefined();
+      const schema = await testAdmin(policyUrl, OP_DATABASE, "/transact", {
+        tx: schemaTx(OperationSchema),
+      });
+      expect(schema.status).toBe(200);
+      const seeded = await testAdmin(policyUrl, OP_DATABASE, "/transact", {
+        tx: [
+          {
+            ":db/id": "alice",
+            ":ramose/type": ":operation-user",
+            ":operation-user/authId": "user_ada",
+          },
+          {
+            ":db/id": "bob",
+            ":ramose/type": ":operation-user",
+            ":operation-user/authId": "user_bob",
+          },
+          {
+            ":db/id": "alice-issue",
+            ":ramose/type": ":operation-issue",
+            ":operation-issue/owner": "alice",
+            ":operation-issue/title": "Alice original",
+          },
+          {
+            ":db/id": "bob-issue",
+            ":ramose/type": ":operation-issue",
+            ":operation-issue/owner": "bob",
+            ":operation-issue/title": "Bob original",
+          },
+        ],
+      });
+      expect(seeded.status).toBe(200);
+      alice = seeded.body.tempids.alice;
+      aliceIssue = seeded.body.tempids["alice-issue"];
+      bobIssue = seeded.body.tempids["bob-issue"];
+      token = await signToken(OP_DATABASE, "member", "user_ada");
+    });
+
+    const invokeOperation = (
+      url: string,
+      operation: unknown,
+      targetEid: number | undefined,
+      input: unknown,
+    ) =>
+      json(
+        url,
+        `/db/${OP_DATABASE}/op`,
+        post({
+          ...proof,
+          operation,
+          ...(targetEid === undefined ? {} : { target: targetEid }),
+          input,
+        }, token),
+      );
+
+    test("a statically granted owned operation commits and returns decoded output", async () => {
+      const { policyUrl } = target.urls();
+      const response = await invokeOperation(
+        policyUrl,
+        RENAME_OPERATION_ID,
+        aliceIssue,
+        { title: "Alice renamed" },
+      );
+      expect(response.status).toBe(200);
+      expect(response.body.result).toEqual({ title: "Alice renamed" });
+      expect(response.body.t).toBeNumber();
+
+      const current = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: aliceIssue,
+      }, { "x-ramose-min-t": String(response.body.t) });
+      expect(current.body.entity[":operation-issue/title"]).toBe("Alice renamed");
+    });
+
+    test("a static operation needs no target and stamps defaults, fixed values, and type", async () => {
+      const { policyUrl } = target.urls();
+      const response = await invokeOperation(
+        policyUrl,
+        CREATE_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(response.status).toBe(200);
+      expect(response.body.result).toEqual({ ok: true });
+      const found = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query:
+          '[:find ?e :where [?e :operation-created/title "created by default"]]',
+      }, { "x-ramose-min-t": String(response.body.t) });
+      const createdEid = found.body.result[0][0];
+      const created = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: createdEid,
+      }, { "x-ramose-min-t": String(response.body.t) });
+      expect(created.body.entity).toMatchObject({
+        ":ramose/type": ":operation-created",
+        ":operation-created/title": "created by default",
+        ":operation-bound/catalog": "authoritative",
+      });
+    });
+
+    test("no grant, hidden, nonexistent, and wrong-type targets are the same policy denial", async () => {
+      const { policyUrl } = target.urls();
+      const responses = await Promise.all([
+        invokeOperation(policyUrl, UNGRANTED_OPERATION_ID, aliceIssue, { title: "x" }),
+        invokeOperation(policyUrl, RENAME_OPERATION_ID, bobIssue, { title: "x" }),
+        invokeOperation(policyUrl, RENAME_OPERATION_ID, 999_999, { title: "x" }),
+        invokeOperation(policyUrl, RENAME_OPERATION_ID, alice, { title: "x" }),
+      ]);
+      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+      expect(responses.map((response) => response.body)).toEqual([
+        responses[0]!.body,
+        responses[0]!.body,
+        responses[0]!.body,
+        responses[0]!.body,
+      ]);
+    });
+
+    test("precommit validation rejects principal identity writes without committing", async () => {
+      const { policyUrl } = target.urls();
+      const rejected = await invokeOperation(
+        policyUrl,
+        CHANGE_IDENTITY_OPERATION_ID,
+        alice,
+        { authId: "hijacked" },
+      );
+      expect(rejected.status).toBe(400);
+
+      const stillAuthorized = await invokeOperation(
+        policyUrl,
+        RENAME_OPERATION_ID,
+        aliceIssue,
+        { title: "Still Alice" },
+      );
+      expect(stillAuthorized.status).toBe(200);
+      const principal = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: alice,
+      }, { "x-ramose-min-t": String(stillAuthorized.body.t) });
+      expect(principal.body.entity[":operation-user/authId"]).toBe("user_ada");
+    });
+
+    test("operation bodies cannot supply engine-owned fixed fields", async () => {
+      const { policyUrl } = target.urls();
+      const rejected = await invokeOperation(
+        policyUrl,
+        FORGE_FIXED_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(rejected.status).toBe(409);
+
+      const stillUsable = await invokeOperation(
+        policyUrl,
+        CREATE_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(stillUsable.status).toBe(200);
+    });
+
+    test("operation bodies cannot mutate the protected canonical type", async () => {
+      const { policyUrl } = target.urls();
+      const rejected = await invokeOperation(
+        policyUrl,
+        CHANGE_TYPE_OPERATION_ID,
+        aliceIssue,
+        {},
+      );
+      expect(rejected.status).toBe(409);
+
+      const unchanged = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: aliceIssue,
+      });
+      expect(unchanged.body.entity[":ramose/type"]).toBe(":operation-issue");
+    });
+
+    test("a trait-owned operation accepts only a compatible visible composer", async () => {
+      const { policyUrl } = target.urls();
+      const created = await invokeOperation(
+        policyUrl,
+        CREATE_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(created.status).toBe(200);
+      const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :ramose/type ":operation-created"]]',
+      }, { "x-ramose-min-t": String(created.body.t) });
+      const createdEid = rows.body.result[0][0];
+
+      const accepted = await invokeOperation(
+        policyUrl,
+        INSPECT_BOUND_OPERATION_ID,
+        createdEid,
+        {},
+      );
+      const wrongType = await invokeOperation(
+        policyUrl,
+        INSPECT_BOUND_OPERATION_ID,
+        aliceIssue,
+        {},
+      );
+      expect(accepted.status).toBe(200);
+      expect(accepted.body.result).toEqual({ ok: true });
+      expect(wrongType.status).toBe(403);
+    });
+
+    test("raw application transactions remain closed", async () => {
+      const { policyUrl } = target.urls();
+      const response = await json(
+        policyUrl,
+        `/db/${OP_DATABASE}/transact`,
+        post({ tx: [{ ":operation-issue/title": "bypass" }] }, token),
+      );
+      expect(response.status).toBe(401);
+    });
+
+    test("the old name-based operation alias remains closed", async () => {
       const { openUrl, policyUrl } = target.urls();
       const db = uniqueDb("movies");
       const unknown = await json(openUrl, `/db/${db}/op`, post({ name: "nope", input: {} }));

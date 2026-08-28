@@ -12,18 +12,30 @@
 
 import { DurableObject } from "cloudflare:workers";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import {
   compositionFromUnit,
+  deployedOperationKey,
+  OperationId,
+  CatalogId,
+  CatalogUnitHash,
+  DatabaseId,
+  resolveDeployedCatalog,
+  type AuthenticatedCaller,
+  type DeployedCatalogs,
   type InstalledCatalogUnitV2,
 } from "../authorization/index.ts";
-import { toJson } from "../core/index.ts";
+import { fromJson, toJson } from "../core/index.ts";
 import { restoreEngineTypeAssertions } from "../core/tx-provenance.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
-import { Transactor, type TxAck } from "./transactor.ts";
+import { asPrincipal, Transactor, type TxAck } from "./transactor.ts";
 import { handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
+import { prepareAuthorizedOperation } from "../authorization/operation-execution.ts";
+import { Unauthorized } from "../../db/Errors.ts";
+import { errorResponse, toDbError } from "../../errorHttp.ts";
 
 export type { TxAck };
 
@@ -45,7 +57,11 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
   private dbName: string | undefined;
 
-  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+  constructor(
+    ctx: DurableObjectState,
+    env: RamoseEnv,
+    private readonly catalogs?: DeployedCatalogs,
+  ) {
     super(ctx, env);
     resetTestHooks();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
@@ -140,6 +156,45 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     }
     if (url.pathname === "/health") {
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname === "/operation" && request.method === "POST") {
+      try {
+        const body = fromJson(await request.json()) as Record<string, unknown>;
+        const principal = asPrincipal(body.principal);
+        if (this.catalogs === undefined || principal === undefined) throw new Unauthorized({});
+        const catalogKey = Schema.decodeUnknownSync(CatalogId)(body.catalogKey);
+        const unitHash = Schema.decodeUnknownSync(CatalogUnitHash)(body.unitHash);
+        const operation = Schema.decodeUnknownSync(OperationId)(body.operation);
+        const deployedResult = resolveDeployedCatalog(this.catalogs, {
+          database: DatabaseId.make(this.dbName),
+          catalogKey,
+          unitHash,
+        });
+        if (Result.isFailure(deployedResult)) throw new Unauthorized({});
+        const deployed = deployedResult.success;
+        const definition = deployed.operations.get(deployedOperationKey(operation));
+        if (definition === undefined) throw new Unauthorized({});
+        this.core.bindComposition(deployed.unitHash, deployed.composition);
+        const caller = body.caller as AuthenticatedCaller;
+        const ack = await this.core.transactOperation((currentDb, now) =>
+          prepareAuthorizedOperation({
+            deployed,
+            definition,
+            caller,
+            principal,
+            dbName: this.dbName!,
+            currentDb,
+            target: body.target,
+            input: body.input,
+            now,
+          })
+        );
+        return new Response(JSON.stringify(toJson({ t: ack.t, result: ack.output })), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (cause) {
+        return errorResponse(toDbError(cause));
+      }
     }
     const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
     if (testAdmin !== undefined) return testAdmin;

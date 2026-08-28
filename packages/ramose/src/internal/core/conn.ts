@@ -28,6 +28,13 @@ export interface TxReport {
   tempids: Record<string, number>;
 }
 
+export interface TransactOptions {
+  /** One captured timestamp shared by validation, defaults, and `:db/txInstant`. */
+  readonly now?: number;
+  /** Runs against the tentative result before any connection state is mutated. */
+  readonly beforeCommit?: (report: TxReport) => void | Promise<void>;
+}
+
 export interface ConnectionOptions {
   store?: NodeStore;
   build?: BuildOptions;
@@ -227,7 +234,7 @@ export class Connection {
   }
 
   /** Transact. Serialized: concurrent callers are queued (single writer). */
-  transact(txData: TxData): Promise<TxReport> {
+  transact(txData: TxData, options: TransactOptions = {}): Promise<TxReport> {
     const run = async (): Promise<TxReport> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
@@ -236,14 +243,44 @@ export class Connection {
         txData,
         t,
         this.nextEid,
-        this.now(),
+        options.now ?? this.now(),
         this.composition === undefined ? undefined : { composition: this.composition },
       );
+      const schemaAfter = this.schema.clone().apply(res.datoms);
+      const noveltyAfter = new Novelty();
+      noveltyAfter.add(
+        this.novelty.byIndex[Index.EAVT].all(),
+        (a) => schemaAfter.isAvet(a),
+        (a) => schemaAfter.isVaet(a),
+      );
+      noveltyAfter.add(
+        res.datoms,
+        (a) => schemaAfter.isAvet(a),
+        (a) => schemaAfter.isVaet(a),
+      );
+      const dbAfter = new Db({
+        store: this.store,
+        roots: this.roots,
+        novelty: noveltyAfter,
+        basisT: t,
+        schema: schemaAfter,
+        nextEid: res.nextEid,
+        composition: this.composition,
+      });
+      const report = {
+        dbBefore,
+        dbAfter,
+        t,
+        txEid: res.txEid,
+        txData: res.datoms,
+        tempids: res.tempids,
+      };
+      await options.beforeCommit?.(report);
       this.nextEid = res.nextEid;
-      this.schema = this.schema.clone().apply(res.datoms);
+      this.schema = schemaAfter;
       this.novelty.add(res.datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));
       this.basisT = t;
-      return { dbBefore, dbAfter: this.db(), t, txEid: res.txEid, txData: res.datoms, tempids: res.tempids };
+      return { ...report, dbAfter: this.db() };
     };
     const p = this.txQueue.then(run, run);
     this.txQueue = p.catch(() => undefined);

@@ -59,11 +59,14 @@ import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 import { checkpoint, checkpointSync } from "../test-hooks.ts";
+import type { Db } from "../core/db.ts";
+import type { PreparedOperation } from "../authorization/operation-execution.ts";
+import { restoreEngineTypeAssertions } from "../core/tx-provenance.ts";
 
 export { TransactorDeadError };
 
 /** Reshape Worker-verified caller metadata. Not an authorization decision. */
-function asPrincipal(x: unknown): Principal | undefined {
+export function asPrincipal(x: unknown): Principal | undefined {
   if (typeof x !== "object" || x === null || Array.isArray(x)) return undefined;
   const o = x as Record<string, unknown>;
   if (o.kind !== "user" || typeof o.class !== "string") return undefined;
@@ -117,7 +120,9 @@ export interface TransactorStats {
 }
 
 interface Pending {
-  tx: TxData;
+  tx?: TxData;
+  /** Prepared only after dequeue, against this writer's exact current Db. */
+  operation?: ((db: Db, now: number) => Promise<PreparedOperation>) | undefined;
   /** verified by the Worker; trusted metadata (the DO is only reachable behind the internal secret) */
   principal?: Principal | undefined;
   /** opaque client id; a replay of a recent id returns the original ack */
@@ -399,6 +404,20 @@ export class Transactor {
     });
   }
 
+  /** Submit a catalog-bound operation to the same serialized commit queue. */
+  transactOperation(
+    prepare: (db: Db, now: number) => Promise<PreparedOperation>,
+  ): Promise<TxAck> {
+    if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
+    return new Promise<TxAck>((resolve, reject) => {
+      this.queue.push({ operation: prepare, resolve, reject });
+      if (!this.committing) {
+        this.committing = true;
+        void this.commitLoop();
+      }
+    });
+  }
+
   /** Principal-row provisioning is closed until verified JWT (#412). */
   async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
     await this.init();
@@ -478,8 +497,22 @@ export class Transactor {
           }
           try {
             if (!p.system) await this.applyProvision(p, entries);
-            const tx = await this.authorize(p);
-            const rep = await this.conn.transact(tx);
+            const now = this.host.now();
+            const operation = p.operation === undefined
+              ? undefined
+              : await p.operation(this.conn.db(), now);
+            if (operation !== undefined) p.principal = operation.principal;
+            const tx = operation?.tx ?? await this.authorize(p);
+            const rep = await this.conn.transact(tx, {
+              now,
+              ...(operation === undefined
+                ? {}
+                : {
+                    beforeCommit: async (report) => {
+                      p.opOutput = await operation.beforeCommit(report);
+                    },
+                  }),
+            });
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
             const ack: TxAck = {
@@ -583,12 +616,13 @@ export class Transactor {
     return;
   }
 
-  /** Writes are raw storage. Operation authorization is #417. */
+  /** Authorize the legacy internal raw-storage transaction path. */
   private async authorize(p: Pending): Promise<TxData> {
+    if (p.tx === undefined) throw new BadRequest({ message: "missing transaction" });
     return p.tx;
   }
 
-  /** Application acks are not filtered here. Filtered `Db` lands in #421/#423. */
+  /** Raw-storage transaction acknowledgements are not externally reachable. */
   private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
     return datoms.map(toWireDatom);
   }
@@ -760,6 +794,9 @@ export class Transactor {
         fromOperation?: unknown;
       };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
+      if (request.headers.get("x-ramose-test-type-assertions") === "1") {
+        restoreEngineTypeAssertions(body.tx);
+      }
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
       const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, {
         opOutput: body.opOutput,

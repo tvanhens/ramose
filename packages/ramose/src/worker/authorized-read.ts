@@ -53,7 +53,7 @@ const decodeUnitHash = (value: unknown): Result.Result<CatalogUnitHash, Unauthor
   return Result.isSuccess(decoded) ? Result.succeed(decoded.success) : Result.fail(deny());
 };
 
-const pickProof = (
+export const parseCatalogProof = (
   body: Record<string, unknown> | undefined,
   headers: Headers,
 ): Result.Result<{ catalogKey: CatalogId; unitHash: CatalogUnitHash }, Unauthorized> => {
@@ -181,7 +181,7 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
   const url = new URL(request.url);
   const method = request.method;
   const body = method === "GET" ? undefined : yield* readJsonObject(request);
-  const proof = yield* Effect.fromResult(pickProof(body, request.headers));
+  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers));
   const read =
     method === "GET"
       ? yield* Effect.fromResult(entityFromPath(rest))

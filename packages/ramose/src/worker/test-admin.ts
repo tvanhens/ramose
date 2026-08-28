@@ -130,13 +130,19 @@ const forward = async (
   scope: CheckpointScope,
   path: string,
   body: string,
-  opts: { readonly passThrough?: boolean } = {},
+  opts: {
+    readonly passThrough?: boolean;
+    readonly restoreTypeAssertions?: boolean;
+  } = {},
 ): Promise<Response> => {
   const headers = {
     "content-type": "application/json",
     ...coloHeader(request),
     ...internalHeaders(env),
     ...minTHeader(request),
+    ...(opts.restoreTypeAssertions === true
+      ? { "x-ramose-test-type-assertions": "1" }
+      : {}),
   };
   try {
     const res =
@@ -225,6 +231,7 @@ export const handleTestAdmin = async (
   if (rest === "/transact") {
     return forward(request, env, db, "transactor", "/transact", await request.text(), {
       passThrough: true,
+      restoreTypeAssertions: true,
     });
   }
   if (rest === "/query") {

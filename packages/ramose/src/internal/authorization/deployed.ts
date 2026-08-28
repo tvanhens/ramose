@@ -24,6 +24,14 @@ import { CatalogMismatch, CatalogUnitCorrupt, CatalogVersionMismatch, InvalidIR 
 import type { CatalogId, CatalogUnitHash, CatalogVersion, DatabaseId } from "./identities.ts";
 import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { CatalogBindingTarget, PolicyTemplateIR } from "./ir.ts";
+import type {
+  DeployedOperationDefinition,
+  LoweredOwnedOperations,
+} from "./authoring/operations.ts";
+import type { OperationId } from "./identities.ts";
+import * as Schema from "effect/Schema";
+import { OperationDescriptor } from "./catalog.ts";
+import { canonicalizeJson } from "./canonical-json.ts";
 
 export type CatalogBoundRef = {
   readonly database: DatabaseId;
@@ -38,6 +46,8 @@ export type DeployedCatalog = {
   readonly unit: InstalledCatalogUnitV2;
   /** Frozen type-to-trait lookup derived from the sealed unit. */
   readonly composition: CompositionIndex;
+  /** Runtime bodies proven to match the operation rows sealed into `unit`. */
+  readonly operations: ReadonlyMap<string, DeployedOperationDefinition>;
 };
 
 export type DeployedCatalogs = {
@@ -55,6 +65,8 @@ export type CatalogAssemblyUnit = {
   readonly children?: readonly CatalogId[];
   readonly descriptor: CatalogDescriptor;
   readonly policy: PolicyTemplateIR;
+  /** Reachable runtime definitions and their deterministically lowered rows. */
+  readonly operations?: LoweredOwnedOperations;
 };
 
 export type CatalogAssemblyInput = {
@@ -92,6 +104,42 @@ const catalogTargetOf = (descriptor: CatalogDescriptor): CatalogBindingTarget =>
   schemaFingerprint: descriptor.fingerprint,
 });
 
+export const deployedOperationKey = (id: OperationId): string =>
+  `${id.catalog}\0${id.owner.kind}\0${id.owner.name}\0${id.localName}\0${id.target}`;
+
+const encodedOperation = (value: CatalogDescriptor["operations"][number]): string =>
+  canonicalizeJson(
+    Schema.encodeUnknownSync(OperationDescriptor)(value) as never,
+  );
+
+const bindRuntimeOperations = (
+  descriptor: CatalogDescriptor,
+  lowered: LoweredOwnedOperations | undefined,
+): Result.Result<ReadonlyMap<string, DeployedOperationDefinition>, InvalidIR> => {
+  if (lowered === undefined) return Result.succeed(new Map());
+  const expected = descriptor.operations.map(encodedOperation).sort();
+  const actual = lowered.descriptors.map(encodedOperation).sort();
+  if (expected.length !== actual.length || expected.some((row, index) => row !== actual[index])) {
+    return invalid("deployed operation definitions do not exactly match the sealed catalog descriptor");
+  }
+  const definitions = lowered.definitions;
+  if (definitions.length !== expected.length) {
+    return invalid("deployed operation definition coverage is incomplete");
+  }
+  const byId = new Map<string, DeployedOperationDefinition>();
+  for (const definition of definitions) {
+    const key = deployedOperationKey(definition.id);
+    if (byId.has(key)) return invalid(`duplicate deployed operation '${definition.localName}'`);
+    byId.set(key, definition);
+  }
+  for (const operation of descriptor.operations) {
+    if (!byId.has(deployedOperationKey(operation.id))) {
+      return invalid(`missing deployed operation definition '${operation.id.localName}'`);
+    }
+  }
+  return Result.succeed(byId);
+};
+
 const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
   function* (
     unit: CatalogAssemblyUnit,
@@ -122,13 +170,15 @@ const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
     });
     const sealed = yield* sealInstalledCatalogUnit(descriptor, policy);
     const composition = yield* Effect.fromResult(compositionFromUnit(sealed));
-    return freezePlain({
+    const operations = yield* Effect.fromResult(bindRuntimeOperations(descriptor, unit.operations));
+    const deployed = freezePlain({
       database: unit.database,
       catalogKey: unit.catalog,
       unitHash: sealed.unitHash,
       unit: sealed,
       composition,
     });
+    return Object.freeze({ ...deployed, operations });
   },
 );
 
