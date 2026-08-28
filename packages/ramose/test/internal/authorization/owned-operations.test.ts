@@ -307,6 +307,8 @@ describe("owned operation lowering", () => {
       Schema.Union([RefSchema.self, Schema.String]),
       Schema.Tuple([RefSchema(Missing), Schema.String]),
       RefSchema.self.pipe(Schema.check(Schema.isGreaterThan(0))),
+      Schema.Record(RefSchema.self as never, Schema.String),
+      Schema.Record(RefSchema(Missing) as never, Schema.String),
     ];
     for (const schema of schemas) {
       expect(() => lowerOperationSchema(catalog, schema)).toThrow(
@@ -413,6 +415,39 @@ describe("owned operation lowering", () => {
       Effect.flip(lowerOwnedOperations(catalog, [App, conflicting], artifactHash)),
     );
     expect(failure.message).toBe("duplicate entity definition 'issue'");
+  });
+
+  test("rejects a write dependency that conflicts with the catalog definition", async () => {
+    const CanonicalAudit = Entity("conflictingAudit", { canonical: string() });
+    const ConflictingAudit = Entity("conflictingAudit", { other: string() });
+    const Owner = Entity(
+      "writeOwner",
+      {},
+      {
+        operations: (Operation) => ({
+          write: Operation({
+            writes: [ConflictingAudit],
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+            run() {
+              return {};
+            },
+          }),
+        }),
+      },
+    );
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        lowerOwnedOperations(
+          catalog,
+          CatalogSchema({ conflictingAudit: CanonicalAudit, writeOwner: Owner }),
+          artifactHash,
+        ),
+      ),
+    );
+    expect(failure.message).toBe(
+      "conflicting write definition 'conflictingAudit' in operation 'writeOwner.write'",
+    );
   });
 
   test("rejects target-resource schema inputs on targetless definitions", async () => {

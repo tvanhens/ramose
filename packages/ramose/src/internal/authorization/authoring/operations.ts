@@ -153,6 +153,9 @@ const collectDrafts = (
     const { entities, traits } = yield* collectOwners(schemas);
     const drafts: Draft[] = [];
     const seen = new Map<string, AnyOwnedOperation>();
+    const writeDefinitions = new Map(
+      entities.map((entity) => [entity.ns, entity] as const),
+    );
 
     const collect = (
       owner: OperationOwner,
@@ -169,6 +172,26 @@ const collectDrafts = (
           return Result.fail(
             invalid(`conflicting operation binding '${owner.ns}.${localName}'`),
           );
+        }
+        const localWrites = new Set<string>();
+        for (const entity of candidate.writes) {
+          if (localWrites.has(entity.ns)) {
+            return Result.fail(
+              invalid(
+                `duplicate write definition '${entity.ns}' in operation '${owner.ns}.${localName}'`,
+              ),
+            );
+          }
+          localWrites.add(entity.ns);
+          const previousDefinition = writeDefinitions.get(entity.ns);
+          if (previousDefinition !== undefined && previousDefinition !== entity) {
+            return Result.fail(
+              invalid(
+                `conflicting write definition '${entity.ns}' in operation '${owner.ns}.${localName}'`,
+              ),
+            );
+          }
+          writeDefinitions.set(entity.ns, entity);
         }
         const ownerRef = ownerRefOf(owner);
         const key = definitionKey(ownerRef, localName);
@@ -278,20 +301,26 @@ const astHasRamoseRefMarker = (ast: SchemaAST.AST): boolean => {
 };
 
 const astChildren = (ast: SchemaAST.AST): readonly SchemaAST.AST[] => {
-  const node = ast as SchemaAST.AST & {
-    readonly types?: ReadonlyArray<SchemaAST.AST>;
-    readonly elements?: ReadonlyArray<SchemaAST.AST>;
-    readonly rest?: ReadonlyArray<SchemaAST.AST>;
-    readonly propertySignatures?: ReadonlyArray<{ readonly type: SchemaAST.AST }>;
-    readonly encoding?: ReadonlyArray<{ readonly to: SchemaAST.AST }>;
+  const children: SchemaAST.AST[] = [];
+  const seen = new WeakSet<object>([ast]);
+  const isAst = (value: object): value is SchemaAST.AST =>
+    (value as { readonly "~effect/Schema"?: unknown })["~effect/Schema"] ===
+      "~effect/Schema" &&
+    typeof (value as { readonly _tag?: unknown })._tag === "string";
+  const visit = (value: unknown): void => {
+    if (typeof value !== "object" || value === null || seen.has(value)) return;
+    if (isAst(value)) {
+      children.push(value);
+      return;
+    }
+    seen.add(value);
+    for (const child of Object.values(value)) visit(child);
   };
-  return [
-    ...(node.types ?? []),
-    ...(node.elements ?? []),
-    ...(node.rest ?? []),
-    ...(node.propertySignatures ?? []).map((field) => field.type),
-    ...(node.encoding ?? []).map((link) => link.to),
-  ];
+  for (const [key, value] of Object.entries(ast)) {
+    if (key === "annotations" || key === "checks" || key === "context") continue;
+    visit(value);
+  }
+  return children;
 };
 
 const astContainsRamoseRef = (

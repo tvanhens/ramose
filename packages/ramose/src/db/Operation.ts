@@ -410,15 +410,23 @@ type FixedAttrs<Entity extends AnyEntity> = {
     : never]?: never;
 };
 
-type CreateAttrsOf<Entity extends AnyEntity> = {
+type CreateAttrsForEntity<Entity extends AnyEntity> = {
   [K in RequiredCreateKeys<Entity>]: DefinitionWriteValue<Entity, K>;
 } & {
   [K in OptionalCreateKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
 } & FixedAttrs<Entity>;
 
-type MutableAttrsOf<Entity extends AnyEntity> = {
+type CreateAttrsOf<Entity extends AnyEntity> = Entity extends AnyEntity
+  ? CreateAttrsForEntity<Entity>
+  : never;
+
+type MutableAttrsForEntity<Entity extends AnyEntity> = {
   [K in MutableKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
 } & FixedAttrs<Entity>;
+
+type MutableAttrsOf<Entity extends AnyEntity> = Entity extends AnyEntity
+  ? MutableAttrsForEntity<Entity>
+  : never;
 
 type UpsertKeys<Entity extends AnyEntity> = {
   [K in MutableKeys<Entity>]: Entity["fields"][K] extends {
@@ -432,7 +440,7 @@ type RequireAtLeastOne<T, Keys extends keyof T> = {
   [K in Keys]-?: Required<Pick<T, K>> & Partial<Omit<T, K>>;
 }[Keys];
 
-type UpdateMapAttrsOf<Entity extends AnyEntity> = [
+type UpdateMapAttrsForEntity<Entity extends AnyEntity> = [
   UpsertKeys<Entity>,
 ] extends [never]
   ? { readonly "update map form needs a unique: \"upsert\" field": never }
@@ -496,22 +504,32 @@ export type OwnedOp<
     entity: EntityRefOf<NoInfer<Entity>>,
   ): void;
   put<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
-    entity: Entity,
-    attrs: CreateAttrsOf<NoInfer<Entity>>,
+    ...args: Entity extends AnyEntity
+      ? [entity: Entity, attrs: CreateAttrsForEntity<NoInfer<Entity>>]
+      : never
   ): OwnedEntityHandle<Entity>;
   put<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
-    entity: Entity,
-    id: EntityRefOf<NoInfer<Entity>>,
-    attrs: MutableAttrsOf<NoInfer<Entity>>,
+    ...args: Entity extends AnyEntity
+      ? [
+          entity: Entity,
+          id: EntityRefOf<NoInfer<Entity>>,
+          attrs: MutableAttrsForEntity<NoInfer<Entity>>,
+        ]
+      : never
   ): OwnedEntityHandle<Entity>;
   update<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
-    entity: Entity,
-    attrs: UpdateMapAttrsOf<NoInfer<Entity>>,
+    ...args: Entity extends AnyEntity
+      ? [entity: Entity, attrs: UpdateMapAttrsForEntity<NoInfer<Entity>>]
+      : never
   ): OwnedEntityHandle<Entity>;
   update<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
-    entity: Entity,
-    id: EntityRefOf<NoInfer<Entity>>,
-    attrs: MutableAttrsOf<NoInfer<Entity>>,
+    ...args: Entity extends AnyEntity
+      ? [
+          entity: Entity,
+          id: EntityRefOf<NoInfer<Entity>>,
+          attrs: MutableAttrsForEntity<NoInfer<Entity>>,
+        ]
+      : never
   ): OwnedEntityHandle<Entity>;
   readonly create: Self extends false
     ? Owner extends { readonly _tag: "Entity" }

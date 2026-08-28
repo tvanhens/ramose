@@ -265,7 +265,7 @@ const Issue = Entity(
     operations: (Operation) => ({
       create: Operation({
         self: false,
-        writes: [Membership],
+        writes: [Membership, Other],
         input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
         output: Schema.Struct({ id: EntityId }),
         run(op, input) {
@@ -279,7 +279,15 @@ const Issue = Entity(
             role: "owner",
           });
           // @ts-expect-error undeclared external entities are not write dependencies
-          op.put(Other, { note: input.title });
+          op.put(User, { name: input.title });
+          const writeTarget = Math.random() > 0.5 ? Membership : Other;
+          // @ts-expect-error a union definition cannot erase required create fields
+          op.put(writeTarget, {});
+          // @ts-expect-error attrs for one branch are not safe until the target narrows
+          op.put(writeTarget, { note: input.title });
+          if (writeTarget.ns === "other") {
+            op.put(writeTarget, { note: input.title });
+          }
           membership.set(Membership.issue, issue);
           membership.set(Membership.role, "admin");
           // @ts-expect-error a Membership handle cannot fill its User ref slot
