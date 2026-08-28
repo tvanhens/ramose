@@ -276,12 +276,7 @@ const astHasRamoseRefMarker = (ast: SchemaAST.AST): boolean => {
   );
 };
 
-const astContainsRamoseRef = (
-  ast: SchemaAST.AST,
-  active: ReadonlySet<object> = new Set(),
-): boolean => {
-  if (active.has(ast)) return false;
-  const next = new Set(active).add(ast);
+const astChildren = (ast: SchemaAST.AST): readonly SchemaAST.AST[] => {
   const node = ast as SchemaAST.AST & {
     readonly types?: ReadonlyArray<SchemaAST.AST>;
     readonly elements?: ReadonlyArray<SchemaAST.AST>;
@@ -289,15 +284,33 @@ const astContainsRamoseRef = (
     readonly propertySignatures?: ReadonlyArray<{ readonly type: SchemaAST.AST }>;
     readonly encoding?: ReadonlyArray<{ readonly to: SchemaAST.AST }>;
   };
-  if (astHasRamoseRefMarker(ast)) return true;
-  const children = [
+  return [
     ...(node.types ?? []),
     ...(node.elements ?? []),
     ...(node.rest ?? []),
     ...(node.propertySignatures ?? []).map((field) => field.type),
     ...(node.encoding ?? []).map((link) => link.to),
   ];
-  return children.some((child) => astContainsRamoseRef(child, next));
+};
+
+const astContainsRamoseRef = (
+  ast: SchemaAST.AST,
+  active: ReadonlySet<object> = new Set(),
+): boolean => {
+  if (active.has(ast)) return false;
+  const next = new Set(active).add(ast);
+  if (astHasRamoseRefMarker(ast)) return true;
+  return astChildren(ast).some((child) => astContainsRamoseRef(child, next));
+};
+
+const astContainsSuspend = (
+  ast: SchemaAST.AST,
+  active: ReadonlySet<object> = new Set(),
+): boolean => {
+  if (active.has(ast)) return false;
+  if (ast._tag === "Suspend") return true;
+  const next = new Set(active).add(ast);
+  return astChildren(ast).some((child) => astContainsSuspend(child, next));
 };
 
 const schemaContainsRamoseRef = (
@@ -337,6 +350,9 @@ export const lowerOperationSchema = (
 ): OperationInputShape => {
   schema = unwrapPropertySchema(schema);
   if (active.has(schema)) return { _tag: "opaque" };
+  if (schema.ast._tag === "Suspend") {
+    throw new Error("suspended operation schemas cannot be lowered");
+  }
   const next = new Set(active).add(schema);
   const valueType = tryInferDbValueType(schema);
   if (valueType === "ref") return refShape(catalog, schema);
@@ -373,6 +389,11 @@ export const lowerOperationSchema = (
       _tag: "array",
       items: lowerOperationSchema(catalog, record.value, next),
     };
+  }
+  if (astContainsSuspend(schema.ast)) {
+    throw new Error(
+      `suspended schemas nested inside an unsupported ${SchemaAST.toType(schema.ast)._tag} operation schema cannot be lowered`,
+    );
   }
   if (schemaContainsRamoseRef(schema)) {
     throw new Error(

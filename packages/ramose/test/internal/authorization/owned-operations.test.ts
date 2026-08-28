@@ -308,6 +308,9 @@ describe("owned operation lowering", () => {
         /refs (nested inside|wrapped by) an unsupported .* operation schema cannot be lowered/,
       );
     }
+    expect(() =>
+      lowerOperationSchema(catalog, Schema.suspend(() => RefSchema.self))
+    ).toThrow("suspended operation schemas cannot be lowered");
   });
 
   test("fails operation lowering before fingerprinting a nested opaque ref", async () => {
@@ -337,6 +340,37 @@ describe("owned operation lowering", () => {
     );
     expect(failure.message).toBe(
       "operation schema lowering failed: refs nested inside an unsupported Union operation schema cannot be lowered",
+    );
+  });
+
+  test("fails operation lowering before fingerprinting a suspended ref", async () => {
+    const Invalid = Entity(
+      "invalidSuspendedRef",
+      {},
+      {
+        operations: (Operation) => ({
+          inspect: Operation({
+            self: false,
+            input: Schema.suspend(() => RefSchema.self),
+            output: Schema.Struct({}),
+            run() {
+              return {};
+            },
+          }),
+        }),
+      },
+    );
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        lowerOwnedOperations(
+          catalog,
+          CatalogSchema({ invalidSuspendedRef: Invalid }),
+          artifactHash,
+        ),
+      ),
+    );
+    expect(failure.message).toBe(
+      "operation schema lowering failed: suspended operation schemas cannot be lowered",
     );
   });
 

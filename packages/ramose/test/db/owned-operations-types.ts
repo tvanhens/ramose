@@ -66,6 +66,31 @@ boundInspectContext.self.set(BoundOperations.catalog, "forged");
 
 const definition = { key: "child", schema: CatalogSchema({}) };
 const BoundOperationsUse = BoundOperations(definition);
+const UnionBoundOperations = Trait(
+  "unionBoundOperations",
+  { catalog: string() },
+  {
+    bind: (
+      definition,
+    ):
+      | { readonly values: { readonly catalog: string } }
+      | { readonly dependencies: readonly [] } =>
+      definition.key === "bound"
+        ? { values: { catalog: definition.key } }
+        : { dependencies: [] },
+    operations: (Operation) => ({
+      inspect: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          // @ts-expect-error any union branch that binds a value makes it fixed
+          op.self.set(UnionBoundOperations.catalog, "forged");
+          return {};
+        },
+      }),
+    }),
+  },
+);
 const BoundEntity = Entity(
   "boundEntity",
   { title: string() },
