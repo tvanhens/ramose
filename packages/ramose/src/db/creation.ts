@@ -18,7 +18,7 @@ import {
   type CreationDefaultInputs,
 } from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
-import { snapshotSchema } from "./schemaSnapshot.ts";
+import { bindDeployedSchema } from "./deployedSchema.ts";
 import { traitsOf, type ComposerLike } from "./compose.ts";
 
 export class BindingConflictError extends Error {
@@ -52,7 +52,7 @@ type CreationFieldEncoder = (value: unknown) => unknown;
 
 type CreationFieldCodec = {
   readonly encode: CreationFieldEncoder;
-  readonly representation: Schema.Json;
+  readonly projection: Schema.Json;
 };
 
 export interface CompositionValueMetadata {
@@ -75,7 +75,7 @@ export type CompiledCreationField = {
   readonly cardinality: "one" | "many";
   readonly optional: boolean;
   readonly encoder: CreationFieldEncoder;
-  readonly schemaRepresentation: Schema.Json;
+  readonly schemaProjection: Schema.Json;
   readonly fixed: unknown | undefined;
   readonly defaults: readonly CompiledCreationDefault[];
   readonly fieldDefault: CompiledCreationDefault | undefined;
@@ -215,10 +215,10 @@ export const compositionValueMetadataFromBindings = (
   const defaults = new Map<string, DefaultEntry[]>();
   const encoders = new Map<string, CreationFieldCodec>();
   for (const field of Object.values(entity.fields)) {
-    const snapshot = snapshotSchema(field.schema);
+    const binding = bindDeployedSchema(field.schema);
     encoders.set(field.ident, Object.freeze({
-      encode: snapshot.codec.encode,
-      representation: snapshot.representation,
+      encode: binding.codec.encode,
+      projection: binding.projection,
     }));
   }
 
@@ -288,7 +288,7 @@ export const compileCreationPlan = (
     const codec = metadata.encoders.get(field.ident);
     if (codec === undefined) {
       throw new CreationValueError(
-        `ramose/create: no snapshotted codec for ${field.ident}`,
+        `ramose/create: no deployed codec binding for ${field.ident}`,
       );
     }
     const fixed = metadata.fixed.get(field.ident);
@@ -312,7 +312,7 @@ export const compileCreationPlan = (
       cardinality: field.cardinality,
       optional: isOptionalField(field),
       encoder: codec.encode,
-      schemaRepresentation: codec.representation,
+      schemaProjection: codec.projection,
       fixed: fixed === undefined ? undefined : cloneBindingValue(fixed.value),
       defaults: Object.freeze(defaults),
       fieldDefault,
@@ -528,7 +528,7 @@ export const resolveCreationValues = (
     const encoder = metadata.encoders.get(field.ident)?.encode;
     if (encoder === undefined) {
       throw new CreationValueError(
-        `ramose/create: no snapshotted codec for ${field.ident}`,
+        `ramose/create: no deployed codec binding for ${field.ident}`,
       );
     }
     const fixed = metadata.fixed.get(field.ident);

@@ -2,7 +2,9 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import {
   Entity,
   EntityId as OperationEntityId,
@@ -17,6 +19,7 @@ import { Ref as RefSchema } from "../../../src/db/valueTypes.ts";
 import {
   lowerOperationSchema,
   lowerOwnedOperations,
+  pairDeployedOperationSchemas,
 } from "../../../src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
@@ -270,16 +273,58 @@ describe("owned operation lowering", () => {
       .toThrow();
   });
 
-  test("rejects operation codecs with caller-owned callback captures", async () => {
-    let allow = true;
+  test("executes deployed refinements and transformations without reviving metadata", async () => {
+    const trustedPrefix = "trusted:";
+    const suffix = "!";
     const Captured = Schema.String.check(Schema.makeFilter((value) =>
-      allow && value.length > 0 ? true : "blocked"
-    ));
+      value.startsWith(trustedPrefix) ? true : "blocked"
+    )).pipe(Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.transform((value) => `${value}${suffix}`),
+      encode: SchemaGetter.transform((value) => value.slice(0, -suffix.length)),
+    }));
+    const EncodedOutput = Schema.String.pipe(Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.transform((value) => value.replace(/^wire:/, "")),
+      encode: SchemaGetter.transform((value) => `wire:${value}`),
+    }));
     const Worker = Entity("callbackWorker", {}, {
       operations: (Operation) => ({
         run: Operation({
           self: false,
           input: Schema.Struct({ value: Captured }),
+          output: Schema.Struct({ value: EncodedOutput }),
+          run: (_op, input) => ({ value: input.value }),
+        }),
+      }),
+    });
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ callbackWorker: Worker }),
+        artifactHash,
+      ),
+    );
+    const definition = lowered.definitions[0]!;
+
+    expect(definition.input.decode({ value: "trusted:value" })).toEqual({
+      value: "trusted:value!",
+    });
+    expect(() => definition.input.decode({ value: "blocked" })).toThrow();
+    expect(definition.output.encode({ value: "ready" })).toEqual({
+      value: "wire:ready",
+    });
+    expect(JSON.stringify(lowered.descriptors)).not.toContain(trustedPrefix);
+  });
+
+  test("fails clearly when a public wire contract has no structural projection", async () => {
+    const Opaque = Schema.declare<string>(
+      (value): value is string => typeof value === "string",
+      { identifier: "opaque-input" },
+    );
+    const Worker = Entity("opaqueWorker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Opaque,
           output: Schema.Struct({}),
           run: () => ({}),
         }),
@@ -288,15 +333,51 @@ describe("owned operation lowering", () => {
     const failure = await Effect.runPromise(Effect.flip(
       lowerOwnedOperations(
         catalog,
-        CatalogSchema({ callbackWorker: Worker }),
+        CatalogSchema({ opaqueWorker: Worker }),
         artifactHash,
       ),
     ));
 
-    expect(failure.message).toMatch(
-      /cannot be sealed without retaining executable callbacks/,
+    expect(failure.message).toContain(
+      "opaque declaration 'opaque-input' has no toCodecJson/toCodec public wire projection",
     );
-    allow = false;
+  });
+
+  test("fails closed when sealed descriptors and private codecs do not pair exactly", async () => {
+    const { App } = fixture();
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(catalog, App, artifactHash),
+    );
+    const definition = lowered.definitions[0]!;
+    const descriptor = lowered.descriptors.find((entry) =>
+      entry.id.owner.kind === definition.owner.kind &&
+      entry.id.owner.name === definition.owner.name &&
+      entry.id.localName === definition.localName
+    )!;
+
+    const missing = pairDeployedOperationSchemas([descriptor], []);
+    expect(Result.isFailure(missing)).toBe(true);
+    if (Result.isFailure(missing)) {
+      expect(missing.failure.message).toMatch(/missing deployed schema binding/);
+    }
+
+    const duplicate = pairDeployedOperationSchemas(
+      [descriptor],
+      [definition, definition],
+    );
+    expect(Result.isFailure(duplicate)).toBe(true);
+    if (Result.isFailure(duplicate)) {
+      expect(duplicate.failure.message).toMatch(/duplicate deployed schema binding/);
+    }
+
+    const mismatch = pairDeployedOperationSchemas([descriptor], [{
+      ...definition,
+      inputSchemaHash: DigestHex.make("f".repeat(64)),
+    }]);
+    expect(Result.isFailure(mismatch)).toBe(true);
+    if (Result.isFailure(mismatch)) {
+      expect(mismatch.failure.message).toMatch(/mismatched deployed schema binding/);
+    }
   });
 
   test("keeps trait ownership once and derives direct plus transitive composers", async () => {

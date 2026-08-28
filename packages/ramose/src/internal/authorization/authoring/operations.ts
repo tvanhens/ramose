@@ -1,9 +1,9 @@
 /**
  * Lower public entity/trait-owned operations into catalog-local data.
  *
- * One synchronous snapshot captures descriptor material and compiled runtime
- * codecs before hashing yields. No caller-owned owner, schema, write entity,
- * or operation callback survives lowering.
+ * One synchronous snapshot captures inert descriptor material and compiles
+ * authoritative codecs from the original deployed schemas before hashing
+ * yields. No mutable authoring schema object survives lowering.
  */
 
 import * as Effect from "effect/Effect";
@@ -25,7 +25,10 @@ import {
 import type { AnyEntity } from "../../../db/Entity.ts";
 import type { AnySchema } from "../../../db/Schema.ts";
 import type { AnyTrait } from "../../../db/Trait.ts";
-import { snapshotSchema } from "../../../db/schemaSnapshot.ts";
+import {
+  bindDeployedSchema,
+  type DeployedSchemaCodec,
+} from "../../../db/deployedSchema.ts";
 import {
   isSelfRefSchema,
   refTargetOf,
@@ -54,10 +57,7 @@ import type { JsonValue } from "../json.ts";
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
 const OPERATION_BODY_HASH_DOMAIN_V1 = "ramose/operation-body/v1\0";
 
-export type DeployedOperationCodec = {
-  readonly decode: (value: unknown) => unknown;
-  readonly encode: (value: unknown) => unknown;
-};
+export type DeployedOperationCodec = DeployedSchemaCodec;
 
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
@@ -67,6 +67,8 @@ export type DeployedOperationDefinition = {
   readonly writes: readonly EntityId[];
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
+  readonly inputSchemaHash: DigestHex;
+  readonly outputSchemaHash: DigestHex;
   readonly doc: string | undefined;
   /** Frozen source retained for #417 compilation; never invoked by this plan. */
   readonly bodySource: string;
@@ -115,6 +117,94 @@ const ownerRefOf = (owner: OperationOwner): OwnerRef => ({
 
 const definitionKey = (owner: OwnerRef, localName: string): string =>
   `${owner.kind}\0${owner.name}\0${localName}`;
+
+const operationLabel = (owner: OwnerRef, localName: string): string =>
+  `${owner.kind} '${owner.name}.${localName}'`;
+
+const hasCodec = (value: unknown): value is DeployedOperationCodec =>
+  typeof value === "object" && value !== null &&
+  typeof (value as { readonly decode?: unknown }).decode === "function" &&
+  typeof (value as { readonly encode?: unknown }).encode === "function";
+
+/**
+ * Pair private codecs with the exact inert descriptors sealed into a unit.
+ * Missing, duplicate, or cross-build schema bindings fail startup.
+ */
+export const pairDeployedOperationSchemas = (
+  descriptors: readonly OperationDescriptorType[],
+  definitions: readonly DeployedOperationDefinition[],
+): Result.Result<readonly DeployedOperationDefinition[], InvalidIR> =>
+  Result.gen(function* () {
+    const byKey = new Map<string, DeployedOperationDefinition>();
+    for (const definition of definitions) {
+      const key = definitionKey(definition.owner, definition.localName);
+      if (byKey.has(key)) {
+        return yield* Result.fail(invalid(
+          `duplicate deployed schema binding for ${
+            operationLabel(definition.owner, definition.localName)
+          }`,
+        ));
+      }
+      if (!hasCodec(definition.input) || !hasCodec(definition.output)) {
+        return yield* Result.fail(invalid(
+          `missing deployed schema codec for ${
+            operationLabel(definition.owner, definition.localName)
+          }`,
+        ));
+      }
+      byKey.set(key, definition);
+    }
+
+    const paired: DeployedOperationDefinition[] = [];
+    const descriptorKeys = new Set<string>();
+    for (const descriptor of descriptors) {
+      const key = definitionKey(descriptor.id.owner, descriptor.id.localName);
+      if (descriptorKeys.has(key)) {
+        return yield* Result.fail(invalid(
+          `duplicate operation descriptor for ${
+            operationLabel(descriptor.id.owner, descriptor.id.localName)
+          }`,
+        ));
+      }
+      descriptorKeys.add(key);
+      const definition = byKey.get(key);
+      if (definition === undefined) {
+        return yield* Result.fail(invalid(
+          `missing deployed schema binding for ${
+            operationLabel(descriptor.id.owner, descriptor.id.localName)
+          }`,
+        ));
+      }
+      if (
+        definition.id.catalog !== descriptor.id.catalog ||
+        definition.id.owner.kind !== descriptor.id.owner.kind ||
+        definition.id.owner.name !== descriptor.id.owner.name ||
+        definition.id.localName !== descriptor.id.localName ||
+        definition.id.target !== descriptor.id.target ||
+        (definition.self ? "required" : "none") !== descriptor.id.target ||
+        definition.inputSchemaHash !== descriptor.inputSchemaHash ||
+        definition.outputSchemaHash !== descriptor.outputSchemaHash
+      ) {
+        return yield* Result.fail(invalid(
+          `mismatched deployed schema binding for ${
+            operationLabel(descriptor.id.owner, descriptor.id.localName)
+          }`,
+        ));
+      }
+      byKey.delete(key);
+      paired.push(definition);
+    }
+
+    const extra = byKey.values().next().value;
+    if (extra !== undefined) {
+      return yield* Result.fail(invalid(
+        `deployed schema binding has no descriptor for ${
+          operationLabel(extra.owner, extra.localName)
+        }`,
+      ));
+    }
+    return Object.freeze(paired);
+  });
 
 const operationsOf = (
   owner: OperationOwner,
@@ -540,14 +630,14 @@ export const snapshotOwnedOperations = (
         localName: draft.localName,
         target: operation.self ? "required" : "none",
       });
-      let inputSchemaSnapshot: ReturnType<typeof snapshotSchema>;
-      let outputSchemaSnapshot: ReturnType<typeof snapshotSchema>;
+      let inputSchemaBinding: ReturnType<typeof bindDeployedSchema>;
+      let outputSchemaBinding: ReturnType<typeof bindDeployedSchema>;
       try {
-        inputSchemaSnapshot = snapshotSchema(operation.input);
-        outputSchemaSnapshot = snapshotSchema(operation.output);
+        inputSchemaBinding = bindDeployedSchema(operation.input);
+        outputSchemaBinding = bindDeployedSchema(operation.output);
       } catch (cause) {
         return yield* Result.fail(invalid(
-          `operation schema snapshot failed for '${draft.owner.ns}.${draft.localName}': ${
+          `operation schema binding failed for '${draft.owner.ns}.${draft.localName}': ${
             cause instanceof Error ? cause.message : String(cause)
           }`,
         ));
@@ -555,13 +645,13 @@ export const snapshotOwnedOperations = (
       const inputSchemaMaterial = yield* schemaHashMaterial(
         catalog,
         operation.input,
-        inputSchemaSnapshot.representation as JsonValue,
+        inputSchemaBinding.projection as JsonValue,
         artifactHash,
       );
       const outputSchemaMaterial = yield* schemaHashMaterial(
         catalog,
         operation.output,
-        outputSchemaSnapshot.representation as JsonValue,
+        outputSchemaBinding.projection as JsonValue,
         artifactHash,
       );
       const inputShape = lowerOperationSchema(catalog, operation.input);
@@ -594,8 +684,8 @@ export const snapshotOwnedOperations = (
         outputShape: deepFreeze(outputShape),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
         outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
-        inputCodec: inputSchemaSnapshot.codec,
-        outputCodec: outputSchemaSnapshot.codec,
+        inputCodec: inputSchemaBinding.codec,
+        outputCodec: outputSchemaBinding.codec,
         doc: operation.doc,
         bodySource: capturedBodySource,
         bodyHashMaterial: deepFreeze({
@@ -659,6 +749,8 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           writes: snapshot.writes,
           input: snapshot.inputCodec,
           output: snapshot.outputCodec,
+          inputSchemaHash,
+          outputSchemaHash,
           doc: snapshot.doc,
           bodySource: snapshot.bodySource,
         }) as DeployedOperationDefinition,

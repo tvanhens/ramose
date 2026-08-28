@@ -455,7 +455,7 @@ describe("catalog definition assembly", () => {
     )).toThrow(/invalid explicit value/);
   });
 
-  test("binds trusted field schema representations into the unit hash", async () => {
+  test("binds inert field schema projections into the unit hash", async () => {
     const schemaFor = (values: readonly [string, ...string[]]) => Schema({
       item: Entity("item", {
         value: Field(stored(EffectSchema.Literals(values), "string")),
@@ -494,10 +494,10 @@ describe("catalog definition assembly", () => {
     )).toEqual({ value: "right" });
   });
 
-  test("rejects field codecs with caller-owned callback captures", async () => {
-    let allow = true;
+  test("executes trusted deployed field refinements without reviving metadata", async () => {
+    const trustedPrefix = "trusted:";
     const Captured = EffectSchema.String.check(EffectSchema.makeFilter((value) =>
-      allow && value.length > 0 ? true : "blocked"
+      value.startsWith(trustedPrefix) ? true : "blocked"
     ));
     const App = Schema({
       item: Entity("item", { value: Field(Captured) }),
@@ -507,10 +507,21 @@ describe("catalog definition assembly", () => {
       policy: await policy(App),
     });
 
-    expect((await assembleFailure(definition)).message).toMatch(
-      /cannot be sealed without retaining executable callbacks/,
+    const installed = Result.getOrThrow(
+      (await assemble(definition)).require(CatalogId.make("callback-field")),
     );
-    allow = false;
+    expect(Reflect.set(Captured, "ast", EffectSchema.Finite.ast)).toBe(true);
+    expect(installed.resolveCreationValues(
+      "item",
+      { value: "trusted:value" },
+      { now: new Date(0) },
+    )).toEqual({ value: "trusted:value" });
+    expect(() => installed.resolveCreationValues(
+      "item",
+      { value: "blocked" },
+      { now: new Date(0) },
+    )).toThrow(/invalid explicit value/);
+    expect(JSON.stringify(installed.unit)).not.toContain(trustedPrefix);
   });
 
   test("compiled boundary ignores every original authoring mutation", async () => {

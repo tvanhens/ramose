@@ -69,6 +69,7 @@ import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { JsonValue } from "./json.ts";
 import {
   lowerOwnedOperationSnapshots,
+  pairDeployedOperationSchemas,
   snapshotOwnedOperations,
   type DeployedOperationDefinition,
   type OwnedOperationSnapshot,
@@ -296,7 +297,7 @@ const creationHashMaterial = (
         .sort((left, right) => compareText(left.ident, right.ident))
         .map((field) => ({
           field: field.ident,
-          representation: field.schemaRepresentation as JsonValue,
+          projection: field.schemaProjection as JsonValue,
         })),
       fieldDefaults: plan.fields
         .filter((field) => field.fieldDefault !== undefined)
@@ -460,6 +461,9 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       template,
     });
     const unit = yield* sealInstalledCatalogUnit(descriptor, policy);
+    const operations = yield* Effect.fromResult(
+      pairDeployedOperationSchemas(unit.catalog.operations, lowered.definitions),
+    );
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
     const creationByEntity = new Map(
       snapshot.creationPlans.map((plan) => [plan.entity, plan] as const),
@@ -483,7 +487,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       unitHash: unit.unitHash,
       unit,
       composition,
-      operations: Object.freeze([...lowered.definitions]),
+      operations,
       path: snapshot.path,
       resolveCreationValues,
     });
