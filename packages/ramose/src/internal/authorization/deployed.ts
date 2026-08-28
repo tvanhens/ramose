@@ -131,9 +131,23 @@ const bindRuntimeOperations = (
     return invalid("deployed operation definition coverage is incomplete");
   }
   const byId = new Map<string, DeployedOperationDefinition>();
+  const descriptorsById = new Map(
+    descriptor.operations.map((operation) =>
+      [deployedOperationKey(operation.id), operation] as const
+    ),
+  );
   for (const definition of definitions) {
     const key = deployedOperationKey(definition.id);
     if (byId.has(key)) return invalid(`duplicate deployed operation '${definition.localName}'`);
+    const sealedDescriptor = descriptorsById.get(key);
+    if (
+      sealedDescriptor === undefined ||
+      encodedOperation(definition.descriptor) !== encodedOperation(sealedDescriptor)
+    ) {
+      return invalid(
+        `deployed operation definition '${definition.localName}' does not match its descriptor`,
+      );
+    }
     byId.set(key, definition);
   }
   for (const operation of descriptor.operations) {

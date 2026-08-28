@@ -15,6 +15,7 @@
  */
 
 import type * as Brand from "effect/Brand";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { CatalogDescriptor, RuleAccessPlan } from "./catalog.ts";
 import { CanonicalAuthorizationExpr, RelativeAuthorizationExpr } from "./expr.ts";
@@ -126,7 +127,9 @@ export const AuthorizationDecisions = <
     entities: Schema.Array(DecisionEntry(ids.entity)),
     traits: Schema.Array(DecisionEntry(ids.trait)),
     fields: Schema.Array(DecisionEntry(ids.field)),
-    operations: Schema.Array(DecisionEntry(ids.operation)),
+    operations: Schema.Array(DecisionEntry(ids.operation)).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed([])),
+    ),
   });
 
 /**

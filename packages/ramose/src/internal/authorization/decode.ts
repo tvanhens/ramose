@@ -264,6 +264,19 @@ export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalled
   },
 );
 
+/** Hash compatibility for v1 policy documents emitted before operation decisions existed. */
+export const hashInstalledAuthorizationWithoutOperationDecisions = Effect.fn(
+  "Authorization.hashInstalledAuthorizationWithoutOperationDecisions",
+)(function* (document: InstalledAuthorizationIRType) {
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+    omitOperationDecisions(
+      omitKey(encodedJson(encodeInstalledAuthorization(document)), "policyHash"),
+    ),
+  );
+  return PolicyHash.make(digest);
+});
+
 export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCatalogUnit")(
   function* (document: InstalledCatalogUnitType) {
     const digest = yield* hashDomainSeparatedCanonicalJson(
@@ -273,6 +286,19 @@ export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCa
     return CatalogUnitHash.make(digest);
   },
 );
+
+/** Hash compatibility for v2 units embedding a pre-operation-decision v1 policy. */
+export const hashInstalledCatalogUnitWithoutOperationDecisions = Effect.fn(
+  "Authorization.hashInstalledCatalogUnitWithoutOperationDecisions",
+)(function* (document: InstalledCatalogUnitType) {
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
+    omitEmbeddedPolicyOperationDecisions(
+      omitKey(encodedJson(encodeInstalledCatalogUnit(document)), "unitHash"),
+    ),
+  );
+  return CatalogUnitHash.make(digest);
+});
 
 /**
  * SHA-256 of the normalized catalog schema tables. Material is RFC 8785
@@ -590,6 +616,25 @@ const omitKey = (encoded: JsonValue, key: string): JsonValue => {
     if (name !== key) body[name] = ownJsonField(encoded, name);
   }
   return body;
+};
+
+const replaceKey = (encoded: JsonValue, key: string, value: JsonValue): JsonValue => {
+  if (typeof encoded !== "object" || encoded === null || Array.isArray(encoded)) {
+    throw new TypeError("ramose/authorization: expected JSON object");
+  }
+  const body: Record<string, JsonValue> = Object.create(null);
+  for (const name of Object.keys(encoded)) {
+    body[name] = name === key ? value : ownJsonField(encoded, name);
+  }
+  return body;
+};
+
+const omitOperationDecisions = (encoded: JsonValue): JsonValue =>
+  replaceKey(encoded, "decisions", omitKey(ownJsonField(encoded, "decisions"), "operations"));
+
+const omitEmbeddedPolicyOperationDecisions = (encoded: JsonValue): JsonValue => {
+  const policy = ownJsonField(encoded, "policy");
+  return replaceKey(encoded, "policy", omitOperationDecisions(policy));
 };
 
 const ownJsonField = (encoded: JsonValue, key: string): JsonValue => {

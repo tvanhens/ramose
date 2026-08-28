@@ -537,9 +537,11 @@ const validateProducedDatoms = async (
       ? undefined
       : fixedFieldsByType.get(rowType)?.get(ident);
     if (fixed !== undefined) {
-      const expected = fixed.value instanceof Date && datom.vt === ValueTag.Inst
-        ? fixed.value.getTime()
-        : fixed.value;
+      const normalizeExpected = (value: unknown): unknown =>
+        value instanceof Date && datom.vt === ValueTag.Inst ? value.getTime() : value;
+      const expected = Array.isArray(fixed.value)
+        ? fixed.value.map(normalizeExpected)
+        : normalizeExpected(fixed.value);
       const allowedCreationValue = createdTypes.has(datom.e) &&
         !(await report.dbBefore.exists(datom.e)) && datom.op &&
         (Array.isArray(expected)

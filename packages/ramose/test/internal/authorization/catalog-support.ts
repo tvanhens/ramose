@@ -131,6 +131,7 @@ export const runtimeOperationsFor = (
   descriptors: descriptor.operations,
   definitions: descriptor.operations.map((operation) => ({
     id: operation.id,
+    descriptor: operation,
     owner: {
       _tag: operation.id.owner.kind === "entity" ? "Entity" : "Trait",
       ns: operation.id.owner.name,

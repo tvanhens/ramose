@@ -32,7 +32,9 @@ import {
   hashCanonicalRule,
   hashCatalogSchemaFingerprint,
   hashInstalledAuthorization,
+  hashInstalledAuthorizationWithoutOperationDecisions,
   hashInstalledCatalogUnit,
+  hashInstalledCatalogUnitWithoutOperationDecisions,
 } from "./decode.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, InvalidIR } from "./failures.ts";
 import {
@@ -501,7 +503,13 @@ const requireEmbeddedPolicyHashes = Effect.fn("Authorization.requireEmbeddedPoli
     catalogId: CatalogId,
   ): Effect.fn.Return<void, InvalidIR | CatalogUnitCorrupt> {
     const policyHash = yield* hashInstalledAuthorization(policy);
-    if (policyHash !== policy.policyHash) {
+    let validPolicyHash = policyHash === policy.policyHash;
+    if (!validPolicyHash && policy.decisions.operations.length === 0) {
+      validPolicyHash =
+        (yield* hashInstalledAuthorizationWithoutOperationDecisions(policy)) ===
+          policy.policyHash;
+    }
+    if (!validPolicyHash) {
       return yield* new CatalogUnitCorrupt({
         message: "installed policy hash mismatch",
         catalog: catalogId,
@@ -580,7 +588,13 @@ export const verifyInstalledCatalogUnit = Effect.fn("Authorization.verifyInstall
     );
     yield* requireCatalogUnitDigests(tables);
     const digest = yield* hashInstalledCatalogUnit(snapshot);
-    if (digest !== snapshot.unitHash) {
+    let validUnitHash = digest === snapshot.unitHash;
+    if (!validUnitHash && snapshot.policy.decisions.operations.length === 0) {
+      validUnitHash =
+        (yield* hashInstalledCatalogUnitWithoutOperationDecisions(snapshot)) ===
+          snapshot.unitHash;
+    }
+    if (!validUnitHash) {
       return yield* new CatalogUnitCorrupt({
         message: "catalog unit hash mismatch",
         catalog: snapshot.catalog.id,

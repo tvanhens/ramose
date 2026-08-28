@@ -94,11 +94,19 @@ export const OperationIssue = Db.Entity(
 
 const OperationBound = Db.Trait(
   "operation-bound",
-  { catalog: Db.string({ optional: true }) },
+  {
+    catalog: Db.string({ optional: true }),
+    instants: Db.Field.many(Db.timestamp()),
+  },
   {
     bind: (definition) => definition.key === "mutable"
       ? { values: {} }
-      : { values: { catalog: definition.key } },
+      : {
+          values: {
+            catalog: definition.key,
+            instants: [new Date(0), new Date(1_000)],
+          },
+        },
     operations: (Operation) => ({
       inspect: Operation({
         input: Schema.Struct({}),
@@ -274,6 +282,11 @@ const boundCatalogId = FieldId.make({
   owner: { kind: "trait", name: OperationBound.ns },
   localName: "catalog",
 });
+const boundInstantsId = FieldId.make({
+  catalog: OP_CATALOG,
+  owner: { kind: "trait", name: OperationBound.ns },
+  localName: "instants",
+});
 
 const lowered = await Effect.runPromise(
   lowerOwnedOperations(OP_CATALOG, OperationSchema, artifact),
@@ -360,6 +373,14 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       cardinality: "one",
       index: false,
       optional: true,
+      owned: false,
+    },
+    {
+      id: boundInstantsId,
+      valueType: "instant",
+      cardinality: "many",
+      index: false,
+      optional: false,
       owned: false,
     },
     {

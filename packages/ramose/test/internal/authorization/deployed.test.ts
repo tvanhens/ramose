@@ -93,6 +93,24 @@ describe("assembleDeployedCatalogs", () => {
     expect(failure.message).toContain("operation definition coverage");
   });
 
+  test("runtime definitions must remain paired with their hashed descriptors", async () => {
+    const descriptor = catalogDescriptor();
+    const runtime = runtimeOperationsFor(descriptor);
+    const operations = {
+      ...runtime,
+      definitions: runtime.definitions.map((definition) => ({
+        ...definition,
+        descriptor: { ...definition.descriptor, bodyHash: digestHex(0xfe) },
+      })),
+    };
+    const failure = await assembleFail({
+      root: catalog,
+      units: [appUnit({ descriptor, operations })],
+    });
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain("does not match its descriptor");
+  });
+
   test("trusted database lookup returns the sealed unit; databases() lists it", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
     const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
