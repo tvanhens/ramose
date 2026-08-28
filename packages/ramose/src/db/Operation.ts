@@ -223,6 +223,7 @@ export const OwnedOperations: unique symbol = Symbol.for(
 );
 
 declare const OwnedOperationOwnerBrand: unique symbol;
+declare const OwnedOpContextBrand: unique symbol;
 const OwnedOperationAuthorToken: unique symbol = Symbol(
   "ramose/owned-operation-author-token",
 );
@@ -475,6 +476,11 @@ export type OwnedOp<
   Op<AnySchema, undefined>,
   "self" | "entity" | "set" | "remove" | "delete" | "put" | "update"
 > & {
+  readonly [OwnedOpContextBrand]: {
+    readonly owner: Owner;
+    readonly self: Self;
+    readonly writes: Writes;
+  };
   readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
   entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
   entity<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
@@ -783,15 +789,17 @@ type InvalidOperationName<K extends string> = {
 export type ValidOwnedOperationMap<
   Ops extends Readonly<Record<string, AnyUnboundOperation>>,
   Owner extends OperationOwnerShape,
-> = {
-  readonly [K in keyof Ops]: K extends string
-    ? K extends ValidIdentName<K>
-      ? Ops[K] extends { readonly [OwnedOperationOwnerBrand]: Owner }
-        ? Ops[K]
-        : never
-      : Ops[K] & InvalidOperationName<K>
-    : never;
-};
+> = string extends keyof Ops
+  ? never
+  : {
+      readonly [K in keyof Ops]: K extends string
+        ? K extends ValidIdentName<K>
+          ? Ops[K] extends { readonly [OwnedOperationOwnerBrand]: Owner }
+            ? Ops[K]
+            : never
+          : Ops[K] & InvalidOperationName<K>
+        : never;
+    };
 
 export interface Operations<
   M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
@@ -889,18 +897,51 @@ type OwnedOperationSpec<
   Self extends boolean,
   Writes extends readonly AnyEntity[],
   Context,
+  Run,
 > = {
   readonly input: ICodec;
   readonly output: OCodec;
   readonly self?: Self;
-  readonly writes?: Writes;
+  readonly writes?: ValidWriteDefinitions<Writes>;
   readonly doc?: string;
   readonly run: [Context] extends [never]
     ? UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>
     : Context extends OperationOwnerShape
-      ? OwnedRun<Context, ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>
+      ? OwnedRun<Context, ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes> &
+          Run &
+          ExactRunContext<
+            Run,
+            OwnedOp<Context, NormalizeOwnedSelf<Self>, Writes>
+          >
       : never;
 };
+
+type RunContext<Run> = Run extends (...args: infer Args) => unknown
+  ? Args["length"] extends 0
+    ? undefined
+    : Args[0]
+  : never;
+
+type ExactRunContext<Run, Expected> = [RunContext<Run>] extends [undefined]
+  ? unknown
+  : [RunContext<Run>] extends [Expected]
+    ? [Expected] extends [RunContext<Run>]
+      ? unknown
+      : never
+    : never;
+
+type IsUnion<T, Whole = T> = T extends unknown
+  ? [Whole] extends [T]
+    ? false
+    : true
+  : never;
+
+type ValidWriteDefinitions<Writes extends readonly AnyEntity[]> =
+  number extends Writes["length"]
+    ? never
+    : true extends IsUnion<Writes>
+      ? never
+      : Writes;
 
 /**
  * Owner-bound constructor supplied to an Entity/Trait `operations` authoring
@@ -913,8 +954,15 @@ export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
     const OCodec extends Schema.Top,
     const Self extends boolean = true,
     const Writes extends readonly AnyEntity[] = readonly [],
+    const Run extends OwnedRun<
+      Owner,
+      ICodec,
+      OCodec,
+      NormalizeOwnedSelf<Self>,
+      Writes
+    > = OwnedRun<Owner, ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>,
   >(
-    spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, Owner>,
+    spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, Owner, Run>,
   ): OwnerAuthoredOperation<
     Owner,
     ICodec,
@@ -931,8 +979,13 @@ function defineOperation<
   const OCodec extends Schema.Top,
   const Self extends boolean = true,
   const Writes extends readonly AnyEntity[] = readonly [],
+  const Run extends UnboundOwnedRun<
+    ICodec,
+    OCodec,
+    NormalizeOwnedSelf<Self>
+  > = UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>,
 >(
-  spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, never>,
+  spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, never, Run>,
 ): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>;
 /** Standalone form retained for the pre-authoritative local peer fixtures. */
 function defineOperation<
@@ -954,7 +1007,8 @@ function defineOperation(
         Schema.Top,
         boolean,
         readonly AnyEntity[],
-        never
+        never,
+        UnboundOwnedRun<Schema.Top, Schema.Top, boolean>
       >,
   schemas?: OperationSchemas<unknown, unknown, AnyEntity | undefined, AnySchema>,
   body?: (op: Op<AnySchema, AnyEntity | undefined>, input: unknown) => unknown,
@@ -1095,7 +1149,7 @@ export const bindOwnedOperations = <
 ): BoundOwnerOperations<Owner, Ops> => {
   const out: Record<string, AnyOwnedOperation> = {};
   if (operations === undefined) {
-    return out as BoundOwnerOperations<Owner, Ops>;
+    return out as unknown as BoundOwnerOperations<Owner, Ops>;
   }
   if (Reflect.ownKeys(operations).some((key) => typeof key !== "string")) {
     throw new Error("ramose/schema: operation map keys must be strings");
@@ -1142,7 +1196,7 @@ export const bindOwnedOperations = <
       run: operation.run,
     } as unknown as AnyOwnedOperation;
   }
-  return out as BoundOwnerOperations<Owner, Ops>;
+  return out as unknown as BoundOwnerOperations<Owner, Ops>;
 };
 
 export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
@@ -1161,7 +1215,14 @@ export const ownedOperationAuthor = <
       Schema.Top,
       boolean,
       readonly AnyEntity[],
-      Owner
+      Owner,
+      OwnedRun<
+        Owner,
+        Schema.Top,
+        Schema.Top,
+        boolean,
+        readonly AnyEntity[]
+      >
     >,
   ) => {
     const operation = defineOperation(
@@ -1170,7 +1231,8 @@ export const ownedOperationAuthor = <
         Schema.Top,
         boolean,
         readonly AnyEntity[],
-        never
+        never,
+        UnboundOwnedRun<Schema.Top, Schema.Top, boolean>
       >,
     ) as AnyUnboundOperation;
     Object.defineProperty(operation, OwnedOperationAuthorToken, { value: token });

@@ -5,6 +5,7 @@
 
 import * as Schema from "effect/Schema";
 import type { Eid } from "../../src/db/Eid.ts";
+import type { AnyEntity } from "../../src/db/Entity.ts";
 import type { Equal, Expect, Extends } from "../../src/db/equal.ts";
 import {
   Entity,
@@ -115,6 +116,43 @@ const BoundEntity = Entity(
           op.put(BoundEntity, { title, catalog: "forged" });
           return {};
         },
+      }),
+    }),
+  },
+);
+
+type BroadRunContext = {
+  update(
+    entity: AnyEntity,
+    id: number,
+    attrs: Record<string, unknown>,
+  ): void;
+};
+const extractedBroadRun = (op: BroadRunContext) => {
+  op.update(BoundEntity, 1, { catalog: "forged" });
+  return {};
+};
+const extractedOptionalBroadRun = (op?: BroadRunContext) => {
+  op?.update(BoundEntity, 1, { catalog: "forged" });
+  return {};
+};
+Entity(
+  "extractedRunOwner",
+  { title: string() },
+  {
+    traits: [BoundOperationsUse],
+    operations: (Operation) => ({
+      escaped: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        // @ts-expect-error extracted callbacks must retain the exact owned context
+        run: extractedBroadRun,
+      }),
+      optionalEscape: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        // @ts-expect-error optional parameters cannot widen the owned context
+        run: extractedOptionalBroadRun,
       }),
     }),
   },
@@ -249,12 +287,53 @@ Entity("numberOperationKey", {}, {
     }),
   }),
 });
+Entity("openOperationMap", {}, {
+  // @ts-expect-error owned operation maps must retain literal keys
+  operations: (Operation) => {
+    const spec = Operation({
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    });
+    const key: string = "run";
+    const operations: Record<string, typeof spec> = { [key]: spec };
+    return operations;
+  },
+});
 
 const IssueLike = Trait("issueLike", {});
 const Membership = Entity("membership", {
   issue: Ref(IssueLike),
   user: Ref(User),
   role: string(),
+});
+const widenedWrites: readonly (typeof Membership | typeof Other)[] = [Membership];
+declare const conditionalWrites:
+  | readonly [typeof Membership]
+  | readonly [typeof Other];
+Entity("invalidWriteDependencies", {}, {
+  operations: (Operation) => ({
+    widened: Operation({
+      // @ts-expect-error write dependencies must be a concrete tuple
+      writes: widenedWrites,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+    conditional: Operation({
+      // @ts-expect-error conditional tuples do not guarantee either dependency
+      writes: conditionalWrites,
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
 });
 
 const Issue = Entity(
