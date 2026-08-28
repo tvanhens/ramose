@@ -11,6 +11,7 @@ import { registerPeerContract } from "../contracts/peer.contract.ts";
 import { localUrls } from "./fixtures.ts";
 import { registerCas } from "./cas.ts";
 import { registerInstrumentation } from "./instrumentation.ts";
+import { registerStorage } from "./storage.ts";
 
 setDefaultTimeout(90_000);
 
@@ -22,3 +23,4 @@ registerAuthContract({ urls: localUrls });
 registerOperationsContract({ urls: localUrls });
 registerInstrumentation({ urls: localUrls });
 registerCas({ urls: localUrls });
+registerStorage({ urls: localUrls });

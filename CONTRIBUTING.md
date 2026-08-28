@@ -94,7 +94,7 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 
 - `test/support/recorder.ts` / `test/support/live.ts` — recording `fetch` and `WebSocket` that always call through
 - Checkpoints in `packages/ramose/src/internal/test-hooks.ts` (`transactor.commit`, `replica.apply`, `session.notify`, `indexer.run`)
-- `POST /__test__/db/:name/r2|checkpoint|abort|transact|query` — write/corrupt real local R2, arm/release/throw at a checkpoint, abort a DO isolate, or forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO (status and body pass through; nothing invents success)
+- `POST /__test__/db/:name/r2|storage|checkpoint|abort|transact|query` — write/corrupt real local R2, exercise storage tiers over real local R2/Cache bindings, arm/release/throw at a checkpoint, abort a DO isolate, or forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO (status and body pass through; nothing invents success)
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
 

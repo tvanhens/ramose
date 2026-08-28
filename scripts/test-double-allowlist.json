@@ -4,7 +4,6 @@
     "packages/ramose/test/better-auth/ramoseToken.test.ts": ["memoryAdapter"],
     "packages/ramose/test/internal/replica/session-follow.test.ts": ["FakeSocket", "MemoryBucket", "bun:sqlite", "mock.module"],
     "packages/ramose/test/internal/replica/session-writes.test.ts": ["FakeSocket", "MemoryBucket", "bun:sqlite", "mock.module"],
-    "packages/ramose/test/internal/storage/store.test.ts": ["MemCache", "MemoryBucket"],
     "packages/ramose/test/internal/transactor/harness.ts": ["FakeAnalytics", "FakeSocket", "MemoryBucket", "bun:sqlite"],
     "packages/ramose/test/internal/transactor/indexer.test.ts": ["MemoryBucket"],
     "packages/ramose/test/internal/transactor/observability.test.ts": ["FakeAnalytics"],

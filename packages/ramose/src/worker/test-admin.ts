@@ -18,6 +18,7 @@ import { internalHeaders } from "../internal/transactor/internal.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { BadRequest, Internal, NotFound, UpstreamError } from "./errors.ts";
 import { coloHeader, nearestReplica } from "./peer.ts";
+import { handleStorageTestAdmin } from "./storage-test-admin.ts";
 
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -202,6 +203,7 @@ export const handleTestAdmin = async (
   }
   if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
+  if (rest === "/storage") return handleStorageTestAdmin(request, env, db);
   if (rest === "/checkpoint") {
     const raw = await request.text();
     const body = raw.length === 0 ? {} : (JSON.parse(raw) as { scope?: unknown; action?: unknown; name?: unknown; error?: unknown });

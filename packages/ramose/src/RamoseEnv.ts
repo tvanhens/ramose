@@ -72,7 +72,7 @@ export interface RamoseEnv {
   /** default basis-cache consistency mode: ttl | peer */
   RAMOSE_CACHE_MODE?: string;
   /**
-   * `"1"` enables `/__test__/*` admin (R2 put/get, checkpoints, DO abort).
+   * `"1"` enables `/__test__/*` admin (R2/storage, checkpoints, DO abort).
    * Ignored when `RAMOSE_STAGE` is `prod`. Local integration sets this;
    * production builds must leave it unset.
    */
