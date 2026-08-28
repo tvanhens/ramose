@@ -37,6 +37,11 @@ import {
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { stringifyJson } from "../../../src/internal/core/json.ts";
 import {
+  RAMOSE_COMPOSES,
+  RAMOSE_KIND,
+  attributeDatoms,
+} from "../../../src/internal/core/schema.ts";
+import {
   armCheckpoint,
   checkpointStatus,
   releaseCheckpoint,
@@ -172,7 +177,18 @@ const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
   );
 
 const seedWorld = async () => {
-  const conn = await Connection.create();
+  const conn = await Connection.fromDatoms([
+    ...attributeDatoms(RAMOSE_KIND, {
+      ident: ":ramose/kind",
+      valueType: ":db.type/string",
+      cardinality: "one",
+    }, 1),
+    ...attributeDatoms(RAMOSE_COMPOSES, {
+      ident: ":ramose/composes",
+      valueType: ":db.type/string",
+      cardinality: "many",
+    }, 1),
+  ]);
   await conn.transact(schemaTx(App));
   await installEntityKinds(conn, ["user", "workspace", "tag"]);
   const report = await conn.transact([
