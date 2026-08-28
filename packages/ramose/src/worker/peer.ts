@@ -132,8 +132,12 @@ export const watchBasisChanges = (
   env: RamoseEnv,
   db: string,
   request: Request,
-): Stream.Stream<LiveBasisEvent, Unauthorized> =>
-  Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
+): {
+  readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
+  readonly currentBasis: () => Basis | undefined;
+} => {
+  let currentBasis: Basis | undefined;
+  const changes = Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
     Effect.gen(function* () {
       const expectedDeployment = env.CF_VERSION_METADATA?.id;
       if (typeof expectedDeployment !== "string" || expectedDeployment.length === 0) {
@@ -167,8 +171,21 @@ export const watchBasisChanges = (
       };
       ws.addEventListener("message", (event) => {
         try {
-          const frame = JSON.parse(String(event.data)) as { kind?: unknown; t?: unknown };
-          if (!Number.isSafeInteger(frame.t)) return fail();
+          const frame = JSON.parse(String(event.data)) as {
+            kind?: unknown;
+            t?: unknown;
+            basis?: Partial<Basis>;
+          };
+          const basis = frame.basis;
+          if (
+            !Number.isSafeInteger(frame.t) ||
+            basis?.v !== 1 ||
+            basis.db !== db ||
+            basis.t !== frame.t ||
+            basis.root === undefined ||
+            !Array.isArray(basis.novelty)
+          ) return fail();
+          currentBasis = basis as Basis;
           if (frame.kind === "ready") Queue.offerUnsafe(out, "ready");
           else if (frame.kind === "basis") Queue.offerUnsafe(out, "change");
           else fail();
@@ -188,6 +205,8 @@ export const watchBasisChanges = (
       }));
     }),
   );
+  return { changes, currentBasis: () => currentBasis };
+};
 
 export function wantsBasisCache(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
   const h = request.headers.get("x-ramose-cache-basis") ?? env?.RAMOSE_CACHE_BASIS ?? "1";

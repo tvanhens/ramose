@@ -13,6 +13,7 @@ import {
   executeAuthorizedRead,
   OneShotReadError,
   type AuthorizedLiveInput,
+  type AuthorizedRequestInput,
   type LiveQueryDiff,
   type OneShotRead,
   type OneShotReadOptions,
@@ -46,7 +47,9 @@ export const liveNdjsonStream = <R, EDb>(
  * body without a reason frame.
  */
 export const authorizedLiveResponse = <R, EDb>(
-  input: AuthorizedLiveInput<R, EDb>,
+  input: AuthorizedLiveInput<R, EDb> & {
+    readonly admissionCurrentDb?: AuthorizedRequestInput<R, EDb>["currentDb"];
+  },
   read: OneShotRead,
   opts: OneShotReadOptions,
   headers: Record<string, string>,
@@ -55,7 +58,13 @@ export const authorizedLiveResponse = <R, EDb>(
     // Resolve the first read before returning headers so admission and read
     // failures retain their ordinary HTTP status. The live scope recomputes
     // this value under its own lease at the downstream emission boundary.
-    yield* executeAuthorizedRead(input, read, opts);
+    yield* executeAuthorizedRead(
+      input.admissionCurrentDb === undefined
+        ? input
+        : { ...input, currentDb: input.admissionCurrentDb },
+      read,
+      opts,
+    );
     const context = yield* Effect.context<R>();
     const body = liveNdjsonStream(input, read, opts, context);
     return new Response(body, {

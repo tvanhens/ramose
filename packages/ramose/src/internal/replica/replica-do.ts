@@ -51,7 +51,8 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
 
 const DEPLOYMENT_HEADER = "x-ramose-deployment";
-const LIVE_DEPLOYMENT_INTERVAL_MS = 4_000;
+const LIVE_DEPLOYMENT_INTERVAL_MS = 2_000;
+const LIVE_DEPLOYMENT_TIMEOUT_MS = 2_000;
 const LIVE_UPSTREAM_WATCH_INTERVAL_MS = 1_000;
 const LIVE_UPSTREAM_STALE_MS = 3_500;
 
@@ -572,7 +573,17 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   private notifyBasisWatches(t: number): void {
-    const body = JSON.stringify({ kind: "basis", t });
+    if (this.dbName === undefined || this.root === undefined) {
+      this.closeBasisWatches("basis unavailable");
+      return;
+    }
+    const basis = makeBasis(
+      this.dbName,
+      this.root,
+      this.entries,
+      this.ctx.id.toString().slice(0, 8),
+    );
+    const body = JSON.stringify({ kind: "basis", t, basis });
     for (const [ws] of this.basisWatches()) {
       try {
         ws.send(body);
@@ -697,6 +708,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     if (this.ws?.readyState !== 1) {
       return json({ error: "replica upstream unavailable" }, 503);
     }
+    if (this.dbName === undefined || this.root === undefined) {
+      return json({ error: "database has no root yet" }, 503);
+    }
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
@@ -705,7 +719,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       expectedDeployment,
       healthUrl: health.href,
     } satisfies BasisWatchAttachment);
-    server.send(JSON.stringify({ kind: "ready", t: this.basisT }));
+    const basis = makeBasis(
+      this.dbName,
+      this.root,
+      this.entries,
+      this.ctx.id.toString().slice(0, 8),
+    );
+    server.send(JSON.stringify({ kind: "ready", t: basis.t, basis }));
     this.armWatch();
     await this.armDeploymentWatch();
     return new Response(null, { status: 101, webSocket: client });
@@ -757,6 +777,8 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       return;
     }
     let currentDeployment: string | undefined;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LIVE_DEPLOYMENT_TIMEOUT_MS);
     try {
       // Every accepted origin routes this same Worker. One public probe fences
       // every co-located watcher and keeps the alarm invocation at one
@@ -767,11 +789,14 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         method: "GET",
         headers: { "cache-control": "no-cache" },
         redirect: "error",
+        signal: controller.signal,
       });
       const value = response.headers.get(DEPLOYMENT_HEADER);
       if (response.ok && value !== null && value.length > 0) currentDeployment = value;
     } catch {
       /* an ambiguous deployment probe fails every watch closed */
+    } finally {
+      clearTimeout(timeout);
     }
     for (const [ws, watch] of watches) {
       if (currentDeployment === watch.expectedDeployment) continue;

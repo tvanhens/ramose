@@ -23,6 +23,7 @@ import * as Result from "effect/Result";
 import { authenticateRequest } from "./admit.ts";
 import {
   acquireCurrentDb,
+  acquireWatchedDb,
   parseOneShotReadRequest,
   queryMaxCells,
 } from "./authorized-read.ts";
@@ -277,20 +278,27 @@ export const handle = (
 
     const parsed = yield* parseOneShotReadRequest(request, rest);
     const stacks = env.RAMOSE_STAGE !== "prod";
+    const liveWatch = rest === "/live" ? watchBasisChanges(env, db, request) : undefined;
+    const admissionCurrentDb = acquireCurrentDb(env, request, {
+      bypassBasisCache: rest === "/live",
+      authoritativeBasisFence: rest === "/live",
+    });
     const input = {
       authenticate:
         rest === "/live"
           ? authenticateRequest(request).pipe(Effect.map(callerFromVerified))
           : Effect.succeed(callerFromVerified(verified)),
-      ...(rest === "/live" ? { basisChanges: watchBasisChanges(env, db, request) } : {}),
+      ...(liveWatch === undefined ? {} : {
+        basisChanges: liveWatch.changes,
+        admissionCurrentDb,
+      }),
       catalogs: peer.catalogs,
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,
       unitHash: parsed.unitHash,
-      currentDb: acquireCurrentDb(env, request, {
-        bypassBasisCache: rest === "/live",
-        authoritativeBasisFence: rest === "/live",
-      }),
+      currentDb: liveWatch === undefined
+        ? admissionCurrentDb
+        : acquireWatchedDb(env, liveWatch.currentBasis),
       view: parsed.view,
     };
     const mapReadError = (error: unknown): RamoseError => {

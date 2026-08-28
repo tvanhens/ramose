@@ -17,7 +17,7 @@ import {
 import type { EntityRef } from "../internal/core/db.ts";
 import type { Db } from "../internal/core/db.ts";
 import { parseJson } from "../internal/core/json.ts";
-import { dbFromBasis } from "../internal/replica/basis.ts";
+import { dbFromBasis, type Basis } from "../internal/replica/basis.ts";
 import { envInt } from "../internal/transactor/env.ts";
 import { DEFAULT_QUERY_MAX_CELLS } from "../internal/core/query/engine.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
@@ -206,6 +206,23 @@ export const acquireCurrentDb = (
           bypassCache: options.bypassBasisCache === true,
           authoritativeFence: options.authoritativeBasisFence === true,
         });
+        return dbFromBasis(segmentSource(env, database), basis);
+      },
+      catch: (cause) => fromThrown(cause),
+    });
+
+/** Build repeated live values from the basis carried by the replica watch. */
+export const acquireWatchedDb = (
+  env: RamoseEnv,
+  currentBasis: () => Basis | undefined,
+): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
+  (database) =>
+    Effect.tryPromise({
+      try: async () => {
+        const basis = currentBasis();
+        if (basis === undefined || basis.db !== database) {
+          throw new Error("live basis unavailable");
+        }
         return dbFromBasis(segmentSource(env, database), basis);
       },
       catch: (cause) => fromThrown(cause),

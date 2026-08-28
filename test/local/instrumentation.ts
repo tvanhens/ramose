@@ -126,10 +126,18 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
           once: true,
         });
       });
-      const frame = new Promise<{ kind?: unknown; t?: unknown }>((resolve, reject) => {
+      const frame = new Promise<{
+        kind?: unknown;
+        t?: unknown;
+        basis?: { v?: unknown; db?: unknown; t?: unknown; root?: unknown; novelty?: unknown };
+      }>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("basis notification timed out")), 5_000);
         socket.addEventListener("message", (event) => {
-          const parsed = JSON.parse(String(event.data)) as { kind?: unknown; t?: unknown };
+          const parsed = JSON.parse(String(event.data)) as {
+            kind?: unknown;
+            t?: unknown;
+            basis?: { v?: unknown; db?: unknown; t?: unknown; root?: unknown; novelty?: unknown };
+          };
           if (parsed.kind !== "basis") return;
           clearTimeout(timer);
           resolve(parsed);
@@ -140,7 +148,15 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       });
       expect(committed.status).toBe(200);
       const pushed = await frame;
-      expect(pushed).toEqual({ kind: "basis", t: committed.body.t });
+      expect(pushed.kind).toBe("basis");
+      expect(pushed.t).toBe(committed.body.t);
+      expect(pushed.basis).toMatchObject({
+        v: 1,
+        db,
+        t: committed.body.t,
+      });
+      expect(pushed.basis?.root).toBeDefined();
+      expect(Array.isArray(pushed.basis?.novelty)).toBe(true);
       expect(rec.frames.some((recorded) => recorded.direction === "recv" &&
         (recorded.payload as { kind?: unknown }).kind === "basis")).toBe(true);
       const closed = new Promise<void>((resolve, reject) => {
