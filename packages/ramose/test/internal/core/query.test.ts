@@ -206,7 +206,15 @@ describe("datalog basics", () => {
   test("attribute and tx variables; history db", async () => {
     const attrs = await query(db, `[:find [?a ...] :in $ ?e :where [?e ?a _]]`, [ids.dave]);
     const idents = attrs.map((a: number) => db.attr(a)!.ident).sort();
-    expect(idents).toEqual([":person/active", ":person/age", ":person/boss", ":person/email", ":person/friends", ":person/name"]);
+    expect(idents).toEqual([
+      ":person/active",
+      ":person/age",
+      ":person/boss",
+      ":person/email",
+      ":person/friends",
+      ":person/name",
+      ":ramose/type",
+    ]);
     const txq = await query(db, `[:find ?inst . :where [?e :person/name "Alice" ?tx] [?tx :db/txInstant ?inst]]`);
     expect((txq as Date).getTime()).toBe(1_700_000_000_000);
     // history: age change appears as retract + assert

@@ -11,7 +11,13 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import * as Result from "effect/Result";
+import {
+  compositionFromUnit,
+  type InstalledCatalogUnitV1,
+} from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
+import { restoreEngineTypeAssertions } from "../core/tx-provenance.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
@@ -81,8 +87,15 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('db', ?)`, JSON.stringify(db));
   }
 
-  transact(db: string, tx: unknown[]): Promise<TxAck> {
+  transact(
+    db: string,
+    tx: unknown[],
+    unit: InstalledCatalogUnitV1,
+  ): Promise<TxAck> {
     this.assign(db);
+    const composition = Result.getOrThrow(compositionFromUnit(unit));
+    this.core.bindComposition(unit.unitHash, composition);
+    restoreEngineTypeAssertions(tx);
     return this.core.init().then(() => this.core.transact(tx));
   }
 

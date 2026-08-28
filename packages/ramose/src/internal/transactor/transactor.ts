@@ -33,6 +33,7 @@ import {
   type RootRecord,
   type Roots,
   type TxData,
+  TxError,
   bootstrapDatoms,
   decodeLogChunk,
   emptyRoots,
@@ -49,6 +50,7 @@ import {
   componentLogger,
   toWireDatom,
 } from "../core/index.ts";
+import type { CompositionIndex } from "../core/composition.ts";
 import type { Principal } from "../../worker/auth.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
@@ -192,10 +194,29 @@ export class Transactor {
   /** Analytics Engine sink (no-op when the host has no dataset bound) */
   readonly metrics: TxMetrics;
   private readonly log: Logger;
+  private deployedComposition:
+    | { readonly unitHash: string; readonly index: CompositionIndex }
+    | undefined;
 
   constructor(readonly host: TransactorHost) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
     this.metrics = new TxMetrics(host.analytics);
+  }
+
+  /** Bind this database's one deployed catalog before authoritative writes. */
+  bindComposition(unitHash: string, index: CompositionIndex): void {
+    const current = this.deployedComposition;
+    if (current !== undefined) {
+      if (current.unitHash !== unitHash) {
+        throw new TxError(
+          "cannot change deployed catalog composition",
+          "tx/system",
+        );
+      }
+      return;
+    }
+    this.deployedComposition = { unitHash, index };
+    if (this.conn !== undefined) this.conn.bindComposition(index);
   }
 
   // ---------------------------------------------------------------------------
@@ -232,7 +253,15 @@ export class Transactor {
     const roots: Roots = recordToRoots(rec);
     const nextEid = this.getMeta<number>("next_eid") ?? rec.next_eid;
     const logDatoms = this.readLogDatoms(roots.t);
-    this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, { now: () => this.host.now() });
+    this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, {
+      now: () => this.host.now(),
+      ...(this.deployedComposition === undefined
+        ? {}
+        : { composition: this.deployedComposition.index }),
+    });
+    if (this.deployedComposition !== undefined) {
+      this.conn.bindComposition(this.deployedComposition.index);
+    }
     for (const row of this.getMeta<StoredOpAck[]>("op_acks") ?? []) {
       this.recentOpAcks.set(row.k, row.ack);
       this.recentAcks.set(row.k, row.ack);

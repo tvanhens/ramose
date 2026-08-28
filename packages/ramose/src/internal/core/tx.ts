@@ -39,6 +39,11 @@ import {
   valueKey,
 } from "./datom.ts";
 import { Db } from "./db.ts";
+import type { CompositionIndex } from "./composition.ts";
+import {
+  ENGINE_TYPE_ASSERTION,
+  type EngineTypeAssertion,
+} from "./tx-provenance.ts";
 import {
   type Attribute,
   DB_CARDINALITY,
@@ -46,8 +51,6 @@ import {
   DB_TX_INSTANT,
   DB_UNIQUE,
   DB_VALUE_TYPE,
-  RAMOSE_KIND,
-  RAMOSE_TRAIT_IDENT,
   RAMOSE_TYPE_IDENT,
   VALUE_TYPE_IDENTS,
   isTxEid,
@@ -81,6 +84,8 @@ export interface TxOp {
   /** CAS expected; `null` is the encoded absent expectation — not `undefined`. */
   expected?: unknown;
   hasV?: boolean;
+  /** Protected type assertion emitted by the typed transaction builder. */
+  engineTypeAssertion?: boolean;
 }
 
 /**
@@ -97,6 +102,8 @@ export interface ExpandedOp {
   readonly implicit: boolean;
   /** retract emitted by a :db/retractEntity closure */
   readonly fromRetractEntity: boolean;
+  /** Protected type assertion emitted by the typed transaction builder. */
+  readonly engineTypeAssertion: boolean;
 }
 
 export interface TxExpansion extends TxResult {
@@ -109,6 +116,12 @@ export interface TxExpansion extends TxResult {
 export interface ExpandOptions {
   /** max datoms a :db/retractEntity closure may produce before throwing */
   closureCap?: number;
+  /**
+   * Deployed type-to-trait lookup. Required to distinguish entity
+   * namespaces from trait namespaces. Absent only for schema-attribute
+   * work that never creates application entities.
+   */
+  composition?: CompositionIndex;
 }
 
 /** Prefix of tempids generated for map forms without an explicit `:db/id`. */
@@ -126,6 +139,10 @@ export function flattenTxData(txData: TxData): TxOp[] {
   let tmpCounter = 0;
   const freshTempid = (): string => `${GENERATED_TEMPID_PREFIX}${++tmpCounter}`;
   const expandMap = (m: Record<string, unknown>): EForm => {
+    const engineTypeAssertion =
+      (m as Record<string, unknown> & EngineTypeAssertion)[
+        ENGINE_TYPE_ASSERTION
+      ] === true;
     let e: EForm | undefined = m[":db/id"] as EForm | undefined;
     if (e === undefined || e === null) e = freshTempid();
     for (const [k, val] of Object.entries(m)) {
@@ -146,7 +163,16 @@ export function flattenTxData(txData: TxData): TxOp[] {
       const vals = Array.isArray(val) && !isLookupRef(val) ? val : [val];
       for (const x of vals) {
         const v = isPlainObject(x) ? expandMap(x as Record<string, unknown>) : x;
-        ops.push({ kind: "add", e, a: k, v, hasV: true });
+        ops.push({
+          kind: "add",
+          e,
+          a: k,
+          v,
+          hasV: true,
+          ...(engineTypeAssertion && k === RAMOSE_TYPE_IDENT
+            ? { engineTypeAssertion: true }
+            : {}),
+        });
       }
     }
     return e;
@@ -241,8 +267,16 @@ export async function processTx(
   t: number,
   nextEid: number,
   txInstant: number,
+  options?: ExpandOptions,
 ): Promise<TxResult> {
-  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(db, txData, t, nextEid, txInstant);
+  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(
+    db,
+    txData,
+    t,
+    nextEid,
+    txInstant,
+    options,
+  );
   return res;
 }
 
@@ -270,8 +304,24 @@ export async function expandTx(
   const closureCap = options.closureCap ?? Number.POSITIVE_INFINITY;
   let closureCount = 0;
   let inRetractEntity = false;
-  const record = (kind: "add" | "retract", e: number, attr: Attribute, d: Datom, implicit = false): void => {
-    expanded.push({ kind, e, a: attr.id, attr, datom: d, implicit, fromRetractEntity: inRetractEntity });
+  const record = (
+    kind: "add" | "retract",
+    e: number,
+    attr: Attribute,
+    d: Datom,
+    implicit = false,
+    engineTypeAssertion = false,
+  ): void => {
+    expanded.push({
+      kind,
+      e,
+      a: attr.id,
+      attr,
+      datom: d,
+      implicit,
+      fromRetractEntity: inRetractEntity,
+      engineTypeAssertion,
+    });
     if (inRetractEntity && ++closureCount > closureCap) {
       throw new TxError(`:db/retractEntity closure exceeds ${closureCap} datoms`, "tx/closure-cap");
     }
@@ -457,10 +507,27 @@ export async function expandTx(
     }
   };
 
-  const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
+  const emitAdd = async (
+    e: number,
+    attr: Attribute,
+    tv: TaggedValue,
+    engineTypeAssertion = false,
+  ): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
-    if (vals.has(vk)) return; // redundant
+    if (vals.has(vk)) {
+      if (attr.ident === RAMOSE_TYPE_IDENT) {
+        record(
+          "add",
+          e,
+          attr,
+          { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true },
+          false,
+          engineTypeAssertion,
+        );
+      }
+      return;
+    }
     if (attr.unique) {
       const uk = attr.id + "|" + vk;
       const seen = uniqueSeen.get(uk);
@@ -488,7 +555,7 @@ export async function expandTx(
     }
     const d: Datom = { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true };
     out.push(d);
-    record("add", e, attr, d);
+    record("add", e, attr, d, false, engineTypeAssertion);
     vals.set(vk, d);
   };
 
@@ -618,12 +685,7 @@ export async function expandTx(
     if (attr.id === DB_IDENT && (typeof tv.v !== "string" || tv.v[0] !== ":")) {
       throw new TxError(`:db/ident must be a keyword-like string starting with ':'`, "tx/schema");
     }
-    if (
-      (attr.ident === RAMOSE_TYPE_IDENT ||
-        attr.ident === RAMOSE_TRAIT_IDENT ||
-        attr.id === RAMOSE_KIND) &&
-      (typeof tv.v !== "string" || tv.v[0] !== ":")
-    ) {
+    if (attr.ident === RAMOSE_TYPE_IDENT && (typeof tv.v !== "string" || tv.v[0] !== ":")) {
       throw new TxError(`${attr.ident} must be a keyword-like string starting with ':'`, "tx/schema");
     }
   };
@@ -640,11 +702,23 @@ export async function expandTx(
     return ident.startsWith(":") ? ident.slice(1) : ident;
   };
 
+  const composition = options.composition;
+  const isEntityIdent = (ident: string): boolean =>
+    composition !== undefined && composition.isEntityIdent(ident);
+  const isTraitIdent = (ident: string): boolean =>
+    composition !== undefined && composition.isTraitIdent(ident);
+  const transitiveTraits = (ident: string): readonly string[] =>
+    composition?.transitiveTraits(ident) ?? [];
+  const isCanonicalTypeIdent = (value: unknown): value is string =>
+    typeof value === "string" &&
+    value.startsWith(":") &&
+    value.length > 1 &&
+    !value.slice(1).includes("/");
+
   const isSystemIdent = (ident: string): boolean =>
     ident.startsWith(":db/") || ident.startsWith(":ramose/");
 
-  const isMembershipIdent = (ident: string): boolean =>
-    ident === RAMOSE_TYPE_IDENT || ident === RAMOSE_TRAIT_IDENT;
+  const isMembershipIdent = (ident: string): boolean => ident === RAMOSE_TYPE_IDENT;
 
   const appNamespacesOf = (idents: readonly string[]): Set<string> => {
     const nss = new Set<string>();
@@ -652,7 +726,7 @@ export async function expandTx(
       if (isSystemIdent(ident)) continue;
       const ns = nsOfIdent(ident);
       if (ns.length === 0) continue;
-      if (db.schema.isTraitIdent(`:${ns}`)) continue;
+      if (isTraitIdent(`:${ns}`)) continue;
       nss.add(ns);
     }
     return nss;
@@ -699,7 +773,6 @@ export async function expandTx(
   };
 
   const typeAttr = (): Attribute | undefined => db.attr(RAMOSE_TYPE_IDENT);
-  const traitAttr = (): Attribute | undefined => db.attr(RAMOSE_TRAIT_IDENT);
 
   const readType = async (e: number): Promise<string | undefined> => {
     const attr = typeAttr();
@@ -732,14 +805,14 @@ export async function expandTx(
     if (existing.has(ns)) return;
     const allowed = new Set(existing);
     for (const entityNs of existing) {
-      for (const trait of db.schema.transitiveTraits(`:${entityNs}`)) {
+      for (const trait of transitiveTraits(`:${entityNs}`)) {
         allowed.add(nsOfComposer(trait));
       }
     }
     const typeIdent = await readType(e);
     if (typeIdent !== undefined) {
       allowed.add(nsOfComposer(typeIdent));
-      for (const trait of db.schema.transitiveTraits(typeIdent)) {
+      for (const trait of transitiveTraits(typeIdent)) {
         allowed.add(nsOfComposer(trait));
       }
     }
@@ -954,7 +1027,7 @@ export async function expandTx(
       await assertWriteTarget(e, attr, true);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
-      await emitAdd(e, attr, tv);
+      await emitAdd(e, attr, tv, op.engineTypeAssertion === true);
     } else {
       const tv = op.hasV ? await valueFor(attr, op.v) : undefined;
       await emitRetract(e, attr, tv);
@@ -972,7 +1045,7 @@ export async function expandTx(
   const requiredOfType = (typeIdent: string): Attribute[] => {
     const nss = [
       nsOfComposer(typeIdent),
-      ...db.schema.transitiveTraits(typeIdent).map(nsOfComposer),
+      ...transitiveTraits(typeIdent).map(nsOfComposer),
     ];
     const out: Attribute[] = [];
     const seen = new Set<string>();
@@ -1012,9 +1085,10 @@ export async function expandTx(
 
   const inferType = async (e: number): Promise<string | undefined> => {
     const nss = appNamespacesOf(await presentIdents(e));
-    const entityNss = [...nss].filter((ns) =>
-      db.schema.isEntityIdent(`:${ns}`),
-    );
+    const entityNss =
+      composition === undefined
+        ? [...nss]
+        : [...nss].filter((ns) => isEntityIdent(`:${ns}`));
     if (entityNss.length > 1) {
       throw new TxError(
         `cannot create an entity in multiple composed types: ${[...entityNss]
@@ -1025,7 +1099,12 @@ export async function expandTx(
       );
     }
     const asserted = await readType(e);
-    if (asserted !== undefined) return asserted;
+    if (asserted !== undefined) {
+      if (composition !== undefined && !isEntityIdent(asserted)) {
+        throw new TxError(`unknown entity type ${asserted}`, "tx/wrong-entity");
+      }
+      return asserted;
+    }
     if (entityNss.length === 1) return `:${entityNss[0]}`;
     return undefined;
   };
@@ -1041,16 +1120,24 @@ export async function expandTx(
   for (const op of expanded) {
     if (!isMembershipIdent(op.attr.ident)) continue;
     if (op.fromRetractEntity) continue;
-    // Typed put stamps `:ramose/type` so inferType can see the composer
-    // when the attr map has no own-namespace keys. Permit that one form
-    // on a newly allocated entity; `:ramose/trait` and all other
-    // membership writes stay engine-owned.
+    const typeBefore =
+      op.kind === "add" && op.attr.ident === RAMOSE_TYPE_IDENT
+        ? await (async () => {
+            const row = await db.entity(op.e);
+            const value = row?.[RAMOSE_TYPE_IDENT];
+            return typeof value === "string" ? value : undefined;
+          })()
+        : undefined;
+    // Typed put stamps `:ramose/type` so inferType can see the composer.
+    // Its provenance permits creation and an idempotent same-type upsert;
+    // raw assertions, changes, and retracts remain protected.
     if (
       op.kind === "add" &&
       op.attr.ident === RAMOSE_TYPE_IDENT &&
-      typeof op.datom.v === "string" &&
-      db.schema.isEntityIdent(op.datom.v) &&
-      newEntities.has(op.e)
+      op.engineTypeAssertion &&
+      isCanonicalTypeIdent(op.datom.v) &&
+      (newEntities.has(op.e) || typeBefore === op.datom.v) &&
+      (composition === undefined || isEntityIdent(op.datom.v))
     ) {
       continue;
     }
@@ -1077,14 +1164,11 @@ export async function expandTx(
     for (const ident of await presentIdents(e)) {
       if (isSystemIdent(ident)) continue;
       const ns = nsOfIdent(ident);
-      if (ns.length > 0 && db.schema.isTraitIdent(`:${ns}`)) traitNss.add(ns);
+      if (ns.length > 0 && isTraitIdent(`:${ns}`)) traitNss.add(ns);
     }
     // Trait attributes may only land on a composer that actually composes
-    // that trait. `appNamespacesOf` drops trait nss (so they never reach
-    // `born` / `missingRequired`), `requiredOfType` only walks the inferred
-    // type's traits, and `assertWriteTarget` no-ops on create — a foreign
-    // required or optional-only trait attr would otherwise persist with no
-    // `:ramose/trait` stamp, leaving an unrepairable row.
+    // that trait. Membership is the protected type plus deployed
+    // composition — never stored `:ramose/trait` stamps.
     if (type === undefined && typeBefore === undefined) {
       if (traitNss.size > 0) {
         throw new TxError(
@@ -1096,33 +1180,23 @@ export async function expandTx(
         );
       }
     } else if (type !== undefined) {
-      const allowed = new Set(db.schema.transitiveTraits(type).map(nsOfComposer));
+      const allowed = new Set(transitiveTraits(type).map(nsOfComposer));
       for (const ns of [...traitNss].sort()) {
         if (!allowed.has(ns)) {
           throw new TxError(`entity ${e} is not a ${ns}`, "tx/wrong-entity");
         }
       }
     }
-    const composed =
-      type !== undefined && db.schema.isEntityIdent(type)
-        ? db.schema.transitiveTraits(type)
-        : [];
 
     if (typeBefore !== undefined) {
       const typeAfter = await readType(e);
       if (typeAfter !== undefined && typeAfter !== typeBefore) {
         throw new TxError(`cannot change system fact ${RAMOSE_TYPE_IDENT}`, "tx/system");
       }
-    } else if (type !== undefined && db.schema.isEntityIdent(type)) {
+    } else if (type !== undefined && (composition === undefined || isEntityIdent(type))) {
       const ta = typeAttr();
-      const tr = traitAttr();
       if (ta !== undefined) {
         await emitAdd(e, ta, { vt: ValueTag.Str, v: type });
-      }
-      if (tr !== undefined) {
-        for (const trait of composed) {
-          await emitAdd(e, tr, { vt: ValueTag.Str, v: trait });
-        }
       }
     }
 
@@ -1133,7 +1207,7 @@ export async function expandTx(
       if (!before.has(ns)) born.add(ns);
     }
     const typeIsNew = type !== undefined && typeBefore === undefined;
-    if (typeIsNew && db.schema.isEntityIdent(type)) {
+    if (typeIsNew && (composition === undefined || isEntityIdent(type))) {
       const missing = await missingRequiredAttrs(e, requiredOfType(type));
       if (missing.length > 0) {
         throw new TxError(

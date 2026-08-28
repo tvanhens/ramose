@@ -34,7 +34,8 @@ import { Connection } from "../../../src/internal/core/conn.ts";
 import { datom, Index, ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
 import { RAMOSE_TYPE } from "../../../src/internal/core/schema.ts";
-import { Entity, Schema, schemaTx, string } from "../../../src/db/internal.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
+import { Entity, Schema, compositionFromSchema, schemaTx, string, type AnySchema } from "../../../src/db/internal.ts";
 import {
   App,
   Issue,
@@ -51,6 +52,11 @@ import {
 } from "./semantic-fixtures.ts";
 
 const Extra = Entity("extra", { name: string() });
+
+const typedTx = <T extends unknown[]>(tx: T): T => {
+  restoreEngineTypeAssertions(tx);
+  return tx;
+};
 
 const sealedDescriptor = async () => {
   const base = catalogDescriptor();
@@ -77,19 +83,12 @@ const unitFrom = (
   extras?: Parameters<typeof compileRules>[1],
 ) => installUnit(expectOk(compileRules(rules, extras)));
 
-const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
-  conn.transact(
-    namespaces.map((ns) => ({
-      ":db/ident": `:${ns}`,
-      ":ramose/kind": ":ramose.kind/entity",
-    })),
-  );
-
-const seedApp = async () => {
-  const conn = await Connection.create();
-  await conn.transact(schemaTx(App));
-  await installEntityKinds(conn, ["user", "workspace", "tag"]);
-  const report = await conn.transact([
+const seedApp = async (extras: AnySchema = App) => {
+  const conn = await Connection.create({
+    composition: compositionFromSchema(extras),
+  });
+  await conn.transact(schemaTx(extras));
+  const report = await conn.transact(typedTx([
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
     { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
@@ -110,7 +109,7 @@ const seedApp = async () => {
       ":issue/workspace": "ws",
       ":issue/parent": "i1",
     },
-  ]);
+  ]));
   const currentDb = conn.db();
   return {
     conn,
@@ -186,7 +185,6 @@ describe("compileReadFilter expressions", () => {
     expect(await pred(currentDb, await datomOf(currentDb, i1, ":issue/title"))).toBe(true);
     await expectVisible(currentDb.filter(pred), i1, [
       ":ramose/type",
-      ":ramose/trait",
       ":issue/title",
       ":issue/parent",
     ]);
@@ -334,12 +332,11 @@ describe("compileReadFilter lattice and fail-closed", () => {
   });
 
   test("type ident not in catalog denies", async () => {
-    const { conn, aliceEid } = await seedApp();
-    await conn.transact(schemaTx(Schema({ extra: Extra })));
-    await installEntityKinds(conn, ["extra"]);
-    const extra = await conn.transact([
+    const Mixed = Schema({ ...App.entities, extra: Extra });
+    const { conn, aliceEid } = await seedApp(Mixed);
+    const extra = await conn.transact(typedTx([
       { ":db/id": "ex", ":ramose/type": ":extra", ":extra/name": "nope" },
-    ]);
+    ]));
     const latest = conn.db();
     const pred = compileReadFilter({
       unit: await unitFrom([read(Issue).when(allow)]),
@@ -553,7 +550,6 @@ describe("compileReadFilter requested-db classification", () => {
     expect(await pred(asOf, title)).toBe(true);
     await expectVisible(asOf.filter(pred), i1, [
       ":ramose/type",
-      ":ramose/trait",
       ":issue/title",
       ":issue/parent",
     ]);
@@ -587,7 +583,6 @@ describe("compileReadFilter requested-db classification", () => {
     expect(await visibleAppIdents(after.filter(pred), i1)).toEqual([]);
     await expectVisible(asOf.filter(pred), i1, [
       ":ramose/type",
-      ":ramose/trait",
       ":issue/title",
       ":issue/parent",
     ]);

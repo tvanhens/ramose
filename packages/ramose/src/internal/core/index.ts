@@ -9,6 +9,7 @@ export * from "./bytes.ts";
 export * from "./segment.ts";
 export * from "./tree.ts";
 export * from "./novelty.ts";
+export * from "./composition.ts";
 export * from "./schema.ts";
 export * from "./store.ts";
 export * from "./db.ts";

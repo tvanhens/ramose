@@ -12,7 +12,8 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
-import { Query, lowerQueryObject, schemaTx } from "../../../src/db/internal.ts";
+import { Query, compositionFromSchema, lowerQueryObject, schemaTx } from "../../../src/db/internal.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 import {
   DatabaseId,
   allow,
@@ -154,18 +155,11 @@ const acceptAllPolicy = (): Promise<DeployedCatalogs> =>
     read(Taggable).when(allow),
   ]);
 
-const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
-  conn.transact(
-    namespaces.map((ns) => ({
-      ":db/ident": `:${ns}`,
-      ":ramose/kind": ":ramose.kind/entity",
-    })),
-  );
-
 const seedWorld = async (includeHiddenIssue: boolean) => {
-  const conn = await Connection.create();
+  const conn = await Connection.create({
+    composition: compositionFromSchema(App),
+  });
   await conn.transact(schemaTx(App));
-  await installEntityKinds(conn, ["user", "workspace", "tag"]);
   const tx: Record<string, unknown>[] = [
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
@@ -199,6 +193,7 @@ const seedWorld = async (includeHiddenIssue: boolean) => {
       ":taggable/tags": "bob",
     });
   }
+  restoreEngineTypeAssertions(tx);
   const report = await conn.transact(tx);
   return {
     conn,

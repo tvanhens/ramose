@@ -16,6 +16,7 @@ import { Novelty } from "./novelty.ts";
 import { DB_IDENT, FIRST_USER_EID, Schema, bootstrapDatoms } from "./schema.ts";
 import { MemStore } from "./store.ts";
 import { type BuildOptions, type NodeSource, type NodeStore, buildTree, mergeTree } from "./tree.ts";
+import type { CompositionIndex } from "./composition.ts";
 import { type TxData, processTx } from "./tx.ts";
 
 export interface TxReport {
@@ -32,6 +33,8 @@ export interface ConnectionOptions {
   build?: BuildOptions;
   /** clock for :db/txInstant */
   now?: () => number;
+  /** Deployed type-to-trait lookup used by processTx. */
+  composition?: CompositionIndex;
 }
 
 /** Sort + dedup datoms for the given index. */
@@ -110,6 +113,7 @@ export class Connection {
   private nextEid = FIRST_USER_EID;
   private readonly build: BuildOptions | undefined;
   private readonly now: () => number;
+  private composition: CompositionIndex | undefined;
   private txQueue: Promise<unknown> = Promise.resolve();
   /** all roots ever published, by t (for as-of from an old root; GC keeps these) */
   readonly rootHistory: Roots[] = [];
@@ -118,6 +122,7 @@ export class Connection {
     this.store = opts.store ?? new MemStore();
     this.build = opts.build;
     this.now = opts.now ?? (() => Date.now());
+    this.composition = opts.composition;
   }
 
   /** Create an empty database (bootstrap schema installed at t = 1). */
@@ -196,6 +201,14 @@ export class Connection {
     return this.nextEid;
   }
 
+  /** Bind deployed composition after restore; recataloging is not supported. */
+  bindComposition(composition: CompositionIndex): void {
+    if (this.composition !== undefined && this.composition !== composition) {
+      throw new Error("connection already has deployed composition");
+    }
+    this.composition = composition;
+  }
+
   /** Apply already-processed datoms (log replay / follower). */
   applyDatoms(datoms: readonly Datom[]): void {
     if (datoms.length === 0) return;
@@ -217,7 +230,14 @@ export class Connection {
     const run = async (): Promise<TxReport> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
-      const res = await processTx(dbBefore, txData, t, this.nextEid, this.now());
+      const res = await processTx(
+        dbBefore,
+        txData,
+        t,
+        this.nextEid,
+        this.now(),
+        this.composition === undefined ? undefined : { composition: this.composition },
+      );
       this.nextEid = res.nextEid;
       this.schema = this.schema.clone().apply(res.datoms);
       this.novelty.add(res.datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));

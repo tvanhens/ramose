@@ -1,10 +1,11 @@
 /**
- * Traits: composition, install metadata, create-time membership, and
- * required-field validation (issue #316).
+ * Traits: descriptor composition, deployed type-to-trait membership, and
+ * required-field validation (issue #460).
  */
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { Connection } from "../../src/internal/core/conn.ts";
 import { pipe } from "effect/Function";
 import {
@@ -13,6 +14,8 @@ import {
   Query,
   Schema,
   Trait,
+  type AnySchema,
+  compositionFromSchema,
   string,
   lowerQueryObject,
   schemaTx,
@@ -20,6 +23,13 @@ import {
   txOps,
 } from "../../src/db/internal.ts";
 import { query as coreQuery } from "../../src/internal/core/index.ts";
+import { Index } from "../../src/internal/core/datom.ts";
+import { restoreEngineTypeAssertions } from "../../src/internal/core/tx-provenance.ts";
+import { compositionFromDescriptor } from "../../src/internal/authorization/index.ts";
+import {
+  App,
+  catalogDescriptor,
+} from "../internal/authorization/semantic-fixtures.ts";
 
 const Taggable = Trait("taggable", {
   tag: string(),
@@ -97,8 +107,8 @@ describe("Trait() / Entity() composition", () => {
   });
 });
 
-describe("schemaTx composition metadata", () => {
-  test("entity-only catalogs still emit only attribute maps", () => {
+describe("schemaTx", () => {
+  test("entity-only catalogs emit only attribute maps", () => {
     const Todo = Entity("todo", { title: string() });
     expect(schemaTx(Schema({ todo: Todo }))).toEqual([
       {
@@ -109,9 +119,9 @@ describe("schemaTx composition metadata", () => {
     ]);
   });
 
-  test("installs trait fields once and records composition", () => {
+  test("installs trait fields once and does not emit kind, composes, or trait facts", () => {
     const tx = schemaTx(Board);
-    expect(tx.filter((op) => ":db/valueType" in op)).toEqual([
+    expect(tx).toEqual([
       {
         ":db/ident": ":issue/title",
         ":db/valueType": ":db.type/string",
@@ -149,21 +159,34 @@ describe("schemaTx composition metadata", () => {
         ":db/cardinality": ":db.cardinality/one",
       },
     ]);
-    expect(tx.filter((op) => ":ramose/kind" in op || ":ramose/composes" in op)).toEqual([
-      { ":db/ident": ":annotated", ":ramose/kind": ":ramose.kind/trait" },
-      { ":db/ident": ":annotated", ":ramose/composes": ":taggable" },
-      { ":db/ident": ":annotated", ":ramose/composes": ":timestamped" },
-      { ":db/ident": ":soft", ":ramose/kind": ":ramose.kind/trait" },
-      { ":db/ident": ":taggable", ":ramose/kind": ":ramose.kind/trait" },
-      { ":db/ident": ":timestamped", ":ramose/kind": ":ramose.kind/trait" },
-      { ":db/ident": ":diamond", ":ramose/kind": ":ramose.kind/entity" },
-      { ":db/ident": ":diamond", ":ramose/composes": ":annotated" },
-      { ":db/ident": ":diamond", ":ramose/composes": ":taggable" },
-      { ":db/ident": ":issue", ":ramose/kind": ":ramose.kind/entity" },
-      { ":db/ident": ":issue", ":ramose/composes": ":taggable" },
-      { ":db/ident": ":note", ":ramose/kind": ":ramose.kind/entity" },
-      { ":db/ident": ":note", ":ramose/composes": ":soft" },
+    expect(tx.some((op) => ":ramose/kind" in op || ":ramose/composes" in op || ":ramose/trait" in op)).toBe(
+      false,
+    );
+  });
+});
+
+describe("deployed type-to-trait lookup", () => {
+  test("schema and catalog descriptor agree on direct, transitive, and diamond membership", () => {
+    const fromSchema = compositionFromSchema(Board);
+    expect(fromSchema.isEntityIdent(":issue")).toBe(true);
+    expect(fromSchema.isEntityIdent(":diamond")).toBe(true);
+    expect(fromSchema.isTraitIdent(":taggable")).toBe(true);
+    expect(fromSchema.isTraitIdent(":annotated")).toBe(true);
+    expect(fromSchema.transitiveTraits(":issue")).toEqual([":taggable"]);
+    expect(fromSchema.transitiveTraits(":note")).toEqual([":soft"]);
+    expect(fromSchema.transitiveTraits(":diamond")).toEqual([
+      ":annotated",
+      ":taggable",
+      ":timestamped",
     ]);
+    expect(fromSchema.transitiveTraits(":todo")).toEqual([]);
+
+    const fromCatalog = Result.getOrThrow(compositionFromDescriptor(catalogDescriptor()));
+    const fromApp = compositionFromSchema(App);
+    expect(fromCatalog.transitiveTraits(":issue")).toEqual(fromApp.transitiveTraits(":issue"));
+    expect(fromCatalog.isEntityIdent(":user")).toBe(true);
+    expect(fromCatalog.isTraitIdent(":taggable")).toBe(true);
+    expect(fromApp.transitiveTraits(":user")).toEqual([]);
   });
 });
 
@@ -197,6 +220,16 @@ describe("typed create", () => {
     ]);
   });
 
+  test("put stamps type on a traitless entity", () => {
+    const Todo = Entity("todo", { title: string() });
+    const Todos = Schema({ todo: Todo });
+    const tx = txBuilder(Todos);
+    Effect.runSync(tx.put(Todo, { title: "x" }));
+    expect(txOps(tx)).toEqual([
+      { ":db/id": "tmp-1", ":ramose/type": ":todo", ":todo/title": "x" },
+    ]);
+  });
+
   test("optional and card-many trait fields are omitted on create", () => {
     const tx = txBuilder(Board);
     Effect.runSync(tx.put(Note, { title: "n" }));
@@ -211,11 +244,16 @@ describe("typed create", () => {
 });
 
 describe("processTx membership and required trait fields", () => {
-  const setup = async () => {
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Board) as unknown[]);
+  const setup = async (schema: AnySchema = Board) => {
+    const conn = await Connection.create({
+      composition: compositionFromSchema(schema),
+    });
+    await conn.transact(schemaTx(schema) as unknown[]);
     return conn;
   };
+
+  const membershipOf = (type: string, schema: AnySchema = Board) =>
+    compositionFromSchema(schema).transitiveTraits(type);
 
   test("missing required trait field is tx/required", async () => {
     const conn = await setup();
@@ -229,7 +267,7 @@ describe("processTx membership and required trait fields", () => {
     });
   });
 
-  test("create stamps type and transitive traits once", async () => {
+  test("create stamps exactly one protected concrete type and no trait facts", async () => {
     const conn = await setup();
     const tx = txBuilder(Board);
     Effect.runSync(
@@ -241,7 +279,10 @@ describe("processTx membership and required trait fields", () => {
     expect(row?.[":taggable/tag"]).toBe("t");
     expect(row?.[":timestamped/createdAt"]).toBe("now");
     expect(row?.[":ramose/type"]).toBe(":diamond");
-    expect([...(row?.[":ramose/trait"] as string[])].sort()).toEqual([
+    expect(row?.[":ramose/trait"]).toBeUndefined();
+    expect(row?.[":ramose/kind"]).toBeUndefined();
+    expect(row?.[":ramose/composes"]).toBeUndefined();
+    expect(membershipOf(":diamond")).toEqual([
       ":annotated",
       ":taggable",
       ":timestamped",
@@ -267,7 +308,8 @@ describe("processTx membership and required trait fields", () => {
     const row = await conn.db().entity(rep.tempids["tmp-1"]!);
     expect(row?.[":note/title"]).toBe("n");
     expect(row?.[":ramose/type"]).toBe(":note");
-    expect(row?.[":ramose/trait"]).toEqual([":soft"]);
+    expect(row?.[":ramose/trait"]).toBeUndefined();
+    expect(membershipOf(":note")).toEqual([":soft"]);
     expect(row?.[":soft/note"]).toBeUndefined();
     expect(row?.[":soft/tags"]).toBeUndefined();
   });
@@ -281,7 +323,7 @@ describe("processTx membership and required trait fields", () => {
 
     await expect(
       conn.transact([[":db/add", e, ":ramose/trait", ":soft"]]),
-    ).rejects.toMatchObject({ code: "tx/system" });
+    ).rejects.toMatchObject({ code: "tx/unknown-attribute" });
     await expect(
       conn.transact([[":db/retract", e, ":ramose/type", ":issue"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
@@ -290,7 +332,7 @@ describe("processTx membership and required trait fields", () => {
     ).rejects.toMatchObject({ code: "tx/system" });
   });
 
-  test("forged membership facts are rejected without a prior type", async () => {
+  test("forged or conflicting type evidence fails closed", async () => {
     const Todo = Entity("todo", { title: string() });
     const Mixed = Schema({
       issue: Issue,
@@ -298,11 +340,13 @@ describe("processTx membership and required trait fields", () => {
       diamond: Diamond,
       todo: Todo,
     });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Mixed) as unknown[]);
+    const conn = await setup(Mixed);
 
     await expect(
       conn.transact([[":db/add", "tmp-x", ":ramose/trait", ":taggable"]]),
+    ).rejects.toMatchObject({ code: "tx/unknown-attribute" });
+    await expect(
+      conn.transact([{ ":db/id": "tmp-ghost", ":ramose/type": ":missing" }]),
     ).rejects.toMatchObject({ code: "tx/system" });
 
     const created = txBuilder(Mixed);
@@ -311,9 +355,12 @@ describe("processTx membership and required trait fields", () => {
     const todo = tempids["tmp-1"]!;
     await expect(
       conn.transact([[":db/add", todo, ":ramose/trait", ":taggable"]]),
-    ).rejects.toMatchObject({ code: "tx/system" });
+    ).rejects.toMatchObject({ code: "tx/unknown-attribute" });
     await expect(
       conn.transact([[":db/add", todo, ":ramose/type", ":todo"]]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+    await expect(
+      conn.transact([[":db/add", todo, ":ramose/type", ":note"]]),
     ).rejects.toMatchObject({ code: "tx/system" });
   });
 
@@ -334,8 +381,7 @@ describe("processTx membership and required trait fields", () => {
       [["isIssue", "?qm0"], ["?qm0", ":ramose/type", ":issue"]],
     ]);
 
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Mixed) as unknown[]);
+    const conn = await setup(Mixed);
     const tx = txBuilder(Mixed);
     Effect.runSync(tx.put(Issue, { title: "an issue", tag: "urgent" }));
     Effect.runSync(tx.put(Task, { title: "a task", tag: "urgent" }));
@@ -352,8 +398,7 @@ describe("processTx membership and required trait fields", () => {
   test("two composed entity namespaces on one id are tx/wrong-entity", async () => {
     const Task = Entity("task", { title: string() }, { traits: [Taggable] });
     const Mixed = Schema({ issue: Issue, task: Task });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Mixed) as unknown[]);
+    const conn = await setup(Mixed);
 
     await expect(
       conn.transact([
@@ -382,8 +427,7 @@ describe("processTx membership and required trait fields", () => {
     const Two = Trait("two", { a: string(), b: string() });
     const Doc = Entity("doc", { title: string() }, { traits: [Two] });
     const Catalog = Schema({ doc: Doc });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const conn = await setup(Catalog);
     await expect(
       conn.transact([{ ":db/id": "tmp-1", ":two/a": "x" }]),
     ).rejects.toMatchObject({
@@ -402,8 +446,7 @@ describe("processTx membership and required trait fields", () => {
     );
     const Bare = Entity("bare", {}, { traits: [Taggable] });
     const Catalog = Schema({ issue: SoftIssue, bare: Bare });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const conn = await setup(Catalog);
 
     const viaPut = txBuilder(Catalog);
     Effect.runSync(viaPut.put(SoftIssue, { tag: "t" }));
@@ -417,14 +460,16 @@ describe("processTx membership and required trait fields", () => {
     const bare = await conn.db().entity(tempids["tmp-2"]!);
     expect(issue).toMatchObject({
       ":ramose/type": ":issue",
-      ":ramose/trait": [":taggable"],
       ":taggable/tag": "t",
     });
     expect(bare).toMatchObject({
       ":ramose/type": ":bare",
-      ":ramose/trait": [":taggable"],
       ":taggable/tag": "u",
     });
+    expect(issue?.[":ramose/trait"]).toBeUndefined();
+    expect(bare?.[":ramose/trait"]).toBeUndefined();
+    expect(membershipOf(":issue", Catalog)).toEqual([":taggable"]);
+    expect(membershipOf(":bare", Catalog)).toEqual([":taggable"]);
 
     await expect(
       conn.transact([{ ":db/id": "tmp-raw", ":taggable/tag": "z" }]),
@@ -436,11 +481,10 @@ describe("processTx membership and required trait fields", () => {
     });
   });
 
-  test("a mixed composed+plain create still requires every born namespace", async () => {
+  test("two concrete entity types on one id fail closed", async () => {
     const Todo = Entity("todo", { title: string(), body: string() });
     const Mixed = Schema({ issue: Issue, todo: Todo });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Mixed) as unknown[]);
+    const conn = await setup(Mixed);
     await expect(
       conn.transact([
         {
@@ -451,9 +495,9 @@ describe("processTx membership and required trait fields", () => {
         },
       ]),
     ).rejects.toMatchObject({
-      code: "tx/required",
+      code: "tx/wrong-entity",
       message: expect.stringContaining(
-        "entity issue is missing required fields: :todo/body",
+        "cannot create an entity in multiple composed types: :issue, :todo",
       ),
     });
   });
@@ -463,8 +507,7 @@ describe("processTx membership and required trait fields", () => {
     const Doc = Entity("doc", { title: string() }, { traits: [Two] });
     const Other = Entity("other", { title: string() }, { traits: [Taggable] });
     const Catalog = Schema({ doc: Doc, other: Other });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const conn = await setup(Catalog);
 
     await expect(
       conn.transact([
@@ -508,8 +551,7 @@ describe("processTx membership and required trait fields", () => {
     const Other = Entity("other", { title: string() }, { traits: [Taggable] });
     const Holder = Entity("holder", { title: string() }, { traits: [Solo] });
     const Catalog = Schema({ other: Other, holder: Holder });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Catalog) as unknown[]);
+    const conn = await setup(Catalog);
     await expect(
       conn.transact([
         {
@@ -525,18 +567,88 @@ describe("processTx membership and required trait fields", () => {
     });
   });
 
-  test("existing entity-only schemas still create without membership facts", async () => {
+  test("a traitless entity receives exactly one protected concrete type fact", async () => {
     const Todo = Entity("todo", { title: string() });
     const Todos = Schema({ todo: Todo });
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Todos) as unknown[]);
+    const conn = await setup(Todos);
     const tx = txBuilder(Todos);
     Effect.runSync(tx.put(Todo, { title: "x" }));
-    expect(txOps(tx)).toEqual([{ ":db/id": "tmp-1", ":todo/title": "x" }]);
+    expect(txOps(tx)).toEqual([
+      { ":db/id": "tmp-1", ":ramose/type": ":todo", ":todo/title": "x" },
+    ]);
     const rep = await conn.transact([...txOps(tx)]);
     const row = await conn.db().entity(rep.tempids["tmp-1"]!);
     expect(row?.[":todo/title"]).toBe("x");
-    expect(row?.[":ramose/type"]).toBeUndefined();
+    expect(row?.[":ramose/type"]).toBe(":todo");
     expect(row?.[":ramose/trait"]).toBeUndefined();
+    expect(membershipOf(":todo", Todos)).toEqual([]);
+  });
+
+  test("typed put preserves same-type upsert while raw type reassertion stays protected", async () => {
+    const Contact = Entity("contact", {
+      email: Field.unique(string(), "upsert"),
+      name: string(),
+    });
+    const Contacts = Schema({ contact: Contact });
+    const conn = await setup(Contacts);
+
+    const first = txBuilder(Contacts);
+    Effect.runSync(first.put(Contact, { email: "a@example.com", name: "A" }));
+    const firstWire = JSON.parse(JSON.stringify(txOps(first))) as unknown[];
+    restoreEngineTypeAssertions(firstWire);
+    const created = await conn.transact(firstWire);
+    const e = created.tempids["tmp-1"]!;
+
+    const again = txBuilder(Contacts);
+    Effect.runSync(
+      again.put(Contact, { email: "a@example.com", name: "A2" }),
+    );
+    const againWire = JSON.parse(JSON.stringify(txOps(again))) as unknown[];
+    restoreEngineTypeAssertions(againWire);
+    const updated = await conn.transact(againWire);
+    expect(updated.tempids["tmp-1"]).toBe(e);
+    expect(await conn.db().entity(e)).toMatchObject({
+      ":ramose/type": ":contact",
+      ":contact/email": "a@example.com",
+      ":contact/name": "A2",
+    });
+
+    await expect(
+      conn.transact([
+        { ":db/id": e, ":ramose/type": ":contact" },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/system" });
+  });
+
+  test("current, as-of, and history derive membership from the row type and current composition", async () => {
+    const conn = await setup();
+    const created = txBuilder(Board);
+    Effect.runSync(created.put(Diamond, { title: "D", tag: "t", createdAt: "now" }));
+    const { tempids, t } = await conn.transact([...txOps(created)]);
+    const e = tempids["tmp-1"]!;
+    const later = await conn.transact([[":db/add", e, ":diamond/title", "D2"]]);
+    const composition = compositionFromSchema(Board);
+    const typeOf = async (db: ReturnType<typeof conn.db>) => {
+      const attr = db.requireAttr(":ramose/type");
+      const datoms = await db.datomsArray(Index.EAVT, { e, a: attr.id });
+      const asserted = datoms
+        .filter((datom) => datom.op && typeof datom.v === "string")
+        .map((datom) => datom.v as string);
+      return asserted[0];
+    };
+    expect(await typeOf(conn.db())).toBe(":diamond");
+    expect(await typeOf(conn.db().asOf(t))).toBe(":diamond");
+    expect(await typeOf(conn.db().history())).toBe(":diamond");
+    expect(composition.transitiveTraits((await typeOf(conn.db()))!)).toEqual([
+      ":annotated",
+      ":taggable",
+      ":timestamped",
+    ]);
+    expect(composition.transitiveTraits((await typeOf(conn.db().asOf(t)))!)).toEqual([
+      ":annotated",
+      ":taggable",
+      ":timestamped",
+    ]);
+    expect(later.t).toBeGreaterThan(t);
   });
 });

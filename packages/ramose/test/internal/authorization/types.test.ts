@@ -378,6 +378,14 @@ export type _uniqueCanonicalTypeNameOnBarrel = Expect<
 >;
 export type _requireUnitHashOnBarrel = Expect<Extends<"requireUnitHash", keyof AuthExports>>;
 export type _requireCatalogKeyOnBarrel = Expect<Extends<"requireCatalogKey", keyof AuthExports>>;
+export type _compositionFromUnitOnBarrel = Expect<Extends<"compositionFromUnit", keyof AuthExports>>;
+export type _compositionFromDescriptorOnBarrel = Expect<
+  Extends<"compositionFromDescriptor", keyof AuthExports>
+>;
+type DeployedCatalogType = import("../../../src/internal/authorization/index.ts").DeployedCatalog;
+export type _deployedCatalogHasComposition = Expect<
+  Extends<"composition", keyof DeployedCatalogType>
+>;
 type DeployedCatalogsType = import("../../../src/internal/authorization/index.ts").DeployedCatalogs;
 export type _requireDatabaseIsDatabaseKeyed = Expect<
   Extends<"requireDatabase", keyof DeployedCatalogsType>

@@ -3,10 +3,10 @@
  *
  * One immutable document nests the canonical {@link CatalogDescriptor}
  * and a lean installed read policy. Catalog identity, schema tables, and
- * trait composition live only on the descriptor. Identity maps and other
- * catalog indexes are derived at validation boundaries — they are not
- * persisted. Structural decode of {@link InstalledCatalogUnit} is not
- * {@link InstalledCatalogUnitV1}; only {@link sealInstalledCatalogUnit}
+ * trait composition live only on the descriptor. Type-to-trait lookup
+ * indexes are derived at validation and assembly — they are not persisted
+ * as application datoms. Structural decode of {@link InstalledCatalogUnit}
+ * is not {@link InstalledCatalogUnitV1}; only {@link sealInstalledCatalogUnit}
  * and verified load may produce the brand.
  */
 
