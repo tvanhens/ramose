@@ -217,8 +217,8 @@ type EntityImplementationOptions<
   Ops extends Readonly<Record<string, AnyUnboundOperation>>,
 > = EntityOptions<Traits> & {
   readonly operations?:
-    | (ValidOwnedOperationMap<Ops> & Ops)
-    | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
+    | Ops
+    | ((Operation: OwnedOperationAuthor<any>) => Ops);
 };
 
 export declare namespace Entity {
@@ -352,7 +352,10 @@ export function Entity<
       Operation: OwnedOperationAuthor<
         EntityOperationContext<Name, Fields, readonly []>
       >,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      EntityOperationContext<Name, Fields, readonly []>
+    > & Ops;
   },
 ): EntityWithTraits<Name, Fields, readonly [], Ops>;
 export function Entity<
@@ -367,7 +370,10 @@ export function Entity<
     readonly traits: Traits;
     readonly operations: (
       Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      EntityOperationContext<Name, Fields, Traits>
+    > & Ops;
   } & ValidTraitCompose<Fields, Traits>,
 ): EntityWithTraits<Name, Fields, Traits, Ops>;
 export function Entity<
@@ -429,13 +435,13 @@ export function Entity<
     id: idField,
     ...merged,
   };
+  const operationAuthor =
+    typeof options?.operations === "function"
+      ? ownedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>()
+      : undefined;
   const operationSpecs =
     typeof options?.operations === "function"
-      ? options.operations(
-          ownedOperationAuthor<
-            EntityOperationContext<Name, Fields, Traits>
-          >(),
-        )
+      ? options.operations(operationAuthor!)
       : options?.operations;
   (entity as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
     entity as unknown as Entity<Name, Fields, Ops> & {
@@ -443,6 +449,7 @@ export function Entity<
       readonly traits: Traits;
     },
     operationSpecs,
+    operationAuthor,
   );
   return entity as unknown as
     | Entity<Name, Fields, Ops>

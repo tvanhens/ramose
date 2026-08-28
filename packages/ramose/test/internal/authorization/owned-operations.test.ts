@@ -158,6 +158,13 @@ describe("owned operation authoring", () => {
         { operations: { [Symbol("run")]: spec } } as never,
       )
     ).toThrow(/operation map keys must be strings/);
+    expect(() =>
+      Entity(
+        "bad-author",
+        {},
+        { operations: () => ({ run: spec }) } as never,
+      )
+    ).toThrow(/must use the Operation author supplied/);
   });
 });
 

@@ -24,6 +24,21 @@ const User = Entity("user", { name: string() });
 const Other = Entity("other", { note: string() });
 declare const userId: Eid<typeof User>;
 declare const otherId: Eid<typeof Other>;
+
+const GloballyAuthored = Operation({
+  input: Schema.Struct({}),
+  output: Schema.Struct({}),
+  run() {
+    return {};
+  },
+});
+Entity("escapedOperationAuthor", {}, {
+  // @ts-expect-error owned maps must use their supplied owner-bound author
+  operations: (_Operation) => ({
+    escaped: GloballyAuthored,
+  }),
+});
+
 const BoundOperations = Trait(
   "boundOperations",
   { catalog: string() },

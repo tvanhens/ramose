@@ -224,7 +224,10 @@ export function Trait<
       Operation: OwnedOperationAuthor<
         BindableTraitOperationContext<Name, Fields, readonly [], Bind>
       >,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      BindableTraitOperationContext<Name, Fields, readonly [], Bind>
+    > & Ops;
   },
 ): BindableTraitWithOperations<Name, Fields, readonly [], Bind, Ops>;
 export function Trait<
@@ -243,7 +246,10 @@ export function Trait<
       Operation: OwnedOperationAuthor<
         BindableTraitOperationContext<Name, Fields, Traits, Bind>
       >,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      BindableTraitOperationContext<Name, Fields, Traits, Bind>
+    > & Ops;
   } & ValidTraitCompose<Fields, Traits>,
 ): BindableTraitWithOperations<Name, Fields, Traits, Bind, Ops>;
 export function Trait<
@@ -272,7 +278,10 @@ export function Trait<
       Operation: OwnedOperationAuthor<
         TraitOperationContext<Name, Fields, readonly []>
       >,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      TraitOperationContext<Name, Fields, readonly []>
+    > & Ops;
   },
 ): TraitWithTraits<Name, Fields, readonly [], Ops>;
 export function Trait<
@@ -287,7 +296,10 @@ export function Trait<
     readonly traits: Traits;
     readonly operations: (
       Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
-    ) => ValidOwnedOperationMap<Ops> & Ops;
+    ) => ValidOwnedOperationMap<
+      Ops,
+      TraitOperationContext<Name, Fields, Traits>
+    > & Ops;
   } & ValidTraitCompose<Fields, Traits>,
 ): TraitWithTraits<Name, Fields, Traits, Ops>;
 export function Trait<
@@ -314,8 +326,8 @@ export function Trait<
   options?: (TraitOptions<Traits> & {
     readonly bind?: Bind;
     readonly operations?:
-      | (ValidOwnedOperationMap<Ops> & Ops)
-      | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
+      | Ops
+      | ((Operation: OwnedOperationAuthor<any>) => Ops);
   }) & ValidTraitCompose<Fields, Traits>,
 ):
   | Trait<Name, Fields, Ops>
@@ -356,13 +368,13 @@ export function Trait<
     [OwnedOperations]: {},
     ...merged,
   };
+  const operationAuthor =
+    typeof options?.operations === "function"
+      ? ownedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>()
+      : undefined;
   const operationSpecs =
     typeof options?.operations === "function"
-      ? options.operations(
-          ownedOperationAuthor<
-            TraitOperationContext<Name, Fields, Traits>
-          >(),
-        )
+      ? options.operations(operationAuthor!)
       : options?.operations;
   (trait as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
     trait as unknown as Trait<Name, Fields, Ops> & {
@@ -370,6 +382,7 @@ export function Trait<
       readonly traits: Traits;
     },
     operationSpecs,
+    operationAuthor,
   );
   if (options?.bind !== undefined) {
     return makeBindableTrait(

@@ -222,6 +222,11 @@ export const OwnedOperations: unique symbol = Symbol.for(
   "ramose/owned-operations",
 );
 
+declare const OwnedOperationOwnerBrand: unique symbol;
+const OwnedOperationAuthorToken: unique symbol = Symbol(
+  "ramose/owned-operation-author-token",
+);
+
 type OperationOwnerShape = {
   readonly _tag: "Entity" | "Trait";
   readonly ns: string;
@@ -677,6 +682,16 @@ export interface UnboundOperation<
 
 export type AnyUnboundOperation = UnboundOperation<Schema.Top, Schema.Top, boolean>;
 
+type OwnerAuthoredOperation<
+  Owner extends OperationOwnerShape,
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+> = UnboundOperation<ICodec, OCodec, Self> & {
+  readonly [OwnedOperationOwnerBrand]: Owner;
+  readonly [OwnedOperationAuthorToken]: object;
+};
+
 /** Public operation value after its enclosing owner and local map key bind it. */
 export interface OwnedOperation<
   Owner extends OperationOwner = OperationOwner,
@@ -730,10 +745,13 @@ type InvalidOperationName<K extends string> = {
 /** Type-level operation-key and value validation for Entity/Trait options. */
 export type ValidOwnedOperationMap<
   Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+  Owner extends OperationOwnerShape,
 > = {
   readonly [K in keyof Ops]: K extends string
     ? K extends ValidIdentName<K>
-      ? Ops[K]
+      ? Ops[K] extends { readonly [OwnedOperationOwnerBrand]: Owner }
+        ? Ops[K]
+        : never
       : Ops[K] & InvalidOperationName<K>
     : never;
 };
@@ -857,7 +875,13 @@ export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
     const Self extends boolean = true,
   >(
     spec: OwnedOperationSpec<ICodec, OCodec, Self, Owner>,
-  ): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>>;
+  ): OwnerAuthoredOperation<
+    Owner,
+    ICodec,
+    OCodec,
+    NormalizeOwnedSelf<Self>
+  >;
+  readonly [OwnedOperationAuthorToken]: object;
 }
 
 /** Unbound form; Entity/Trait supply an owner-bound constructor when needed. */
@@ -1016,6 +1040,7 @@ export const bindOwnedOperations = <
 >(
   owner: Owner,
   operations: Ops | undefined,
+  author?: OwnedOperationAuthor<OperationOwnerShape>,
 ): BoundOwnerOperations<Owner, Ops> => {
   const out: Record<string, AnyOwnedOperation> = {};
   if (operations === undefined) {
@@ -1024,6 +1049,7 @@ export const bindOwnedOperations = <
   if (Reflect.ownKeys(operations).some((key) => typeof key !== "string")) {
     throw new Error("ramose/schema: operation map keys must be strings");
   }
+  const authorToken = author?.[OwnedOperationAuthorToken];
   for (const [localName, operation] of Object.entries(operations)) {
     if (!isIdentName(localName)) throw invalidIdentName("operation", localName);
     if (
@@ -1033,6 +1059,16 @@ export const bindOwnedOperations = <
     ) {
       throw new Error(
         `ramose/schema: ${owner.ns}.${localName} must be Ramose.Operation({ input, output, run })`,
+      );
+    }
+    if (
+      authorToken !== undefined &&
+      (operation as Partial<OwnerAuthoredOperation<OperationOwnerShape>>)[
+        OwnedOperationAuthorToken
+      ] !== authorToken
+    ) {
+      throw new Error(
+        `ramose/schema: ${owner.ns}.${localName} must use the Operation author supplied to its operations callback`,
       );
     }
     out[localName] = {
@@ -1057,8 +1093,25 @@ export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
 /** @internal Build the owner-specialized constructor passed by Entity/Trait. */
 export const ownedOperationAuthor = <
   Owner extends OperationOwnerShape,
->(): OwnedOperationAuthor<Owner> =>
-  defineOperation as unknown as OwnedOperationAuthor<Owner>;
+>(): OwnedOperationAuthor<Owner> => {
+  const token = {};
+  const author = ((
+    spec: OwnedOperationSpec<Schema.Top, Schema.Top, boolean, Owner>,
+  ) => {
+    const operation = defineOperation(
+      spec as unknown as OwnedOperationSpec<
+        Schema.Top,
+        Schema.Top,
+        boolean,
+        never
+      >,
+    ) as AnyUnboundOperation;
+    Object.defineProperty(operation, OwnedOperationAuthorToken, { value: token });
+    return operation;
+  }) as unknown as OwnedOperationAuthor<Owner>;
+  Object.defineProperty(author, OwnedOperationAuthorToken, { value: token });
+  return author;
+};
 
 /** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
 export const Operation: typeof defineOperation & {
