@@ -745,6 +745,10 @@ describe("public barrels stay closed", () => {
     const db = await import("../../../src/db/index.ts");
     expect("Policy" in root).toBe(true);
     expect("compileReadAuthorization" in root.Policy).toBe(true);
+    expect("compileReadAuthorizationResult" in root.Policy).toBe(false);
+    expect("seededPath" in root.Policy).toBe(false);
+    expect("lowerOwnedOperations" in root.Policy).toBe(false);
+    expect("lowerOperationSchema" in root.Policy).toBe(false);
     expect("compileReadAuthorization" in root).toBe(false);
     expect("compileReadAuthorizationResult" in root).toBe(false);
     expect("Policy" in db).toBe(false);

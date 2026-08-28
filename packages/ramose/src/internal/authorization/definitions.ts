@@ -14,7 +14,7 @@ import {
 import { compositionValueMetadata } from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import {
-  creationDefaultInputsOf,
+  creationDefaultIdentityOf,
   type AnyField,
   type CreationDefault,
 } from "../../db/Field.ts";
@@ -232,15 +232,15 @@ const defaultIdentity = (
   get: CreationDefault<unknown>,
   label: string,
 ): JsonValue => {
-  const inputs = creationDefaultInputsOf(get);
-  if (inputs === undefined) {
+  const identity = creationDefaultIdentityOf(get);
+  if (identity === undefined) {
     throw new Error(
       `${label} must declare canonical captured inputs with creationDefault(inputs, get)`,
     );
   }
   return {
-    source: Function.prototype.toString.call(get),
-    inputs: jsonValue(inputs),
+    source: identity.source,
+    inputs: jsonValue(identity.inputs),
   };
 };
 

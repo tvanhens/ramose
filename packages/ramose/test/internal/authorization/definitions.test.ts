@@ -236,7 +236,8 @@ describe("catalog definition assembly", () => {
   });
 
   test("binds declared captured default inputs and rejects undeclared captures", async () => {
-    const make = (value: string) => creationDefault({ value }, () => value);
+    const make = (value: string) =>
+      creationDefault({ value }, (inputs) => inputs.value);
     const LeftSchema = Schema({ item: Entity("item", {
       value: string({ default: make("left") }),
     }) });
@@ -258,6 +259,29 @@ describe("catalog definition assembly", () => {
       (await assemble(right)).require(CatalogId.make("defaults")),
     );
     expect(rightUnit.unitHash).not.toBe(leftUnit.unitHash);
+
+    const mutable = { value: "snapshot" };
+    const SnapshotSchema = Schema({ item: Entity("item", {
+      value: string({
+        default: creationDefault(mutable, (inputs) => inputs.value),
+      }),
+    }) });
+    const snapshot = Catalog("snapshot-default", {
+      schema: SnapshotSchema,
+      policy: await policy(SnapshotSchema),
+    });
+    const installedSnapshot = Result.getOrThrow(
+      (await assemble(snapshot)).require(CatalogId.make("snapshot-default")),
+    );
+    mutable.value = "mutated";
+    expect(resolveCreationValues(
+      SnapshotSchema.entities.item!,
+      {},
+      { now: new Date(0) },
+    )).toEqual({ value: "snapshot" });
+    expect(Result.getOrThrow(
+      (await assemble(snapshot)).require(CatalogId.make("snapshot-default")),
+    ).unitHash).toBe(installedSnapshot.unitHash);
 
     const UnsafeSchema = Schema({ item: Entity("item", {
       value: string({ default: () => "captured" }),

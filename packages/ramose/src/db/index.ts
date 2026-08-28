@@ -43,6 +43,7 @@ export {
   type CreationDefault,
   type CreationDefaultContext,
   type CreationDefaultInputs,
+  type ImmutableCreationDefaultInputs,
   creationDefault,
   type FieldOptions,
   type ValueOf,

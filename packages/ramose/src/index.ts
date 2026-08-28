@@ -50,7 +50,7 @@ export {
   type CatalogPolicy,
   type CatalogProps,
 } from "./Catalog.ts";
-export * as Policy from "./internal/authorization/authoring/index.ts";
+export * as Policy from "./Policy.ts";
 export {
   DEFAULT_JWT_MAX_TTL,
   type AuthEnvValue,

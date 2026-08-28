@@ -36,41 +36,109 @@ export type CreationDefaultInputs =
   | readonly CreationDefaultInputs[]
   | { readonly [key: string]: CreationDefaultInputs };
 
-const CREATION_DEFAULT_INPUTS: unique symbol = Symbol.for(
-  "ramose.creation-default.inputs",
+export type ImmutableCreationDefaultInputs<T extends CreationDefaultInputs> =
+  T extends null | string | number | boolean
+    ? T
+    : T extends readonly (infer Item extends CreationDefaultInputs)[]
+      ? readonly ImmutableCreationDefaultInputs<Item>[]
+      : T extends Readonly<Record<string, CreationDefaultInputs>>
+        ? { readonly [K in keyof T]: ImmutableCreationDefaultInputs<T[K]> }
+        : never;
+
+type CreationDefaultIdentity = {
+  readonly inputs: CreationDefaultInputs;
+  readonly source: string;
+};
+
+const CREATION_DEFAULT_IDENTITY: unique symbol = Symbol.for(
+  "ramose.creation-default.identity",
 );
 
 /** Synchronous creation-time value computation. `undefined` means missing. */
 export type CreationDefault<A> = ((
   context: CreationDefaultContext,
 ) => A | undefined) & {
-  readonly [CREATION_DEFAULT_INPUTS]?: CreationDefaultInputs;
+  readonly [CREATION_DEFAULT_IDENTITY]?: CreationDefaultIdentity;
+};
+
+const snapshotInputs = (
+  value: CreationDefaultInputs,
+  seen = new WeakSet<object>(),
+): CreationDefaultInputs => {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("ramose/default: inputs must contain only finite numbers");
+    }
+    return value;
+  }
+  if (seen.has(value)) {
+    throw new Error("ramose/default: inputs must not contain cycles");
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const snapshot = Object.freeze(
+      value.map((item) => snapshotInputs(item, seen)),
+    );
+    seen.delete(value);
+    return snapshot;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("ramose/default: inputs must be canonical JSON data");
+  }
+  const record = value as Readonly<Record<string, CreationDefaultInputs>>;
+  const out: Record<string, CreationDefaultInputs> = {};
+  for (const key of Object.keys(record).sort()) {
+    const item = record[key];
+    if (item === undefined) {
+      throw new Error("ramose/default: inputs must be canonical JSON data");
+    }
+    out[key] = snapshotInputs(item, seen);
+  }
+  seen.delete(value);
+  return Object.freeze(out);
 };
 
 /**
- * Declare every runtime/config value captured by a default as canonical data.
- * Catalog assembly rejects unannotated defaults because function source cannot
- * identify closure state.
+ * Snapshot every runtime/config input used by a default as immutable canonical
+ * data. The evaluator receives that snapshot and should derive its result only
+ * from the snapshot and authoritative context.
  */
 export const creationDefault = <
   A,
   const Inputs extends CreationDefaultInputs,
 >(
   inputs: Inputs,
-  get: (context: CreationDefaultContext) => A | undefined,
+  get: (
+    inputs: ImmutableCreationDefaultInputs<Inputs>,
+    context: CreationDefaultContext,
+  ) => A | undefined,
 ): CreationDefault<A> => {
-  Object.defineProperty(get, CREATION_DEFAULT_INPUTS, {
-    value: inputs,
+  const snapshot = snapshotInputs(inputs) as ImmutableCreationDefaultInputs<Inputs>;
+  const run = (context: CreationDefaultContext): A | undefined =>
+    get(snapshot, context);
+  Object.defineProperty(run, CREATION_DEFAULT_IDENTITY, {
+    value: Object.freeze({
+      inputs: snapshot,
+      source: Function.prototype.toString.call(get),
+    }),
     enumerable: false,
   });
-  return get as CreationDefault<A>;
+  return Object.freeze(run) as CreationDefault<A>;
 };
 
-/** @internal Canonical captured inputs retained on a declared default. */
-export const creationDefaultInputsOf = (
+/** @internal Immutable identity retained on a declared default. */
+export const creationDefaultIdentityOf = (
   get: CreationDefault<unknown>,
-): CreationDefaultInputs | undefined =>
-  get[CREATION_DEFAULT_INPUTS];
+): CreationDefaultIdentity | undefined =>
+  get[CREATION_DEFAULT_IDENTITY];
 
 /**
  * Field options. Cardinality, uniqueness and ownership live on
