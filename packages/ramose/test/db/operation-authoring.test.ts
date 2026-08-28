@@ -38,6 +38,17 @@ describe("portable operation authoring", () => {
     ]);
   });
 
+  test("discovery cards omit normalized empty documentation", () => {
+    const blank = Op(
+      "todo/blank",
+      { on: Todo, input: Schema.Struct({}), doc: " \n\t" },
+      () => ({}),
+    );
+    expect(operationCards(defineOperations(Todos, { blank }))).toEqual([
+      { name: "todo/blank", on: "todo" },
+    ]);
+  });
+
   test("Schema-backed input decoding remains available to authoritative execution", async () => {
     expect(await Effect.runPromise(decodeInput(rename.input, { title: "next" }))).toEqual({ title: "next" });
     await expect(Effect.runPromise(decodeInput(rename.input, { title: 1 }))).rejects.toMatchObject({ _tag: "InvalidRequest" });

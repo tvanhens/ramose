@@ -193,6 +193,23 @@ describe("uuid public type", () => {
 });
 
 describe("Field composition merge", () => {
+  test("documentation survives direct fields, refs, and combinators and can be removed", () => {
+    const direct = string({ doc: "Direct text." });
+    const ref = Ref(User, { doc: "The related user." });
+    const many = Field.many(ref);
+    const unique = Field.unique(direct, "strict");
+    const owned = Field.owned(Field(Ref.self, { doc: "Owned child." }));
+
+    expect(direct.doc).toBe("Direct text.");
+    expect(ref.doc).toBe("The related user.");
+    expect(many.doc).toBe("The related user.");
+    expect(unique.doc).toBe("Direct text.");
+    expect(owned.doc).toBe("Owned child.");
+    expect(Field(many, { doc: "Replacement." }).doc).toBe("Replacement.");
+    expect(Field(many, { doc: " \n" }).doc).toBeUndefined();
+    expect(string({ doc: "" }).doc).toBeUndefined();
+  });
+
   test("composition cannot change valueType; stored() brands the schema", () => {
     expect(Field.unique(string(), "upsert").valueType).toBe("string");
     expect(Field.many(Field.owned(string())).valueType).toBe("string");

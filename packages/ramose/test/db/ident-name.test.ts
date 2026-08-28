@@ -55,6 +55,7 @@ describe("ident names", () => {
       "fields",
       "_tag",
       "traits",
+      "doc",
     ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
@@ -63,6 +64,7 @@ describe("ident names", () => {
     expect(isIdentName("ns")).toBe(true);
     expect(isIdentName("fields")).toBe(true);
     expect(isIdentName("traits")).toBe(true);
+    expect(isIdentName("doc")).toBe(true);
     expect(isIdentName("operations")).toBe(true);
     expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
@@ -90,7 +92,10 @@ describe("Entity()", () => {
   test("rejects a reserved field key before it can overwrite metadata", () => {
     for (const key of RESERVED_FIELD_KEYS) {
       expect(() => Entity("post", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
+        /reserved — id, ns, fields, _tag, traits, and doc are Entity \/ Trait metadata/,
+      );
+      expect(() => Trait("postTrait", { [key]: string() })).toThrow(
+        /reserved — id, ns, fields, _tag, traits, and doc are Entity \/ Trait metadata/,
       );
     }
     const Post = Entity("post", { title: string() });

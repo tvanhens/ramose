@@ -209,6 +209,7 @@ const ownFields = (
       index: field.index,
       optional: field.isOptional,
       owned: field.owned,
+      ...(field.doc === undefined ? {} : { doc: field.doc }),
     };
     fields.push(field.valueType === "ref"
       ? { ...common, valueType: "ref", refTarget: refTarget(catalog, field) }
@@ -338,10 +339,12 @@ const descriptorTables = (
   const entityDescriptors = entities.map((entity) => ({
     id: EntityId.make({ catalog, name: entity.ns }),
     traits: directTraits(catalog, entity as ComposerLike),
+    ...(entity.doc === undefined ? {} : { doc: entity.doc }),
   }));
   const traitDescriptors = traits.map((trait) => ({
     id: TraitId.make({ catalog, name: trait.ns }),
     traits: directTraits(catalog, trait as unknown as ComposerLike),
+    ...(trait.doc === undefined ? {} : { doc: trait.doc }),
   }));
   const fields = [
     ...entities.flatMap((entity) => ownFields(catalog, "entity", entity)),

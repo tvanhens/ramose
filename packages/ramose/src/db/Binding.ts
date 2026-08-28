@@ -71,6 +71,7 @@ type BoundFields<T extends TraitLike, B> = BoundFieldMap<T["fields"], B>;
 export type TraitLike = {
   readonly _tag: "Trait";
   readonly ns: string;
+  readonly doc: string | undefined;
   readonly fields: Readonly<Record<string, AnyField & { readonly ident: string }>>;
   readonly traits: readonly { readonly ns: string }[];
 };

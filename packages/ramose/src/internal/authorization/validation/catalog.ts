@@ -33,6 +33,8 @@ import {
 } from "./common.ts";
 import { validateInputShapeKeys } from "./descriptors.ts";
 
+const isBlankDoc = (doc: string): boolean => doc.trim().length === 0;
+
 export type RowFocus =
   | { readonly _tag: "entity"; readonly entity: EntityId }
   | { readonly _tag: "trait"; readonly trait: TraitId };
@@ -236,6 +238,9 @@ export const prepareAuthorizationCatalog = (
     for (const entity of descriptor.entities) {
       yield* catalogOfIdentity(entity.id, target, "entity");
       if (isBlank(entity.id.name)) return yield* invalid("blank entity name");
+      if (entity.doc !== undefined && isBlankDoc(entity.doc)) {
+        return yield* invalid(`blank entity doc for '${entity.id.name}'`);
+      }
       if (entities.has(entity.id.name)) {
         return yield* invalid(`ambiguous entity '${entity.id.name}'`);
       }
@@ -252,6 +257,9 @@ export const prepareAuthorizationCatalog = (
     for (const trait of descriptor.traits) {
       yield* catalogOfIdentity(trait.id, target, "trait");
       if (isBlank(trait.id.name)) return yield* invalid("blank trait name");
+      if (trait.doc !== undefined && isBlankDoc(trait.doc)) {
+        return yield* invalid(`blank trait doc for '${trait.id.name}'`);
+      }
       if (traits.has(trait.id.name)) {
         return yield* invalid(`ambiguous trait '${trait.id.name}'`);
       }
@@ -269,6 +277,11 @@ export const prepareAuthorizationCatalog = (
       yield* catalogOfIdentity(field.id, target, "field");
       if (isBlank(field.id.localName)) return yield* invalid("blank field local name");
       if (isBlank(field.id.owner.name)) return yield* invalid("blank field owner name");
+      if (field.doc !== undefined && isBlankDoc(field.doc)) {
+        return yield* invalid(
+          `blank field doc for '${field.id.owner.name}.${field.id.localName}'`,
+        );
+      }
       const key = fieldKey(field.id);
       if (fields.has(key)) return yield* invalid(`ambiguous field '${key}'`);
       const owner = field.id.owner;
@@ -303,7 +316,7 @@ export const prepareAuthorizationCatalog = (
       } else if (!traits.has(owner.name)) {
         return yield* invalid(`missing operation owner trait '${owner.name}'`);
       }
-      if (operation.doc !== undefined && isBlank(operation.doc)) {
+      if (operation.doc !== undefined && isBlankDoc(operation.doc)) {
         return yield* invalid(`blank operation doc for '${owner.name}.${operation.id.localName}'`);
       }
       yield* validateInputShapeKeys(operation.input);

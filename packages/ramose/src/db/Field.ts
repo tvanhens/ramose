@@ -3,6 +3,7 @@
 import { parse } from "acorn";
 import type * as SchemaNS from "effect/Schema";
 import * as Schema from "effect/Schema";
+import { normalizeDoc } from "./documentation.ts";
 import {
   Bytes,
   Instant,
@@ -695,7 +696,7 @@ const makeField = (
     unique,
     index: options?.index ?? unique !== undefined,
     owned: flags?.owned ?? false,
-    doc: options?.doc,
+    doc: normalizeDoc(options?.doc),
     valueType: tryInferDbValueType(schema),
     isOptional: options?.optional === true || schemaAllowsUndefined(schema),
     default: options?.default,

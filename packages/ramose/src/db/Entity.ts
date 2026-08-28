@@ -36,6 +36,7 @@ import {
   type OwnedOperationAuthor,
   type ValidOwnedOperationMap,
 } from "./Operation.ts";
+import { normalizeDoc } from "./documentation.ts";
 
 export type FieldMap = Record<string, AnyField>;
 
@@ -129,7 +130,7 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
 /**
  * Stamped fields plus metadata. Address a field as `User.name`.
  * `fields` is the iteration map (`schemaTx`, `pick`, policy) — not a
- * second public handle. `id`, `ns`, `fields`, `_tag`, and `traits` cannot
+ * second public handle. `id`, `ns`, `fields`, `_tag`, `traits`, and `doc` cannot
  * be field names, so spreading cannot overwrite metadata.
  *
  * Composed trait fields are intersected onto the instance (`Issue.tag`)
@@ -142,6 +143,8 @@ export type Entity<
 > = {
   readonly _tag: "Entity";
   readonly ns: Name;
+  /** Optional Markdown documentation retained in deployed discovery metadata. */
+  readonly doc: string | undefined;
   /**
    * Iteration map. Use `User.name` at call sites; this property exists
    * so schema / policy / pull can walk keys without listing them.
@@ -182,6 +185,7 @@ export type Entity<
 export type AnyEntity = {
   readonly _tag: "Entity";
   readonly ns: string;
+  readonly doc: string | undefined;
   readonly fields: {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
@@ -210,6 +214,7 @@ export type EntityOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
 > = {
   readonly traits?: Traits;
+  readonly doc?: string;
 };
 
 type EntityImplementationOptions<
@@ -329,6 +334,7 @@ type EntityOperationContext<
 > = {
   readonly _tag: "Entity";
   readonly ns: Name;
+  readonly doc: string | undefined;
   readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
   readonly traits: Traits;
   readonly [COMPOSED_TRAITS]: ComposedTraitMap<TraitClosure<Traits[number]>>;
@@ -348,6 +354,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: never;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<
         EntityOperationContext<Name, Fields, readonly []>
@@ -368,6 +375,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<
@@ -385,6 +393,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: Traits;
+    readonly doc?: string;
     readonly operations?: never;
   } & ValidTraitCompose<Fields, Traits>,
 ): EntityWithTraits<Name, Fields, Traits, {}>;
@@ -426,6 +435,7 @@ export function Entity<
   const entity = {
     _tag: "Entity" as const,
     ns: name,
+    doc: normalizeDoc(options?.doc),
     fields: merged,
     traits: direct,
     [COMPOSED_TRAITS]: Object.fromEntries(

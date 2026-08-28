@@ -522,6 +522,60 @@ describe("owned operation descriptors", () => {
       /blank operation doc/,
     );
   });
+
+  test("rejects blank entity, trait, and field documentation", () => {
+    const cases: ReadonlyArray<{
+      readonly label: string;
+      readonly descriptor: CatalogDescriptor;
+      readonly pattern: RegExp;
+    }> = [
+      {
+        label: "entity",
+        descriptor: {
+          ...descriptor,
+          entities: descriptor.entities.map((entry, index) =>
+            index === 0 ? { ...entry, doc: " \n" } : entry
+          ),
+        },
+        pattern: /blank entity doc/,
+      },
+      {
+        label: "trait",
+        descriptor: {
+          ...descriptor,
+          traits: descriptor.traits.map((entry, index) =>
+            index === 0 ? { ...entry, doc: "\t" } : entry
+          ),
+        },
+        pattern: /blank trait doc/,
+      },
+      {
+        label: "field",
+        descriptor: {
+          ...descriptor,
+          fields: descriptor.fields.map((entry, index) =>
+            index === 0 ? { ...entry, doc: "" } : entry
+          ),
+        },
+        pattern: /blank field doc/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = validateBoundAuthorizationResult({
+        bound: boundDocument([]),
+        descriptor: testCase.descriptor,
+      });
+      if (Result.isSuccess(result)) {
+        throw new Error(`expected blank ${testCase.label} documentation to fail`);
+      }
+      expectFailure(
+        result,
+        "InvalidIR",
+        testCase.pattern,
+      );
+    }
+  });
 });
 
 describe("traversal", () => {

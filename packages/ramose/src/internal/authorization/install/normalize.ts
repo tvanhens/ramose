@@ -130,7 +130,11 @@ export const normalizeEntities = (
     const closed: EntityDescriptor[] = [];
     for (const entity of entities) {
       const traits = yield* canonicalizeComposedTraits(entity.traits);
-      closed.push({ id: entity.id, traits });
+      closed.push({
+        id: entity.id,
+        traits,
+        ...(entity.doc === undefined ? {} : { doc: entity.doc }),
+      });
     }
     return yield* uniqueSorted(closed, (entity) => encodeEntity(entity.id), "entity identity");
   });
@@ -142,7 +146,11 @@ export const normalizeTraits = (
     const closed: TraitDescriptor[] = [];
     for (const trait of traits) {
       const nested = yield* canonicalizeComposedTraits(trait.traits);
-      closed.push({ id: trait.id, traits: nested });
+      closed.push({
+        id: trait.id,
+        traits: nested,
+        ...(trait.doc === undefined ? {} : { doc: trait.doc }),
+      });
     }
     return yield* uniqueSorted(closed, (trait) => encodeTrait(trait.id), "trait identity");
   });

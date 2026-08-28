@@ -12,6 +12,7 @@ import {
   Entity,
   Field,
   OwnedOperations,
+  Ref,
   Schema,
   Trait,
   bytes,
@@ -181,6 +182,119 @@ describe("catalog definition assembly", () => {
 
     expect(Result.getOrThrow(first.require(CatalogId.make("app"))).unitHash)
       .not.toBe(Result.getOrThrow(second.require(CatalogId.make("app"))).unitHash);
+  });
+
+  test("preserves documentation in deployed discovery metadata without changing identities", async () => {
+    const schemaWithDocs = (docs: {
+      readonly entity?: string;
+      readonly trait?: string;
+      readonly directField?: string;
+      readonly refField?: string;
+      readonly composedField?: string;
+      readonly operation?: string;
+    }) => {
+      const Author = Entity("docAuthor", { name: string() });
+      const Taggable = Trait(
+        "docTaggable",
+        {
+          tags: Field.many(string(
+            docs.composedField === undefined ? {} : { doc: docs.composedField },
+          )),
+        },
+        {
+          ...(docs.trait === undefined ? {} : { doc: docs.trait }),
+          operations: (Operation) => ({
+            addTag: Operation({
+              input: EffectSchema.Struct({ tag: EffectSchema.String }),
+              output: EffectSchema.Struct({}),
+              ...(docs.operation === undefined ? {} : { doc: docs.operation }),
+              run(op, { tag }) {
+                op.self.set(Taggable.tags, tag);
+                return {};
+              },
+            }),
+          }),
+        },
+      );
+      const Article = Entity(
+        "docArticle",
+        {
+          title: string(
+            docs.directField === undefined ? {} : { doc: docs.directField },
+          ),
+          author: Ref(
+            Author,
+            docs.refField === undefined ? {} : { doc: docs.refField },
+          ),
+        },
+        {
+          traits: [Taggable],
+          ...(docs.entity === undefined ? {} : { doc: docs.entity }),
+        },
+      );
+      return Schema({ docAuthor: Author, docArticle: Article });
+    };
+    const assembleDocs = async (docs: Parameters<typeof schemaWithDocs>[0]) => {
+      const schema = schemaWithDocs(docs);
+      return Result.getOrThrow(
+        (await assemble(Catalog("documented", {
+          schema,
+          policy: await policy(schema),
+        }))).require(CatalogId.make("documented")),
+      );
+    };
+    const original = await assembleDocs({
+      entity: "A documented article.",
+      trait: "Supports tags.",
+      directField: "Article title.",
+      refField: "Article author.",
+      composedField: "User-managed tags.",
+      operation: "Add a tag.",
+    });
+    const replacement = await assembleDocs({
+      entity: "Replacement entity docs.",
+      trait: "Replacement trait docs.",
+      directField: "Replacement title docs.",
+      refField: "Replacement author docs.",
+      composedField: "Replacement tag docs.",
+      operation: "Replacement operation docs.",
+    });
+    const removed = await assembleDocs({});
+    const catalog = original.unit.catalog;
+
+    expect(catalog.entities.find((entry) => entry.id.name === "docArticle")?.doc)
+      .toBe("A documented article.");
+    expect(catalog.traits.find((entry) => entry.id.name === "docTaggable")?.doc)
+      .toBe("Supports tags.");
+    expect(catalog.fields.find((entry) => entry.id.localName === "title")?.doc)
+      .toBe("Article title.");
+    expect(catalog.fields.find((entry) => entry.id.localName === "author")?.doc)
+      .toBe("Article author.");
+    expect(catalog.fields.find((entry) => entry.id.localName === "tags")?.doc)
+      .toBe("User-managed tags.");
+    expect(catalog.operations.find((entry) => entry.id.localName === "addTag")?.doc)
+      .toBe("Add a tag.");
+
+    const identities = (installed: typeof original) => ({
+      entities: installed.unit.catalog.entities.map((entry) => entry.id),
+      traits: installed.unit.catalog.traits.map((entry) => entry.id),
+      fields: installed.unit.catalog.fields.map((entry) => entry.id),
+      operations: installed.unit.catalog.operations.map((entry) => entry.id),
+    });
+    expect(identities(replacement)).toEqual(identities(original));
+    expect(identities(removed)).toEqual(identities(original));
+    expect(replacement.unit.catalog.version).toBe(original.unit.catalog.version);
+    expect(removed.unit.catalog.version).toBe(original.unit.catalog.version);
+    expect(replacement.unitHash).not.toBe(original.unitHash);
+    expect(removed.unitHash).not.toBe(original.unitHash);
+
+    const serializedRemoved = JSON.parse(
+      JSON.stringify(removed.unit.catalog),
+    ) as typeof removed.unit.catalog;
+    expect(serializedRemoved.entities.every((entry) => !("doc" in entry))).toBe(true);
+    expect(serializedRemoved.traits.every((entry) => !("doc" in entry))).toBe(true);
+    expect(serializedRemoved.fields.every((entry) => !("doc" in entry))).toBe(true);
+    expect(serializedRemoved.operations.every((entry) => !("doc" in entry))).toBe(true);
   });
 
   test("binds the unit hash to fixed creation constraints", async () => {
@@ -440,6 +554,7 @@ describe("catalog definition assembly", () => {
       tags: Field.many(string()),
       label: string(),
     }, {
+      doc: "original trait",
       bind: () => {
         bindingCalls++;
         return bindingResult;
@@ -449,6 +564,7 @@ describe("catalog definition assembly", () => {
     let bodyCapture = "body-original";
     const Item = Entity("boundaryItem", {
       title: string({
+        doc: "original field",
         default: creationDefault(fieldInputs, (inputs) => inputs.value),
       }),
       createdAt: timestamp({
@@ -463,6 +579,7 @@ describe("catalog definition assembly", () => {
       checked: Field(MutableFieldSchema),
     }, {
       traits: [Bound(child)],
+      doc: "original entity",
       operations: (Operation) => ({
         check: Operation({
           self: false,
@@ -511,6 +628,9 @@ describe("catalog definition assembly", () => {
       (inputs) => inputs.value,
     ))).toBe(true);
     expect(Reflect.set(Item, "ns", "mutatedItem")).toBe(true);
+    expect(Reflect.set(Item, "doc", "mutated entity")).toBe(true);
+    expect(Reflect.set(Item.title, "doc", "mutated field")).toBe(true);
+    expect(Reflect.set(Bound, "doc", "mutated trait")).toBe(true);
     expect(Reflect.set(Audit, "ns", "mutatedAudit")).toBe(true);
     expect(Reflect.set(operation, "doc", "mutated operation")).toBe(true);
     expect(Reflect.set(operation, "run", () => ({ ok: false }))).toBe(true);

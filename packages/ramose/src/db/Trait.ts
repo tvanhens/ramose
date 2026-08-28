@@ -19,6 +19,7 @@ import {
 } from "./Entity.ts";
 import type { AnyField } from "./Field.ts";
 import { attachAttrNav, type AttrNav, type PathCarrier } from "./shapes.ts";
+import { normalizeDoc } from "./documentation.ts";
 import {
   invalidIdentName,
   isIdentName,
@@ -43,6 +44,7 @@ export type TraitOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
 > = {
   readonly traits?: Traits;
+  readonly doc?: string;
 };
 
 export type BindableTraitOptions<
@@ -64,6 +66,8 @@ export type Trait<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
+  /** Optional Markdown documentation retained in deployed discovery metadata. */
+  readonly doc: string | undefined;
   /**
    * Iteration map. Use `Taggable.tag` at call sites; this property exists
    * so schema / install can walk keys without listing them.
@@ -94,6 +98,7 @@ export type Trait<
 export type AnyTrait = {
   readonly _tag: "Trait";
   readonly ns: string;
+  readonly doc: string | undefined;
   readonly fields: {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
@@ -161,6 +166,7 @@ type TraitOperationContext<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
+  readonly doc: string | undefined;
   readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
   readonly traits: Traits;
 };
@@ -173,6 +179,7 @@ type BindableTraitOperationContext<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
+  readonly doc: string | undefined;
   readonly fields: BoundFieldMap<StampedMap<Name, Fields>, Bind> &
     FlattenedTraitFields<Traits>;
   readonly traits: Traits;
@@ -219,6 +226,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: never;
+    readonly doc?: string;
     readonly bind: Bind;
     readonly operations: (
       Operation: OwnedOperationAuthor<
@@ -241,6 +249,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly bind: Bind;
     readonly operations: (
       Operation: OwnedOperationAuthor<
@@ -274,6 +283,7 @@ export function Trait<
   options: {
     readonly traits?: never;
     readonly bind?: never;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<
         TraitOperationContext<Name, Fields, readonly []>
@@ -294,6 +304,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<
@@ -311,6 +322,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: Traits;
+    readonly doc?: string;
     readonly operations?: never;
   } & ValidTraitCompose<Fields, Traits>,
 ): TraitWithTraits<Name, Fields, Traits, {}>;
@@ -362,6 +374,7 @@ export function Trait<
   const trait = {
     _tag: "Trait" as const,
     ns: name,
+    doc: normalizeDoc(options?.doc),
     fields: merged,
     traits: direct,
     id: idField,

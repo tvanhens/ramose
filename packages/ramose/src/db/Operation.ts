@@ -12,6 +12,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { COMPOSED_TRAITS } from "./Composer.ts";
+import { normalizeDoc } from "./documentation.ts";
 import type { Eid } from "./Eid.ts";
 import type { AnySchema } from "./Schema.ts";
 import { InvalidRequest, OperationsCoverageError } from "./Errors.ts";
@@ -231,6 +232,7 @@ const OwnedOperationAuthorToken: unique symbol = Symbol(
 type OperationOwnerShape = {
   readonly _tag: "Entity" | "Trait";
   readonly ns: string;
+  readonly doc: string | undefined;
   readonly fields: object;
 };
 
@@ -296,7 +298,7 @@ type OwnedFieldValue<
 
 type EntityIdentity<Entity extends AnyEntity> = Pick<
   Entity,
-  "_tag" | "ns" | "fields"
+  "_tag" | "ns" | "doc" | "fields"
 > &
   Pick<
     AnyEntity,
@@ -867,9 +869,6 @@ type CatalogEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
 
 const emptyOutput = Schema.Struct({});
 
-const docOf = (doc: string | undefined): string | undefined =>
-  doc === undefined || doc === "" ? undefined : doc;
-
 /** Define one legacy standalone named operation. */
 const defineNamedOperation = <
   Name extends string,
@@ -887,7 +886,7 @@ const defineNamedOperation = <
   input: schemas.input,
   output: (schemas.output ?? emptyOutput) as Schema.Codec<O, unknown>,
   on: schemas.on,
-  doc: docOf(schemas.doc),
+  doc: normalizeDoc(schemas.doc),
   body,
 });
 
@@ -1033,7 +1032,7 @@ function defineOperation(
     output: nameOrSpec.output,
     self,
     writes: Object.freeze([...(nameOrSpec.writes ?? [])]),
-    doc: docOf(nameOrSpec.doc),
+    doc: normalizeDoc(nameOrSpec.doc),
     run: nameOrSpec.run,
   } as AnyUnboundOperation;
 }

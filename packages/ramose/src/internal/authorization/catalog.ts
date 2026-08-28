@@ -58,12 +58,16 @@ export const EntityDescriptor = Schema.Struct({
   id: EntityId,
   /** Direct composed traits. Transitive closure is {@link TraitComposition}. */
   traits: Schema.Array(TraitId),
+  /** Optional Markdown documentation for discovery. */
+  doc: Schema.optionalKey(Schema.String),
 });
 export type EntityDescriptor = typeof EntityDescriptor.Type;
 
 export const TraitDescriptor = Schema.Struct({
   id: TraitId,
   traits: Schema.Array(TraitId),
+  /** Optional Markdown documentation for discovery. */
+  doc: Schema.optionalKey(Schema.String),
 });
 export type TraitDescriptor = typeof TraitDescriptor.Type;
 
@@ -89,6 +93,8 @@ const FieldDescriptorBase = {
   index: Schema.Boolean,
   optional: Schema.Boolean,
   owned: Schema.Boolean,
+  /** Optional Markdown documentation for discovery. */
+  doc: Schema.optionalKey(Schema.String),
 };
 
 export const ScalarFieldDescriptor = Schema.Struct({
