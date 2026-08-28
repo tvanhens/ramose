@@ -24,6 +24,7 @@ import {
   hashCatalogSchemaFingerprint,
   me,
   read,
+  subject,
   type AuthorizedRequestInput,
   type DeployedCatalogs,
   type OneShotRead,
@@ -139,7 +140,10 @@ const deployPolicy = async (
 };
 
 const ownerPolicy = (): Promise<DeployedCatalogs> =>
-  deployPolicy([read(Issue).when(eq(Issue.owner, me)), read(User).when(allow)]);
+  deployPolicy([
+    read(Issue).when(eq(Issue.owner, me)),
+    read(User).when(eq(User.authId, subject)),
+  ]);
 
 const acceptAllPolicy = (): Promise<DeployedCatalogs> =>
   deployPolicy([
@@ -270,9 +274,9 @@ type Observation = {
   pullMissing: unknown;
   entityI1: unknown;
   entityMissing: unknown;
-  lookupBug: unknown;
-  lookupOther: unknown;
-  lookupNope: unknown;
+  lookupAlice: unknown;
+  lookupBob: unknown;
+  lookupGhost: unknown;
 };
 
 const observe = async (db: Db, i1: number, missingEid: number): Promise<Observation> => {
@@ -294,9 +298,9 @@ const observe = async (db: Db, i1: number, missingEid: number): Promise<Observat
     pullMissing: await pull(db, missingEid, `[*]`),
     entityI1: await db.entity(i1),
     entityMissing: (await db.entity(missingEid)) ?? null,
-    lookupBug: (await db.entid([":issue/title", "Bug"])) ?? null,
-    lookupOther: (await db.entid([":issue/title", "Other"])) ?? null,
-    lookupNope: (await db.entid([":issue/title", "Nope"])) ?? null,
+    lookupAlice: (await db.entid([":user/authId", "alice-sub"])) ?? null,
+    lookupBob: (await db.entid([":user/authId", "bob-sub"])) ?? null,
+    lookupGhost: (await db.entid([":user/authId", "ghost-sub"])) ?? null,
   };
 };
 
@@ -317,9 +321,9 @@ const publicObservation = (obs: Observation) => ({
   entityI1Title: (obs.entityI1 as { ":issue/title"?: string } | null)?.[":issue/title"],
   entityI1Owner: (obs.entityI1 as { ":issue/owner"?: number } | null)?.[":issue/owner"],
   entityMissing: obs.entityMissing,
-  lookupBug: obs.lookupBug === null ? null : "hit",
-  lookupOther: obs.lookupOther,
-  lookupNope: obs.lookupNope,
+  lookupAlice: obs.lookupAlice === null ? null : "hit",
+  lookupBob: obs.lookupBob,
+  lookupGhost: obs.lookupGhost,
 });
 
 describe("executeAuthorizedRead uses the constructor's filtered Db", () => {
@@ -347,20 +351,22 @@ describe("executeAuthorizedRead uses the constructor's filtered Db", () => {
     });
     const entity = await runRead(input, { kind: "entity", ref: hidden.i1 });
     const hiddenEntity = await runRead(input, { kind: "entity", ref: hidden.i2! });
-    const lookupOther = await runRead(input, { kind: "lookup", ref: [":issue/title", "Other"] });
-    const lookupBug = await runRead(input, { kind: "lookup", ref: [":issue/title", "Bug"] });
+    const lookupBob = await runRead(input, { kind: "lookup", ref: [":user/authId", "bob-sub"] });
+    const lookupAlice = await runRead(input, { kind: "lookup", ref: [":user/authId", "alice-sub"] });
     const pullHidden = await runRead(input, { kind: "pull", eid: hidden.i2!, pattern: `[*]` });
 
     expect((titles as string[]).sort()).toEqual(["Bug", "Child"]);
     expect((pulled as { ":issue/title": string })[":issue/title"]).toBe("Bug");
-    expect((pulled as { ":issue/owner": number })[":issue/owner"]).toBe(hidden.aliceEid);
+    expect((pulled as { ":issue/owner": { ":db/id": number } })[":issue/owner"]).toEqual({
+      ":db/id": hidden.aliceEid,
+    });
     expect((entity as { ":issue/title": string })[":issue/title"]).toBe("Bug");
     expect((entity as { ":issue/owner": number })[":issue/owner"]).toBe(hidden.aliceEid);
     expect(hiddenEntity).toBeNull();
     expect(pullHidden).toBeNull();
-    expect(lookupOther).toBeNull();
-    expect(lookupBug).toBe(hidden.i1);
-    expect(JSON.stringify({ titles, pulled, entity, hiddenEntity, lookupOther })).not.toMatch(
+    expect(lookupBob).toBeNull();
+    expect(lookupAlice).toBe(hidden.aliceEid);
+    expect(JSON.stringify({ titles, pulled, entity, hiddenEntity, lookupBob })).not.toMatch(
       /"t"|explain|basis|planner/,
     );
   });
@@ -378,7 +384,7 @@ describe("executeAuthorizedRead uses the constructor's filtered Db", () => {
     expect(await runRead(input, { kind: "pull", eid: world.i2!, pattern: `[:issue/title]` })).toEqual(
       await pull(raw, world.i2!, `[:issue/title]`),
     );
-    expect(await runRead(input, { kind: "lookup", ref: [":issue/title", "Other"] })).toBe(world.i2);
+    expect(await runRead(input, { kind: "lookup", ref: [":user/authId", "bob-sub"] })).toBe(world.bobEid);
   });
 });
 
@@ -404,12 +410,12 @@ describe("paired-world: hidden datoms cannot affect one-shot reads", () => {
     expect(seenWith.titles).toEqual(["Bug", "Child"]);
     expect(seenWith.children).toEqual(["Bug", "Child"]);
     expect(seenWith.traitRoots).toEqual(["Bug", "Child"]);
-    expect(seenWith.traitFields).toEqual(["Bug"]);
+    expect(seenWith.traitFields).toEqual([]);
     expect(seenWith.count).toBe(2);
-    expect(seenWith.negation).toEqual(["Child"]);
+    expect(seenWith.negation).toEqual(["Bug", "Child"]);
     expect(seenWith.ordered).toEqual(["Bug", "Child"]);
-    expect(seenWith.lookupOther).toBeNull();
-    expect(seenWith.lookupNope).toBeNull();
+    expect(seenWith.lookupBob).toBeNull();
+    expect(seenWith.lookupGhost).toBeNull();
     expect(seenWith.pullMissing).toBeNull();
     expect(seenWith.entityMissing).toBeNull();
     expect(seenWith.joins).toEqual(sortRows([["Bug", "alice-sub"], ["Child", "alice-sub"]]));
@@ -443,7 +449,7 @@ describe("paired-world: hidden datoms cannot affect one-shot reads", () => {
     expect(sortRows(joins)).toEqual(sortRows([["Bug", "alice-sub"], ["Child", "alice-sub"]]));
     expect((children as string[]).sort()).toEqual(["Bug", "Child"]);
     expect(count).toBe(2);
-    expect((negation as string[]).sort()).toEqual(["Child"]);
+    expect((negation as string[]).sort()).toEqual(["Bug", "Child"]);
     expect(ordered).toEqual(["Bug", "Child"]);
     expect(sortRows(graph)).toEqual(sortRows([["Bug", "Bug"], ["Child", "Bug"]]));
     expect(reverse).toEqual({
@@ -464,15 +470,15 @@ describe("paired-world: hidden datoms cannot affect one-shot reads", () => {
     expect(await runRead(input, { kind: "pull", eid: world.i2!, pattern: `[*]` })).toBe(
       await runRead(input, { kind: "pull", eid: missing, pattern: `[*]` }),
     );
-    expect(await runRead(input, { kind: "lookup", ref: [":issue/title", "Other"] })).toBe(
-      await runRead(input, { kind: "lookup", ref: [":issue/title", "Nope"] }),
+    expect(await runRead(input, { kind: "lookup", ref: [":user/authId", "bob-sub"] })).toBe(
+      await runRead(input, { kind: "lookup", ref: [":user/authId", "ghost-sub"] }),
     );
 
     const open = inputOf(await acceptAllPolicy(), token, world.conn);
-    expect(await runRead(open, { kind: "lookup", ref: [":issue/title", "Other"] })).toBe(world.i2);
+    expect(await runRead(open, { kind: "lookup", ref: [":user/authId", "bob-sub"] })).toBe(world.bobEid);
     expect(await runRead(open, { kind: "entity", ref: world.i2! })).not.toBeNull();
-    await expect(runRead(open, { kind: "lookup", ref: [":issue/title", 123] })).rejects.toThrow();
-    await expect(runRead(input, { kind: "lookup", ref: [":issue/title", 123] })).rejects.toThrow();
+    await expect(runRead(open, { kind: "lookup", ref: [":user/authId", 123] })).rejects.toThrow();
+    await expect(runRead(input, { kind: "lookup", ref: [":user/authId", 123] })).rejects.toThrow();
   });
 
   test("as-of and history use the same filtered value the constructor composed", async () => {
