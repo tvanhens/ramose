@@ -172,6 +172,15 @@ export type AnyEntity = {
   readonly fields: {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
+  readonly id: AttrNav<
+    AnyField & {
+      readonly schema: { readonly Type: number };
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: "ref";
+      readonly cardinality: "one";
+    } & PathCarrier
+  >;
 };
 
 export type EntityOptions<

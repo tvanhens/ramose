@@ -17,10 +17,9 @@
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
-import { traitsOf } from "../compose.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyComposer } from "../Composer.ts";
 import {
   lowerOrderPath,
   requiredClauses,
@@ -174,7 +173,7 @@ export interface QueryOrder {
  * body the same value is a clause source: `yield* entities(Issue)`
  * mints the branded focus var and contributes membership.
  */
-export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
+export interface Pipeline<Row = unknown, N extends AnyComposer = AnyComposer> {
   readonly _tag: "Pipeline";
   readonly ns: N;
   readonly stages: readonly PipeStage[];
@@ -1135,7 +1134,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     readonly hasRet: boolean;
   }
   const byRule = new Map<RuleValue, RuleEntry>();
-  const byNs = new Map<AnyEntity, RuleEntry>();
+  const byNs = new Map<AnyComposer, RuleEntry>();
   const takenNames = new Map<string, unknown>();
   const ruleDefs: unknown[] = [];
 
@@ -1161,7 +1160,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return entry;
   };
 
-  const registerMembership = (ns: AnyEntity): RuleEntry => {
+  const registerMembership = (ns: AnyComposer): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
     const wireName = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(/[^A-Za-z0-9_]/g, "_");
@@ -1169,16 +1168,18 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    // Composed entities share trait idents with other composers. Membership
-    // is the engine-owned type fact, not an `or` over flattened fields.
-    if (traitsOf(ns).length > 0) {
-      ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
+    // Membership is always derived from the protected concrete type. Trait
+    // roots additionally consult the immutable deployed composition bound
+    // to the ordinary Db that executes this query.
+    if (ns._tag === "Trait") {
+      const type = freshName("type");
+      ruleDefs.push([
+        [wireName, e],
+        [e, RAMOSE_TYPE_IDENT, type],
+        [["ramose-trait?", e, type, `:${ns.ns}`]],
+      ]);
     } else {
-      const prefix = `:${ns.ns}/`;
-      const idents = Object.values(ns.fields)
-        .map((a) => (a as { ident: string }).ident)
-        .filter((ident) => ident.startsWith(prefix));
-      ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
+      ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
     }
     return entry;
   };

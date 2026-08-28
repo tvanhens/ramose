@@ -16,11 +16,13 @@ import type {
   Eid,
   Equal,
   Expect,
+  RefWriteTarget,
   Tx,
 } from "../../src/db/internal.ts";
 import {
   Entity,
   Field,
+  Ref,
   Schema,
   Trait,
   string,
@@ -48,6 +50,18 @@ const Note = Entity(
 );
 
 const Board = Schema({ issue: Issue, note: Note });
+
+const Link = Entity("link", { target: Ref(Taggable) });
+const Plain = Entity("plain", { title: string() });
+const TraitRefs = Schema({ issue: Issue, note: Note, link: Link, plain: Plain });
+export type _traitRefTarget = Expect<
+  Equal<RefWriteTarget<typeof TraitRefs, ":link/target">, typeof Issue>
+>;
+declare const traitRefTx: Tx<typeof TraitRefs>;
+declare const plain: Eid<typeof Plain>;
+traitRefTx.put(Link, { target: issue });
+// @ts-expect-error a known non-composer cannot be written to Ref(Taggable)
+traitRefTx.put(Link, { target: plain });
 
 export type _tagIdent = Expect<
   Equal<(typeof Issue)["tag"]["ident"], ":taggable/tag">
@@ -103,6 +117,14 @@ export type _diamondTag = Expect<
 >;
 export type _diamondCreated = Expect<
   Equal<(typeof Diamond)["createdAt"]["ident"], ":timestamped/createdAt">
+>;
+const TransitiveLink = Entity("transitiveLink", { target: Ref(Taggable) });
+const TransitiveRefs = Schema({ issue: Issue, diamond: Diamond, transitiveLink: TransitiveLink });
+export type _transitiveTraitRefTarget = Expect<
+  Equal<
+    RefWriteTarget<typeof TransitiveRefs, ":transitiveLink/target">,
+    typeof Issue | typeof Diamond
+  >
 >;
 
 const OtherTag = Trait("labeled", { tag: string() });

@@ -12,6 +12,7 @@ import {
   type StampedMap,
 } from "./Entity.ts";
 import type { AnyField } from "./Field.ts";
+import { attachAttrNav, type AttrNav, type PathCarrier } from "./shapes.ts";
 import {
   invalidIdentName,
   isIdentName,
@@ -48,6 +49,17 @@ export type Trait<
   readonly fields: StampedMap<Name, Fields>;
   /** Direct composed traits, in author order. */
   readonly traits: readonly { readonly ns: string }[];
+  /** Pseudo-field `:db/id`, usable in trait-root select shapes. */
+  readonly id: AttrNav<
+    AnyField & {
+      readonly schema: { readonly Type: number };
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: "ref";
+      readonly cardinality: "one";
+      readonly _ns?: Trait<Name, Fields>;
+    } & PathCarrier
+  >;
 } & StampedMap<Name, Fields>;
 
 /**
@@ -62,6 +74,15 @@ export type AnyTrait = {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
   readonly traits: readonly { readonly ns: string }[];
+  readonly id: AttrNav<
+    AnyField & {
+      readonly schema: { readonly Type: number };
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: "ref";
+      readonly cardinality: "one";
+    } & PathCarrier
+  >;
 };
 
 export declare namespace Trait {
@@ -123,11 +144,25 @@ export function Trait<
     stamped as Record<string, unknown>,
     flattened,
   );
+  const idField = attachAttrNav({
+    _tag: "Field" as const,
+    schema: null as never,
+    cardinality: "one" as const,
+    unique: undefined,
+    index: false,
+    owned: false,
+    doc: undefined,
+    valueType: "ref" as const,
+    isOptional: false,
+    attrName: "id" as const,
+    ident: ":db/id" as const,
+  });
   return {
     _tag: "Trait" as const,
     ns: name,
     fields: merged,
     traits: direct,
+    id: idField,
     ...merged,
   } as Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits>;
 }

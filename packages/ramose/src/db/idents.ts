@@ -5,6 +5,7 @@ import type { AnyEntity } from "./Entity.ts";
 import type { Tempid } from "./entityArg.ts";
 import type { ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
+import type { AnyTrait } from "./Trait.ts";
 
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 
@@ -152,6 +153,31 @@ export type FieldTargetEntity<F> = F extends {
     : never
   : never;
 
+type DeclaredRefTarget<F> = F extends {
+  readonly schema: { readonly _target?: infer T };
+}
+  ? Exclude<T, undefined>
+  : unknown;
+
+type TraitClosure<T> = T extends AnyTrait
+  ? T | TraitClosure<T["traits"][number]>
+  : never;
+
+type EntityComposes<N extends AnyEntity, T extends AnyTrait> = T extends TraitClosure<
+  N extends { readonly traits: readonly AnyTrait[] } ? N["traits"][number] : never
+>
+  ? true
+  : false;
+
+/** Concrete catalog entities known statically to compose `T`, directly or transitively. */
+export type TraitComposer<C extends AnySchema, T extends AnyTrait> = {
+  [K in keyof C["entities"]]: C["entities"][K] extends infer N extends AnyEntity
+    ? EntityComposes<N, T> extends true
+      ? N
+      : never
+    : never;
+}[keyof C["entities"]];
+
 /** The entity that owns ident `I` in `C`. */
 export type EntityOfIdent<C extends AnySchema, I extends string> = {
   [K in keyof C["entities"]]: {
@@ -170,10 +196,12 @@ export type EntityOfIdent<C extends AnySchema, I extends string> = {
  * enclosing entity of the ident.
  */
 export type RefWriteTarget<C extends AnySchema, I extends string> = [
-  FieldTargetEntity<AttrAtIdent<C, I>>,
-] extends [never]
-  ? EntityOfIdent<C, I>
-  : FieldTargetEntity<AttrAtIdent<C, I>>;
+  DeclaredRefTarget<AttrAtIdent<C, I>>,
+] extends [AnyEntity]
+  ? Extract<DeclaredRefTarget<AttrAtIdent<C, I>>, AnyEntity>
+  : [DeclaredRefTarget<AttrAtIdent<C, I>>] extends [AnyTrait]
+    ? TraitComposer<C, Extract<DeclaredRefTarget<AttrAtIdent<C, I>>, AnyTrait>>
+    : EntityOfIdent<C, I>;
 
 /**
  * Write value for a ref-typed ident: {@link EntityRef} of the declared

@@ -13,7 +13,7 @@ import type {
   Expect,
   Row,
 } from "../../src/db/internal.ts";
-import { Entity, Field, Instant, Long, Q, Query, Ref, stored, string } from "../../src/db/internal.ts";
+import { Entity, Field, Instant, Long, Q, Query, Ref, Trait, stored, string } from "../../src/db/internal.ts";
 import type { Var } from "../../src/db/query/kernel.ts";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
@@ -31,6 +31,27 @@ const Comment = Entity("comment", {
   at: Field(Instant),
   issue: Ref(Issue),
 });
+
+const Taggable = Trait("taggable", {
+  tags: Field.many(string()),
+});
+const TaggedIssue = Entity("taggedIssue", { title: string() }, { traits: [Taggable] });
+const TagLink = Entity("tagLink", { target: Ref(Taggable) });
+
+const urgent = Query.from(Taggable)
+  .where(Query.is(Taggable.tags, "urgent"))
+  .select({ id: Taggable.id, tags: Taggable.tags });
+export type _traitRoot = Expect<
+  Equal<
+    Row<typeof urgent>,
+    { readonly id: Eid<typeof Taggable>; readonly tags: readonly string[] }
+  >
+>;
+export type _traitRef = Expect<
+  Equal<EntityRow<typeof TagLink>["target"], { readonly id: Eid<typeof Taggable> }>
+>;
+declare const taggedIssueId: Eid<typeof TaggedIssue>;
+Query.from(TagLink).where({ target: taggedIssueId });
 
 // ── header example (inline values) ─────────────────────────────────────────
 

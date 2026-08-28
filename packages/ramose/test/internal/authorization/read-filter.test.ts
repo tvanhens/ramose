@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import {
   EntityId,
+  TraitId,
   all,
   allow,
   any,
@@ -465,6 +466,55 @@ describe("compileReadFilter lattice and fail-closed", () => {
     expect(await pred(currentDb, await datomOf(currentDb, i1, ":issue/title"))).toBe(true);
     expect(await pred(currentDb, await datomOf(currentDb, i1, ":issue/owner"))).toBe(false);
     expect(await pred(currentDb, await datomOf(currentDb, aliceEid, ":user/authId"))).toBe(false);
+  });
+
+  test("trait-targeted refs expose only readable deployed composers", async () => {
+    const { currentDb, aliceEid, i1, i2 } = await seedApp();
+    const base = catalogDescriptor();
+    const rewritten = {
+      ...base,
+      fields: base.fields.map((field) =>
+        field.id.owner.kind === "entity" &&
+        field.id.owner.name === "issue" &&
+        field.id.localName === "owner"
+          ? {
+              ...field,
+              refTarget: {
+                _tag: "trait" as const,
+                trait: TraitId.make({ catalog, name: "taggable" }),
+              },
+            }
+          : field,
+      ),
+    };
+    const fingerprint = await Effect.runPromise(hashCatalogSchemaFingerprint(rewritten));
+    const descriptor = { ...rewritten, fingerprint };
+    const template = expectOk(
+      compileRules([
+        read(Issue).when(allow),
+        read(User).when(allow),
+        read(Taggable).when(allow),
+      ]),
+    );
+    const policy = await Effect.runPromise(
+      installAuthorization({
+        target: { ...target, schemaFingerprint: fingerprint },
+        descriptor,
+        template,
+      }),
+    );
+    const unit = await Effect.runPromise(sealInstalledCatalogUnit(descriptor, policy));
+    const pred = compileReadFilter({
+      unit,
+      principal: alicePrincipal(aliceEid),
+      currentDb,
+    });
+    const owner = await datomOf(currentDb, i1, ":issue/owner");
+
+    // The stored User target is readable but is not a Taggable composer.
+    expect(await pred(currentDb, owner)).toBe(false);
+    // A readable Issue target composes Taggable under the deployed unit.
+    expect(await pred(currentDb, { ...owner, v: i2 })).toBe(true);
   });
 
   test("current grant governs historical and as-of values (HIST-2)", async () => {

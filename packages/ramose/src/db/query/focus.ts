@@ -7,10 +7,11 @@
  * `:taggable/tags` and still belong to `Issue`.
  */
 
+import type { AnyComposer } from "../Composer.ts";
 import type { AnyEntity, Entity, FieldMap } from "../Entity.ts";
 
 /** `:db/id` plus every ident in `N.fields`. */
-export type FocusIdents<N extends AnyEntity> =
+export type FocusIdents<N extends AnyComposer> =
   | {
       [K in keyof N["fields"]]: N["fields"][K] extends {
         readonly ident: infer I;
@@ -24,7 +25,7 @@ export type FocusIdents<N extends AnyEntity> =
 export type AttrIdent<A> = A extends { readonly ident: infer I } ? I : never;
 
 /** `A` is a member of `N`'s stamped field map. */
-export type InFocus<A, N extends AnyEntity> = [AttrIdent<A>] extends [
+export type InFocus<A, N extends AnyComposer> = [AttrIdent<A>] extends [
   FocusIdents<N>,
 ]
   ? true
@@ -35,9 +36,9 @@ export type InFocus<A, N extends AnyEntity> = [AttrIdent<A>] extends [
  * the entity exposes one. Used as the PathCarrier union for fluent
  * `orderBy`; membership checks go through {@link InFocus} / {@link FocusIdents}.
  */
-export type FocusAttr<N extends AnyEntity> = N["fields"][keyof N["fields"]] | FocusId<N>;
+export type FocusAttr<N extends AnyComposer> = N["fields"][keyof N["fields"]] | FocusId<N>;
 
-type FocusId<N extends AnyEntity> = N extends { readonly id: infer Id } ? Id : never;
+type FocusId<N extends AnyComposer> = N extends { readonly id: infer Id } ? Id : never;
 
 /**
  * The entity a stamped field was filed under, recovered from its ident
@@ -65,10 +66,10 @@ export type FocusMismatch = {
  * The entity a `Ref(User)` field points at. Self-refs / untargeted refs
  * resolve to `Enclosing`. Optional `_target` infers `T | undefined`.
  */
-export type RefTarget<A, Enclosing extends AnyEntity> = A extends {
+export type RefTarget<A, Enclosing extends AnyComposer> = A extends {
   readonly schema: { readonly _target?: infer T };
 }
-  ? Exclude<T, undefined> extends AnyEntity
+  ? Exclude<T, undefined> extends AnyComposer
     ? Exclude<T, undefined>
     : Enclosing
   : Enclosing;
@@ -80,10 +81,10 @@ type OwnerNs<A> = A extends { readonly ident: `:${infer Ns}/${string}` } ? Ns : 
  * `Ref(Issue)` must land on `N`; a self-ref / untargeted ref is owned
  * by `N` (its ident namespace matches `N.ns`).
  */
-export type ReverseOk<A, N extends AnyEntity> = [RefTarget<A, AnyEntity>] extends [
-  AnyEntity,
+export type ReverseOk<A, N extends AnyComposer> = [RefTarget<A, AnyComposer>] extends [
+  AnyComposer,
 ]
-  ? [AnyEntity] extends [RefTarget<A, AnyEntity>]
+  ? [AnyComposer] extends [RefTarget<A, AnyComposer>]
     ? [OwnerNs<A>] extends [N["ns"]]
       ? true
       : false

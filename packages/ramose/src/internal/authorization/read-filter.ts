@@ -461,6 +461,24 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     return true;
   };
 
+  const refTargetMatches = (
+    field: Extract<FieldDescriptor, { readonly valueType: "ref" }>,
+    target: EntityId,
+  ): boolean => {
+    switch (field.refTarget._tag) {
+      case "untargeted":
+        return true;
+      case "entity":
+        return field.refTarget.entity.name === target.name;
+      case "trait":
+        return entityComposes(index, target, field.refTarget.trait.name);
+      case "self":
+        return field.id.owner.kind === "entity"
+          ? field.id.owner.name === target.name
+          : entityComposes(index, target, field.id.owner.name);
+    }
+  };
+
   return async (db, datom) => {
     try {
       const entity = await classifyFrom(db, datom.e);
@@ -473,6 +491,9 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
       if (!(await isFieldReadable(db, datom.e, entity, field))) return false;
       if (datom.vt === ValueTag.Ref) {
         if (typeof datom.v !== "number") return false;
+        if (field.valueType !== "ref") return false;
+        const target = await classifyFrom(db, datom.v);
+        if (target === undefined || !refTargetMatches(field, target)) return false;
         if (!(await isRowReadable(db, datom.v))) return false;
       }
       return true;

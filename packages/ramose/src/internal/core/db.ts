@@ -26,6 +26,7 @@ import { Novelty, collapseCurrent, currentView, filterAsOf, mergeChunks, rawView
 import { type Attribute, DB_IDENT, Schema, isTxEid } from "./schema.ts";
 import { type NodeRef, type NodeSource, estimateCount, scan, scanMany, sortedUnion } from "./tree.ts";
 import { COMPARATORS } from "./datom.ts";
+import type { CompositionIndex } from "./composition.ts";
 
 export interface Roots {
   /** the tree contains every datom with t <= this */
@@ -71,6 +72,8 @@ export interface DbOptions {
   asOfT?: number | undefined;
   history?: boolean;
   filters?: readonly DatomPredicate[];
+  /** Current deployed type-to-trait lookup. Never database-resident. */
+  composition?: CompositionIndex | undefined;
 }
 
 export class Db {
@@ -83,6 +86,7 @@ export class Db {
   readonly asOfT: number | undefined;
   readonly isHistory: boolean;
   readonly filters: readonly DatomPredicate[];
+  readonly composition: CompositionIndex | undefined;
 
   constructor(o: DbOptions) {
     this.store = o.store;
@@ -94,6 +98,7 @@ export class Db {
     this.asOfT = o.asOfT;
     this.isHistory = !!o.history;
     this.filters = Object.freeze([...(o.filters ?? [])]);
+    this.composition = o.composition;
   }
 
   /** Effective upper bound on visible t. */
@@ -114,6 +119,11 @@ export class Db {
   filter(predicate: DatomPredicate): Db {
     return new Db({ ...this.opts(), filters: Object.freeze([...this.filters, predicate]) });
   }
+  /** Bind the immutable deployed composition used by ordinary trait reads. */
+  withComposition(composition: CompositionIndex): Db {
+    if (this.composition === composition) return this;
+    return new Db({ ...this.opts(), composition });
+  }
   private opts(): DbOptions {
     return {
       store: this.store,
@@ -125,6 +135,7 @@ export class Db {
       asOfT: this.asOfT,
       history: this.isHistory,
       filters: this.filters,
+      composition: this.composition,
     };
   }
 

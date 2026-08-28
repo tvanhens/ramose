@@ -395,6 +395,41 @@ describe("processTx membership and required trait fields", () => {
     expect(issueRow?.[":task/title"]).toBeUndefined();
   });
 
+  test("Query.from(Trait) derives every composer from protected type and deployed composition", async () => {
+    const Marker = Trait("marker", {
+      notes: Field.many(string()),
+    });
+    const Marked = Entity("marked", { title: string() }, { traits: [Marker] });
+    const AlsoMarked = Entity("alsoMarked", { title: string() }, { traits: [Marker] });
+    const Plain = Entity("plain", { title: string() });
+    const Mixed = Schema({ marked: Marked, alsoMarked: AlsoMarked, plain: Plain });
+    const conn = await setup(Mixed);
+    const tx = txBuilder(Mixed);
+    Effect.runSync(tx.put(Marked, { title: "empty many" }));
+    Effect.runSync(tx.put(AlsoMarked, { title: "populated", notes: ["one"] }));
+    Effect.runSync(tx.put(Plain, { title: "not a composer" }));
+    await conn.transact([...txOps(tx)]);
+
+    const listing = Query.from(Marker).select({ id: Marker.id, notes: Marker.notes });
+    const lowered = lowerQueryObject(listing);
+    expect(lowered.query.rules).toEqual([
+      [
+        ["isMarker", "?qm0"],
+        ["?qm0", ":ramose/type", "?qtype1"],
+        [["ramose-trait?", "?qm0", "?qtype1", ":marker"]],
+      ],
+    ]);
+    const rows = lowered.finalize(await coreQuery(conn.db(), lowered.query)) as readonly {
+      readonly id: number;
+      readonly notes: readonly string[];
+    }[];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.notes).sort((a, b) => a.length - b.length)).toEqual([
+      [],
+      ["one"],
+    ]);
+  });
+
   test("two composed entity namespaces on one id are tx/wrong-entity", async () => {
     const Task = Entity("task", { title: string() }, { traits: [Taggable] });
     const Mixed = Schema({ issue: Issue, task: Task });

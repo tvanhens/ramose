@@ -13,7 +13,7 @@
  */
 
 import type { Eid } from "../Eid.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyComposer } from "../Composer.ts";
 import type { UnbrandedId } from "../idents.ts";
 import type {
   AttrValue,
@@ -40,12 +40,12 @@ import { isPipeline, type Pipeline, type PipeStage, type SelectExtra } from "./q
 
 // ── the pipeline value ──────────────────────────────────────────────────────
 
-const addStage = <Row, N extends AnyEntity>(
+const addStage = <Row, N extends AnyComposer>(
   p: Pipeline<unknown, N>,
   stage: PipeStage,
 ): Pipeline<Row, N> => makePipeline(p.ns, [...p.stages, stage]);
 
-const makePipeline = <Row, N extends AnyEntity>(
+const makePipeline = <Row, N extends AnyComposer>(
   ns: N,
   stages: readonly PipeStage[],
 ): Pipeline<Row, N> => ({
@@ -67,18 +67,21 @@ const makePipeline = <Row, N extends AnyEntity>(
 });
 
 /** The row a bare (select-less) pipeline yields: the matched entity id. */
-export type IdRow<N extends AnyEntity = AnyEntity> = { readonly id: Eid<N> };
+export type IdRow<N extends AnyComposer = AnyComposer> = { readonly id: Eid<N> };
 
 /**
- * The source stage: the entities of one namespace. There is no entity
- * table — membership means "has at least one fact in the namespace", named
- * as a catalog-generated rule so the planner can treat it as a scan; when
- * the pipeline already constrains the focus through a namespace attr, the
- * rule is entailed and lowering emits nothing.
+ * The source stage: concrete entities of one type, or every concrete type
+ * composing one trait. Membership is derived from the protected type fact
+ * and current deployed composition through a catalog-generated rule.
  */
-export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
-  if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
-    throw new Error("ramose/query: entities(...) takes an entity");
+export const entities = <N extends AnyComposer>(ns: N): Pipeline<IdRow<N>, N> => {
+  if (
+    typeof ns !== "object" ||
+    ns === null ||
+    ((ns as { _tag?: unknown })._tag !== "Entity" &&
+      (ns as { _tag?: unknown })._tag !== "Trait")
+  ) {
+    throw new Error("ramose/query: entities(...) takes an entity or trait");
   }
   return makePipeline(ns, []);
 };
@@ -89,12 +92,12 @@ export const entities = <N extends AnyEntity>(ns: N): Pipeline<IdRow<N>, N> => {
  * Dual stage output: a pipeline keeps its row and focus namespace;
  * anything else is the generator fragment. One generic (not an
  * overload) so `pipe` infers `N` from the argument instead of
- * defaulting it to {@link AnyEntity}.
+ * defaulting it to the wide composer type.
  */
 type FilterOut<X> = [X] extends [never]
   ? QueryGen<void>
   : [X] extends [Pipeline<infer Row, infer N>]
-    ? [N] extends [AnyEntity]
+    ? [N] extends [AnyComposer]
       ? Pipeline<Row, N>
       : QueryGen<void>
     : QueryGen<void>;
@@ -115,13 +118,13 @@ type FilterParam<X, A> = [X] extends [Pipeline<any, infer N>]
 /**
  * A filter parameterized by the focus namespace. `N` is the pipeline
  * focus the stage may be applied to; the attr-capturing form
- * (`FilterStage<AnyEntity, typeof User.name>`) rejects a foreign
+ * (`FilterStage<AnyComposer, typeof User.name>`) rejects a foreign
  * field map at the call site. The return carries an ident brand so a
  * policy `FragFn` can tell a `Query.is` from a handwritten generator
  * (`{ _ident?: never }`).
  */
 export type FilterStage<
-  N extends AnyEntity = AnyEntity,
+  N extends AnyComposer = AnyComposer,
   A = void,
 > = <X>(
   x: FilterParam<X, A>,
@@ -130,12 +133,12 @@ export type FilterStage<
 };
 
 type FollowOut<A extends AttrLike, X> = [X] extends [never]
-  ? QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
+  ? QueryGen<Var<Eid<RefTarget<A, AnyComposer>>>>
   : [X] extends [Pipeline<infer _Row, infer N>]
-    ? [N] extends [AnyEntity]
+    ? [N] extends [AnyComposer]
       ? Pipeline<IdRow<RefTarget<A, N>>, RefTarget<A, N>>
-      : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>
-    : QueryGen<Var<Eid<RefTarget<A, AnyEntity>>>>;
+      : QueryGen<Var<Eid<RefTarget<A, AnyComposer>>>>
+    : QueryGen<Var<Eid<RefTarget<A, AnyComposer>>>>;
 
 type FollowParam<X, A> = [X] extends [Pipeline<any, infer N>]
   ? [InFocus<A, N>] extends [true]
@@ -180,10 +183,10 @@ export type TraversalStage<A = void> = <X>(
   x: ReverseParam<X, A>,
 ) => TraversalOut<A, X>;
 
-const filter = <A = void>(frag: (focus: AnyVar) => QueryGen<void>): FilterStage<AnyEntity, A> =>
+const filter = <A = void>(frag: (focus: AnyVar) => QueryGen<void>): FilterStage<AnyComposer, A> =>
   ((x: unknown) =>
     isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar)) as FilterStage<
-    AnyEntity,
+    AnyComposer,
     A
   >;
 
@@ -214,7 +217,7 @@ type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number };
 export const is = <A extends AttrLike>(
   attr: A,
   value: ValueIn<A>,
-): FilterStage<AnyEntity, A> =>
+): FilterStage<AnyComposer, A> =>
   filter<A>(function* (e) {
     yield* Q.fact(e, attr, value);
   });
@@ -232,13 +235,13 @@ export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage
   });
 
 /** `has(A)`: the focus carries some `A` fact. */
-export const has = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> =>
+export const has = <A extends AttrLike>(attr: A): FilterStage<AnyComposer, A> =>
   filter<A>(function* (e) {
     yield* Q.fact(e, attr);
   });
 
 /** `missing(A)`: no `A` fact at all. */
-export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> =>
+export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyComposer, A> =>
   filter<A>(function* (e) {
     yield* Q.not(has(attr)(e));
   });
@@ -254,7 +257,7 @@ export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyEntity, A> 
 export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
-): FilterStage<AnyEntity, A> =>
+): FilterStage<AnyComposer, A> =>
   filter<A>(function* (e) {
     const f = yield* Q.fact(e, attr);
     yield* pred(f.v as Var<AttrValue<A>>) as QueryGen<unknown>;
@@ -263,7 +266,7 @@ export const matching = <A extends AttrLike>(
 /** The attr brand a filter stage carries — unioned across `any` / `not`. */
 type StageAttr<S> = S extends FilterStage<any, infer A> ? A : void;
 
-const asFrag = (stage: FilterStage<AnyEntity, any>, e: AnyVar): QueryGen<unknown> =>
+const asFrag = (stage: FilterStage<AnyComposer, any>, e: AnyVar): QueryGen<unknown> =>
   stage(e) as QueryGen<unknown>;
 
 /**
@@ -271,9 +274,9 @@ const asFrag = (stage: FilterStage<AnyEntity, any>, e: AnyVar): QueryGen<unknown
  * Built on {@link Q.or}; usable in fluent `.where(...)`. Each arm is
  * namespace-constrained the same way `is` / `matching` are.
  */
-export const any = <const S extends readonly FilterStage<AnyEntity, any>[]>(
+export const any = <const S extends readonly FilterStage<AnyComposer, any>[]>(
   ...stages: S
-): FilterStage<AnyEntity, StageAttr<S[number]>> => {
+): FilterStage<AnyComposer, StageAttr<S[number]>> => {
   if (stages.length === 0) {
     throw new Error("ramose/query: any(...) needs at least one stage");
   }
@@ -286,25 +289,25 @@ export const any = <const S extends readonly FilterStage<AnyEntity, any>[]>(
  * Negation of a filter stage — `not(any(...))` is the negated disjunction.
  * Built on {@link Q.not}.
  */
-export const not = <A = void>(stage: FilterStage<AnyEntity, A>): FilterStage<AnyEntity, A> =>
+export const not = <A = void>(stage: FilterStage<AnyComposer, A>): FilterStage<AnyComposer, A> =>
   filter<A>(function* (e) {
     yield* Q.not(() => asFrag(stage, e));
   });
 
 /** `gt(A, v)`: the attr's value is greater than `v`. */
-export const gt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+export const gt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.gt(v, value));
 
 /** `gte(A, v)`: the attr's value is greater than or equal to `v`. */
-export const gte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+export const gte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.gte(v, value));
 
 /** `lt(A, v)`: the attr's value is less than `v`. */
-export const lt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+export const lt = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.lt(v, value));
 
 /** `lte(A, v)`: the attr's value is less than or equal to `v`. */
-export const lte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyEntity, A> =>
+export const lte = <A extends AttrLike>(attr: A, value: AttrValue<A>): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.lte(v, value));
 
 /** `startsWith(A, s)`: the string attr starts with `s`. */
@@ -312,7 +315,7 @@ export const startsWith = <A extends AttrLike>(
   attr: A,
   needle: Extract<AttrValue<A>, string>,
   opts?: StringPredOpts,
-): FilterStage<AnyEntity, A> =>
+): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.startsWith(v as Var<string>, needle, opts));
 
 /** `includes(A, s)`: the string attr contains `s`. */
@@ -320,7 +323,7 @@ export const includes = <A extends AttrLike>(
   attr: A,
   needle: Extract<AttrValue<A>, string>,
   opts?: StringPredOpts,
-): FilterStage<AnyEntity, A> =>
+): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.includes(v as Var<string>, needle, opts));
 
 // ── traversals ──────────────────────────────────────────────────────────────
@@ -408,7 +411,7 @@ export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): Filter
 
 // ── terminals: they close the query, not compose it ─────────────────────────
 
-const assertPipeline = <N extends AnyEntity = AnyEntity>(
+const assertPipeline = <N extends AnyComposer = AnyComposer>(
   x: unknown,
   what: string,
 ): Pipeline<any, N> => {
@@ -418,7 +421,7 @@ const assertPipeline = <N extends AnyEntity = AnyEntity>(
   return x as Pipeline<any, N>;
 };
 
-type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
+type SelectArg<S, N extends AnyComposer> = [S] extends [FocusSelect<N, S>]
   ? unknown
   : FocusMismatch;
 
@@ -428,30 +431,30 @@ type SelectArg<S, N extends AnyEntity> = [S] extends [FocusSelect<N, S>]
 export const select: {
   <const S extends Shape>(
     shape: S & ValidShape<S>,
-  ): <N extends AnyEntity>(
+  ): <N extends AnyComposer>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S>, N>;
   <const S extends Shape, const Extra>(
     shape: S & ValidShape<S>,
     extra: (e: Var<EidCell>) => Extra & { readonly [K in keyof Extra]: AggSpec<any> },
-  ): <N extends AnyEntity>(
+  ): <N extends AnyComposer>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
   <const S extends Shape, const Extra>(
     shape: S & ValidShape<S>,
     extra: Extra & { readonly [K in keyof Extra]: AggSpec<any> },
-  ): <N extends AnyEntity>(
+  ): <N extends AnyComposer>(
     q: Pipeline<any, N> & SelectArg<S, N>,
   ) => Pipeline<SelectResult<S> & { readonly [K in keyof Extra]: Extra[K] extends AggSpec<infer T> ? T : never }, N>;
 } = ((shape: Shape, extra?: SelectExtra) =>
-  <N extends AnyEntity>(q: Pipeline<any, N>): Pipeline<any, N> =>
+  <N extends AnyComposer>(q: Pipeline<any, N>): Pipeline<any, N> =>
     addStage(assertPipeline(q, "select"), {
       kind: "select",
       shape,
       extra,
     })) as never;
 
-type OrderKeyArg<K, Row, N extends AnyEntity> = [K] extends [string]
+type OrderKeyArg<K, Row, N extends AnyComposer> = [K] extends [string]
   ? [K] extends [keyof Row]
     ? unknown
     : FocusMismatch
@@ -466,7 +469,7 @@ export const orderBy =
     dir: OrderDir = "asc",
     opts?: { readonly empty?: OrderEmpty },
   ) =>
-  <Row, N extends AnyEntity>(
+  <Row, N extends AnyComposer>(
     q: Pipeline<Row, N> & OrderKeyArg<K, Row, N>,
   ): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "orderBy"), {
@@ -479,13 +482,13 @@ export const orderBy =
 /** Keep at most `n` rows. */
 export const limit =
   (n: number) =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
+  <Row, N extends AnyComposer>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "limit"), { kind: "limit", n });
 
 /** Drop `n` rows from the front of the (ordered) result. */
 export const offset =
   (n: number) =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
+  <Row, N extends AnyComposer>(q: Pipeline<Row, N>): Pipeline<Row, N> =>
     addStage(assertPipeline(q, "offset"), { kind: "offset", n });
 
 /**
@@ -496,5 +499,5 @@ export const offset =
  */
 export const ids =
   () =>
-  <Row, N extends AnyEntity>(q: Pipeline<Row, N>): Pipeline<IdRow<N>, N> =>
+  <Row, N extends AnyComposer>(q: Pipeline<Row, N>): Pipeline<IdRow<N>, N> =>
     addStage(assertPipeline(q, "ids"), { kind: "ids" });

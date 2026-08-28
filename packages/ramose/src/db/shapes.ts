@@ -17,6 +17,7 @@
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AnyComposer } from "./Composer.ts";
 import type { AttrIdent, FocusIdents } from "./query/focus.ts";
 import { lowerElemFilter, type ElemFilterFragment } from "./query/elemFilter.ts";
 import type { EidCell, Var } from "./query/kernel.ts";
@@ -182,7 +183,7 @@ type ShapeAttrOf<F> = F extends { readonly _tag: "optional" | "default"; readonl
  */
 type IsReverseField<A> = A extends { readonly __reverse: true } ? true : false;
 
-export type FocusShape<N extends AnyEntity, S> = {
+export type FocusShape<N extends AnyComposer, S> = {
   readonly [K in keyof S]: [IsReverseField<ShapeAttrOf<S[K]>>] extends [true]
     ? S[K]
     : [AttrIdent<ShapeAttrOf<S[K]>>] extends [FocusIdents<N>]
@@ -191,7 +192,7 @@ export type FocusShape<N extends AnyEntity, S> = {
 };
 
 /** A select argument constrained to the focus entity's attributes. */
-export type FocusSelect<N extends AnyEntity, S> = S extends AllShape<infer M>
+export type FocusSelect<N extends AnyComposer, S> = S extends AllShape<infer M>
   ? [M] extends [N]
     ? S
     : `all(...) is not the focus entity`

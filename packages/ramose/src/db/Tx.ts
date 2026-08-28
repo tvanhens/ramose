@@ -13,9 +13,9 @@ import type {
   AttrAtIdent,
   CatalogIdent,
   EntityRef,
-  FieldTargetEntity,
   LookupRef,
   RefWriteValue,
+  RefWriteTarget,
   UnbrandedId,
   ValueAtIdent,
   WriteAtEntity,
@@ -80,10 +80,11 @@ export type TxKnownEntity<C extends AnySchema> = string extends keyof C["entitie
   : C["entities"][keyof C["entities"]];
 
 /** Targeted ref → that entity; `Ref.self` / untargeted → the enclosing entity. */
-type RefSlotTarget<N extends AnyEntity, K extends string> =
-  [FieldTargetEntity<N["fields"][K]>] extends [never]
-    ? N
-    : FieldTargetEntity<N["fields"][K]>;
+type RefSlotTarget<
+  C extends AnySchema,
+  N extends AnyEntity,
+  K extends string,
+> = RefWriteTarget<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>;
 
 /**
  * Ref forms `put` accepts. Same {@link EntityRef} vocabulary as `set` /
@@ -104,7 +105,7 @@ type PutScalar<
   H = TxHandle<C>,
 > =
   | (N["fields"][K] extends { readonly valueType: "ref" }
-      ? PutRef<C, H, RefSlotTarget<N, K>>
+      ? PutRef<C, H, RefSlotTarget<C, N, K>>
       : ValueAtIdent<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>);
 
 type PutFieldValue<

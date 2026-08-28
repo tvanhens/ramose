@@ -8,6 +8,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
 import type { AnyEntity, FieldMap } from "./Entity.ts";
+import type { AnyComposer } from "./Composer.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
@@ -284,7 +285,7 @@ type FieldsResult<F> = {
  * no cast. An id attr without the phantom stays a plain `number`.
  */
 export type IdCell<F> = F extends { readonly _ns?: infer N }
-  ? [NonNullable<N>] extends [AnyEntity]
+  ? [NonNullable<N>] extends [AnyComposer]
     ? Eid<NonNullable<N>>
     : number
   : number;

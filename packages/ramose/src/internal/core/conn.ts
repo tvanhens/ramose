@@ -182,6 +182,7 @@ export class Connection {
       basisT: this.basisT,
       schema: this.schema,
       nextEid: this.nextEid,
+      composition: this.composition,
     });
   }
 
@@ -279,6 +280,7 @@ export class Connection {
       basisT: roots.t,
       schema: this.schema,
       nextEid: this.nextEid,
+      composition: this.composition,
     });
   }
 }

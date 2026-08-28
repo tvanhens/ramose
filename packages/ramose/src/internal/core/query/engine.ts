@@ -13,7 +13,7 @@
 
 import { type Datom, Index, type IndexId, type Prefix, ValueTag, inferTag } from "../datom.ts";
 import { Db, coerceValue, datomJsValue } from "../db.ts";
-import { TX_BASE, txEid } from "../schema.ts";
+import { RAMOSE_TYPE, TX_BASE, txEid } from "../schema.ts";
 import {
   type Binding,
   type Clause,
@@ -811,6 +811,31 @@ class Executor {
     const args = c.args;
     const db = this.view(c);
     // special-cased predicates that need the db
+    if (name === "ramose-trait?") {
+      const get = this.argGetter(rel, args);
+      const rows: unknown[][] = [];
+      for (const r of rel.rows) {
+        const [eid, typeIdent, traitIdent] = get(r);
+        if (
+          typeof eid !== "number" ||
+          typeof typeIdent !== "string" ||
+          typeof traitIdent !== "string" ||
+          db.composition === undefined
+        ) {
+          continue;
+        }
+        // Keep this predicate row-bound: callers cannot probe catalog
+        // composition without a visible protected type fact for the entity.
+        const type = await db.first(Index.EAVT, { e: eid, a: RAMOSE_TYPE });
+        if (
+          type?.v === typeIdent &&
+          db.composition.transitiveTraits(typeIdent).includes(traitIdent)
+        ) {
+          rows.push(r);
+        }
+      }
+      return { vars: rel.vars, rows };
+    }
     if (name === "missing?") {
       const [src, eT, aT] = args[0]?.kind === "const" && typeof args[0].value === "string" && (args[0].value as string).startsWith("$") ? args : [null, ...args];
       void src;

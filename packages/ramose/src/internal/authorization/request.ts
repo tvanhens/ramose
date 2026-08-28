@@ -22,6 +22,7 @@ import type { Db } from "../core/db.ts";
 import { RAMOSE_TYPE } from "../core/schema.ts";
 import { MAX_READ_LEASE_MS } from "./bounds.ts";
 import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import { compositionFromUnit } from "./composition.ts";
 import {
   opaqueCatalogDenial,
   resolveDeployedCatalog,
@@ -269,7 +270,10 @@ const constructFilteredDb = <R, EDb>(
 ): Effect.Effect<Db, Unauthorized | EDb, R> =>
   Effect.gen(function* () {
     const admitted = yield* admitDeployedCaller(input, caller);
-    const current = yield* input.currentDb(input.routeDatabase);
+    const composition = yield* Effect.fromResult(compositionFromUnit(admitted.unit)).pipe(
+      Effect.mapError(() => deny()),
+    );
+    const current = (yield* input.currentDb(input.routeDatabase)).withComposition(composition);
     const predicate = yield* bindReadPredicate(
       admitted.unit,
       admitted.subject,

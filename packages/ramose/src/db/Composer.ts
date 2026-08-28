@@ -1,0 +1,11 @@
+import type { AnyEntity } from "./Entity.ts";
+import type { AnyTrait } from "./Trait.ts";
+
+/** A concrete entity or a trait usable as a polymorphic read focus. */
+export type AnyComposer = AnyEntity | AnyTrait;
+
+export const isComposer = (value: unknown): value is AnyComposer =>
+  typeof value === "object" &&
+  value !== null &&
+  ((value as { readonly _tag?: unknown })._tag === "Entity" ||
+    (value as { readonly _tag?: unknown })._tag === "Trait");

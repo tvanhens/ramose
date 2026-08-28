@@ -252,6 +252,11 @@ const orderLimitQuery = {
 const issueListing = Query.q(() =>
   pipe(Query.entities(Issue), Query.select({ id: Issue.id, title: Issue.title })),
 );
+const traitIdsListing = Query.from(Taggable).ids();
+const traitFieldsListing = Query.from(Taggable).select({
+  id: Taggable.id,
+  tags: Taggable.tags,
+});
 
 type Observation = {
   titles: unknown;
@@ -263,6 +268,8 @@ type Observation = {
   negation: unknown;
   ordered: unknown;
   typedTitles: unknown;
+  traitIdsTyped: unknown;
+  traitFieldsTyped: unknown;
   pullI1: unknown;
   nestedPullI1: unknown;
   reversePullI1: unknown;
@@ -277,6 +284,8 @@ type Observation = {
 const observe = async (db: Db, i1: number, missingEid: number): Promise<Observation> => {
   const lowered = lowerQueryObject(issueListing);
   const typed = lowered.finalize(await query(db, lowered.query));
+  const loweredTraitIds = lowerQueryObject(traitIdsListing);
+  const loweredTraitFields = lowerQueryObject(traitFieldsListing);
   return {
     titles: ((await query(db, titlesQuery)) as string[]).sort(),
     joins: sortRows(await query(db, joinQuery)),
@@ -287,6 +296,8 @@ const observe = async (db: Db, i1: number, missingEid: number): Promise<Observat
     negation: ((await query(db, notQuery)) as string[]).sort(),
     ordered: await query(db, orderLimitQuery),
     typedTitles: (typed as { title: string }[]).map((row) => row.title).sort(),
+    traitIdsTyped: loweredTraitIds.finalize(await query(db, loweredTraitIds.query)),
+    traitFieldsTyped: loweredTraitFields.finalize(await query(db, loweredTraitFields.query)),
     pullI1: await pull(db, i1, `[:issue/title :issue/owner {:issue/_parent [:issue/title]}]`),
     nestedPullI1: await pull(db, i1, `[:issue/title {:issue/parent [:issue/title]}]`),
     reversePullI1: await pull(db, i1, `[{:issue/_parent [:issue/title]}]`),
@@ -309,6 +320,8 @@ const publicObservation = (obs: Observation) => ({
   negation: obs.negation,
   ordered: obs.ordered,
   typedTitles: obs.typedTitles,
+  traitIdsTyped: obs.traitIdsTyped,
+  traitFieldsTyped: obs.traitFieldsTyped,
   pullI1: obs.pullI1,
   nestedPullI1: obs.nestedPullI1,
   reversePullI1: obs.reversePullI1,
@@ -406,6 +419,14 @@ describe("paired-world: hidden datoms cannot affect one-shot reads", () => {
     expect(seenWith.children).toEqual(["Bug", "Child"]);
     expect(seenWith.traitRoots).toEqual(["Bug", "Child"]);
     expect(seenWith.traitFields).toEqual([]);
+    expect(seenWith.traitIdsTyped).toEqual([
+      { id: withHidden.i1 },
+      { id: withHidden.i3 },
+    ]);
+    expect(seenWith.traitFieldsTyped).toEqual([
+      { id: withHidden.i1, tags: [] },
+      { id: withHidden.i3, tags: [] },
+    ]);
     expect(seenWith.count).toBe(2);
     expect(seenWith.negation).toEqual(["Bug", "Child"]);
     expect(seenWith.ordered).toEqual(["Bug", "Child"]);

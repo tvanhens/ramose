@@ -27,7 +27,7 @@
 
 import { FUNCTIONS } from "../../internal/core/query/builtins.ts";
 import type { Eid } from "../Eid.ts";
-import type { AnyEntity } from "../Entity.ts";
+import type { AnyComposer } from "../Composer.ts";
 import type { InFocus } from "./focus.ts";
 import type { FocusShape, Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
@@ -43,13 +43,13 @@ export type VarKind = "entity" | "value" | "t" | "tx" | "op";
 /**
  * The namespace brand a var carries — the same `_ns` phantom {@link Eid}
  * uses. `Var<Eid<Issue>>` brands as `Issue`; a value var stays
- * {@link AnyEntity} (unconstrained).
+ * the wide composer type (unconstrained).
  */
 export type VarNs<T> = T extends { readonly _ns: infer E }
-  ? E extends AnyEntity
+  ? E extends AnyComposer
     ? E
-    : AnyEntity
-  : AnyEntity;
+    : AnyComposer
+  : AnyComposer;
 
 /**
  * A query variable — an *identity*, not a name. Two mentions of one `Var`
@@ -58,7 +58,7 @@ export type VarNs<T> = T extends { readonly _ns: infer E }
  * (phantom); `N` is the focus namespace an entity var is branded with
  * (the same brand {@link Eid} carries — not a fourth vocabulary).
  */
-export interface Var<T = unknown, N extends AnyEntity = VarNs<T>> {
+export interface Var<T = unknown, N extends AnyComposer = VarNs<T>> {
   readonly _tag: "QVar";
   readonly id: number;
   /** @internal refined as positions are minted; drives cell reshaping */
@@ -73,13 +73,13 @@ export interface Var<T = unknown, N extends AnyEntity = VarNs<T>> {
 
 export type AnyVar = Var<any, any>;
 
-/** The focus namespace a var is branded with (`AnyEntity` when unbranded). */
-export type FocusOf<V> = V extends Var<any, infer N> ? N : AnyEntity;
+/** The focus namespace a var is branded with (a wide composer when unbranded). */
+export type FocusOf<V> = V extends Var<any, infer N> ? N : AnyComposer;
 
 let nextVarId = 1;
 
 /** @internal Mint a fresh var. Public spelling is {@link Q.var}. */
-export const mkVar = <T = unknown, N extends AnyEntity = VarNs<T>>(
+export const mkVar = <T = unknown, N extends AnyComposer = VarNs<T>>(
   kind: VarKind = "value",
   ns?: string,
 ): Var<T, N> => ({ _tag: "QVar", id: nextVarId++, kind, ns }) as Var<T, N>;
@@ -216,7 +216,7 @@ export type SubBody =
   | NotCommand;
 
 /** `entities(ns)` in a generator body: mint a branded var, membership rule. */
-export interface MemberCommand<N extends AnyEntity = AnyEntity> extends Yieldable<Var<Eid<N>>> {
+export interface MemberCommand<N extends AnyComposer = AnyComposer> extends Yieldable<Var<Eid<N>>> {
   readonly _tag: "member";
   readonly ns: N;
 }
@@ -241,7 +241,7 @@ export type AnyCommand =
 
 export interface MemberClause {
   readonly _tag: "memberOf";
-  readonly ns: AnyEntity;
+  readonly ns: AnyComposer;
   readonly v: AnyVar;
 }
 
@@ -327,7 +327,7 @@ const dispatch = (cmd: AnyCommand, ctx: BuildCtx): unknown => {
       ctx.clauses.push({ _tag: "notGroup", clauses: collectBody(cmd.body) });
       return undefined;
     case "member": {
-      const v = mkVar<Eid<AnyEntity>>("entity", cmd.ns.ns);
+      const v = mkVar<Eid<AnyComposer>>("entity", cmd.ns.ns);
       ctx.clauses.push({ _tag: "memberOf", ns: cmd.ns, v });
       return v;
     }
@@ -554,7 +554,7 @@ const fnBind = (fn: string, args: readonly Position[]): FnBindCommand => {
  * focus's field map. Unbranded vars, blanks, and omitted e stay open.
  */
 type FactAttr<E, A> = [E] extends [Var<any, infer N>]
-  ? [AnyEntity] extends [N]
+  ? [AnyComposer] extends [N]
     ? A
     : [InFocus<A, N>] extends [true]
       ? A
