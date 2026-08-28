@@ -112,6 +112,31 @@ describe("owned operation authoring", () => {
     expect(Object.keys(Issue[OwnedOperations])).toEqual(["create", "assign"]);
   });
 
+  test("preserves symbol-keyed operations on bindable trait callables", () => {
+    const Bound = Trait(
+      "bound",
+      { catalog: string() },
+      {
+        bind: (definition) => ({ values: { catalog: definition.key } }),
+        operations: (Operation) => ({
+          inspect: Operation({
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+            run() {
+              return {};
+            },
+          }),
+        }),
+      },
+    );
+    expect(Bound[OwnedOperations].inspect.owner.ns).toBe("bound");
+    expect(Bound[OwnedOperations].inspect.localName).toBe("inspect");
+    expect(
+      Bound({ key: "child", schema: CatalogSchema({}) })[OwnedOperations]
+        .inspect,
+    ).toBe(Bound[OwnedOperations].inspect);
+  });
+
   test("rejects invalid operation map keys and values", () => {
     const spec = Operation({
       input: Schema.Struct({}),
@@ -126,6 +151,13 @@ describe("owned operation authoring", () => {
     expect(() =>
       Entity("bad-value", {}, { operations: { run: {} } } as never)
     ).toThrow(/must be Ramose\.Operation/);
+    expect(() =>
+      Entity(
+        "bad-symbol",
+        {},
+        { operations: { [Symbol("run")]: spec } } as never,
+      )
+    ).toThrow(/operation map keys must be strings/);
   });
 });
 
@@ -203,6 +235,9 @@ describe("owned operation lowering", () => {
         assignee: RefSchema(User),
         labels: Schema.Array(Schema.String),
         note: Schema.optionalKey(Schema.String),
+        optionalAssignee: Schema.optionalKey(RefSchema(User)),
+        optionalSelf: Schema.optionalKey(RefSchema.self),
+        self: RefSchema.self,
       }),
     );
     expect(shape).toEqual({
@@ -228,6 +263,27 @@ describe("owned operation lowering", () => {
           key: "note",
           optional: true,
           shape: { _tag: "scalar", valueType: "string" },
+        },
+        {
+          key: "optionalAssignee",
+          optional: true,
+          shape: {
+            _tag: "ref",
+            refTarget: {
+              _tag: "entity",
+              entity: EntityId.make({ catalog, name: "user" }),
+            },
+          },
+        },
+        {
+          key: "optionalSelf",
+          optional: true,
+          shape: { _tag: "ref", refTarget: { _tag: "self" } },
+        },
+        {
+          key: "self",
+          optional: false,
+          shape: { _tag: "ref", refTarget: { _tag: "self" } },
         },
       ],
     });
@@ -271,7 +327,7 @@ describe("owned operation lowering", () => {
         operations: (Operation) => ({
           inspect: Operation({
             self: false,
-            input: Schema.Struct({ nested: Schema.Array(RefSchema.self) }),
+            input: Schema.Struct({ nested: Schema.optionalKey(RefSchema.self) }),
             output: Schema.Struct({}),
             run() {
               return {};

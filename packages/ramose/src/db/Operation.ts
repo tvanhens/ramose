@@ -11,6 +11,7 @@
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { COMPOSED_TRAITS } from "./Composer.ts";
 import type { Eid } from "./Eid.ts";
 import type { AnySchema, Schema as CatalogSchema } from "./Schema.ts";
 import { InvalidRequest, OperationsCoverageError } from "./Errors.ts";
@@ -227,10 +228,21 @@ type OperationOwnerShape = {
   readonly fields: object;
 };
 
-type OwnerField<Owner extends OperationOwnerShape> = Extract<
-  Owner["fields"][keyof Owner["fields"] & string],
-  { readonly ident: string }
->;
+type OwnerField<Owner extends OperationOwnerShape> = Owner["fields"][
+  keyof Owner["fields"] & string
+] extends infer Field
+  ? Field extends { readonly ident: string }
+    ? Field extends { readonly fixed: true }
+      ? never
+      : Field
+    : never
+  : never;
+
+type TraitComposerEntity<Target extends AnyTrait> = AnyEntity & {
+  readonly [COMPOSED_TRAITS]: {
+    readonly [Name in Target["ns"]]: true;
+  };
+};
 
 type OwnedFieldValue<
   Owner extends OperationOwnerShape,
@@ -239,11 +251,21 @@ type OwnedFieldValue<
   readonly valueType: "ref";
   readonly schema: { readonly _target?: infer Target };
 }
-  ? Exclude<Target, undefined> extends infer Declared extends AnyEntity
-    ? EntityRef<AnySchema, Declared, AnyOpHandle>
-    : Owner extends AnyEntity
-      ? EntityRef<AnySchema, Owner, AnyOpHandle>
-      : EntityRef<AnySchema, AnyEntity, AnyOpHandle>
+  ? Exclude<Target, undefined> extends infer Declared
+    ? Declared extends AnyEntity
+      ? EntityRef<AnySchema, Declared, AnyOpHandle>
+      : Declared extends AnyTrait
+        ? EntityRef<AnySchema, TraitComposerEntity<Declared>, AnyOpHandle>
+        : Owner extends { readonly _tag: "Entity" }
+          ? EntityRef<AnySchema, Owner & AnyEntity, AnyOpHandle>
+          : Owner extends { readonly _tag: "Trait" }
+            ? EntityRef<
+                AnySchema,
+                TraitComposerEntity<Owner & AnyTrait>,
+                AnyOpHandle
+              >
+            : EntityRef<AnySchema, AnyEntity, AnyOpHandle>
+    : never
   : OpValue<AnySchema, A>;
 
 /** A targeted handle only accepts fields carried by its canonical owner. */
@@ -268,12 +290,14 @@ type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
 }
   ? PutCreateAttrs<
       CatalogSchema<{
-        readonly [K in Owner["ns"]]: Owner & Pick<AnyEntity, "id">;
+        readonly [K in Owner["ns"]]: Owner &
+          Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>;
       }>,
-      Owner & Pick<AnyEntity, "id">,
+      Owner & Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>,
       AnyOpHandle<
         CatalogSchema<{
-          readonly [K in Owner["ns"]]: Owner & Pick<AnyEntity, "id">;
+          readonly [K in Owner["ns"]]: Owner &
+            Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>;
         }>
       >
     >
@@ -520,7 +544,7 @@ export type ValidOwnedOperationMap<
     ? K extends ValidIdentName<K>
       ? Ops[K]
       : Ops[K] & InvalidOperationName<K>
-    : Ops[K];
+    : never;
 };
 
 export interface Operations<
@@ -805,6 +829,9 @@ export const bindOwnedOperations = <
   const out: Record<string, AnyOwnedOperation> = {};
   if (operations === undefined) {
     return out as BoundOwnerOperations<Owner, Ops>;
+  }
+  if (Reflect.ownKeys(operations).some((key) => typeof key !== "string")) {
+    throw new Error("ramose/schema: operation map keys must be strings");
   }
   for (const [localName, operation] of Object.entries(operations)) {
     if (!isIdentName(localName)) throw invalidIdentName("operation", localName);

@@ -223,12 +223,12 @@ export const makeBindableTrait = <T extends TraitLike, B extends TraitBind>(
 ): BindableTrait<T, B> => {
   const callable = ((definition: CodeDefinitionRef) =>
     makeTraitBinding(trait, definition, bind)) as BindableTrait<T, B>;
-  for (const [key, value] of Object.entries(trait)) {
-    Object.defineProperty(callable, key, {
-      value,
-      enumerable: true,
-      configurable: true,
-    });
+  for (const key of Reflect.ownKeys(trait)) {
+    Object.defineProperty(
+      callable,
+      key,
+      Object.getOwnPropertyDescriptor(trait, key)!,
+    );
   }
   Object.defineProperty(callable, TRAIT_BIND_FACTORY, { value: bind });
   return callable;

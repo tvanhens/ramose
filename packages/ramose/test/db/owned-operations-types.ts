@@ -13,6 +13,7 @@ import {
   Operation,
   OwnedOperations,
   Ref,
+  Schema as CatalogSchema,
   Trait,
   string,
 } from "../../src/db/internal.ts";
@@ -35,6 +36,28 @@ const BoundOperations = Trait(
         run(op) {
           // @ts-expect-error bindable trait operations retain their exact owner
           op.self.set(Other.note, "wrong owner");
+          return {};
+        },
+      }),
+    }),
+  },
+);
+
+const definition = { key: "child", schema: CatalogSchema({}) };
+const BoundOperationsUse = BoundOperations(definition);
+const BoundEntity = Entity(
+  "boundEntity",
+  { title: string() },
+  {
+    traits: [BoundOperationsUse],
+    operations: (Operation) => ({
+      rename: Operation({
+        input: Schema.Struct({ title: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, { title }) {
+          op.self.set(BoundEntity.title, title);
+          // @ts-expect-error engine-owned binding fields are not mutable
+          op.self.set(BoundEntity.catalog, "forged");
           return {};
         },
       }),
@@ -69,6 +92,108 @@ const Taggable = Trait(
     }),
   },
 );
+
+const Classified = Trait("classified", {});
+const Specialized = Trait("specialized", {}, { traits: [Classified] });
+const ClassifiedEntity = Entity("classifiedEntity", {}, { traits: [Specialized] });
+const UnclassifiedEntity = Entity("unclassifiedEntity", {});
+declare const classifiedId: Eid<typeof ClassifiedEntity>;
+declare const unclassifiedId: Eid<typeof UnclassifiedEntity>;
+
+const Relation = Trait(
+  "relation",
+  { target: Ref(Classified), parent: Ref.self },
+  {
+    operations: (Operation) => ({
+      retarget: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          op.self.set(Relation.target, classifiedId);
+          // @ts-expect-error trait refs only accept entity composers of that trait
+          op.self.set(Relation.target, unclassifiedId);
+          op.self.set(Relation.parent, 1);
+          return {};
+        },
+      }),
+    }),
+  },
+);
+
+const Link = Entity(
+  "link",
+  { target: Ref(Classified), parent: Ref.self },
+  {
+    operations: (Operation) => ({
+      retarget: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          op.self.set(Link.target, classifiedId);
+          // @ts-expect-error entity-owned trait refs reject non-composers
+          op.self.set(Link.target, unclassifiedId);
+          op.self.set(Link.parent, 1);
+          return {};
+        },
+      }),
+    }),
+  },
+);
+
+const PlainOperationsEntity = Entity("plainOperationsEntity", {}, {
+  operations: (Operation) => ({
+    inspect: Operation({
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+const PlainOperationsTrait = Trait("plainOperationsTrait", {}, {
+  operations: (Operation) => ({
+    inspect: Operation({
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+export type _entityOmittedTraitsAreEmpty = Expect<
+  Extends<typeof PlainOperationsEntity.traits, readonly []>
+>;
+export type _traitOmittedTraitsAreEmpty = Expect<
+  Extends<typeof PlainOperationsTrait.traits, readonly []>
+>;
+
+const invalidOperationKey = Symbol("invalidOperationKey");
+Entity("symbolOperationKey", {}, {
+  // @ts-expect-error operation-map keys must be strings
+  operations: (Operation) => ({
+    [invalidOperationKey]: Operation({
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+Entity("numberOperationKey", {}, {
+  // @ts-expect-error operation-map keys must be strings
+  operations: (Operation) => ({
+    1: Operation({
+      input: Schema.Struct({}),
+      output: Schema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
 
 const Issue = Entity(
   "issue",
@@ -179,3 +304,6 @@ void _completeCreate;
 void _missingEntityField;
 void _missingTraitField;
 void BoundOperations;
+void BoundEntity;
+void Relation;
+void Link;

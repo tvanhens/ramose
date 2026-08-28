@@ -245,12 +245,26 @@ const primitiveShape = (ast: SchemaAST.AST): OperationInputShape | undefined => 
   }
 };
 
+/** Remove Effect struct-key wrappers while retaining their inner ref metadata. */
+const unwrapPropertySchema = (schema: Schema.Top): Schema.Top => {
+  let current = schema;
+  const seen = new Set<Schema.Top>();
+  while (SchemaAST.isOptional(current.ast) && !seen.has(current)) {
+    seen.add(current);
+    const inner = (current as Schema.Top & { readonly schema?: unknown }).schema;
+    if (!Schema.isSchema(inner)) break;
+    current = inner;
+  }
+  return current;
+};
+
 /** Conservative policy-visible projection of an Effect Schema. */
 export const lowerOperationSchema = (
   catalog: CatalogId,
   schema: Schema.Top,
   active: ReadonlySet<Schema.Top> = new Set(),
 ): OperationInputShape => {
+  schema = unwrapPropertySchema(schema);
   if (active.has(schema)) return { _tag: "opaque" };
   const next = new Set(active).add(schema);
   const valueType = tryInferDbValueType(schema);

@@ -6,6 +6,7 @@ import {
   walkTraits,
   type ComposerLike,
 } from "./compose.ts";
+import { COMPOSED_TRAITS } from "./Composer.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import {
   invalidIdentName,
@@ -184,6 +185,7 @@ export type AnyEntity = {
   readonly fields: {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
+  readonly [COMPOSED_TRAITS]?: Readonly<Record<string, true>>;
   readonly id: AttrNav<
     AnyField & {
       readonly schema: { readonly Type: number };
@@ -194,6 +196,14 @@ export type AnyEntity = {
     } & PathCarrier
   >;
   readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
+};
+
+type TraitClosure<T> = T extends AnyTrait
+  ? T | TraitClosure<T["traits"][number]>
+  : never;
+
+type ComposedTraitMap<T extends AnyTrait> = {
+  readonly [Trait in T as Trait["ns"]]: true;
 };
 
 export type EntityOptions<
@@ -303,9 +313,13 @@ type EntityWithTraits<
       Entity<Name, Fields, Ops> & {
         readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
         readonly traits: Traits;
+        readonly [COMPOSED_TRAITS]: ComposedTraitMap<
+          TraitClosure<Traits[number]>
+        >;
       },
       Ops
     >;
+    readonly [COMPOSED_TRAITS]: ComposedTraitMap<TraitClosure<Traits[number]>>;
   };
 
 type EntityOperationContext<
@@ -316,6 +330,8 @@ type EntityOperationContext<
   readonly _tag: "Entity";
   readonly ns: Name;
   readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+  readonly traits: Traits;
+  readonly [COMPOSED_TRAITS]: ComposedTraitMap<TraitClosure<Traits[number]>>;
 };
 
 /** Group fields under one ident prefix. */
@@ -326,13 +342,29 @@ export function Entity<const Name extends string, Fields extends FieldMap>(
 export function Entity<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
   const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
   options: {
-    readonly traits?: Traits;
+    readonly traits?: never;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        EntityOperationContext<Name, Fields, readonly []>
+      >,
+    ) => ValidOwnedOperationMap<Ops> & Ops;
+  },
+): EntityWithTraits<Name, Fields, readonly [], Ops>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits: Traits;
     readonly operations: (
       Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<Ops> & Ops;
@@ -341,7 +373,7 @@ export function Entity<
 export function Entity<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
@@ -353,7 +385,7 @@ export function Entity<
 export function Entity<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
   const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
@@ -364,7 +396,7 @@ export function Entity<
   assertEntityName(name);
   assertFieldKeys(fields);
   const direct = (options?.traits ?? []) as readonly ComposerLike[];
-  walkTraits(direct);
+  const traitClosure = walkTraits(direct).all;
   const stamped = stamp(name, fields);
   const flattened = flattenTraitFields(direct);
   const merged = mergeComposerFields(
@@ -390,6 +422,9 @@ export function Entity<
     ns: name,
     fields: merged,
     traits: direct,
+    [COMPOSED_TRAITS]: Object.fromEntries(
+      traitClosure.map((trait) => [trait.ns, true]),
+    ),
     [OwnedOperations]: {},
     id: idField,
     ...merged,

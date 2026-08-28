@@ -161,6 +161,7 @@ type TraitOperationContext<
   readonly _tag: "Trait";
   readonly ns: Name;
   readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+  readonly traits: Traits;
 };
 
 /** Group fields under one ident prefix, optionally composing other traits. */
@@ -172,13 +173,31 @@ export function Trait<
   const Name extends string,
   Fields extends FieldMap,
   const Bind extends TraitBind<Fields>,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits?: never;
+    readonly bind: Bind;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        TraitOperationContext<Name, Fields, readonly []>
+      >,
+    ) => ValidOwnedOperationMap<Ops> & Ops;
+  },
+): BindableTrait<TraitWithTraits<Name, Fields, readonly [], Ops>, Bind>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Bind extends TraitBind<Fields>,
   const Traits extends readonly AnyTrait[] = [],
   const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
   options: {
-    readonly traits?: Traits;
+    readonly traits: Traits;
     readonly bind: Bind;
     readonly operations: (
       Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
@@ -200,13 +219,30 @@ export function Trait<
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
   const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
   options: {
-    readonly traits?: Traits;
+    readonly traits?: never;
+    readonly bind?: never;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        TraitOperationContext<Name, Fields, readonly []>
+      >,
+    ) => ValidOwnedOperationMap<Ops> & Ops;
+  },
+): TraitWithTraits<Name, Fields, readonly [], Ops>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits: Traits;
     readonly operations: (
       Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<Ops> & Ops;
@@ -215,7 +251,7 @@ export function Trait<
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
@@ -227,7 +263,7 @@ export function Trait<
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
   const Bind extends TraitBind<Fields> | undefined = undefined,
   const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
