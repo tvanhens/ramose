@@ -30,7 +30,11 @@ export async function* readLiveNdjson(response: Response): AsyncGenerator<LiveQu
       if (done) break;
     }
   } finally {
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } catch {
+      reader.releaseLock();
+    }
   }
 }
 

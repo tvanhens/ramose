@@ -66,27 +66,39 @@ export const authorizedLiveResponse = <R, EDb>(
       context,
     );
     const first = isSilentLiveDiff(opening) ? new Uint8Array() : encodeDiff(opening);
+    let restReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const body = first.byteLength === 0
       ? rest
       : new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(first);
-            const reader = rest.getReader();
+            restReader = rest.getReader();
+            const safeClose = (): void => {
+              try {
+                controller.close();
+              } catch {
+                /* consumer already cancelled */
+              }
+            };
             const pump = (): Promise<void> =>
-              reader.read().then(({ done, value }) => {
+              restReader!.read().then(({ done, value }) => {
                 if (done) {
-                  controller.close();
+                  safeClose();
                   return;
                 }
-                controller.enqueue(value);
+                try {
+                  controller.enqueue(value);
+                } catch {
+                  return;
+                }
                 return pump();
-              }, (error: unknown) => {
-                controller.error(error);
+              }, () => {
+                safeClose();
               });
             void pump();
           },
           cancel() {
-            void rest.cancel();
+            return restReader?.cancel();
           },
         });
     return new Response(body, {

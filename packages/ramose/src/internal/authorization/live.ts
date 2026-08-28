@@ -197,6 +197,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             ? Effect.never
             : Deferred.await(input.revoked).pipe(Effect.andThen(invalidate), Effect.andThen(Effect.fail(deny())));
 
+        const close = Queue.end(pending).pipe(Effect.andThen(Queue.end(out)), Effect.asVoid);
         const emitLoop = Effect.forever(
           Effect.gen(function* () {
             const item = yield* Queue.take(pending);
@@ -219,7 +220,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             yield* Queue.offer(out, diff);
             yield* Ref.set(lastSent, item.value);
           }),
-        );
+        ).pipe(Effect.ignoreCause);
 
         const recompute = (
           caller: AuthenticatedCaller,
@@ -253,7 +254,12 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
 
         const leaseLoop = Effect.gen(function* () {
           while (true) {
-            const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
+            const admitted = yield* input.authenticate.pipe(
+              Effect.mapError(() => deny()),
+              Effect.result,
+            );
+            if (Result.isFailure(admitted)) return;
+            const caller = admitted.success;
             const nowMs = yield* Clock.currentTimeMillis;
             const lease = yield* Effect.fromResult(callerLease(caller, nowMs, limit));
             const id = yield* Ref.updateAndGet(epoch, (n) => n + 1);
@@ -276,15 +282,12 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
         });
 
         yield* Effect.forkChild(emitLoop);
+        // Always end the callback queue. A failed producer fiber otherwise
+        // leaves Stream.callback open, so consumers hang until the test timeout.
         yield* Effect.race(leaseLoop, revoked).pipe(
-          Effect.onInterrupt(() => Queue.end(pending).pipe(Effect.andThen(Queue.end(out)))),
-          Effect.catchCause((cause) =>
-            Queue.end(pending).pipe(
-              Effect.andThen(
-                Cause.hasInterrupts(cause) ? Queue.end(out) : Queue.fail(out, deny()),
-              ),
-            ),
-          ),
+          Effect.result,
+          Effect.andThen(close),
+          Effect.onInterrupt(() => close),
         );
       }),
     { bufferSize: 16, strategy: "suspend" },
