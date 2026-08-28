@@ -90,6 +90,10 @@ describe("assembleDeployedCatalogs", () => {
     expect(deployed.unit._tag).toBe("InstalledCatalogUnit");
     expect(deployed.unit.unitHash).toBe(deployed.unitHash);
     expect(deployed.unit.catalog.database).toBe(database);
+    expect(deployed.composition.isEntityIdent(":issue")).toBe(true);
+    expect(deployed.composition.isTraitIdent(":taggable")).toBe(true);
+    expect(deployed.composition.transitiveTraits(":issue")).toEqual([":taggable"]);
+    expect(deployed.composition.transitiveTraits(":user")).toEqual([]);
     expect(catalogs.databases()).toEqual([database]);
   });
 

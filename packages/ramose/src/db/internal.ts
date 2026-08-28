@@ -10,6 +10,7 @@
 
 export * from "./Field.ts";
 export * from "./Schema.ts";
+export * from "./composition.ts";
 export * from "./ensure.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";

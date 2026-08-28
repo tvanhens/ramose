@@ -44,7 +44,7 @@ import { fieldKey } from "./validation/common.ts";
 import type { Datom } from "../core/datom.ts";
 import { Index, ValueTag } from "../core/datom.ts";
 import type { Db, DatomPredicate } from "../core/db.ts";
-import { RAMOSE_TRAIT, RAMOSE_TYPE } from "../core/schema.ts";
+import { RAMOSE_TYPE } from "../core/schema.ts";
 
 export type CompileReadFilterInput = {
   readonly unit: InstalledCatalogUnitV1;
@@ -465,7 +465,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     try {
       const entity = await classifyFrom(db, datom.e);
       if (entity === undefined) return false;
-      if (datom.a === RAMOSE_TYPE || datom.a === RAMOSE_TRAIT) {
+      if (datom.a === RAMOSE_TYPE) {
         return isRowReadable(db, datom.e);
       }
       const field = attrFields.get(datom.a);

@@ -11,7 +11,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { Unauthorized } from "../../../src/db/Errors.ts";
-import { schemaTx } from "../../../src/db/internal.ts";
+import { compositionFromSchema, schemaTx } from "../../../src/db/internal.ts";
 import {
   CatalogId,
   CatalogUnitHash,
@@ -163,18 +163,11 @@ const signRamose = (
     }),
   });
 
-const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
-  conn.transact(
-    namespaces.map((ns) => ({
-      ":db/ident": `:${ns}`,
-      ":ramose/kind": ":ramose.kind/entity",
-    })),
-  );
-
 const seedApp = async (workspaceMember: "alice" | "bob" = "alice") => {
-  const conn = await Connection.create();
+  const conn = await Connection.create({
+    composition: compositionFromSchema(App),
+  });
   await conn.transact(schemaTx(App));
-  await installEntityKinds(conn, ["user", "workspace", "tag"]);
   const report = await conn.transact([
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
@@ -597,9 +590,10 @@ describe("executeAuthorizedRequest", () => {
   });
 
   test("subjectClaim other than sub resolves me from that claim, not JWT sub", async () => {
-    const conn = await Connection.create();
+    const conn = await Connection.create({
+      composition: compositionFromSchema(App),
+    });
     await conn.transact(schemaTx(App));
-    await installEntityKinds(conn, ["user", "workspace", "tag"]);
     const report = await conn.transact([
       { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
       { ":db/id": "decoy", ":ramose/type": ":user", ":user/authId": "jwt-sub" },

@@ -2,7 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import { lowerAttr } from "./attrRef.ts";
-import { composerIdent, traitsOf } from "./compose.ts";
+import { composerIdent } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyField, ValueOf } from "./Field.ts";
@@ -423,18 +423,16 @@ const lowerPut = (
   attrs: Record<string, unknown>,
 ): { readonly map: TxMap; readonly extras: TxOp[] } => {
   const map: Record<string, unknown> = { ":db/id": eid };
-  // Composed creates can carry only trait attrs. Thread the composer so
-  // processTx does not treat a typed put as a raw trait-only write.
-  if (traitsOf(entity).length > 0) {
-    const ns =
-      typeof entity === "object" &&
-      entity !== null &&
-      "ns" in entity &&
-      typeof (entity as { ns: unknown }).ns === "string"
-        ? (entity as { ns: string }).ns
-        : "";
-    if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
-  }
+  // Every typed create asserts the concrete composer. processTx owns the
+  // protected `:ramose/type` fact and rejects trait-only raw writes.
+  const ns =
+    typeof entity === "object" &&
+    entity !== null &&
+    "ns" in entity &&
+    typeof (entity as { ns: unknown }).ns === "string"
+      ? (entity as { ns: string }).ns
+      : "";
+  if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;

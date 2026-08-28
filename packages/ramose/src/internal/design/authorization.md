@@ -139,19 +139,24 @@ results and disclosure unchanged (**NI-4**).
 ## 5. Identity
 
 **ID-1.** Every application entity has exactly one engine-owned
-entity-type stamp (`:ramose/type`) and all transitive trait stamps
-(`:ramose/trait`).
+canonical type stamp (`:ramose/type`), including entities that compose
+no traits. Direct and transitive trait membership is derived from that
+type and the current deployed catalog unit. Application databases do
+not store `:ramose/trait`, `:ramose/kind`, `:ramose/composes`, trait
+closure, or equivalent composition metadata.
 
-**ID-2.** The engine and transactor own membership datoms. Clients and
-operation bodies MUST NOT forge, omit, or mutate them. Attempts fail
-atomically.
+**ID-2.** The engine and transactor own the type stamp. Clients and
+operation bodies MUST NOT forge, omit, change, or retract it. Attempts
+fail atomically.
 
-**ID-3.** Type and trait authorization consult only these canonical
-stamps. Field-prefix, attribute-presence, and schema-shape inference
-MUST NOT decide identity.
+**ID-3.** Type and trait authorization consult only the protected type
+plus deployed type-to-trait lookup. Field-prefix, attribute-presence,
+stored trait stamps, and schema-shape inference MUST NOT decide
+identity.
 
-**ID-4.** Missing, stale, contradictory, or ambiguous membership fails
-closed. Occupied type composition cannot change.
+**ID-4.** Missing, stale, contradictory, or ambiguous type evidence
+fails closed. Occupied type composition cannot change. Current deployed
+composition interprets existing and historical facts.
 
 **ID-5.** The same entity has identical membership in reads, operations,
 traversal, and policy evaluation.
@@ -216,10 +221,10 @@ require **POL-2**.
 explicitly allowlisted and read through the application snapshot. Nothing
 under `:db/*` or `:ramose/*` is automatically public.
 
-**POL-8.** Engine-owned membership stamps on an entity are readable iff
-that entity's row policy allows (**POL-1**). They identify an authorized
-row; they are not globally public catalog metadata. A hidden entity's
-stamps MUST NOT leak through type or trait scans.
+**POL-8.** The engine-owned type stamp on an entity is readable iff
+that entity's row policy allows (**POL-1**). It identifies an authorized
+row; it is not globally public catalog metadata. A hidden entity's
+type MUST NOT leak through type or trait scans.
 
 ## 8. Refs, paths, and errors
 

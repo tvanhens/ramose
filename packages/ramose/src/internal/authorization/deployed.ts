@@ -14,6 +14,8 @@ import * as Result from "effect/Result";
 import { Unauthorized } from "../../db/Errors.ts";
 import type { CatalogDescriptor } from "./catalog.ts";
 import type { InstalledCatalogUnitV1 } from "./catalog-unit.ts";
+import { compositionFromUnit } from "./composition.ts";
+import type { CompositionIndex } from "../core/composition.ts";
 import {
   type AssembleCatalogUnitFailure,
   sealInstalledCatalogUnit,
@@ -34,6 +36,8 @@ export type DeployedCatalog = {
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV1;
+  /** Frozen type-to-trait lookup derived from the sealed unit. */
+  readonly composition: CompositionIndex;
 };
 
 export type DeployedCatalogs = {
@@ -117,11 +121,13 @@ const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
       template: unit.policy,
     });
     const sealed = yield* sealInstalledCatalogUnit(descriptor, policy);
+    const composition = yield* Effect.fromResult(compositionFromUnit(sealed));
     return freezePlain({
       database: unit.database,
       catalogKey: unit.catalog,
       unitHash: sealed.unitHash,
       unit: sealed,
+      composition,
     });
   },
 );
