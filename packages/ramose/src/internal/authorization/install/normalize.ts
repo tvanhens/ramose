@@ -22,6 +22,7 @@ import {
 import type {
   EntityId,
   FieldId,
+  OperationId,
   RuleId,
   TraitId,
 } from "../identities.ts";
@@ -86,6 +87,8 @@ const encodeTrait = (id: TraitId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.trait)(id);
 const encodeField = (id: FieldId): unknown =>
   Schema.encodeUnknownSync(CanonicalIdentitySchemas.field)(id);
+const encodeOperationId = (id: OperationId): unknown =>
+  Schema.encodeUnknownSync(CanonicalIdentitySchemas.operation)(id);
 const encodeOperation = (operation: CatalogDescriptor["operations"][number]): unknown =>
   Schema.encodeUnknownSync(OperationDescriptor)(operation);
 const encodeComposition = (row: TraitComposition): unknown =>
@@ -166,6 +169,7 @@ export const normalizeTraitComposition = (
         composer: row.composer,
         trait: row.trait,
         transitive,
+        ...(row.values === undefined ? {} : { values: row.values }),
       });
     }
     const sorted = yield* uniqueSorted(
@@ -234,7 +238,17 @@ export const normalizeDecisions = (
       encodeField,
       "field decision target",
     );
-    return { entities, traits, fields };
+    const operations = yield* normalizeDecisionEntries(
+      decisions.operations ?? [],
+      encodeOperationId,
+      "operation decision target",
+    );
+    return {
+      entities,
+      traits,
+      fields,
+      ...(operations.length > 0 ? { operations } : {}),
+    };
   });
 
 export const normalizeAccessPlans = (

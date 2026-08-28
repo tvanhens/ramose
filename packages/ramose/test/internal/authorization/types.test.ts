@@ -520,8 +520,8 @@ type OperationFocus = {
   readonly _tag: "operation";
   readonly operation: RelativeOperationIdType;
 };
-export type _operationFocusRejected = Expect<
-  Equal<Extends<OperationFocus, PolicyTemplateIR["rules"][number]["focus"]>, false>
+export type _operationFocusAccepted = Expect<
+  Equal<Extends<OperationFocus, PolicyTemplateIR["rules"][number]["focus"]>, true>
 >;
 
 type BindingWithoutDatabase = {

@@ -30,6 +30,7 @@ import {
   deny,
   eq,
   hasClass,
+  invoke,
   lit,
   me,
   not,
@@ -736,6 +737,37 @@ describe("expression-size bounds before iterating", () => {
     );
     expect(indexed).toBeGreaterThan(0);
     expect(indexed).toBeLessThan(count);
+  });
+});
+
+describe("invoke() principal-only grants", () => {
+  test("compile emits optional operations decisions and rejects target paths", () => {
+    const template = expectOk(
+      compile([
+        invoke({ owner: Issue, localName: "rename", target: "required" }).when(hasClass("member")),
+        read(Issue).when(eq(Issue.owner, me)),
+      ]),
+    );
+    expect(template.decisions.operations).toHaveLength(1);
+    expect(template.decisions.operations?.[0]?.target).toEqual({
+      _tag: "RelativeOperationId",
+      owner: issueOwner,
+      localName: "rename",
+      target: "required",
+    });
+    expect(template.rules.some((rule) => rule.focus._tag === "operation")).toBe(true);
+    expectInvalid(
+      compile([invoke({ owner: Issue, localName: "rename", target: "required" }).when(eq(Issue.owner, me))]),
+      /target or operation input|resource/,
+    );
+    expect(() =>
+      invoke({ owner: Issue, localName: "rename" }).when(Issue.title as never),
+    ).toThrow(/target path/);
+  });
+
+  test("read-only compile still omits operations so existing hashes stay stable", () => {
+    const template = expectOk(compile([read(Issue).when(allow)]));
+    expect("operations" in template.decisions).toBe(false);
   });
 });
 

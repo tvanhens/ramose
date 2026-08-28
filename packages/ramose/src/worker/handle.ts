@@ -1,9 +1,11 @@
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import { type AnyOperations, operationNames } from "../db/Operation.ts";
+import { InvalidRequest } from "../db/Errors.ts";
 import {
   callerFromVerified,
   DatabaseId,
   executeAuthorizedRead,
+  executeAuthorizedWrite,
   OneShotReadError,
   type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
@@ -26,6 +28,7 @@ import {
   parseOneShotReadRequest,
   queryMaxCells,
 } from "./authorized-read.ts";
+import { commitViaTransactor, parseOperationRequest } from "./authorized-write.ts";
 import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
@@ -251,6 +254,33 @@ export const handle = (
       return yield* new BadRequest({ message: "invalid database name" });
     }
     if (peer.catalogs === undefined) return yield* new Unauthorized({});
+    const stacks = env.RAMOSE_STAGE !== "prod";
+    const authenticate = Effect.succeed(callerFromVerified(verified));
+    if (rest === "/op" && request.method === "POST") {
+      const parsed = yield* parseOperationRequest(request, rest);
+      const result = yield* executeAuthorizedWrite(
+        {
+          authenticate,
+          catalogs: peer.catalogs,
+          routeDatabase: DatabaseId.make(db),
+          catalogKey: parsed.catalogKey,
+          unitHash: parsed.unitHash,
+          currentDb: acquireCurrentDb(env, request),
+          ...(peer.operations === undefined ? {} : { operations: peer.operations }),
+          commit: commitViaTransactor(env, db, request),
+          effectEnv: env,
+        },
+        parsed.invocation,
+      ).pipe(
+        Effect.mapError((error) => {
+          if (error instanceof Unauthorized) return error;
+          if (error instanceof InvalidRequest) return new BadRequest({ message: error.message });
+          if (isRamoseError(error)) return error;
+          return fromThrown(error, { stacks });
+        }),
+      );
+      return json({ result });
+    }
     if (
       !((rest === "/query" || rest === "/pull") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
@@ -259,10 +289,9 @@ export const handle = (
     }
 
     const parsed = yield* parseOneShotReadRequest(request, rest);
-    const stacks = env.RAMOSE_STAGE !== "prod";
     const result = yield* executeAuthorizedRead(
       {
-        authenticate: Effect.succeed(callerFromVerified(verified)),
+        authenticate,
         catalogs: peer.catalogs,
         routeDatabase: DatabaseId.make(db),
         catalogKey: parsed.catalogKey,

@@ -16,7 +16,7 @@ import { Novelty } from "./novelty.ts";
 import { DB_IDENT, FIRST_USER_EID, Schema, bootstrapDatoms } from "./schema.ts";
 import { MemStore } from "./store.ts";
 import { type BuildOptions, type NodeSource, type NodeStore, buildTree, mergeTree } from "./tree.ts";
-import { type TxData, processTx } from "./tx.ts";
+import { type ExpandOptions, type TxData, processTx } from "./tx.ts";
 
 export interface TxReport {
   dbBefore: Db;
@@ -213,11 +213,11 @@ export class Connection {
   }
 
   /** Transact. Serialized: concurrent callers are queued (single writer). */
-  transact(txData: TxData): Promise<TxReport> {
+  transact(txData: TxData, options?: ExpandOptions): Promise<TxReport> {
     const run = async (): Promise<TxReport> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
-      const res = await processTx(dbBefore, txData, t, this.nextEid, this.now());
+      const res = await processTx(dbBefore, txData, t, this.nextEid, this.now(), options);
       this.nextEid = res.nextEid;
       this.schema = this.schema.clone().apply(res.datoms);
       this.novelty.add(res.datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));

@@ -20,6 +20,7 @@ export {
   subject,
 } from "./expr.ts";
 export { $, path, seededPath } from "./path.ts";
+export { invoke, invokeTargetOf, type InvokeBuilder } from "./invoke.ts";
 export { read, type ReadBuilder } from "./read.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
 export type {
@@ -27,8 +28,11 @@ export type {
   AuthOperandInput,
   AuthPathLike as AuthPath,
   AuthPathProxy,
+  AuthRule,
   CompileReadAuthorizationInput,
   FieldTargetFields,
+  InvokeRule,
+  InvokeTarget,
   ReadRule,
   ReadTarget,
 } from "./types.ts";

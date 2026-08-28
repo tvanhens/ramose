@@ -10,6 +10,7 @@ import type { PolicyTemplateIR } from "../../../src/internal/authorization/index
 import {
   compileReadAuthorizationResult,
   read,
+  type AuthRule,
   type CompileReadAuthorizationInput,
   type ReadRule,
 } from "../../../src/internal/authorization/index.ts";
@@ -48,7 +49,7 @@ type CompileSuccess = Extract<
   { readonly _tag: "Success" }
 >["success"];
 export type _compileResultIsTemplate = Expect<Equal<CompileSuccess, PolicyTemplateIR>>;
-export type _inputHasRules = Expect<Extends<CompileReadAuthorizationInput["rules"], readonly ReadRule[]>>;
+export type _inputHasRules = Expect<Extends<CompileReadAuthorizationInput["rules"], readonly AuthRule[]>>;
 
 void User;
 void Tag;

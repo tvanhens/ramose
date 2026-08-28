@@ -4,12 +4,13 @@
 
 import * as Result from "effect/Result";
 import type { CanonicalAuthorizationExpr } from "../expr.ts";
-import type { EntityId } from "../identities.ts";
+import { EntityId } from "../identities.ts";
 import type { CanonicalAuthorizationRule, CanonicalRuleFocus } from "../ir.ts";
 import type { ClaimDescriptor, InstalledPrincipalResolution } from "../principal.ts";
 import {
   requireEntity,
   requireField,
+  requireOperation,
   requireTrait,
   type PreparedAuthorizationCatalog,
   type RowFocus,
@@ -139,6 +140,9 @@ const validateFocus = (
       case "field":
         yield* requireField(index, focus.field, "rule focus field");
         return;
+      case "operation":
+        yield* requireOperation(index, focus.operation, "rule focus operation");
+        return;
     }
   });
 
@@ -152,12 +156,34 @@ export const validateRule = (
 ): Result.Result<CanonicalAuthorizationRule, ValidateFailure> =>
   Result.gen(function* () {
     yield* validateFocus(index, rule.focus);
-    const resource = yield* resourceFocus(index, rule.focus);
     const me = yield* meEntity(index, principal);
+    const resource =
+      rule.focus._tag === "operation"
+        ? undefined
+        : yield* resourceFocus(index, rule.focus);
 
-    const derived = yield* walkExpr(index, rule.expr, resource, me, classes, claims, limits, {
-      count: 0,
-    });
+    const derived =
+      resource === undefined
+        ? yield* walkExpr(
+            index,
+            rule.expr,
+            {
+              _tag: "entity",
+              entity: me ?? EntityId.make({ catalog: index.target.catalog, name: "_" }),
+            },
+            me,
+            classes,
+            claims,
+            limits,
+            { count: 0 },
+          )
+        : yield* walkExpr(index, rule.expr, resource, me, classes, claims, limits, {
+            count: 0,
+          });
+
+    if (rule.focus._tag === "operation" && derived.usesResource) {
+      return yield* invalid("operation grant cannot inspect a target or operation input");
+    }
 
     yield* compareDerived(rule, derived, limits);
     return {

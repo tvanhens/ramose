@@ -48,6 +48,8 @@ export const resourceFocus = (
         const field = yield* requireField(index, focus.field, "rule focus field");
         return yield* ownerFocus(index, field.id.owner);
       }
+      case "operation":
+        return yield* invalid("operation grant has no resource");
     }
   });
 

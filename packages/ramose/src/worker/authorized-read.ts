@@ -53,7 +53,7 @@ const decodeUnitHash = (value: unknown): Result.Result<CatalogUnitHash, Unauthor
   return Result.isSuccess(decoded) ? Result.succeed(decoded.success) : Result.fail(deny());
 };
 
-const pickProof = (
+export const pickProof = (
   body: Record<string, unknown> | undefined,
   headers: Headers,
 ): Result.Result<{ catalogKey: CatalogId; unitHash: CatalogUnitHash }, Unauthorized> => {
@@ -159,7 +159,7 @@ const entityFromPath = (rest: string): Result.Result<OneShotRead, Unauthorized> 
 };
 
 /** Decode the HTTP body with the established `$inst` / `$bytes` / `$uuid` wire contract. */
-const readJsonObject = (
+export const readJsonObject = (
   request: Request,
 ): Effect.Effect<Record<string, unknown>, BadRequest> =>
   Effect.tryPromise({

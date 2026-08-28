@@ -410,10 +410,15 @@ const decisionCollisions = (decisions: {
   readonly entities: ReadonlyArray<{ readonly target: unknown }>;
   readonly traits: ReadonlyArray<{ readonly target: unknown }>;
   readonly fields: ReadonlyArray<{ readonly target: unknown }>;
+  readonly operations?: ReadonlyArray<{ readonly target: unknown }>;
 }): InvalidIR | undefined =>
   uniqueEncoded(decisions.entities.map((entry) => entry.target), "entity decision target") ??
   uniqueEncoded(decisions.traits.map((entry) => entry.target), "trait decision target") ??
-  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target");
+  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target") ??
+  uniqueEncoded(
+    (decisions.operations ?? []).map((entry) => entry.target),
+    "operation decision target",
+  );
 
 const entityDescriptorCollisions = (
   entities: CatalogDescriptor["entities"],

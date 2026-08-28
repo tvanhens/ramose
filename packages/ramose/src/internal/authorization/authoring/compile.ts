@@ -21,7 +21,14 @@ import {
   hashRelativeRule,
 } from "../decode.ts";
 import { InvalidIR } from "../failures.ts";
-import { RuleId, type OwnerRef, type RelativeEntityId, type RelativeFieldId, type RelativeTraitId } from "../identities.ts";
+import {
+  RuleId,
+  type OwnerRef,
+  type RelativeEntityId,
+  type RelativeFieldId,
+  type RelativeOperationId,
+  type RelativeTraitId,
+} from "../identities.ts";
 import type {
   PolicyTemplateIR,
   RelativeAuthorizationRule,
@@ -35,7 +42,9 @@ import type {
   RelativeAuthorizationExpr,
   RelativeValueTerm,
 } from "../expr.ts";
+import { invokeTargetOf } from "./invoke.ts";
 import {
+  INVOKE_RULE_TAG,
   isEntityTarget,
   isJsonScalar,
   isPathCarrier,
@@ -44,7 +53,9 @@ import {
   READ_RULE_TAG,
   stepFromCarrier,
   type AuthPathStep,
+  type AuthRule,
   type CompileReadAuthorizationInput,
+  type InvokeRule,
   type ReadRule,
   type ReadTarget,
 } from "./types.ts";
@@ -509,6 +520,40 @@ const lowerFocus = (
     return yield* invalid("read() target must be an Entity, Trait, or stamped field");
   });
 
+const lowerInvokeFocus = (
+  schema: AnySchema,
+  rule: InvokeRule,
+): Result.Result<RelativeRuleFocus, InvalidIR> =>
+  Result.gen(function* () {
+    let identity: ReturnType<typeof invokeTargetOf>;
+    try {
+      identity = invokeTargetOf(rule.target);
+    } catch (cause) {
+      return yield* invalid(cause instanceof Error ? cause.message : "invalid invoke target");
+    }
+    if (identity.localName.length === 0) {
+      return yield* invalid("blank operation local name");
+    }
+    if (identity.owner.name.length === 0) {
+      return yield* invalid("blank operation owner name");
+    }
+    const owner = yield* ownerOfNamespace(schema, identity.owner.name);
+    if (owner.kind !== identity.owner.kind) {
+      return yield* invalid(
+        `wrong owner kind for operation '${identity.owner.name}.${identity.localName}': expected ${identity.owner.kind}`,
+      );
+    }
+    return {
+      _tag: "operation" as const,
+      operation: {
+        _tag: "RelativeOperationId" as const,
+        owner,
+        localName: identity.localName,
+        target: identity.target,
+      },
+    };
+  });
+
 const focusTargetKey = (focus: RelativeRuleFocus): string => {
   switch (focus._tag) {
     case "entity":
@@ -517,12 +562,14 @@ const focusTargetKey = (focus: RelativeRuleFocus): string => {
       return `trait\0${focus.trait.name}`;
     case "field":
       return `field\0${focus.field.owner.kind}\0${focus.field.owner.name}\0${focus.field.localName}`;
+    case "operation":
+      return `operation\0${focus.operation.owner.kind}\0${focus.operation.owner.name}\0${focus.operation.localName}\0${focus.operation.target}`;
   }
 };
 
 const focusTarget = (
   focus: RelativeRuleFocus,
-): RelativeEntityId | RelativeTraitId | RelativeFieldId => {
+): RelativeEntityId | RelativeTraitId | RelativeFieldId | RelativeOperationId => {
   switch (focus._tag) {
     case "entity":
       return focus.entity;
@@ -530,6 +577,8 @@ const focusTarget = (
       return focus.trait;
     case "field":
       return focus.field;
+    case "operation":
+      return focus.operation;
   }
 };
 
@@ -567,15 +616,14 @@ const lowerPrincipal = (
     return { subjectClaim, entity: field.id };
   });
 
-const requireReadRule = (rule: unknown): Result.Result<ReadRule, InvalidIR> => {
-  if (
-    typeof rule !== "object" ||
-    rule === null ||
-    (rule as { readonly _tag?: unknown })._tag !== READ_RULE_TAG
-  ) {
-    return invalid("rules must be produced by read().when / read().deny");
+const requireAuthRule = (rule: unknown): Result.Result<AuthRule, InvalidIR> => {
+  if (typeof rule !== "object" || rule === null) {
+    return invalid("rules must be produced by read().when / read().deny or invoke().when / invoke().deny");
   }
-  return Result.succeed(rule as ReadRule);
+  const tag = (rule as { readonly _tag?: unknown })._tag;
+  if (tag === READ_RULE_TAG) return Result.succeed(rule as ReadRule);
+  if (tag === INVOKE_RULE_TAG) return Result.succeed(rule as InvokeRule);
+  return invalid("rules must be produced by read().when / read().deny or invoke().when / invoke().deny");
 };
 
 type DecisionBucket = {
@@ -616,8 +664,11 @@ export const compileReadAuthorizationResult = (
     const documentBudget: NodeBudget = { nodes: 0 };
 
     for (let i = 0; i < input.rules.length; i++) {
-      const authored = yield* requireReadRule(input.rules[i]);
-      const focus = yield* lowerFocus(input.schema, authored.target);
+      const authored = yield* requireAuthRule(input.rules[i]);
+      const focus =
+        authored._tag === INVOKE_RULE_TAG
+          ? yield* lowerInvokeFocus(input.schema, authored)
+          : yield* lowerFocus(input.schema, authored.target);
       const lowered = yield* lowerExpr(input.schema, authored.expr, documentBudget);
       for (const key of lowered.claims) {
         if (!declaredClaimKeys.has(key)) {
@@ -632,6 +683,9 @@ export const compileReadAuthorizationResult = (
         }
       }
       const flags = deriveFlags(lowered.expr);
+      if (authored._tag === INVOKE_RULE_TAG && flags.usesResource) {
+        return yield* invalid("operation grant cannot inspect a target or operation input");
+      }
       const id = RuleId.make(placeholderRuleId(i));
       const rule = {
         id,
@@ -676,17 +730,28 @@ export const compileReadAuthorizationResult = (
       readonly target: RelativeFieldId;
       readonly decision: { readonly allow: readonly RuleId[]; readonly deny: readonly RuleId[] };
     }> = [];
+    const operations: Array<{
+      readonly target: RelativeOperationId;
+      readonly decision: { readonly allow: readonly RuleId[]; readonly deny: readonly RuleId[] };
+    }> = [];
     for (const bucket of buckets.values()) {
       const decision = { allow: bucket.allow, deny: bucket.deny };
       if (bucket.focusKey.startsWith("entity\0")) {
         entities.push({ target: bucket.target as RelativeEntityId, decision });
       } else if (bucket.focusKey.startsWith("trait\0")) {
         traits.push({ target: bucket.target as RelativeTraitId, decision });
+      } else if (bucket.focusKey.startsWith("operation\0")) {
+        operations.push({ target: bucket.target as RelativeOperationId, decision });
       } else {
         fields.push({ target: bucket.target as RelativeFieldId, decision });
       }
     }
-    const decisions = { entities, traits, fields };
+    const decisions = {
+      entities,
+      traits,
+      fields,
+      ...(operations.length > 0 ? { operations } : {}),
+    };
 
     const principal = yield* lowerPrincipal(input.schema, input.principal);
     const document = {
@@ -748,6 +813,17 @@ export const compileReadAuthorization = Effect.fn("Authorization.compileReadAuth
             deny: remapRuleIds(entry.decision.deny, idMap),
           },
         })),
+        ...(template.decisions.operations === undefined
+          ? {}
+          : {
+              operations: template.decisions.operations.map((entry) => ({
+                ...entry,
+                decision: {
+                  allow: remapRuleIds(entry.decision.allow, idMap),
+                  deny: remapRuleIds(entry.decision.deny, idMap),
+                },
+              })),
+            }),
       },
     };
     return yield* Effect.fromResult(

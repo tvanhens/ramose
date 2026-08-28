@@ -249,15 +249,56 @@ const bindReadPredicate = (
   subject: string,
   caller: AuthenticatedCaller,
   current: Db,
-): Effect.Effect<ReturnType<typeof compileReadFilter>, Unauthorized> =>
+): Effect.Effect<
+  {
+    readonly principal: AuthorizationPrincipal;
+    readonly predicate: ReturnType<typeof compileReadFilter>;
+  },
+  Unauthorized
+> =>
   Effect.gen(function* () {
     const resolved = yield* Effect.tryPromise({
       try: () => resolveMe(unit, subject, caller, current),
       catch: () => deny(),
     });
     const principal = yield* Effect.fromResult(resolved);
-    return yield* Effect.fromResult(compilePredicate(unit, principal, current));
+    const predicate = yield* Effect.fromResult(compilePredicate(unit, principal, current));
+    return { principal, predicate };
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
+
+export type AdmittedAuthorizedRequest = {
+  readonly caller: AuthenticatedCaller;
+  readonly unit: InstalledCatalogUnitV1;
+  readonly principal: AuthorizationPrincipal;
+  readonly currentDb: Db;
+  readonly filteredDb: Db;
+};
+
+/**
+ * Admit the caller, acquire the route database, then filter that value.
+ * `currentDb` errors are infrastructure and pass through unchanged.
+ */
+export const admitAuthorizedRequest = <R, EDb>(
+  input: AuthorizedRequestInput<R, EDb>,
+  caller: AuthenticatedCaller,
+): Effect.Effect<AdmittedAuthorizedRequest, Unauthorized | EDb, R> =>
+  Effect.gen(function* () {
+    const admitted = yield* admitDeployedCaller(input, caller);
+    const current = yield* input.currentDb(input.routeDatabase);
+    const bound = yield* bindReadPredicate(
+      admitted.unit,
+      admitted.subject,
+      caller,
+      current,
+    );
+    return {
+      caller,
+      unit: admitted.unit,
+      principal: bound.principal,
+      currentDb: current,
+      filteredDb: requestedView(current, input.view).filter(bound.predicate),
+    };
+  });
 
 /**
  * Admit the caller, acquire the route database, then filter that value.
@@ -267,17 +308,7 @@ const constructFilteredDb = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,
 ): Effect.Effect<Db, Unauthorized | EDb, R> =>
-  Effect.gen(function* () {
-    const admitted = yield* admitDeployedCaller(input, caller);
-    const current = yield* input.currentDb(input.routeDatabase);
-    const predicate = yield* bindReadPredicate(
-      admitted.unit,
-      admitted.subject,
-      caller,
-      current,
-    );
-    return requestedView(current, input.view).filter(predicate);
-  });
+  admitAuthorizedRequest(input, caller).pipe(Effect.map((admitted) => admitted.filteredDb));
 
 export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthorizedRequest")(
   function* <A, E, R, EDb = unknown>(

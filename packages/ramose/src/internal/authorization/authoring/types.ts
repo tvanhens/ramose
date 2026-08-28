@@ -9,12 +9,15 @@
 import type { AnySchema } from "../../../db/Schema.ts";
 import type { PathCarrier } from "../../../db/shapes.ts";
 import type { AnyEntity } from "../../../db/Entity.ts";
+import type { AnyOperation } from "../../../db/Operation.ts";
 import type { AnyTrait } from "../../../db/Trait.ts";
+import type { OperationTarget, OwnerRef } from "../identities.ts";
 import type { JsonScalar } from "../json.ts";
 import type { ClaimDescriptor } from "../principal.ts";
 
 export const AUTH_PATH_TAG = "AuthPath" as const;
 export const READ_RULE_TAG = "ReadRule" as const;
+export const INVOKE_RULE_TAG = "InvokeRule" as const;
 
 export type AuthPathStep = {
   readonly ident: string;
@@ -59,9 +62,27 @@ export type ReadRule = {
   readonly expr: AuthExpr;
 };
 
+export type InvokeTarget =
+  | AnyOperation
+  | {
+      readonly owner: AnyEntity | AnyTrait | OwnerRef;
+      readonly localName: string;
+      readonly target?: OperationTarget;
+      readonly self?: boolean;
+    };
+
+export type InvokeRule = {
+  readonly _tag: typeof INVOKE_RULE_TAG;
+  readonly target: InvokeTarget;
+  readonly kind: "allow" | "deny";
+  readonly expr: AuthExpr;
+};
+
+export type AuthRule = ReadRule | InvokeRule;
+
 export type CompileReadAuthorizationInput = {
   readonly schema: AnySchema;
-  readonly rules: readonly ReadRule[];
+  readonly rules: readonly AuthRule[];
   readonly classes?: readonly string[];
   readonly claims?: readonly ClaimDescriptor[];
   readonly principal?: {

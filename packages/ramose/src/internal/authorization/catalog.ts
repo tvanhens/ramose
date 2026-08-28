@@ -19,6 +19,7 @@ import {
   SchemaFingerprint,
   TraitId,
 } from "./identities.ts";
+import { JsonValue } from "./json.ts";
 
 /**
  * Storage value type a field or operation input key holds.
@@ -88,6 +89,10 @@ const FieldDescriptorBase = {
   index: Schema.Boolean,
   optional: Schema.Boolean,
   owned: Schema.Boolean,
+  /** Pure create-time default. Applied and revalidated at the write boundary. */
+  defaultValue: Schema.optionalKey(JsonValue),
+  /** Engine-owned composition value. Callers and bodies cannot forge it. */
+  fixedValue: Schema.optionalKey(JsonValue),
 };
 
 export const ScalarFieldDescriptor = Schema.Struct({
@@ -203,6 +208,8 @@ export const TraitComposition = Schema.Struct({
   composer: EntityId,
   trait: TraitId,
   transitive: Schema.Array(TraitId),
+  /** Engine-owned fixed values for this composition, keyed by trait field name. */
+  values: Schema.optionalKey(Schema.Record(Schema.String, JsonValue)),
 });
 export type TraitComposition = typeof TraitComposition.Type;
 

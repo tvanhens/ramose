@@ -35,6 +35,7 @@ export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./principal.ts";
 export * from "./read-filter.ts";
+export * from "./operations.ts";
 export * from "./reads.ts";
 export * from "./request.ts";
 export * from "./truth.ts";

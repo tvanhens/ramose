@@ -38,6 +38,7 @@ import {
   type FieldRefTarget,
   type OwnerRef,
   type PolicyTemplateIR,
+  type AuthRule,
   type ReadRule,
   type ValidatedAuthorizationIR,
 } from "../../../src/internal/authorization/index.ts";
@@ -78,7 +79,7 @@ export const teamsClaim = {
 export type CompileExtras = Omit<Partial<Parameters<typeof compileReadAuthorizationResult>[0]>, "rules">;
 
 export const compileRules = (
-  rules: readonly ReadRule[],
+  rules: readonly AuthRule[],
   extras: CompileExtras = {},
 ) =>
   compileReadAuthorizationResult({

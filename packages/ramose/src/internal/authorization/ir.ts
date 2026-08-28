@@ -69,6 +69,7 @@ export const RuleFocus = <
     Schema.TaggedStruct("entity", { entity: ids.entity }),
     Schema.TaggedStruct("trait", { trait: ids.trait }),
     Schema.TaggedStruct("field", { field: ids.field }),
+    Schema.TaggedStruct("operation", { operation: ids.operation }),
   ]);
 
 /**
@@ -125,6 +126,8 @@ export const AuthorizationDecisions = <
     entities: Schema.Array(DecisionEntry(ids.entity)),
     traits: Schema.Array(DecisionEntry(ids.trait)),
     fields: Schema.Array(DecisionEntry(ids.field)),
+    /** Principal-only operation grants. Absent is deny for every operation. */
+    operations: Schema.optionalKey(Schema.Array(DecisionEntry(ids.operation))),
   });
 
 /**

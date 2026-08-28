@@ -109,6 +109,11 @@ export interface TxExpansion extends TxResult {
 export interface ExpandOptions {
   /** max datoms a :db/retractEntity closure may produce before throwing */
   closureCap?: number;
+  /**
+   * Persist `:ramose/trait` stamps on create. Catalog-bound operations
+   * derive traits from the deployed unit and omit stored membership.
+   */
+  persistTraitStamps?: boolean;
 }
 
 /** Prefix of tempids generated for map forms without an explicit `:db/id`. */
@@ -241,8 +246,16 @@ export async function processTx(
   t: number,
   nextEid: number,
   txInstant: number,
+  options: ExpandOptions = {},
 ): Promise<TxResult> {
-  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(db, txData, t, nextEid, txInstant);
+  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(
+    db,
+    txData,
+    t,
+    nextEid,
+    txInstant,
+    options,
+  );
   return res;
 }
 
@@ -1119,7 +1132,7 @@ export async function expandTx(
       if (ta !== undefined) {
         await emitAdd(e, ta, { vt: ValueTag.Str, v: type });
       }
-      if (tr !== undefined) {
+      if (tr !== undefined && options.persistTraitStamps !== false) {
         for (const trait of composed) {
           await emitAdd(e, tr, { vt: ValueTag.Str, v: trait });
         }

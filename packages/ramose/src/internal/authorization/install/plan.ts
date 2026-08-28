@@ -257,20 +257,27 @@ export const deriveRuleAccessPlan = (
 ): Result.Result<RuleAccessPlan, ValidateFailure> =>
   Result.gen(function* () {
     const builder: PlanBuilder = { seen: new Map() };
-    const resource = yield* resourceFocus(index, rule.focus);
     const me = yield* meEntity(index, principal);
+    const resource =
+      rule.focus._tag === "operation" ? undefined : yield* resourceFocus(index, rule.focus);
 
-    if (rule.usesResource) {
+    if (rule.focus._tag === "operation") {
+      if (rule.usesResource) {
+        return yield* invalid("operation grant cannot inspect a target or operation input");
+      }
+    } else if (rule.usesResource) {
       yield* addFocusMembership(index, rule, builder);
     } else if (rule.focus._tag === "field") {
       yield* addField(builder, rule.focus.field);
       const owner = yield* ownerFocus(index, rule.focus.field.owner);
       yield* addMembership(builder, owner);
-    } else {
+    } else if (resource !== undefined) {
       yield* addMembership(builder, resource);
     }
 
-    yield* walkExpr(index, rule.expr, resource, me, builder);
+    if (resource !== undefined) {
+      yield* walkExpr(index, rule.expr, resource, me, builder);
+    }
 
     if (rule.usesMe) {
       yield* addPrincipalResolution(index, principal, builder);
