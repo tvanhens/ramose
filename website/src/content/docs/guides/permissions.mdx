@@ -1,175 +1,101 @@
 ---
 title: Permissions
-description: Write a policy next to your schema, see a write refused and a field masked in Reef, and let the deploy fail before a screen quietly empties.
+description: Author deny-by-default read rules and exact operation grants over entities, traits, fields, claims, principals, and bounded relations.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose decides, per fact, who may read it, and per named operation, who may run that write. The rules live next to your schema, compile at deploy time, and run inside the database: a query returns fewer rows rather than trusting your UI to filter, and a forbidden operation is refused rather than logged. This page walks Reef's real policy; it is for anyone who has run the Quickstart.
+Policy is deployed with each catalog and denies by default. Read rules decide which facts exist in a principal's filtered database. Invoke rules decide which exact operations the principal may attempt.
 
-*Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.*
+<Learn learn={["How entity, trait, and field rules narrow one another", "How to use principal classes, subject, claims, and relation paths", "How operation grants compose with target visibility"]} before={[{ href: "/concepts/authorization/", label: "Authorization" }]} minutes={14} />
 
-<Learn learn={["Read a real policy, rule by rule", "Watch a write get refused and a field get masked", "Deny by default and the deploy-time check"]} before={[{ href: "/getting-started/quickstart/", label: "Quickstart" }]} minutes={12} />
+## Compile policy with the catalog
 
-## What a policy is
+```ts
+import * as Ramose from "ramose"
 
-The **policy** is a value: which roles may read which facts, and which roles may run which named operations, compiled to JSON for the server ([glossary](/concepts/glossary/#policy)). You write it in TypeScript against your schema's record types and the app's operations registry. The server enforces it on every read and write; your buttons are only a hint.
+const P = Ramose.Policy
 
-**Reads are per-fact masks. Writes are per-operation arms.**
-
-## The three roles in Reef
-
-A **role** is a name carried in the **sign-in token** — the signed token the server verifies on every request ([glossary](/concepts/glossary/#token)). Rules refer to roles; the policy calls them *classes* ([glossary](/concepts/glossary/#role)).
-
-| role | may |
-| --- | --- |
-| `owner` | install schema; read the private note; still subject to the rules |
-| `member` | read; run issue/comment operations on their own rows |
-| `viewer` | read only — every operation arm denies it |
-
-Reef maps the invite's role onto the token at sign-in — [What the token carries](/guides/sign-in/#what-the-token-carries).
-
-## Reef's policy, read aloud
-
-Helper fragments first, then read arms per record type and one arm per operation:
-
-```ts title="examples/reef/src/domain/policy.ts#own-rules"
-const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, me);
-const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
+export const policy = P.compileReadAuthorization({
+  schema: ProjectSchema,
+  classes: ["member", "admin"],
+  claims: ["org"],
+  principal: { entity: User.authId },
+  rules: [
+    P.read(Task).when(P.hasClass("member")),
+  ],
+})
 ```
 
-```ts title="examples/reef/src/domain/policy.ts#policy-setup"
-export const policy = Ramose.policy(
-  {
-    schema: Reef,
-    principal: User.sub,
-    classes: ["owner", "member", "viewer"],
-    schemaClasses: ["owner"],
-    operations,
-    claims: Schema.Struct({
-      name: Schema.optional(Schema.String),
-      email: Schema.optional(Schema.String),
-    }),
-  },
-  {
-    user: {
-      read: true,
-      // The peer upserts `sub`, `role`, and `ramose.attrs` (name, email).
-      // Clients never write this row.
-    },
-    label: {
-      read: true,
-    },
+The compiler produces inert schema-checked policy data. Deployment binds it to the exact catalog and rejects unknown fields, invalid paths, incompatible targets, unbounded structures, and undeclared claims.
+
+## Allow an entity
+
+```ts
+P.read(Task).when(P.hasClass("member"))
 ```
 
-```ts title="examples/reef/src/domain/policy.ts#policy-issue · examples/reef/src/domain/policy.ts#policy-comment"
-    issue: {
-      read: true,
-      attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("owner") }),
-      ],
-    },
+Multiple allows for the same focus combine with OR. A deny overrides allows at that focus:
 
-    comment: {
-      read: true,
-    },
+```ts
+P.read(Task).deny(P.hasClass("suspended"))
 ```
 
-```ts title="examples/reef/src/domain/policy.ts#policy-operations"
-    operations: {
-      provisionWorkspaceOp: P.class("owner"),
-      createIssueOp: P.class("owner", "member"),
-      setTitleOp: { class: ["owner", "member"], rule: ownIssue },
-      setPrivateNoteOp: P.class("owner"),
-      deleteCommentOp: { class: ["owner", "member"], rule: ownComment },
-    },
+## Use the resource and principal
+
+```ts
+P.read(Task).when((task) =>
+  P.any(
+    task.owner.eq(P.me),
+    task.project.members.contains(P.me),
+    P.hasClass("admin"),
+  ),
+)
 ```
 
-Read it as:
+`me` is the principal entity resolved through the configured unique field. `subject` is the JWT subject string. `claim(name)` reads a declared stable claim. Resource relation traversal is bounded and must remain within the catalog.
 
-| rule | plain English |
-| --- | --- |
-| `principal: User.sub` · `classes: ["owner", "member", "viewer"]` · `schemaClasses: ["owner"]` | "Who is calling" is the user record whose `sub` equals the token's `sub`; the three roles a token may carry. Owners may install schema. |
-| `ownIssue` | This issue's `creator` is me — the same fragment the app can pipe. A `member` class gate sits in front; owners reach the same rules. |
-| `issue.read: true` · `attrs: privateNote read: owner` | Everyone sees issues — except `privateNote`, which only owners receive. A screen that wants it must ask for it as `.optional`. |
-| `issue/set-title` (and the other issue-editing ops): `ownIssue` | Owners and members change only their own issues; viewers never. A viewer's drag is `Unauthorized`. |
-| `issue/set-private-note`: `P.class("owner")` | Only owners set the private note — on any issue. |
-| `comment/delete`: `ownComment` | Owners and members delete only their own comments. |
-| `creator` / `author` from `op.principal` | The operation body stamps who-did-this; the client never sends it. |
-| (nothing) | A registered operation with no arm denies everyone but superuser. Reef has no `superuser`, so an unarmed op there denies everyone; compile-time coverage is what keeps that safe. |
+Prefer database-backed membership for rapidly changing access and claims for stable deployment-wide context. A token is identity input, not a database selector.
 
-**Deny by default.** A record type or operation with no rule is invisible and unwritable ([glossary](/concepts/glossary/#deny-by-default)). You never have to remember to lock something down; you have to remember to open it. Field rules narrow the record type's rule, never widen it.
+## Narrow a field
 
-## See a write refused
-
-Reef's buttons are polite; the proof is the server. Try it:
-
-1. `bun run dev:reef`, sign up, create a workspace, add the sample issues.
-2. **Invite** a second email as *viewer*.
-3. In a private window, sign up with that email, accept, open the board.
-4. Drag a card. It snaps back; a red toast reads `Unauthorized`.
-
-<Shot src="/reef/denied-toast.png" alt="Reef board as a viewer: header badge reads viewer, a red toast, the dragged card is back in place" caption="A viewer's drag, refused by the server; the toast is the error's own message." code="examples/reef/src/app/screens/BoardScreen.tsx#use-operation" />
-
-What came back was `Unauthorized` (HTTP 403) with `code: "policy"` — the same opaque denial a fact refusal is. Reef's `useOperation(db, op, { onError })` turns it into the toast. The class gate runs before the database is touched; a named rule (when the op has `on:`) runs against the resolved target before the body accumulates any tx. Both are in [Errors](/reference/errors/).
-
-## See a field masked
-
-Open the same issue as an owner and as the member. Everything matches until the **Admin note**, which the member sees tagged *masked* and empty — that value never left the server:
-
-<Shot src="/reef/masked-note-compare.png" alt="The same Reef issue panel twice, headed ADMIN — note visible and MEMBER — note masked; only the Admin note differs, empty and tagged MASKED FOR MEMBER" caption="One rule on privateNote is the whole difference; everything above it is identical." code="examples/reef/src/domain/policy.ts#policy-private-note" />
-
-Reads do not fail. They shrink. A fact you may not read is absent — which is why Reef's panel shape asks for it as `privateNote: Issue.privateNote.optional` (`queries.ts:40-46`). Had it been required, the whole row would disappear: `pull` resolves to `null` and a list query drops that record. That is deliberate — an error message that distinguishes "forbidden" from "does not exist" is itself a leak.
-
-## Who is the caller?
-
-`principal: User.sub` says the **signed-in user** is the user record whose `sub` matches the token's `sub` ([glossary](/concepts/glossary/#signed-in-user)). That attr derives `me` in every arm. The peer upserts that record at session establishment (`sub` from the token, `role` from the token class, name and email from `ramose.attrs`) before any client write; anonymous and service callers stay unresolved and fragments that mention `me` match nothing. Clients never write this row — `db.principal()` is how you learn your eid.
-
-`createIssueOp` writes `creator: op.principal` (and `addCommentOp` writes `author: op.principal`). The client does not send those fields — there is no way to forge who created an issue.
-
-## The deploy-time check
-
-*Because the policy and the shapes your screens read are both values, `Ramose.Policy.compile(policy, { pulls })` checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.*
-
-```ts title="examples/reef/src/domain/policy.ts#compiled-policy"
-export const compiledPolicy = (): string =>
-  P.compile(policy, { pulls: allShapes, operations });
+```ts
+P.read(Task).when(P.hasClass("member")),
+P.read(Task.privateNote).when(P.hasClass("admin")),
 ```
 
-```ts title="examples/reef/test/policy.test.ts#masked-required"
-  test("a masked attribute pulled as required is a compile error", () => {
-    const badShape = { note: Issue.privateNote };
-    expect(() =>
-      Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
-    ).toThrow(/privateNote/);
-  });
+The field rule narrows its parent. A client asking for `privateNote` receives it only for admins; the field is absent for others. Hidden refs hide the whole edge rather than revealing an inaccessible target id.
+
+## Author trait rules
+
+```ts
+P.read(Commentable).when(P.hasClass("member"))
 ```
 
-The check is opt-in: `compile(policy)` with no `pulls` skips it. Keep every shape your app reads in one list, as `allShapes` does.
+Trait rules apply to the trait fields on readable composers. They do not reopen an entity hidden by its concrete rule. This makes reusable capability policy possible without weakening concrete domains.
 
-## The three server modes
+## Grant exact operations
 
-**The Ramose server** picks its mode from two environment variables, which `auth` / `token` on `Ramose.Server` produce. (The server is the one Cloudflare Worker that serves all your databases — [glossary](/concepts/glossary/#server).)
+```ts
+const ops = Task[Ramose.OwnedOperations]
 
-| mode | environment | who gets in |
-| --- | --- | --- |
-| **Open** | neither set | everyone, as `admin`. Right for a laptop, wrong for the internet |
-| **Shared token** | `RAMOSE_TOKEN` | one bearer token, `admin` on every database — for a backend that is itself the authority |
-| **Policy** | `RAMOSE_POLICY` (+ **JWKS**, the sign-in provider's public keys — [glossary](/concepts/glossary/#jwks)) | every caller presents a sign-in token; reads are filtered per fact and writes checked per operation |
+P.invoke(ops.createTask).when(P.hasClass("member"))
+P.invoke(ops.setDone).when(P.hasClass("member"))
+P.invoke(ops.delete).when(P.hasClass("admin"))
+```
 
-Setting `RAMOSE_POLICY` changes what `RAMOSE_TOKEN` means: its holder gets a role no rule can name — the surprise behind "my token stopped working when I turned on permissions".
+Invoke expressions are principal-only: classes, subject, and claims. Targeted operations separately require a visible compatible target. If an update is only valid for a resource owner, express that invariant as a narrower domain operation until target-aware grant predicates exist; do not expose a broad generated update.
 
-## Add a policy to your app
+## Graph access needs no enter rule
 
-1. Write `policy.ts` next to your schema and compile it with your shapes.
-2. Put it on the server with `auth: { policy, jwt, jwksUrl }` on `Ramose.Server` — [Deploy](/guides/deploy/#the-stack-file).
-3. Mint tokens carrying a role and a database name — [Sign in and roles](/guides/sign-in/).
+A readable Graph row and required Graph fields make the child discoverable and openable. The child policy then filters its contents. Every ancestor is reauthorized for long-lived output; an inaccessible ancestor stops descendant synchronization.
+
+## Test observable behavior
+
+For each role, test visible rows, fields, relations, trait roots, graph paths, operations, history, counts, ordering, limits, errors, and revocation. Compare hidden and nonexistent cases. The security contract includes what callers cannot infer, not just which successful request returns 200.
 
 <Next links={[
-  { href: "/guides/sign-in/", label: "Sign in and roles", why: "where the token and the role come from" },
-  { href: "/reference/policy/", label: "Policy", why: "every expression and how rules combine" },
-  { href: "/guides/before-production/", label: "Before production", why: "the rest of the checklist" },
+  { href: "/guides/sign-in/", label: "Authentication", why: "supply the verified principal and claims" },
+  { href: "/reference/policy/", label: "Policy reference", why: "all focuses, expressions, merge rules, and limits" },
+  { href: "/best-practices/security/", label: "Security practices", why: "review graph, offline, MCP, and history exposure" },
 ]} />

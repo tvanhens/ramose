@@ -1,0 +1,32 @@
+<figure class="rg-surface-map">
+  <div class="rg-surface-caller">
+    <span>Web app</span>
+    <code>query · mutate · offline</code>
+  </div>
+  <div class="rg-surface-center">
+    <span>One deployed model</span>
+    <strong>Schema · policy · operations</strong>
+    <small>authorization is applied before either caller sees data</small>
+  </div>
+  <div class="rg-surface-caller">
+    <span>Agent</span>
+    <code>describe · query · mutate</code>
+  </div>
+  <figcaption>The application and MCP endpoint are two doors into the same model, not two backends that must be kept aligned.</figcaption>
+</figure>
+
+<style>
+  .rg-surface-map { display:grid; grid-template-columns:minmax(0,1fr) minmax(14rem,1.35fr) minmax(0,1fr); gap:.75rem; align-items:center; margin:1.75rem 0; }
+  .rg-surface-caller,.rg-surface-center { min-width:0; padding:1rem; border:1px solid var(--sl-color-hairline); border-radius:.75rem; background:var(--rg-forest); text-align:center; }
+  .rg-surface-caller { position:relative; }
+  .rg-surface-caller:first-child::after,.rg-surface-caller:nth-child(3)::before { content:"→"; position:absolute; top:50%; color:var(--rg-green); transform:translateY(-50%); }
+  .rg-surface-caller:first-child::after { right:-.65rem; }
+  .rg-surface-caller:nth-child(3)::before { left:-.65rem; transform:translateY(-50%) rotate(180deg); }
+  .rg-surface-caller span,.rg-surface-center span { display:block; color:var(--rg-green); font-family:var(--sl-font-mono); font-size:.65rem; letter-spacing:.09em; text-transform:uppercase; }
+  .rg-surface-caller code { display:block; margin-top:.4rem; padding:0; color:var(--sl-color-gray-3); background:transparent; font-size:.68rem; }
+  .rg-surface-center { padding:1.35rem 1rem; border-color:#663819; background:linear-gradient(160deg,rgba(255,101,0,.12),transparent 70%),#100d0b; }
+  .rg-surface-center strong { display:block; margin-top:.45rem; color:var(--rg-white); font-size:.98rem; }
+  .rg-surface-center small { display:block; margin-top:.35rem; color:var(--sl-color-gray-4); line-height:1.4; }
+  .rg-surface-map figcaption { grid-column:1 / -1; color:var(--sl-color-gray-3); font-size:.78rem; line-height:1.55; }
+  @media (max-width:42rem) { .rg-surface-map { grid-template-columns:1fr; } .rg-surface-caller:first-child::after,.rg-surface-caller:nth-child(3)::before { display:none; } }
+</style>

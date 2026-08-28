@@ -13,12 +13,12 @@ describe("remarkExtractSnippets", () => {
     const fence = {
       type: "code",
       lang: "ts",
-      meta: 'title="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"',
-      value: "const board = useLiveQuery(db, boardQuery);",
+      meta: 'title="examples/todos/src/App.tsx#todo-list"',
+      value: "const tasks = useQuery(taskQuery);",
     };
     const tree = run([fence]);
     expect((tree.children[0] as { value: string }).value).toBe(
-      "const board = useLiveQuery(db, boardQuery);",
+      "const tasks = useQuery(taskQuery);",
     );
   });
 

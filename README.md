@@ -15,7 +15,7 @@
 queries, operations, and authorization in TypeScript, then deploy the
 authoritative Worker and storage topology into your account.
 
-[Docs](https://ramose.ai) · [Getting started](https://ramose.ai/getting-started/quickstart/) · [Tour of Reef](https://ramose.ai/getting-started/tour-of-reef/) · [Examples](./examples)
+[Docs](https://ramose.ai) · [Getting started](https://ramose.ai/getting-started/quickstart/) · [Mental model](https://ramose.ai/concepts/mental-model/) · [MCP](https://ramose.ai/getting-started/connect-an-agent/)
 
 </div>
 
@@ -23,12 +23,14 @@ authoritative Worker and storage topology into your account.
 
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Portable authoring.** Schemas, queries, pulls, and operation declarations
-  are ordinary values shared by application and server code.
+- **Graphs of graphs.** Keep related facts queryable together, then introduce
+  child databases only where isolation, authorization, or lifecycle demands it.
+- **Portable authoring.** Schemas, queries, and operation declarations are
+  ordinary values shared by browser, server, policy, and MCP.
 - **Permissions in the database.** Who may read or write each field is checked
   on the server, deny by default — not middleware you remember to add.
-- **A database per customer.** One deployed peer owns many isolated database
-  names without provisioning another Worker for each customer.
+- **Offline-first clients.** Persistent browser replicas answer local queries,
+  queue operations, and converge across reconnects and tabs.
 - **Nothing overwritten.** Every version is kept; read the database as it was
   at any earlier point in time.
 - **Your Cloudflare account.** One Worker, Durable Objects, and R2, deployed
@@ -46,10 +48,10 @@ Effect Schemas. `alchemy` comes with Ramose for deploys. Apps using
 ## Learn more
 
 - [What is Ramose?](https://ramose.ai/getting-started/introduction/) — the one-minute version
-- [Getting started](https://ramose.ai/getting-started/quickstart/) — define and deploy a typed database
-- [Tour of Reef](https://ramose.ai/getting-started/tour-of-reef/) — a multi-tenant issue tracker whose whole backend is 680 lines
+- [Mental model](https://ramose.ai/concepts/mental-model/) — graphs, catalogs, queries, operations, and replicas
+- [Getting started](https://ramose.ai/getting-started/quickstart/) — build a small offline-first web app
+- [Connect an agent](https://ramose.ai/getting-started/connect-an-agent/) — use the same model through MCP
 - [How it compares](https://ramose.ai/getting-started/compare/) — against Convex, Supabase, Instant, Firebase, and D1
-- [Examples](./examples) — runnable apps in this repository
 
 > **Ramose is pre-release.** The API moves between releases, so pin exact
 > versions. Issues and pull requests are welcome.

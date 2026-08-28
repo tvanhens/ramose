@@ -1,0 +1,88 @@
+---
+title: Operations
+description: Reference for owned operations, authoritative writers, optimistic projections, grants, invocation ids, and receipts.
+---
+import Next from "../../../components/Next.astro";
+
+Operations are the only public mutation surface. They are owned by an entity or trait, have stable catalog identities, and execute authoritatively inside one graph.
+
+*New here? Start with [Mutate data](/guides/transactions/).*
+
+## Targeted operation
+
+```ts
+const Task = Ramose.Entity("task", {
+  fields: { title: Ramose.string(), done: Ramose.boolean() },
+  operations: (Operation) => ({
+    setDone: Operation({
+      description: "Set whether this task is complete",
+      input: S.Struct({ done: S.Boolean }),
+      output: S.Struct({}),
+      run(op, { done }) {
+        op.self.set(Task.done, done)
+        return {}
+      },
+      optimistic(tx, self, { done }) {
+        tx.set(self, Task.done, done)
+      },
+    }),
+  }),
+})
+```
+
+Targeted operations default to `self: true`. The authoritative writer exposes the compatible owner as `op.self` and only the explicitly declared related write capabilities.
+
+## Targetless operation
+
+```ts
+const createTask = Operation({
+  self: false,
+  input: S.Struct({ title: S.String }),
+  output: S.Struct({ task: Ramose.entityRef(Task) }),
+  run(op, { title }) {
+    const task = op.create(Task, { title, done: false })
+    return { task }
+  },
+})
+```
+
+Targetless operations are invoked from `db.mutate`. Use them for creation and graph-scoped commands without an existing target.
+
+## Input and output
+
+`input` and `output` are Effect Schemas. Validation occurs before the body or optimistic projection runs. Output is plain cloneable data stored with the receipt and returned on an identical retry.
+
+## Authoritative writer
+
+The writer can create compatible entities, set or retract allowed fields, and delete according to declared ownership and cascade rules. The commit applies required fields, defaults, fixed graph bindings, protected types, reference checks, uniqueness, and policy constraints atomically.
+
+Operation-thrown domain rejections become `operation_rejected`. Unexpected faults remain internal errors and do not expose implementation details.
+
+## Optimistic projection
+
+The optional `optimistic` function is synchronous and pure. It receives validated input, stable client entity references, and a local transaction builder. It cannot query local state, read a clock, inspect policy, run an Effect, or expand its write scope.
+
+It is a preview only. The server body is the authority and its receipt reconciles the local layer.
+
+## Invocation and receipt
+
+```ts
+const receipt = task.mutate.setDone({ done: true })
+```
+
+Every invocation has a client-generated `invocationId`. The server scopes the stored receipt to principal, graph, operation, target, and input. Repeating the same invocation returns its original outcome. Reusing the id for a different intent returns `invocation_conflict`.
+
+Receipt states are `queued`, `committed`, and `rejected`. Committed receipts include decoded output; rejected receipts include a public operation error.
+
+## Authorization
+
+A targeted call requires an exact invoke grant plus a visible compatible target. A targetless call requires its exact invoke grant. A grant does not reveal an otherwise hidden target, and read visibility does not grant any operation.
+
+## Generated CRUD
+
+Catalog-generated create, set, and delete capabilities are ordinary owned operations. They are not automatically public; grant each exact operation just like a custom product command.
+
+<Next links={[
+  { href: "/reference/policy/", label: "Policy reference", why: "grant exact operation identities" },
+  { href: "/best-practices/operations/", label: "Operation design", why: "choose clear intents and honest offline behavior" },
+]} />

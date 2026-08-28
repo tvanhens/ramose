@@ -7,7 +7,6 @@ import {
   extractCitation,
   extractTitle,
   parseTitleCitations,
-  resolveShotCode,
   REPO,
 } from "./snippets.mjs";
 import {
@@ -21,8 +20,8 @@ const tmp = join(REPO, ".tmp-snippets-test");
 
 describe("parseTitleCitations", () => {
   test("named marker", () => {
-    expect(parseTitleCitations("examples/reef/src/domain/schema.ts#issue-entity")).toEqual([
-      { relPath: "examples/reef/src/domain/schema.ts", marker: "issue-entity", start: null, end: null },
+    expect(parseTitleCitations("src/domain/schema.ts#task-entity")).toEqual([
+      { relPath: "src/domain/schema.ts", marker: "task-entity", start: null, end: null },
     ]);
   });
 
@@ -104,9 +103,6 @@ describe("extractCitation", () => {
     expect(got.ok).toBe(false);
     expect(got.skipped).toBe(true);
     expect(got.error).toContain("examples/todos/src/App.tsx");
-    const shot = resolveShotCode("examples/todos/src/App.tsx#todo-list");
-    expect(shot?.skipped).toBe(true);
-    expect(shot?.error).toBeUndefined();
   });
 
   test("non-allowlisted missing path is an error, not skipped", () => {
@@ -119,9 +115,6 @@ describe("extractCitation", () => {
     expect(got.ok).toBe(false);
     expect(got.skipped).toBeUndefined();
     expect(got.error).toContain("cited file does not exist");
-    const shot = resolveShotCode("examples/does-not-exist/Nope.tsx#anything");
-    expect(shot?.skipped).toBeUndefined();
-    expect(shot?.error).toContain("cited file does not exist");
   });
 
   test("bad marker on a kept file is an error", () => {
@@ -159,7 +152,7 @@ describe("extractTitle + compare", () => {
 
   test("a single allowlisted missing title is skipped, not a failed extract", () => {
     const got = extractTitle(
-      "examples/reef/src/app/screens/BoardScreen.tsx#use-live-board",
+      "examples/todos/src/App.tsx#todo-list",
     );
     expect(got.ok).toBe(true);
     expect(got.skipped).toBe(true);

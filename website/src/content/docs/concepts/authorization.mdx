@@ -1,0 +1,46 @@
+---
+title: Authorization
+description: How Ramose filters immutable database values, grants exact operations, seals metadata, and composes access across graph paths.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Authorization is one invariant: every external read runs against an immutable database value filtered for the verified principal before query semantics begin.
+
+<Learn learn={["Why filtering precedes queries and synchronization", "How read rules narrow from entity to trait to field", "Why operation grants and graph-path access are separate checks"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
+
+## Authentication names a principal
+
+A deployment verifies a JWT's signature, issuer, audience, lifetime, and subject. The token identifies a principal across the deployment; it does not select a database, catalog, or policy.
+
+Trusted root routing and authorized Graph rows establish server-owned graph bindings. Callers cannot combine an internal database with another catalog.
+
+## Filtering precedes query semantics
+
+Ramose compiles code-defined read rules into a predicate over facts. The current, historical, or history view is filtered first. Query, relation traversal, pull, aggregate, ordering, limit, and live synchronization operate only on the filtered result.
+
+That order prevents hidden data from changing visible answers indirectly. A hidden row cannot alter a count, make a negative condition fail, displace a visible row from a limit, or reveal itself through a missing reference.
+
+## Rules form a narrowing lattice
+
+Entity, trait, and field rules can each narrow access. A trait cannot grant a composer hidden by its concrete entity rule; a field cannot reopen a hidden parent. Deny rules override allows at the same focus.
+
+Rules may use stable principal classes, claims, subject identity, the current resource, the principal entity, and bounded relation paths. Policy is inert schema-checked data deployed with the catalog, not arbitrary request-time code.
+
+## Operations have exact grants
+
+Read rules do not authorize mutations. Every owned operation has its own principal-only allow or deny decision. Targeted operations also require a visible compatible target in the current filtered database. The server repeats those checks at commit time; discovery and client method presence are not authority.
+
+## Paths compose authorization
+
+Every Graph path segment must remain readable. Long-lived synchronization holds a bounded lease over the complete path and stops output after expiry until every segment is authorized again. Archive, rename, membership, policy, catalog, and token changes participate in that decision.
+
+## Public observations are sealed
+
+Errors and metadata intentionally omit internal database ids, catalog keys, hashes, transaction ids, storage layout, policy internals, hidden names, and hidden-only timing signals. Missing and unauthorized resources are indistinguishable when a richer answer would disclose authority.
+
+<Next links={[
+  { href: "/guides/permissions/", label: "Write permissions", why: "author entity, field, relation, and operation rules" },
+  { href: "/guides/sign-in/", label: "Authentication", why: "configure identity tokens and OAuth discovery" },
+  { href: "/best-practices/security/", label: "Security practices", why: "design and test observable non-disclosure" },
+]} />

@@ -1,0 +1,133 @@
+---
+title: Connect an agent to your app
+description: Connect any Streamable HTTP MCP client to the starter app, discover its catalog, query tasks, and invoke an operation.
+---
+import Learn from "../../../components/Learn.astro";
+import SurfaceMap from "../../../components/SurfaceMap.astro";
+import Next from "../../../components/Next.astro";
+
+Every Ramose deployment exposes one MCP endpoint at `POST /mcp`. It lists exactly three tools—`describe`, `query`, and `mutate`—regardless of how many entities, operations, or child graphs your application contains.
+
+This guide connects to the task app from [Build your first Ramose web app](/getting-started/quickstart/).
+
+<Learn learn={["How a stock MCP client authenticates to Ramose", "How an agent discovers a schema it has never seen", "How query and mutate reuse the application's policy and operations"]} before={[{ href: "/getting-started/quickstart/", label: "Build the starter app" }]} minutes={12} />
+
+<SurfaceMap />
+
+## 1. Add the remote MCP server
+
+In your MCP client, add a Streamable HTTP server with the starter's URL:
+
+```text
+https://your-ramose-origin.example/mcp
+```
+
+Ramose publishes OAuth protected-resource metadata, so clients that support remote MCP authentication can discover the authorization server and start sign-in. The resulting bearer token represents one principal and one authorized root; the client never chooses an internal database or catalog.
+
+For a client that accepts static configuration, the shape is typically:
+
+```json
+{
+  "name": "tasks",
+  "transport": "streamable-http",
+  "url": "https://your-ramose-origin.example/mcp",
+  "headers": {
+    "Authorization": "Bearer ${RAMOSE_ACCESS_TOKEN}"
+  }
+}
+```
+
+Use a short-lived token from the same identity provider as the web app. Client-specific field names differ; the URL and bearer-token contract do not.
+
+## 2. Start with no schema prompt
+
+After initialization, `tools/list` returns only:
+
+```text
+describe   Browse or search the visible application model
+query      Execute one bounded QueryDocument against an authorized graph
+mutate     Invoke one exact authorized operation with a durable receipt
+```
+
+The agent begins at its authorized root with `describe`:
+
+```json
+{
+  "at": [],
+  "browse": { "kinds": ["entity", "operation", "graph"] },
+  "page": { "limit": 20 }
+}
+```
+
+The result contains concise capability cards and an opaque `catalogToken`. For the starter, the visible cards include the `task` entity and its `createTask` and `setDone` operations. Full input schemas are returned only when the client drills into an exact reference.
+
+## 3. Query open tasks
+
+The agent can now call `query` with the exact entity reference returned by `describe`:
+
+```json
+{
+  "at": [],
+  "ifCatalog": "cat_opaque",
+  "query": {
+    "version": 1,
+    "from": { "kind": "entity", "name": "task" },
+    "where": {
+      "op": "eq",
+      "path": ["done"],
+      "value": false
+    },
+    "select": {
+      "id": { "path": ["id"] },
+      "title": { "path": ["title"] },
+      "createdAt": { "path": ["createdAt"] }
+    },
+    "order": [{ "path": ["createdAt"], "direction": "desc" }],
+    "page": { "first": 20 }
+  }
+}
+```
+
+The plain-data query is `QueryDocumentV1`, the same representation emitted by the TypeScript builder. Field paths are arrays; every collection is bounded; continuation cursors are opaque.
+
+## 4. Mutate through the declared operation
+
+Suppose the query returned task `task_01H…`. The agent marks it done by invoking the exact operation reference from discovery:
+
+```json
+{
+  "at": [],
+  "ifCatalog": "cat_opaque",
+  "operation": {
+    "kind": "operation",
+    "owner": { "kind": "entity", "name": "task" },
+    "name": "setDone"
+  },
+  "target": { "kind": "entity", "entity": "task", "id": "task_01H…" },
+  "input": { "done": true },
+  "invocationId": "0195f4ee-6a6a-7c63-a0bf-4f5d7f8a9d20"
+}
+```
+
+`mutate` does not expose raw writes. Ramose re-resolves the graph path, operation, target visibility, input schema, and grant at execution time. An identical retry with the same `invocationId` returns the original result and receipt. Reusing that id for different input returns `invocation_conflict`.
+
+## 5. Watch the app converge
+
+The React task list updates from its normal synchronization stream. There is no agent-only callback, webhook, or second permission model. The MCP call and the UI mutation both pass through `Task.setDone` and the same policy.
+
+When the app later introduces project subgraphs, the tool list remains unchanged. Discovery may return a child path such as `at: ["acme", "launch"]`; the agent uses that path in later calls. Every segment is authorized again.
+
+## Recovery agents should implement
+
+| Error | Next action |
+| --- | --- |
+| `catalog_changed` | call `describe` again and rebuild the exact request from the new catalog |
+| `query_budget_exceeded` | narrow the projection, filter earlier, lower recursion, or request a smaller page |
+| `inaccessible` | stop or ask the user for access; missing and unauthorized are intentionally indistinguishable |
+| `invocation_conflict` | generate a new invocation id only for a genuinely new intent |
+
+<Next links={[
+  { href: "/guides/mcp/", label: "MCP guide", why: "graph traversal, paging, safety, and production setup" },
+  { href: "/reference/mcp/", label: "MCP reference", why: "the exact three-tool contracts and errors" },
+  { href: "/reference/query-document/", label: "QueryDocument v1", why: "the portable query grammar used by agents" },
+]} />

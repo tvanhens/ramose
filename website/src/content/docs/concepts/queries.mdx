@@ -1,0 +1,63 @@
+---
+title: Query model
+description: How one portable query value powers local React views, server reads, MCP, relations, aggregates, and history.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A Ramose query is inert, serializable data. Building one performs no read. The TypeScript builder and `QueryDocumentV1` are two authoring surfaces for the same normalized query plan.
+
+<Learn learn={["How roots, filters, projections, and cardinality shape a result", "Why app queries run locally while MCP queries run on the server", "Where query cost comes from"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={9} />
+
+## Start from an entity or trait
+
+```ts
+const openTasks = db.query
+  .from(Task)
+  .where({ done: false })
+  .orderBy(Task.createdAt, "desc")
+```
+
+An entity root returns that concrete type. A trait root returns every readable composer. The root establishes the focus whose identity keeps rows distinct.
+
+## Filter before you shape
+
+Filters constrain candidate rows. Equality, ranges, sets, boolean combinations, relation paths, and nested existence all compile into the portable query. Indexed equality and range constraints reduce work early; late string predicates and broad negative conditions usually scan more.
+
+Authorization is not a query rewrite. Ramose first constructs the principal's filtered immutable database, then runs the same query engine. Hidden facts cannot participate in joins, ordering, negation, aggregates, or limits.
+
+## Projection defines the result contract
+
+Without an explicit projection, an entity query returns a friendly entity row. A projection selects only what the consumer needs and may shape relations:
+
+```ts
+const cards = db.query.from(Task).select({
+  id: Task.id,
+  title: Task.title,
+  assignee: Task.assignee.select({ id: User.id, name: User.name }).optional,
+})
+```
+
+Entity-focused client results become live handles with `.data`, `.local`, and `.mutate`. A projection that drops the entity focus, or an aggregate, returns plain serializable values.
+
+## Cardinality is explicit
+
+Queries return many by default. `.one()` expresses zero-or-one; `.oneOrFail()` requires exactly one. Never fetch many and choose the first when identity is part of correctness. Graph traversal uses `.one().db()` and rejects ambiguous matches.
+
+## App and MCP execution differ intentionally
+
+Observed app queries execute over the complete authorized local database. The server synchronizes database changes, not UI query definitions. That means a new query can run offline and several screens can reuse one local replica.
+
+MCP and server-side reads submit `QueryDocumentV1` to the server. They use budgets, explicit page bounds, and opaque cursors. Shared fixtures guarantee that builder and document forms agree.
+
+## Query cost
+
+The dominant costs are candidate facts examined, intermediate rows produced by joins, projection width, nested collection size, recursion, and sorting before a limit. Query budgets fail explicitly instead of returning partial data.
+
+Pagination is part of the query contract. Prefer stable indexed order plus cursor pagination for user-facing feeds. Aggregates operate within one graph and one authorized view; there are no cross-graph aggregates.
+
+<Next links={[
+  { href: "/guides/queries/", label: "Read data", why: "build everyday and relational queries" },
+  { href: "/best-practices/query-performance/", label: "Query performance", why: "diagnose and reduce query cost" },
+  { href: "/reference/query-document/", label: "QueryDocument v1", why: "see the portable data grammar" },
+]} />

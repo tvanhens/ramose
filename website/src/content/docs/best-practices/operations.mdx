@@ -1,0 +1,77 @@
+---
+title: Operation design
+description: Design precise, authorized, retry-safe operations with deterministic optimistic behavior and useful receipts.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+An operation is a durable product command. Its name and input should capture one intent clearly enough for a human interface, an offline queue, and an agent to invoke safely.
+
+<Learn learn={["How to choose operation boundaries and inputs", "How authoritative and optimistic behavior differ", "How to present queued, committed, and rejected outcomes"]} before={[{ href: "/concepts/operations/", label: "Operations deep dive" }]} minutes={12} />
+
+## Name the outcome
+
+Prefer outcome-oriented operations:
+
+- `setDone({ done: true })`
+- `assign({ assignee })`
+- `moveToColumn({ column })`
+- `archive({ reason })`
+
+Avoid `toggle`, `increment`, or `update` when the caller can state the desired result. Absolute intent survives retries and makes optimistic projection independent of unknown local state.
+
+Do not expose a universal patch operation. It weakens authorization, lets callers modify protected fields, produces poor agent descriptions, and makes business invariants hard to locate.
+
+## Keep one authority
+
+Put validation, defaults, fixed bindings, reference checks, derived writes, and related entity changes in the authoritative operation. UI code and MCP callers provide intent; they do not reproduce the transaction.
+
+An operation may update multiple entities atomically when they are in the same graph and permitted by its declared write scope. If work crosses graphs or external systems, model a workflow with durable state and compensating actions. Do not pretend it is one transaction.
+
+## Separate targeted and targetless actions
+
+A targeted operation acts on a visible compatible entity. Its invocation needs both the exact operation grant and target visibility.
+
+A targetless operation creates or initiates something without an existing target, such as `createTask`. It needs the exact operation grant and belongs on the database mutation namespace.
+
+Keep creation inputs minimal. Server-side defaults and graph bindings should stamp fields the caller is not allowed to choose.
+
+## Make optimism deterministic
+
+The optimistic projection is a pure preview, not a second implementation. It may use validated input and stable client references to describe local changes. It must not query current state, read time, inspect policy, or perform effects.
+
+Only project behavior users need immediately. If the server computes a complex result, show a pending state and reconcile when the receipt commits. A conservative projection is better than a convincing lie.
+
+When one invocation is rejected, Ramose removes its layer and reapplies later optimistic layers. Absolute inputs make that replay predictable.
+
+## Design rejection as a product state
+
+Offline work can be queued long enough for authorization or state to change. A rejected receipt is normal distributed-system behavior, not an exceptional page crash.
+
+Good interfaces:
+
+- Keep unrelated work available.
+- Explain which intent was rejected in user language.
+- Show the authoritative value after rollback.
+- Offer a safe retry only when a new intent makes sense.
+- Preserve any user-authored text that would otherwise be lost.
+
+Use entity-level pending state for quiet row feedback. Observe the exact receipt when the result or rejection changes the workflow.
+
+## Reuse invocation ids correctly
+
+Generate an invocation id before queueing. Retry the same intent with the same id after timeouts, restarts, or reconnects. Generate a new id only for a genuinely new action.
+
+The stored receipt is scoped to the principal, graph, operation, target, and input. Reusing an id with a different intent returns `invocation_conflict`; never catch that error and silently mint another id.
+
+## Document consequences
+
+Operation descriptions are shown to agents. State the outcome, required input, and important consequence. Do not promise authorization the catalog cannot know for a particular target, and do not reveal hidden resource names in errors.
+
+High-impact actions such as deletion, export, billing, or invitations should be narrow operations so products can add confirmation and auditing at the appropriate layer.
+
+<Next links={[
+  { href: "/best-practices/security/", label: "Security", why: "review exact grants and information disclosure" },
+  { href: "/guides/transactions/", label: "Author operations", why: "declare bodies, optimistic projections, and generated CRUD" },
+  { href: "/reference/operations/", label: "Operations reference", why: "look up ownership, writers, and receipt states" },
+]} />

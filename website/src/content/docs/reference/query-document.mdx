@@ -1,0 +1,109 @@
+---
+title: QueryDocument v1
+description: Portable JSON grammar for bounded Ramose queries used by MCP and language-neutral clients.
+---
+import Next from "../../../components/Next.astro";
+
+`QueryDocumentV1` is the plain-data form of a Ramose query. It is accepted by MCP `query` and emitted by the TypeScript builder.
+
+*New here? Start with [How queries work](/concepts/queries/).*
+
+## Top-level shape
+
+```ts
+interface QueryDocumentV1 {
+  version: 1
+  from: DefinitionRef
+  where?: Predicate
+  select: Record<string, Selection>
+  order?: Order[]
+  page: { first: number; after?: string }
+}
+```
+
+All collections are bounded. Unknown keys, definitions, fields, operators, and incompatible values are rejected rather than ignored.
+
+## Definition references
+
+```json
+{ "kind": "entity", "name": "task" }
+```
+
+`from` may reference a visible entity or trait returned by `describe`. References are catalog-scoped names, not internal ids.
+
+## Field paths
+
+Paths are arrays of public field and relationship keys:
+
+```json
+{ "path": ["assignee", "name"] }
+```
+
+Array paths avoid ambiguous string escaping and validate one segment at a time.
+
+## Predicates
+
+Leaf predicates have an operator, path, and compatible value:
+
+```json
+{ "op": "eq", "path": ["done"], "value": false }
+```
+
+Logical predicates nest explicit arguments:
+
+```json
+{
+  "op": "and",
+  "args": [
+    { "op": "eq", "path": ["done"], "value": false },
+    { "op": "in", "path": ["priority"], "value": ["high", "urgent"] }
+  ]
+}
+```
+
+Supported leaf operators are catalog- and type-aware. They include equality, ordering comparisons, membership, presence, and bounded text predicates. Discovery describes the operators valid for a field.
+
+## Selection
+
+Each result key maps to a field path or bounded nested selection:
+
+```json
+{
+  "select": {
+    "id": { "path": ["id"] },
+    "title": { "path": ["title"] },
+    "assignee": {
+      "select": { "name": { "path": ["name"] } }
+    }
+  }
+}
+```
+
+Result keys are caller-chosen plain JSON keys. Selection does not grant access to a hidden field.
+
+## Ordering and pagination
+
+```json
+{
+  "order": [
+    { "path": ["updatedAt"], "direction": "desc" },
+    { "path": ["id"], "direction": "asc" }
+  ],
+  "page": { "first": 50, "after": "cursor_opaque" }
+}
+```
+
+The response contains an opaque continuation cursor when another page is available. Do not decode, modify, cache across principals, or reuse it with a different graph or query.
+
+## Validation errors
+
+- `invalid_query`: malformed grammar, bad operator, type mismatch, missing bound, or invalid cursor.
+- `unknown_definition`: the referenced public definition is not in the current visible catalog.
+- `inaccessible`: the graph path or requested capability cannot be revealed.
+- `catalog_changed`: `ifCatalog` does not match; rediscover and rebuild the query.
+- `query_budget_exceeded`: the valid query exceeds configured work limits; narrow it.
+
+<Next links={[
+  { href: "/reference/mcp/", label: "MCP reference", why: "send query documents through the fixed query tool" },
+  { href: "/reference/query-language/", label: "TypeScript builder", why: "construct the same document with typed expressions" },
+]} />

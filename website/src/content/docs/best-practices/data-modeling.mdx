@@ -1,0 +1,75 @@
+---
+title: Data modeling
+description: Design identities, traits, references, relationships, and operation-owned invariants for models that can evolve safely.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Good Ramose models describe durable product facts. They do not mirror a screen, network payload, or temporary workflow state.
+
+<Learn learn={["How to separate identity from reusable capabilities", "When references or related entities are the right shape", "Where defaults, invariants, and derived values belong"]} before={[{ href: "/concepts/data-model/", label: "Data model deep dive" }]} minutes={12} />
+
+## Start with questions and actions
+
+Before declaring entities, write down:
+
+- The questions the product must answer most often.
+- The actions users and agents may perform.
+- The boundaries that require separate lifecycle or authorization.
+- The facts that must remain queryable over time.
+
+These answers expose the durable nouns and verbs. UI components rarely map one-to-one to entities.
+
+## Give identity only to durable things
+
+Use an entity when a fact needs a stable identity, independent updates, references, history, or operations. Keep small immutable value objects—coordinates, money, a date range—inside a field when they are always read and replaced with their owner.
+
+Choose stable, opaque ids. Names, slugs, email addresses, and positions change. They can be unique attributes or graph path segments without becoming identity.
+
+## Use traits for substitutable capabilities
+
+A trait describes a reusable capability such as `Assignable`, `Commentable`, or `Graph<Catalog>`. Use one when multiple entity types should share fields, relationships, operations, or policy rules.
+
+Do not create a trait only to reduce a few repeated lines. A useful trait has product meaning and allows callers to treat conforming entities uniformly.
+
+Keep ownership clear. An operation defined by `Assignable` should govern assignment behavior; an entity operation should govern behavior specific to that entity.
+
+## Model relationships by ownership
+
+Ask which side owns lifecycle and cardinality:
+
+- A reference is appropriate when one entity points to another independently owned entity.
+- A related entity is appropriate when the related record has its own identity, query needs, or operations.
+- An embedded value is appropriate when the value has no independent lifecycle.
+- A child graph is appropriate only when the boundary needs isolation, authorization, lifecycle, or scale—not merely because two entities are related.
+
+Avoid unbounded arrays of ids inside one entity. They make updates contend on one record and make filtering, pagination, and independent authorization harder.
+
+## Put invariants on the write path
+
+Declare defaults, fixed graph bindings, required references, protected types, and cascade behavior in the catalog or authoritative operation. Do not rely on every UI and agent caller to remember them.
+
+Prefer a narrow `moveTask({ column })` operation over a generic patch that lets callers set protected ownership or type fields. The operation can validate the transition and change all affected entities atomically inside one graph.
+
+## Make common queries cheap
+
+Fields used for equality filters, ordering, graph lookup, and relationship traversal should be explicit and consistently typed. Store values you must filter or sort; derive presentation-only strings in the application.
+
+Denormalize only after identifying a real read path. If you copy data, decide which operation owns synchronization and what staleness is acceptable. A duplicated display label may be harmless; duplicated authorization state is usually not.
+
+## Plan evolution
+
+Treat public entity, trait, field, graph, and operation keys as contracts. Prefer additive evolution:
+
+- Add a new optional field or operation.
+- Backfill before making a field required.
+- Keep compatibility during a rename or shape transition.
+- Retire old definitions only after stored data, clients, and agent discovery have moved.
+
+Stable definitions matter beyond TypeScript. Persisted facts, offline replicas, receipts, and MCP catalog tokens all outlive a single deployment.
+
+<Next links={[
+  { href: "/best-practices/graph-boundaries/", label: "Graph boundaries", why: "decide what belongs in a separate database" },
+  { href: "/best-practices/query-performance/", label: "Query performance", why: "shape data around bounded read paths" },
+  { href: "/reference/schema/", label: "Schema reference", why: "look up declaration contracts" },
+]} />

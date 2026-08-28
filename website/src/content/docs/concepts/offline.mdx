@@ -1,0 +1,55 @@
+---
+title: Offline and synchronization
+description: Complete authorized browser replicas, durable operation queues, optimistic layers, reconnect, and multi-tab coordination.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose treats offline support as a database property, not a UI cache. Every activated graph has one complete, authorized, principal-scoped local database at an opaque revision.
+
+<Learn learn={["What is persisted and what is derived", "How queued and optimistic state remains separate from committed state", "What happens on restart, reconnect, revocation, and multiple tabs"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={10} />
+
+## Activation is lazy
+
+Creating a root or child handle is synchronous and inert. A graph activates when the first observed query or mutation needs it. Only activated graphs synchronize; merely being reachable does not download a sibling.
+
+Once activated, a graph stays synchronized for that client session. A later session restores its last complete value and reactivates it lazily.
+
+## The committed replica is always complete
+
+Initial synchronization installs a complete snapshot atomically. Resume applies each visible committed change atomically. The application sees the previous complete value or the next complete value, never half of a snapshot or transaction.
+
+Query results are not persisted. Local indexes derive every answer from the database, which is why a query written tomorrow can still run over yesterday's offline replica.
+
+## Optimistic state is layered
+
+The visible local value is:
+
+```text
+committed database
+  + queued optimistic projection 1
+  + queued optimistic projection 2
+  + …
+```
+
+Commit installs the server result and removes the corresponding layer. Rejection removes only that layer, then replays later projections. The committed database never contains pending metadata; live entity handles expose it separately through `.local`.
+
+## The outbox survives failure
+
+Invocations, client-created references, queue order, and receipts are persisted separately from the replica. Restart restores both the committed value and the exact speculative view. Reconnect resumes synchronization, submits in order per graph, and uses durable server receipts to recover lost acknowledgements safely.
+
+## One browser, one replica
+
+Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One leader owns server synchronization; every tab can enqueue. If the leader closes, another resumes without a second commit or partial state.
+
+Under storage pressure, Ramose may evict inactive child graphs as complete units. It does not evict the active root, outbox, receipts, or part of a graph. Logout or principal replacement purges or quarantines the previous principal's partition before the next principal can render.
+
+## Security remains observable offline
+
+Revocation, policy changes, graph-path changes, and read-view changes cause authorized resets or removals. Hidden-only server activity produces no visible frames, count gaps, queue signals, or diagnostic metadata. Offline data is locally retained application data; use the same device and session threat model you would use for any offline-capable product.
+
+<Next links={[
+  { href: "/guides/react/", label: "React and offline UX", why: "render pending, stale, error, and reconnect states" },
+  { href: "/best-practices/operations/", label: "Offline operation design", why: "make optimistic intent deterministic" },
+  { href: "/reference/client-api/", label: "Client API", why: "database, entity, receipt, and sync subscriptions" },
+]} />

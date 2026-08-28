@@ -1,82 +1,50 @@
 ---
-title: How Ramose works
-description: How a write becomes a read — your app, the Ramose server, one writer per database, object storage that keeps every version, read copies, and every open tab.
+title: Architecture
+description: The Cloudflare topology behind ordered writes, immutable reads, complete authorized synchronization, graph routing, and MCP.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
-import WriteReadFlow from "../../../components/diagrams/WriteReadFlow.astro";
 
-This page shows how a write becomes a read, with one picture. It is for anyone who has read a guide and wants to know what happens after they call `db.run`.
+Ramose separates authority, persistence, and local interaction while keeping one public model. The architecture is optimized for many independent graph databases rather than one globally writable cluster.
 
-<Learn learn={["What the pieces are and which ones you never write", "What happens between a write and every open tab updating", "The four promises Ramose keeps, and what happens when something fails"]} before={[{ href: "/concepts/data-model/", label: "How Ramose thinks about data" }]} minutes={7} />
+<Learn learn={["What runs in the Worker, writer, read copies, object storage, and browser", "Which guarantees come from one ordered writer per graph", "Where scaling and failure boundaries live"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
 
-## Cloudflare words you'll meet
+## Request edge
 
-- **Worker** — Cloudflare's serverless function. Your app's backend and the Ramose server are Workers.
-- **Durable Object** — a Worker with exactly one running instance and its own storage ([glossary](/concepts/glossary/#durable-object)). The writer and the read copies are Durable Objects.
-- **R2** — Cloudflare's object storage, like S3 ([glossary](/concepts/glossary/#object-storage)). Every version of every database is kept there.
-- **D1** — Cloudflare's SQL database. Ramose never uses it; Reef's sign-in Worker keeps Better Auth's accounts in one.
-- **Service binding** — a Worker calling another Worker directly, no URL. How your Worker reaches the Ramose server ([glossary](/concepts/glossary/#service-binding)).
+One Cloudflare Worker terminates HTTPS, synchronization, and MCP. It verifies identity, resolves an authorized root or graph path, selects the deployed catalog server-side, applies request limits, and routes work to the graph's stateful components.
 
-## The picture
+The Worker is stateless for correctness. MCP requests do not depend on sticky sessions or in-memory client state.
 
-<WriteReadFlow size="large" />
+## One writer per graph
 
-The five numbered arrows are the five steps below, in the same order.
+Each graph has one authoritative writer that orders operations, checks grants and visible targets, runs operation bodies, validates facts, assigns the next version, and commits all or nothing.
 
-## A write, step by step
+This is the source of simple uniqueness, exact operation receipts, dense ordering, and deterministic history. It is also the per-graph write ceiling. Independent child graphs have independent writers and progress in parallel.
 
-Reef's "drag an issue to Done" is one **write** — one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). Here is its journey:
+## Immutable read values
 
-1. The writing tab applies the change on its local overlay and the live query re-runs there. Then the app sends the write over HTTPS to **the Ramose server** — the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)).
-2. The server verifies the sign-in token, then checks the rules in the policy (the writer checks them again before committing). A viewer moving a card is refused here; the overlay drops the pending layer and the card snaps back.
-3. The server hands the write to **the writer** — the one thing per database that commits writes, in order ([glossary](/concepts/glossary/#writer)). The writer stores it before answering, the database's **version number `t`** goes up by one ([glossary](/concepts/glossary/#version-number)), and your app gets `report.t` back.
-4. The read copies learn the new version.
-5. Other open tabs receive a filtered transaction within about a second, and every **live query** on those pages re-runs locally ([glossary](/concepts/glossary/#live-query)). Nobody subscribed to anything. Pinned `asOf` still reads the server.
+Read copies serve immutable database values built from persisted indexes plus committed changes. A request selects current, as-of, or history semantics, filters that value for the principal, and only then evaluates the query.
 
-## A read, step by step
+Content-addressed index nodes and retained roots live in R2. Stateful coordination and recent change data live with the graph's Durable Objects. A failed storage write cannot expose a partial commit.
 
-1. A current-view live query runs on the session overlay. First sync and pinned `asOf` / `history` still read a **read copy** — a copy of the data near your users, kept current by the writer ([glossary](/concepts/glossary/#read-copy)).
-2. The rules filter what a session may keep: a field you may not read is missing, not an error, and never arrives as a transaction frame.
-3. The read happens at a version. Live reads follow the newest overlay; `db.asOf(t)` pins an earlier one on the server.
+## Complete browser replicas
 
-## The four promises
+The browser receives logical authorized facts and opaque revisions, not physical indexes or raw transaction metadata. It persists one complete local value per active principal and graph, builds local indexes, and derives query results.
 
-- **One writer per database.** All writes to a database go through one place, in order. There are no write conflicts to resolve and no "eventually".
-- **Version numbers are dense and in order.** Every write gets the next `t`; nothing mints, skips or supplies one.
-- **A write is stored before you get an answer.** If `db.run` returns, the write is durable.
-- **Reads never block the writer.** Queries run on read copies; the writer's queue does not compete with them.
+Snapshots install atomically. Resume streams authorized additions and removals. Incompatible catalog or read-view changes reset the committed replica while preserving compatible queued invocation identity.
 
-## What runs where
+## Graph routing
 
-| Piece | Runs as | You write it? |
-|---|---|---|
-| your app | a browser page, or your own Worker | yes |
-| the Ramose server | one Cloudflare Worker, all databases | no — Server declares it |
-| the writer | a Durable Object, one per database | no — Server declares it |
-| read copies | Durable Objects | no — Server declares them |
-| object storage | a Cloudflare R2 bucket | no — you name it, or accept `"Store"` |
+Configured deployment roots establish the first database and catalog binding. Every child binding is derived only after an authorized Graph row is resolved. Stable storage identity follows the parent and row identity; readable path names may change.
 
-`Ramose.Server` declares those three things: a storage bucket where every version is kept, and two [Durable Objects](/concepts/glossary/#durable-object) — one for the writer, one for the read copy. You name storage and options; you never write the classes.
+## Failure model
 
-```ts title="examples/todos/resources.ts"
-export const Server = Ramose.Server("Ramose", {
-  databases: { todos: Todos },
-});
-```
+Clients retry transient transport and platform failures. Durable receipts make repeated operation delivery safe. Read copies and browser replicas can reset from a complete snapshot. Child cache eviction discards a whole inactive graph, never part of one.
 
-Every version of every database ends up in [object storage](/concepts/glossary/#object-storage), and nothing there is rewritten, which is why you can still read yesterday. Reef names the bucket (pinned for the published demo) and passes `auth`, the AUTH binding, and `/db/*` routes on `Ramose.Server` — Server declares the rest.
-
-## When something fails
-
-- **The writer's storage fails mid-write.** Nothing from that write is kept; the client sees a 503 and retries; version numbers continue with no gap.
-- **A read copy falls behind or disconnects.** It reconnects on the next request and catches up from the log.
-- **The WebSocket connection drops.** The client reconnects with backoff; live queries pick up where they left off.
-
-Details, settings and what to look at are in [The server](/reference/server/#when-something-fails).
+The design avoids cross-graph transactions. A workflow spanning graphs is a sequence of independently committed operations with application-level compensation or reconciliation.
 
 <Next links={[
-  { href: "/concepts/time-travel/", label: "Time travel", why: "read the database as it was" },
-  { href: "/reference/server/", label: "The server", why: "settings, storage layout, operations" },
-  { href: "/reference/client-api/", label: "Client API", why: "every call, with an example" },
+  { href: "/concepts/offline/", label: "Offline and sync", why: "follow one authorized value into the browser" },
+  { href: "/best-practices/graph-boundaries/", label: "Graph boundaries", why: "design around the architecture's scale unit" },
+  { href: "/reference/server/", label: "Server reference", why: "configuration, routes, limits, and operations" },
 ]} />

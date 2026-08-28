@@ -162,7 +162,7 @@ h1[data-page-title] {
   }
 }
 
-/* Screenshots (rendered by src/components/Shot.astro). */
+/* Optional media figures. */
 .rg-shot {
   margin: 1.75rem 0 0;
 }
@@ -170,11 +170,10 @@ h1[data-page-title] {
 .rg-shot img {
   display: block;
   width: 100%;
-  /* Never blown up past its own pixels: a tight crop stays sharp and
-     centred instead of stretching to the column (Shot.astro caps it). */
+  /* Keep media centered instead of stretching it beyond the content column. */
   margin-inline: auto;
   height: auto;
-  /* Reef shots are light-theme: a pale edge and lift so they read on the
+  /* Product media gets a pale edge and lift so it reads on the
      dark site instead of dissolving into the page. */
   background: #f4f6f9;
   border: 1px solid #c6cdd9;
@@ -543,7 +542,7 @@ h1[data-page-title] {
 /* palette variables, same type. Components: src/components/*.astro.   */
 /* ================================================================== */
 
-/* --- Screenshots (Shot.astro) --------------------------------------- */
+/* --- Optional media figures ----------------------------------------- */
 
 .rg-shot img {
   max-width: 100%;
@@ -567,10 +566,6 @@ h1[data-page-title] {
 }
 
 /* --- "Also built in" (landing) --------------------------------------- */
-/* One card per row rather than a two-up: these two screenshots are the only
-   evidence the section offers, and at half the band they were 0.3 scale —
-   decoration, not proof. Full width they read; a tighter crop stops at its
-   own pixel size (Shot.astro caps it) instead of being blown up. */
 
 .rg-also {
   display: grid;
@@ -799,7 +794,7 @@ h1[data-page-title] {
   }
 }
 
-/* --- Landing hero: eyebrow, copy, then Reef full width -------------- */
+/* --- Landing hero: eyebrow, copy, then product media ---------------- */
 /* Starlight's hero grid puts `hero.image.html` beside the copy. We flatten
    that wrapper so its children (the eyebrow and the screenshot) take part in
    the hero grid directly: eyebrow, then copy, then the product shot. */

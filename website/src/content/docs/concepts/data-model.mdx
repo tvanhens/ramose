@@ -1,85 +1,71 @@
 ---
-title: How Ramose thinks about data
-description: The mental model in plain words — facts instead of rows, nothing overwritten, reads at a version, a database is a name, rules and schema are values.
+title: Data model
+description: Ramose stores typed facts over time, groups them into entities and traits, and connects them with references.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
-import FactsOverTime from "../../../components/diagrams/FactsOverTime.astro";
 
-This page is the mental model behind Ramose, in plain words, for someone who has run the Quickstart and wants the guides to make sense. It assumes nothing about databases.
+Ramose presents records in application code, but its durable model is a set of typed facts: one entity, one field, one value, and the period during which that statement is true. Updating a single-value field closes the old statement and adds a new one; it does not overwrite history.
 
-<Learn learn={["What a fact is, and why nothing is ever overwritten", "What a version number is and how every read uses one", "Why a database is only a name, and why rules and schema are values"]} minutes={8} />
+<Learn learn={["How entities, fields, traits, references, and history relate", "Why composition is not inheritance", "Which identities become durable contracts"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
 
-## A database is a pile of facts
+## Entities group fields
 
-A **record** is one thing in the database — an issue, a user ([glossary](/concepts/glossary/#record)). A **field** is one named, typed slot on it, like `issue.title` ([glossary](/concepts/glossary/#field)). Group the fields and you have a **record type** — a kind of record, like a table ([glossary](/concepts/glossary/#record-type)).
+An entity definition is a durable record kind:
 
-Ramose does not store an issue as a row. It stores **facts**: *issue 17's title is "Fix login"*, *issue 17's status is "todo"* ([glossary](/concepts/glossary/#fact)). A record is the set of facts about one id. That is the whole storage model; everything on this page follows from it.
+```ts
+const Task = Ramose.Entity("task", {
+  title: Ramose.string(),
+  done: Ramose.boolean(),
+  assignee: Ramose.Ref(User, { optional: true }),
+  labels: Ramose.Field.many(Ramose.Ref(Label)),
+})
+```
 
-<FactsOverTime />
+Every stored row carries one protected concrete type. Application code cannot forge or change it. The type lets queries, policies, operation targets, and trait membership agree even when optional fields are absent.
 
-## Nothing is overwritten
+## Fields define durable meaning
 
-Move issue 17 to Done and Ramose does not edit the status fact. It adds a new one (*status is "done"*) and marks the old one as gone. Both stay on file.
+`Task.title` is more than a TypeScript property. It is a stable field identity with a value type, cardinality, indexing, uniqueness, ownership, documentation, and creation behavior.
 
-A **write** is one all-or-nothing group of changes ([glossary](/concepts/glossary/#write)). Every write gets the next **version number `t`** ([glossary](/concepts/glossary/#version-number)). The picture above is the database at version 9. Read it at version 8 and the status is still "todo". That is all Reef's time-travel slider does.
+Single-value fields replace; many-value fields are sets. A unique field can be strict or can identify an existing entity during creation. An owned reference declares the one cascading-delete relationship. Requiredness alone never implies ownership.
 
-<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="Reef's board read at an earlier version; the same query, one extra call." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
+Names belong to the data contract. Rename UI labels freely; rename an entity, field, trait, or operation only with an explicit migration plan.
 
-## Reading means asking at a version
+## Traits compose capabilities
 
-Every read happens at a version. You pick which one:
+A trait is a reusable group of fields and operations:
 
-- **Now, and again on every change** — a **live query** re-runs itself whenever the version moves and hands your screen new rows ([glossary](/concepts/glossary/#live-query)). Reef's board is one.
-- **As it was** — `db.asOf(t)` reads at an earlier version ([glossary](/concepts/glossary/#as-of)). Reef's slider is one.
-- **Including what was removed** — `db.history` also returns facts marked gone ([glossary](/concepts/glossary/#history)). Reef's "Deleted, still in history" strip is one.
+```ts
+const Commentable = Ramose.Trait("commentable", {
+  comments: Ramose.Field.many(Ramose.Ref(Comment)),
+})
 
-The query is the same value in all three cases. [Time travel](/concepts/time-travel/) shows the code.
+const Task = Ramose.Entity(
+  "task",
+  { title: Ramose.string() },
+  { traits: [Commentable] },
+)
+```
 
-## A database is a name
+Composition is a transitive union, not inheritance. Trait fields retain the trait's identity even though they flatten onto the entity for authoring. Querying a trait returns readable entities whose deployed concrete type composes it. Trait operations can target every compatible visible composer.
 
-A **database** is a named, isolated pile of facts ([glossary](/concepts/glossary/#database)). `ramose.db("coral-team", Reef)` names one; nothing is created until the first write lands. Each name has its own **writer** — the one thing that commits its writes, in order ([glossary](/concepts/glossary/#writer)) — so two databases never wait on each other.
+Diamonds are harmless when they reach the same trait. Cycles and two flattened fields competing for the same public name are rejected at definition time.
 
-Because a database is only a name, one per customer is a function call, not a deployment. Every Reef workspace is a database. [One database per customer](/guides/workspaces/) walks through it.
+## References form the graph
 
-## Rules live with the data
+A reference is a typed edge to an entity or trait. Forward navigation follows the stored edge; reverse navigation finds rows that point back. Nested query projections can pull related data, but every hop remains subject to authorization.
 
-The **policy** is a value that says which roles may read, create, change or remove which fields ([glossary](/concepts/glossary/#policy)). The server checks it on every write and filters every read with it, so a rule holds no matter which screen or script is asking. It is deny by default: forgetting a rule closes a door, never opens one.
+References do not cross database boundaries directly. A Graph row is the authorized bridge to a child database; inside that child, ordinary references form its local graph.
 
-Rules are about facts, so they can be precise: in Reef, a member may change an issue *they created*, and only owners ever receive the private note. Because the policy and the fields your screens read are both values, the deploy checks them against each other — see [the deploy-time check](/guides/permissions/#the-deploy-time-check).
+## Facts over time
 
-## The schema is a value
+Because changes accumulate, the current database is only one immutable value in a sequence. `asOf` selects an earlier value. `history` asks when statements appeared or were removed. Current deployed policy and current grants still govern historical reads.
 
-The **schema** is your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)). It is written into a database as an ordinary write, `db.install()`. Adding a record type or a field is adding facts about the schema, at a version, like any other write. Nothing rewrites old data, so there is no migration step that can fail halfway. [Changing a schema later](/guides/catalog/#changing-a-schema-later) has the details.
-
-## Where the ideas come from
-
-These ideas — facts instead of rows, a database you can read at any earlier version, one writer and many readers — come from **Datomic**, which inspired Ramose. You do not need to know Datomic to use Ramose. If you do know it: Ramose re-homes the shape on Cloudflare, with a typed query builder instead of a query language, no JVM and no create-database call.
-
-<details>
-<summary>If you know Datomic: names, side by side</summary>
-
-| Datomic | Ramose |
-| --- | --- |
-| datom `[e a v t]` | a fact; the same order on `t` |
-| schema transacted as data | a **schema** of TypeScript values; `db.install()` or `Server({ databases })` writes it, safe to repeat |
-| `d/transact` with tx-data | `db.run(operation, …)` — a named operation of `put` / `update` / `set` / `remove` / `delete` |
-| tempids resolved in the transactor | return a handle with `EntityId` in the operation output; `report.output` is the id |
-| `:db.unique/identity`, lookup refs | `Field.unique(schema, "upsert")`, `[User.sub, "…"]` (`"strict"` is `:db.unique/value` — reject on collision) |
-| `:db.cardinality/many` | `Field.many(schema)` |
-| `:db/isComponent` | `Field.owned(schema)` |
-| `d/pull` | `db.pull({ id }, shape)`, same nesting; `.optional` for absence, `.orDefault(v)` for a pull `:default` |
-| Datalog query | a typed value — `Query.from(Issue).where(…).select(…).orderBy(…).limit(n)`, run by `db.query` / `db.live`; the combinators are listed under [Filter](/guides/queries/#filter). Single-row terminals and keyset paging ride the value (`q.one()`, `q.after(cursor)`); named rules give recursion ([the query language](/reference/query-language/)) |
-| `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only view |
-| transaction entity | `report.txEid` |
-| `d/filter` | a compiled **policy**, evaluated per request against the token's claims |
-| peer library, JVM | one Cloudflare Worker you declare, not write |
-
-</details>
+This model descends from Datomic's immutable database values and indexes, adapted here for TypeScript authoring, graph boundaries, browser replication, and Cloudflare deployment.
 
 <Next links={[
-  { href: "/concepts/architecture/", label: "How Ramose works", why: "how a write becomes a read, with one picture" },
-  { href: "/concepts/time-travel/", label: "Time travel", why: "asOf and history, with Reef's slider" },
-  { href: "/concepts/glossary/", label: "Glossary", why: "every word, in plain words" },
+  { href: "/guides/catalog/", label: "Schemas and traits", why: "use every field and composition option" },
+  { href: "/best-practices/data-modeling/", label: "Model domains", why: "make durable identity and relation decisions" },
+  { href: "/concepts/time-travel/", label: "History and time", why: "understand current, as-of, and history views" },
 ]} />

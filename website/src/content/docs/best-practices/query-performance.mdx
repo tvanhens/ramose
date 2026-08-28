@@ -1,0 +1,82 @@
+---
+title: Query performance
+description: Keep browser, server, and MCP queries selective, bounded, index-friendly, and local to one graph.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose queries are incremental and relational, but they still obey physical limits. Performance comes from reducing the candidate set early, bounding every collection, and activating only the graphs a view needs.
+
+<Learn learn={["How to reason about query cost", "How graph activation changes browser cost", "How to diagnose and reshape an expensive query"]} before={[{ href: "/concepts/queries/", label: "Query model" }]} minutes={12} />
+
+## Start with the smallest source
+
+Choose the most selective entity or trait as the query root. Apply equality and range predicates before traversing relationships. Project only the fields and nested data the view consumes.
+
+```ts
+projectDb.query
+  .from(Task)
+  .where(Task.status.eq("open"))
+  .where(Task.assignee.eq(viewer.id))
+  .orderBy(Task.updatedAt, "desc")
+  .select({ id: Task.id, title: Task.title, updatedAt: Task.updatedAt })
+  .page({ first: 50 })
+```
+
+Avoid fetching full entities “just in case.” A narrow projection reduces server work, transfer size, local indexes, React updates, and agent context.
+
+## Bound every collection
+
+Every list needs a deterministic order and page size. Use the opaque continuation cursor returned with a page; do not construct offsets or infer cursor contents.
+
+Nested collections need their own limits. Recursive rules need an explicit maximum depth. If the product truly needs every record, make that an export or background workflow rather than an interactive query.
+
+## Keep work inside one graph
+
+One query executes against one graph. This makes cost and authorization understandable and keeps incremental maintenance local. Do not compensate for a poor graph boundary by activating every child and joining results in the browser.
+
+For a parent dashboard, prefer bounded parent summaries or lazy per-child detail. When the user opens one project, activate that project graph and release observers when the view unmounts.
+
+## Design indexes from real read paths
+
+Record representative queries before adding indexes. Favor indexes that support a selective predicate followed by the requested order. Too many speculative indexes raise write, storage, snapshot, and browser activation cost.
+
+Watch for:
+
+- Filters on unindexed high-cardinality fields.
+- Sorting a broad set after weak filtering.
+- Traversing a relationship before reducing candidates.
+- Wide projections with nested collections.
+- Many live queries that differ only cosmetically.
+
+Share a query definition when several components need the same result shape; derive small presentation changes in React.
+
+## Treat local queries as real work
+
+Offline-capable queries execute against a persistent browser replica. They avoid network latency, not computation. Broad queries consume CPU and maintain indexes as new facts arrive.
+
+Keep inactive graphs dormant. A component that renders 100 graph links should not call `useQuery` inside every destination graph. Constructing a handle is cheap; observing a query activates synchronization.
+
+## Give agents explicit budgets
+
+MCP query limits protect the service and keep results useful. Set conservative caps for page size, depth, selected fields, execution time, and total work. Return `query_budget_exceeded` with actionable categories, never internal plans or data-dependent counts that reveal inaccessible records.
+
+An agent should narrow and retry rather than request an exception. This is why catalog descriptions should mention useful filter fields and common relationships.
+
+## Measure the whole path
+
+When a view is slow, separate:
+
+1. Graph activation and snapshot restore.
+2. Catch-up synchronization.
+3. Local query compilation and initial evaluation.
+4. Incremental maintenance after changes.
+5. React rendering.
+
+Changing the query will not fix a component that activates 200 graphs; changing the component will not fix a full scan. Diagnose the stage before redesigning the model.
+
+<Next links={[
+  { href: "/best-practices/operations/", label: "Operation design", why: "balance authoritative writes with responsive offline UI" },
+  { href: "/guides/queries/", label: "Write queries", why: "apply filters, traversal, rules, and pagination" },
+  { href: "/reference/query-language/", label: "Query builder reference", why: "look up operators and result contracts" },
+]} />

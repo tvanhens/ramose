@@ -1,33 +1,32 @@
-# Launch checklist — what the site still hedges on
+# Documentation release checklist
 
-Two of the four items here are done. The repository is public and the package is
-on npm, so the "not published yet" hedges and the `git clone`-only install path
-are gone from the site; `getting-started/first-app.mdx` was folded into the
-Quickstart, which now builds an app from an empty folder against the published
-package. It is a single `ramose` package, so every install line on the site
-is one `bun add`.
+The public documentation describes the graph-of-graphs, offline client,
+operation authorization, and fixed MCP surface currently landing in parallel.
+Before publishing a release, verify the prose and samples against the final
+exported contracts rather than restoring retired examples.
 
 ```sh
-grep -rni "not on npm yet\|not published yet\|unpublished" website/src/content/docs
-cd website && bun run check     # must stay at 0 errors after every edit
+cd website
+bun run check
+bun run build
 ```
 
-## 1. When the LICENSE lands on the default branch
+## Product contracts to verify
 
-`release/npm-publishing` adds Apache-2.0. The landing page's trust strip
-(`index.mdx`, `.rg-trust`) deliberately names no license, because there is no
-LICENSE file on `master` yet. Once there is, add it:
+- `ramose/client` and `ramose/react` export names and state unions.
+- Graph trait declaration, typed `.db()` traversal, path rename, and archive.
+- Query builder lowering and the complete `QueryDocumentV1` grammar.
+- Entity- and trait-owned operations, optimistic projections, and receipts.
+- Read policy compilation and exact `Policy.invoke(...)` grants.
+- MCP Streamable HTTP and OAuth behavior at `POST /mcp`.
+- The fixed `describe`, `query`, and `mutate` request and error contracts.
+- Production query, discovery, retention, and synchronization defaults.
 
-> Pre-release · Apache-2.0 · no Ramose bill … · 669 tests …
+## Editorial invariants
 
-## 2. Standing facts the site depends on
-
-Re-check these when the code changes; each is asserted on several pages.
-
-- **669 tests, 65 files** — `index.mdx` trust strip. Re-run `bun run test`.
-- **Reef's backend is 680 lines** — `getting-started/tour-of-reef.mdx`.
-  `cat examples/reef/src/domain/*.ts examples/reef/src/infra/*.ts examples/reef/alchemy.run.ts | wc -l`
-- **166–879 writes/second** — five pages, always attributed to `bench/RESULTS.md`.
-- **Ports 1337 / 1338 / 5173** — `examples/reef/src/domain/shared.ts`.
-  Note `examples/todos/src/db.ts:17` still falls back to the dead `:8787`; the
-  docs say so out loud. Fixing the example retires that sentence.
+- No sample application or screenshots are required to understand the model.
+- Start pages form one path: value → mental model → starter → MCP.
+- Each guide explains tradeoffs and failure states, not only syntax.
+- Reference pages distinguish public names from internal identities.
+- Browser, Worker, and MCP callers share the same catalog, policy, and operations.
+- Claims about planned providers and pre-release stability remain clearly labeled.

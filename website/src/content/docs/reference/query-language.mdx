@@ -1,252 +1,88 @@
 ---
-title: The query language
-description: The kernel query surface — Query.q, the pipeable stdlib, named rules, and composition by delegation — under the fluent Query.from app spelling.
+title: Query builder
+description: Reference for typed sources, predicates, traversal, projections, ordering, pagination, rules, and result cardinality.
 ---
 import Next from "../../../components/Next.astro";
 
-The minimum set of ideas behind the query language: what a query is, what
-the kernel is made of, and why every larger construct is derived rather
-than primitive. This is the one constraint language — the fluent spelling
-taught in [Read data](/guides/queries/) wraps the same pipeline AST; the
-pipe and generator spellings below remain one tier down for joins,
-aggregates, and disjunction.
+The TypeScript query builder creates immutable, serializable query values. The browser runs them against a local replica; the server runs the same representation against its authorized database view.
 
 *New here? Start with [Read data](/guides/queries/).*
 
-## One kind of object
-
-A query is a body of clauses plus a projection. Everyday code puts values
-in the fluent chain (`Query.from(Issue).where({ done: false })`). The
-kernel constructor `Query.q(body)` has two spellings of the same value
-(a leftover `Query.q(holes, body)` form still accepts declared holes):
+## Start from an entity or trait
 
 ```ts
-import { pipe } from "ramose/effect";
-import { Q, Query } from "ramose/db";
-const { entities, is, none, select, orderBy, limit, updatedSince } = Query;
-
-declare const me: Ramose.Eid<typeof User>;
-declare const since: number;
-
-// pipe spelling — most everyday kernel code
-export const inbox = Query.q(() => pipe(
-  entities(Issue),
-  is(Issue.done, false),
-  none(Comment.issue, is(Comment.author, me)),
-  updatedSince(since),
-  select({ id: Issue.id, title: Issue.title }),
-  orderBy("title"), limit(50),
-));
-
-// generator spelling — the same value, written directly
-export const inbox = Query.q(function* () {
-  const issue = yield* entities(Issue);
-  yield* is(Issue.done, false)(issue);
-  yield* none(Comment.issue, is(Comment.author, me))(issue);
-  yield* updatedSince(since)(issue);
-  return Q.pull(issue, { id: Issue.id, title: Issue.title });
-});
+db.query.from(Task)
+db.query.from(Assignable)
 ```
 
-Escalating from pipe to generator is un-sugaring, never rewriting. The
-same names live on the `Query` namespace from `ramose/db` (`Ramose.Q` /
-`Ramose.Query` when you import the module as a namespace).
+An entity source returns that exact type. A trait source returns every visible entity that implements the trait. One query belongs to one `db` handle and cannot cross into a child graph.
 
-## The kernel is inert data
-
-Primitives are typed clause *descriptions*, not Effects — serializability
-is definitional, and there is no build runtime, ambient collector, or
-cast:
-
-- `Q.fact(e, attr, v?)` — the one pattern clause, five positions. Unbound
-  positions mint typed vars (lazily: reading `f.t` is what puts the tx
-  position on the wire); the handle exposes `{ e, v, t, tx, op }`, so
-  time-based questions are ordinary clauses (`f.t` reads as the basis `t`).
-- Value comparisons — `Q.eq`, `Q.gt`, `Q.startsWith`, `Q.in`, … over bound
-  vars. `Q.startsWith` / `Q.endsWith` / `Q.includes` take
-  `{ ignoreCase: true }`, which folds both sides through the engine's
-  `lower-case` function before the predicate. That fold is JavaScript
-  `toLowerCase`, not Unicode case folding: `"İSTANBUL"` matches
-  `İstanbul` under `ignoreCase`, but not the ASCII `"istanbul"`.
-  `Q.matches` still rejects `RegExp` flags — there is no inline `(?i)`.
-- `Q.call(fn, …args)` — a function-binding clause: `yield* Q.call("+", a, 1)`
-  binds the result so the next clause can name it. The names it accepts are
-  the engine functions listed below.
-- `Q.or` / `Q.not` — take sub-generators; closure capture over outer
-  handles supplies the join-variable lists. No explicit var lists, ever.
-- Rule invocation — yielding a rule application records an inert call
-  descriptor.
-- `Q.var` / `Q._` — naming devices; they contribute nothing to the IR.
-
-`yield*` is the collector: you cannot obtain a clause's binding without
-contributing the clause (the orphaned-clause bug is structurally gone),
-clauses accumulate implicitly while bindings return explicitly, and every
-inclusion re-runs the build function — fresh vars make self-joins hygienic
-with no alpha-renaming machinery. Variables are identities, not names: a
-typo is a compile error.
-
-## Output is inferred
-
-The fluent spelling binds values at the clause:
+## Predicates
 
 ```ts
-declare const me: Ramose.Eid<typeof User>;
-Query.from(Issue).where({ owner: me });
+query
+  .where(Task.done.eq(false))
+  .where(Task.priority.in(["high", "urgent"]))
+  .where(Task.createdAt.gte(since))
 ```
 
-so `db.query(q)` takes no bindings argument. Output is the type of the
-body's one return expression — `Q.pull(focus, shape)` for one root,
-`Q.rows({ … })` (or a plain record of handles) for several, `Q.value(...)`
-for a scalar, `Q.distinct({ … })` for unique projected tuples, a bare
-focus var for ids — so inference is sound and there is no declared
-`find`. `orderBy` / `limit` / `offset` live on the query value, so a
-generator projection can be sorted and limited.
+Typed field expressions expose compatible equality, comparison, membership, text, presence, and reference operators. Combine predicates with `and`, `or`, and `not`. Literal input is validated before execution.
 
-## Projection keeps one row per source
+## Relationships
 
-`select(...)` and `Q.pull` project through the matched record, so two
-issues with the same title are two rows. A generator record of value
-cells — `return { title: t.v }` — would otherwise collapse those two
-into one: the engine keeps unique projected tuples, and a title is not
-an identity. The default is now the same as `select`: the record that
-bound each projected value rides along, so the two issues stay two
-rows.
-
-That ride follows the value to the fact that bound it. A cell bound by
-`Q.call` — `return { low: yield* Q.call("lower-case", t.v) }` — traces
-each argument back to its binding fact, so two issues titled
-`"same title"` stay two rows after a case-insensitive projection. A
-value exported from `Q.or` (a join var bound by a fact in a branch)
-does the same when the entity handle is already in scope — the
-documented pattern, where branches close over outer handles. `Q.not`
-does not bind, so a value that exists only inside `not` has no row
-provenance.
-
-`Q.distinct({ title: t.v })` is the opt-in for unique titles —
-one row when every projected cell agrees.
+Traverse declared references and relationships from a bound source. Relationship clauses participate in the query; nested projection controls returned shape.
 
 ```ts
-// two issues titled "fix" → two rows
-return { title: t.v };
-
-// the same two issues, folded → two rows
-const low = yield* Q.call("lower-case", t.v);
-return { low };
-
-// the same two issues → one row
-return Q.distinct({ title: t.v });
+db.query
+  .from(Task)
+  .where(Task.assignee.email.eq(viewer.email))
+  .select({
+    id: Task.id,
+    title: Task.title,
+    assignee: { name: Task.assignee.name },
+  })
 ```
 
-`select` / `Q.pull` already identify each row by the focus record;
-wrapping them in `Q.distinct` does not change that. Aggregates still
-count every matching row either way — `Q.distinct` is about the
-projected cells, not the rows a `sum` or `count` sees.
+Traversal never bypasses policy. Hidden facts are absent from the database capability the query sees.
 
-## Membership is derived
+## Projection
 
-There is no entity table: `entities(ns)` mints a branded var and invokes a
-catalog-generated membership rule (`isIssue(e) := or [e :issue/… _]`) —
-library, not kernel. When the query already constrains the focus through a
-namespace attr, membership is entailed and lowering emits nothing; the
-rule name is a planner hook.
+Without an explicit projection, entity queries return entity handles. `.select({...})` returns the declared plain-data shape. Select only fields needed by the caller, especially for MCP and nested results.
 
-## Rules and the engine
-
-`Query.rule(name, body)` is the named form; the body's parameters are the
-bound head vars and a returned var joins the head — so promotion of an
-instantiated fragment is one mechanical call
-(`Query.rule("issue/ownerOf", follow(Issue.owner))`). Invocation is a
-clause value expanded by the *engine*, which is what makes recursion work.
-
-On the wire the query gains a `rules` section
-(`[[name ?arg…] clause…]`; same-named definitions are disjunctive branches
-with one shared head). A non-recursive call inlines to an or-join (bound
-arguments still seek); a recursive call is answered from a memoized
-bottom-up fixpoint whose every round — and cumulative expansion work — is
-charged against the existing query budget, so a runaway recursion is a
-`QueryBudgetExceeded`, never a hang.
-
-## Composition is delegation, at three altitudes
-
-1. `yield* frag(handle)` — a fragment's clauses flow into the enclosing
-   build; native JS delegation. A fragment is a rule with modes: bound
-   vars are its arguments, the free var its return — the dataflow that
-   makes pipe thread. `Query.stage(frag)` lifts a userland fragment with
-   the same adapter the shipped combinators use, so a userland combinator
-   is indistinguishable from a shipped one.
-2. `yield* q.open()` — a whole closed query as a subquery: clauses
-   inline, and `{ focus, cols }` comes back to keep constraining. Cursor
-   terminals don't delegate — extend then order, or strip explicitly with
-   `q.logic()`. `Query.enrich` / `Query.refine` are derived from `open`.
-3. `Query.rule` — engine-expanded, recursive, budgeted; serializes with
-   the query.
-
-## Terminals ride the value
-
-`q.one()` / `q.oneOrFail()` force `limit 1`/`2` at lowering and unwrap the
-answer (a miss is `NotOne`); `q.after(cursor)` turns the result into a
-keyset `Page` — the sort-key cells ride in `find` past the projection, the
-entity id joins the order as a tie-breaker, and the next cursor is minted
-from the last row. `Query.encodeCursor(q, cursor)` / `Query.decodeCursor`
-round-trip that cursor through a URL; Instant keys rehydrate as `Date`.
-None of these delegate through `q.open` — a cursor is
-post-processing for the outermost query; strip it with `q.logic()`. Conditional
-clauses in the fluent spelling are ordinary JavaScript
-(`if (assignee) q = q.where({ assignee })`).
-
-## Engine functions `Q.call` can bind
-
-`Q.call` is the escape hatch for builtins the kernel does not wrap as
-comparisons or aggregate cells. A call is a clause: you cannot obtain the
-result without contributing it. Unknown names fail at build time.
-
-| Group | Names |
-| --- | --- |
-| Arithmetic | `+` `-` `*` `/` `quot` `rem` `mod` `inc` `dec` `abs` `min` `max` |
-| String | `str` `subs` `lower-case` `upper-case` `trim` `split` `clojure.string/join` |
-| Regex | `re-find` `re-matches` `re-seq` |
-| Collections | `count` `identity` `ground` `vector` `tuple` `untuple` |
-| Other | `rand` `rand-int` `now` |
-
-`lower-case`, `upper-case`, `trim`, and `split` also answer under
-`clojure.string/` aliases; `join` answers only as `clojure.string/join`,
-and `str` / `subs` have no prefixed spelling. Aggregates
-(`count`, `sum`, `median`, …) stay cells — `Q.count(e)`, not `Q.call`.
-`get-else` and `missing?` need the database source and are not `Q.call`
-names.
-
-`Q.call` checks the function set only, so predicate builtins (`even?`,
-`odd?`, `starts-with?`, …) fail at build time. The engine still accepts
-those names as wire binding clauses; use the comparison helpers
-(`Q.eq`, `Q.startsWith`, …) from app code.
-
-`rand`, `rand-int`, and `now` re-evaluate on every invocation. Inside a
-subscription that means a new value on each push — the cell is not
-stable across notifications.
-
-`re-find`, `re-seq`, and `split` compile the caller-supplied pattern
-into a `RegExp` on the Durable Object thread. A pathological pattern
-can be expensive (ReDoS-shaped); there is no length cap or linear-time
-engine yet.
+## Ordering and pages
 
 ```ts
-const next = yield* Q.call("+", age, 1);
-const folded = yield* Q.call("lower-case", title);
-yield* Q.includes(folded, needle);
+query
+  .orderBy(Task.updatedAt, "desc")
+  .orderBy(Task.id, "asc")
+  .page({ first: 50, after: cursor })
 ```
 
-Projecting the result keeps one row per source, the same as projecting
-the argument — see [Projection keeps one row per source](#projection-keeps-one-row-per-source).
+Use a stable tie-breaker for deterministic pages. Cursors are opaque and scoped to the query, graph, authorization view, and basis that produced them.
 
-## Effect stops at the boundary
+## Cardinality
 
-Query building is synchronous, pure, and total; Effect appears where
-computation becomes real — `db.query` returns an Effect with typed failures,
-`db.live` is a Stream. Because built queries are inert data they are
-hashable for live-query identity and stable as hook dependencies; the
-same wire form runs on the peer and on the local session overlay.
+```ts
+query.all()       // zero or more
+query.first()     // zero or one
+query.one()       // exactly one
+```
+
+`.one()` fails when the authorized query does not produce exactly one result. Do not use the distinction between zero and hidden as an authorization signal.
+
+## Rules and recursion
+
+Named rules package reusable relational logic. Recursive rules require an explicit depth or result bound. Keep rule inputs and outputs typed, and compose rules from the same query clauses as ordinary reads.
+
+## Lowering and portability
+
+Every supported builder query lowers to `QueryDocumentV1`. Unsupported closures, functions, classes, and runtime objects are rejected before transport. Use the document form directly for language-neutral clients and MCP.
+
+## Cost controls
+
+The runtime budgets candidate work, projection width, relationship expansion, recursion, page size, and execution time. `query_budget_exceeded` is not retried automatically; narrow the request.
 
 <Next links={[
-  { href: "/guides/queries/", label: "Read data", why: "the fluent app spelling these ideas compile to" },
-  { href: "/reference/client-api/", label: "Client API", why: "db.query, live, and pull" },
+  { href: "/reference/query-document/", label: "QueryDocument v1", why: "inspect the portable data representation" },
+  { href: "/best-practices/query-performance/", label: "Query performance", why: "make common reads selective and bounded" },
 ]} />

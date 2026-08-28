@@ -1,131 +1,77 @@
 ---
 title: Before production
-description: The checklist between "it works on my laptop" and "it is on the internet" — starting with the fact that a fresh server is open to everyone.
+description: Launch checklist for identity, policy, graph isolation, query limits, offline recovery, MCP, observability, and data lifecycle.
 ---
 import ChecklistState from "../../../components/ChecklistState.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-A freshly deployed **Ramose server** accepts every request, from anyone, with full rights. That is the right default for a laptop and the wrong one for the internet. This checklist is for anyone about to point real users at it. (The Ramose server is the one Cloudflare Worker that serves all your databases.)
+Use this checklist before any real principal or durable data reaches a production Ramose stage.
 
-<Learn learn={["Close the front door: policy, keys, origins, token lifetime", "What is kept, and what a teardown deletes", "How much one database can take", "The failures that will happen, and what to do"]} before={[{ href: "/guides/deploy/", label: "Deploy" }, { href: "/guides/permissions/", label: "Permissions" }]} minutes={8} />
+<Learn learn={["The security and lifecycle gates that must fail closed", "What to test across browser, Worker, and MCP callers", "Which operational signals and recovery paths to prepare"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }, { href: "/best-practices/security/", label: "Security" }]} minutes={10} />
 
-{/* The boxes below tick, and this browser remembers which ones. */}
 <ChecklistState />
 
-## Close the front door
+## Identity and edge
 
-- [ ] **Set a policy, or a shared token.** With neither `auth.policy` nor
-      `token` on `Ramose.Server` (so neither `RAMOSE_POLICY` nor
-      `RAMOSE_TOKEN` on the Worker), every caller is an administrator on
-      every database. Use a [policy](/guides/permissions/) for anything a
-      browser talks to; a shared `token` only when the sole caller is your
-      own backend.
-- [ ] **Complete the verifier.** A policy needs `jwksUrl`, `issuers`, and
-      `aud` on `auth` (they become `RAMOSE_JWKS_URL`, `RAMOSE_JWT_ISS`,
-      `RAMOSE_JWT_AUD`). The deploy fails loudly when one is missing — or
-      when a policy never reaches the Worker as `RAMOSE_POLICY` — better
-      than a server that is open to everyone or denies every request at
-      runtime.
-- [ ] **Route the keys through a binding.** If your sign-in provider is another
-      Worker on the same account, bind it into the server and name that binding
-      in `RAMOSE_JWKS_SERVICE`. Fetching its `workers.dev` URL returns
-      Cloudflare error 1042, not the keys, so every token is rejected — and only
-      after you deploy, since local runs have no such limit.
-- [ ] **Narrow the origins.** Without a policy the server answers CORS for `*`
-      and ignores `RAMOSE_ALLOWED_ORIGINS`. Once a policy is set, list your own
-      origins there. An empty list sends no CORS header at all, which blocks
-      browsers entirely — a valid choice for a server only Workers call.
-- [ ] **Cap token lifetime.** `RAMOSE_JWT_MAX_TTL` defaults to 900 seconds.
-      A revoked *grant* takes effect on the next write, but a revoked *token*
-      is only gone when it expires.
-- [ ] **Declare `superuser` deliberately.** A token whose class is the
-      policy's `superuser` bypasses every rule and is the only class that
-      may call `explain` or the `/admin/*` routes. Do not hand it to a
-      browser. Schema install is `schemaClasses` (default `[superuser]`)
-      and does not require bypass.
-- [ ] **Check the demo console is gone.** The server serves a small demo app at
-      `/` until a policy is configured. Load your server's root URL and confirm
-      you get a 404.
-- [ ] **Pin the internal secret.** Set `RAMOSE_INTERNAL_SECRET` in production.
-      It is the Worker-to-writer gate — the **writer** is the one thing per
-      database that commits writes ([glossary](/concepts/glossary/#writer)) —
-      and `internalGate` enforces it only when the secret is set. The owned
-      form mints one when a policy is set; pin it so it does not change on
-      every deploy.
-- [ ] **Pass your pull patterns to the compiler.**
-      `Ramose.Policy.compile(policy, { pulls: [...] })` turns "this masked field
-      silently deletes rows" into a build error. Without `pulls`, the check does
-      not run.
+- [ ] Verify token issuer, audience, keys, expiry, clock tolerance, and callback origins for the production hostname.
+- [ ] Derive principals and authorized roots from trusted configuration; reject caller-supplied internal graph or catalog ids.
+- [ ] Confirm unauthenticated `/db/*` and `/mcp` requests fail closed.
+- [ ] Use short-lived browser and MCP tokens and redact them from logs.
+- [ ] Restrict CORS and OAuth redirect targets to exact production origins.
 
-## Decide what you keep
+## Catalog and policy
 
-- [ ] **Know how history is kept.** History is kept as version numbers, not
-      dates: `asOf` takes a `t`. Nothing prunes history — `RAMOSE_RETAIN_ROOTS`
-      bounds how much storage the index costs, not how far back `asOf` reads —
-      see [Retention](/reference/server/#retention).
-- [ ] **Have a copy story.** Ramose ships no export command. Your data lives in
-      your own R2 bucket plus the writer's storage, so a bucket-level copy
-      captures everything already folded into a snapshot but not writes newer
-      than the last one.
-- [ ] **Know what a teardown deletes.** Deleting a `Ramose.Database` or
-      `Ramose.Server` resource deletes no data, on purpose. The rest of the
-      stack is another matter:
+- [ ] Compile read policy and exact invoke grants against the production catalog during deployment.
+- [ ] Test owner, member, viewer, suspended, removed, and newly invited principals with real identity tokens.
+- [ ] Prove hidden facts cannot leak through joins, counts, relationship traversal, graph discovery, errors, or operation target checks.
+- [ ] Review every targetless creation grant and every generated CRUD operation explicitly.
+- [ ] Stage incompatible catalog evolution through additive releases and backfills.
 
-:::caution
-`alchemy destroy` deletes the stack's R2 bucket and Durable Object classes — your data goes with them. Only the `Ramose.*` resources are no-ops. Back up first.
-:::
+## Graph design and lifecycle
 
-## Size it honestly
+- [ ] Write a boundary brief for each child graph type: isolation, access, lifecycle, cross-boundary questions, and normal activation count.
+- [ ] Keep root graphs bounded; do not load every tenant or project graph for dashboards.
+- [ ] Test graph path rename, archive, restore, export, and deletion with stable storage identity.
+- [ ] Model cross-graph work as recoverable workflows rather than transactions.
 
-- [ ] **Know the write ceiling.** In our benchmark (`bench/RESULTS.md` in the
-      repo) one database sustained a few hundred writes per second on
-      Cloudflare — 166–879 per second depending on client count. Past that you
-      split across databases: a function call, not a deployment. There is
-      exactly one writer per database and that is not configurable.
-- [ ] **Split rather than scale up.** More write throughput means more
-      databases, divided along ownership lines. There are no joins across
-      databases: a view that spans them is one query per database, merged in
-      your app ([The write ceiling](/reference/server/#the-write-ceiling)).
-- [ ] **Set a query budget you understand.** `RAMOSE_QUERY_MAX_CELLS` defaults
-      to 1,572,864 cells (about 48 MB of intermediate results). Over-budget
-      queries fail with `QueryBudgetExceeded` (413), and a live query does not
-      retry them.
-- [ ] **`limit` bounds what you receive, not what the query scans.** The
-      `where` clauses still build the full intermediate result, so a broad query
-      with `limit(20)` can still exceed the budget. Narrow with `where`, not
-      with `limit`.
+## Browser and offline
 
-## Handle the failures that will happen
+- [ ] Test first activation, snapshot restore, resume, forced resnapshot, offline reload, and reconnect.
+- [ ] Test queued operations across browser restart and multiple tabs.
+- [ ] Test later server rejection after optimistic UI and preserve user-authored input where needed.
+- [ ] Switch principals without exposing the prior principal's replica or receipts.
+- [ ] Keep ready or stale data visible during transient connectivity failures.
 
-- [ ] **503 `Unavailable`.** The writer restarts (deploys, storage faults) and
-      returns a `retryAfterMs`. Retrying is safe: nothing from a failed batch is
-      kept, and version numbers never gap. Surface it as a retry, not an error.
-- [ ] **413 `QueryBudgetExceeded`.** Not retryable. Log the clause the error
-      names and fix the query.
-- [ ] **403 / 409 on writes.** A policy refusal arrives as `Unauthorized` from
-      the server's first check or `TxRejected` from the writer. Handle both — see
-      [Permissions](/guides/permissions/#see-a-write-refused).
-- [ ] **Reconnection is already handled.** Live queries retry network
-      failures with backoff and re-authenticate in place. Four failures are
-      terminal and need your attention:
-      `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`,
-      `QueryBudgetExceeded`.
+## Query and capacity limits
 
-## Deploy hygiene
+- [ ] Measure representative query latency, candidate work, projection width, snapshot size, and incremental update cost.
+- [ ] Bound every page, nested collection, and recursive rule.
+- [ ] Set conservative browser, server, and MCP query budgets.
+- [ ] Load-test the expected number of simultaneously active graphs, not only the number stored.
+- [ ] Verify `query_budget_exceeded` provides safe, actionable recovery without internal plans.
 
-- [ ] **Use stages.** `bun alchemy deploy` ships your personal stage;
-      `--stage prod` is production. Stages are isolated copies of the whole
-      stack.
-- [ ] **Expect the first deploy to wait.** `Ramose.Server` probes `GET /health`
-      up to 30 times, 2 seconds apart. Slow first DNS looks like a hang;
-      `probe: false` skips it.
-- [ ] **Install the schema from one place.** `databases:` on `Ramose.Server`
-      at deploy for known databases, `db.install()` at signup for per-customer
-      ones. Never per request.
+## MCP
+
+- [ ] Publish correct OAuth protected-resource metadata for `POST /mcp`.
+- [ ] Confirm `tools/list` contains exactly `describe`, `query`, and `mutate`.
+- [ ] Review catalog descriptions for agent clarity and sensitive details.
+- [ ] Test discovery pagination, stale catalog tokens, graph traversal, opaque cursors, operation retry, and invocation conflict.
+- [ ] Invoke through MCP and observe the ordinary web app converge.
+
+## Reliability and operations
+
+- [ ] Alert on health, storage faults, synchronization lag, resnapshot rate, query-budget failures, and rejected/internal operation outcomes.
+- [ ] Correlate requests and receipts with safe opaque identifiers.
+- [ ] Practice restore, export, stage rollback, and catalog rollback procedures using non-production data.
+- [ ] Document retention and deletion behavior for graph data, history, snapshots, and receipts.
+- [ ] Confirm test hooks and instrumentation routes are inert in production.
+
+## Final launch test
+
+Run the starter's critical user journey from a clean browser, an existing offline replica, a second tab, a server-side Worker, and an MCP client. Use both a permitted and denied principal. The product should tell a consistent story in every surface because all of them share the same catalog, policy, queries, and operations.
 
 <Next links={[
-  { href: "/guides/deploy/", label: "Deploy", why: "the stack file, commands, and teardown" },
-  { href: "/reference/server/", label: "The server", why: "every environment variable, route, and limit" },
-  { href: "/guides/troubleshooting/", label: "Troubleshooting and FAQ", why: "the first-deploy surprises, answered" },
+  { href: "/guides/troubleshooting/", label: "Troubleshooting", why: "diagnose common setup and runtime failures" },
+  { href: "/reference/server/", label: "Server reference", why: "review routes, limits, lifecycle, and observability" },
 ]} />

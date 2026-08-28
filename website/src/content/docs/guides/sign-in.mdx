@@ -1,177 +1,82 @@
 ---
-title: Sign in and roles
-description: Get a real sign-in token to the client, with a role inside it — with Better Auth as Reef does, or with Clerk, Auth0, or your own signer.
+title: Authentication
+description: Connect an OAuth or JWT issuer, configure verification and audience, supply tokens to the client, and expose MCP authorization discovery.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose checks a token on every request; something else signs your users in. This page is for you once you have a policy — the value that says who may read and write what ([glossary](/concepts/glossary/#policy)) — and want real users behind it.
+Ramose verifies identities; it does not manage passwords or issue user sessions. Bring an OAuth/OIDC provider or another signer that publishes a JSON Web Key Set.
 
-<Learn learn={["What a sign-in token carries", "The Better Auth path, as Reef wires it", "The path for Clerk, Auth0, or your own signer", "How tokens refresh themselves"]} before={[{ href: "/guides/permissions/", label: "Permissions" }]} minutes={10} />
+<Learn learn={["Which JWT fields Ramose verifies", "How web and MCP clients obtain the same principal identity", "How token changes interact with offline caches and graph access"]} before={[{ href: "/guides/permissions/", label: "Permissions" }]} minutes={10} />
 
-Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.
+## Configure the server
 
-## What the token carries
-
-A **sign-in token** — a signed token the server verifies and never issues ([glossary](/concepts/glossary/#token)) — decodes to this:
-
-```json title="a decoded Reef token (illustrative)"
-{
-  "iss": "reef-demo-auth",
-  "aud": "ramose:reef",
-  "sub": "user_01HQ8ZK",
-  "iat": 1755499100,
-  "exp": 1755500000,
-  "ramose": {
-    "db": "coral-team",
-    "class": "member",
-    "attrs": { "name": "Ada", "email": "ada@reef.test" }
-  }
-}
-```
-
-| claim | meaning | the server checks |
-| --- | --- | --- |
-| `iss` | who signed it | listed in `RAMOSE_JWT_ISS` |
-| `aud` | who it is for | equals `RAMOSE_JWT_AUD` |
-| `sub` | the user's id at your provider | non-empty; matched to the field the policy names for the **signed-in user** ([glossary](/concepts/glossary/#signed-in-user)) — Reef: `User.sub` |
-| `exp` | when it expires | `exp - iat` ≤ `RAMOSE_JWT_MAX_TTL` (900 s by default) |
-| `ramose.db` | the one database it opens | equals the database in the request |
-| `ramose.class` | the caller's role | a class the policy declares |
-| `ramose.attrs` | app claims the peer may stamp on the principal row | optional; Reef's `orgClassOf` puts `name` and `email` here |
-
-`iss` and `aud` are the **issuer / audience** pair ([glossary](/concepts/glossary/#issuer-audience)). Signatures: RS256, ES256, or EdDSA. A wrong `db` or `class` is `Unauthorized`.
-
-At session establishment the peer always writes the principal ident (`sub`). It writes `role` only when that attr exists and is string-typed. Matching `ramose.attrs` keys are stamped when present, but they are per-token and never guaranteed — they do not make a required field provisionable. A required field beyond `sub` and a string `role` — including a required non-string `role` — makes **first login** fail with `tx/required` (409) — before any client write. Mark those fields `optional: true`. Reef's `User.name` / `User.email` are the example. `Ramose.policy` / `compile()` refuse a principal entity with unprovisionable required fields at deploy ([Define your data](/guides/catalog/#the-signed-in-user-row)).
-
-## With Better Auth (what Reef does)
-
-<Shot src="/reef/sign-in.png" alt="Reef's sign-in card: the Reef logo, the heading Welcome back, empty email and password fields and a Sign in button, over a soft glow" caption="Better Auth owns this screen. Ramose never sees a password — only the token it signs." code="examples/reef/src/app/screens/AuthScreen.tsx:147-150" />
-
-Better Auth (the sign-in library — [glossary](/concepts/glossary/#better-auth)) plus the shipped `ramose/better-auth` plugin is the shortest path. On the auth server, the `jwt` plugin publishes signing keys and `ramoseToken` adds the route that **mints** — creates and signs ([glossary](/concepts/glossary/#mint)) — a token for one database:
-
-```ts title="examples/reef/src/infra/api.ts#jwt-plugin"
-        jwt({
-          // Reef never reads `set-auth-jwt`. The jwt plugin's default
-          // /get-session after-hook signs an identity JWT on every session
-          // fetch, which decrypts the JWKS private key. That key is
-          // encrypted with BetterAuthSecret — Alchemy.Random, state-only,
-          // reminted on a cache miss — so a rotated secret turns
-          // `useSession` into a 500 and the SPA shows create-account
-          // after a successful sign-in. `ramoseToken` heals JWKS for mint;
-          // this flag keeps get-session off that path entirely.
-          disableSettingJwtHeader: true,
-          jwt: {
-            issuer: REEF_AUTH.issuer,
-            audience: REEF_AUTH.audience,
-            expirationTime: `${REEF_AUTH.ttl}s`,
-          },
-        }),
-```
-
-In the browser, `ramoseTokenClient()` in the auth client's plugins (`examples/reef/src/app/auth.ts:12-18`) adds one call, `authClient.ramose.token({ db })`. Wrap it in a **token source** and it is what `Ramose.connect` takes — a token source is a self-refreshing credential ([glossary](/concepts/glossary/#token-source)):
-
-```ts title="examples/reef/src/app/ramose.ts#open-workspace-token"
-  const token =
-    options?.token ??
-    Ramose.token.jwt(async () => {
-      const { authClient } = await import("./auth.ts");
-      return authClient.ramose.token({ db: slug });
-    });
-  await token.claims();
-```
-
-The route is `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`, behind the session cookie. The server's `RAMOSE_JWKS_URL` points at Better Auth's `/api/auth/jwks` — the sign-in provider's public keys ([glossary](/concepts/glossary/#jwks)).
-
-## Roles become classes
-
-A **role** is a name in the token that rules refer to; the policy calls it a *class* ([glossary](/concepts/glossary/#role)). In Reef a workspace is a Better Auth organization, and `orgClassOf()` turns your membership role there into `ramose.class` and copies the Better Auth user's name and email onto `ramose.attrs` so the peer can stamp them:
-
-```ts title="packages/ramose/src/better-auth/index.ts:312-323"
-export const classOfRole = (role: string): "owner" | "member" | "viewer" => {
-  const primary = role.split(",")[0]?.trim() ?? role;
-  switch (primary) {
-    case "owner":
-    case "admin":
-      return "owner";
-    case "member":
-      return "member";
-    default:
-      return "viewer";
-  }
-};
-```
-
-Reef's `viewer` is a Better Auth role with no permissions (`examples/reef/src/domain/roles.ts:20-25`); a workspace's creator is `owner`. Change the mapping with `orgClassOf({ map })`. No organization and no membership are the same 403, so the route never reveals whether a workspace exists.
-
-## Invite flow
-
-<Shot src="/reef/invite.png" alt="Reef's Invite to this workspace dialog over a dimmed board: an email field reading grace@example.com and a role select showing viewer — read-only by policy" caption="The role chosen here becomes ramose.class in the next token minted for that person." code="examples/reef/src/app/auth.ts:62-75" />
-
-The invitee accepts from their workspaces screen and opens the board with that role's badge. Better Auth's organization plugin stores the invitation. The role only changes what the next minted token says.
-
-## With Clerk, Auth0, or your own signer
-
-Any provider that signs a token of the shape above and publishes its keys works. `Ramose.claims` builds the payload; you sign it:
-
-```ts title="mint-route.ts"
-const payload = Ramose.claims(
-  AUTH, // { issuer, audience, ttl } — the same values the server pins.
-  { sub: user.id, db: workspace, class: role, attrs: { name: user.name, email: user.email } },
-  policy, // optional: the policy value narrows `class`; compiled JSON still accepted.
-);
-// Sign `payload` with your key (RS256, ES256, or EdDSA); publish the public key as a JWKS.
-```
-
-In the browser, `Ramose.token.jwt(() => fetch("/api/ramose-token", { method: "POST" }).then((r) => r.json()))` wraps your route as Reef's line wraps Better Auth's; a string or `{ token }` both work.
-
-:::note[Two things called claims]
-`Ramose.claims(auth, input)` builds a payload to sign. `P.claim.sub` inside a policy reads a claim from the verified token. Same word, different jobs.
-:::
-
-## Wire the server
-
-The **Ramose server** needs the policy, the keys URL, and the issuer / audience pair. Set them once on `Ramose.Server` as `auth: { policy, jwt, jwksUrl }` — and `token` when you want a shared bearer. Server writes the `RAMOSE_*` keys onto the Worker. Do not also hand-copy those keys onto a Worker env.
-
-Reef is the same path. The JWKS URL and CORS origins are Alchemy Outputs over the auth Worker; `auth` carries them through (they are not string-normalised away):
-
-```ts title="examples/reef/src/infra/resources.ts"
-export const Server = Ramose.Server("Ramose", {
-  env: { AUTH: Api },
+```ts
+const server = Ramose.Server("App", {
+  root: AppCatalog,
+  mcp: true,
   auth: {
-    policy: compiledPolicy(),
-    jwt: REEF_AUTH,
-    jwksService: "AUTH",
-    jwksUrl: Effect.map(
-      Api,
-      (api) => Output.interpolate`${api.url}${AUTH_BASE_PATH}/jwks`,
-    ),
-    allowedOrigins: Effect.map(
-      Api,
-      (api) => Output.interpolate`${DEV_UI_ORIGIN},${api.url}`,
-    ),
+    jwksUrl: "https://auth.example.com/.well-known/jwks.json",
+    issuers: ["https://auth.example.com/"],
+    aud: "https://api.example.com",
+    maxTtl: 900,
+    allowedOrigins: ["https://app.example.com"],
   },
-});
+})
 ```
 
-With a policy set and any of the three verifier fields missing, the [deploy](/guides/deploy/) fails instead of shipping a server that denies every request. A policy on Server whose Worker has no `RAMOSE_POLICY` is the same class of error. For offline tests, `RAMOSE_JWKS_JSON` takes a literal key set — [Policy](/reference/policy/#testing-without-a-login-provider).
+Ramose verifies signature, issuer, audience, expiry, and configured maximum lifetime. The subject identifies the principal deployment-wide. Authentication alone grants access to nothing.
 
-`AUTH: Api` binds the sign-in Worker into the server, and `jwksService` names
-that binding as the route to the keys. Deployed, both are `workers.dev` hosts,
-and Cloudflare answers a Worker-to-Worker request there with error 1042 rather
-than the key set — so the public URL alone rejects every token, and only once
-deployed ([Server](/reference/server/)).
+Use `jwksJson` for a pinned local or isolated environment. Use `jwksService` when the issuer is another Worker reached through a service binding. Never place private signing keys in the Ramose Worker.
 
-## Tokens refresh themselves
+## Supply tokens to the browser
 
-`Ramose.token.jwt(mint)` calls `mint` on first use, caches the token, and mints again two minutes before `exp` (`refreshMargin` changes that). The client re-reads it on every reconnect and every write, so short tokens need no timers. Switching workspaces means a new token for a new name — see [One database per customer](/guides/workspaces/#one-token-per-workspace).
+```ts
+const client = createClient({
+  url: "https://api.example.com",
+  token: () => auth.getAccessToken({ audience: "https://api.example.com" }),
+})
+```
 
-- `source.claims()` is decoded, not verified: show the role badge with it, never trust it for access.
-- `mint` throwing `Unauthorized` (signed out, not a member) stops live queries for good; anything else is `NetworkError` and retried.
+The callback may refresh a short-lived token. When the principal changes, Ramose closes the previous synchronization scope and purges or quarantines its browser partition before rendering the next principal's data.
+
+## Map the principal into catalog data
+
+Policies can use `subject` directly or resolve `me` through a unique field:
+
+```ts
+const User = Ramose.Entity("user", {
+  authId: Ramose.Field.unique(Ramose.string(), "strict"),
+  name: Ramose.string({ optional: true }),
+})
+
+P.compileReadAuthorization({
+  schema: AppSchema,
+  principal: { entity: User.authId },
+  rules: [P.read(Task).when((task) => task.owner.eq(P.me))],
+})
+```
+
+Create or update principal rows through explicit authorized operations. Do not depend on token payload fields being silently copied into application data.
+
+## Use claims sparingly
+
+Declare every claim a policy may read. Claims are best for stable identity context such as organization issuer or service class. Put revocable membership and resource ownership in the database so policy changes take effect without waiting for token expiry.
+
+## MCP OAuth discovery
+
+With MCP enabled, `POST /mcp` publishes protected-resource metadata and standards-correct bearer challenges. A capable MCP client can discover the authorization server, request the correct audience, and return with a token. The MCP session is transport state, not authority; every tool call verifies the bearer token again.
+
+## Service and agent principals
+
+Represent agents and backend jobs as ordinary signed principals with narrow classes and grants. Prefer short-lived delegated tokens over deployment-wide shared secrets. Give the agent only the root and operations its job requires; discovery automatically reflects that view.
+
+## Local development
+
+Use a local JWKS signer with the same issuer and audience checks as production. Keep development keys outside the repository and rotate them freely. Do not add an anonymous or open-mode bypass: testing the real authentication boundary is part of the application contract.
 
 <Next links={[
-  { href: "/guides/workspaces/", label: "One database per customer", why: "a token opens one database; here is how names work" },
-  { href: "/reference/policy/", label: "Policy", why: "every rule and operand, with the verified token shape" },
-  { href: "/guides/deploy/", label: "Deploy", why: "ship the server with its policy and keys" },
+  { href: "/guides/mcp/", label: "Add MCP", why: "connect a remote client through OAuth discovery" },
+  { href: "/best-practices/security/", label: "Security practices", why: "token lifetime, revocation, device cache, and agent scope" },
+  { href: "/reference/server/#authentication", label: "Server auth reference", why: "all verifier and origin options" },
 ]} />

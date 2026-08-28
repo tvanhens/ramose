@@ -94,9 +94,8 @@ looking at.
 | --- | --- |
 | `src/content/docs/` | all pages (Markdown/MDX); `index.mdx` is the landing page |
 | `src/styles/theme.css` | the brand theme mapped onto Starlight variables |
-| `src/components/` | `SiteTitle` (lockup), `ThemeProvider`/`ThemeSelect` (dark-only) |
+| `src/components/` | site lockup, diagrams, interactive landing demos, and guide UI |
 | `src/assets/ramose-mark.svg` | the geometric diamond mark |
 | `public/favicon.svg` | the mark tuned for micro use |
-| `public/reef/` | light-theme product shots; regenerate with `bun scripts/shots/capture.mjs` |
 | `astro.config.mjs` | Starlight config: sidebar, edit links, code theme |
 | `alchemy.run.ts` | the Cloudflare deploy stack |

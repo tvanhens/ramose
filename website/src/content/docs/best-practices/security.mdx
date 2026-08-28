@@ -1,0 +1,67 @@
+---
+title: Security
+description: Review identity, graph traversal, filtered reads, exact operation grants, MCP access, and production test hooks.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose authorization is data-dependent and graph-scoped. Security reviews should follow a request from authenticated principal to graph path, catalog, filtered database, operation, and public response.
+
+<Learn learn={["The authorization checks on every read and mutation", "How graph traversal and MCP errors avoid disclosure", "What to verify before production"]} before={[{ href: "/concepts/authorization/", label: "Authorization deep dive" }]} minutes={12} />
+
+## Bind identity at the edge
+
+Validate issuer, audience, signature, expiry, and required claims before constructing a principal. Derive the authorized root from trusted server configuration and identity data; never let a caller supply an internal database or catalog identifier.
+
+Keep browser and MCP tokens short-lived. Do not place tokens in graph paths, query documents, logs, error details, or client-persisted entity data.
+
+## Authorize every graph segment
+
+A path such as `at: ["acme", "launch"]` crosses two graph bindings. Resolve each public name and check that the principal can observe and enter it. Do not authorize only the final child.
+
+Paths are not secrets. Use them for human navigation, keep internal storage identities opaque, and return `inaccessible` when revealing whether a hidden child exists would leak information.
+
+## Filter the database before evaluation
+
+Read authorization must produce a filtered database capability. Queries, rules, pull, graph discovery, and operation target lookup run against that view. Post-filtering query results is unsafe because joins, counts, existence tests, and errors may already reveal hidden facts.
+
+Review recursive and relationship policies for cycles and unintended reachability. Prefer small named predicates over one broad role check spread across the application.
+
+## Grant exact operations
+
+Read access does not imply write access. Grant an exact operation identity and, for a targeted operation, require visibility of a compatible target. A generic “editor may write Task” rule is wider and harder to audit than grants for `Task.rename`, `Task.assign`, and `Task.setDone`.
+
+Keep targetless creation grants separate. Stamp protected types, ownership, and graph bindings inside the authoritative transaction rather than accepting them from input.
+
+## Treat MCP as the same public surface
+
+MCP adds a transport, not a trusted caller. Apply the same principal, graph traversal, read policy, operation grants, query budgets, and receipts as the web application.
+
+Discovery should return only visible definitions and public graph paths. Error messages must remain useful without confirming hidden data. Log protocol and operation metadata carefully; query projections and operation inputs may contain sensitive user content.
+
+## Keep test instrumentation inert
+
+Production deployments must not expose test hooks, database corruption routes, checkpoints, or abort controls. Verify both the explicit test-hook flag and the non-production stage guard in CI and deployment configuration.
+
+Do not substitute permissive local infrastructure for authorization tests. Exercise the real Worker, Durable Object, storage, cache, WebSocket, and identity boundaries in the appropriate integration layer.
+
+## Production review
+
+Before shipping, verify:
+
+- Unauthenticated browser and MCP requests fail closed.
+- Tokens cannot select another root or internal graph identity.
+- Hidden and missing graphs, entities, and targets are indistinguishable where required.
+- Every mutation maps to one exact granted operation.
+- Query and discovery pagination has conservative budgets.
+- Catalog changes force rediscovery rather than best-effort coercion.
+- Invocation conflicts do not silently execute a second intent.
+- Logs and traces redact credentials and sensitive payloads.
+- Test hooks are inert in production.
+- Archive, delete, export, and recovery paths have explicit ownership and audit behavior.
+
+<Next links={[
+  { href: "/guides/before-production/", label: "Before production", why: "turn the security model into a launch checklist" },
+  { href: "/reference/policy/", label: "Policy reference", why: "look up read and invoke policy contracts" },
+  { href: "/guides/mcp/", label: "MCP guide", why: "apply the same boundaries to agent clients" },
+]} />

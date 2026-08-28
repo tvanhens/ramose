@@ -1,0 +1,105 @@
+---
+title: Build for MCP clients
+description: Expose the same graphs, queries, operations, and authorization to agents through Ramose's fixed three-tool MCP surface.
+---
+import Learn from "../../../components/Learn.astro";
+import SurfaceMap from "../../../components/SurfaceMap.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose's MCP server is a projection of your application model, not a second API to maintain. Every deployment exposes three tools at `POST /mcp`: `describe`, `query`, and `mutate`.
+
+<Learn learn={["How discovery stays useful as a catalog grows", "How agents traverse child graphs without internal identifiers", "How to bound queries and make mutations safe to retry"]} before={[{ href: "/getting-started/connect-an-agent/", label: "Connect an agent" }]} minutes={14} />
+
+<SurfaceMap />
+
+## Design the application first
+
+An agent can only use what the application declares and the principal may access. A good MCP experience therefore starts with a good Ramose model:
+
+1. Give entities, fields, graphs, and operations short descriptions that explain product meaning.
+2. Model product actions as narrow operations with validated inputs.
+3. Put data in child graphs when isolation, authorization, or lifecycle justifies the boundary.
+4. Grant the exact reads and operations each role needs.
+5. Keep common queries bounded and index-friendly.
+
+There are no MCP-specific handlers to keep in sync. Catalog descriptions become discovery cards, queries compile from `QueryDocumentV1`, and writes invoke ordinary operations.
+
+## Progressive discovery
+
+Agents should not place an entire application schema in context. Start broad and cheap:
+
+```json
+{
+  "at": [],
+  "browse": { "kinds": ["entity", "graph", "operation"] },
+  "page": { "limit": 20 }
+}
+```
+
+Then ask `describe` for exact definitions only when needed. Search terms help when the catalog is large. Results include an opaque `catalogToken`; pass it as `ifCatalog` to `query` and `mutate`. If the model changes, Ramose returns `catalog_changed` so the client can rediscover instead of guessing.
+
+Descriptions are part of your agent interface. Prefer “A work item that can be assigned and completed” to “Task table.” Say what an operation does and what its input means; do not duplicate implementation details.
+
+## Traverse the graph hierarchy
+
+The `at` field is a path of public graph names from the authorized root:
+
+```json
+{ "at": ["acme", "launch"] }
+```
+
+Ramose resolves and authorizes every segment. The client never receives storage ids, database ids, or graph implementation details. Use child paths returned by discovery or an authorized parent query; do not invent paths from user input.
+
+Queries remain inside one graph. If an agent needs information from two projects, query each project graph separately and combine the plain results in the client. The same rule applies to the TypeScript API.
+
+## Keep agent queries bounded
+
+`query` accepts the portable query document rather than source code or SQL. Production limits should cap page size, traversal depth, projection width, execution time, and total work.
+
+Teach clients to recover from `query_budget_exceeded` by doing less work:
+
+- Filter before projecting nested data.
+- Select only fields needed for the current step.
+- Lower recursive depth.
+- Request a smaller page and continue with the opaque cursor.
+- Split broad exploration into several focused queries.
+
+Never relax global limits in response to one agent prompt. A smaller, composable result is usually better for model context as well as the database.
+
+## Make mutations unambiguous
+
+`mutate` identifies one exact operation, optional target, validated input, and client-generated `invocationId`. The same id may be retried after a timeout; a different intent needs a new id.
+
+Agent-facing operations should express outcomes:
+
+```ts
+Task.setDone({ done: true })
+```
+
+Avoid ambiguous commands such as `toggleDone`, wide “update anything” payloads, and raw write access. Precise verbs make authorization, audit trails, retries, and confirmations easier to reason about.
+
+For consequential actions, put confirmation in the calling product and keep the server operation exact. Ramose enforces authorization and consistency; it does not decide whether a human intended a high-impact action.
+
+## Authentication and isolation
+
+The endpoint uses Streamable HTTP and OAuth protected-resource discovery. Treat MCP access tokens like application access tokens:
+
+- Keep them short-lived and audience-bound.
+- Derive the principal and authorized root from the token.
+- Never accept a database id or catalog id from the caller.
+- Apply the same operation and read policy used by the web app.
+- Log operation identity and receipt outcome without logging secrets or unnecessary input data.
+
+An `inaccessible` response deliberately does not distinguish missing from unauthorized resources. Do not add a discovery side channel in error messages.
+
+## Test the shared contract
+
+Test product behavior at the operation and query layers first. Add protocol coverage for the fixed MCP adapter: discovery pagination, catalog changes, bounded query errors, graph traversal, OAuth failures, repeated invocation ids, and inaccessible targets.
+
+The strongest end-to-end check is simple: perform a mutation through MCP and observe the ordinary web app converge through its normal synchronization path.
+
+<Next links={[
+  { href: "/reference/mcp/", label: "MCP reference", why: "request, response, paging, and error contracts" },
+  { href: "/reference/query-document/", label: "QueryDocument v1", why: "the complete portable query grammar" },
+  { href: "/best-practices/security/", label: "Security checklist", why: "review graph paths, grants, errors, and tokens" },
+]} />

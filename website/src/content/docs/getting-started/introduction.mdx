@@ -1,36 +1,54 @@
 ---
-title: What is Ramose
-description: The one-minute answer — a typed, realtime database for apps on Cloudflare, shown through Reef, the example issue tracker.
+title: What is Ramose?
+description: A database for offline-first applications and their agents, built around typed graphs, authoritative operations, and one permission model.
 ---
-import Shot from "../../../components/Shot.astro";
+import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose is a database for apps you deploy on Cloudflare. You describe your data in TypeScript, write it through a typed API, and read it with queries that update themselves. Who may read or write each field is part of the database, not middleware you remember to add. This is the one-minute version, for React and TypeScript developers who are new here.
+Ramose is a database for TypeScript applications that need to work locally, synchronize in realtime, and expose the same product safely to AI agents.
 
-<Shot src="/reef/board.png" alt="Reef's kanban board: four columns of issue cards with labels, priorities and assignee avatars, a live pill in the header" caption="This is Reef, built on Ramose. One live query draws the board." code="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board" />
+You define three things in code:
 
-The [Tour of Reef](/getting-started/tour-of-reef/) walks it screen by screen — all 680 lines of its backend.
+- a **schema** describing entities, traits, fields, relations, and graph boundaries;
+- a **policy** deciding which facts and operations each principal may use;
+- **operations** containing every authoritative change the product can make.
 
-## What you get
+From that model, your web app gets typed local queries, durable offline mutations, and synchronization. Your deployment also gets one MCP endpoint with three stable tools: `describe`, `query`, and `mutate`.
 
-- **A typed schema** — one file your app, rules and deploy all import ([glossary](/concepts/glossary/#schema)) → [Define your data](/guides/catalog/)
-- **Live queries** — a query that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) → [Live queries](/guides/live-queries/)
-- **Permissions in the database**, enforced by the Ramose server — the one Cloudflare Worker that serves all your databases ([glossary](/concepts/glossary/#server)) → [Permissions](/guides/permissions/)
-- **A database per customer** — naming one costs nothing → [One database per customer](/guides/workspaces/)
-- **Nothing overwritten** — read the database as it was at any earlier version → [Time travel](/concepts/time-travel/)
+<SurfaceMap />
 
-The app path is TypeScript and `async`/`await`. Every word we use, in plain English: [Glossary](/concepts/glossary/).
+## The unusual part
 
-## Good fit, bad fit
+A Ramose deployment is a **graph of graphs**. One database can contain ordinary rows that open child databases. An organization can be a graph containing projects; a project can be a graph containing tasks. Each graph has its own schema, policy, write stream, offline cache boundary, and throughput ceiling.
 
-**Reach for Ramose** on Cloudflare when you want a realtime UI, rules the database enforces, history you can query, and a database per customer without a deployment per customer.
+That gives you an explicit place to put isolation and scale. It also means graph boundaries are an important modeling decision, not just deployment configuration.
 
-**Look elsewhere** for analytics or SQL, for more than a few hundred writes per second into a single database, or for a hosted console: Ramose has no dashboard and no managed service.
+## What the application feels like
 
-Closest to Convex and Instant in feel, and to Supabase in that the rules live in the database — the row-by-row trade against all five is [How it compares](/getting-started/compare/).
+```tsx
+const tasks = useQuery(
+  projectDb.query.from(Task).where({ done: false }).orderBy(Task.createdAt),
+)
+
+task.mutate.setDone({ done: true })
+```
+
+Queries run against a complete authorized local database. A cached answer can render before the network is available. Mutations are queued durably, may project an immediate local result, and are committed by the server through the operation you declared.
+
+## Where Ramose fits
+
+Choose Ramose when you want:
+
+- an offline-first or realtime product without building a cache and sync protocol;
+- strong tenant or domain isolation through nested graph boundaries;
+- application and agent access governed by the same rules;
+- typed history, relations, and operations without running a managed database service;
+- deployment into your own Cloudflare account.
+
+Do not choose it for ad-hoc SQL analytics, cross-graph joins, full-text search, or a workload that must atomically update several graphs. Ramose is pre-release and intentionally optimizes for fresh applications over compatibility with earlier APIs.
 
 <Next links={[
-  { href: "/getting-started/quickstart/", label: "Getting started", why: "build a realtime todo app from scratch" },
-  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "every screen and the code behind it" },
-  { href: "/getting-started/compare/", label: "How it compares", why: "against Convex, Supabase, Instant, Firebase, D1" },
+  { href: "/concepts/mental-model/", label: "Mental model", why: "understand the six ideas everything else builds on" },
+  { href: "/getting-started/quickstart/", label: "Build a web app", why: "create the starter app and see the local-first loop" },
+  { href: "/getting-started/compare/", label: "How it compares", why: "decide whether the tradeoffs fit your product" },
 ]} />

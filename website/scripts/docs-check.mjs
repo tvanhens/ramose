@@ -19,15 +19,11 @@ import { fileURLToPath } from "node:url";
 import {
   extractTitle,
   bodyMatchesExtract,
-  resolveShotCode,
 } from "./lib/snippets.mjs";
 import {
   dbErrorTags,
   errorTableTags,
-  ramoseDbRuntime,
-  ramoseRootRuntime,
   statedRequestErrorCounts,
-  tickNames,
 } from "./lib/facts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,51 +37,52 @@ const asJson = args.includes("--json");
 const onlyPage = args.includes("--page") ? args[args.indexOf("--page") + 1] : null;
 const onlyCheck = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
 
-// ── word budgets, from blueprint.md Part 2 (ceilings, include code) ──────────
+// ── word budgets for the current information architecture ──────────────────
 const BUDGETS = {
-  // Raised so the landing snippets can be the real Issue entity / policy
-  // arm / live query, not a shortened transcription.
-  "index": 1000,
-  "getting-started/introduction": 350,
-  // Quickstart + "Build your first app" consolidated into one build-it-from-
-  // scratch guide; it carries both former budgets (2300 combined), and it is
-  // mostly code. Raised to 2100 after a from-scratch reader test showed the
-  // last two sections needed full context, not fragments.
-  "getting-started/quickstart": 2100,
-  "getting-started/tour-of-reef": 1400,
-  "getting-started/compare": 900,
-  "guides/catalog": 1100,
-  "guides/transactions": 1200,
-  // Raised for count / groupBy / keyset `.after` on the everyday nav surface,
-  // and the recursive-tree window that `again` is for.
-  // Raised for count / groupBy / keyset `.after`, and to keep the
-  // select-less `Query.from` (`EntityRow`) vs `Ramose.all(N)` distinction
-  // honest now that snippets extract from source.
-  "guides/queries": 2600,
-  "guides/live-queries": 800,
-  "guides/permissions": 1350,
-  "guides/sign-in": 1100,
-  "guides/workspaces": 900,
-  "guides/deploy": 1200,
-  "guides/workers": 800,
-  "guides/ssr": 900,
-  "guides/before-production": 1000,
-  // Raised for the entries covering the bare-specifier `main` hang, schema-change
-  // watching, and the corrected port-collision advice (which used to tell readers
-  // to kill an unrelated process). All cost real debugging time to rediscover.
-  "guides/troubleshooting": 1300,
-  "concepts/data-model": 1000,
-  "concepts/architecture": 900,
-  "concepts/time-travel": 700,
-  "concepts/effect": 800,
-  "concepts/glossary": 2200,
-  // Raised for the aggregate / groupBy / `.after` entries on the query builder,
-  // and the thread-window sketch on `again`.
-  "reference/client-api": 3600,
-  "reference/react": 1400,
-  "reference/policy": 2150,
-  "reference/errors": 1000,
-  "reference/server": 2500,
+  index: 1000,
+  "getting-started/introduction": 400,
+  "getting-started/quickstart": 1200,
+  "getting-started/connect-an-agent": 900,
+  "getting-started/compare": 650,
+  "concepts/mental-model": 750,
+  "concepts/graph-of-graphs": 700,
+  "concepts/data-model": 700,
+  "concepts/queries": 600,
+  "concepts/operations": 600,
+  "concepts/offline": 600,
+  "concepts/authorization": 600,
+  "concepts/time-travel": 500,
+  "concepts/architecture": 600,
+  "concepts/effect": 400,
+  "concepts/glossary": 900,
+  "guides/catalog": 750,
+  "guides/subgraphs": 800,
+  "guides/queries": 750,
+  "guides/transactions": 800,
+  "guides/react": 600,
+  "guides/permissions": 650,
+  "guides/sign-in": 650,
+  "guides/mcp": 950,
+  "guides/deploy": 650,
+  "guides/workers": 550,
+  "guides/ssr": 600,
+  "guides/before-production": 700,
+  "guides/troubleshooting": 900,
+  "best-practices/data-modeling": 750,
+  "best-practices/graph-boundaries": 750,
+  "best-practices/query-performance": 750,
+  "best-practices/operations": 750,
+  "best-practices/security": 750,
+  "reference/schema": 650,
+  "reference/client-api": 700,
+  "reference/query-language": 600,
+  "reference/query-document": 600,
+  "reference/operations": 700,
+  "reference/react": 600,
+  "reference/mcp": 800,
+  "reference/policy": 600,
+  "reference/errors": 800,
+  "reference/server": 700,
 };
 
 // Banned in PROSE (allowed inside code fences, and in Reference tables where
@@ -96,7 +93,7 @@ const BANNED = [
 ];
 // Softer: a legitimate use exists, but only so many. `peer` is banned in
 // prose — the code is `createServer` / `ServerAuth`.
-const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, checkpoint: 0, colo: 0, segment: 0 };
+const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, colo: 0 };
 
 const REFERENCE_PAGES = /^reference\//;
 const NO_LEARN = new Set([
@@ -342,8 +339,8 @@ for (const page of pages) {
 
   // IMAGES
   if (run("images")) {
-    for (const m of body.matchAll(/<(Shot|img)\b([^>]*)>/g)) {
-      const attrs = m[2];
+    for (const m of body.matchAll(/<img\b([^>]*)>/g)) {
+      const attrs = m[1];
       const src = attrs.match(/src=["']([^"']+)["']/)?.[1];
       const alt = attrs.match(/alt=["']([^"']*)["']/)?.[1];
       if (!src) continue;
@@ -353,9 +350,6 @@ for (const page of pages) {
         add("ERROR", "images", page.slug, `image with no alt: ${src}`);
       else if (/^(screenshot|image|picture) of/i.test(alt))
         add("WARN", "images", page.slug, `alt starts with "screenshot of": ${src}`);
-      if (m[1] === "Shot" && /\bwidth=/.test(attrs))
-        add("WARN", "images", page.slug,
-          `<Shot> passes width/height; Shot.astro measures the file — remove them`);
     }
   }
 
@@ -391,14 +385,6 @@ for (const page of pages) {
           match.missing.slice(0, 3).join(" ⏎ ").slice(0, 160));
       }
     }
-    for (const m of body.matchAll(/<(?:Shot)\b([^>]*)>/g)) {
-      const code = m[1].match(/\bcode=["']([^"']+)["']/)?.[1];
-      if (!code) continue;
-      const resolved = resolveShotCode(code);
-      if (resolved?.skipped) continue;
-      if (resolved?.error)
-        add("ERROR", "code", page.slug, `Shot code= ${resolved.error}`);
-    }
   }
 
   report.push(row);
@@ -407,9 +393,6 @@ for (const page of pages) {
 // FACTS — counts and tables that name code
 if (run("facts") && !onlyPage) {
   const tags = dbErrorTags();
-  const dbNames = ramoseDbRuntime();
-  const root = ramoseRootRuntime();
-
   for (const page of pages) {
     const { body } = splitFrontmatter(page.src);
     for (const hit of statedRequestErrorCounts(body)) {
@@ -424,39 +407,6 @@ if (run("facts") && !onlyPage) {
       for (const tag of tags) {
         if (!table.includes(tag))
           add("ERROR", "facts", page.slug, `DbError member ${tag} missing from the errors table`);
-      }
-    }
-    if (page.slug === "reference/client-api") {
-      // Authorization/client rebuild docs are frozen. Do not rewrite the
-      // inventory table for retired names; #416 / #442 own removing them.
-      const frozenInventory = new Set([
-        "Policy",
-        "PolicyError",
-        "PrefixHalt",
-        "connect",
-        "token",
-        "IncompatibleSchema",
-        "Databases",
-        "layer",
-        "asRead",
-      ]);
-      const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
-      if (dbRow) {
-        for (const name of tickNames(dbRow[1])) {
-          if (frozenInventory.has(name)) continue;
-          if (!dbNames.has(name) && name !== "DbError")
-            add("ERROR", "facts", page.slug,
-              `ramose/db table lists ${name}, which is not a runtime export`);
-        }
-      }
-      const addRow = body.match(/\|\s*`ramose`\s*\(adds\)\s*\|\s*([^|\n]+)\|/);
-      if (addRow) {
-        for (const name of tickNames(addRow[1])) {
-          if (frozenInventory.has(name)) continue;
-          if (!root.added.has(name) && !root.all.has(name))
-            add("ERROR", "facts", page.slug,
-              `ramose (adds) table lists ${name}, which is not a ramose export`);
-        }
       }
     }
     if (/select-less `Query\.from`.{0,80}Ramose\.all\(/s.test(body) &&
@@ -480,9 +430,7 @@ if (run("images") && !onlyPage) {
   const onDisk = walk(PUBLIC)
     .map((p) => "/" + relative(PUBLIC, p))
     .filter((p) => /\.(png|gif|jpg)$/.test(p) && !p.startsWith("/brand") && !HEAD_ASSETS.has(p));
-  // One consolidated line, not one warning per file: these are kept on purpose
-  // (alternate crops, the GIF's source frames) and seven separate warnings
-  // drown out the findings that need action.
+  // Keep unused-asset output consolidated so actionable findings stay visible.
   const unused = onDisk
     .filter((img) => !referenced.has(img))
     .map((img) => ({ img, kb: Math.round(statSync(join(PUBLIC, img)).size / 1024) }));

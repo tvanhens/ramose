@@ -1,0 +1,58 @@
+---
+title: Operations
+description: Why every change is a named, typed, authorized operation and how the same contract serves UI and agent callers.
+---
+import Learn from "../../../components/Learn.astro";
+import SurfaceMap from "../../../components/SurfaceMap.astro";
+import Next from "../../../components/Next.astro";
+
+Operations are Ramose's only public write path. They turn product verbs—create task, close issue, invite member—into stable, typed capabilities that the application and MCP endpoint can both invoke.
+
+<Learn learn={["How targeted and targetless operations differ", "What the optimistic projection may and may not do", "How grants, receipts, and retries compose"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={8} />
+
+## Ownership gives an operation meaning
+
+An entity- or trait-owned operation has a permanent identity derived from its owner and local key. `Task.setDone` is different from another entity's `setDone`. Targeted operations default to `self: true`; targetless operations set `self: false` and live on the database mutation namespace.
+
+```ts
+operations: (Operation) => ({
+  rename: Operation({
+    input: S.Struct({ title: S.String }),
+    output: S.Struct({}),
+    run(op, { title }) {
+      op.self.set(Task.title, title)
+      return {}
+    },
+  }),
+})
+```
+
+The operation body receives a narrow writer. It may change its owner and explicitly declared related entities. The authoritative transaction applies defaults, fixed graph bindings, protected types, reference validation, and cascade rules before committing all or nothing.
+
+## Permission has two gates
+
+A targeted invocation requires both an exact operation grant and visibility of a compatible target. A targetless invocation requires its exact grant. Readability never implies write permission; a grant never reveals a hidden target.
+
+Hidden, missing, unauthorized, and wrong-type targets intentionally collapse to the same public rejection where distinguishing them would disclose data.
+
+## Optimism is a projection, not a second body
+
+An operation may declare a pure optimistic projection. It receives validated input, stable client references, and a local transaction builder. It cannot query local state, inspect policy, read the clock, run Effects, or decide whether the operation is allowed.
+
+Prefer requested target values such as `{ done: true }` over basis-dependent commands such as `toggle`. That makes replay deterministic and lets rejection remove one optimistic layer before later layers are reapplied.
+
+## Receipts make intent durable
+
+The client assigns every invocation a stable id before it becomes queued. The server stores a durable receipt scoped to principal, graph, operation, target, and input. An identical retry returns the original result; reusing the id for another intent fails.
+
+The browser exposes queued, committed, and rejected transitions. A lost acknowledgement, restart, reconnect, or leadership change across tabs cannot commit the same invocation twice.
+
+<SurfaceMap />
+
+MCP `mutate` is only a generic adapter over these operations. Adding an operation adds a capability card; it does not add server glue or another MCP tool.
+
+<Next links={[
+  { href: "/guides/transactions/", label: "Mutate data", why: "author targeted, targetless, generated, and optimistic operations" },
+  { href: "/best-practices/operations/", label: "Operation design", why: "choose safe intent shapes and offline behavior" },
+  { href: "/reference/operations/", label: "Operations reference", why: "all authoring and receipt contracts" },
+]} />

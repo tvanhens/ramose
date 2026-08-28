@@ -1,6 +1,6 @@
 // Shared snippet extraction for the docs site.
 //
-// A fence `title` (or a <Shot code=…>) may cite source as:
+// A fence `title` may cite source as:
 //   path#marker                  named region in that file
 //   path:N                       one line
 //   path:N-M                     inclusive line range
@@ -27,11 +27,11 @@ export const SITE = resolve(HERE, "../..");
 export const REPO = resolve(SITE, "..");
 
 // Exact paths of known-deleted client files still cited from MDX. Missing
-// citations are errors by default; only these paths may skip the body/Shot
+// citations are errors by default; only these paths may skip the body
 // check. Shrink-only — do not glob, and do not add a general missing-file
 // escape. Removal of entries is owned by #416 / #442.
-// Imported (not readFileSync) so the Astro/Vite build of Shot.astro
-// embeds the list instead of looking for a sibling JSON in dist/.
+// Imported so the Astro/Vite build embeds the list instead of looking for a
+// sibling JSON in dist/.
 const DELETED_CITATION_ALLOWLIST = new Set(deletedCitationAllowlist);
 
 const isAllowlistedDeleted = (relPath) =>
@@ -248,32 +248,4 @@ export const bodyMatchesExtract = (body, extracted) => {
     (l) => !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"),
   );
   return { ok: realMissing.length === 0, empty: false, missing: realMissing };
-};
-
-/** Resolve a <Shot code="path#marker"> / "path:N-M" to a GitHub blob URL. */
-export const resolveShotCode = (code) => {
-  if (!code) return null;
-  const titleish = code.includes("#") || /:\d/.test(code) ? code : `${code}`;
-  const cites = parseTitleCitations(titleish);
-  if (!cites.length) {
-    const path = code;
-    return {
-      path,
-      short: path.replace(/^examples\/reef\//, ""),
-      gh: `https://github.com/tvanhens/ramose/blob/master/${path}`,
-    };
-  }
-  const first = extractCitation(cites[0]);
-  if (!first.ok) {
-    if (first.skipped) return { skipped: true, path: cites[0].relPath };
-    return { error: first.error, path: cites[0].relPath };
-  }
-  const short = first.label.replace(/^examples\/reef\//, "");
-  return {
-    path: first.rel,
-    start: first.start,
-    end: first.end,
-    short,
-    gh: `https://github.com/tvanhens/ramose/blob/master/${first.rel}#L${first.start}-L${first.end}`,
-  };
 };

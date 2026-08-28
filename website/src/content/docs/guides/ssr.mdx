@@ -1,91 +1,57 @@
 ---
-title: Read on the server
-description: Run a query in a Worker, pass the rows into useLiveQuery, and skip the empty first paint.
+title: Server rendering
+description: Render authorized server data while letting the browser establish its own persistent replica and honest synchronization state.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-A Worker can already `await db.query(query)`. The missing seam was handing those rows to React so the first paint is the list, not a loading shell. This page is for anyone rendering React on Cloudflare — Next App Router, React Router, or a Worker that returns HTML — who has a live query and does not want the empty flash.
+Server rendering and offline replication solve different problems. The server can produce an authorized first response; the browser still restores and synchronizes its persistent graph replica after hydration.
 
-<Learn learn={["Query from a Worker with Ramose.Databases", "Hydrate useLiveQuery with initialData", "Suspend instead of rendering a loading shell"]} before={[{ href: "/guides/workers/", label: "Use it from a Worker" }, { href: "/guides/live-queries/", label: "Live queries" }]} minutes={6} />
+<Learn learn={["Where server queries are useful", "Why an HTML payload is not a replica snapshot", "How to avoid mixing principals or hiding stale state"]} before={[{ href: "/guides/workers/", label: "Use Ramose from a Worker" }, { href: "/guides/react/", label: "React and offline UX" }]} minutes={7} />
 
-## Why the first paint is empty
+## Choose what the server owns
 
-`useLiveQuery` is a client hook. Without rows from the server it mounts as `status: "loading"` and `data: undefined`, then fills in when the WebSocket answers. On Cloudflare that empty shell is the default path — the same Worker that can read the database is also the one rendering the page.
+Use server queries for metadata, route decisions, public content, and an authorized first paint when that latency matters. Use the browser client for persistent offline data, live local queries, optimistic operations, receipts, and multi-tab coordination.
 
-`"use client"` on `ramose/react` is what lets a server component import the hook. The rest of this page is the hydration seam.
+Do not create a browser `Db` handle in a Server Component. It depends on browser storage and session coordination.
 
-## Read on the Worker
+## Query with the request principal
 
-`Ramose.Databases` is the typed client bound to the Ramose server. `db.query` / `db.pull` / `db.basis` are promises; `live` and `livePull` are not on this type. The `examples/kv-style` Worker reads its own write back:
-
-```ts title="examples/kv-style/app.ts#tenant-run"
-        const { t, dbAfter } = yield* tenant.effect.run(addUser, { name: "Ada" });
-        // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.effect.query(namesQuery);
-```
-
-The same handle speaks promises in an async loader or server component:
-
-```ts
-const db = ramose.db("todos", Todos);
-const rows = await db.query(todoQuery);
-const { t } = await db.basis();
-```
-
-Pass `rows` and `t` into the client tree as props. How calls travel — a **service binding** when the caller is another Worker in the same stack, the public URL otherwise — is on [Use it from a Worker](/guides/workers/#how-calls-travel).
-
-## Hydrate the live query
-
-The client hook takes the same query the Worker ran. `initialData` is the first paint; the subscription still starts and later emissions replace the seed.
+Authenticate the request and open the same authorized graph path the page will use:
 
 ```tsx
-"use client";
-import * as Ramose from "ramose/db";
-import { useLiveQuery } from "ramose/react";
+export default async function ProjectPage({ params }) {
+  const rootDb = await ramose.open({ principal: await principal() })
+  const projectDb = await openProject(rootDb, params.project)
+  const initial = await projectDb.query(openTasks.page({ first: 50 }))
 
-export function TodoList({
-  rows,
-  t,
-}: {
-  rows: Ramose.Rows<typeof todoQuery>;
-  t: number;
-}) {
-  const { data } = useLiveQuery(db, todoQuery, {
-    initialData: rows,
-    initialT: t,
-  });
-  return (
-    <ul>
-      {(data ?? rows).map((row) => (
-        <li key={row.id}>{row.title}</li>
-      ))}
-    </ul>
-  );
+  return <ProjectClient project={params.project} initial={initial} />
 }
 ```
 
-`useQuery` / `useLivePull` / `usePull` take the same options. A hydrated one-shot does not refetch on mount — `refetch()` still does. A hydrated live query keeps listening.
+The server result is scoped to that principal and request. Never place it in a shared framework cache unless the cache key includes the complete safe authorization context—and prefer not caching personalized database results at all.
 
-Hydration is keyed on the same identity the hook already uses: the view (`db` / `db.asOf(t)` / `db.history`) plus the lowered query AST, or the pull subject. A changed `.where` is a new key. Pass `initialData` that matches the query you hand the hook; a new key without rows is the empty shell again (live) or the previous rows while the next run is in flight (one-shot).
+## Hydrate presentation, not storage
 
-## Suspend instead of a loading shell
+Pass plain initial rows to the client for immediate presentation if your adapter supports seeding that exact query. The browser then opens its own graph, restores local state, and validates/catches up through normal synchronization.
 
-`{ suspense: true }` throws until that key has a value, then `data` is defined. Wrap the tree in React `<Suspense>`, **inside** `<RamoseProvider>` — if the provider is inside the boundary it unmounts while the read is in flight and closes the client. Hydrated rows do not suspend.
+An HTML payload is not a trusted database snapshot. It has no durable cursor, outbox, policy transition state, or multi-tab ownership. Do not write arbitrary server props directly into IndexedDB as if they came from the synchronization protocol.
 
-```tsx
-const { data } = useLiveQuery(db, todoQuery, { suspense: true });
-// data is Out — not Out | undefined
-```
+## Reconcile visibly
 
-A terminal failure (`InvalidRequest`, `Unauthorized`, …) throws to the nearest error boundary. Network trouble on a live query is still retried in place.
+The client result may be newer than SSR because another device committed after render. It may also be locally optimistic because this browser has queued work. Let the browser query become authoritative for interaction as soon as it is ready.
 
-## Live updates still need a browser
+If the client reports `stale`, keep the complete result visible and add connectivity context. Avoid an SSR-to-spinner flash by retaining the initial presentation until the first local query snapshot is ready.
 
-The server read is one shot. After hydrate, `useLiveQuery` is the browser subscription — a WebSocket to the Ramose server, the same as [Live queries](/guides/live-queries/). Server-side handles from `Ramose.Databases` still have no `live` / `livePull`.
+## Protect principal changes
+
+Key the browser client by stable principal/session generation. On sign-out or account switch, close the old client and mount a new one. Never reuse one principal's graph handles, query snapshots, or queued receipts for another principal.
+
+## Static generation
+
+Use static generation only for truly public, catalog-independent content. Personalized or graph-scoped data should be rendered at request time or loaded by the browser. Revalidation cannot represent arbitrary policy changes safely without an authorization-aware cache design.
 
 <Next links={[
-  { href: "/reference/react/", label: "React hooks", why: "every hook, including the options" },
-  { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs after the first paint" },
-  { href: "/guides/workers/", label: "Use it from a Worker", why: "the server handle this page reads through" },
+  { href: "/concepts/offline/", label: "Offline deep dive", why: "understand what the browser replica actually persists" },
+  { href: "/reference/react/", label: "React reference", why: "handle pending, ready, stale, and error states" },
 ]} />

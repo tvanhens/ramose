@@ -1,75 +1,76 @@
 ---
-title: Use it from a Worker
-description: Call your databases from your own Cloudflare Worker — server-side jobs, onboarding, request handlers — with a typed client and no URL or token to manage.
+title: Use Ramose from a Worker
+description: Run authorized queries and operations from a Cloudflare Worker through a typed service binding and explicit principal context.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Your own Worker gets a typed client bound to the Ramose server — no URL, no token to manage. This page is for anyone who has deployed once and wants server-side reads and writes.
+Application Workers can call Ramose through a Cloudflare service binding. The same catalogs, query language, operations, and policy apply; the binding removes public network hops, not authorization.
 
-<Learn learn={["The smallest Worker that reads and writes", "What a Worker can and cannot do", "How calls travel: service binding or public URL", "Turning errors into HTTP responses"]} before={[{ href: "/guides/deploy/", label: "Deploy" }]} minutes={7} />
+<Learn learn={["How to bind the Ramose service", "How server queries and operations differ from browser replicas", "How to preserve principal context and graph boundaries"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }]} minutes={8} />
 
-## The smallest Worker
+## Bind the service
 
-You declare a **capability** ([glossary](/concepts/glossary/#capability)); `Ramose.layer` picks how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
+Declare the application Worker and Ramose Server in one Alchemy stack, then provide the generated service binding through the Ramose server layer. Resolve the application catalog at module scope so query and operation types remain stable.
 
-```ts title="examples/kv-style/app.ts#worker-app · examples/kv-style/app.ts#worker-layer"
-export const App = Cloudflare.Worker(
-  "App",
-  { main: import.meta.url },
-  Effect.gen(function* () {
-    // The binding *is* the client. One `Databases`, bound once at init.
-    const ramose = yield* Ramose.Databases(Server);
-
-  }).pipe(
-    Effect.provide(Ramose.layer),
+```ts
+const app = yield* Cloudflare.Worker("Web", {
+  entrypoint: import.meta.resolve("./src/worker.ts"),
+  bindings: { DATA: server.binding },
+})
 ```
 
-Inside, a request handler names a database, writes, and reads its own write back — no fetch, no connection string:
+Use the exact binding shape exported by your `Ramose.Server` version. Avoid rebuilding a public URL and bearer-token client inside the same Cloudflare account.
 
-```ts title="examples/kv-style/app.ts#tenant-run"
-        const { t, dbAfter } = yield* tenant.effect.run(addUser, { name: "Ada" });
-        // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.effect.query(namesQuery);
+## Open a request-scoped principal
+
+Authenticate the incoming request, derive the principal, and open its authorized root through the binding:
+
+```ts
+const rootDb = await ramose.open({ principal })
 ```
 
-`ramose.db(name, schema)` costs nothing per request; creating a customer's database at sign-up is on [One database per customer](/guides/workspaces/#from-a-worker). The file's `effect/unstable/http` imports are Effect 4's HTTP module — the name is Effect's, not a warning about Ramose.
+Do not accept an internal database id from the request. Traverse child graphs through typed, authorized parent queries just as the browser does.
 
-## What the Worker can do
+## Query on the server
 
-| handle | your Worker gets |
-| --- | --- |
-| `ramose.db(name, schema)` | `query`, `pull`, `basis`, `asOf`, `history`, `principal`, `run`, `install` |
-| `Ramose.asRead(db)` | type-level read-only view of the same handle — writes still exist at runtime; policy is what enforces them |
+Server reads are request/response operations, not browser observations:
 
-`live` and `livePull` are **not** on this type — they are client subscriptions (`ramose/db`, `ramose/react`). There is no write-only capability: a writer that cannot read cannot look anything up.
-
-## How calls travel
-
-`Ramose.layer` picks the hop: a **service binding** ([glossary](/concepts/glossary/#service-binding)) when the caller is another Worker in the same stack and the binding is present, the server's public URL over `fetch` otherwise. Provide it with `Effect.provide` around the whole Worker; nothing inside changes when the wire swaps.
-
-## Handling failures
-
-Errors are tagged classes. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself — `try/catch` and `instanceof`. Mapping them to HTTP is `Ramose.errorToHttp`:
-
-```ts title="examples/kv-style/app.ts#error-to-http"
-        // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
-        Effect.catch((e) => {
-          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
-          return HttpServerResponse.json(body, { status, headers });
-        }),
+```ts
+const rows = await projectDb.query(
+  projectDb.query.from(Task).where(Task.done.eq(false)).page({ first: 50 }),
+)
 ```
 
-`errorToHttp` lives on `ramose` and `ramose/worker`, not `ramose/db` — it is an HTTP helper, not a browser export. Configuration mistakes are not in that list on purpose: a missing binding or a malformed URL fails at start-up, not on some unlucky request. `Unavailable` and `NetworkError` are tried 6 times before you see them.
+They execute against the server's filtered database capability and return plain data. There is no IndexedDB replica, optimistic layer, or multi-tab leader in a Worker request.
 
-## Live queries need a browser
+## Invoke product operations
 
-A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)). `db.live` needs a WebSocket to the server. Server-side handles from `Ramose.Databases` do not include `live` / `livePull` — those methods are not on the type. Run live queries in the browser through `Ramose.connect`; let your Worker do request-shaped reads and writes. Hand those rows to React with `initialData` — [Read on the server](/guides/ssr/).
+Use the same operation definitions as the web app:
 
-The complete Worker is [`examples/kv-style`](https://github.com/tvanhens/ramose/tree/master/examples/kv-style): four files, type-checked with the repo.
+```ts
+const receipt = await task.mutate.setDone({ done: true })
+```
+
+Background jobs need an explicit service principal whose grants match the job—not a universal bypass token. Record the product operation and resulting receipt so retries preserve the original invocation identity.
+
+## Long-running workflows
+
+One operation transacts inside one graph. For work that spans graphs or external services:
+
+1. Commit a workflow entity and current state in its owning graph.
+2. Perform one external or cross-graph step.
+3. Invoke another operation to record success or a recoverable failure.
+4. Resume by stable workflow identity after retries.
+
+This makes partial progress visible and avoids claiming atomicity the platform cannot provide.
+
+## Map errors deliberately
+
+Translate unauthenticated and inaccessible results without leaking hidden resource existence. Treat domain operation rejection as an expected product outcome. Retry temporary availability failures with the same invocation id; do not retry invalid input, policy denial, or query budget failures unchanged.
 
 <Next links={[
-  { href: "/guides/ssr/", label: "Read on the server", why: "hand Worker rows to a live query" },
-  { href: "/guides/workspaces/", label: "One database per customer", why: "create a customer's database at sign-up" },
-  { href: "/guides/before-production/", label: "Before production", why: "the checklist before real users" },
+  { href: "/guides/ssr/", label: "Server rendering", why: "combine server reads with an offline browser replica honestly" },
+  { href: "/best-practices/operations/", label: "Operation design", why: "model retry-safe server and multi-graph workflows" },
+  { href: "/reference/server/", label: "Server reference", why: "inspect runtime boundaries and observability" },
 ]} />

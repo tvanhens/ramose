@@ -1,144 +1,231 @@
 ---
-title: Getting started
-description: Define a typed Ramose schema, query, and authoritative operation, then wire them into a Cloudflare deployment.
+title: Build your first Ramose web app
+description: Build a typed, offline-first React task list, deploy its authoritative server, and leave it ready for an MCP client.
 ---
+import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-This guide builds the authoring and deployment half of a todo database. The
-current package intentionally does not include an online application client;
-schemas, queries, pulls, and operations are portable declarations consumed by
-the authoritative peer and future data-plane adapters.
+This guide builds a small React task list. It has one root graph, one entity, a live local query, and two authoritative operations. The result is also the starter app used by [Connect an agent](/getting-started/connect-an-agent/).
 
-## Install
+<Learn learn={["How schema, policy, operations, client, and React fit together", "How cached data renders and offline mutations queue", "Which URL becomes the app's MCP server"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={20} />
+
+## 1. Create the app
+
+Start with a React application and add Ramose:
 
 ```sh
-mkdir ramose-todos
-cd ramose-todos
-bun init -y
+bun create vite ramose-tasks --template react-ts
+cd ramose-tasks
 bun add ramose effect@rc
 ```
 
-Effect is a required peer because operation input and output codecs are Effect
-Schemas. Alchemy is installed by Ramose and supplies the deployment CLI.
+Ramose uses Effect Schema for operation input and output codecs, so install `effect` as a direct dependency.
 
-## Define the schema
+## 2. Define the domain
 
-Create `schema.ts`:
-
-```ts
-import * as Ramose from "ramose/db";
-
-export const Todo = Ramose.Entity("todo", {
-  title: Ramose.string(),
-  done: Ramose.boolean(),
-  createdAt: Ramose.timestamp(),
-});
-
-export const Todos = Ramose.Schema({ todo: Todo });
-```
-
-Entity and field names become stable catalog identities. Changing a name later
-is a migration, not a display-label edit.
-
-## Author a query
-
-Create `todos.ts`:
+Create `src/domain.ts`:
 
 ```ts
-import * as Ramose from "ramose/db";
-import * as S from "effect/Schema";
-import { Todo } from "./schema.ts";
+import * as Ramose from "ramose/db"
+import * as S from "effect/Schema"
 
-export const openTodos = Ramose.Query.from(Todo)
-  .where({ done: false })
-  .select({
-    id: Todo.id,
-    title: Todo.title,
-    createdAt: Todo.createdAt,
-  })
-  .orderBy(Todo.createdAt, "desc");
-```
-
-The query is a typed immutable value. Constructing it performs no network
-request.
-
-## Author an operation
-
-In the same file, declare an authoritative write:
-
-```ts
-export const addTodo = Ramose.Operation(
-  "todo/add",
+export const Task = Ramose.Entity(
+  "task",
   {
-    input: S.Struct({ title: S.String }),
-    output: S.Struct({ id: Ramose.EntityId }),
-    doc: "Add a todo",
+    title: Ramose.string({ doc: "Short description of the work" }),
+    done: Ramose.boolean(),
+    createdAt: Ramose.timestamp(),
   },
-  (op, input) => ({
-    id: op.put(Todo, {
-      title: input.title,
-      done: false,
-      createdAt: new Date(),
+  {
+    operations: (Operation) => ({
+      createTask: Operation({
+        self: false,
+        input: S.Struct({ title: S.String }),
+        output: S.Struct({ id: Ramose.EntityId }),
+        doc: "Create a task",
+        run(op, { title }) {
+          const task = op.create({ title, done: false, createdAt: new Date() })
+          return { id: task }
+        },
+      }),
+      setDone: Operation({
+        input: S.Struct({ done: S.Boolean }),
+        output: S.Struct({}),
+        doc: "Set whether a task is complete",
+        optimistic: ({ input, tx, self }) => tx.set(self, Task.done, input.done),
+        run(op, { done }) {
+          op.self.set(Task.done, done)
+          return {}
+        },
+      }),
     }),
-  }),
-);
+  },
+)
 
-export const operations = Ramose.defineOperations(Todos, {
-  addTodo,
-  setDone: Ramose.Operation.patch("todo/set-done", Todo, ["done"]),
-});
+export const AppSchema = Ramose.Schema({ task: Task })
 ```
 
-The body builds transaction data for authoritative execution. It is not an
-optimistic client callback, and `ramose/db` does not run it against local
-state.
+Entity and operation names are durable public identities. Treat renaming them as an API migration, not a display-copy change.
 
-## Deploy the peer
+## 3. Declare the policy and catalog
+
+Create `src/catalog.ts`. This starter admits the `member` class to read tasks and invoke both operations:
+
+```ts
+import * as Ramose from "ramose"
+import { AppSchema, Task } from "./domain"
+
+const P = Ramose.Policy
+const operations = Task[Ramose.OwnedOperations]
+
+const policy = P.compileReadAuthorization({
+  schema: AppSchema,
+  classes: ["member"],
+  rules: [
+    P.read(Task).when(P.hasClass("member")),
+    P.invoke(operations.createTask).when(P.hasClass("member")),
+    P.invoke(operations.setDone).when(P.hasClass("member")),
+  ],
+})
+
+export const AppCatalog = Ramose.Catalog("task-starter", {
+  schema: AppSchema,
+  policy,
+})
+```
+
+Read permission and operation permission are separate. A caller who can see a task cannot mutate it unless the exact operation is also granted.
+
+## 4. Deploy the authoritative server
 
 Create `alchemy.run.ts`:
 
 ```ts
-import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Ramose from "ramose";
-import { Todos } from "./schema.ts";
-import { operations } from "./todos.ts";
+import * as Alchemy from "alchemy"
+import * as Cloudflare from "alchemy/Cloudflare"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+import * as Ramose from "ramose"
+import { AppCatalog } from "./src/catalog"
 
-const server = Ramose.Server("Ramose", {
-  databases: { todos: Todos },
-  operations,
-});
+const server = Ramose.Server("Tasks", {
+  root: AppCatalog,
+  mcp: true,
+  auth: {
+    jwksUrl: process.env.RAMOSE_JWKS_URL!,
+    issuers: [process.env.RAMOSE_JWT_ISS!],
+    aud: process.env.RAMOSE_JWT_AUD!,
+    allowedOrigins: [process.env.APP_ORIGIN!],
+  },
+})
 
 export default Alchemy.Stack(
-  "ramose-todos",
+  "ramose-tasks",
   {
     providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
-    yield* server;
+    yield* server
   }),
-);
+)
 ```
 
-`ramose/worker` is resolved internally by the resource. If you configure a
-Cloudflare Worker directly, pass `import.meta.resolve("ramose/worker")` where
-the tool expects a filesystem path.
+Ramose verifies identity tokens but does not issue them. Use your OAuth or sign-in provider's JWKS URL, issuer, and audience. For a local signer and provider-specific notes, see [Authentication](/guides/sign-in/).
 
-Run the stack with:
+Deploy or run locally:
 
 ```sh
-bun alchemy deploy alchemy.run.ts
+bun alchemy dev alchemy.run.ts
 ```
 
-The deployed server exposes health and authoritative database routes. External
-`/db/*` access remains fail-closed during the authorization redesign; this
-guide stops at the supported authoring and deploy boundary.
+Keep the printed server URL. The app uses it as its data endpoint; an MCP client will use the same origin with `/mcp`.
+
+## 5. Open the local client
+
+Create `src/ramose.ts`:
+
+```ts
+import { createClient } from "ramose/client"
+import { getAccessToken } from "./auth"
+
+export const client = createClient({
+  url: import.meta.env.VITE_RAMOSE_URL,
+  token: getAccessToken,
+})
+
+export const rootDb = client.open()
+```
+
+`client.open()` constructs a handle; it does not fetch the database. The root activates when the first observed query or mutation needs it.
+
+## 6. Build the React screen
+
+Replace `src/App.tsx`:
+
+```tsx
+import { FormEvent, useState } from "react"
+import { useQuery, useSyncState } from "ramose/react"
+import { Task } from "./domain"
+import { client, rootDb } from "./ramose"
+
+const taskQuery = rootDb.query.from(Task).orderBy(Task.createdAt, "desc")
+
+export default function App() {
+  const tasks = useQuery(taskQuery)
+  const sync = useSyncState(client)
+  const [title, setTitle] = useState("")
+
+  function addTask(event: FormEvent) {
+    event.preventDefault()
+    if (!title.trim()) return
+    rootDb.mutate.createTask({ title: title.trim() })
+    setTitle("")
+  }
+
+  if (tasks.status === "pending") return <p>Opening your tasks…</p>
+  if (tasks.status === "error") return <p>{String(tasks.error)}</p>
+
+  return (
+    <main>
+      <p>{sync.status}</p>
+      <form onSubmit={addTask}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+        <button>Add task</button>
+      </form>
+      <ul>
+        {tasks.data.map((task) => (
+          <li key={task.data.id} data-pending={task.local.pending || undefined}>
+            <label>
+              <input
+                type="checkbox"
+                checked={task.data.done}
+                onChange={(e) => task.mutate.setDone({ done: e.target.checked })}
+              />
+              {task.data.title}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </main>
+  )
+}
+```
+
+On a warm start, `useQuery` can return `stale` data immediately from the complete local replica while synchronization resumes. Mutations return durable receipts and may update the local query before they reach the server. The authoritative operation still decides what commits.
+
+## 7. Verify the offline loop
+
+Open the app, add a few tasks, then take the browser offline. Toggle a task and add another. The local view updates, pending state remains visible, and the queue survives a restart. Reconnect and the client submits each invocation once, installs the authoritative result, and converges.
+
+The starter is now ready for an agent. Its MCP URL is:
+
+```text
+https://your-ramose-origin.example/mcp
+```
 
 <Next links={[
-  { href: "/concepts/data-model/", label: "Understand the data model", why: "entities, fields, refs, and immutable facts" },
-  { href: "/reference/client-api/", label: "Authoring API", why: "the exact portable and deploy-time surface" },
-  { href: "/guides/deploy/", label: "Deployment guide", why: "credentials, stages, and production setup" },
+  { href: "/getting-started/connect-an-agent/", label: "Connect an agent", why: "use describe, query, and mutate against this app" },
+  { href: "/guides/subgraphs/", label: "Add subgraphs", why: "grow the starter into organizations and projects" },
+  { href: "/guides/react/", label: "React and offline UX", why: "handle stale, pending, rejection, and reconnect states well" },
 ]} />

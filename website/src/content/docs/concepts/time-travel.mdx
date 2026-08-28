@@ -1,78 +1,45 @@
 ---
-title: Time travel
-description: Read the database as it was at any earlier version with asOf, and everything that ever happened with history — the same query, one extra call.
+title: History and time
+description: Read immutable database values as of an earlier version, inspect change history, and understand current-policy semantics.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Nothing is overwritten, so the past is a query away. This page is for anyone who saw Reef's time-travel slider and wants the same thing in their app.
+Ramose never overwrites the history of a field. Every committed operation produces a new immutable database value. Current reads use the latest value; temporal queries select another view over the same graph.
 
-<Learn learn={["Read the database as it was at version t with asOf", "Where t comes from", "Read everything that ever happened, deleted included, with history"]} before={[{ href: "/guides/queries/", label: "Read data" }]} minutes={6} />
+<Learn learn={["The difference between current, as-of, and history views", "Why current policy governs historical data", "Which recovery and audit workflows temporal queries support"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={6} />
 
-## See it in Reef
+## Current
 
-<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="The board read at version 27 of 42. Same board query; the slider picks the version." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
+The normal database is the latest committed value plus any client-local optimistic layers. Server reads use only committed state. Each graph has its own ordered version sequence.
 
-The slider's ceiling is the current **version number `t`** — the number every write gets, in order ([glossary](/concepts/glossary/#version-number)). Its value picks a view of the database:
+## As of
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis · examples/reef/src/app/screens/BoardScreen.tsx#time-travel"
-  const maxT = useBasis(db);
+An as-of query asks what the graph looked like at or before an earlier version. The schema and policy come from the current deployment; the application facts come from the selected immutable value.
 
-  const [scrubbed, setScrubbed] = useState<number | null>(null);
-  const t = scrubbed ?? maxT;
-  // Until the basis lands, read the live view — the same rows the board
-  // already shows — so the hook order never varies.
-  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
-  const everything = useQuery(db.history, everyIssueEverQuery);
+```ts
+const yesterday = projectDb.asOf(version)
+const tasks = yesterday.query.from(Task).where({ done: false })
 ```
 
-`boardQuery` is the same value the live board uses. Nothing was copied or exported.
+As-of views are read-only. They are not branches and do not rewind the current graph. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
 
-## asOf(t): the database as it was
+## History
 
-`db.asOf(t)` is a read-only view of the database exactly as it was right after version `t` ([glossary](/concepts/glossary/#as-of)). Queries and pulls run over it unchanged. It takes a version number, not a date; and you cannot write into it — the view has no `run`.
+History queries expose when visible statements were added or removed. Use them for audit trails, change explanations, conflict UI, and recovery tooling. They do not expose raw storage records or hidden transaction metadata.
 
-```ts title="examples/kv-style/app.ts#as-of"
-        const beforeRows = yield* db.asOf(report.t - 1).effect.query(namesQuery);
-        const before = beforeRows.map((r) => r.name);
-```
+## Authorization over time
 
-Calling `asOf` costs nothing; the read happens when you run the query.
+Current deployed policy and current grants govern historical reads. Revoking a principal removes access to past data too. The engine classifies historical facts by their concrete identity at the requested value, including facts from entities later deleted, then filters them before query semantics.
 
-## Where t comes from
+## Retention and deletion
 
-- **From a write.** `report.t` is the version your write produced.
-- **From the database.** `db.basis()` answers `{ t }` for the newest version; in React, `useBasis(db)` keeps it current, which is how Reef's slider knows its ceiling.
-- **From your own records.** Store a `t` you care about and read at it later.
+Logical history is distinct from retained index snapshots. Storage maintenance may discard old physical roots while the current index still retains the facts needed for temporal reads.
 
-## history: including what was deleted
-
-`db.history` is a view that also returns **facts** later removed — one statement about one record's field ([glossary](/concepts/glossary/#fact)). Reef uses it for the "Deleted, still in history" strip: run a plain query over `db.history`, subtract what the live board shows, and what is left was deleted.
-
-```ts title="examples/reef/src/domain/queries.ts#every-issue-ever-query"
-export const everyIssueEverQuery = Query.from(Issue).select({
-  id: Issue.id,
-  title: Issue.title,
-});
-```
-
-Use it for audit trails, "who changed this", and debugging state that no longer exists.
-
-## Live queries over the past
-
-A live query over `asOf(t)` or `history` emits once and stops — a pinned view has no news.
-
-## Rules still apply
-
-Reads over `asOf` and `history` are filtered by the *current* policy: a field you may not read now is missing from the past too, and a removed permission cannot re-grant access to what it once allowed.
-
-## How far back?
-
-History is kept as version numbers, not dates: `asOf` takes a `t`. Nothing prunes history — `RAMOSE_RETAIN_ROOTS` bounds how much storage the index costs, not how far back `asOf` reads. A read opens the current index and hides facts newer than your `t`, so `asOf` reaches the database's very first version no matter how many snapshots have been swept — see [Retention](/reference/server/#retention).
+Application deletion hides an entity from the current value but preserves history. Regulatory erasure requires a separate data-lifecycle strategy; do not store secrets that must become unrecoverable without that design.
 
 <Next links={[
-  { href: "/concepts/data-model/", label: "How Ramose thinks about data", why: "why nothing is overwritten" },
-  { href: "/guides/queries/", label: "Read data", why: "filters, fields, one record, the past" },
-  { href: "/reference/server/", label: "The server", why: "retention and the settings behind it" },
+  { href: "/guides/queries/#time-and-history", label: "Query history", why: "use temporal selectors in real queries" },
+  { href: "/best-practices/security/", label: "Security practices", why: "plan erasure and historical access" },
+  { href: "/reference/query-document/#temporal-views", label: "Temporal QueryDocument", why: "express as-of and history for MCP" },
 ]} />

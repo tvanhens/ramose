@@ -1,149 +1,94 @@
 ---
-title: Troubleshooting and FAQ
-description: Stuck? Every common error and question on one page — local dev, tokens, npm, Effect, history, and what Ramose does not do.
+title: Troubleshooting
+description: Diagnose setup, catalog, graph traversal, browser synchronization, query, operation, policy, and MCP failures.
 ---
 import Next from "../../../components/Next.astro";
 
-The page for when something is not working, or you have a question the guides did not answer. Every heading is one problem or question; scan the list on the right.
+Start by identifying the failing layer: deployment, identity, graph resolution, catalog, query, operation, browser synchronization, or MCP protocol. Avoid changing several layers at once.
 
-## No credentials configured for Cloudflare
+## The server is healthy but every request is denied
 
-Every resource fails, and `alchemy dev` keeps running anyway — so the terminal looks busy rather than broken:
+`/health` proves liveness, not identity configuration. Check token issuer, audience, expiry, key discovery, the principal mapping field, and the root derived for that principal. An authenticated principal with no matching root should remain denied.
 
-```ansi frame="terminal"
-[Store] fail (local)
-alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.
-AuthError: No credentials configured for 'Cloudflare' in profile 'default',
-and this process is non-interactive so it can't be configured interactively.
+Do not add an anonymous or administrator fallback. Test with one freshly issued production-shaped token and inspect safe server correlation logs.
+
+## A child graph is inaccessible
+
+Resolve the path one segment at a time from the authorized root. Confirm each parent entity is visible, implements the expected graph trait, and exposes the current public path name. A renamed path does not change storage identity, but old navigation should no longer resolve unless you deliberately preserve an alias.
+
+Missing and unauthorized paths intentionally look alike to callers.
+
+## A catalog change is rejected
+
+Read the incompatible definition list. Value representation, cardinality, uniqueness, required fields on existing records, definition identity, and graph bindings may require a migration.
+
+Use an additive sequence: introduce the new shape, deploy compatible readers, backfill, switch writers, then remove the old definition. Do not force installation until you have described how existing facts and offline clients transition.
+
+## A browser query stays pending
+
+`pending` means the local replica has no complete answer. Check that the graph was actually observed, browser storage is available, authentication is current, the snapshot/resume request completed, and no terminal query error is being swallowed.
+
+Constructing a graph handle does not activate it. `useQuery` or a framework-neutral observer does.
+
+## The app says stale while online
+
+Connectivity and catch-up are separate. The socket may be connected while a snapshot restores, a cursor resumes, or policy change forces resnapshot. Keep the complete stale result visible and inspect sync state, graph identity, cursor recovery, and storage errors.
+
+Frequent resnapshots usually point to retention, authorization churn, catalog incompatibility, or a client that fails to persist its cursor.
+
+## The same mutation appears twice
+
+Trace the `invocationId`. A retry of one intent must reuse the original id across timeouts, reloads, and tab leadership changes. A new user intent must receive a new id.
+
+If the server reports `invocation_conflict`, the caller reused an id with a different graph, operation, target, or input. Fix invocation persistence; do not hide the bug by automatically generating another id.
+
+## Optimistic state rolls back
+
+Observe the receipt. The server may reject because authorization changed, the target disappeared, input violated a current invariant, or the operation body returned a domain rejection. Ramose removes that optimistic layer and reapplies later layers.
+
+Show the public reason and authoritative state. Preserve user-authored input when offering a corrected new action.
+
+## A query exceeds its budget
+
+Reduce work rather than raising the global limit first:
+
+- Start from a more selective entity or trait.
+- Add an indexed equality or range filter.
+- Project fewer fields.
+- Bound nested collections and recursion.
+- Lower the page size.
+- Avoid activating many child graphs to simulate a cross-graph join.
+
+Measure server evaluation separately from graph activation, local evaluation, and React rendering.
+
+## MCP returns `catalog_changed`
+
+Call `describe` again, replace the opaque catalog token, and rebuild exact definition references and input shapes. Do not remove `ifCatalog`; it prevents an agent from acting on a model it no longer understands.
+
+## MCP cannot find a tool for an operation
+
+Operations never become separate tools. `tools/list` always contains `describe`, `query`, and `mutate`. Discover the operation reference with `describe`, then pass it to `mutate`.
+
+## Local integration tests cannot reach infrastructure
+
+Run the repository's Alchemy local integration command and confirm the shared local stack is healthy. Keep infrastructure tests on the real Worker, Durable Object, object storage, cache, WebSocket, and auth path. Use unique graph names for isolation rather than replacing platform services.
+
+## Effect diagnostics disappeared
+
+Run:
+
+```sh
+bunx tsc --version
 ```
 
-Two stack traces follow. Nothing will come up; stop it with Ctrl-C.
+This repository expects a version suffix containing `effect-tsgo`. If it prints only the TypeScript version, reapply the configured patch before trusting typecheck results.
 
-The local emulator wants placeholder Cloudflare credentials even though it never talks to Cloudflare. Three do it:
+## What to include in a bug report
 
-```sh title=".env"
-CI=1
-CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef
-CLOUDFLARE_API_TOKEN=x
-```
-
-`alchemy dev` reads `.env` on its own. `CI=1` is what makes it read the environment at all, instead of a login profile; `alchemy login` is the alternative if you would rather store real credentials once. These are placeholders: the account id must be 32 hex characters — `local` fails with `'local' is not a valid Cloudflare account ID` — and the token can be anything. `ALCHEMY_STATE=local` is a separate switch your stack may branch on (`Alchemy.localState()` vs `Cloudflare.state()`); do not put it in `.env` unless you mean every deploy to use a file store. In a clone of this repository, `bun run dev:reef` and `bun run dev:todos` set the local-dev keys.
-
-## The server says ready but nothing ever loads
-
-Requests hang rather than fail. On the owned form, Server resolves `ramose/worker` for you. On the explicit-Worker hatch, check `main`:
-
-```ts title="resources.ts"
-main: "ramose/worker",                       // refused at deploy — or silently finds nothing on older stacks
-main: import.meta.resolve("ramose/worker"),  // a real path — this one works
-```
-
-`main` is resolved as a file path, so a bare module specifier finds no entry and no Worker is bundled. The hatch now fails the deploy when `main` is the bare specifier or does not resolve. The tell on an older stack is the startup output: a Worker that booted prints `Started in NNNms` after `ready at …`.
-
-## My schema change did nothing
-
-`alchemy dev` watches the stack files, so saving `schema.ts` re-applies it on its own: `Plan: 1 to update`, then the Server resource reseeds the catalog. If you restarted instead, you will see a no-op — the change already landed.
-
-## The terminal says the Worker's code had hung
-
-`The Workers runtime canceled this request because it detected that your Worker's code had hung` appears when a tab closes. It is the local emulator reaping a live-query socket, not a crash. The server keeps serving.
-
-## The second tab does not update
-
-It should: two windows on the same database update each other within about a second, locally and deployed. Check that both tabs use the same origin, the same database name, and the same server (`:1337` locally, or wherever it actually came up).
-
-## How do I stop it, or start over?
-
-Ctrl-C stops `alchemy dev`. Your data lives in `.alchemy/` beside your stack file and survives a restart; delete that folder — or run from another directory by accident — to start from an empty database. `alchemy destroy` tears the stack down [and deletes your data](#does-alchemy-destroy-delete-my-data). Nothing is stored anywhere else.
-
-## Is it on npm?
-
-Yes:
-
-```sh frame="terminal"
-bun add ramose react react-dom
-```
-
-`npm install` and `pnpm add` work the same. One package: `effect`, `alchemy` and the two `@effect/platform-*` packages come with it, at versions that resolve, so there is no `@rc` to remember. React is an optional peer — a server-only app installs `ramose` alone.
-
-[Getting started](/getting-started/quickstart/) builds a todo app from an empty folder.
-
-## What is Effect and how much do I need?
-
-The app path is promises: `await db.query(…)`, `await db.run(…)`. React hooks run reads and `useOperation(db, op).run` wraps a write. Effect is an [advanced hatch](/concepts/effect/).
-
-## TypeScript cannot resolve `ramose`
-
-`ramose` ships compiled ESM with type declarations, so an ordinary install needs no `tsconfig.json` setting. If your editor cannot find it, check the install landed (`npm ls ramose`) before reaching for `moduleResolution`.
-
-Inside a clone of this repository it resolves from source instead, through the `ramose` paths in the root `tsconfig.json` — run `bun install` at the root.
-
-## The token is not valid for this database
-
-A sign-in token names one database in its `ramose.db` claim, and it must equal the name you passed to `ramose.db(name, …)`. Mint one token per database — Reef asks for `authClient.ramose.token({ db: slug })` when it opens a workspace. See [Sign in and roles](/guides/sign-in/#what-the-token-carries).
-
-## My token stopped working after fifteen minutes
-
-Tokens live at most `RAMOSE_JWT_MAX_TTL` seconds (900 by default). Use `Ramose.token.jwt(mint)`, which re-mints near expiry, instead of `Ramose.token.static(value)`. [Tokens refresh themselves](/guides/sign-in/#tokens-refresh-themselves).
-
-## Query budget exceeded (413)
-
-The query needed more memory on the server than the per-query limit allows. Narrow it — a tighter `where`, a `limit`, fewer fields — and retry. The limit is a setting: [Query budget](/reference/server/#query-budget).
-
-## CORS errors in the browser
-
-Until a policy is set, the server answers every origin. Once a policy is set, list your app's origins in `RAMOSE_ALLOWED_ORIGINS` (Reef sets it in `src/infra/resources.ts`). The setting is ignored without a policy — [Configuration](/reference/server/#configuration).
-
-## Port 1337 or 5173 is already in use
-
-Usually nothing to fix. Both fall back to the next free port and print where they landed:
-
-```ansi frame="terminal"
-WARN: Port 1337 is in use by another process; serving on 1339 instead.
-Port 5173 is in use, trying another one...
-[Ui] ready at http://localhost:5174/
-```
-
-Read the URLs off the terminal — the next free port may not be the next number. Your app is handed the server's real URL through `VITE_RAMOSE_URL`, so the two never disagree.
-
-Reef is the exception: it pins its ports, so a collision there is real. `lsof -i :1337` shows who holds it — stop that process only if it is yours.
-
-## Where is the dashboard?
-
-There is none. Until a policy is set, the server serves a small demo console at `/`; `curl http://localhost:1337/health` — on whichever port the server reported — answers `{ "ok": true, … }` at any time. Your app's screens are the dashboard.
-
-## Can I use SQL, count, or full-text search?
-
-No — none of the three exist. Count rows on the client for now. The full list is in [What Ramose does not have](/getting-started/compare/#what-ramose-does-not-have).
-
-## Does alchemy destroy delete my data?
-
-:::caution
-`alchemy destroy` deletes the stack's R2 bucket and Durable Object classes — your data goes with them. Only the `Ramose.*` resources are no-ops. Back up first.
-:::
-
-## Can I use it without React? Without Effect?
-
-Without React, yes: `await db.query(query)` from any TypeScript. Live queries need a WebSocket, so they work in a browser, not through a Worker service binding. Effect is optional — an [advanced hatch](/concepts/effect/).
-
-## Can I use Clerk, Auth0, or my own login?
-
-Yes. Ramose verifies sign-in tokens; it never issues them. Any provider that publishes signing keys works, as long as the token carries `sub` and `ramose: { db, class }` — [With Clerk, Auth0, or your own signer](/guides/sign-in/#with-clerk-auth0-or-your-own-signer).
-
-## How much history is kept?
-
-History is kept as version numbers, not dates: `asOf` takes a `t`. Nothing prunes history — `RAMOSE_RETAIN_ROOTS` bounds how much storage the index costs, not how far back `asOf` reads — see [Retention](/reference/server/#retention).
-
-## Do I need to know another database first?
-
-No. Plain TypeScript is enough. If you want the mental model, [How Ramose thinks about data](/concepts/data-model/) is a ten-minute read that assumes nothing.
-
-## Something else
-
-[Open an issue](https://github.com/tvanhens/ramose/issues) with what you ran, what you saw, and the terminal output. The [Errors](/reference/errors/) page lists every error the client can raise and what the user sees.
+Include the Ramose and TypeScript versions, deployment stage kind, failing surface, public error tag/code, safe correlation id, catalog change involved, and the smallest catalog/query/operation that reproduces the failure. Remove tokens, internal ids, and user data.
 
 <Next links={[
-  { href: "/reference/errors/", label: "Errors", why: "every error, its status code, and what the user sees" },
-  { href: "/reference/server/", label: "The server", why: "settings, retention, operations" },
-  { href: "/getting-started/quickstart/", label: "Getting started", why: "start again from a known-good state" },
+  { href: "/reference/errors/", label: "Errors reference", why: "map every public error to caller recovery" },
+  { href: "/concepts/architecture/", label: "Architecture", why: "locate the runtime boundary that is failing" },
+  { href: "/getting-started/introduction/", label: "Restart the learning path", why: "rebuild the model from first principles" },
 ]} />

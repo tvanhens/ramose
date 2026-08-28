@@ -1,0 +1,103 @@
+---
+title: MCP server
+description: Reference for Ramose's Streamable HTTP endpoint, OAuth discovery, three fixed tools, graph paths, paging, and errors.
+---
+import Next from "../../../components/Next.astro";
+
+Ramose serves a remote Model Context Protocol endpoint at `POST /mcp`. It uses Streamable HTTP, OAuth protected-resource discovery, and exactly three tools.
+
+*New here? Start with [Connect an agent](/getting-started/connect-an-agent/).*
+
+## Tool list
+
+| Tool | Purpose |
+| --- | --- |
+| `describe` | Browse, search, or inspect the visible catalog and child graph capabilities |
+| `query` | Execute one bounded `QueryDocumentV1` against one authorized graph |
+| `mutate` | Invoke one exact authorized operation and return its durable receipt |
+
+Catalog size never changes the tool list. Entities and operations are arguments discovered at runtime, not dynamically registered tools.
+
+## Shared request fields
+
+`at: string[]` is the public graph path from the token's authorized root. An empty array addresses the root. Every segment is resolved and authorized; internal graph and storage ids are never accepted.
+
+`ifCatalog` is the opaque catalog token returned by `describe`. Supply it to `query` and `mutate` so a request fails with `catalog_changed` instead of running against a model the client did not inspect.
+
+## describe
+
+Browse visible capabilities:
+
+```json
+{
+  "at": [],
+  "browse": { "kinds": ["entity", "trait", "graph", "operation"] },
+  "page": { "limit": 20, "after": "cursor_opaque" }
+}
+```
+
+Search descriptions and names:
+
+```json
+{ "at": [], "search": "complete task", "page": { "limit": 10 } }
+```
+
+Inspect exact references returned by a previous result to obtain field, input, output, relationship, and operator schemas. Results include concise cards, an opaque `catalogToken`, and an opaque continuation cursor when needed.
+
+## query
+
+```json
+{
+  "at": ["acme", "launch"],
+  "ifCatalog": "cat_opaque",
+  "query": {
+    "version": 1,
+    "from": { "kind": "entity", "name": "task" },
+    "where": { "op": "eq", "path": ["done"], "value": false },
+    "select": { "id": { "path": ["id"] }, "title": { "path": ["title"] } },
+    "order": [{ "path": ["id"], "direction": "asc" }],
+    "page": { "first": 20 }
+  }
+}
+```
+
+The response contains plain JSON rows, an opaque continuation cursor when another page is available, and catalog/basis metadata needed for safe continuation. Queries cannot cross graph boundaries.
+
+## mutate
+
+```json
+{
+  "at": ["acme", "launch"],
+  "ifCatalog": "cat_opaque",
+  "operation": {
+    "kind": "operation",
+    "owner": { "kind": "entity", "name": "task" },
+    "name": "setDone"
+  },
+  "target": { "kind": "entity", "entity": "task", "id": "task_01H…" },
+  "input": { "done": true },
+  "invocationId": "0195f4ee-6a6a-7c63-a0bf-4f5d7f8a9d20"
+}
+```
+
+Omit `target` only for a targetless operation. Input and output follow the Effect Schemas published through discovery. Repeating the same invocation id and intent returns the stored result; changing the intent returns `invocation_conflict`.
+
+## Errors
+
+| Code | Meaning | Recovery |
+| --- | --- | --- |
+| `invalid_query` | The query document is malformed or incompatible | Correct the document; do not repeat unchanged |
+| `unknown_definition` | A catalog reference is unknown | Rediscover the exact definition |
+| `invalid_input` | Operation input does not match its schema | Correct input from the discovered schema |
+| `inaccessible` | A path, target, or capability cannot be revealed | Stop or request user access |
+| `catalog_changed` | The supplied catalog token is stale | Call `describe` and rebuild the request |
+| `query_budget_exceeded` | The valid query exceeds a work limit | Narrow selection, depth, filters, or page size |
+| `operation_rejected` | The authoritative operation refused the intent | Present the public reason; do not blind-retry |
+| `invocation_conflict` | An invocation id was reused for another intent | Fix caller state; use a new id only for new intent |
+
+Authentication and protocol failures use the standard OAuth and MCP error layers. Public errors do not expose internal ids, hidden-resource existence, query plans, or policy details.
+
+<Next links={[
+  { href: "/reference/query-document/", label: "QueryDocument v1", why: "look up the query grammar" },
+  { href: "/guides/mcp/", label: "MCP production guide", why: "design discovery, budgets, operations, and tests" },
+]} />

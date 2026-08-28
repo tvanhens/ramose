@@ -6,23 +6,23 @@
       <span>~/launch-app</span>
     </header>
     <div class="rg-agent-session">
-      <div class="rg-agent-command"><b>›</b><span>Delete all issues from the backlog</span><i></i></div>
-      <div class="rg-agent-line thinking"><span>•</span><p>Checking the live board and available operations…</p></div>
-      <div class="rg-agent-line query"><span>✓</span><p><strong>ramose.query_issue</strong><code>&#123; status: "backlog" &#125;</code></p></div>
-      <div class="rg-agent-line found"><span>↳</span><p>3 issues found <em>ISS-12 · ISS-18 · ISS-23</em></p></div>
-      <div class="rg-agent-line remove"><span>✓</span><p><strong>ramose.op_issue_delete</strong><code>&#123; ids: ["ISS-12", "ISS-18", "ISS-23"] &#125;</code></p></div>
-      <div class="rg-agent-line removed"><span>↳</span><p>Deleted 3 issues · policy allowed</p></div>
-      <div class="rg-agent-line complete"><span>●</span><p>Done — the backlog is empty.</p></div>
+      <div class="rg-agent-command"><b>›</b><span>Complete every launch task assigned to me</span><i></i></div>
+      <div class="rg-agent-line thinking"><span>•</span><p>Discovering the project model and allowed operations…</p></div>
+      <div class="rg-agent-line query"><span>✓</span><p><strong>ramose.describe</strong><code>&#123; at: ["launch"] &#125;</code></p></div>
+      <div class="rg-agent-line found"><span>↳</span><p>Task and Task.setDone are visible</p></div>
+      <div class="rg-agent-line remove"><span>✓</span><p><strong>ramose.query · ramose.mutate</strong><code>&#123; done: true &#125;</code></p></div>
+      <div class="rg-agent-line removed"><span>↳</span><p>3 receipts committed · policy allowed</p></div>
+      <div class="rg-agent-line complete"><span>●</span><p>Done — your launch tasks are complete.</p></div>
     </div>
   </div>
 
   <div class="rg-agent-board" aria-hidden="true">
     <div class="rg-agent-boardbar">
       <span class="rg-agent-board-dots"><i></i><i></i><i></i></span>
-      <span>app.ramose.local / issues</span>
+      <span>app.ramose.local / launch</span>
       <b><i></i> Live</b>
     </div>
-    <svg viewBox="0 0 680 270" role="img" aria-label="A project board whose backlog cards disappear after the agent tool call">
+    <svg viewBox="0 0 680 270" role="img" aria-label="A project board whose assigned launch tasks complete after MCP calls">
       <defs>
         <filter id="agent-orange-glow" x="-80%" y="-80%" width="260%" height="260%">
           <feGaussianBlur stdDeviation="7" result="blur" />
@@ -32,12 +32,12 @@
         </filter>
       </defs>
       <rect width="680" height="270" fill="#0d0b0a" />
-      <text class="eyebrow" x="24" y="27">PRODUCT / LAUNCH</text>
-      <text class="title" x="24" y="49">Issue board</text>
+      <text class="eyebrow" x="24" y="27">PROJECT / LAUNCH</text>
+      <text class="title" x="24" y="49">Tasks</text>
 
       <g class="column">
         <rect x="22" y="69" width="202" height="178" rx="8" />
-        <text class="column-title" x="36" y="91">BACKLOG</text>
+        <text class="column-title" x="36" y="91">MY TASKS</text>
         <g class="rg-agent-backlog-count">
           <text x="198" y="91">3</text>
           <text x="198" y="91">0</text>
@@ -45,25 +45,25 @@
         <g class="card card-one">
           <rect x="34" y="106" width="178" height="36" rx="6" />
           <circle cx="48" cy="124" r="3" />
-          <text x="58" y="122">Fix empty state</text>
-          <text class="card-id" x="58" y="133">ISS-12</text>
+          <text x="58" y="122">Write release notes</text>
+          <text class="card-id" x="58" y="133">TASK-12</text>
         </g>
         <g class="card card-two">
           <rect x="34" y="150" width="178" height="36" rx="6" />
           <circle cx="48" cy="168" r="3" />
-          <text x="58" y="166">Remove old flag</text>
-          <text class="card-id" x="58" y="177">ISS-18</text>
+          <text x="58" y="166">Verify permissions</text>
+          <text class="card-id" x="58" y="177">TASK-18</text>
         </g>
         <g class="card card-three">
           <rect x="34" y="194" width="178" height="36" rx="6" />
           <circle cx="48" cy="212" r="3" />
-          <text x="58" y="210">Archive launch notes</text>
-          <text class="card-id" x="58" y="221">ISS-23</text>
+          <text x="58" y="210">Connect the agent</text>
+          <text class="card-id" x="58" y="221">TASK-23</text>
         </g>
         <g class="rg-agent-empty">
           <circle cx="123" cy="151" r="13" />
           <path d="M118 151l4 4 7-8" />
-          <text x="123" y="178">Backlog cleared</text>
+          <text x="123" y="178">Tasks complete</text>
         </g>
       </g>
 
@@ -75,7 +75,7 @@
           <rect x="251" y="106" width="178" height="36" rx="6" />
           <circle cx="265" cy="124" r="3" />
           <text x="275" y="122">Polish onboarding</text>
-          <text class="card-id" x="275" y="133">ISS-31</text>
+          <text class="card-id" x="275" y="133">TASK-31</text>
         </g>
       </g>
 
@@ -87,13 +87,13 @@
           <rect x="468" y="106" width="178" height="36" rx="6" />
           <circle cx="482" cy="124" r="3" />
           <text x="492" y="122">Connect auth</text>
-          <text class="card-id" x="492" y="133">ISS-04</text>
+          <text class="card-id" x="492" y="133">TASK-04</text>
         </g>
         <g class="card still done">
           <rect x="468" y="150" width="178" height="36" rx="6" />
           <circle cx="482" cy="168" r="3" />
           <text x="492" y="166">Ship schema</text>
-          <text class="card-id" x="492" y="177">ISS-08</text>
+          <text class="card-id" x="492" y="177">TASK-08</text>
         </g>
       </g>
       <path class="rg-agent-action-pulse" d="M24 253H222" />

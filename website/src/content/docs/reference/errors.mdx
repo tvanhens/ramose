@@ -1,94 +1,55 @@
 ---
 title: Errors
-description: The nine request errors, plus NotOne and PolicyError — what each means, what to show the user, which are retried for you.
+description: Reference for public browser, operation, synchronization, query, catalog, and MCP error categories and recovery.
 ---
 import Next from "../../../components/Next.astro";
 
-Every error a call can fail with, what it means, and what to do about it. This page is for anyone who has read [Write data](/guides/transactions/) and is handling the failure path.
+Ramose errors are tagged and safe to branch on. Public errors explain what a caller can do next without exposing hidden resources, policy internals, storage identities, or query plans.
 
-*New here? Start with [Getting started](/getting-started/quickstart/).*
+*New here? Start with [Troubleshooting](/guides/troubleshooting/).*
 
-Every error is a tagged class and `DbError` is the union of the nine request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases. `.oneOrFail()` can also fail with `NotOne`, a policy that did not compile throws `PolicyError`, and `install()` can fail with `IncompatibleSchema` — none of those three is a `DbError`. A query that cannot lower fails as `InvalidRequest`. On the app path, `await db.run(…)` / `db.query(…)` reject with the class itself. Match with `try/catch`, `instanceof`, or `_tag`. `Ramose.isDatabaseError(e)` is the type guard.
+## Data-plane request errors
 
-```ts
-try {
-  const rows = await db.query(query);
-} catch (e) {
-  if (e instanceof Ramose.QueryBudgetExceeded || e instanceof Ramose.Unavailable) {
-    return [];
-  }
-  throw e;
-}
-```
-
-## The errors
-
-| tag | means | typical cause |
+| Tag | Meaning | Caller action |
 | --- | --- | --- |
-| `TxRejected` | the write was refused by the **writer** — the one thing per database that commits writes ([glossary](/concepts/glossary/#writer)); no version number used | schema violation, unique-key conflict, a missing required field (`tx/required`), `put` / `update` / `set` of a missing row or a dangling ref (`tx/missing-entity`), a rule that failed at commit, schema not installed |
-| `Unavailable` | the server cannot serve right now (503) | the writer restarting after a failed storage write; carries `retryAfterMs` |
-| `InvalidRequest` | the request is malformed (400) | bad database name, unknown field, bad query or shape |
-| `DatabaseNotFound` | the route does not exist (404) | a wrong server URL or path — a database *name* always exists |
-| `Unauthorized` | you may not do this (401/403) | missing or expired **sign-in token** ([glossary](/concepts/glossary/#token)), a token for another database, a rule that denies (`code: "policy"`, never a value), or an app-class raw `/transact` (`code: "operations"` — use `db.run` / `POST /op`). `writes: "all"` opens raw `/transact` only when no policy is configured. A live WebSocket handshake the peer refuses with 401/403 is this class too — the same as the HTTPS path — not `NetworkError` |
-| `QueryBudgetExceeded` | the query went over the server's per-query memory limit ([glossary](/concepts/glossary/#query-budget)) (413) | too wide a query; carries `clause`, `cells`, `limit`, and `spentBy` (`caller` or `policy`) |
-| `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
-| `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |
-| `OperationRejected` | a named operation was refused (409) | dangling / foreign entity, a body-thrown rejection |
-| `NotOne` | `.oneOrFail()` did not see exactly one row | zero matches, or two (the server is asked for two so a second row is seen); `found` is `0` or `2` |
-| `PolicyError` | a policy did not compile against its schema | undeclared ident, a pull that requires a read-masked field; deploy time, not a request |
-| `OperationsCoverageError` | the peer is missing an operation id the client ships | client/peer registry drift; deploy (`Server({ operations })`) or `checkOperations()`; not a request |
-| `IncompatibleSchema` | `install()` refused a data-model split | value type, cardinality, or adding/changing uniqueness, or a new required field on a record type that already has rows; lists the idents. Pass `install({ allowIncompatible: [":ident"] })` to apply them anyway. Not a request — the write never left the client |
+| `TxRejected` | A commit violated the catalog or storage constraints | Refresh authoritative state; change the intent before retrying |
+| `Unavailable` | The service is temporarily unable to serve the request | Honor retry guidance and retain stale data |
+| `InvalidRequest` | A data-plane request is malformed | Fix the caller; do not repeat unchanged |
+| `DatabaseNotFound` | The requested public route is not available | Verify the deployment URL and route |
+| `Unauthorized` | Authentication or authorization failed | Refresh identity or stop; do not reveal hidden state |
+| `QueryBudgetExceeded` | A valid query exceeded configured work | Narrow filters, projection, recursion, or page size |
+| `InternalError` | An unexpected server failure occurred | Show a generic message and correlate server logs |
+| `NetworkError` | The request did not reach a conclusive response | Keep queued work and reconnect |
+| `OperationRejected` | The authoritative operation refused the intent | Present the public reason; retry only after a meaningful change |
 
-## What the user sees
+## Query, catalog, and MCP codes
 
-Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.message ?? e._tag ?? String(e)`.
-
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-operation"
-  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
-  // a toast — enforcement is server-side, the UI is only a hint.
-  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
-```
-
-`useOperation` hands `error` and `onError` the failure itself, so `errorMessage` works on it directly. The read hooks — `useLiveQuery`, `useQuery`, `usePull` — report the same tagged error.
-
-| tag | what to show | what to do |
+| Code | Meaning | Caller action |
 | --- | --- | --- |
-| `Unauthorized` (policy) | the server's message as a toast — in Reef a viewer who drags a card sees `Unauthorized` | nothing to retry; the button was only a hint |
-| `Unauthorized` (operations) | the server's message — raw `/transact` is closed for app-class tokens | write through `db.run` / `POST /op`. `writes: "all"` only when no policy is configured |
-| `Unauthorized` (token) | "sign in again" | refresh the sign-in; a live query stops on it |
-| `TxRejected` | "someone changed this; try again" | re-read, then retry with fresh data |
-| `Unavailable` / `NetworkError` | "offline — retrying" or "try again" | already tried 6 times for you; if it still surfaces, the whole write may be retried — nothing landed |
-| `InvalidRequest` / `DatabaseNotFound` | a generic error | fix the app: name, field, URL |
-| `QueryBudgetExceeded` | a generic error | narrow the query; not retried |
-| `OperationRejected` | the server's message | nothing to retry; the operation was refused |
-| `InternalError` | "something went wrong" | try later |
-| `NotOne` | a generic error | the filter matched zero or several records; tighten it |
+| `invalid_query` | Query grammar, type, bound, or cursor is invalid | Fix the query; do not repeat unchanged |
+| `unknown_definition` | A public catalog reference is unknown | Rediscover or update the client catalog |
+| `catalog_changed` | The inspected catalog token is stale | Rediscover and rebuild the request |
+| `query_budget_exceeded` | A valid query exceeded configured work | Narrow filters, projection, recursion, or page size |
+| `invalid_input` | Input failed the operation schema | Correct input from the catalog |
+| `inaccessible` | A graph, definition, entity, or target cannot be revealed | Stop or ask the user for access |
+| `operation_rejected` | The authoritative operation refused the intent | Present the public reason; retry only after a meaningful change |
+| `invocation_conflict` | An invocation id identifies a different prior intent | Fix caller state; never silently repeat as new work |
 
-## Retries
+`inaccessible` intentionally covers missing and unauthorized cases when distinguishing them would disclose information. `.one()` may also produce `NotOne`; catalog policy compilation may produce `PolicyError` before deployment.
 
-- **`Unavailable` and `NetworkError` are retried for you** — 6 attempts on a jittered ladder from about 150 ms doubling to 2 s — on HTTPS and on the WebSocket alike. Nothing else is retried.
-- **A live query keeps going.** Beyond that ladder, dropped sockets and 5xx are retried with backoff (250 ms to 5 s). It stops only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`.
-- **A write is not retried past the ladder.** An `Unavailable` after a writer restart means nothing from that write is stored — retry the whole write.
-- **`TxRejected` never retries.** Retrying the same write against the same data rejects again.
-- **Setup mistakes are not errors.** A missing service binding or malformed URL throws at start-up instead of failing requests.
+A rejected receipt rolls back that optimistic layer and reapplies later layers. Preserve user-authored input when the UI offers a corrected new invocation.
 
-## HTTP status mapping
+The browser client resumes graph synchronization and replays durable queued invocations. It does not blindly repeat invalid queries, policy denials, domain rejections, or invocation conflicts.
 
-| status | error |
-| --- | --- |
-| 400 | `InvalidRequest` |
-| 401 / 403 | `Unauthorized` (`{ error, code: "policy", attr }` for a rule; `{ error, code: "operations" }` when raw `/transact` is closed for this token) |
-| 404 | `DatabaseNotFound` (unknown route) |
-| 409 | `TxRejected` (`{ error, tag, code }`) or `OperationRejected` (`{ error, tag, operation }`) |
-| 413 | `QueryBudgetExceeded` |
-| 503 (+ `retry-after`) | `Unavailable` |
-| other 5xx | `InternalError` |
-| no response | `NetworkError` |
+## UI guidance
 
-A Cloudflare error page (HTML 404, 1xxx) is treated as `Unavailable`, so a deploy in progress retries instead of failing.
+- `pending` query state: show an initial skeleton because no complete local answer exists.
+- `stale` query state: keep the complete result visible and label connectivity or catch-up.
+- `rejected` receipt: identify the action, show its public reason, and display authoritative state after rollback.
+- unauthenticated: pause protected work and start session recovery without clearing another principal's data into the new session.
+- inaccessible: do not reveal whether the requested resource exists.
 
 <Next links={[
-  { href: "/reference/client-api/", label: "Client API", why: "the calls these errors come from" },
-  { href: "/guides/troubleshooting/", label: "Troubleshooting and FAQ", why: "when the fix is not in code" },
-  { href: "/guides/workers/", label: "Use it from a Worker", why: "mapping errors to HTTP in your own Worker" },
+  { href: "/guides/troubleshooting/", label: "Troubleshooting", why: "diagnose setup, sync, query, and receipt failures" },
+  { href: "/reference/mcp/", label: "MCP errors", why: "map protocol codes to agent recovery" },
 ]} />

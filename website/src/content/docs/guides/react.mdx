@@ -1,0 +1,93 @@
+---
+title: React and offline UX
+description: Observe local queries and receipts, traverse graphs safely during render, and design honest stale, pending, and reconnect states.
+---
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+`ramose/react` is a thin adapter over the framework-neutral client. It adds React subscriptions, not another cache, query language, or mutation state machine.
+
+<Learn learn={["How to render the QueryState union", "How entity handles and receipts update components", "How to navigate graphs without downloading every child"]} before={[{ href: "/getting-started/quickstart/", label: "Build the starter app" }]} minutes={10} />
+
+## Observe a query
+
+```tsx
+const tasks = useQuery(projectDb.query.from(Task).orderBy(Task.createdAt))
+```
+
+`QueryState<A>` is explicit:
+
+```ts
+type QueryState<A> =
+  | { status: "pending" }
+  | { status: "ready"; data: A }
+  | { status: "stale"; data: A }
+  | { status: "error"; error: unknown }
+```
+
+`pending` means there is no complete local answer yet. `stale` means a complete cached answer is available while resume is pending or the network is offline. Keep stale data visible and label connectivity; do not replace it with a full-screen spinner.
+
+## Render entity handles
+
+```tsx
+if (tasks.status === "pending") return <TaskListSkeleton />
+if (tasks.status === "error") return <ErrorPanel error={tasks.error} />
+
+return tasks.data.map((task) => (
+  <TaskRow
+    key={task.data.id}
+    task={task.data}
+    pending={task.local.pending}
+    onDone={(done) => task.mutate.setDone({ done })}
+  />
+))
+```
+
+Plain `.data` remains cloneable and free of methods or client metadata. A component rerenders when the entity data or its `.local` state changes.
+
+## Track one mutation
+
+```tsx
+const [receipt, setReceipt] = useState<Receipt | null>(null)
+const state = useReceipt(receipt)
+
+function save(title: string) {
+  setReceipt(task.mutate.rename({ title }))
+}
+```
+
+Use entity pending state for lightweight row feedback and `useReceipt` when the UI needs exact queued, committed, rejected, output, or retry information. Disable destructive repeat actions while one receipt is in flight, but do not disable unrelated offline work.
+
+## Show synchronization separately
+
+```tsx
+const sync = useSyncState(client)
+```
+
+Connectivity is not query validity. A ready or stale query can be useful while offline. A connected client may still have a rejected receipt. Keep the two signals distinct in UI copy.
+
+## Traverse child graphs during render
+
+Equivalent graph handles are interned and safe to construct during render:
+
+```tsx
+const projectDb = organizationDb.query
+  .from(Project)
+  .where({ name: projectName })
+  .one()
+  .db()
+```
+
+Construction does not activate the child. `useQuery` does. Keep routing and selection narrow so a list of projects does not accidentally observe every child database.
+
+## React guarantees
+
+Hooks use React's external-store contract, so snapshots are stable under concurrent rendering. Strict Mode does not duplicate activation, subscriptions, or operations. Unmounting a component removes its observer; a graph already activated in the session remains synchronized.
+
+Server Components may render ordinary server-side queries, but browser database handles and offline replicas belong in Client Components. There is no persisted SSR query-result cache.
+
+<Next links={[
+  { href: "/reference/react/", label: "React reference", why: "hook signatures and state contracts" },
+  { href: "/concepts/offline/", label: "Offline deep dive", why: "understand snapshots, outbox, replay, and multi-tab state" },
+  { href: "/best-practices/operations/", label: "Offline interaction patterns", why: "make pending and rejection behavior trustworthy" },
+]} />

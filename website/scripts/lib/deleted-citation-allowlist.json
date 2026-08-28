@@ -1,13 +1,5 @@
 [
   "examples/kv-style/app.ts",
-  "examples/reef/src/app/App.tsx",
-  "examples/reef/src/app/auth.ts",
-  "examples/reef/src/app/components/IssueDetail.tsx",
-  "examples/reef/src/app/mutations.ts",
-  "examples/reef/src/app/ramose.ts",
-  "examples/reef/src/app/screens/AuthScreen.tsx",
-  "examples/reef/src/app/screens/BoardScreen.tsx",
-  "examples/reef/src/app/screens/WorkspacesScreen.tsx",
   "examples/todos/src/App.tsx",
   "examples/todos/src/todos.ts#add-todo",
   "examples/todos/src/todos.ts#add-todo-op",

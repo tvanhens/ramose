@@ -1,91 +1,45 @@
 ---
-title: Effect (advanced)
-description: The Effect hatch — ramose/effect, ramose/db/effect, db.effect.run, and bring-your-own Effect. The app path is promises.
+title: Effect boundary
+description: Where Ramose uses Effect for deployment and orchestration, and where application authoring remains inert TypeScript data.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-The app path is TypeScript and `async`/`await`: `await db.query(…)`, `await db.run(…)`. React hooks run reads and wrap write promises. This page is the escape hatch for people who already use [Effect](https://effect.website), or who are wiring a Worker that does.
+Most application code does not need to learn Effect. Schemas, queries, policy rules, optimistic projections, and operation bodies are ordinary typed values. React uses subscriptions and event-handler methods.
 
-<Learn learn={["The app path is promises; this page is the hatch", "ramose/effect and ramose/db/effect", "db.effect.run and bring-your-own Effect"]} before={[{ href: "/getting-started/quickstart/", label: "Getting started" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={6} />
+<Learn learn={["Where Effect appears in a Ramose project", "Why policy and query authoring stay inert", "How the Alchemy stack composes providers once"]} before={[{ href: "/getting-started/quickstart/", label: "Build a web app" }]} minutes={5} />
 
-## Why a hatch exists
+## Where Effect appears
 
-Ramose is built on Effect. The public `Db` unwraps that into promises and [subscriptions](/guides/live-queries/#outside-react). `db.effect` is the same handle returning Effect / Stream values, so a program that is already an Effect can `yield*` without a second wrapper.
-
-Do not start here. [Getting started](/getting-started/quickstart/) and [Write data](/guides/transactions/) teach `db.run`.
-
-## ramose/effect
-
-`effect` is a dependency of `ramose`. Two copies in one tree produce mutually unassignable types. Declare it in your own `package.json` only at a version that agrees with Ramose's.
-
-One subpath lets a resolver that refuses undeclared imports (pnpm without hoisting, Yarn PnP) avoid naming `effect` at all:
+Effect owns deployment resources, startup validation, acquisition, cancellation, deadlines, server orchestration, and provider composition. The Alchemy entry point is the main place most applications see it:
 
 ```ts
-import { Schema, Effect, Layer, Stream, Redacted, pipe } from "ramose/effect";
+export default Alchemy.Stack(
+  "my-app",
+  {
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
+    state: Cloudflare.state(),
+  },
+  Effect.gen(function* () {
+    yield* Ramose.Server("App", { root: AppCatalog, auth })
+  }),
+)
 ```
 
-It re-exports the module instances `effect` itself exports, so the two spellings are interchangeable.
+Provide shared Layers once at the stack boundary. Keep parameterized Layer instances in constants when several resources reuse them.
 
-App schemas do not import `effect/Schema` — they use `Ramose.string()`, `Ramose.Enum([...])`, and the other shorthands. A raw Effect Schema is the advanced field form: `Ramose.Field(schema)`. Operation input and output codecs stay Effect Schema.
+## What is deliberately not Effect
 
-## ramose/db/effect
+Query builders and policy rules compile to data. Operation codecs are Effect Schemas, but operation bodies build one authoritative change through a narrow handle. Optimistic projections must be pure and deterministic. None of these surfaces receives an ambient service context.
 
-`import { layer, Databases } from "ramose/db/effect"` is the Effect-native twin of `Ramose.connect`. It provides a `Databases` service you `yield*` inside your own programs, and closes its connections when the program ends. A Worker talking to a deployed `Ramose.Server` uses `yield* Ramose.Databases(Server)` and `Ramose.layer` instead:
+That separation makes the same declarations portable to browser type checking, server validation, catalog discovery, MCP schemas, and build-time compatibility checks.
 
-```ts
-const ramose = yield* Ramose.Databases(Server);   // provide Ramose.layer
-const db = ramose.db("todos", Todos);
-```
+## Advanced server work
 
-Reef's workspace provision is still `await db.run(…)` on the app path:
-
-```ts title="examples/reef/src/app/ramose.ts#open-workspace-provision"
-    const connect = options?.connect ?? Ramose.connect;
-    const ramose = connect({
-      url: options?.url ?? RAMOSE_URL,
-      token,
-      fetch: options?.fetch,
-      webSocket: options?.webSocket,
-    });
-    try {
-      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
-    } finally {
-      await ramose.close();
-    }
-```
-
-## db.effect
-
-Every promise method has an Effect twin: `db.effect.query`, `db.effect.run`, `db.effect.install`, `db.effect.principal`, `db.effect.pull`, `db.effect.basis`. Live reads are Streams: `db.effect.live`, `db.effect.livePull`.
-
-```ts
-const report = yield* db.effect.run(addTodoOp, { title: "buy milk" });
-const id = report.output.id;
-```
-
-There is no `db.effect.transact`. Writes are named operations on both surfaces.
-
-## Errors
-
-On the app path, `await db.query(…)` / `db.run(…)` reject with the tagged class itself. Match with `try/catch` and `instanceof` / `_tag` — see [Errors](/reference/errors/).
-
-The hatch still produces Effects. `runPromise` from `ramose/effect` (or `ramose/db/effect`) unwraps them so the Promise rejects with that same class, not a FiberFailure. Do not use `Effect.runPromise` on a Ramose Effect if you need `_tag` / `instanceof` to work.
-
-A Worker that proxies those to HTTP uses `errorToHttp`:
-
-```ts title="examples/kv-style/app.ts#error-to-http"
-        // Tagged DbError → HTTP. One helper instead of a 9-arm catchTags.
-        Effect.catch((e) => {
-          const { status, body, headers } = Ramose.errorToHttp(Ramose.toDbError(e));
-          return HttpServerResponse.json(body, { status, headers });
-        }),
-```
-
-Hatch code can still `Effect.catchTags` by `_tag`. Ramose tracks Effect 4, so the spellings are `Effect.catch`, `Effect.catchTags`, `effect/Schema` and `Context.Service`. The library's own guide is at [effect.website](https://effect.website).
+Worker-side application integrations may return or compose Effects around external services, but the final database change still goes through the owned operation boundary. Put retries, timeouts, logging, and spans around service calls; do not retry a committed operation by inventing a second invocation identity.
 
 <Next links={[
-  { href: "/guides/workers/", label: "Use it from a Worker", why: "Ramose from your own backend, no React" },
-  { href: "/reference/client-api/", label: "Client API", why: "every call, with its errors" },
-  { href: "/guides/transactions/", label: "Write data", why: "named operations, put and update" },
+  { href: "/guides/deploy/", label: "Deploy", why: "compose the Cloudflare and Ramose providers" },
+  { href: "/concepts/operations/", label: "Operations", why: "see the deterministic write boundary" },
+  { href: "/reference/server/", label: "Server reference", why: "deployment and runtime configuration" },
 ]} />

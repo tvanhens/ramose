@@ -1,70 +1,41 @@
 ---
-title: How it compares
-description: Ramose next to Convex, Supabase, Instant, Firebase, D1 + Drizzle and Postgres — what is the same, what is different, what you give up.
+title: How Ramose compares
+description: Choose Ramose by its architecture and tradeoffs, not by a feature checklist.
 ---
 import Next from "../../../components/Next.astro";
 
-Ramose is small and pre-release. Here is the honest trade against what you'd use otherwise — no feature matrix, just what's the same, what's different and what you give up. For a two-minute decision, read the table; the sections below add what you give up.
+Ramose is closest to an offline-first application database, a multi-tenant graph store, and an agent backend combined. Its differentiator is not one isolated feature: the local client, nested graph boundaries, policy, operations, and MCP surface are one model.
 
-## At a glance
+## The short version
 
-| Instead of | Same idea | What's different with Ramose |
-|---|---|---|
-| Convex | queries that re-run themselves, typed from your schema | runs in your Cloudflare account, not their cloud; a database per customer is a function call |
-| Supabase | rules enforced by the database | rules per field, deny by default, checked against your screens at deploy; your Cloudflare account, not their cloud |
-| Instant | read and write from the browser, live, with per-user permissions | you own the deploy end to end; nothing is hosted for you |
-| Firebase | realtime listeners and security rules | a typed schema in TypeScript; one database per customer by name; your Cloudflare account, not Google's |
-| D1 + Drizzle, or a Durable Object + SQLite | the same Cloudflare primitives, your account and deploy | already assembled: live fan-out, per-customer routing, permissions, history |
-| Postgres + an ORM | typed access | no migration ever rewrites old data; live queries and history come standard |
+| If you would otherwise use | Ramose feels familiar because | The decisive difference |
+| --- | --- | --- |
+| Convex | typed queries and server-controlled functions | complete offline replicas, graph boundaries, your Cloudflare account, native MCP |
+| Instant or Firebase | local-first reads and realtime synchronization | code-defined operations and policy, nested databases, no hosted control plane |
+| Supabase | the database enforces access | field-level filtered views and operation grants apply to app and agent callers |
+| D1 + Drizzle | it runs on Cloudflare primitives | sync, history, authorization, graph routing, and MCP are already assembled |
+| Postgres + an ORM | types flow from a schema | no SQL, no cross-graph joins, immutable history, offline query execution |
 
-Two words recur. The **schema** is your data model as one TypeScript value ([glossary](/concepts/glossary/#schema)); a **database** is a named, isolated set of facts ([glossary](/concepts/glossary/#database)). One customer, one database — naming one is a line of code, not a project in a console.
+## Choose Ramose when boundaries matter
 
-```ts title="examples/reef/src/app/ramose.ts#ramose-db-slug"
-      await ramose.db(slug, Reef).run(provisionWorkspaceOp, {});
-```
+The graph-of-graphs model is unusually good for products whose natural containers should also be isolation and scale boundaries: organizations, projects, notebooks, worlds, repositories, rooms, or devices. Each child graph can have its own catalog and policy while still being reached through an authorized parent path.
 
-## Why not just Convex?
+## Choose something else when SQL is the product
 
-**What you give up:** a hosted dashboard, scheduled functions and file storage.
+Ramose does not provide ad-hoc SQL, arbitrary cross-graph joins, a BI ecosystem, full-text search, or a managed console. If analysts need to explore the primary store directly, Postgres or a warehouse is usually the better center of gravity. Ramose data can still feed an analytical system.
 
-## Why not just Supabase?
+## The performance trade
 
-**What you give up:** SQL and the Postgres tool belt, built-in sign-in and file storage. Rules also work differently: per field and deny by default, checked at deploy against the shapes your screens read.
+Writes inside one graph are committed in order by one authoritative writer. That gives each graph simple ordering, uniqueness, receipts, and history. It also gives each graph a finite write ceiling. Scale writes by choosing graph boundaries that distribute ownership; do not expect one hot graph to scale horizontally without changing semantics.
 
-## Why not just Instant?
+Queries run over a complete authorized local graph in the browser and over immutable filtered values on the server. They are fast when a graph is appropriately sized and queries constrain indexed fields early. A giant graph increases initial sync, browser storage, local index, and query costs.
 
-**What you give up:** the hosted service and its admin console — you own the deploy end to end.
+## The maturity trade
 
-## Why not just Firebase?
-
-**What you give up:** Google's console, hosted auth and the offline-first mobile SDKs.
-
-## Why not just D1 + Drizzle, or a Durable Object + SQLite?
-
-**What you give up:** SQL and a hand-tuned storage layout. What you stop writing: the fan-out behind **live queries** ([glossary](/concepts/glossary/#live-query)), the migration runner, and the authorization middleware.
-
-## Why not just Postgres + an ORM?
-
-**What you give up:** SQL, a planner to tune, `psql`, and joins across databases.
-
-## What Ramose does not have
-
-- SQL, or joins across databases
-- A hosted dashboard
-- Sign-in of its own — it verifies tokens from Better Auth, Clerk, Auth0 or any provider that publishes signing keys, and never issues them
-- File storage
-- Scheduled jobs
-- Aggregates (`count`, `sum`) — count rows on the client for now
-- Full-text search
-
-## Numbers, honestly
-
-In our benchmark (`bench/RESULTS.md` in the repo) one database sustained a few hundred writes per second on Cloudflare — 166–879 per second depending on client count. Past that you split across databases: a function call, not a deployment.
-
-Each query has a memory limit on the server (about 48 MB by default). A query that exceeds it fails with a 413 instead of slowing everyone else down — narrow the query and retry.
+Ramose is pre-release. APIs are intentionally changing toward the coherent model documented here. There is no hosted service, support contract, dashboard, migration framework, or broad integration catalog. In return, the whole data plane runs in your account and the application model remains ordinary TypeScript.
 
 <Next links={[
-  { href: "/getting-started/quickstart/", label: "Getting started", why: "build a realtime todo app from scratch" },
-  { href: "/getting-started/tour-of-reef/", label: "Tour of Reef", why: "every screen beside the code that drives it" },
-  { href: "/guides/before-production/", label: "Before production", why: "the checklist before real users arrive" },
+  { href: "/concepts/mental-model/", label: "Mental model", why: "see whether the architecture matches how you think" },
+  { href: "/best-practices/graph-boundaries/", label: "Graph boundary decisions", why: "turn the main tradeoff into a concrete design" },
+  { href: "/getting-started/quickstart/", label: "Build the starter", why: "feel the client and operation model directly" },
 ]} />

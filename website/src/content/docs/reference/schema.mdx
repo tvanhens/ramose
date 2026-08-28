@@ -1,0 +1,96 @@
+---
+title: Schema and catalog
+description: Reference for entities, traits, graphs, fields, relationships, stored values, and catalog construction.
+---
+import Next from "../../../components/Next.astro";
+
+This page summarizes the declaration surface exported by `ramose`. Definitions are immutable values; declare and export them at module scope.
+
+*New here? Start with [Schemas and traits](/guides/catalog/).*
+
+## Catalog
+
+```ts
+const AppCatalog = Ramose.Catalog({
+  entities: { Account, Organization },
+  graphs: { organizations: Organization.graph },
+})
+```
+
+A catalog is the closed model installed for one graph. It contains entity and trait definitions, graph bindings, operation identities, descriptions, and schema metadata used by the server, browser client, policy compiler, and MCP discovery.
+
+Public keys are persistent contract names. Keep them stable once deployed.
+
+## Entity
+
+```ts
+const Task = Ramose.Entity("task", {
+  description: "A work item that can be completed",
+  fields: {
+    title: Ramose.string(),
+    done: Ramose.boolean({ default: false }),
+    createdAt: Ramose.timestamp(),
+  },
+  traits: [Assignable],
+  operations: (Operation) => ({ /* … */ }),
+})
+```
+
+An entity definition gives stored records a type, fields, traits, relationships, and owned operations. Ramose supplies stable entity identity separately from user fields.
+
+## Trait
+
+```ts
+const Assignable = Ramose.Trait("assignable", {
+  fields: { assignee: Ramose.ref(Account).optional() },
+  operations: (Operation) => ({ assign: Operation({ /* … */ }) }),
+})
+```
+
+A trait is a reusable capability. Entities that implement it are substitutable in trait-rooted queries and inherit its fields, relationships, and operations.
+
+## Graph trait
+
+```ts
+const OrganizationGraph = Ramose.Graph(OrganizationCatalog)
+
+const Organization = Ramose.Entity("organization", {
+  fields: { slug: Ramose.string().unique() },
+  traits: [OrganizationGraph],
+})
+```
+
+`Ramose.Graph(catalog)` binds each conforming entity to a child graph whose contents use that catalog. The entity lives in the parent; the bound database has a separate identity and lifecycle.
+
+## Stored fields
+
+Common constructors include:
+
+| Constructor | Stored value |
+| --- | --- |
+| `string()` | UTF-8 text |
+| `boolean()` | `true` or `false` |
+| `int()` | integer number |
+| `float()` | finite number |
+| `timestamp()` | ordered instant |
+| `uuid()` | UUID value |
+| `bytes()` | binary data |
+| `Enum([...])` | one declared string value |
+| `ref(EntityOrTrait)` | stable entity reference |
+
+Field modifiers declare cardinality, optionality, defaults, uniqueness, indexing, and ownership. Exact modifier availability depends on the stored value and relationship kind; TypeScript rejects invalid combinations.
+
+## References and relationships
+
+`ref(Target)` stores a checked reference to a compatible entity. A many relationship is modeled as related entities or an explicit many-valued relationship, not an unbounded application array.
+
+References cannot cross graph boundaries. Store a public child path or application-level locator when a workflow must point across graphs, then resolve and authorize it explicitly.
+
+## Evolution rules
+
+Additive changes are normally compatible. Changes to value representation, cardinality, uniqueness, required fields on existing records, type identity, or graph binding require an explicit migration. Catalog installation refuses incompatible changes by default.
+
+<Next links={[
+  { href: "/reference/operations/", label: "Operations reference", why: "attach the write surface to entities and traits" },
+  { href: "/reference/policy/", label: "Policy reference", why: "compile reads and operation grants against the catalog" },
+]} />

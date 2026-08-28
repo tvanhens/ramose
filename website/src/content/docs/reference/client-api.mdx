@@ -1,173 +1,110 @@
 ---
-title: Authoring API
-description: The portable `ramose/db` authoring surface and the deploy-time names added by `ramose`.
+title: Browser client
+description: Reference for creating a client, opening graphs, observing queries, invoking operations, and tracking synchronization.
 ---
 import Next from "../../../components/Next.astro";
 
-`ramose/db` is the portable authoring half of Ramose. It defines schemas,
-queries, pulls, authoritative operations, and tagged errors. It does not open a
-database connection, send requests, subscribe to changes, or install a schema.
+`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts.
 
-`ramose` re-exports that authoring surface and adds deployment resources, JWT
-claim minting, providers, peer constants, and HTTP error mapping.
+*New here? Start with [Build your first Ramose web app](/getting-started/quickstart/).*
 
-*New here? Start with [Getting started](/getting-started/quickstart/).*
-
-## Install and import
-
-```sh
-bun add ramose effect@rc
-```
-
-## Effect is a required peer
-
-Effect is a required peer because operation input and output codecs are Effect
-Schemas. Declaring it directly keeps pnpm and Yarn PnP resolution legal and
-ensures the application and Ramose use one compatible Effect instance.
+## createClient
 
 ```ts
-import * as Ramose from "ramose/db";
-import * as S from "effect/Schema";
+import { createClient } from "ramose/client"
+
+const client = createClient({
+  url: "https://data.example.com",
+  token: () => session.accessToken,
+  catalog: AppCatalog,
+})
 ```
 
-## Schema
+The client is framework-neutral. One instance coordinates all tabs for the same origin and principal. Close it when the signed-in principal changes permanently.
 
-Build a catalog from entities, traits, fields, and the built-in stored value
-types.
-
-```ts title="examples/todos/schema.ts#todo-schema"
-import * as Ramose from "ramose/db";
-
-export const Todo = Ramose.Entity("todo", {
-  title: Ramose.string(),
-  done: Ramose.boolean(),
-  createdAt: Ramose.timestamp(),
-});
-
-export const Todos = Ramose.Schema({ todo: Todo });
-```
-
-The value helpers are `string`, `boolean`, `int`, `float`, `timestamp`,
-`uuid`, `bytes`, `Enum`, and `Ref`. `Field` adds cardinality, uniqueness,
-and ownership. `Trait` defines reusable field groups. `stored` associates a
-custom Effect Schema with its database value type.
+## Open the authorized root
 
 ```ts
-const Label = Ramose.Entity("label", {
-  name: Ramose.Field.unique(Ramose.string(), "upsert"),
-});
-
-const Issue = Ramose.Entity("issue", {
-  title: Ramose.string(),
-  labels: Ramose.Field.many(Ramose.Ref(Label)),
-  priority: Ramose.Enum(["low", "medium", "high"]),
-});
+const rootDb = client.open()
 ```
 
-## Queries
+The token and server determine the root. Callers cannot choose an internal database or catalog id.
 
-`Query.from(Entity)` builds an immutable typed query value. `Q` exposes the
-lower-level query language for joins, rules, aggregates, and disjunction.
-Queries are declarations for a later data-plane adapter; this package version
-does not ship an online `Db` runtime that executes them.
+## Traverse to a child graph
 
 ```ts
-export const openTodos = Ramose.Query.from(Todo)
-  .where({ done: false })
-  .select({ id: Todo.id, title: Todo.title })
-  .orderBy(Todo.createdAt, "desc");
+const projectDb = rootDb.query
+  .from(Project)
+  .where(Project.slug.eq("launch"))
+  .one()
+  .db()
 ```
 
-## Pull
+`.db()` is available only from an entity that implements a graph trait. Equivalent handles are interned. Creating a handle is cheap and does not activate synchronization; observing a query does.
 
-Pull helpers are `all`, `pick`, `values`, and `again`. They construct typed
-selection shapes and recursive pull patterns.
-
-## Db
-
-This release intentionally has no public online `Db` handle. `ramose/db`
-authors values for the authoritative peer and future data-plane adapters; it
-does not expose `connect`, `query`, `run`, `live`, or `install` methods.
-
-## Authoritative operations
-
-An `Operation` declares a stable wire name, Effect Schema codecs, and an
-authoritative body. The body builds transaction data; it is not an optimistic
-client prefix and is never executed by `ramose/db` against local state.
+## Observe a query
 
 ```ts
-export const addTodo = Ramose.Operation(
-  "todo/add",
-  {
-    input: S.Struct({ title: S.String }),
-    output: S.Struct({ id: Ramose.EntityId }),
-  },
-  (op, input) => ({
-    id: op.put(Todo, {
-      title: input.title,
-      done: false,
-      createdAt: new Date(),
-    }),
-  }),
-);
+const unsubscribe = projectDb.observe(
+  projectDb.query.from(Task).orderBy(Task.createdAt, "desc"),
+  (state) => { /* render or update a store */ },
+)
 ```
 
-Use `Operation.patch` for standard field updates. `Operations` and
-`defineOperations` create registries shared with the peer. `operationNames`,
-`operationCards`, and `checkOperationsCoverage` inspect or validate a registry.
-
-## Writes
-
-Writes are declared inside authoritative operation bodies with `put`, `update`,
-`set`, `remove`, and `delete`. `ramose/db` does not execute those operations or
-expose a raw transaction submission API.
-
-## Names and errors
-
-`DATABASE_NAME_RE` and `isDatabaseName` validate database names.
-`IDENT_NAME_RE`, `isIdentName`, `RESERVED_FIELD_KEYS`, and
-`isReservedFieldKey` validate entity and field names.
-
-Request failures use the tagged `DbError` union: `InvalidRequest`,
-`Unauthorized`, `DatabaseNotFound`, `QueryBudgetExceeded`, `TxRejected`,
-`OperationRejected`, `Unavailable`, `InternalError`, and `NotOne`.
-`isDatabaseError` narrows unknown values.
-
-## Deploy-time additions
-
-Import `ramose` in Alchemy stack files. It adds `Server`, `Database`,
-`providers`, `Providers`, `claims`, `Claims`, `AuthConfig`, peer compatibility
-constants, and `errorToHttp` / `errorResponse`.
+Query state is a tagged union:
 
 ```ts
-import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Ramose from "ramose";
-
-const server = Ramose.Server("Ramose", {
-  databases: { todos: Todos },
-});
-
-export default Alchemy.Stack(
-  "app",
-  {
-    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
-    state: Cloudflare.state(),
-  },
-  Effect.gen(function* () {
-    yield* server;
-  }),
-);
+type QueryState<A> =
+  | { status: "pending" }
+  | { status: "ready"; data: A }
+  | { status: "stale"; data: A }
+  | { status: "error"; error: unknown }
 ```
 
-`ramose/worker` is the peer Worker entry. Use
-`import.meta.resolve("ramose/worker")` when a Cloudflare resource expects a
-filesystem path. `ramose/better-auth` is the optional Better Auth integration.
+`stale` retains a complete local result while catch-up is pending or the network is unavailable. Disposing the last observer stops maintaining that query. The activated graph replica remains available for the session and future offline use.
+
+## Entity handles
+
+Querying entities returns handles with separate application data and local state:
+
+```ts
+task.data.title
+task.local.pending
+task.local.receipts
+task.mutate.setDone({ done: true })
+```
+
+`.data` is plain cloneable data. `.local` contains client-only pending and reconciliation metadata. `.mutate` contains operations owned by the entity and its traits.
+
+## Targetless operations
+
+```ts
+const receipt = projectDb.mutate.createTask({ title: "Ship docs" })
+```
+
+Targetless operations live on `db.mutate`. Invocation returns immediately with a durable receipt handle. The optimistic projection, when declared, updates local queries before the server acknowledgement.
+
+## Receipt state
+
+```ts
+type ReceiptState<Output> =
+  | { status: "queued" }
+  | { status: "committed"; output: Output }
+  | { status: "rejected"; error: OperationError }
+```
+
+The invocation id is assigned before the outbox write and survives reload, reconnect, and tab leadership changes. Observe a receipt when the exact outcome matters; use entity `.local.pending` for lightweight feedback.
+
+## Synchronization state
+
+`client.observeSync(listener)` reports offline, connecting, catching-up, and live transitions independently of query state. A ready query can remain useful offline; a live connection does not imply every receipt committed.
+
+## Persistence and multi-tab behavior
+
+Each activated graph has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and graph. Followers execute local queries and submit intents through the shared outbox. Closing one tab does not discard queued work.
 
 <Next links={[
-  { href: "/concepts/data-model/", label: "Define schemas", why: "entities, fields, references, and stored values" },
-  { href: "/guides/queries/", label: "Write queries", why: "build typed query values" },
-  { href: "/guides/deploy/", label: "Deploy Ramose", why: "run the authoritative peer in Cloudflare" },
+  { href: "/reference/query-language/", label: "Query builder", why: "construct typed local and server queries" },
+  { href: "/reference/react/", label: "React hooks", why: "subscribe through React's external-store contract" },
+  { href: "/reference/errors/", label: "Errors", why: "handle query, sync, and receipt failures" },
 ]} />

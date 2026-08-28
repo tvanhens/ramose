@@ -1,0 +1,73 @@
+---
+title: The Ramose mental model
+description: Six ideas that make schemas, graphs, queries, offline behavior, authorization, and MCP fit together.
+---
+import Learn from "../../../components/Learn.astro";
+import GraphModel from "../../../components/GraphModel.astro";
+import SurfaceMap from "../../../components/SurfaceMap.astro";
+import Next from "../../../components/Next.astro";
+
+Ramose is easier to learn if you begin with the whole model. Nearly every API is a consequence of the six ideas on this page.
+
+<Learn learn={["Why a deployment is a graph of databases", "Why queries are local values and writes are named operations", "Why the app and MCP surface can share one security model"]} before={[{ href: "/getting-started/introduction/", label: "What is Ramose?" }]} minutes={8} />
+
+## 1. A graph is the unit of isolation
+
+A Ramose database is one graph: a set of typed entities and relations governed by one deployed catalog. A row carrying the built-in `Graph` trait opens a child database. Child graphs may contain more graph rows.
+
+<GraphModel />
+
+The path is a sequence of readable names; the stored identity is stable. Every path segment is authorized, and each child applies its own policy. No caller supplies or pairs an internal database with a catalog.
+
+## 2. The catalog is deployed code
+
+A **catalog** packages a schema, policy, operations, traits, and documentation. It is immutable for one deployment. Deploying code changes the current catalog; application data does not install or select one.
+
+The same catalog definition can back thousands of child graph instances. The definition is code; each instance is separate data, history, synchronization, and write capacity.
+
+## 3. Reads are queries over an immutable value
+
+A query is a typed, serializable description. In the app, the builder is bound to a database handle:
+
+```ts
+const open = projectDb.query.from(Task).where({ done: false })
+```
+
+Observed client queries run against a complete local authorized value and rerun when that value changes. The server never needs the UI's live query. One-shot server and MCP queries run against the same logical query representation after authorization has filtered the database.
+
+## 4. Writes are named operations
+
+There is no public raw transaction endpoint. Every product change is an operation owned by an entity or trait. An operation has a stable name, input and output schemas, documentation, a server body, and optionally a pure optimistic projection.
+
+The server alone checks the grant, resolves a visible target, executes the body, validates the change, and commits it. Offline clients queue intentions, not authority.
+
+## 5. Offline state is a complete authorized replica
+
+The browser persists the complete current value of every graph it activates. It does not persist query results. Queries derive answers from local indexes, so a new query can run offline without having been used before.
+
+Each graph activates lazily. Cached children can be evicted as units. One durable outbox survives restarts and coordinates across tabs. Optimistic layers sit above the committed value and can be removed or replayed without corrupting it.
+
+## 6. Authorization shapes what exists for a caller
+
+For a principal, Ramose constructs a filtered immutable database before evaluating reads. Hidden facts cannot affect joins, ordering, counts, relations, graph discovery, errors, or synchronization signals. Operation grants are separate and exact.
+
+<SurfaceMap />
+
+That is why MCP is a thin surface. `describe`, `query`, and `mutate` discover and use the same visible catalog and operations as the web app. Adding an entity or operation changes capability data, not the MCP tool list.
+
+## Keep this picture in your head
+
+```text
+deployment
+  └─ authorized root graph
+       ├─ local queries derive views
+       ├─ named operations change state
+       ├─ graph rows open authorized children
+       └─ app client and MCP share the same policy
+```
+
+<Next links={[
+  { href: "/getting-started/quickstart/", label: "Build a web app", why: "turn the model into a working React screen" },
+  { href: "/concepts/graph-of-graphs/", label: "Graph of graphs", why: "understand paths, identity, boundaries, and lifecycle" },
+  { href: "/concepts/offline/", label: "Offline and sync", why: "see how complete replicas and queued operations converge" },
+]} />

@@ -1,336 +1,122 @@
 ---
 title: Read data
-description: Build a query as a fluent value, run it, filter it, choose the fields (through references), order and page, count, read one record, read the past.
+description: Build typed entity and trait queries with filters, projections, relations, sorting, paging, aggregates, and temporal views.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen. The everyday spelling is a **fluent chain**; the same value can also be written as a generator of clauses — that power room is [The query language](/reference/query-language/).
+Use `db.query.from` for application queries. The builder is bound to one graph and emits the portable query model; constructing it is synchronous and performs no network request.
 
-<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count", "Paint a recursive tree as a window", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={12} />
+<Learn learn={["How to shape entity, trait, and relational results", "How cardinality, ordering, and cursors prevent ambiguous reads", "How to keep query work bounded"]} before={[{ href: "/guides/catalog/", label: "Schemas and traits" }]} minutes={14} />
 
-## A query is a value
-
-Reef's whole board is one query, built once at module scope with `Query.from`:
-
-```ts title="examples/reef/src/domain/queries.ts"
-export const boardQuery = Query.from(Issue)
-  .select(boardShape)
-  .orderBy(Issue.rank, "asc");
-```
-
-`Query.from(Issue)` means "every issue"; each method after it narrows or shapes that set. `Query` is the `Query` namespace on `ramose/db` (`Ramose.Query` when you import the module as a namespace). Because the query is a value, the same `boardQuery` runs once, live, or as the database was at an earlier version — unchanged. Without `.select`, the row is the full entity (friendly keys; refs come back as `{ id: Eid<Target> }` cells — `Comment.issue` is `{ id: Eid<Issue> }`). Required fields stay required; `| undefined` is only on optional fields. That widens live invalidation — any field change wakes the subscription — so `.select` is the optimization lever. `.ids()` keeps today's cheap id-only subscription.
-
-## Run it
-
-`db.query(query)` runs it once. `db.principal()` is who the peer says you are — the row it upserts at session establishment (`sub`, `role`, and `ramose.attrs`) — so finding your own eid does not need a query:
+## Return entities
 
 ```ts
-const who = await db.principal();
-const myEid = who.eid;
+const openTasks = db.query
+  .from(Task)
+  .where({ status: { not: "done" } })
+  .orderBy(Task.createdAt, "desc")
 ```
 
-A lookup by any other field is an ordinary query — put the value in `.where`. Two independently-built queries with the same literals share a live subscription (the key is the lowered AST). Changing an inline literal changes that key and resubscribes; that is the point.
+In the browser, an observed entity-focused query returns live entity handles. Read fields under `.data`; mutation methods and local pending state remain separate.
 
-In React, `useQuery(db, query)` gives you `{ data, error, loading }` for a one-shot read. Hand the same value to `useLive` and it becomes a **live query**, one that re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)) — that is the next page. Outside React, `await db.query(query)`.
-
-## Filter
-
-`.where({ … })` is a conjunction of equality filters; keys are the entity's fields. Compound predicates pass a stage fragment to the same method. Reef's comments are the comments pointing at one issue — the changing id is an ordinary value:
-
-```ts title="examples/reef/src/domain/queries.ts"
-export const commentsQuery = (issueId: Ramose.Eid<typeof Issue>) =>
-  Query.from(Comment)
-    .where({ issue: issueId })
-    .select(commentShape)
-    .orderBy(Comment.at, "asc");
-```
-
-| stage | meaning |
-| --- | --- |
-| `.where({ field: value })` | conjunction of equality filters; keys typechecked from the entity |
-| `.where(Query.some(…))` / any filter stage | compound predicates — the same method takes fragments |
-| `byId(id)` | the focus is this record — the blessed spelling of a filter by entity id (`id` is a number or an id cell). Equivalent to `is(N.id, id)` |
-| `is(attr, v)` | the field equals `v` — for a reference, points at this record (`v` is an id or a row cell). `is(N.id, id)` is the same filter as `byId(id)` |
-| `has(attr)` / `missing(attr)` | the fact is there / is not there — absence is not a value |
-| `any(…stages)` / `not(stage)` | disjunction of stages, and negation — `where(Query.any(Query.startsWith(Issue.title, term), Query.includes(Issue.title, term)))`. Built on `Q.or` / `Q.not` |
-| `gt` / `gte` / `lt` / `lte` / `startsWith` / `includes` | attr-level comparator sugar on `matching`: `Query.gt(Issue.rank, 3)`, `Query.startsWith(Issue.title, term, { ignoreCase: true })` |
-| `matching(attr, (v) => …)` | bind the field's value and constrain it: `matching(Issue.title, (t) => Q.startsWith(t, "re:"))`; the comparisons are `Q.eq` `Q.ne` `Q.lt` `Q.lte` `Q.gt` `Q.gte` `Q.in` `Q.startsWith` `Q.endsWith` `Q.includes` `Q.matches`. `startsWith` / `endsWith` / `includes` take `{ ignoreCase: true }`; `matches` takes a string or a `RegExp` with no flags |
-| `follow(ref)` / `backlink(ref)` | refocus the pipeline on the reference's target / on the records pointing here — filter across a hop: `Query.from(Issue)` then a `follow` fragment |
-| `some(ref, …ps)` / `every(ref, …ps)` / `none(ref, …ps)` | quantify over the records pointing here through `ref` (`every` and `none` are vacuously true of a record nothing points at) |
-| `updatedSince(t)` / `assertedBy(attr, who)` | time and provenance as ordinary stages |
-
-`Query.any` / `Query.not` are the app-surface spelling of `Q.or` / `Q.not`. The kernel forms remain for generator bodies; a filter you compose yourself is a first-class citizen — `Query.stage(fragment)` lifts it with the same adapter the shipped ones use ([the query language](/reference/query-language/#composition-is-delegation-at-three-altitudes)).
-
-**Conditional filters.** The builder is immutable, so a clause that depends on a local is ordinary JavaScript — reassign, or skip the call. Filter stages come before `select`:
+## Select only the shape you need
 
 ```ts
-let board = Query.from(Issue);
-if (assignee) board = board.where({ assignee });
-const q = board.select({ id: Issue.id, title: Issue.title });
+const taskCards = db.query.from(Task).select({
+  id: Task.id,
+  title: Task.title,
+  status: Task.status,
+})
 ```
 
-Consecutive `.where({…})` objects are assembled in field-key order, so `if (done) q = q.where({ done }); if (rank) q = q.where({ rank })` shares a cache key with the reverse. A fragment (`.where(Query.some(…))`) or an `orderBy` between two `.where()` calls is left in place and blocks that sharing.
+Projection reduces synchronization-independent query work, component updates, MCP output, and server result size. Keep reusable shapes near the domain definition.
 
-## Choose the fields
-
-`select` decides both the rows you get and their TypeScript type — the **shape** ([glossary](/concepts/glossary/#shape)). Reef's board shape follows two references and one set:
-
-```ts title="examples/reef/src/domain/queries.ts#board-shape"
-export const boardShape = {
-  id: Issue.id,
-  title: Issue.title,
-  status: Issue.status,
-  priority: Issue.priority,
-  rank: Issue.rank,
-  createdAt: Issue.createdAt,
-  creator: Issue.creator.select(personShape),
-  assignee: Issue.assignee.select(personShape).optional,
-  labels: Issue.labels.select(labelShape),
-} as const;
-```
-
-- A field without `.optional` is required: an issue with no `title` is dropped from the results.
-- `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
-- `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
-- `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
-- A **reference** also reads backwards in a shape with `.reverse` — `Issue.creator.reverse.select({ … })` from a user is "the issues that point at me", many-valued unless the reference is `Field.owned` (a component has at most one owner).
-
-The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a plain `number` at runtime (`key={row.id}` in React), typed `Ramose.Eid<typeof Issue>` — branded with its namespace, so it feeds the next query or pull with no cast and an `Issue` id never passes for a `Person` id. A select-less `Query.from` returns `EntityRow`: every field under its friendly key (`title`, `status`), refs as `{ id }`. That is not `Ramose.all(Issue)`. `.ids()` (and a select-less pipe) still returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by ident (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
-
-When the same card repeats under itself — a comment thread, an org chart — write `ref.select(Ramose.again(n))` on that edge. `n` is a hop bound you name (`1` through `16`): the same shape, again, that many full hops, then a stub `{ id }`. A many-valued again edge needs an explicit width in its select options (`{ limit: n }` — the server will not pick a default for you). The shape must include `N.id`; a cycle or a hop that runs out of budget comes back as that id, still in the array, not dropped.
-
-A many-valued reference in a shape can filter, order, and page its own collection *inside* the pull — an options record on its `.select` — without changing which rows you get:
+## Follow relations
 
 ```ts
-.select({
-  id: Comment.id,
-  body: Comment.body,
-  replies: Comment.replies.select(Ramose.again(4), {
-    where: [Query.is(Comment.deleted, false)],
-    orderBy: { key: Comment.createdAt, dir: "asc" },
-    limit: 50,
+const assignedTasks = db.query.from(Task).select({
+  id: Task.id,
+  title: Task.title,
+  assignee: Task.assignee
+    .select({ id: User.id, name: User.name })
+    .optional,
+  comments: Comment.task.reverse.select({
+    id: Comment.id,
+    body: Comment.body,
   }),
 })
 ```
 
-The record is deliberately a record, not a chain: the four slots — `where`, `orderBy` (a key, a `{ key, dir, empty }` record, or an array of them), `limit`, `offset` — evaluate in that fixed order whatever order you write them, exactly like the wire's own nested-constraint map. `where` entries are the same filter fragments the query itself uses — `Query.is`, `Query.has`, `Q.not`, a generator over the element, any userland combinator built from the kernel — ANDed, evaluated per element: a collection that filters to nothing is `[]`, never a dropped row. A many-valued **scalar** has no shape to select through, so it takes the same record as a field: `tags: Ramose.values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })` — the fragment is handed the value itself, and `orderBy` does not apply. A nested filter cannot close over the enclosing query's handles (it runs per element, after the rows are fixed — that is a lowering error); inline values are fine.
+Forward references follow a field. `.reverse` follows rows pointing back. Optional and many cardinalities remain explicit in the result type. Every related entity and field is independently filtered by policy.
 
-## A tree is a window
-
-Without `again`, the inner `.select` is a thinner card and then it stops. Nested replies are not included unless you listed them:
+## Query traits
 
 ```ts
-.select({
-  id: Comment.id,
-  body: Comment.body,
-  replies: Comment.replies.select(
-    { id: Comment.id, body: Comment.body },
-    { orderBy: Comment.createdAt, limit: 20 },
-  ),
+const assigned = db.query.from(Assignable).where({ assignee: me })
+```
+
+A trait root returns every visible concrete composer. Use this for cross-type inboxes or generic tools. If the consumer immediately branches on every concrete type, separate entity queries may be clearer and cheaper.
+
+## Express filters
+
+The fluent object form covers common equality, inequality, ranges, membership, and boolean combinations:
+
+```ts
+const urgent = db.query.from(Task).where({
+  status: { in: ["todo", "doing"] },
+  priority: { gte: 3 },
+  title: { startsWith: "Ship", ignoreCase: true },
 })
 ```
 
-```json title="one hop — no replies on the children"
-{
-  "id": 1,
-  "body": "What should we ship?",
-  "replies": [{ "id": 2, "body": "The window first." }]
-}
-```
+Escalate to `Query.q` and the kernel only for joins, disjunction, recursion, or reusable rule fragments the fluent surface cannot express cleanly. It is another spelling of the same query, not a separate engine.
 
-`again(n)` re-applies the enclosing map, including `replies`, `n` full hops, then `{ id }` stubs. Same roots, deeper tree. `again(1)` is one full-shape hop then stubs; `again(4)` is four full hops then stubs.
+## Ask for one deliberately
 
 ```ts
-.select({
-  id: Comment.id,
-  body: Comment.body,
-  replies: Comment.replies.select(Ramose.again(1), {
-    orderBy: Comment.createdAt,
-    limit: 20,
-  }),
-})
+const project = organizationDb.query
+  .from(Project)
+  .where({ name })
+  .one()
 ```
 
-```json title="same roots after again(1)"
-{
-  "id": 1,
-  "body": "What should we ship?",
-  "replies": [
-    {
-      "id": 2,
-      "body": "The window first.",
-      "replies": [{ "id": 3 }]
-    }
-  ]
-}
-```
+Use `.one()` for zero-or-one and `.oneOrFail()` for exactly one. Graph traversal adds `.db()`. Never rely on an unspecified first row.
 
-A Reddit thread is a window, not one fetch. `again(4)` plus `{ limit: 20 }` on replies is the first paint. The stub `{ id }` is the "continue this thread" handle: the same query, with the stub's id in `.where`.
+## Page stable ordered results
 
 ```ts
-const thread = (root: Ramose.Eid<typeof Comment>) =>
-  Query.from(Comment)
-    .where(Query.byId(root))
-    .select({
-      id: Comment.id,
-      body: Comment.body,
-      replies: Comment.replies.select(Ramose.again(4), {
-        orderBy: Comment.createdAt,
-        limit: 20,
-      }),
-    });
-// useLive(db, thread(postId))          first paint
-// useLive(db, thread(clicked.id))      continue this thread
-// Query.is(Comment.id, root) is the same filter as Query.byId(root)
+const firstPage = db.query
+  .from(Task)
+  .orderBy(Task.createdAt, "desc")
+  .after({ first: 50 })
 ```
 
-Sibling "load more" pages that parent's replies. It is not a deeper `again`.
+The returned cursor is opaque and tied to principal, graph, query, catalog, and order. Supply it to the same query for the next page. Use offset only for small, stable administrative lists.
 
-A recursive `T` with `replies: T[]` would type-check `.body` on a stub — after a cycle, or after the budget. That is the lie. A literal bound makes `replies[0].replies[0].body` a type error on purpose (`again(1)`: one full card, then `{ id }`). An unbounded form would be `T | { id }` and a narrow. That is parked: a thousand-wide collection and no hop cap is how a shape melts — not because TypeScript cannot recurse.
+## Aggregate inside one graph
 
-Which records can reach which is a *set* of ids. `again` paints a *tree*. Graph walks are later.
+Count, sum, minimum, maximum, and grouped results are query projections. Aggregates see only visible facts and share the same query budget. They do not cross graphs.
 
-## Order, limit, page
+For frequently rendered dashboard totals, consider maintaining a summary entity through authoritative operations. That trades write work for predictable reads.
 
-`orderBy`, `limit`, and `offset` run on the server: rows are sorted, then paged, *then* shaped — so `limit(20)` returns twenty records and the client never sees the rows a page dropped. `limit` bounds what you receive, not what the query scans. Required fields are enforced before the limit, so the page you get is the page you keep.
+## Time and history
+
+Select an as-of or history view before executing the query:
 
 ```ts
-  // Todo is the todos example's record type.
-  Query.from(Todo)
-    .select(todoShape)
-    .orderBy(Todo.createdAt, "asc", { empty: "last" })
-    .limit(20)
-    .offset(0)
+const pastOpen = projectDb.asOf(version).query.from(Task).where({ done: false })
+const changes = projectDb.history().query.from(Task).where({ id: taskId })
 ```
 
-`orderBy` takes the attribute itself, or — after `select` — the name of a selected column (`Query.orderBy("createdAt")`). `empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
+Current policy and grants still apply. Temporal views are read-only.
 
-`orderBy`, `limit`, and `offset` are methods on the query value itself — `Query.q(function* () { … }).orderBy(r => r.n, "desc").limit(10)` is the same cursor as the fluent chain. `orderBy` takes a selected column, an attribute, a bound var / projected cell, or a picker of one (`r => r.n`). A generator `{ title: t.v }` keeps duplicate titles as two rows; `Q.distinct` is unique titles ([query language](/reference/query-language/#projection-keeps-one-row-per-source)).
+## Keep work bounded
 
-`one()` and `oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it. They are methods on the query value:
-
-```ts
-const byEmail = (email: string) =>
-  Query.from(User)
-    .where({ email })
-    .select({ name: User.name });
-
-const ada = await db.query(byEmail("ada@example").one());
-// { name: string } | null — null when nobody matches
-
-const theAda = await db.query(byEmail("ada@example").oneOrFail());
-// { name: string } — fails with NotOne if there are zero or two matches
-```
-
-`one()` is at most one: two matches are not an error, and the rest are never fetched. `oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
-
-`after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker). Hold it in memory, or put `Query.encodeCursor(q, cursor)` in a URL and `Query.decodeCursor(q, token)` it back — Instant keys rehydrate as `Date`.
-
-```ts
-const page1 = await db.query(boardQuery.after(null));
-const page2 = await db.query(boardQuery.after(page1.cursor));
-// page.cursor is null when the page came back short — nothing past it
-
-const token = page1.cursor && Query.encodeCursor(boardQuery, page1.cursor);
-const next = token ? Query.decodeCursor(boardQuery, token) : null;
-```
-
-## Count
-
-When the answer is a number, not rows, `Q.value(Q.count(e))` is a scalar — `db.query` resolves to that number, `0` over no matches. Grouped aggregates stay a record projection: the other cells are the group keys, and `orderBy` / `limit` on the query value write top-N.
-
-```ts
-const open = await db.query(
-  Query.q(function* () {
-    const todo = yield* Query.entities(Todo);
-    yield* Query.is(Todo.done, false)(todo);
-    return Q.value(Q.count(todo));
-  }),
-);
-// number — 0 over no matches
-
-const topOwners = Query.q(function* () {
-  const todo = yield* Query.entities(Todo);
-  const owner = yield* Query.follow(Todo.owner)(todo);
-  const name = yield* Q.fact(owner, User.name);
-  return { owner: name.v, n: Q.count(todo) };
-})
-  .orderBy((r) => r.n, "desc")
-  .limit(10);
-// { owner: string, n: number }[] — top 10 owners by todo count
-```
-
-Fluent `select` takes the same aggregate cells beside a shape — `Q.focus` is the queried record:
-
-```ts
-Query.from(Todo)
-  .select({ owner: Todo.owner.select({ name: User.name }) }, { n: Q.count(Q.focus) })
-  .orderBy((r) => r.n, "desc")
-  .limit(10)
-```
-
-An aggregate-only record (no `Q.value`) still answers one row over an empty match set — `count` / `countDistinct` / `sum` read `0`, `avg` / `min` / `max` read `null` — while a grouped record is `[]` (no rows, no groups).
-
-To keep only some groups, compare the aggregate cell itself — the comparison lowers into the server's post-group filter (`:having`), because the aggregate does not exist until after grouping:
-
-```ts
-const busy = Query.q(function* () {
-  const todo = yield* Query.entities(Todo);
-  const owner = yield* Query.follow(Todo.owner)(todo);
-  const n = Q.count(todo);
-  yield* Q.gt(n, 5); // groups with more than five todos
-  return { owner, n };
-});
-```
-
-The compared cell must reach the projection (that is what names it on the row), and the comparison sits at the query's top level — inside `Q.or` / `Q.not` there is no group yet, so that is a lowering error. Filtering groups by a group *key* needs none of this: an ordinary comparison on the bound var already says it, row by row.
-
-## Read one record
-
-When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:
-
-```ts title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
-```
-
-```ts title="examples/reef/src/domain/queries.ts#issue-extra-shape"
-export const issueExtraShape = {
-  title: Issue.title,
-  description: Issue.description.optional,
-  // Read-masked for member/viewer (policy.ts): must be `.optional`, so for
-  // them the row survives and the field is simply absent.
-  privateNote: Issue.privateNote.optional,
-} as const;
-```
-
-The subject is `{ id }` or a lookup by unique key, `[User.sub, "user_ada"]`. The result is the shape or `null` — `null` when the record is missing *or* a required field is absent (including one permissions hid from you). Outside React it is `db.pull(subject, shape)`.
-
-<Shot src="/reef/issue-detail.png" alt="Reef's issue panel open on one card: title, status, priority, assignee, labels, description and comments" caption="One pull for the panel's extras; the rest rides the live board row." code="examples/reef/src/app/components/IssueDetail.tsx:255-266" />
-
-## Read the past
-
-Every query runs unchanged against an earlier version of the database. Reef's time-travel slider is `useQuery` on `db.asOf(t)`; its "deleted, still in history" strip is the same idea over `db.history`:
-
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx"
-  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
-  const everything = useQuery(db.history, everyIssueEverQuery);
-```
-
-`t` is a **version number**, not a date ([glossary](/concepts/glossary/#version-number)): the `t` a write returns, or `useBasis(db)` for the current one. Both views are read-only. How far back, what history includes, and the rest of the slider: [Time travel](/concepts/time-travel/).
-
-## Rules the builder enforces
-
-- Filter stages come before `select` — clauses close before the projection.
-- A select field is a direct field of the queried record type or a nested `ref.select({…})`; a hop in a select (`{ creatorName: Issue.creator.name }`) is a runtime error.
-- `Ramose.again(n)` is a shape on a self-reference (`ref.select(Ramose.again(n))`), not a field and not the query's own `select`. The bound is a literal `1`–`16`. A many-valued again edge needs `{ limit: n }` in its select options. The shape must select `N.id`.
-- `orderBy` across a many-valued attribute throws — sort by a single-valued field.
-- `after(cursor)` needs an `orderBy` (the cursor is a position in the sort), and a cursor only continues the query that minted it.
-- Everything runs on the server, under a memory limit per query; exceeding it fails with `QueryBudgetExceeded` — narrow the query. See [Query budget](/reference/server/#query-budget).
+Filter on indexed selective fields early, project narrowly, bound every nested collection, page lists, and cap recursion. Query budget failures are useful feedback; raising a global limit is rarely the first fix.
 
 <Next links={[
-  { href: "/guides/live-queries/", label: "Live queries", why: "the same query, re-run for you on every change" },
-  { href: "/reference/query-language/", label: "The query language", why: "the generator tier: Q.fact, rules, recursion, composition" },
-  { href: "/reference/client-api/", label: "Client API", why: "every combinator and terminal, with an example" },
+  { href: "/guides/react/", label: "Observe in React", why: "render ready, stale, and pending local results" },
+  { href: "/best-practices/query-performance/", label: "Query performance", why: "profile joins, sorting, projection, and graph size" },
+  { href: "/reference/query-language/", label: "Query builder reference", why: "the complete fluent and kernel surface" },
 ]} />

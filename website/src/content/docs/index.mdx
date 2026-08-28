@@ -1,6 +1,6 @@
 ---
 title: Ramose — the database optimized for humans and agents
-description: One offline-first database for your app and its agents, with generated MCP tools and exactly the same permissions for both.
+description: One offline-first graph database for your app and its agents, with one model, one operation surface, and one policy.
 template: splash
 head:
   - tag: title
@@ -20,7 +20,7 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
   <HeroMesh />
   <h1>The database optimized for <em>humans</em> and <em>agents</em>.</h1>
   <div class="rg-proto-hero-grid">
-    <p class="rg-proto-intro">Right now those are two jobs: the app you shipped, and the MCP server, auth path, and permission model you bolt on beside it for agents. Ramose makes them one. Declare your schema and rules once — your UI gets offline-first writes and live queries, your agents get generated MCP tools, and both read through exactly the same permissions.</p>
+    <p class="rg-proto-intro">Right now those are two jobs: the app you shipped, and the MCP server, auth path, and permission model you bolt on beside it for agents. Ramose makes them one. Declare graphs, schema, operations, and policy once—your UI gets offline-first writes and local queries, your agents get one discoverable MCP endpoint, and both use the same capabilities.</p>
     <div class="rg-proto-hero-cta">
       <div class="rg-proto-actions">
         <a class="rg-proto-button primary" href="/getting-started/quickstart/">Start in 15 minutes →</a>
@@ -42,25 +42,22 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
       <p class="rg-console-label">schema.ts</p>
 
 ```ts
-const Issue = Ramose.Entity("issue", {
-  title: Ramose.string(),
-  status: Ramose.Enum(["todo", "doing", "done"]),
-  creator: Ramose.Ref(User),
-  privateNote: Ramose.string({ optional: true }),
-});
+const Project = Ramose.Entity("project", {
+  fields: { slug: Ramose.string().unique() },
+  traits: [Ramose.Graph(ProjectCatalog)],
+})
 ```
 
     </div>
     <div class="rg-feature-sample" data-feature-sample aria-hidden="true">
-      <p class="rg-console-label">IssueList.tsx</p>
+      <p class="rg-console-label">TaskList.tsx</p>
 
 ```tsx
-const issues = useLiveQuery(
-  db,
-  Query.from(Issue).where({
-    status: { not: "done" },
-  }),
-);
+const tasks = useQuery(
+  projectDb.query
+    .from(Task)
+    .where(Task.done.eq(false)),
+)
 ```
 
     </div>
@@ -68,12 +65,10 @@ const issues = useLiveQuery(
       <p class="rg-console-label">policy.ts</p>
 
 ```ts
-const policy = Ramose.Policy({
-  issue: {
-    read: P.class("member"),
-    privateNote: P.class("owner"),
-  },
-});
+const grants = [
+  P.read(Task).when(isMember),
+  P.invoke(Task.setDone).when(isMember),
+]
 ```
 
     </div>
@@ -81,13 +76,13 @@ const policy = Ramose.Policy({
       <p class="rg-console-label">agent.ts</p>
 
 ```ts
-const openIssues = await mcp.callTool({
-  name: "query.issue",
+const openTasks = await mcp.callTool({
+  name: "query",
   arguments: {
-    where: { status: { not: "done" } },
-    select: ["title", "assignee"],
+    at: ["acme", "launch"],
+    query: openTasksDocument,
   },
-});
+})
 ```
 
     </div>
@@ -106,7 +101,7 @@ const openIssues = await mcp.callTool({
         <p>Ask for a field that does not exist, or write the wrong shape, and TypeScript stops you before production does.</p>
         <div class="rg-feature-result">
           <span>You get</span>
-          <code>useLiveQuery(db, Query.from(Issue))</code>
+          <code>useQuery(projectDb.query.from(Task))</code>
         </div>
       </div>
       <div class="rg-feature-card" id="feature-live" role="tabpanel" data-feature-card aria-hidden="true">
@@ -115,7 +110,7 @@ const openIssues = await mcp.callTool({
         <p>The query is the subscription. Local writes render immediately, then every connected client converges without cache keys or refetch calls.</p>
         <div class="rg-feature-result">
           <span>One query</span>
-          <code>db.live(Query.from(Issue).where(&#123; status: "doing" &#125;))</code>
+          <code>Task.setDone(&#123; done: true &#125;)</code>
         </div>
       </div>
       <div class="rg-feature-card" id="feature-permissions" role="tabpanel" data-feature-card aria-hidden="true">
@@ -124,16 +119,16 @@ const openIssues = await mcp.callTool({
         <p>Field-level rules are enforced by the Ramose server for your UI and your agents, so neither path can quietly see more than the other.</p>
         <div class="rg-feature-result">
           <span>Enforced rule</span>
-          <code>Issue.privateNote → owner only</code>
+          <code>Task.setDone → member only</code>
         </div>
       </div>
       <div class="rg-feature-card" id="feature-mcp" role="tabpanel" data-feature-card aria-hidden="true">
         <p class="rg-console-label">MCP endpoint</p>
-        <h2>Your schema becomes agent tools</h2>
-        <p>Entities become query tools and named operations become action tools, generated from the same model your application already uses.</p>
+        <h2>Three tools understand your app</h2>
+        <p>Agents discover visible entities, graphs, and operations progressively, then query or mutate through the same model your application already uses.</p>
         <div class="rg-feature-result">
-          <span>Generated tools</span>
-          <code>query.issue · op.issue/set-status</code>
+          <span>Fixed tools</span>
+          <code>describe · query · mutate</code>
         </div>
       </div>
     </div>
@@ -153,7 +148,7 @@ const openIssues = await mcp.callTool({
   <div class="rg-proto-copy">
     <p class="rg-proto-kicker">02 — Agents</p>
     <h2>Everything a user can do an agent can do.</h2>
-    <p class="rg-proto-lede">Ramose turns the capabilities already in your app into MCP tools. Agents query live data and run the same named operations as your UI, under the same field-level permissions. No shadow database, glue server, or second authorization model to keep aligned.</p>
+    <p class="rg-proto-lede">Ramose projects the capabilities already in your app through three MCP tools. Agents discover the graph and catalog progressively, query visible data, and invoke the same named operations as your UI. No shadow database, glue server, or second authorization model to keep aligned.</p>
   </div>
   <AgentCommandDemo />
 </section>
@@ -204,5 +199,5 @@ const openIssues = await mcp.callTool({
 
 <nav class="rg-proto-footer" aria-label="Documentation" data-pagefind-ignore>
   <span>ramose.ai — the offline-first database your agents can call</span>
-  <span><a href="/getting-started/introduction/">Docs</a> · <a href="/getting-started/tour-of-reef/">Example</a> · <a href="/getting-started/compare/">Compare</a></span>
+  <span><a href="/getting-started/introduction/">Docs</a> · <a href="/concepts/mental-model/">Mental model</a> · <a href="/getting-started/compare/">Compare</a></span>
 </nav>

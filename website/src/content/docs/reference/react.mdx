@@ -1,161 +1,98 @@
 ---
 title: React hooks
-description: "`RamoseProvider`, `useDb`, `useLiveQuery`, `useQuery`, `useLivePull`, `usePull`, `useBasis`, `useConnectionStatus`, `usePrincipal`, `useRamoseClaims`, `useOperation`, `errorMessage`."
+description: Reference for observing Ramose queries, synchronization, entity state, and receipts from concurrent React applications.
 ---
 import Next from "../../../components/Next.astro";
 
-The exact surface of `ramose/react`, one section per export. This page is for React developers who have read [Live queries](/guides/live-queries/) and want the signatures.
+`ramose/react` adapts the framework-neutral browser client to React's external-store contract. It adds no cache or query semantics of its own.
 
-*New here? Start with [Getting started](/getting-started/quickstart/).*
+*New here? Start with [React and offline UX](/guides/react/).*
 
 ```tsx
-import { RamoseProvider, useDb, useLiveQuery, useQuery, useLivePull, usePull, useBasis, useConnectionStatus, usePrincipal, useRamoseClaims, useOperation, errorMessage } from "ramose/react";
+import {
+  RamoseProvider,
+  useDb,
+  useQuery,
+  useReceipt,
+  useSyncState,
+} from "ramose/react"
 ```
-
-Hooks only, no UI. They reach the Ramose server through one client. Read hooks take a `db` explicitly, so they work with `db.asOf(t)` and `db.history` too. The **Ramose server** is the one Cloudflare Worker that serves all your databases.
-
-Every read hook returns the same `Read<A, E>`: `data`, a plain tagged `error`, `status` / `isLoading`, the basis `t` the rows were read at, `refetch()`, and `retry()`. Names say liveness: `useLiveQuery` / `useQuery`, `useLivePull` / `usePull`. Result types exported alongside the hooks: `Read`, `ReadOptions`, `ReadStatus`, `SuspendedRead`, `ConnectionStatus`, `Principal`, `OperationHandle`, `RunResult`, `RamoseProviderProps`.
-
-A server read hydrates the first paint: `useLiveQuery(db, query, { initialData: rows, initialT: t })`. `{ suspense: true }` throws until that key has a value, then `data` is defined. Both are keyed on the same structural identity as the subscription. The walkthrough is [Read on the server](/guides/ssr/).
 
 ## RamoseProvider
 
-```tsx title="examples/reef/src/app/App.tsx#ramose-provider"
-          <RamoseProvider
-            key={open.workspace.slug}
-            url={RAMOSE_URL}
-            token={open.workspace.token}
-          >
+```tsx
+<RamoseProvider client={client}>
+  <App />
+</RamoseProvider>
 ```
 
-`RamoseProvider(props: ClientOptions & { children })` — owns one **client** ([glossary](/concepts/glossary/#client)) made with `Ramose.connect`, and closes it on unmount or when `url` / `token` / `fetch` / `webSocket` change.
-
-- `token` must be a stable **token source** ([glossary](/concepts/glossary/#token-source)) — module scope or `useMemo`, never built inline.
-- One customer per client: switch workspaces with React's `key`, as Reef does.
+Provides one already-created client. Remount with a new client when the signed-in principal changes. The provider does not silently transfer cached graphs or queued receipts between principals.
 
 ## useDb
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-db"
-  const db = useDb(slug, Reef);
+```tsx
+const rootDb = useDb()
 ```
 
-`useDb(name, schema): Db<C>` — `client.db(name, schema)` from the nearest provider, kept stable on `[client, name, schema]`. Pass a module-scope schema. Throws outside a provider.
-
-## useLiveQuery
-
-```tsx title="examples/todos/src/App.tsx#todo-list"
-const TodoList = () => {
-  const { data, error } = useLiveQuery(db, todoQuery);
-  if (error !== undefined) return <p>offline…</p>;
-  if (data === undefined) return <p>loading…</p>;
-  return (
-    <ul>
-      {data.map((row) => (
-        <TodoRowView key={row.id} row={row} />
-      ))}
-    </ul>
-  );
-};
-```
-
-`useLiveQuery(db, query, options?): Read<Out, QueryError>` — a **live query** as React state: it re-runs whenever the database changes ([glossary](/concepts/glossary/#live-query)). Needs no provider. Put changing values in the query (`where({ issue: issueId })`). Same literals share a subscription; a changed literal resubscribes. `options` is `{ initialData, initialT, suspense }`.
-
-- `data` is `undefined` until the first answer, and again right after `db` or `query` change, unless `initialData` hydrated this key.
-- `error` is a *terminal* failure only (`InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`); network trouble is retried in place. On `db.asOf(t)` the query runs once and the data stays.
-- `t` is the basis those rows were read at. `status` / `isLoading` cover the first answer; later emissions are not a load. `refetch()` re-reads once without tearing the subscription down. `retry()` re-subscribes — recover a terminal error without unmounting. A reconnect after `Unauthorized` (new session generation, status `live`) re-runs on its own.
-- `key={row.id}`: a selected `id: X.id` is a plain `number`.
-
-A second form, `useLiveQuery(sub, options?)`, drains a `Subscription` you built yourself (`db.live(q)`, `db.livePull(...)`) with the same result shape.
+Returns the authorized root database handle from the nearest provider. Child graph handles are obtained through typed query traversal and `.db()`.
 
 ## useQuery
 
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-query"
-  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+```tsx
+const tasks = useQuery(
+  projectDb.query.from(Task).orderBy(Task.createdAt, "desc"),
+)
 ```
 
-`useQuery(db, query, options?): Read<Out, QueryError>` — one `db.query` per view / lowered-AST pair (the same structural key `useLiveQuery` uses). A render-fresh factory with the same literals does not re-run. While a new run is loading the previous `data` stays, so a time-travel slider never flashes empty; a slower older answer never overwrites a newer one. `refetch()` re-issues the same run. `initialData` skips the automatic first fetch; `{ suspense: true }` throws until it settles.
-
-## useLivePull
-
-```tsx title="examples/reef/src/app/components/IssueDetail.tsx#use-pull-extra"
-  const extra = useLivePull(db, issueId, issueExtraShape).data ?? null;
-```
-
-`useLivePull(db, subject, shape, options?): Read<Pull | null>` — one record, live. `data` is the record or `null` (missing, deleted, or a required field hidden from you). A branded `row.id` (or a number) inline is fine, and so is a render-fresh shape — both are keyed structurally, the same way `useLiveQuery` keys the query. Same `initialData` / `suspense` options as `useLiveQuery`.
-
-## usePull
-
-`usePull(db, subject, shape, options?): Read<Pull | null>` — one `db.pull`, same `Read` shape. Previous `data` stays while a later subject is in flight. Same `initialData` / `suspense` options as `useQuery`.
-
-## useBasis
-
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-basis"
-  const maxT = useBasis(db);
-```
-
-`useBasis(db): number | undefined` — the **version number** this view reads at ([glossary](/concepts/glossary/#version-number)), from `session.t` on a live view (no `GET /info` per update). Reef uses it as the slider's upper bound. `useBasis(db.asOf(t))` answers `t` at once with no request.
-
-## useConnectionStatus
-
-`useConnectionStatus(): ConnectionStatus` and `useConnectionStatus(db): ConnectionStatus` — `"connecting" | "live" | "reconnecting" | "offline" | "closed"`, from the session the client already tracks (`generation`, `connects`, `closed`, `onWake`). The no-argument form needs a provider and rolls up every session that client has opened. The `db` form is per database and needs no provider. `"offline"` is an HTTPS-only client (no WebSocket) or `navigator.onLine === false`. Reef's header pill reads this instead of inferring "live" from `error === undefined`.
-
-## usePrincipal
-
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-principal"
-  const {
-    eid,
-    class: principalClass,
-    loading: selfLoading,
-  } = usePrincipal(db, {
-    onError: (error) => toast("error", errorMessage(error)),
-  });
-```
-
-`usePrincipal(db, options?): { eid, class, loading }` — who this session is, from `db.principal()` (cached per session generation). `eid` is `undefined` while loading, `null` until the principal row exists, then the branded id. `class` is the peer's class string. Needs no provider. `onError` fires if `/info` cannot name a principal.
-
-## useRamoseClaims
-
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-ramose-claims"
-  const claims = useRamoseClaims();
-```
-
-`useRamoseClaims(): Claims | undefined` — the provider's token payload, decoded, **not** verified (`ramose.class`, `sub`, `exp`). Synchronous when the `TokenSource` already has a cached JWT. Throws outside a provider.
-
-## useOperation
-
-```tsx title="examples/reef/src/app/screens/BoardScreen.tsx#use-operation"
-  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
-  // a toast — enforcement is server-side, the UI is only a hint.
-  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
-```
-
-```tsx title="examples/todos/src/App.tsx#todo-row-operation"
-  const { run } = useOperation(db, setDoneOp);
-```
-
-`useOperation(db, op, options?): { run, pending, pendingFor, error, errorFor, clearError }` — typed write hook for one operation. `run` matches `db.run`: `(input)` or `(entity, input)`. Needs no provider.
-
-- `run(...): Promise<{ ok: true, value } | { ok: false, error }>` — resolves instead of throwing, so `onClick={() => void run(...)}` is safe. Failure lands on `error` / `errorFor` / `onError`.
-- `pendingFor(key)` is `true` while that invocation is in flight (contextual ops key on the entity), so two buttons on one hook instance can spinner independently. `pending` is any in flight; `error` is the last settler.
-
-## errorMessage
+Subscribes during commit and returns `QueryState<A>`:
 
 ```ts
-errorMessage(e); // e.message ?? e._tag ?? String(e)
+type QueryState<A> =
+  | { status: "pending" }
+  | { status: "ready"; data: A }
+  | { status: "stale"; data: A }
+  | { status: "error"; error: unknown }
 ```
 
-`errorMessage(error: unknown): string` — the one-liner for a toast; a policy denial shows `Unauthorized`.
+Snapshots are stable under concurrent rendering. Strict Mode does not duplicate activation or subscriptions. A structurally equivalent query reuses the same local observation; changed literals create the appropriate new observation.
 
-## Rules
+`pending` has no complete local answer. `stale` preserves a complete cached answer while synchronization is behind. Terminal invalid or unauthorized queries use `error`; transient connectivity is represented by sync state and normally keeps prior data.
 
-- **Stable token source.** Build it once per sign-in, not per render.
-- **Inline query values.** `useLiveQuery` and `useQuery` key on the lowered AST — `useLiveQuery(db, Query.from(Comment).where({ issue: issueId }))` is the spelling. Same literals share a subscription / one-shot run; a changed literal resubscribes or re-runs. `useLivePull` / `usePull` key the shape the same way (lowered pull pattern). `db`, `db.asOf(t)` and `{ id }` subjects are compared by value, so inline is fine.
-- **One client per customer.** Remount the provider with `key={slug}` when the workspace changes.
-- **`key={row.id}`** in lists; the id is a `number`.
-- **`error` is the tagged failure.** Every hook reports the class itself, so `errorMessage(error)` works on every hook.
+## Entity handles in React
+
+Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when selected entity data or local pending metadata changes.
+
+```tsx
+<TaskRow
+  task={task.data}
+  pending={task.local.pending}
+  onDone={(done) => task.mutate.setDone({ done })}
+/>
+```
+
+Use stable entity ids as React keys.
+
+## useReceipt
+
+```tsx
+const state = useReceipt(receipt)
+```
+
+Observes one invocation through `queued`, `committed`, or `rejected`. Passing `null` returns an idle state suitable for components that have not invoked anything yet. Use this hook when output or rejection drives UI; use `entity.local.pending` for quiet row feedback.
+
+## useSyncState
+
+```tsx
+const sync = useSyncState(client)
+```
+
+Returns the client connection and catch-up state independently from any query. Render stale query data and connectivity messaging together rather than replacing useful data with a spinner.
+
+## Server rendering
+
+Browser database handles depend on IndexedDB and belong in Client Components. Server Components may execute explicit server queries through the server API, but Ramose does not serialize a browser replica into HTML or maintain a hidden SSR result cache.
 
 <Next links={[
-  { href: "/guides/ssr/", label: "Read on the server", why: "hydrate a live query from a Worker read" },
-  { href: "/guides/live-queries/", label: "Live queries", why: "what re-runs, and when" },
-  { href: "/reference/errors/", label: "Errors", why: "what lands in error and what to show" },
+  { href: "/reference/client-api/", label: "Browser client", why: "understand the framework-neutral state behind the hooks" },
+  { href: "/concepts/offline/", label: "Offline deep dive", why: "follow snapshots, outbox, optimistic layers, and multi-tab coordination" },
 ]} />

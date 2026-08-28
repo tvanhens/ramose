@@ -1,0 +1,56 @@
+<figure class="rg-graph-model">
+  <div class="rg-graph-level">
+    <div class="rg-graph-label"><span>Root</span><strong>Your deployment</strong></div>
+    <div class="rg-graph-database">
+      <header><b>Root database</b><code>at: []</code></header>
+      <div class="rg-graph-rows">
+        <span>Organization · acme</span>
+        <span>Organization · northwind</span>
+      </div>
+    </div>
+  </div>
+  <div class="rg-graph-arrow" aria-hidden="true"><span>authorized Graph row</span><b>↓</b></div>
+  <div class="rg-graph-level">
+    <div class="rg-graph-label"><span>Child</span><strong>Acme</strong></div>
+    <div class="rg-graph-database accent">
+      <header><b>Organization database</b><code>at: ["acme"]</code></header>
+      <div class="rg-graph-rows">
+        <span>Project · launch</span>
+        <span>Project · mobile</span>
+        <span>Member · ada</span>
+      </div>
+    </div>
+  </div>
+  <div class="rg-graph-arrow" aria-hidden="true"><span>authorized Graph row</span><b>↓</b></div>
+  <div class="rg-graph-level">
+    <div class="rg-graph-label"><span>Child</span><strong>Launch</strong></div>
+    <div class="rg-graph-database">
+      <header><b>Project database</b><code>at: ["acme", "launch"]</code></header>
+      <div class="rg-graph-rows">
+        <span>Task · write docs</span>
+        <span>Comment · ready to ship</span>
+      </div>
+    </div>
+  </div>
+  <figcaption>Paths use readable names. Storage follows stable graph identity, so renaming a graph changes its address without moving its data.</figcaption>
+</figure>
+
+<style>
+  .rg-graph-model { margin:1.75rem 0; padding:1.25rem; border:1px solid var(--sl-color-hairline); border-radius:1rem; background:linear-gradient(150deg,rgba(255,101,0,.06),transparent 46%),var(--rg-forest); }
+  .rg-graph-level { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:1rem; align-items:stretch; }
+  .rg-graph-label { display:flex; flex-direction:column; justify-content:center; padding:.75rem; color:var(--sl-color-gray-3); }
+  .rg-graph-label span { color:var(--rg-green); font-family:var(--sl-font-mono); font-size:.64rem; letter-spacing:.1em; text-transform:uppercase; }
+  .rg-graph-label strong { margin-top:.25rem; color:var(--rg-white); font-size:.9rem; }
+  .rg-graph-database { overflow:hidden; border:1px solid var(--sl-color-gray-5); border-radius:.75rem; background:#0c0b0a; }
+  .rg-graph-database.accent { border-color:#71401f; box-shadow:0 0 2.5rem -2rem rgba(255,101,0,.9); }
+  .rg-graph-database header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:.5rem; padding:.65rem .85rem; border-bottom:1px solid var(--sl-color-gray-6); }
+  .rg-graph-database header b { color:var(--sl-color-gray-2); font-size:.8rem; }
+  .rg-graph-database header code { padding:0; color:var(--sl-color-gray-4); background:transparent; font-size:.68rem; }
+  .rg-graph-rows { display:flex; flex-wrap:wrap; gap:.45rem; padding:.75rem .85rem; }
+  .rg-graph-rows span { padding:.35rem .55rem; border:1px solid var(--sl-color-gray-6); border-radius:.4rem; color:var(--sl-color-gray-3); background:#13110f; font-family:var(--sl-font-mono); font-size:.66rem; }
+  .rg-graph-arrow { display:grid; grid-template-columns:7rem minmax(0,1fr); gap:1rem; min-height:2.7rem; color:var(--sl-color-gray-4); }
+  .rg-graph-arrow span { align-self:center; text-align:right; font-family:var(--sl-font-mono); font-size:.56rem; }
+  .rg-graph-arrow b { align-self:center; margin-left:1rem; color:var(--rg-green); font-size:1.2rem; }
+  .rg-graph-model figcaption { margin-top:1rem; color:var(--sl-color-gray-3); font-size:.78rem; line-height:1.55; }
+  @media (max-width:36rem) { .rg-graph-level { grid-template-columns:1fr; gap:.35rem; } .rg-graph-label { padding:.25rem 0; } .rg-graph-arrow { grid-template-columns:1fr; gap:0; min-height:2.4rem; text-align:center; } .rg-graph-arrow span { display:none; } .rg-graph-arrow b { margin:0; } }
+</style>

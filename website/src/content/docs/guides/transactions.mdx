@@ -1,165 +1,112 @@
 ---
-title: Write data
-description: One function writes — db.run. Named operations, put and update, and the id of what you created.
+title: Mutate data
+description: Author targeted and targetless operations, optimistic projections, related writes, deletion, grants, and durable receipts.
 ---
-import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-App writes go through `db.run` — a named **operation**. Raw `POST /transact` is closed for app-class tokens by default; superuser and the seed token keep it, or set `writes: "all"`. A write either lands completely or not at all (Ramose calls a write a *transaction* — [glossary](/concepts/glossary/#write)). This page is for anyone who has defined a schema and wants to create, change and delete records; Reef's own writes are the examples.
+Every application change is an operation declared on an entity or trait. The local client exposes targetless operations under `db.mutate` and targeted operations under `entity.mutate`.
 
-Define every write in one registry both the app and the peer import (`defineOperations(catalog, { … })`, then `createServer({ operations })` and `Server({ operations, main })`). A trivial field update is `Operation.patch` — one line:
+<Learn learn={["How to author create, update, relation, and delete operations", "How to add deterministic optimistic behavior", "How receipts, rejection, and exact retry work"]} before={[{ href: "/concepts/operations/", label: "Operations" }]} minutes={14} />
 
-```ts title="examples/reef/src/app/mutations.ts#set-title-op"
-export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"], {
-  doc: "Set an issue's title",
-});
-```
-
-The string id (`issue/set-title`) is the wire contract. Convention: `entity/verb` or `entity/verb-noun`. Renaming an id, or reusing one with a different input or output, is a breaking change — add a new id. `doc:` is what humans read. `Server({ operations })` and `checkOperationsCoverage` fail with `OperationsCoverageError` when the peer is missing an id the client ships.
-
-<Learn learn={["Named operations are the only write path", "put makes a row so; update changes what's there", "How you get the id of what you created"]} before={[{ href: "/guides/catalog/", label: "Define your data" }]} minutes={8} />
-
-## The verbs
-
-`put` makes a row so. `update` changes what's there. `set` / `remove` / `delete` stay as the field-level escape hatch (a many-valued toggle, clearing a field):
-
-| call | does |
-| --- | --- |
-| `op.put(Entity, {…})` | make this row so — every required field; a unique key unifies (insert-or-update) |
-| `op.update(Entity, id, {…})` | change what's there — partial; the row must already exist |
-| `op.set` / `op.remove` / `op.delete` | field-by-field (same verbs on a handle) |
-
-A new entity cannot be created without its required fields. That is why the default row type is honest: creation carried them.
-
-## Create a record
-
-Reef's "New issue" dialog is one operation; everything inside lands together or not at all:
-
-```ts title="examples/reef/src/app/mutations.ts#create-issue-put"
-    const created = op.put(Issue, {
-      title: input.title,
-      description:
-        input.description != null && input.description !== ""
-          ? input.description
-          : undefined,
-      status: input.status,
-      priority: input.priority,
-      rank: input.rank,
-      createdAt: new Date(),
-      creator: op.principal,
-      assignee: input.assigneeId,
-      labels: input.labelIds ?? [],
-    });
-```
-
-Return the handle from the body with `EntityId` in the output schema. `db.run` resolves it after the writer assigns ids:
+## Create with a targetless operation
 
 ```ts
-const report = await db.run(createIssueOp, { title, … });
-const id = report.output.id;
+const Task = Ramose.Entity(
+  "task",
+  { title: Ramose.string(), done: Ramose.boolean() },
+  {
+    operations: (Operation) => ({
+      createTask: Operation({
+        self: false,
+        input: S.Struct({ title: S.String }),
+        output: S.Struct({ id: Ramose.EntityId }),
+        run(op, { title }) {
+          const task = op.create({ title, done: false })
+          return { id: task }
+        },
+      }),
+    }),
+  },
+)
 ```
 
-A **reference** field takes the other record's id as a number: `issue.set(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
+`op.create` is available because the operation is targetless and entity-owned. It requires every non-defaulted field and applies protected type and fixed trait bindings inside the authoritative transaction.
 
-## Change fields
-
-Dragging a card in Reef is one write of two facts — new column, new position:
-
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx#move-issue"
-                void move.run(id, { status, rank })
-```
-
-A single-value **field** replaces its old value ([glossary](/concepts/glossary/#field)): adding `Issue.status` again takes the old status back in the same write. You never write that step.
-
-<Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged into a new column in the top window is already in that column in the bottom one" caption="One drag, one write of two facts — and every window on that database follows." code="examples/reef/src/app/screens/BoardScreen.tsx#move-issue" />
-
-`update` never creates. Address by eid / handle / branded cell, or by a map that contains at least one `unique: "upsert"` field:
+The client call is graph-scoped:
 
 ```ts
-op.update(Issue, id, { status: "done" });
-op.update(User, { sub: "auth0|…", name: "Ada" });
+const receipt = db.mutate.createTask({ title: "Write the guide" })
+await receipt.queued
+await receipt.committed
 ```
 
-A missing row is `TxRejected` with `code: "tx/missing-entity"` — `put` / `set` addressed at a numeric id that does not exist, same as `update`. Clearing a required field (the `remove` escape hatch) is `tx/required`. An all-`undefined` map still checks that the subject exists. `update` by unique key sees a `put` of that key in the same operation.
+## Change a visible target
 
-`put` with a unique key unifies with the existing row — insert-or-update, still with full required data on create. Key-only `op.put(User, { sub })` is a compile error: that is `update`. A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
-
-```ts title="examples/reef/src/app/mutations.ts#seed-labels"
-    for (const seed of SEED_LABELS) {
-      op.put(Label, { name: seed.name, color: seed.color });
-    }
+```ts
+setDone: Operation({
+  input: S.Struct({ done: S.Boolean }),
+  output: S.Struct({}),
+  optimistic: ({ tx, self, input }) => tx.set(self, Task.done, input.done),
+  run(op, { done }) {
+    op.self.set(Task.done, done)
+    return {}
+  },
+})
 ```
 
-## Remove a value, delete a record
+The call is entity-scoped:
 
-Clearing a field is `remove` with no value; deleting a record is `delete`:
-
-```ts title="examples/reef/src/app/components/IssueDetail.tsx#set-description"
-                void setDescription.run(issueId, { text: description.trim() });
+```ts
+task.mutate.setDone({ done: true })
 ```
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx#delete-issue"
-            void removeIssue.run(issueId, {})
+The server requires the exact operation grant, a visible compatible `task`, valid input, and a valid produced change. The optimistic projection only controls the temporary local view.
+
+## Write related entities explicitly
+
+Declare every additional entity an operation may change:
+
+```ts
+addMember: Operation({
+  writes: [Membership],
+  input: S.Struct({ userId: Ramose.EntityId }),
+  output: S.Struct({}),
+  run(op, { userId }) {
+    op.put(Membership, { project: op.self, user: userId, role: "member" })
+    return {}
+  },
+})
 ```
 
-Neither erases history — [Time travel](/concepts/time-travel/) can still show the issue as it was.
+The write list is a closed capability, not documentation. References are checked against concrete or derived trait types on the committing basis.
 
-Deleting a parent does not infer a cascade. Incoming refs on survivors **clear** when the field is optional or many-valued, and **reject** (`tx/required`) when it is a required card-one ref — unless that referrer is itself deleted in the same write. Requiredness never implies delete-propagation. Delete the children first (Reef's comments stay required on their issue):
+## Use generated operations selectively
 
-```ts title="examples/reef/src/app/mutations.ts#delete-issue-op"
-    const issueId = op.self.eid;
-    if (typeof issueId === "number") {
-      const comments = await op.query(
-        Query.from(Comment)
-          .where({ issue: issueId })
-          .select({ id: Comment.id }),
-      );
-      for (const row of comments) op.delete(row.id);
-    }
-    op.delete(op.self);
-```
+Entities expose generated create, update, and delete operations unless you override a key. They use the same descriptors, grants, validation, and mutation namespaces as hand-written operations.
 
-The one declared cascade is `Field.owned` on an outgoing ref — see [Define your data](/guides/catalog/#many-unique-owned).
+Generated update is appropriate only when one grant may change every mutable field it exposes. Override it or add a narrower domain operation when fields have different write rules or a change requires invariants, side effects, or related writes.
 
-## Many-valued fields
+## Delete and ownership
 
-A field declared with `Field.many` is a set. One `set` per value; `remove` with the value takes one out:
+`op.self.delete()` retracts the target. Owned children follow declared cascading references. Other incoming required references can reject deletion; optional or many references may be cleared according to their schema.
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx#toggle-label"
-                      void toggleLabel.run(issueId, { labelId: label.id, on: !on })
-```
+Deletion changes the current value without erasing history. Use archive operations when the domain needs reversible lifecycle rather than disappearance.
 
-## What a write returns
+## Design optimistic projections for replay
 
-`db.run` resolves with `{ t, txEid, datomCount, dbAfter, output }`:
+Projections must be pure and must not query the local database. Send desired state (`{ done: true }`), not commands whose meaning depends on a basis (`toggle`). Do not optimistically claim uniqueness, authorization, payment success, or any conditional server outcome.
 
-- **`t`** — the **version number** the database is at after your write ([glossary](/concepts/glossary/#version-number)).
-- **`txEid`** — the write's own record id.
-- **`datomCount`** — how many facts landed.
-- **`dbAfter`** — the same database, pinned at `t`. Read through it and you see your own write with no second round trip.
-- **`output`** — the operation's encoded return. Return a handle (or `{ id: handle }`) with `EntityId` in the output schema to get the id of what you created.
+An operation without a projection still queues offline. The UI can show its receipt and pending entity state without inventing a result.
 
-A write also moves every open screen forward. A **live query** re-runs itself when the database changes ([glossary](/concepts/glossary/#live-query)); after your write, every open one re-runs at `t`.
+## Handle receipts
 
-## When a write is refused
+Receipts expose queued, committed, and rejected transitions plus the stable public result. Treat `queued` as durable local acceptance, not server success. Treat `committed` as authoritative.
 
-- **`Unauthorized`** (HTTP 403) — the permission check said no before anything reached **the writer** ([glossary](/concepts/glossary/#writer)). It carries `code: "policy"` and does not name a field or value.
-- **`TxRejected`** (HTTP 409) — the writer refused it: a schema violation, a unique-key conflict, or a denial the first check missed. No version number is spent.
-- **`OperationRejected`** (HTTP 409) — the named operation was refused (dangling / foreign entity, a body-thrown rejection).
-
-All are values you can match by name — see [Errors](/reference/errors/).
-
-In React, `useOperation` is the pending / error helper around `db.run` — not the write API:
-
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx#use-operation"
-  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
-  // a toast — enforcement is server-side, the UI is only a hint.
-  const move = useOperation(db, moveIssueOp, { onError: onWriteError });
-```
+If transport fails after submission, reuse the same receipt and invocation identity. Do not create a new invocation for the same intent. Ramose returns the original result for an identical retry and a conflict for changed input.
 
 <Next links={[
-  { href: "/guides/queries/", label: "Read data", why: "filter, shape and page through what you wrote" },
-  { href: "/guides/live-queries/", label: "Live queries", why: "make the screen update itself" },
-  { href: "/guides/permissions/", label: "Permissions", why: "who may write which field" },
+  { href: "/guides/permissions/", label: "Grant operations", why: "separate exact invoke permission from target readability" },
+  { href: "/guides/react/", label: "Render mutation state", why: "show optimistic, queued, rejected, and offline UX" },
+  { href: "/best-practices/operations/", label: "Operation best practices", why: "design stable verbs and safe retries" },
 ]} />
