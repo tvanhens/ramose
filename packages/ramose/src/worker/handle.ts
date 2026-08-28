@@ -26,6 +26,7 @@ import {
   parseOneShotReadRequest,
   queryMaxCells,
 } from "./authorized-read.ts";
+import { authorizedLiveResponse } from "./authorized-live.ts";
 import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
@@ -252,7 +253,7 @@ export const handle = (
     }
     if (peer.catalogs === undefined) return yield* new Unauthorized({});
     if (
-      !((rest === "/query" || rest === "/pull") && request.method === "POST") &&
+      !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
     ) {
       return yield* new Unauthorized({});
@@ -260,26 +261,32 @@ export const handle = (
 
     const parsed = yield* parseOneShotReadRequest(request, rest);
     const stacks = env.RAMOSE_STAGE !== "prod";
-    const result = yield* executeAuthorizedRead(
-      {
-        authenticate: Effect.succeed(callerFromVerified(verified)),
-        catalogs: peer.catalogs,
-        routeDatabase: DatabaseId.make(db),
-        catalogKey: parsed.catalogKey,
-        unitHash: parsed.unitHash,
-        currentDb: acquireCurrentDb(env, request),
-        view: parsed.view,
-      },
-      parsed.read,
-      { maxCells: queryMaxCells(env) },
-    ).pipe(
-      Effect.mapError((error) => {
-        if (error instanceof Unauthorized) return error;
-        if (isRamoseError(error)) return error;
-        if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
-        return fromThrown(error, { stacks });
-      }),
-    );
+    const input = {
+      authenticate:
+        rest === "/live"
+          ? authenticateRequest(request).pipe(Effect.map(callerFromVerified))
+          : Effect.succeed(callerFromVerified(verified)),
+      catalogs: peer.catalogs,
+      routeDatabase: DatabaseId.make(db),
+      catalogKey: parsed.catalogKey,
+      unitHash: parsed.unitHash,
+      currentDb: acquireCurrentDb(env, request),
+      view: parsed.view,
+    };
+    const mapReadError = (error: unknown): RamoseError => {
+      if (error instanceof Unauthorized) return error;
+      if (isRamoseError(error)) return error;
+      if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
+      return fromThrown(error, { stacks });
+    };
+    if (rest === "/live") {
+      return yield* authorizedLiveResponse(input, parsed.read, { maxCells: queryMaxCells(env) }, CORS).pipe(
+        Effect.mapError(mapReadError),
+      );
+    }
+    const result = yield* executeAuthorizedRead(input, parsed.read, {
+      maxCells: queryMaxCells(env),
+    }).pipe(Effect.mapError(mapReadError));
     return json({ result });
   });
 

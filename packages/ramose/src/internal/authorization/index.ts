@@ -13,7 +13,8 @@
  * {@link PolicyTemplateIR}; it is not a public `ramose` / `ramose/db`
  * export. Fail-closed until verified JWT (#412) and a deployed catalog.
  * #421 constructs the filtered `Db`; #423 runs query/pull/entity/ref/graph
- * through that value only.
+ * through that value only. #415 recomputes and diffs that same one-shot
+ * read under a short authorization lease.
  * Executable policy is authorization language v1.
  *
  * Contract: `src/internal/design/authorization.md`.
@@ -33,6 +34,7 @@ export * from "./identities.ts";
 export * from "./install.ts";
 export * from "./ir.ts";
 export * from "./json.ts";
+export * from "./live.ts";
 export * from "./principal.ts";
 export * from "./read-filter.ts";
 export * from "./reads.ts";

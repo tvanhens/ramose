@@ -43,6 +43,7 @@ describe("http data point", () => {
     expect(routeOf("/op", "POST")).toBe("op");
     expect(routeOf("/query", "POST")).toBe("query");
     expect(routeOf("/pull", "POST")).toBe("pull");
+    expect(routeOf("/live", "POST")).toBe("live");
     expect(routeOf("/info", "GET")).toBe("info");
     expect(routeOf("/admin/index", "POST")).toBe("admin");
     expect(routeOf("/admin/replica/reconnect", "POST")).toBe("admin");

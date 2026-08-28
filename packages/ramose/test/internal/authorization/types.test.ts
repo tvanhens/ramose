@@ -142,8 +142,13 @@ export type _noPublicAuthorization = Expect<
       | "compileReadFilter"
       | "executeAuthorizedRequest"
       | "executeAuthorizedRead"
+      | "executeAuthorizedLive"
       | "runOneShotRead"
       | "OneShotReadError"
+      | "diffAuthorizedResults"
+      | "liveDiffFromPrevious"
+      | "liveResultRows"
+      | "isSilentLiveDiff"
       | "callerFromVerified"
       | "uniqueCanonicalTypeName"
       | "DeployedCatalogs"
@@ -366,6 +371,8 @@ export type _executeAuthorizedReadOnBarrel = Expect<
 >;
 export type _runOneShotReadOnBarrel = Expect<Extends<"runOneShotRead", keyof AuthExports>>;
 export type _oneShotReadErrorOnBarrel = Expect<Extends<"OneShotReadError", keyof AuthExports>>;
+export type _executeAuthorizedLiveOnBarrel = Expect<Extends<"executeAuthorizedLive", keyof AuthExports>>;
+export type _diffAuthorizedResultsOnBarrel = Expect<Extends<"diffAuthorizedResults", keyof AuthExports>>;
 export type _uniqueCanonicalTypeNameOnBarrel = Expect<
   Extends<"uniqueCanonicalTypeName", keyof AuthExports>
 >;
@@ -1097,6 +1104,10 @@ describe("legacy authorization names cannot be imported", () => {
     expect("executeAuthorizedRead" in ir).toBe(true);
     expect("runOneShotRead" in ir).toBe(true);
     expect("OneShotReadError" in ir).toBe(true);
+    expect("executeAuthorizedLive" in ir).toBe(true);
+    expect("diffAuthorizedResults" in ir).toBe(true);
+    expect("liveDiffFromPrevious" in ir).toBe(true);
+    expect("isSilentLiveDiff" in ir).toBe(true);
     expect("callerFromVerified" in ir).toBe(true);
     expect("uniqueCanonicalTypeName" in ir).toBe(true);
     expect("requireCatalogKey" in ir).toBe(true);
@@ -1124,6 +1135,8 @@ describe("legacy authorization names cannot be imported", () => {
     expect("executeAuthorizedRead" in root).toBe(false);
     expect("runOneShotRead" in root).toBe(false);
     expect("OneShotReadError" in root).toBe(false);
+    expect("executeAuthorizedLive" in root).toBe(false);
+    expect("diffAuthorizedResults" in root).toBe(false);
     expect("callerFromVerified" in root).toBe(false);
     expect("uniqueCanonicalTypeName" in root).toBe(false);
     expect("DeployedCatalogs" in root).toBe(false);
@@ -1139,6 +1152,8 @@ describe("legacy authorization names cannot be imported", () => {
     expect("executeAuthorizedRead" in db).toBe(false);
     expect("runOneShotRead" in db).toBe(false);
     expect("OneShotReadError" in db).toBe(false);
+    expect("executeAuthorizedLive" in db).toBe(false);
+    expect("diffAuthorizedResults" in db).toBe(false);
     expect("callerFromVerified" in db).toBe(false);
     expect("uniqueCanonicalTypeName" in db).toBe(false);
   });

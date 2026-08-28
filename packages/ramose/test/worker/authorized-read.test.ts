@@ -46,6 +46,25 @@ describe("parseOneShotReadRequest", () => {
     });
   });
 
+  test("POST /live uses the same query body as one-shot", async () => {
+    const parsed = await runParse(
+      new Request("https://peer.test/db/todos/live", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          catalog,
+          unitHash,
+          query: { find: ["?t"], where: [["?e", ":issue/title", "?t"]] },
+        }),
+      }),
+      "/live",
+    );
+    expect(parsed.read).toEqual({
+      kind: "query",
+      query: { find: ["?t"], where: [["?e", ":issue/title", "?t"]] },
+    });
+  });
+
   test("GET /entity takes catalog proof from headers", async () => {
     const parsed = await runParse(
       new Request("https://peer.test/db/todos/entity/42?asOf=3", {

@@ -16,6 +16,7 @@ export interface AuthTarget {
 
 const everyDbSurface = (base: string, db: string, token?: string) => [
   json(base, `/db/${encodeURIComponent(db)}/query`, post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, token)),
+  json(base, `/db/${encodeURIComponent(db)}/live`, post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, token)),
   json(base, `/db/${encodeURIComponent(db)}/info`, token === undefined ? {} : { token }),
   json(base, `/db/${encodeURIComponent(db)}/transact`, post({ tx: [{ ":doc/title": "x" }] }, token)),
 ];

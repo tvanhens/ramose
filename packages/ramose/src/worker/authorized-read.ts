@@ -102,7 +102,7 @@ const readFromBody = (
   method: string,
   body: Record<string, unknown> | undefined,
 ): Result.Result<OneShotRead, BadRequest | Unauthorized> => {
-  if (rest === "/query" && method === "POST") {
+  if ((rest === "/query" || rest === "/live") && method === "POST") {
     if (body?.query !== undefined && body.query !== null) {
       return Result.succeed({
         kind: "query",
