@@ -10,9 +10,11 @@ import {
   CatalogId,
   CatalogUnitHash,
   CatalogVersionMismatch,
+  DatabaseId,
   EntityId,
   FieldId,
   SchemaFingerprint,
+  TraitId,
   assembleDeployedCatalogs,
   hashCatalogSchemaFingerprint,
   opaqueCatalogDenial,
@@ -25,13 +27,17 @@ import {
   catalog,
   catalogDescriptor,
   catalogSchemaTables,
+  childCatalog,
   childCatalogDescriptor,
   childTemplate,
   database,
   issueOwner,
+  principalOnlyTables,
+  principalOnlyTemplate,
   scalarField,
   templateOf,
   version,
+  withFingerprint,
 } from "./catalog-support.ts";
 import { digestHex } from "./fixtures.ts";
 
@@ -159,43 +165,14 @@ describe("assembleDeployedCatalogs", () => {
   });
 
   test("diamond reachability: same child via two parents, identical definition, one unit", async () => {
-    const lib = CatalogId.make("lib");
     const mid = CatalogId.make("mid");
-    const midTables = {
-      ...childCatalogDescriptor(),
-      id: mid,
-      entities: [{ id: EntityId.make({ catalog: mid, name: "user" }), traits: [] }],
-      fields: [
-        {
-          id: FieldId.make({
-            catalog: mid,
-            owner: { kind: "entity", name: "user" },
-            localName: "authId",
-          }),
-          valueType: "string" as const,
-          cardinality: "one" as const,
-          unique: "upsert" as const,
-          index: true,
-          optional: false,
-          owned: false,
-        },
-      ],
-    };
-    const midFingerprint = SchemaFingerprint.make(
-      await Effect.runPromise(
-        hashCatalogSchemaFingerprint({
-          ...midTables,
-          fingerprint: SchemaFingerprint.make("placeholder"),
-        }),
-      ),
-    );
-    const midDescriptor: CatalogDescriptor = { ...midTables, fingerprint: midFingerprint };
+    const midDescriptor = await withFingerprint(principalOnlyTables(mid, database, "profile"));
     const catalogs = await assemble({
       root: catalog,
       units: [
-        appUnit({ children: [lib, mid] }),
+        appUnit({ children: [childCatalog, mid] }),
         {
-          catalog: lib,
+          catalog: childCatalog,
           database,
           version,
           descriptor: childCatalogDescriptor(),
@@ -205,15 +182,159 @@ describe("assembleDeployedCatalogs", () => {
           catalog: mid,
           database,
           version,
-          children: [lib],
+          children: [childCatalog],
           descriptor: midDescriptor,
+          policy: principalOnlyTemplate("profile"),
+        },
+      ],
+    });
+    const deployed = Result.getOrThrow(catalogs.require(childCatalog));
+    expect(deployed.catalogKey).toBe(childCatalog);
+    expect([...catalogs.keys()]).toEqual([catalog, childCatalog, mid].slice().sort());
+  });
+
+  test("same-database root and child with distinct canonical user entities fail assembly", async () => {
+    const colliding = await withFingerprint(principalOnlyTables(childCatalog, database, "user"));
+    const failure = await assembleFail({
+      root: catalog,
+      units: [
+        appUnit({ children: [childCatalog] }),
+        {
+          catalog: childCatalog,
+          database,
+          version,
+          descriptor: colliding,
+          policy: principalOnlyTemplate("user"),
+        },
+      ],
+    });
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain(":user");
+    expect(failure.message).toContain(database);
+    expect(failure.message.toLowerCase()).toMatch(/physical|distinct|maps to/);
+    expect(failure.message).toContain("app/user");
+    expect(failure.message).toContain("lib/user");
+  });
+
+  test("entity-owned and trait-owned fields with the same physical ident fail assembly", async () => {
+    const tables = {
+      ...catalogSchemaTables(),
+      traits: [
+        ...catalogSchemaTables().traits,
+        { id: TraitId.make({ catalog, name: "user" }), traits: [] },
+      ],
+      fields: [
+        ...catalogSchemaTables().fields,
+        {
+          id: FieldId.make({
+            catalog,
+            owner: { kind: "trait", name: "user" },
+            localName: "authId",
+          }),
+          valueType: "string" as const,
+          cardinality: "one" as const,
+          index: false,
+          optional: false,
+          owned: false,
+        },
+      ],
+    };
+    const failure = await assembleFail({
+      root: catalog,
+      units: [appUnit({ descriptor: await withFingerprint(tables) })],
+    });
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain(":user/authId");
+    expect(failure.message).toMatch(/entity:user\/authId/);
+    expect(failure.message).toMatch(/trait:user\/authId/);
+  });
+
+  test("distinct canonical fields mapping to one physical ident fail assembly", async () => {
+    const libTables = {
+      ...principalOnlyTables(childCatalog, database, "account"),
+      traits: [{ id: TraitId.make({ catalog: childCatalog, name: "issue" }), traits: [] }],
+      fields: [
+        ...principalOnlyTables(childCatalog, database, "account").fields,
+        {
+          id: FieldId.make({
+            catalog: childCatalog,
+            owner: { kind: "trait", name: "issue" },
+            localName: "title",
+          }),
+          valueType: "string" as const,
+          cardinality: "one" as const,
+          index: false,
+          optional: false,
+          owned: false,
+        },
+      ],
+    };
+    const colliding = await withFingerprint(libTables);
+    const failure = await assembleFail({
+      root: catalog,
+      units: [
+        appUnit({ children: [childCatalog] }),
+        {
+          catalog: childCatalog,
+          database,
+          version,
+          descriptor: colliding,
           policy: childTemplate(),
         },
       ],
     });
-    const deployed = Result.getOrThrow(catalogs.require(lib));
-    expect(deployed.catalogKey).toBe(lib);
-    expect([...catalogs.keys()]).toEqual([catalog, lib, mid].slice().sort());
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain(":issue/title");
+    expect(failure.message).toContain(database);
+    expect(failure.message).toMatch(/entity:issue\/title/);
+    expect(failure.message).toMatch(/trait:issue\/title/);
+  });
+
+  test("same-database catalogs with non-colliding physical idents assemble", async () => {
+    const catalogs = await assemble({
+      root: catalog,
+      units: [
+        appUnit({ children: [childCatalog] }),
+        {
+          catalog: childCatalog,
+          database,
+          version,
+          descriptor: childCatalogDescriptor(),
+          policy: childTemplate(),
+        },
+      ],
+    });
+    expect([...catalogs.keys()]).toEqual([catalog, childCatalog].slice().sort());
+    expect(Result.getOrThrow(catalogs.require(childCatalog)).unit.catalog.entities[0]?.id.name).toBe(
+      "account",
+    );
+  });
+
+  test("same local names in different databases assemble", async () => {
+    const otherDatabase = DatabaseId.make("crm");
+    const otherDescriptor = await withFingerprint(
+      principalOnlyTables(childCatalog, otherDatabase, "user"),
+    );
+    const catalogs = await assemble({
+      root: catalog,
+      units: [
+        appUnit({ children: [childCatalog] }),
+        {
+          catalog: childCatalog,
+          database: otherDatabase,
+          version,
+          descriptor: otherDescriptor,
+          policy: principalOnlyTemplate("user"),
+        },
+      ],
+    });
+    expect(Result.getOrThrow(catalogs.require(catalog)).unit.catalog.database).toBe(database);
+    expect(Result.getOrThrow(catalogs.require(childCatalog)).unit.catalog.database).toBe(
+      otherDatabase,
+    );
+    expect(Result.getOrThrow(catalogs.require(childCatalog)).unit.catalog.entities[0]?.id.name).toBe(
+      "user",
+    );
   });
 
   test("cross-catalog identity on a descriptor fails at install/seal", async () => {
@@ -249,13 +370,12 @@ describe("assembleDeployedCatalogs", () => {
   });
 
   test("unused unreachable unit is InvalidIR", async () => {
-    const lib = CatalogId.make("lib");
     const failure = await assembleFail({
       root: catalog,
       units: [
         appUnit(),
         {
-          catalog: lib,
+          catalog: childCatalog,
           database,
           version,
           descriptor: childCatalogDescriptor(),

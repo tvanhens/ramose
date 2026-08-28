@@ -106,6 +106,20 @@ export const catalogSchemaTables = (): Omit<CatalogDescriptor, "fingerprint"> =>
   ],
 });
 
+export const withFingerprint = async (
+  tables: Omit<CatalogDescriptor, "fingerprint">,
+): Promise<CatalogDescriptor> => {
+  const fingerprint = SchemaFingerprint.make(
+    await Effect.runPromise(
+      hashCatalogSchemaFingerprint({
+        ...tables,
+        fingerprint: SchemaFingerprint.make("placeholder"),
+      }),
+    ),
+  );
+  return { ...tables, fingerprint };
+};
+
 const fingerprint = SchemaFingerprint.make(
   await Effect.runPromise(
     hashCatalogSchemaFingerprint({
@@ -118,6 +132,69 @@ const fingerprint = SchemaFingerprint.make(
 export const catalogDescriptor = (): CatalogDescriptor => ({
   ...catalogSchemaTables(),
   fingerprint,
+});
+
+/** Principal-only catalog: one entity and its unique subject field. */
+export const principalOnlyTables = (
+  id: CatalogId,
+  databaseId: DatabaseId,
+  entityName: string,
+): Omit<CatalogDescriptor, "fingerprint"> => ({
+  id,
+  database: databaseId,
+  version,
+  entities: [{ id: EntityId.make({ catalog: id, name: entityName }), traits: [] }],
+  traits: [],
+  fields: [
+    {
+      id: FieldId.make({
+        catalog: id,
+        owner: { kind: "entity", name: entityName },
+        localName: "authId",
+      }),
+      valueType: "string",
+      cardinality: "one",
+      unique: "upsert",
+      index: true,
+      optional: false,
+      owned: false,
+    },
+  ],
+  operations: [],
+  traitComposition: [],
+});
+
+export const principalOnlyTemplate = (entityName: string): PolicyTemplateIR => ({
+  _tag: "PolicyTemplateIR",
+  version: POLICY_TEMPLATE_IR_VERSION,
+  languageVersion: "v1",
+  classes: ["member"],
+  claims: [],
+  principal: {
+    subjectClaim: "sub",
+    entity: RelativeFieldId.make({ owner: { kind: "entity", name: entityName }, localName: "authId" }),
+  },
+  rules: [
+    {
+      id: RuleId.make(digestHex(0x21)),
+      focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: entityName } },
+      expr: { _tag: "hasClass", class: "member" },
+      usesResource: false,
+      usesMe: false,
+      usesSubject: false,
+      traversalDepth: 0,
+    },
+  ],
+  decisions: {
+    entities: [
+      {
+        target: { _tag: "RelativeEntityId", name: entityName },
+        decision: { allow: [RuleId.make(digestHex(0x21))], deny: [] },
+      },
+    ],
+    traits: [],
+    fields: [],
+  },
 });
 
 export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
@@ -159,32 +236,12 @@ export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTempla
   ...extras,
 });
 
-const childCatalog = CatalogId.make("lib");
+export const childCatalog = CatalogId.make("lib");
+/** Non-colliding child entity so `lib` can share `todos` with `app`. */
+export const childEntityName = "account";
 
-export const childCatalogTables = (): Omit<CatalogDescriptor, "fingerprint"> => ({
-  id: childCatalog,
-  database,
-  version,
-  entities: [{ id: EntityId.make({ catalog: childCatalog, name: "user" }), traits: [] }],
-  traits: [],
-  fields: [
-    {
-      id: FieldId.make({
-        catalog: childCatalog,
-        owner: { kind: "entity", name: "user" },
-        localName: "authId",
-      }),
-      valueType: "string",
-      cardinality: "one",
-      unique: "upsert",
-      index: true,
-      optional: false,
-      owned: false,
-    },
-  ],
-  operations: [],
-  traitComposition: [],
-});
+export const childCatalogTables = (): Omit<CatalogDescriptor, "fingerprint"> =>
+  principalOnlyTables(childCatalog, database, childEntityName);
 
 const childFingerprint = SchemaFingerprint.make(
   await Effect.runPromise(
@@ -200,35 +257,4 @@ export const childCatalogDescriptor = (): CatalogDescriptor => ({
   fingerprint: childFingerprint,
 });
 
-export const childTemplate = (): PolicyTemplateIR => ({
-  _tag: "PolicyTemplateIR",
-  version: POLICY_TEMPLATE_IR_VERSION,
-  languageVersion: "v1",
-  classes: ["member"],
-  claims: [],
-  principal: {
-    subjectClaim: "sub",
-    entity: RelativeFieldId.make({ owner: { kind: "entity", name: "user" }, localName: "authId" }),
-  },
-  rules: [
-    {
-      id: RuleId.make(digestHex(0x21)),
-      focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "user" } },
-      expr: { _tag: "hasClass", class: "member" },
-      usesResource: false,
-      usesMe: false,
-      usesSubject: false,
-      traversalDepth: 0,
-    },
-  ],
-  decisions: {
-    entities: [
-      {
-        target: { _tag: "RelativeEntityId", name: "user" },
-        decision: { allow: [RuleId.make(digestHex(0x21))], deny: [] },
-      },
-    ],
-    traits: [],
-    fields: [],
-  },
-});
+export const childTemplate = (): PolicyTemplateIR => principalOnlyTemplate(childEntityName);

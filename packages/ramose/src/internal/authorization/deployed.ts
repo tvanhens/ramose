@@ -4,6 +4,11 @@
  * Assembled once at startup from reachable code definitions. The sealed
  * {@link InstalledCatalogUnitV1} is the sole runtime authority. Not a
  * module-global mutable map and not import-order registration.
+ *
+ * Reachable catalogs may share a database. Distinct canonical entity or
+ * field identities must not collapse onto one physical ident in that
+ * database (`:user`, `:user/authId`). Ambiguous collisions fail assembly
+ * with {@link InvalidIR} before the registry is returned.
  */
 
 import * as Effect from "effect/Effect";
@@ -16,9 +21,10 @@ import {
   sealInstalledCatalogUnit,
 } from "./catalog-unit.ts";
 import { CatalogMismatch, CatalogUnitCorrupt, CatalogVersionMismatch, InvalidIR } from "./failures.ts";
-import type { CatalogId, CatalogUnitHash, CatalogVersion, DatabaseId } from "./identities.ts";
+import type { CatalogId, CatalogUnitHash, CatalogVersion, DatabaseId, EntityId, FieldId } from "./identities.ts";
 import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { CatalogBindingTarget, PolicyTemplateIR } from "./ir.ts";
+import { entityKey, fieldKey } from "./validation/common.ts";
 
 export type CatalogBoundRef = {
   readonly catalogKey: CatalogId;
@@ -70,6 +76,72 @@ const formatPath = (path: readonly CatalogId[]): string => path.join(" → ");
 
 const compareCatalogId = (left: CatalogId, right: CatalogId): number =>
   left < right ? -1 : left > right ? 1 : 0;
+
+const compareDatabaseId = (left: DatabaseId, right: DatabaseId): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+/** Persisted entity type ident. Catalog key is not part of the wire form. */
+const physicalEntityIdent = (id: EntityId): `:${string}` => `:${id.name}`;
+
+/** Persisted attribute ident. Owner kind and catalog key are not persisted. */
+const physicalFieldIdent = (id: FieldId): `:${string}/${string}` =>
+  `:${id.owner.name}/${id.localName}`;
+
+const formatEntityId = (id: EntityId): string => `${id.catalog}/${id.name}`;
+
+const formatFieldId = (id: FieldId): string =>
+  `${id.catalog}/${id.owner.kind}:${id.owner.name}/${id.localName}`;
+
+/**
+ * One physical ident in a database may belong to only one canonical
+ * identity. The same identity seen again (diamond reachability, repeated
+ * listing of one unit) is valid. Owner kind is not part of the physical
+ * field ident, so entity-owned and trait-owned fields collide when their
+ * owner name and local name match.
+ */
+const requireUniquePhysicalIdents = (
+  catalogs: readonly DeployedCatalog[],
+): Result.Result<void, InvalidIR> =>
+  Result.gen(function* () {
+    const byDatabase = new Map<DatabaseId, DeployedCatalog[]>();
+    for (const deployed of catalogs) {
+      const database = deployed.unit.catalog.database;
+      const existing = byDatabase.get(database);
+      if (existing === undefined) byDatabase.set(database, [deployed]);
+      else existing.push(deployed);
+    }
+
+    const databases = [...byDatabase.keys()].sort(compareDatabaseId);
+    for (const database of databases) {
+      const units = (byDatabase.get(database) ?? [])
+        .slice()
+        .sort((left, right) => compareCatalogId(left.catalogKey, right.catalogKey));
+      const entities = new Map<string, EntityId>();
+      const fields = new Map<string, FieldId>();
+      for (const deployed of units) {
+        for (const entity of deployed.unit.catalog.entities) {
+          const ident = physicalEntityIdent(entity.id);
+          const prior = entities.get(ident);
+          if (prior !== undefined && entityKey(prior) !== entityKey(entity.id)) {
+            return yield* invalid(
+              `physical entity ident '${ident}' in database '${database}' maps to distinct canonical identities ${formatEntityId(prior)} and ${formatEntityId(entity.id)}`,
+            );
+          }
+          entities.set(ident, entity.id);
+        }
+        for (const field of deployed.unit.catalog.fields) {
+          const ident = physicalFieldIdent(field.id);
+          const prior = fields.get(ident);
+          if (prior !== undefined && fieldKey(prior) !== fieldKey(field.id)) {
+            return yield* invalid(
+              `physical field ident '${ident}' in database '${database}' maps to distinct canonical identities ${formatFieldId(prior)} and ${formatFieldId(field.id)}`,
+            );
+          }
+          fields.set(ident, field.id);
+        }
+      }
+    }
+  });
 
 const catalogTargetOf = (descriptor: CatalogDescriptor): CatalogBindingTarget => ({
   database: descriptor.database,
@@ -245,6 +317,8 @@ export const assembleDeployedCatalogs = Effect.fn("Authorization.assembleDeploye
       }
       byKey.set(key, assembled[0]!);
     }
+
+    yield* Effect.fromResult(requireUniquePhysicalIdents([...byKey.values()]));
 
     return buildRegistry(Object.freeze(byKey));
   },
