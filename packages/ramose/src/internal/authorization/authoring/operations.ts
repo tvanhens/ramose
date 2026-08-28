@@ -258,6 +258,77 @@ const unwrapPropertySchema = (schema: Schema.Top): Schema.Top => {
   return current;
 };
 
+const isRamoseRefIdentifier = (value: unknown): boolean =>
+  value === "ramose/ref" || value === "ramose/ref-self";
+
+const astHasRamoseRefMarker = (ast: SchemaAST.AST): boolean => {
+  const node = ast as SchemaAST.AST & {
+    readonly annotations?: { readonly identifier?: unknown };
+    readonly checks?: ReadonlyArray<{
+      readonly annotations?: { readonly identifier?: unknown };
+    }>;
+  };
+  return (
+    isRamoseRefIdentifier(node.annotations?.identifier) ||
+    node.checks?.some((check) =>
+      isRamoseRefIdentifier(check.annotations?.identifier)
+    ) === true
+  );
+};
+
+const astContainsRamoseRef = (
+  ast: SchemaAST.AST,
+  active: ReadonlySet<object> = new Set(),
+): boolean => {
+  if (active.has(ast)) return false;
+  const next = new Set(active).add(ast);
+  const node = ast as SchemaAST.AST & {
+    readonly types?: ReadonlyArray<SchemaAST.AST>;
+    readonly elements?: ReadonlyArray<SchemaAST.AST>;
+    readonly rest?: ReadonlyArray<SchemaAST.AST>;
+    readonly propertySignatures?: ReadonlyArray<{ readonly type: SchemaAST.AST }>;
+    readonly encoding?: ReadonlyArray<{ readonly to: SchemaAST.AST }>;
+  };
+  if (astHasRamoseRefMarker(ast)) return true;
+  const children = [
+    ...(node.types ?? []),
+    ...(node.elements ?? []),
+    ...(node.rest ?? []),
+    ...(node.propertySignatures ?? []).map((field) => field.type),
+    ...(node.encoding ?? []).map((link) => link.to),
+  ];
+  return children.some((child) => astContainsRamoseRef(child, next));
+};
+
+const schemaContainsRamoseRef = (
+  schema: Schema.Top,
+  active: ReadonlySet<Schema.Top> = new Set(),
+): boolean => {
+  schema = unwrapPropertySchema(schema);
+  if (active.has(schema)) return false;
+  if (tryInferDbValueType(schema) === "ref") return true;
+  if (astContainsRamoseRef(schema.ast)) return true;
+  const next = new Set(active).add(schema);
+  const node = schema as Schema.Top & {
+    readonly fields?: Readonly<Record<PropertyKey, Schema.Top>>;
+    readonly value?: Schema.Top;
+    readonly members?: ReadonlyArray<Schema.Top>;
+    readonly elements?: ReadonlyArray<Schema.Top>;
+    readonly rest?: ReadonlyArray<Schema.Top>;
+    readonly from?: Schema.Top;
+    readonly to?: Schema.Top;
+  };
+  return [
+    ...Object.values(node.fields ?? {}),
+    ...(node.value === undefined ? [] : [node.value]),
+    ...(node.members ?? []),
+    ...(node.elements ?? []),
+    ...(node.rest ?? []),
+    ...(node.from === undefined ? [] : [node.from]),
+    ...(node.to === undefined ? [] : [node.to]),
+  ].some((child) => schemaContainsRamoseRef(child, next));
+};
+
 /** Conservative policy-visible projection of an Effect Schema. */
 export const lowerOperationSchema = (
   catalog: CatalogId,
@@ -269,6 +340,11 @@ export const lowerOperationSchema = (
   const next = new Set(active).add(schema);
   const valueType = tryInferDbValueType(schema);
   if (valueType === "ref") return refShape(catalog, schema);
+  if (astHasRamoseRefMarker(schema.ast)) {
+    throw new Error(
+      `refs wrapped by an unsupported ${SchemaAST.toType(schema.ast)._tag} operation schema cannot be lowered`,
+    );
+  }
   if (valueType !== undefined) {
     return { _tag: "scalar", valueType };
   }
@@ -297,6 +373,11 @@ export const lowerOperationSchema = (
       _tag: "array",
       items: lowerOperationSchema(catalog, record.value, next),
     };
+  }
+  if (schemaContainsRamoseRef(schema)) {
+    throw new Error(
+      `refs nested inside an unsupported ${SchemaAST.toType(schema.ast)._tag} operation schema cannot be lowered`,
+    );
   }
   return primitiveShape(schema.ast) ?? { _tag: "opaque" };
 };

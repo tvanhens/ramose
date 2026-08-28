@@ -462,7 +462,6 @@ export type OwnedOp<
   "self" | "entity" | "set" | "remove" | "delete" | "put" | "update"
 > & {
   readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
-  entity(): OwnedTargetHandle<Owner>;
   entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
   entity<const Entity extends AnyEntity>(
     definition: Entity,

@@ -76,6 +76,8 @@ const BoundEntity = Entity(
         input: Schema.Struct({ title: Schema.String }),
         output: Schema.Struct({}),
         run(op, { title }) {
+          // @ts-expect-error anonymous handles cannot omit required owner fields
+          op.entity();
           op.self.set(BoundEntity.title, title);
           op.set(BoundEntity, op.self, BoundEntity.title, title);
           op.put(BoundEntity, { title });

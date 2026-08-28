@@ -296,6 +296,50 @@ describe("owned operation lowering", () => {
     });
   });
 
+  test("rejects refs hidden in unsupported union, tuple, and refinement schemas", () => {
+    const Missing = Entity("missing", {});
+    const schemas = [
+      Schema.Union([RefSchema.self, Schema.String]),
+      Schema.Tuple([RefSchema(Missing), Schema.String]),
+      RefSchema.self.pipe(Schema.check(Schema.isGreaterThan(0))),
+    ];
+    for (const schema of schemas) {
+      expect(() => lowerOperationSchema(catalog, schema)).toThrow(
+        /refs (nested inside|wrapped by) an unsupported .* operation schema cannot be lowered/,
+      );
+    }
+  });
+
+  test("fails operation lowering before fingerprinting a nested opaque ref", async () => {
+    const Invalid = Entity(
+      "invalidNestedRef",
+      {},
+      {
+        operations: (Operation) => ({
+          inspect: Operation({
+            input: Schema.Union([RefSchema.self, Schema.String]),
+            output: Schema.Struct({}),
+            run() {
+              return {};
+            },
+          }),
+        }),
+      },
+    );
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        lowerOwnedOperations(
+          catalog,
+          CatalogSchema({ invalidNestedRef: Invalid }),
+          artifactHash,
+        ),
+      ),
+    );
+    expect(failure.message).toBe(
+      "operation schema lowering failed: refs nested inside an unsupported Union operation schema cannot be lowered",
+    );
+  });
+
   test("is idempotent across repeated schema components and rejects conflicts", async () => {
     const { App } = fixture();
     const repeated = await Effect.runPromise(
