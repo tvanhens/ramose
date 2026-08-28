@@ -14,6 +14,7 @@ const ADDS = [
   "Server",
   "Database",
   "Catalog",
+  "Policy",
   // peer
   "PEER_COMPAT",
   "PEER_BINDINGS",
@@ -51,7 +52,6 @@ const KILLED = [
   "ReadDatabases",
   "ServerBinding",
   "ServerHttp",
-  "Policy",
   "policy",
   "PolicyError",
   "filterDb",

@@ -1,13 +1,19 @@
 /** Permanently keyed runnable catalog definitions. */
 
+import * as Effect from "effect/Effect";
 import type { CodeDefinition } from "./db/Binding.ts";
 import type { AnySchema } from "./db/Schema.ts";
+import type { InvalidIR } from "./internal/authorization/failures.ts";
 import type { PolicyTemplateIR } from "./internal/authorization/ir.ts";
+
+export type CatalogPolicy =
+  | PolicyTemplateIR
+  | Effect.Effect<PolicyTemplateIR, InvalidIR>;
 
 export interface CatalogProps<S extends AnySchema = AnySchema> {
   readonly schema: S;
-  /** Catalog-relative, data-only authorization policy. */
-  readonly policy: PolicyTemplateIR;
+  /** Catalog-relative policy data or a `Policy.compileReadAuthorization` result. */
+  readonly policy: CatalogPolicy;
 }
 
 /**
@@ -21,7 +27,7 @@ export interface CatalogDefinition<
   readonly _tag: "Catalog";
   readonly key: Key;
   readonly schema: S;
-  readonly policy: PolicyTemplateIR;
+  readonly policy: CatalogPolicy;
 }
 
 export const isCatalogDefinition = (
@@ -34,8 +40,8 @@ export const isCatalogDefinition = (
   (value as { readonly key: string }).key.length > 0 &&
   (value as { readonly schema?: { readonly _tag?: unknown } }).schema?._tag ===
     "Schema" &&
-  (value as { readonly policy?: { readonly _tag?: unknown } }).policy?._tag ===
-    "PolicyTemplateIR";
+  ((value as { readonly policy?: { readonly _tag?: unknown } }).policy?._tag ===
+    "PolicyTemplateIR" || Effect.isEffect((value as { readonly policy?: unknown }).policy));
 
 /** Define one runnable catalog. Assembly starts from an explicit root value. */
 export const Catalog = <const Key extends string, const S extends AnySchema>(
@@ -48,8 +54,13 @@ export const Catalog = <const Key extends string, const S extends AnySchema>(
   if (props.schema?._tag !== "Schema") {
     throw new Error("ramose/catalog: schema must be a Ramose.Schema");
   }
-  if (props.policy?._tag !== "PolicyTemplateIR") {
-    throw new Error("ramose/catalog: policy must be compiled authorization data");
+  if (
+    !Effect.isEffect(props.policy) &&
+    props.policy?._tag !== "PolicyTemplateIR"
+  ) {
+    throw new Error(
+      "ramose/catalog: policy must be authorization data or a Policy compiler Effect",
+    );
   }
   return Object.freeze({
     _tag: "Catalog" as const,

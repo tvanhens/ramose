@@ -27,10 +27,50 @@ export interface CreationDefaultContext {
   readonly now: Date;
 }
 
+/** Canonical data that identifies values captured by a creation default. */
+export type CreationDefaultInputs =
+  | null
+  | string
+  | number
+  | boolean
+  | readonly CreationDefaultInputs[]
+  | { readonly [key: string]: CreationDefaultInputs };
+
+const CREATION_DEFAULT_INPUTS: unique symbol = Symbol.for(
+  "ramose.creation-default.inputs",
+);
+
 /** Synchronous creation-time value computation. `undefined` means missing. */
-export type CreationDefault<A> = (
+export type CreationDefault<A> = ((
   context: CreationDefaultContext,
-) => A | undefined;
+) => A | undefined) & {
+  readonly [CREATION_DEFAULT_INPUTS]?: CreationDefaultInputs;
+};
+
+/**
+ * Declare every runtime/config value captured by a default as canonical data.
+ * Catalog assembly rejects unannotated defaults because function source cannot
+ * identify closure state.
+ */
+export const creationDefault = <
+  A,
+  const Inputs extends CreationDefaultInputs,
+>(
+  inputs: Inputs,
+  get: (context: CreationDefaultContext) => A | undefined,
+): CreationDefault<A> => {
+  Object.defineProperty(get, CREATION_DEFAULT_INPUTS, {
+    value: inputs,
+    enumerable: false,
+  });
+  return get as CreationDefault<A>;
+};
+
+/** @internal Canonical captured inputs retained on a declared default. */
+export const creationDefaultInputsOf = (
+  get: CreationDefault<unknown>,
+): CreationDefaultInputs | undefined =>
+  get[CREATION_DEFAULT_INPUTS];
 
 /**
  * Field options. Cardinality, uniqueness and ownership live on

@@ -740,11 +740,14 @@ describe("expression-size bounds before iterating", () => {
 });
 
 describe("public barrels stay closed", () => {
-  test("authoring names are not on ramose or ramose/db", async () => {
+  test("authoring is root-only behind the Policy namespace", async () => {
     const root = await import("../../../src/index.ts");
     const db = await import("../../../src/db/index.ts");
+    expect("Policy" in root).toBe(true);
+    expect("compileReadAuthorization" in root.Policy).toBe(true);
     expect("compileReadAuthorization" in root).toBe(false);
     expect("compileReadAuthorizationResult" in root).toBe(false);
+    expect("Policy" in db).toBe(false);
     expect("compileReadAuthorization" in db).toBe(false);
     expect("hasClass" in db).toBe(false);
     expect("compileReadAuthorization" in (await import("../../../src/internal/authorization/index.ts"))).toBe(

@@ -12,6 +12,7 @@ import {
   Entity,
   Schema,
   Trait,
+  creationDefault,
   resolveCreationValues,
   string,
   type AnySchema,
@@ -60,6 +61,17 @@ describe("Catalog", () => {
     expect(() => Catalog("", { schema: App, policy: definition.policy })).toThrow(
       /permanent key must not be empty/,
     );
+  });
+
+  test("accepts the supported root Policy compiler Effect directly", async () => {
+    const App = Schema({});
+    const definition = Catalog("effect-policy", {
+      schema: App,
+      policy: compileReadAuthorization({ schema: App, rules: [] }),
+    });
+
+    const registry = await assemble(definition);
+    expect(registry.keys().map(String)).toEqual(["effect-policy"]);
   });
 });
 
@@ -190,6 +202,73 @@ describe("catalog definition assembly", () => {
     );
     expect(rightUnit.unit.catalog.fingerprint).toBe(leftUnit.unit.catalog.fingerprint);
     expect(rightUnit.unitHash).not.toBe(leftUnit.unitHash);
+  });
+
+  test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
+    const Empty = Schema({});
+    const left = Catalog("left-child", { schema: Empty, policy: await policy(Empty) });
+    const right = Catalog("right-child", { schema: Empty, policy: await policy(Empty) });
+    const Graph = Trait("multiGraph", { catalog: string() }, {
+      bind: (catalog) => ({
+        values: { catalog: "shared" },
+        dependencies: [catalog],
+      }),
+    });
+    const Root = Entity("multiRoot", {}, {
+      traits: [Graph(left), Graph(right)],
+    });
+    const RootSchema = Schema({ multiRoot: Root });
+    const root = Catalog("multi-root", {
+      schema: RootSchema,
+      policy: await policy(RootSchema),
+    });
+
+    const registry = await assemble(root);
+    expect(registry.keys().map(String)).toEqual([
+      "left-child",
+      "multi-root",
+      "right-child",
+    ]);
+    const installed = Result.getOrThrow(
+      registry.require(CatalogId.make("multi-root")),
+    );
+    expect(installed.unit.catalog.entities[0]!.traits).toHaveLength(1);
+  });
+
+  test("binds declared captured default inputs and rejects undeclared captures", async () => {
+    const make = (value: string) => creationDefault({ value }, () => value);
+    const LeftSchema = Schema({ item: Entity("item", {
+      value: string({ default: make("left") }),
+    }) });
+    const RightSchema = Schema({ item: Entity("item", {
+      value: string({ default: make("right") }),
+    }) });
+    const left = Catalog("defaults", {
+      schema: LeftSchema,
+      policy: await policy(LeftSchema),
+    });
+    const right = Catalog("defaults", {
+      schema: RightSchema,
+      policy: await policy(RightSchema),
+    });
+    const leftUnit = Result.getOrThrow(
+      (await assemble(left)).require(CatalogId.make("defaults")),
+    );
+    const rightUnit = Result.getOrThrow(
+      (await assemble(right)).require(CatalogId.make("defaults")),
+    );
+    expect(rightUnit.unitHash).not.toBe(leftUnit.unitHash);
+
+    const UnsafeSchema = Schema({ item: Entity("item", {
+      value: string({ default: () => "captured" }),
+    }) });
+    const unsafe = Catalog("unsafe-default", {
+      schema: UnsafeSchema,
+      policy: await policy(UnsafeSchema),
+    });
+    expect((await assembleFailure(unsafe)).message).toMatch(
+      /must declare canonical captured inputs with creationDefault/,
+    );
   });
 
   test("rejects duplicate permanent keys with both internal reachability paths", async () => {

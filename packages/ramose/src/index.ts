@@ -47,8 +47,10 @@ export { Database } from "./Database.ts";
 export {
   Catalog,
   type CatalogDefinition,
+  type CatalogPolicy,
   type CatalogProps,
 } from "./Catalog.ts";
+export * as Policy from "./internal/authorization/authoring/index.ts";
 export {
   DEFAULT_JWT_MAX_TTL,
   type AuthEnvValue,

@@ -42,6 +42,8 @@ export {
   type AnyField,
   type CreationDefault,
   type CreationDefaultContext,
+  type CreationDefaultInputs,
+  creationDefault,
   type FieldOptions,
   type ValueOf,
 } from "./Field.ts";

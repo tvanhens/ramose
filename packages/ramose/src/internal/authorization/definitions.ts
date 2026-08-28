@@ -13,7 +13,11 @@ import {
 } from "../../db/Binding.ts";
 import { compositionValueMetadata } from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
-import type { AnyField } from "../../db/Field.ts";
+import {
+  creationDefaultInputsOf,
+  type AnyField,
+  type CreationDefault,
+} from "../../db/Field.ts";
 import {
   collectCodeReachability,
   collectDefinitionEntities,
@@ -123,14 +127,27 @@ const ownerRef = (kind: "entity" | "trait", name: string): OwnerRef => ({
   name,
 });
 
+const stableDirectTraits = (
+  owner: ComposerLike,
+): readonly TraitLike[] => {
+  const seen = new Set<string>();
+  const out: TraitLike[] = [];
+  for (const trait of traitsOf(owner)) {
+    const stable = traitDefinitionOf(trait as unknown as TraitLike);
+    if (seen.has(stable.ns)) continue;
+    seen.add(stable.ns);
+    out.push(stable);
+  }
+  return out;
+};
+
 const directTraits = (
   catalog: CatalogId,
   owner: ComposerLike,
 ): readonly TraitId[] =>
-  traitsOf(owner).map((trait) => {
-    const stable = traitDefinitionOf(trait as unknown as TraitLike);
-    return TraitId.make({ catalog, name: stable.ns });
-  });
+  stableDirectTraits(owner).map((trait) =>
+    TraitId.make({ catalog, name: trait.ns })
+  );
 
 const refTarget = (
   catalog: CatalogId,
@@ -211,6 +228,22 @@ const jsonValue = (value: unknown): JsonValue => {
   throw new Error("catalog fixed values must encode as finite stored data");
 };
 
+const defaultIdentity = (
+  get: CreationDefault<unknown>,
+  label: string,
+): JsonValue => {
+  const inputs = creationDefaultInputsOf(get);
+  if (inputs === undefined) {
+    throw new Error(
+      `${label} must declare canonical captured inputs with creationDefault(inputs, get)`,
+    );
+  }
+  return {
+    source: Function.prototype.toString.call(get),
+    inputs: jsonValue(inputs),
+  };
+};
+
 /** Canonical executable creation metadata retained outside the inert unit. */
 const creationHashMaterial = (
   schema: AnySchema,
@@ -228,7 +261,10 @@ const creationHashMaterial = (
           .sort((left, right) => compareText(left.ident, right.ident))
           .map((field) => ({
             field: field.ident,
-            source: Function.prototype.toString.call(field.default),
+            default: defaultIdentity(
+              field.default!,
+              `field default '${field.ident}'`,
+            ),
           })),
         fixed: [...metadata.fixed.values()]
           .sort((left, right) => compareText(left.ident, right.ident))
@@ -237,7 +273,10 @@ const creationHashMaterial = (
           .sort(([left], [right]) => compareText(left, right))
           .map(([field, entries]) => ({
             field,
-            sources: entries.map((entry) => Function.prototype.toString.call(entry.get)),
+            defaults: entries.map((entry) => defaultIdentity(
+              entry.get,
+              `composition default '${field}'`,
+            )),
           })),
         bindings: metadata.bindings.map((use) => ({
           trait: use.binding.trait.ns,
@@ -275,8 +314,7 @@ const descriptorTables = (
     ...traits.flatMap((trait) => ownFields(catalog, "trait", trait)),
   ];
   const traitComposition = entities.flatMap((entity) =>
-    traitsOf(entity as ComposerLike).map((direct) => {
-      const stable = traitDefinitionOf(direct as unknown as TraitLike);
+    stableDirectTraits(entity as ComposerLike).map((stable) => {
       const nested = walkTraits(traitsOf(stable as unknown as ComposerLike)).all;
       const names = [stable.ns, ...nested.map((trait) => trait.ns)];
       return {
@@ -308,8 +346,11 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     }
     const definition = reachable.definition;
     const catalog = CatalogId.make(definition.key);
+    const authoredPolicy = Effect.isEffect(definition.policy)
+      ? yield* definition.policy
+      : definition.policy;
     const template = yield* Effect.fromResult(
-      decodePolicyTemplateResult(definition.policy),
+      decodePolicyTemplateResult(authoredPolicy),
     );
     const schema = yield* fromPure(
       `catalog '${definition.key}' schema reachability failed`,
