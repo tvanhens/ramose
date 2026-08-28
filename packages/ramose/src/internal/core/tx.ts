@@ -473,7 +473,12 @@ export async function expandTx(
   const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
-    if (vals.has(vk)) return; // redundant
+    if (vals.has(vk)) {
+      if (attr.ident === RAMOSE_TYPE_IDENT) {
+        record("add", e, attr, { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true });
+      }
+      return;
+    }
     if (attr.unique) {
       const uk = attr.id + "|" + vk;
       const seen = uniqueSeen.get(uk);

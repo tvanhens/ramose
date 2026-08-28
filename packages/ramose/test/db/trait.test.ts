@@ -480,7 +480,7 @@ describe("processTx membership and required trait fields", () => {
     });
   });
 
-  test("a mixed composed+plain create still requires every born namespace", async () => {
+  test("two concrete entity types on one id fail closed", async () => {
     const Todo = Entity("todo", { title: string(), body: string() });
     const Mixed = Schema({ issue: Issue, todo: Todo });
     const conn = await setup(Mixed);
@@ -494,9 +494,9 @@ describe("processTx membership and required trait fields", () => {
         },
       ]),
     ).rejects.toMatchObject({
-      code: "tx/required",
+      code: "tx/wrong-entity",
       message: expect.stringContaining(
-        "entity issue is missing required fields: :todo/body",
+        "cannot create an entity in multiple composed types: :issue, :todo",
       ),
     });
   });
