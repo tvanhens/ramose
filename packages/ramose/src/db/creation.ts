@@ -3,6 +3,7 @@
 import * as Schema from "effect/Schema";
 import {
   bindingOf,
+  cloneBindingValue,
   resolveTraitBinding,
   traitDefinitionOf,
   type ResolvedTraitBinding,
@@ -173,7 +174,7 @@ export const compositionValueMetadataFromBindings = (
         fixed.set(field.ident, {
           key,
           ident: field.ident,
-          value: validated,
+          value: cloneBindingValue(validated),
           path,
         });
       }
@@ -286,7 +287,11 @@ export const resolveCreationValues = (
   for (const [key, field] of Object.entries(entity.fields)) {
     const fixed = metadata.fixed.get(field.ident);
     if (fixed !== undefined) {
-      out[key] = decodeField(field, fixed.value, "fixed value");
+      out[key] = decodeField(
+        field,
+        cloneBindingValue(fixed.value),
+        "fixed value",
+      );
       continue;
     }
 

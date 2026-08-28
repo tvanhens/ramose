@@ -112,6 +112,16 @@ export interface ResolvedTraitBinding {
   readonly dependencies: readonly CodeDefinition[];
 }
 
+/** @internal Copy the mutable stored-value forms retained by bindings. */
+export const cloneBindingValue = (value: unknown): unknown => {
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneBindingValue));
+  }
+  return value;
+};
+
 export const isCodeDefinition = (value: unknown): value is CodeDefinition =>
   typeof value === "object" &&
   value !== null &&
@@ -191,10 +201,14 @@ export const resolveTraitBinding = (
       );
     }
   }
+  const snapshotValues = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(values)) {
+    snapshotValues[key] = cloneBindingValue(value);
+  }
   return Object.freeze({
     trait: runtime.trait,
     definition,
-    values: Object.freeze({ ...values }),
+    values: Object.freeze(snapshotValues),
     defaults: Object.freeze(defaults),
     dependencies: Object.freeze(dependencies),
   });

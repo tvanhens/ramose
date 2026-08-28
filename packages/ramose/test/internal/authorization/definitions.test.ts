@@ -12,9 +12,11 @@ import {
   Entity,
   Schema,
   Trait,
+  bytes,
   creationDefault,
   resolveCreationValues,
   string,
+  timestamp,
   type AnySchema,
   type CodeDefinition,
 } from "../../../src/db/internal.ts";
@@ -238,6 +240,43 @@ describe("catalog definition assembly", () => {
       { now: new Date(0) },
     )).toEqual({ value: "binding-child:1" });
     expect(calls).toBe(1);
+  });
+
+  test("isolates mutable fixed binding values from authors and callers", async () => {
+    const originalDate = new Date("2025-01-02T03:04:05.000Z");
+    const originalBytes = new Uint8Array([1, 2, 3]);
+    const Fixed = Trait("mutableFixed", {
+      at: timestamp(),
+      data: bytes(),
+    }, {
+      bind: () => ({
+        values: { at: originalDate, data: originalBytes },
+      }),
+    });
+    const App = Schema({
+      item: Entity("item", {}, { traits: [Fixed({ key: "fixed", schema: Schema({}) })] }),
+    });
+    const installed = Result.getOrThrow(
+      (await assemble(Catalog("fixed-snapshot", {
+        schema: App,
+        policy: await policy(App),
+      }))).require(CatalogId.make("fixed-snapshot")),
+    );
+
+    originalDate.setUTCFullYear(2030);
+    originalBytes[0] = 9;
+    const first = installed.resolveCreationValues("item", {}, { now: new Date(0) });
+    expect(first).toEqual({
+      at: new Date("2025-01-02T03:04:05.000Z"),
+      data: new Uint8Array([1, 2, 3]),
+    });
+    (first.at as Date).setUTCFullYear(2040);
+    (first.data as Uint8Array)[1] = 8;
+    expect(installed.resolveCreationValues("item", {}, { now: new Date(0) }))
+      .toEqual({
+        at: new Date("2025-01-02T03:04:05.000Z"),
+        data: new Uint8Array([1, 2, 3]),
+      });
   });
 
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
