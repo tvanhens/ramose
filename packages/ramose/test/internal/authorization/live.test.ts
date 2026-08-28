@@ -263,6 +263,7 @@ describe("diffAuthorizedResults", () => {
     expect(diff.retracted).toEqual(["Child"]);
     expect(isSilentLiveDiff(diffAuthorizedResults(["Bug"], ["Bug"]))).toBe(true);
     expect(liveDiffFromPrevious(undefined, ["Bug"]).added).toEqual(["Bug"]);
+    expect(liveDiffFromPrevious(undefined, [])).toEqual({ added: [], retracted: [] });
     expect(leakKeys(diff)).toEqual([]);
   });
 });
@@ -451,7 +452,7 @@ describe("lease invalidation around recompute and enqueue", () => {
     await waitArmed(name);
     await Effect.runPromise(Deferred.succeed(revoked, undefined));
     releaseCheckpoint(name);
-    await Effect.runPromise(Fiber.await(fiber).pipe(Effect.timeout("2 seconds"), Effect.ignoreCause));
+    await Effect.runPromise(Fiber.await(fiber).pipe(Effect.timeout("2 seconds")));
     await Effect.runPromise(Fiber.interrupt(fiber));
     expect(emitted).toEqual([]);
   };
@@ -467,6 +468,43 @@ describe("lease invalidation around recompute and enqueue", () => {
   test("revocation around emit drops the queued snapshot", async () => {
     await runRace("live.emit");
   });
+
+  test("a basis wake invalidates a snapshot already waiting to emit", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    const wakes = await Effect.runPromise(Queue.unbounded<void>());
+    let authenticateCalls = 0;
+    const caller = {
+      claims: { sub: "alice-sub", org: "acme" },
+      classes: ["member"],
+      exp: nowSeconds() + 300,
+    };
+    const input = inputOf(catalogs, await sign(), world.conn, {
+      authenticate: Effect.sync(() => {
+        authenticateCalls += 1;
+        return caller;
+      }),
+    });
+
+    armCheckpoint("live.emit", "wait");
+    const seen = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
+    const fiber = Effect.runFork(
+      executeAuthorizedLive({ ...input, wakes }, titlesQuery).pipe(
+        Stream.runForEach((diff) => Queue.offer(seen, diff)),
+      ),
+    );
+    await waitArmed("live.emit");
+    await world.conn.transact([{ ":db/id": world.i1, ":issue/owner": world.bobEid }]);
+    await Effect.runPromise(Queue.offer(wakes, undefined));
+    for (let i = 0; i < 200 && authenticateCalls < 2; i++) await Bun.sleep(5);
+    expect(authenticateCalls).toBeGreaterThanOrEqual(2);
+    releaseCheckpoint("live.emit");
+
+    const first = await Effect.runPromise(Queue.take(seen).pipe(Effect.timeout("2 seconds")));
+    expect(titlesOf(first.added)).toEqual(["Child"]);
+    expect(first.retracted).toEqual([]);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+  });
 });
 
 describe("thin consumer against the live HTTP body", () => {
@@ -481,5 +519,17 @@ describe("thin consumer against the live HTTP body", () => {
     const diffs = await collectLive(response, 1);
     expect(titlesOf(applyLiveDiffs(diffs))).toEqual(["Bug", "Child"]);
     expect(leakKeys(diffs)).toEqual([]);
+  });
+
+  test("authorizedLiveResponse emits an initialization frame for an empty read", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    const token = await sign();
+    const input = inputOf(catalogs, token, world.conn);
+    const response = await Effect.runPromise(
+      authorizedLiveResponse(input, { kind: "entity", ref: Number.MAX_SAFE_INTEGER }, {}, {}),
+    );
+    const diffs = await collectLive(response, 1);
+    expect(diffs).toEqual([{ added: [], retracted: [] }]);
   });
 });

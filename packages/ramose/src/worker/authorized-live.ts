@@ -11,8 +11,6 @@ import { Unauthorized } from "../db/Errors.ts";
 import {
   executeAuthorizedLive,
   executeAuthorizedRead,
-  isSilentLiveDiff,
-  liveDiffFromPrevious,
   OneShotReadError,
   type AuthorizedRequestInput,
   type LiveQueryDiff,
@@ -56,51 +54,17 @@ export const authorizedLiveResponse = <R, EDb>(
   headers: Record<string, string>,
 ): Effect.Effect<Response, EDb | OneShotReadError | Unauthorized, R> =>
   Effect.gen(function* () {
-    const initial = yield* executeAuthorizedRead(input, read, opts);
-    const opening = liveDiffFromPrevious(undefined, initial);
+    // Resolve the first read before returning headers so admission and read
+    // failures retain their ordinary HTTP status. The live scope recomputes
+    // this value under its own lease at the downstream emission boundary.
+    yield* executeAuthorizedRead(input, read, opts);
     const context = yield* Effect.context<R>();
-    const rest = liveNdjsonStream(
-      { ...input, previous: initial, watchBasis: true },
+    const body = liveNdjsonStream(
+      { ...input, watchBasis: true },
       read,
       opts,
       context,
     );
-    const first = isSilentLiveDiff(opening) ? new Uint8Array() : encodeDiff(opening);
-    let restReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    const body = first.byteLength === 0
-      ? rest
-      : new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(first);
-            restReader = rest.getReader();
-            const safeClose = (): void => {
-              try {
-                controller.close();
-              } catch {
-                /* consumer already cancelled */
-              }
-            };
-            const pump = (): Promise<void> =>
-              restReader!.read().then(({ done, value }) => {
-                if (done) {
-                  safeClose();
-                  return;
-                }
-                try {
-                  controller.enqueue(value);
-                } catch {
-                  return;
-                }
-                return pump();
-              }, () => {
-                safeClose();
-              });
-            void pump();
-          },
-          cancel() {
-            return restReader?.cancel();
-          },
-        });
     return new Response(body, {
       status: 200,
       headers: {

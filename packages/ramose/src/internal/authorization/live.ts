@@ -9,7 +9,6 @@
  * never forwarded. There is no second live authorization predicate.
  */
 
-import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -46,7 +45,7 @@ export type LiveQueryDiff = {
 };
 
 export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInput<R, EDb> & {
-  /** Already-authorized result; the stream waits for a wake or lease renew. */
+  /** Already-authorized result used as the first diff baseline. */
   readonly previous?: unknown;
   /** Basis-change signals. Extra offers coalesce on a sliding slot. */
   readonly wakes?: Queue.Dequeue<unknown>;
@@ -61,6 +60,8 @@ type QueuedSnapshot = {
   readonly id: number;
   readonly expiresAtMs: number;
   readonly value: unknown;
+  readonly epoch: Ref.Ref<number>;
+  readonly lastSent: Ref.Ref<unknown | Absent>;
 };
 
 const leaseLimit = (interruptAfter: Duration.Input | undefined): Duration.Duration =>
@@ -131,9 +132,12 @@ const remainingOf = (expiresAtMs: number, nowMs: number): Duration.Duration =>
 const waitWakeOrLease = (
   wakes: Queue.Dequeue<unknown>,
   remaining: Duration.Duration,
-): Effect.Effect<void> => {
-  if (Duration.toMillis(remaining) <= 0) return Effect.void;
-  return Effect.race(Queue.take(wakes), Effect.sleep(remaining)).pipe(Effect.asVoid);
+): Effect.Effect<boolean> => {
+  if (Duration.toMillis(remaining) <= 0) return Effect.succeed(false);
+  return Effect.race(
+    Queue.take(wakes).pipe(Effect.as(true)),
+    Effect.sleep(remaining).pipe(Effect.as(false)),
+  );
 };
 
 const readAuthorized = (
@@ -146,6 +150,33 @@ const readAuthorized = (
     catch: (cause) => new OneShotReadError({ cause }),
   });
 
+/** Validate the authorization epoch at the downstream pull boundary. */
+const deliverSnapshot = (
+  item: QueuedSnapshot,
+): Effect.Effect<Result.Result<LiveQueryDiff, void>, Unauthorized> =>
+  Effect.gen(function* () {
+    yield* atBoundary("live.emit");
+    const nowMs = yield* Clock.currentTimeMillis;
+    const current = yield* Ref.get(item.epoch);
+    if (item.id !== current || nowMs >= item.expiresAtMs) return Result.fail(undefined);
+
+    const sent = yield* Ref.get(item.lastSent);
+    const initial = sent === ABSENT;
+    const diff = initial
+      ? liveDiffFromPrevious(undefined, item.value)
+      : diffAuthorizedResults(sent, item.value);
+    if (!initial && isSilentLiveDiff(diff)) {
+      yield* Ref.set(item.lastSent, item.value);
+      return Result.fail(undefined);
+    }
+
+    const still = yield* Ref.get(item.epoch);
+    const again = yield* Clock.currentTimeMillis;
+    if (still !== item.id || again >= item.expiresAtMs) return Result.fail(undefined);
+    yield* Ref.set(item.lastSent, item.value);
+    return Result.succeed(diff);
+  });
+
 /**
  * Live output over ordinary filtered values. Reuses one-shot query, pull,
  * entity, lookup, refs, graph, aggregation, ordering, and limit behavior.
@@ -155,22 +186,25 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
   read: OneShotRead,
   opts: OneShotReadOptions = {},
 ): Stream.Stream<LiveQueryDiff, Unauthorized | OneShotReadError | EDb, R> =>
-  Stream.callback<LiveQueryDiff, Unauthorized | OneShotReadError | EDb, R>(
+  Stream.callback<QueuedSnapshot, Unauthorized | OneShotReadError | EDb, R>(
     (out) =>
       Effect.gen(function* () {
-        const pending = yield* Queue.sliding<QueuedSnapshot, Cause.Done>(1);
         const wakes = yield* Queue.dropping<void>(1);
         const epoch = yield* Ref.make(0);
         const lastSent = yield* Ref.make<unknown | Absent>(
           input.previous === undefined ? ABSENT : input.previous,
         );
         const limit = leaseLimit(input.interruptAfter);
-        let seeded = input.previous !== undefined;
+        const invalidate = Ref.update(epoch, (id) => id + 1);
+        const signalBasisChange = invalidate.pipe(
+          Effect.andThen(Queue.offer(wakes, undefined)),
+          Effect.asVoid,
+        );
 
         if (input.wakes !== undefined) {
           const external = input.wakes;
           yield* Effect.forkChild(
-            Effect.forever(Queue.take(external).pipe(Effect.andThen(Queue.offer(wakes, undefined)))),
+            Effect.forever(Queue.take(external).pipe(Effect.andThen(signalBasisChange))),
           );
         }
         if (input.watchBasis === true) {
@@ -179,48 +213,26 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             Effect.gen(function* () {
               let lastT = Number.NaN;
               while (true) {
-                yield* Effect.sleep(pollEvery);
                 const snapshot = yield* input.currentDb(input.routeDatabase).pipe(Effect.option);
-                if (Option.isNone(snapshot)) continue;
-                const nextT = snapshot.value.basisT;
-                if (lastT === nextT) continue;
-                const first = Number.isNaN(lastT);
-                lastT = nextT;
-                if (!first) yield* Queue.offer(wakes, undefined);
+                if (Option.isSome(snapshot)) {
+                  const nextT = snapshot.value.basisT;
+                  if (lastT !== nextT) {
+                    const first = Number.isNaN(lastT);
+                    lastT = nextT;
+                    if (!first) yield* signalBasisChange;
+                  }
+                }
+                yield* Effect.sleep(pollEvery);
               }
             }).pipe(Effect.ignoreCause),
           );
         }
-        const invalidate = Ref.update(epoch, (id) => id + 1);
         const revoked =
           input.revoked === undefined
             ? Effect.never
             : Deferred.await(input.revoked).pipe(Effect.andThen(invalidate), Effect.andThen(Effect.fail(deny())));
 
-        const close = Queue.end(pending).pipe(Effect.andThen(Queue.end(out)), Effect.asVoid);
-        const emitLoop = Effect.forever(
-          Effect.gen(function* () {
-            const item = yield* Queue.take(pending);
-            yield* atBoundary("live.emit");
-            const nowMs = yield* Clock.currentTimeMillis;
-            const current = yield* Ref.get(epoch);
-            if (item.id !== current || nowMs >= item.expiresAtMs) return;
-            const sent = yield* Ref.get(lastSent);
-            const diff =
-              sent === ABSENT
-                ? liveDiffFromPrevious(undefined, item.value)
-                : diffAuthorizedResults(sent, item.value);
-            if (isSilentLiveDiff(diff)) {
-              yield* Ref.set(lastSent, item.value);
-              return;
-            }
-            const still = yield* Ref.get(epoch);
-            const again = yield* Clock.currentTimeMillis;
-            if (still !== item.id || again >= item.expiresAtMs) return;
-            yield* Queue.offer(out, diff);
-            yield* Ref.set(lastSent, item.value);
-          }),
-        ).pipe(Effect.ignoreCause);
+        const close = Queue.end(out).pipe(Effect.asVoid);
 
         const recompute = (
           caller: AuthenticatedCaller,
@@ -247,7 +259,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
                   const still = yield* Ref.get(epoch);
                   const enqueueNow = yield* Clock.currentTimeMillis;
                   if (still !== id || enqueueNow >= expiresAtMs) return;
-                  yield* Queue.offer(pending, { id, expiresAtMs, value });
+                  yield* Queue.offer(out, { id, expiresAtMs, value, epoch, lastSent });
                 }),
             );
           });
@@ -263,32 +275,33 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             const nowMs = yield* Clock.currentTimeMillis;
             const lease = yield* Effect.fromResult(callerLease(caller, nowMs, limit));
             const id = yield* Ref.updateAndGet(epoch, (n) => n + 1);
-            if (seeded) {
-              seeded = false;
-              yield* waitWakeOrLease(wakes, lease.duration);
-              const afterWait = yield* Clock.currentTimeMillis;
-              if (afterWait >= lease.expiresAtMs) continue;
-            }
             while (true) {
               const tickNow = yield* Clock.currentTimeMillis;
               if (tickNow >= lease.expiresAtMs) break;
               yield* recompute(caller, id, lease.expiresAtMs);
               const after = yield* Clock.currentTimeMillis;
               if (after >= lease.expiresAtMs) break;
-              yield* waitWakeOrLease(wakes, remainingOf(lease.expiresAtMs, after));
+              const basisChanged = yield* waitWakeOrLease(
+                wakes,
+                remainingOf(lease.expiresAtMs, after),
+              );
+              if (basisChanged) break;
             }
             yield* invalidate;
           }
         });
 
-        yield* Effect.forkChild(emitLoop);
         // Always end the callback queue. A failed producer fiber otherwise
         // leaves Stream.callback open, so consumers hang until the test timeout.
-        yield* Effect.race(leaseLoop, revoked).pipe(
+        yield* Effect.raceFirst(leaseLoop, revoked).pipe(
           Effect.result,
+          Effect.andThen(invalidate),
           Effect.andThen(close),
-          Effect.onInterrupt(() => close),
+          Effect.onInterrupt(() => invalidate.pipe(
+            Effect.andThen(Queue.shutdown(out)),
+            Effect.asVoid,
+          )),
         );
       }),
-    { bufferSize: 16, strategy: "suspend" },
-  );
+    { bufferSize: 1, strategy: "suspend" },
+  ).pipe(Stream.filterMapEffect(deliverSnapshot));
