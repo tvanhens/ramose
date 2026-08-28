@@ -49,6 +49,7 @@ import {
   CanonicalAuthorizationRule,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InstalledAuthorizationIR,
+  LegacyInstalledAuthorizationIRV1,
   type BoundAuthorizationIR,
   type InstalledAuthorizationIR as InstalledAuthorizationIRType,
   type InstalledAuthorizationIRV2 as InstalledAuthorizationIRV2Type,
@@ -118,7 +119,7 @@ export const LegacyInstalledCatalogUnitV1 = Schema.TaggedStruct(
   {
     version: Schema.Literal(1),
     catalog: LegacyCatalogDescriptorV1,
-    policy: InstalledAuthorizationIR,
+    policy: LegacyInstalledAuthorizationIRV1,
     unitHash: CatalogUnitHash,
   },
 );

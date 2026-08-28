@@ -219,6 +219,37 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
 });
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
 
+/** Exact persisted policy shape embedded by catalog-unit v1. Migration only. */
+const LegacyCanonicalIdentitySchemasV1 = {
+  ...CanonicalIdentitySchemas,
+  operation: Schema.Never,
+};
+
+const LegacyAuthorizationDecisionsV1 = Schema.Struct({
+  entities: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.entity)),
+  traits: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.trait)),
+  fields: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.field)),
+});
+
+export const LegacyInstalledAuthorizationIRV1 = Schema.TaggedStruct(
+  "InstalledAuthorizationIR",
+  {
+    version: Schema.Literal(1),
+    languageVersion: AuthorizationLanguageVersion,
+    policyHash: PolicyHash,
+    classes: ClassVocabulary,
+    claims: ClaimVocabulary,
+    principal: InstalledPrincipalResolution,
+    rules: Schema.Array(
+      AuthorizationRule(LegacyCanonicalIdentitySchemasV1, CanonicalAuthorizationExpr),
+    ),
+    decisions: LegacyAuthorizationDecisionsV1,
+    accessPlans: Schema.Array(RuleAccessPlan),
+  },
+);
+export type LegacyInstalledAuthorizationIRV1 =
+  typeof LegacyInstalledAuthorizationIRV1.Type;
+
 /**
  * Verified/sealed runtime-acceptable v1 artifact. Distinct from the
  * Schema-decoded structural document: #361 must consume this brand, not

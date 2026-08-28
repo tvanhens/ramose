@@ -483,6 +483,15 @@ describe("sealInstalledCatalogUnit", () => {
         ...encoded.catalog,
         operations: encoded.catalog.operations.map(({ id, input }) => ({ id, input })),
       },
+      policy: {
+        ...encoded.policy,
+        version: 1,
+        decisions: {
+          entities: encoded.policy.decisions.entities,
+          traits: encoded.policy.decisions.traits,
+          fields: encoded.policy.decisions.fields,
+        },
+      },
     };
     const decoded = decodeInstalledCatalogUnitResult(legacy);
     expect(Result.isFailure(decoded)).toBe(true);
