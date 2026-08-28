@@ -560,9 +560,12 @@ describe("compileReadFilter requested-db classification", () => {
   });
 
   test("after retractEntity, history and bounded history recover type; current denies", async () => {
-    const { conn, currentDb, aliceEid, i1, createdT } = await seedApp();
+    const { conn, currentDb, aliceEid, i1, i2, createdT } = await seedApp();
     const title = await datomOf(currentDb, i1, ":issue/title");
-    const retracted = await conn.transact([[":db/retractEntity", i1]]);
+    const retracted = await conn.transact([
+      [":db/retractEntity", i2],
+      [":db/retractEntity", i1],
+    ]);
     const after = conn.db();
     const pred = compileReadFilter({
       unit: await unitFrom([read(Issue).when(allow)]),
@@ -593,9 +596,12 @@ describe("compileReadFilter requested-db classification", () => {
   });
 
   test("current grants still govern historical datoms after retractEntity", async () => {
-    const { conn, currentDb, aliceEid, i1, createdT } = await seedApp();
+    const { conn, currentDb, aliceEid, i1, i2, createdT } = await seedApp();
     const title = await datomOf(currentDb, i1, ":issue/title");
-    await conn.transact([[":db/retractEntity", i1]]);
+    await conn.transact([
+      [":db/retractEntity", i2],
+      [":db/retractEntity", i1],
+    ]);
     const after = conn.db();
     const ownerPred = compileReadFilter({
       unit: await unitFrom([read(Issue).when(eq(Issue.owner, me))]),
