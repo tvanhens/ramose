@@ -5,6 +5,7 @@ import {
   DatabaseId,
   executeAuthorizedRead,
   OneShotReadError,
+  type DeployedCatalogDefinitions,
   type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
 import {
@@ -52,11 +53,17 @@ import {
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
 import { watchBasisChanges } from "./peer.ts";
+import {
+  invokeAuthoritativeOperation,
+  parseOperationRequest,
+} from "./authorized-operation.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
   /** Deployed catalog registry assembled from reachable code. Missing = deny. */
   readonly catalogs?: DeployedCatalogs;
+  /** Concrete route database -> exact private runnable catalog definition. */
+  readonly operationCatalogs?: DeployedCatalogDefinitions;
 }
 
 const plog = componentLogger("peer");
@@ -268,7 +275,28 @@ export const handle = (
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
     }
-    if (peer.catalogs === undefined) return yield* new Unauthorized({});
+    const catalogs = peer.operationCatalogs?.catalogs ?? peer.catalogs;
+    if (catalogs === undefined) return yield* new Unauthorized({});
+    if (rest === "/op" && request.method === "POST") {
+      if (peer.operationCatalogs === undefined) return yield* new Unauthorized({});
+      const parsed = yield* parseOperationRequest(request);
+      const ack = yield* Effect.tryPromise({
+        try: () => invokeAuthoritativeOperation(
+          env,
+          db,
+          parsed,
+          callerFromVerified(verified),
+        ),
+        catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
+          stacks: env.RAMOSE_STAGE !== "prod",
+        }),
+      });
+      return json(
+        { result: ack.output, t: ack.t },
+        200,
+        { "x-ramose-basis-t": String(ack.t) },
+      );
+    }
     if (
       !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
@@ -292,7 +320,7 @@ export const handle = (
         basisChanges: liveWatch.changes,
         admissionCurrentDb,
       }),
-      catalogs: peer.catalogs,
+      catalogs,
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,
       unitHash: parsed.unitHash,

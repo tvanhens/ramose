@@ -53,7 +53,7 @@ const decodeUnitHash = (value: unknown): Result.Result<CatalogUnitHash, Unauthor
   return Result.isSuccess(decoded) ? Result.succeed(decoded.success) : Result.fail(deny());
 };
 
-const pickProof = (
+export const parseCatalogProof = (
   body: Record<string, unknown> | undefined,
   headers: Headers,
 ): Result.Result<{ catalogKey: CatalogId; unitHash: CatalogUnitHash }, Unauthorized> => {
@@ -86,7 +86,7 @@ const viewOf = (
   };
 };
 
-const isEntityRef = (value: unknown): value is EntityRef => {
+export const isEntityRef = (value: unknown): value is EntityRef => {
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return true;
   if (typeof value === "string" && value.length > 0) return true;
   return (
@@ -159,7 +159,7 @@ const entityFromPath = (rest: string): Result.Result<OneShotRead, Unauthorized> 
 };
 
 /** Decode the HTTP body with the established `$inst` / `$bytes` / `$uuid` wire contract. */
-const readJsonObject = (
+export const readJsonObject = (
   request: Request,
 ): Effect.Effect<Record<string, unknown>, BadRequest> =>
   Effect.tryPromise({
@@ -181,7 +181,7 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
   const url = new URL(request.url);
   const method = request.method;
   const body = method === "GET" ? undefined : yield* readJsonObject(request);
-  const proof = yield* Effect.fromResult(pickProof(body, request.headers));
+  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers));
   const read =
     method === "GET"
       ? yield* Effect.fromResult(entityFromPath(rest))

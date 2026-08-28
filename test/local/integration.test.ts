@@ -13,6 +13,7 @@ import { localUrls } from "./fixtures.ts";
 import { registerBasisCache } from "./basis-cache.ts";
 import { registerCas } from "./cas.ts";
 import { registerInstrumentation } from "./instrumentation.ts";
+import { registerNativeOperations } from "./native-operations.ts";
 import { registerStorage } from "./storage.ts";
 import { registerSessions } from "./sessions.ts";
 
@@ -25,6 +26,7 @@ registerPeerContract({
 registerAuthContract({ urls: localUrls });
 registerOperationsContract({ urls: localUrls });
 registerInstrumentation({ urls: localUrls });
+registerNativeOperations({ urls: localUrls });
 registerBasisCache({ urls: localUrls });
 registerSessions({ urls: localUrls });
 registerCas({ urls: localUrls });

@@ -51,6 +51,13 @@ export type AuthorizedRequestView = {
   readonly history?: boolean;
 };
 
+export type AuthorizedRequestContext = {
+  readonly unit: InstalledCatalogUnitV2;
+  readonly principal: AuthorizationPrincipal;
+  readonly currentDb: Db;
+  readonly filteredDb: Db;
+};
+
 export type AuthorizedRequestInput<R = never, EDb = unknown> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly catalogs: DeployedCatalogs;
@@ -250,37 +257,46 @@ const bindReadPredicate = (
   subject: string,
   caller: AuthenticatedCaller,
   current: Db,
-): Effect.Effect<ReturnType<typeof compileReadFilter>, Unauthorized> =>
+): Effect.Effect<{
+  readonly principal: AuthorizationPrincipal;
+  readonly predicate: ReturnType<typeof compileReadFilter>;
+}, Unauthorized> =>
   Effect.gen(function* () {
     const resolved = yield* Effect.tryPromise({
       try: () => resolveMe(unit, subject, caller, current),
       catch: () => deny(),
     });
     const principal = yield* Effect.fromResult(resolved);
-    return yield* Effect.fromResult(compilePredicate(unit, principal, current));
+    const predicate = yield* Effect.fromResult(compilePredicate(unit, principal, current));
+    return { principal, predicate };
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
 
 /**
  * Admit the caller, acquire the route database, then filter that value.
  * `currentDb` errors are infrastructure and pass through unchanged.
  */
-const constructFilteredDb = <R, EDb>(
+export const constructAuthorizedRequestContext = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,
-): Effect.Effect<Db, Unauthorized | EDb, R> =>
+): Effect.Effect<AuthorizedRequestContext, Unauthorized | EDb, R> =>
   Effect.gen(function* () {
     const admitted = yield* admitDeployedCaller(input, caller);
     const composition = yield* Effect.fromResult(compositionFromUnit(admitted.unit)).pipe(
       Effect.mapError(() => deny()),
     );
     const current = (yield* input.currentDb(input.routeDatabase)).withComposition(composition);
-    const predicate = yield* bindReadPredicate(
+    const bound = yield* bindReadPredicate(
       admitted.unit,
       admitted.subject,
       caller,
       current,
     );
-    return requestedView(current, input.view).filter(predicate);
+    return {
+      unit: admitted.unit,
+      principal: bound.principal,
+      currentDb: current,
+      filteredDb: requestedView(current, input.view).filter(bound.predicate),
+    };
   });
 
 export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthorizedRequest")(
@@ -294,8 +310,8 @@ export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthoriz
       const nowMs = yield* Clock.currentTimeMillis;
       const duration = yield* Effect.fromResult(leaseDuration(caller.exp, nowMs, limit));
       const rest = Effect.gen(function* () {
-        const filteredDb = yield* constructFilteredDb(input, caller);
-        return yield* execute(filteredDb);
+        const context = yield* constructAuthorizedRequestContext(input, caller);
+        return yield* execute(context.filteredDb);
       });
       return yield* rest.pipe(
         Effect.timeoutOrElse({

@@ -17,6 +17,7 @@ export { Open };
 
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
+const operationWorker = import.meta.resolve("./operation-worker.ts");
 
 const jwtAuth = () =>
   ({
@@ -68,6 +69,15 @@ export const PolicySchema = Ramose.Server("PolicySchema", {
   peer: "PolicySchemaPeer",
   storage: "PolicySchemaStore",
   main: empty,
+  auth: jwtAuth(),
+  env: TEST_HOOKS_ENV,
+});
+
+/** Exact deployed-catalog native operation boundary (#417). */
+export const NativeOperations = Ramose.Server("NativeOperations", {
+  peer: "NativeOperationsPeer",
+  storage: "NativeOperationsStore",
+  main: operationWorker,
   auth: jwtAuth(),
   env: TEST_HOOKS_ENV,
 });

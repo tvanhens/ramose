@@ -14,6 +14,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Result from "effect/Result";
 import {
   compositionFromUnit,
+  type DeployedCatalogDefinitions,
   type InstalledCatalogUnitV2,
 } from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
@@ -41,11 +42,15 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
   };
 }
 
-export class TransactorDO extends DurableObject<RamoseEnv> {
+class TransactorDOBase extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
   private dbName: string | undefined;
 
-  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+  constructor(
+    ctx: DurableObjectState,
+    env: RamoseEnv,
+    operationCatalogs?: DeployedCatalogDefinitions,
+  ) {
     super(ctx, env);
     resetTestHooks();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
@@ -71,7 +76,12 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
       // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
       ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
     };
-    this.core = new Transactor(host);
+    this.core = new Transactor(
+      host,
+      operationCatalogs === undefined
+        ? undefined
+        : { catalogs: operationCatalogs, environment: env, now: () => host.now() },
+    );
   }
 
   /** In-process access for other code running in the same isolate (tests, worker). */
@@ -144,5 +154,24 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
     if (testAdmin !== undefined) return testAdmin;
     return this.core.handleRequest(request);
+  }
+}
+
+/** Build the deployed Transactor class from the same immutable registry as the Worker. */
+export const createTransactorDO = (
+  operationCatalogs: DeployedCatalogDefinitions,
+): (new (
+  ctx: DurableObjectState,
+  env: RamoseEnv,
+) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env, operationCatalogs);
+  }
+};
+
+/** Default fail-closed class for peers with no runnable catalog definitions. */
+export class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env);
   }
 }

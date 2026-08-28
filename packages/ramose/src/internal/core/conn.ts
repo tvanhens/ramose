@@ -28,6 +28,11 @@ export interface TxReport {
   tempids: Record<string, number>;
 }
 
+export interface ValidatedTxReport<A> {
+  readonly report: TxReport;
+  readonly value: A;
+}
+
 export interface ConnectionOptions {
   store?: NodeStore;
   build?: BuildOptions;
@@ -226,9 +231,17 @@ export class Connection {
     this.nextEid = maxE + 1;
   }
 
-  /** Transact. Serialized: concurrent callers are queued (single writer). */
-  transact(txData: TxData): Promise<TxReport> {
-    const run = async (): Promise<TxReport> => {
+  /**
+   * Stage, validate, then apply one transaction. The callback receives an
+   * immutable provisional `dbAfter`; a failure leaves connection state
+   * untouched. Serialized with ordinary transactions on the same writer.
+   */
+  transactValidated<A>(
+    txData: TxData,
+    validate: (report: TxReport) => Promise<A> | A,
+    txInstant: number = this.now(),
+  ): Promise<ValidatedTxReport<A>> {
+    const run = async (): Promise<ValidatedTxReport<A>> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
       const res = await processTx(
@@ -236,18 +249,53 @@ export class Connection {
         txData,
         t,
         this.nextEid,
-        this.now(),
+        txInstant,
         this.composition === undefined ? undefined : { composition: this.composition },
       );
+      const schemaAfter = this.schema.clone().apply(res.datoms);
+      const noveltyAfter = new Novelty();
+      noveltyAfter.add(
+        this.novelty.byIndex[Index.EAVT].all(),
+        (a) => schemaAfter.isAvet(a),
+        (a) => schemaAfter.isVaet(a),
+      );
+      noveltyAfter.add(
+        res.datoms,
+        (a) => schemaAfter.isAvet(a),
+        (a) => schemaAfter.isVaet(a),
+      );
+      const dbAfter = new Db({
+        store: this.store,
+        roots: this.roots,
+        novelty: noveltyAfter,
+        basisT: t,
+        schema: schemaAfter,
+        nextEid: res.nextEid,
+        composition: this.composition,
+      });
+      const report: TxReport = {
+        dbBefore,
+        dbAfter,
+        t,
+        txEid: res.txEid,
+        txData: res.datoms,
+        tempids: res.tempids,
+      };
+      const value = await validate(report);
       this.nextEid = res.nextEid;
-      this.schema = this.schema.clone().apply(res.datoms);
+      this.schema = schemaAfter;
       this.novelty.add(res.datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));
       this.basisT = t;
-      return { dbBefore, dbAfter: this.db(), t, txEid: res.txEid, txData: res.datoms, tempids: res.tempids };
+      return { report: { ...report, dbAfter: this.db() }, value };
     };
     const p = this.txQueue.then(run, run);
     this.txQueue = p.catch(() => undefined);
     return p;
+  }
+
+  /** Transact. Serialized: concurrent callers are queued (single writer). */
+  transact(txData: TxData): Promise<TxReport> {
+    return this.transactValidated(txData, () => undefined).then(({ report }) => report);
   }
 
   /**

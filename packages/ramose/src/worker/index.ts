@@ -19,6 +19,7 @@ import { runFetch, type ServerOptions } from "./handle.ts";
 export { resolveWrites } from "../writes.ts";
 
 export { TransactorDO, QueryReplicaDO };
+export { createTransactorDO } from "../internal/transactor/transactor-do.ts";
 export { clearWritesWarning } from "./handle.ts";
 export type { ServerOptions } from "./handle.ts";
 export type { RamoseEnv } from "../RamoseEnv.ts";

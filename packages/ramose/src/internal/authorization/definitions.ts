@@ -7,6 +7,7 @@ import {
   type CatalogDefinition,
 } from "../../Catalog.ts";
 import {
+  cloneBindingValue,
   traitDefinitionOf,
   type TraitLike,
 } from "../../db/Binding.ts";
@@ -76,7 +77,21 @@ import {
   type DeployedOperationBinding,
   type OwnedOperationSnapshot,
 } from "./authoring/operations.ts";
-import { requireUnitHash } from "./deployed.ts";
+import {
+  requireCatalogKey,
+  requireUnitHash,
+  type CatalogBoundRef,
+  type DeployedCatalog,
+  type DeployedCatalogs,
+} from "./deployed.ts";
+
+export type InstalledFieldRuntime = {
+  readonly cardinality: "one" | "many";
+  readonly validate: (value: unknown) => void;
+  readonly fixed:
+    | { readonly _tag: "mutable" }
+    | { readonly _tag: "fixed"; readonly value: unknown };
+};
 
 export type InstalledCatalogDefinition = {
   readonly catalogKey: CatalogId;
@@ -92,6 +107,11 @@ export type InstalledCatalogDefinition = {
     input: Readonly<Record<string, unknown>>,
     context: CreationDefaultContext,
   ) => Readonly<Record<string, unknown>>;
+  /** Exact private field codec/fixed binding captured from deployed code. */
+  readonly requireFieldRuntime: (
+    entityName: string,
+    fieldIdent: string,
+  ) => InstalledFieldRuntime;
 };
 
 export type CatalogDefinitions = {
@@ -100,6 +120,28 @@ export type CatalogDefinitions = {
     catalogKey: CatalogId,
   ) => Result.Result<InstalledCatalogDefinition, CatalogMismatch>;
   readonly keys: () => readonly CatalogId[];
+};
+
+export type CatalogDefinitionDeployment = {
+  readonly database: DatabaseId;
+  readonly catalogKey: CatalogId;
+};
+
+export type DeployedCatalogDefinition = {
+  readonly database: DatabaseId;
+  readonly definition: InstalledCatalogDefinition;
+};
+
+/**
+ * Immutable deployment-owned database -> runnable definition binding. The
+ * request may prove the catalog key/hash, but it never selects this pairing.
+ */
+export type DeployedCatalogDefinitions = {
+  readonly catalogs: DeployedCatalogs;
+  readonly requireDatabase: (
+    database: DatabaseId,
+  ) => Result.Result<DeployedCatalogDefinition, CatalogMismatch>;
+  readonly databases: () => readonly DatabaseId[];
 };
 
 export type CatalogDefinitionBoundRef = {
@@ -505,6 +547,30 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       }
       return resolveCompiledCreationValues(plan, input, context, creationDefaults);
     });
+    const requireFieldRuntime = Object.freeze((
+      entityName: string,
+      fieldIdent: string,
+    ): InstalledFieldRuntime => {
+      const plan = creationByEntity.get(entityName);
+      const field = plan?.fields.find((candidate) => candidate.ident === fieldIdent);
+      if (field === undefined) {
+        throw new Error(
+          `ramose/operation: field ${JSON.stringify(fieldIdent)} is not deployed for entity ${JSON.stringify(entityName)}`,
+        );
+      }
+      return Object.freeze({
+        cardinality: field.cardinality,
+        validate: (value: unknown): void => {
+          field.encoder(value);
+        },
+        fixed: field.fixed === undefined
+          ? Object.freeze({ _tag: "mutable" as const })
+          : Object.freeze({
+            _tag: "fixed" as const,
+            value: cloneBindingValue(field.fixed),
+          }),
+      });
+    });
     return Object.freeze({
       catalogKey: snapshot.catalog,
       unitHash: unit.unitHash,
@@ -513,6 +579,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       operations,
       path: snapshot.path,
       resolveCreationValues,
+      requireFieldRuntime,
     });
   },
 );
@@ -583,4 +650,82 @@ export const assembleCatalogDefinitions = Effect.fn(
     byKey.set(assembled.catalogKey, assembled);
   }
   return buildRegistry(CatalogId.make(reachability.root.key), Object.freeze(byKey));
+});
+
+/**
+ * Bind assembled runnable definitions to concrete route databases once at
+ * deployment startup. This is deliberately not a request or module-global
+ * registration API.
+ */
+export const deployCatalogDefinitions = (
+  definitions: CatalogDefinitions,
+  deployments: readonly CatalogDefinitionDeployment[],
+): Result.Result<DeployedCatalogDefinitions, CatalogMismatch | InvalidIR> =>
+  Result.gen(function* () {
+    const byDatabase = new Map<DatabaseId, DeployedCatalogDefinition>();
+    const readCatalogs = new Map<DatabaseId, DeployedCatalog>();
+    for (const deployment of deployments) {
+      if (byDatabase.has(deployment.database)) {
+        return yield* Result.fail(new InvalidIR({
+          message: `duplicate deployed catalog definition for database '${deployment.database}'`,
+        }));
+      }
+      const definition = yield* definitions.require(deployment.catalogKey);
+      const bound = Object.freeze({
+        database: deployment.database,
+        definition,
+      });
+      byDatabase.set(deployment.database, bound);
+      readCatalogs.set(deployment.database, Object.freeze({
+        database: deployment.database,
+        catalogKey: definition.catalogKey,
+        unitHash: definition.unitHash,
+        unit: definition.unit,
+        composition: definition.composition,
+      }));
+    }
+    const databases = (): readonly DatabaseId[] =>
+      Object.freeze([...byDatabase.keys()].sort(compareText));
+    const requireDatabase = (
+      database: DatabaseId,
+    ): Result.Result<DeployedCatalogDefinition, CatalogMismatch> => {
+      const found = byDatabase.get(database);
+      return found === undefined
+        ? Result.fail(new CatalogMismatch({
+          message: "catalog mismatch",
+          expectedDatabase: database,
+        }))
+        : Result.succeed(found);
+    };
+    const catalogs: DeployedCatalogs = Object.freeze({
+      requireDatabase: (database: DatabaseId) => {
+        const found = readCatalogs.get(database);
+        return found === undefined
+          ? Result.fail(new CatalogMismatch({
+            message: "catalog mismatch",
+            expectedDatabase: database,
+          }))
+          : Result.succeed(found);
+      },
+      databases,
+    });
+    return Object.freeze({ catalogs, requireDatabase, databases });
+  });
+
+/** Database-first resolution of one exact runnable deployed definition. */
+export const resolveDeployedCatalogDefinition = (
+  deployed: DeployedCatalogDefinitions,
+  ref: CatalogBoundRef,
+): Result.Result<
+  DeployedCatalogDefinition,
+  CatalogMismatch | CatalogVersionMismatch
+> => Result.gen(function* () {
+  const found = yield* deployed.requireDatabase(ref.database);
+  yield* requireCatalogKey(ref.catalogKey, found.definition.catalogKey);
+  yield* requireUnitHash(
+    ref.unitHash,
+    found.definition.unitHash,
+    found.definition.catalogKey,
+  );
+  return found;
 });

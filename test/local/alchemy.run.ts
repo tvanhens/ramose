@@ -22,6 +22,7 @@ import {
   Jwks,
   JwksBound,
   JwksUrlOnly,
+  NativeOperations,
   Open,
   Policy,
   PolicyClosed,
@@ -47,6 +48,7 @@ export const Stack = Alchemy.Stack(
     const policy = yield* Policy;
     const policyClosed = yield* PolicyClosed;
     const policySchema = yield* PolicySchema;
+    const nativeOperations = yield* NativeOperations;
     const seeded = yield* Seeded;
     const jwks = yield* Jwks;
     const jwksBound = yield* JwksBound;
@@ -61,6 +63,7 @@ export const Stack = Alchemy.Stack(
       policyUrl: policy.url,
       policyClosedUrl: policyClosed.url,
       policySchemaUrl: policySchema.url,
+      nativeOperationsUrl: nativeOperations.url,
       seededUrl: seeded.url,
       jwksUrl: jwks.url,
       jwksBoundUrl: jwksBound.url,

@@ -59,6 +59,14 @@ import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 import { checkpoint, checkpointSync } from "../test-hooks.ts";
+import {
+  executeCatalogOperation,
+  opaqueCatalogDenial,
+  resolveDeployedCatalogDefinition,
+  type OperationInvocation,
+  type OperationRuntime,
+} from "../authorization/index.ts";
+import * as Result from "effect/Result";
 
 export { TransactorDeadError };
 
@@ -93,6 +101,11 @@ export interface TxAck {
   clientTxId?: string;
   /** Encoded operation output; present when this ack is an operation replay. */
   output?: unknown;
+}
+
+export interface OperationAck {
+  readonly t: number;
+  readonly output: unknown;
 }
 
 export interface TransactorStats {
@@ -134,7 +147,9 @@ interface Pending {
    * raw-transact data deny (schema / superuser only).
    */
   fromOperation?: boolean | undefined;
-  resolve: (r: TxAck) => void;
+  /** Native deployed invocation; mutually exclusive with raw `tx`. */
+  operation?: OperationInvocation | undefined;
+  resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
 }
 
@@ -198,7 +213,10 @@ export class Transactor {
     | { readonly unitHash: string; readonly index: CompositionIndex }
     | undefined;
 
-  constructor(readonly host: TransactorHost) {
+  constructor(
+    readonly host: TransactorHost,
+    private readonly operationRuntime?: OperationRuntime,
+  ) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
     this.metrics = new TxMetrics(host.analytics);
   }
@@ -389,7 +407,27 @@ export class Transactor {
         opOutput: extras?.opOutput,
         system: extras?.system || undefined,
         fromOperation: extras?.fromOperation || undefined,
-        resolve,
+        resolve: resolve as (result: TxAck | OperationAck) => void,
+        reject,
+      });
+      if (!this.committing) {
+        this.committing = true;
+        void this.commitLoop();
+      }
+    });
+  }
+
+  /** Submit one exact deployed-catalog invocation to the serialized writer. */
+  invoke(invocation: OperationInvocation): Promise<OperationAck> {
+    if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
+    if (this.operationRuntime === undefined) {
+      return Promise.reject(new BadRequest({ message: "deployed operations are not configured" }));
+    }
+    return new Promise<OperationAck>((resolve, reject) => {
+      this.queue.push({
+        tx: [],
+        operation: invocation,
+        resolve: resolve as (result: TxAck | OperationAck) => void,
         reject,
       });
       if (!this.committing) {
@@ -464,7 +502,7 @@ export class Transactor {
         const tLoop = performance.now();
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
-        const acks: { p: Pending; ack: TxAck }[] = [];
+        const acks: { p: Pending; ack: TxAck | OperationAck }[] = [];
         const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
@@ -477,20 +515,53 @@ export class Transactor {
             }
           }
           try {
-            if (!p.system) await this.applyProvision(p, entries);
-            const tx = await this.authorize(p);
-            const rep = await this.conn.transact(tx);
+            let rep;
+            let ack: TxAck | OperationAck;
+            if (p.operation !== undefined) {
+              if (this.operationRuntime === undefined) {
+                throw new BadRequest({ message: "deployed operations are not configured" });
+              }
+              const resolved = resolveDeployedCatalogDefinition(
+                this.operationRuntime.catalogs,
+                {
+                  database: p.operation.database,
+                  catalogKey: p.operation.catalogKey,
+                  unitHash: p.operation.unitHash,
+                },
+              );
+              if (Result.isFailure(resolved)) {
+                throw opaqueCatalogDenial(resolved.failure);
+              }
+              const deployed = resolved.success;
+              this.bindComposition(
+                deployed.definition.unitHash,
+                deployed.definition.composition,
+              );
+              const executed = await executeCatalogOperation(
+                this.conn,
+                this.operationRuntime,
+                p.operation,
+              );
+              rep = executed.report;
+              ack = { t: rep.t, output: executed.output };
+            } else {
+              if (!p.system) await this.applyProvision(p, entries);
+              const tx = await this.authorize(p);
+              rep = await this.conn.transact(tx);
+              ack = {
+                t: rep.t,
+                txEid: rep.txEid,
+                tempids: rep.tempids,
+                datoms: await this.ackDatoms(rep.txData, p.principal),
+                ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
+                ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
+              };
+            }
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
-            const ack: TxAck = {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: await this.ackDatoms(rep.txData, p.principal),
-              ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
-              ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
-            };
-            if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
+            if (p.clientTxId !== undefined && p.operation === undefined) {
+              batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack as TxAck);
+            }
             acks.push({ p, ack });
           } catch (err) {
             const e = this.scrub(err, p);
@@ -583,12 +654,12 @@ export class Transactor {
     return;
   }
 
-  /** Writes are raw storage. Operation authorization is #417. */
+  /** Internal/admin transaction path. The public Worker never routes raw application writes here. */
   private async authorize(p: Pending): Promise<TxData> {
     return p.tx;
   }
 
-  /** Application acks are not filtered here. Filtered `Db` lands in #421/#423. */
+  /** Internal transaction acks; external operation results use their resulting filtered `Db`. */
   private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
     return datoms.map(toWireDatom);
   }
@@ -723,6 +794,8 @@ export class Transactor {
       Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(
         Effect.catchTags({
           TxRejected: (e) => Effect.sync(() => errorResponse(e)),
+          Unauthorized: (e) => Effect.sync(() => errorResponse(e)),
+          OperationRejected: (e) => Effect.sync(() => errorResponse(e)),
           TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
           BadRequest: (e) => Effect.sync(() => errorResponse(e)),
           NotFound: (e) => Effect.sync(() => errorResponse(e)),
@@ -734,6 +807,16 @@ export class Transactor {
 
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
+    if (path === "/invoke" && request.method === "POST") {
+      const body = fromJson(await request.json()) as { invocation?: OperationInvocation };
+      if (
+        typeof body?.invocation !== "object" || body.invocation === null ||
+        body.invocation.database !== safeName(this.host)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      return json(await this.invoke(body.invocation));
+    }
     if (path === "/op-ack" && request.method === "POST") {
       const body = fromJson(await request.json()) as {
         clientOpId?: unknown;
