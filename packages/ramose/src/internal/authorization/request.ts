@@ -10,7 +10,8 @@
  */
 
 import * as Cause from "effect/Cause";
-import type * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { Unauthorized } from "../../db/Errors.ts";
@@ -38,6 +39,8 @@ import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 export type AuthenticatedCaller = {
   readonly claims: Readonly<Record<string, JsonValue>>;
   readonly classes: readonly string[];
+  /** JWT NumericDate expiration, in whole seconds. */
+  readonly exp: number;
 };
 
 export type AuthorizedRequestView = {
@@ -65,6 +68,7 @@ const deny = (): Unauthorized => new Unauthorized({});
  * single `class`. Authentication does not select a database.
  */
 export const callerFromVerified = (verified: {
+  readonly exp: number;
   readonly principal: {
     readonly sub?: string;
     readonly class: string;
@@ -84,7 +88,19 @@ export const callerFromVerified = (verified: {
   return {
     claims,
     classes: verified.principal.classes ?? [verified.principal.class],
+    exp: verified.exp,
   };
+};
+
+const leaseDuration = (
+  exp: number,
+  nowMs: number,
+  limit: Duration.Duration,
+): Result.Result<Duration.Duration, Unauthorized> => {
+  if (!Number.isSafeInteger(exp)) return Result.fail(deny());
+  const remainingMs = exp * 1_000 - nowMs;
+  if (remainingMs <= 0) return Result.fail(deny());
+  return Result.succeed(Duration.min(limit, Duration.millis(remainingMs)));
 };
 
 const selectSubject = (
@@ -202,9 +218,9 @@ const compilePredicate = (
 
 const constructFilteredDb = <R>(
   input: AuthorizedRequestInput<R>,
+  caller: AuthenticatedCaller,
 ): Effect.Effect<Db, Unauthorized, R> =>
   Effect.gen(function* () {
-    const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
     const deployed = yield* Effect.fromResult(
       resolveDeployedCatalog(input.catalogs, {
         database: input.routeDatabase,
@@ -232,15 +248,27 @@ export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthoriz
     input: AuthorizedRequestInput<R>,
     execute: (filteredDb: Db) => Effect.Effect<A, E, R>,
   ): Effect.fn.Return<A, Unauthorized | E, R> {
+    const limit = Duration.fromInputUnsafe(input.interruptAfter ?? MAX_READ_LEASE_MS);
     const program = Effect.gen(function* () {
-      const filteredDb = yield* constructFilteredDb(input).pipe(
-        Effect.catchCause(() => Effect.fail(deny())),
+      const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
+      const nowMs = yield* Clock.currentTimeMillis;
+      const duration = yield* Effect.fromResult(leaseDuration(caller.exp, nowMs, limit));
+      const rest = Effect.gen(function* () {
+        const filteredDb = yield* constructFilteredDb(input, caller).pipe(
+          Effect.catchCause(() => Effect.fail(deny())),
+        );
+        return yield* execute(filteredDb);
+      });
+      return yield* rest.pipe(
+        Effect.timeoutOrElse({
+          duration,
+          orElse: () => Effect.fail(deny()),
+        }),
       );
-      return yield* execute(filteredDb);
     });
     return yield* program.pipe(
       Effect.timeoutOrElse({
-        duration: input.interruptAfter ?? MAX_READ_LEASE_MS,
+        duration: limit,
         orElse: () => Effect.fail(deny()),
       }),
       Effect.catchCause((cause) =>

@@ -20,10 +20,12 @@ import {
   assembleDeployedCatalogs,
   callerFromVerified,
   claim,
+  contains,
   eq,
   executeAuthorizedRequest,
   hashCatalogSchemaFingerprint,
   me,
+  path,
   read,
   type AuthorizedRequestInput,
   type AuthorizedRequestView,
@@ -38,6 +40,7 @@ import {
   App,
   Issue,
   User,
+  Workspace,
   catalog,
   catalogDescriptor,
   compileRules,
@@ -166,14 +169,14 @@ const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
     })),
   );
 
-const seedApp = async () => {
+const seedApp = async (workspaceMember: "alice" | "bob" = "alice") => {
   const conn = await Connection.create();
   await conn.transact(schemaTx(App));
   await installEntityKinds(conn, ["user", "workspace", "tag"]);
   const report = await conn.transact([
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
-    { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
+    { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": workspaceMember },
     {
       ":db/id": "i1",
       ":ramose/type": ":issue",
@@ -683,12 +686,15 @@ describe("executeAuthorizedRequest", () => {
   });
 
   test("the same JWT requests two databases; each database's deployed policy decides access", async () => {
-    const seededA = await seedApp();
-    const seededB = await seedApp();
+    const seededA = await seedApp("alice");
+    const seededB = await seedApp("bob");
     const otherdb = DatabaseId.make("otherdb");
-    const catalogsA = await deployOwnerPolicy();
-    const catalogsB = await deployPolicy([read(Issue).when(allow)], {}, otherdb);
-    const token = await sign();
+    const membership = [read(Issue).when(contains(path(Issue.workspace, Workspace.members), me))];
+    const catalogsA = await deployPolicy(membership);
+    const catalogsB = await deployPolicy(membership, {}, otherdb);
+    const token = await sign({
+      payload: payload({ ramose: { class: "authenticated", attrs: { org: "acme" } } }),
+    });
     const ask = (
       catalogs: DeployedCatalogs,
       route: typeof database,
@@ -715,9 +721,102 @@ describe("executeAuthorizedRequest", () => {
     const onTodos = await ask(catalogsA, database, seededA);
     const onOther = await ask(catalogsB, otherdb, seededB);
     expect(onTodos.i1).toBe("Bug");
-    expect(onTodos.i2).toBeUndefined();
-    expect(onOther.i1).toBe("Bug");
-    expect(onOther.i2).toBe("Other");
+    expect(onTodos.i2).toBe("Other");
+    expect(onOther.i1).toBeUndefined();
+    expect(onOther.i2).toBeUndefined();
+  });
+
+  test("callerFromVerified preserves exp and carries no database-derived role", async () => {
+    const token = await sign({
+      payload: payload({ ramose: { class: "authenticated", attrs: { org: "acme" } } }),
+    });
+    const verified = await Effect.runPromise(verifier().verify(Redacted.make(token)));
+    const caller = callerFromVerified(verified);
+    expect(caller.exp).toBe(verified.exp);
+    expect(caller.classes).toEqual(["authenticated"]);
+    expect(caller).not.toHaveProperty("database");
+    expect(caller).not.toHaveProperty("db");
+    expect(caller.claims).not.toHaveProperty("db");
+  });
+
+  test("an already-expired caller is Unauthorized before currentDb and execute", async () => {
+    const catalogs = await deployOwnerPolicy();
+    let acquired = false;
+    let executed = false;
+    const error = await runFail(
+      {
+        authenticate: Effect.succeed({
+          claims: { sub: "alice-sub", org: "acme" },
+          classes: ["member"],
+          exp: nowSeconds() - 1,
+        }),
+        catalogs,
+        routeDatabase: database,
+        ...proofOf(catalogs),
+        currentDb: () => {
+          acquired = true;
+          return Effect.die("currentDb must not run");
+        },
+      },
+      () =>
+        Effect.sync(() => {
+          executed = true;
+        }),
+    );
+    expect(acquired).toBe(false);
+    expect(executed).toBe(false);
+    expectOpaque(error);
+  });
+
+  test("a JWT still inside clock tolerance is Unauthorized once exp has passed", async () => {
+    const catalogs = await deployOwnerPolicy();
+    const now = nowSeconds();
+    const token = await sign({
+      payload: payload({ iat: now - 10, exp: now - 1 }),
+    });
+    let acquired = false;
+    let executed = false;
+    const error = await runFail(
+      {
+        authenticate: authenticateToken(token),
+        catalogs,
+        routeDatabase: database,
+        ...proofOf(catalogs),
+        currentDb: () => {
+          acquired = true;
+          return Effect.die("currentDb must not run");
+        },
+      },
+      () =>
+        Effect.sync(() => {
+          executed = true;
+        }),
+    );
+    expect(acquired).toBe(false);
+    expect(executed).toBe(false);
+    expectOpaque(error);
+  });
+
+  test("remaining token lifetime caps the lease below interruptAfter", async () => {
+    const catalogs = await deployOwnerPolicy();
+    const started = Date.now();
+    const error = await runFail(
+      {
+        authenticate: Effect.succeed({
+          claims: { sub: "alice-sub", org: "acme" },
+          classes: ["member"],
+          exp: nowSeconds() + 1,
+        }),
+        catalogs,
+        routeDatabase: database,
+        ...proofOf(catalogs),
+        currentDb: () => Effect.never,
+        interruptAfter: 5_000,
+      },
+      () => Effect.void,
+    );
+    expectOpaque(error);
+    expect(Date.now() - started).toBeLessThan(4_000);
   });
 
   test("asOf and history compose as a product (bounded history)", async () => {

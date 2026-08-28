@@ -382,6 +382,7 @@ export type _partialBoundNotTemplate = Expect<
 
 type CallerKeys = keyof AuthenticatedCaller;
 export type _noDatabaseOnCaller = Expect<Equal<Extract<CallerKeys, "database" | "db">, never>>;
+export type _expOnCaller = Expect<Equal<AuthenticatedCaller["exp"], number>>;
 
 type PrincipalWithoutSubject = {
   readonly claims: {};
