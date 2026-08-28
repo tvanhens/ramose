@@ -113,7 +113,7 @@ export class Connection {
   private nextEid = FIRST_USER_EID;
   private readonly build: BuildOptions | undefined;
   private readonly now: () => number;
-  private readonly composition: CompositionIndex | undefined;
+  private composition: CompositionIndex | undefined;
   private txQueue: Promise<unknown> = Promise.resolve();
   /** all roots ever published, by t (for as-of from an old root; GC keeps these) */
   readonly rootHistory: Roots[] = [];
@@ -199,6 +199,14 @@ export class Connection {
   }
   get nextEntityId(): number {
     return this.nextEid;
+  }
+
+  /** Bind deployed composition after restore; recataloging is not supported. */
+  bindComposition(composition: CompositionIndex): void {
+    if (this.composition !== undefined && this.composition !== composition) {
+      throw new Error("connection already has deployed composition");
+    }
+    this.composition = composition;
   }
 
   /** Apply already-processed datoms (log replay / follower). */

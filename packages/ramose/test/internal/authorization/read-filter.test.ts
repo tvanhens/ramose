@@ -34,6 +34,7 @@ import { Connection } from "../../../src/internal/core/conn.ts";
 import { datom, Index, ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
 import { RAMOSE_TYPE } from "../../../src/internal/core/schema.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 import { Entity, Schema, compositionFromSchema, schemaTx, string, type AnySchema } from "../../../src/db/internal.ts";
 import {
   App,
@@ -51,6 +52,11 @@ import {
 } from "./semantic-fixtures.ts";
 
 const Extra = Entity("extra", { name: string() });
+
+const typedTx = <T extends unknown[]>(tx: T): T => {
+  restoreEngineTypeAssertions(tx);
+  return tx;
+};
 
 const sealedDescriptor = async () => {
   const base = catalogDescriptor();
@@ -82,7 +88,7 @@ const seedApp = async (extras: AnySchema = App) => {
     composition: compositionFromSchema(extras),
   });
   await conn.transact(schemaTx(extras));
-  const report = await conn.transact([
+  const report = await conn.transact(typedTx([
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
     { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
@@ -103,7 +109,7 @@ const seedApp = async (extras: AnySchema = App) => {
       ":issue/workspace": "ws",
       ":issue/parent": "i1",
     },
-  ]);
+  ]));
   const currentDb = conn.db();
   return {
     conn,
@@ -328,9 +334,9 @@ describe("compileReadFilter lattice and fail-closed", () => {
   test("type ident not in catalog denies", async () => {
     const Mixed = Schema({ ...App.entities, extra: Extra });
     const { conn, aliceEid } = await seedApp(Mixed);
-    const extra = await conn.transact([
+    const extra = await conn.transact(typedTx([
       { ":db/id": "ex", ":ramose/type": ":extra", ":extra/name": "nope" },
-    ]);
+    ]));
     const latest = conn.db();
     const pred = compileReadFilter({
       unit: await unitFrom([read(Issue).when(allow)]),

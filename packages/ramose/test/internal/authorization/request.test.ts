@@ -12,6 +12,7 @@ import * as Result from "effect/Result";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { Unauthorized } from "../../../src/db/Errors.ts";
 import { compositionFromSchema, schemaTx } from "../../../src/db/internal.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 import {
   CatalogId,
   CatalogUnitHash,
@@ -51,6 +52,11 @@ import {
   orgClaim,
   version,
 } from "./semantic-fixtures.ts";
+
+const typedTx = <T extends unknown[]>(tx: T): T => {
+  restoreEngineTypeAssertions(tx);
+  return tx;
+};
 
 const ISS = "https://issuer.example.test";
 const AUD = "ramose:test";
@@ -168,7 +174,7 @@ const seedApp = async (workspaceMember: "alice" | "bob" = "alice") => {
     composition: compositionFromSchema(App),
   });
   await conn.transact(schemaTx(App));
-  const report = await conn.transact([
+  const report = await conn.transact(typedTx([
     { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
     { ":db/id": "bob", ":ramose/type": ":user", ":user/authId": "bob-sub" },
     { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": workspaceMember },
@@ -189,7 +195,7 @@ const seedApp = async (workspaceMember: "alice" | "bob" = "alice") => {
       ":issue/workspace": "ws",
       ":issue/parent": "i1",
     },
-  ]);
+  ]));
   return {
     conn,
     aliceEid: report.tempids["alice"]!,
@@ -594,7 +600,7 @@ describe("executeAuthorizedRequest", () => {
       composition: compositionFromSchema(App),
     });
     await conn.transact(schemaTx(App));
-    const report = await conn.transact([
+    const report = await conn.transact(typedTx([
       { ":db/id": "alice", ":ramose/type": ":user", ":user/authId": "alice-sub" },
       { ":db/id": "decoy", ":ramose/type": ":user", ":user/authId": "jwt-sub" },
       { ":db/id": "ws", ":ramose/type": ":workspace", ":workspace/members": "alice" },
@@ -614,7 +620,7 @@ describe("executeAuthorizedRequest", () => {
         ":issue/workspace": "ws",
         ":issue/parent": "i1",
       },
-    ]);
+    ]));
     const catalogs = await deployPolicy([read(Issue).when(eq(Issue.owner, me))], {
       principal: { subjectClaim: "authId", entity: User.authId },
     });
@@ -645,7 +651,7 @@ describe("executeAuthorizedRequest", () => {
 
   test("wrong-type unique lookup is Unauthorized and execute does not run", async () => {
     const { conn } = await seedApp();
-    const report = await conn.transact([
+    const report = await conn.transact(typedTx([
       { ":db/id": "spoof-ws", ":ramose/type": ":workspace", ":user/authId": "spoof-sub" },
       {
         ":db/id": "spoof-issue",
@@ -655,7 +661,7 @@ describe("executeAuthorizedRequest", () => {
         ":issue/workspace": "spoof-ws",
         ":issue/parent": "spoof-issue",
       },
-    ]);
+    ]));
     expect(report.tempids["spoof-ws"]).toBeDefined();
     const catalogs = await deployOwnerPolicy();
     const token = await signRamose({ sub: "spoof-sub" });

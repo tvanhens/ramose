@@ -41,6 +41,10 @@ import {
 import { Db } from "./db.ts";
 import type { CompositionIndex } from "./composition.ts";
 import {
+  ENGINE_TYPE_ASSERTION,
+  type EngineTypeAssertion,
+} from "./tx-provenance.ts";
+import {
   type Attribute,
   DB_CARDINALITY,
   DB_IDENT,
@@ -80,6 +84,8 @@ export interface TxOp {
   /** CAS expected; `null` is the encoded absent expectation — not `undefined`. */
   expected?: unknown;
   hasV?: boolean;
+  /** Protected type assertion emitted by the typed transaction builder. */
+  engineTypeAssertion?: boolean;
 }
 
 /**
@@ -96,6 +102,8 @@ export interface ExpandedOp {
   readonly implicit: boolean;
   /** retract emitted by a :db/retractEntity closure */
   readonly fromRetractEntity: boolean;
+  /** Protected type assertion emitted by the typed transaction builder. */
+  readonly engineTypeAssertion: boolean;
 }
 
 export interface TxExpansion extends TxResult {
@@ -131,6 +139,10 @@ export function flattenTxData(txData: TxData): TxOp[] {
   let tmpCounter = 0;
   const freshTempid = (): string => `${GENERATED_TEMPID_PREFIX}${++tmpCounter}`;
   const expandMap = (m: Record<string, unknown>): EForm => {
+    const engineTypeAssertion =
+      (m as Record<string, unknown> & EngineTypeAssertion)[
+        ENGINE_TYPE_ASSERTION
+      ] === true;
     let e: EForm | undefined = m[":db/id"] as EForm | undefined;
     if (e === undefined || e === null) e = freshTempid();
     for (const [k, val] of Object.entries(m)) {
@@ -151,7 +163,16 @@ export function flattenTxData(txData: TxData): TxOp[] {
       const vals = Array.isArray(val) && !isLookupRef(val) ? val : [val];
       for (const x of vals) {
         const v = isPlainObject(x) ? expandMap(x as Record<string, unknown>) : x;
-        ops.push({ kind: "add", e, a: k, v, hasV: true });
+        ops.push({
+          kind: "add",
+          e,
+          a: k,
+          v,
+          hasV: true,
+          ...(engineTypeAssertion && k === RAMOSE_TYPE_IDENT
+            ? { engineTypeAssertion: true }
+            : {}),
+        });
       }
     }
     return e;
@@ -283,8 +304,24 @@ export async function expandTx(
   const closureCap = options.closureCap ?? Number.POSITIVE_INFINITY;
   let closureCount = 0;
   let inRetractEntity = false;
-  const record = (kind: "add" | "retract", e: number, attr: Attribute, d: Datom, implicit = false): void => {
-    expanded.push({ kind, e, a: attr.id, attr, datom: d, implicit, fromRetractEntity: inRetractEntity });
+  const record = (
+    kind: "add" | "retract",
+    e: number,
+    attr: Attribute,
+    d: Datom,
+    implicit = false,
+    engineTypeAssertion = false,
+  ): void => {
+    expanded.push({
+      kind,
+      e,
+      a: attr.id,
+      attr,
+      datom: d,
+      implicit,
+      fromRetractEntity: inRetractEntity,
+      engineTypeAssertion,
+    });
     if (inRetractEntity && ++closureCount > closureCap) {
       throw new TxError(`:db/retractEntity closure exceeds ${closureCap} datoms`, "tx/closure-cap");
     }
@@ -470,12 +507,24 @@ export async function expandTx(
     }
   };
 
-  const emitAdd = async (e: number, attr: Attribute, tv: TaggedValue): Promise<void> => {
+  const emitAdd = async (
+    e: number,
+    attr: Attribute,
+    tv: TaggedValue,
+    engineTypeAssertion = false,
+  ): Promise<void> => {
     const vals = await current(e, attr.id);
     const vk = valueKey(tv.vt, tv.v);
     if (vals.has(vk)) {
       if (attr.ident === RAMOSE_TYPE_IDENT) {
-        record("add", e, attr, { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true });
+        record(
+          "add",
+          e,
+          attr,
+          { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true },
+          false,
+          engineTypeAssertion,
+        );
       }
       return;
     }
@@ -506,7 +555,7 @@ export async function expandTx(
     }
     const d: Datom = { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true };
     out.push(d);
-    record("add", e, attr, d);
+    record("add", e, attr, d, false, engineTypeAssertion);
     vals.set(vk, d);
   };
 
@@ -978,7 +1027,7 @@ export async function expandTx(
       await assertWriteTarget(e, attr, true);
       const tv = await valueFor(attr, op.v, true);
       validateSchemaValue(attr, tv);
-      await emitAdd(e, attr, tv);
+      await emitAdd(e, attr, tv, op.engineTypeAssertion === true);
     } else {
       const tv = op.hasV ? await valueFor(attr, op.v) : undefined;
       await emitRetract(e, attr, tv);
@@ -1071,15 +1120,23 @@ export async function expandTx(
   for (const op of expanded) {
     if (!isMembershipIdent(op.attr.ident)) continue;
     if (op.fromRetractEntity) continue;
-    // Typed put stamps `:ramose/type` so inferType can see the composer
-    // when the attr map has no own-namespace keys. Permit that one form
-    // on a newly allocated entity. Application writes cannot forge,
-    // change, or retract the protected type.
+    const typeBefore =
+      op.kind === "add" && op.attr.ident === RAMOSE_TYPE_IDENT
+        ? await (async () => {
+            const row = await db.entity(op.e);
+            const value = row?.[RAMOSE_TYPE_IDENT];
+            return typeof value === "string" ? value : undefined;
+          })()
+        : undefined;
+    // Typed put stamps `:ramose/type` so inferType can see the composer.
+    // Its provenance permits creation and an idempotent same-type upsert;
+    // raw assertions, changes, and retracts remain protected.
     if (
       op.kind === "add" &&
       op.attr.ident === RAMOSE_TYPE_IDENT &&
+      op.engineTypeAssertion &&
       isCanonicalTypeIdent(op.datom.v) &&
-      newEntities.has(op.e) &&
+      (newEntities.has(op.e) || typeBefore === op.datom.v) &&
       (composition === undefined || isEntityIdent(op.datom.v))
     ) {
       continue;

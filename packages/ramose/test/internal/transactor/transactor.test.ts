@@ -8,7 +8,11 @@
  *   - alarm-driven indexing publishes a root and prunes the log
  */
 import { describe, expect, test } from "bun:test";
-import { TxError } from "../../../src/internal/core/index.ts";
+import {
+  TxError,
+  makeCompositionIndex,
+} from "../../../src/internal/core/index.ts";
+import { markEngineTypeAssertion } from "../../../src/internal/core/tx-provenance.ts";
 import { Harness, attribute } from "./harness.ts";
 import { TransactorDeadError } from "../../../src/internal/transactor/index.ts";
 
@@ -22,6 +26,50 @@ async function fresh(opts: ConstructorParameters<typeof Harness>[0] = {}) {
 }
 
 describe("transactor: group commit + monotonic t", () => {
+  test("restored connections use the bound deployed composition", async () => {
+    const composition = makeCompositionIndex({
+      entities: [":issue"],
+      traits: [":taggable"],
+      entityTraits: [[":issue", [":taggable"]]],
+    });
+    const unitHash = "a".repeat(64);
+    const schema = [
+      {
+        ":db/ident": ":issue/title",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+      },
+      {
+        ":db/ident": ":taggable/tag",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+      },
+    ];
+    const typed = (title: string, tag?: string) =>
+      markEngineTypeAssertion({
+        ":db/id": `issue-${title}`,
+        ":ramose/type": ":issue",
+        ":issue/title": title,
+        ...(tag === undefined ? {} : { ":taggable/tag": tag }),
+      });
+
+    const h = new Harness();
+    h.transactor.bindComposition(unitHash, composition);
+    await h.transactor.init();
+    await h.transactor.transact(schema);
+    await h.transactor.transact([typed("first", "tag")]);
+
+    const restarted = h.restart();
+    restarted.transactor.bindComposition(unitHash, composition);
+    await restarted.transactor.init();
+    await expect(
+      restarted.transactor.transact([typed("missing")]),
+    ).rejects.toMatchObject({ code: "tx/required" });
+    await expect(() =>
+      restarted.transactor.bindComposition("b".repeat(64), composition),
+    ).toThrow(/cannot change deployed catalog composition/);
+  });
+
   test("bootstraps a fresh database at t=1 and persists it", async () => {
     const h = new Harness();
     await h.transactor.init();

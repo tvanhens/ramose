@@ -24,6 +24,7 @@ import {
 } from "../../src/db/internal.ts";
 import { query as coreQuery } from "../../src/internal/core/index.ts";
 import { Index } from "../../src/internal/core/datom.ts";
+import { restoreEngineTypeAssertions } from "../../src/internal/core/tx-provenance.ts";
 import { compositionFromDescriptor } from "../../src/internal/authorization/index.ts";
 import {
   App,
@@ -581,6 +582,42 @@ describe("processTx membership and required trait fields", () => {
     expect(row?.[":ramose/type"]).toBe(":todo");
     expect(row?.[":ramose/trait"]).toBeUndefined();
     expect(membershipOf(":todo", Todos)).toEqual([]);
+  });
+
+  test("typed put preserves same-type upsert while raw type reassertion stays protected", async () => {
+    const Contact = Entity("contact", {
+      email: Field.unique(string(), "upsert"),
+      name: string(),
+    });
+    const Contacts = Schema({ contact: Contact });
+    const conn = await setup(Contacts);
+
+    const first = txBuilder(Contacts);
+    Effect.runSync(first.put(Contact, { email: "a@example.com", name: "A" }));
+    const firstWire = JSON.parse(JSON.stringify(txOps(first))) as unknown[];
+    restoreEngineTypeAssertions(firstWire);
+    const created = await conn.transact(firstWire);
+    const e = created.tempids["tmp-1"]!;
+
+    const again = txBuilder(Contacts);
+    Effect.runSync(
+      again.put(Contact, { email: "a@example.com", name: "A2" }),
+    );
+    const againWire = JSON.parse(JSON.stringify(txOps(again))) as unknown[];
+    restoreEngineTypeAssertions(againWire);
+    const updated = await conn.transact(againWire);
+    expect(updated.tempids["tmp-1"]).toBe(e);
+    expect(await conn.db().entity(e)).toMatchObject({
+      ":ramose/type": ":contact",
+      ":contact/email": "a@example.com",
+      ":contact/name": "A2",
+    });
+
+    await expect(
+      conn.transact([
+        { ":db/id": e, ":ramose/type": ":contact" },
+      ]),
+    ).rejects.toMatchObject({ code: "tx/system" });
   });
 
   test("current, as-of, and history derive membership from the row type and current composition", async () => {

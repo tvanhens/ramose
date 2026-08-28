@@ -1,6 +1,7 @@
 /** Schema-generic transaction builder. Internal — operation bodies see {@link Op}. */
 
 import * as Effect from "effect/Effect";
+import { markEngineTypeAssertion } from "../internal/core/tx-provenance.ts";
 import { lowerAttr } from "./attrRef.ts";
 import { composerIdent } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
@@ -432,7 +433,10 @@ const lowerPut = (
     typeof (entity as { ns: unknown }).ns === "string"
       ? (entity as { ns: string }).ns
       : "";
-  if (ns.length > 0) map[":ramose/type"] = composerIdent(ns);
+  if (ns.length > 0) {
+    map[":ramose/type"] = composerIdent(ns);
+    markEngineTypeAssertion(map);
+  }
   const extras: TxOp[] = [];
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined) continue;

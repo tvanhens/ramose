@@ -13,6 +13,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { Query, compositionFromSchema, lowerQueryObject, schemaTx } from "../../../src/db/internal.ts";
+import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 import {
   DatabaseId,
   allow,
@@ -192,6 +193,7 @@ const seedWorld = async (includeHiddenIssue: boolean) => {
       ":taggable/tags": "bob",
     });
   }
+  restoreEngineTypeAssertions(tx);
   const report = await conn.transact(tx);
   return {
     conn,
