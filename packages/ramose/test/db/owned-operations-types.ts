@@ -17,6 +17,24 @@ import { Ref as RefSchema } from "../../src/db/valueTypes.ts";
 
 const Slugged = Trait("slugged", { slug: string() });
 const Other = Entity("other", { note: string() });
+const BoundOperations = Trait(
+  "boundOperations",
+  { catalog: string() },
+  {
+    bind: (definition) => ({ values: { catalog: definition.key } }),
+    operations: (Operation) => ({
+      inspect: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          // @ts-expect-error bindable trait operations retain their exact owner
+          op.self.set(Other.note, "wrong owner");
+          return {};
+        },
+      }),
+    }),
+  },
+);
 
 const Taggable = Trait(
   "taggable",
@@ -151,3 +169,4 @@ Operation({
 void _completeCreate;
 void _missingEntityField;
 void _missingTraitField;
+void BoundOperations;

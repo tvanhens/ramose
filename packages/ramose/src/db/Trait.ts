@@ -39,24 +39,15 @@ import {
 
 export type TraitOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
-  Ops extends Readonly<Record<string, AnyUnboundOperation>> = Readonly<
-    Record<string, AnyUnboundOperation>
-  >,
 > = {
   readonly traits?: Traits;
-  readonly operations?:
-    | (ValidOwnedOperationMap<Ops> & Ops)
-    | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
 };
 
 export type BindableTraitOptions<
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
   Bind extends TraitBind<Fields>,
-  Ops extends Readonly<Record<string, AnyUnboundOperation>> = Readonly<
-    Record<string, AnyUnboundOperation>
-  >,
-> = TraitOptions<Traits, Ops> & { readonly bind: Bind };
+> = TraitOptions<Traits> & { readonly bind: Bind };
 
 /**
  * Stamped fields plus metadata. Address a field as `Taggable.tag`.
@@ -185,9 +176,26 @@ export function Trait<
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: BindableTraitOptions<Fields, Traits, Bind, Ops> &
-    ValidTraitCompose<Fields, Traits>,
+  options: {
+    readonly traits?: Traits;
+    readonly bind: Bind;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
+    ) => ValidOwnedOperationMap<Ops> & Ops;
+  } & ValidTraitCompose<Fields, Traits>,
 ): BindableTrait<TraitWithTraits<Name, Fields, Traits, Ops>, Bind>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Bind extends TraitBind<Fields>,
+  const Traits extends readonly AnyTrait[] = [],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: BindableTraitOptions<Fields, Traits, Bind> & {
+    readonly operations?: never;
+  } & ValidTraitCompose<Fields, Traits>,
+): BindableTrait<TraitWithTraits<Name, Fields, Traits, {}>, Bind>;
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
@@ -224,8 +232,12 @@ export function Trait<
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: (TraitOptions<Traits, Ops> & { readonly bind?: Bind }) &
-    ValidTraitCompose<Fields, Traits>,
+  options?: (TraitOptions<Traits> & {
+    readonly bind?: Bind;
+    readonly operations?:
+      | (ValidOwnedOperationMap<Ops> & Ops)
+      | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
+  }) & ValidTraitCompose<Fields, Traits>,
 ): Trait<Name, Fields, Ops> | TraitResult<Name, Fields, Traits, Bind, Ops> {
   assertTraitName(name);
   assertFieldKeys(fields);

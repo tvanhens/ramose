@@ -197,11 +197,14 @@ export type AnyEntity = {
 
 export type EntityOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
-  Ops extends Readonly<Record<string, AnyUnboundOperation>> = Readonly<
-    Record<string, AnyUnboundOperation>
-  >,
 > = {
   readonly traits?: Traits;
+};
+
+type EntityImplementationOptions<
+  Traits extends readonly AnyTrait[],
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = EntityOptions<Traits> & {
   readonly operations?:
     | (ValidOwnedOperationMap<Ops> & Ops)
     | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
@@ -354,7 +357,8 @@ export function Entity<
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: EntityOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+  options?: EntityImplementationOptions<Traits, Ops> &
+    ValidTraitCompose<Fields, Traits>,
 ): Entity<Name, Fields, Ops> | EntityWithTraits<Name, Fields, Traits, Ops> {
   assertEntityName(name);
   assertFieldKeys(fields);
