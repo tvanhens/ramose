@@ -337,6 +337,21 @@ export const prepareAuthorizationCatalog = (
         }
         declaredComposers.add(composer.name);
       }
+      const declaredWrites = new Set<string>();
+      for (const entity of operation.writes) {
+        yield* catalogOfIdentity(entity, target, "operation write dependency");
+        if (!entities.has(entity.name)) {
+          return yield* invalid(
+            `missing operation write entity '${entity.name}'`,
+          );
+        }
+        if (declaredWrites.has(entity.name)) {
+          return yield* invalid(
+            `duplicate operation write entity '${entity.name}'`,
+          );
+        }
+        declaredWrites.add(entity.name);
+      }
       if (
         operation.id.target === "none" ||
         operation.id.owner.kind === "entity"

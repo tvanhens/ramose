@@ -206,11 +206,17 @@ export const normalizeOperations = (
         encodeEntity,
         "operation composer",
       );
+      const writes = yield* uniqueSorted(
+        operation.writes,
+        encodeEntity,
+        "operation write entity",
+      );
       normalized.push({
         ...operation,
         input: canonicalizeInputShape(operation.input),
         output: canonicalizeInputShape(operation.output),
         composers,
+        writes,
       });
     }
     return yield* uniqueSorted(

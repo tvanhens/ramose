@@ -59,6 +59,7 @@ export type DeployedOperationDefinition = {
   readonly owner: OperationOwner;
   readonly localName: string;
   readonly self: boolean;
+  readonly writes: readonly AnyEntity[];
   readonly input: Schema.Top;
   readonly output: Schema.Top;
   readonly doc: string | undefined;
@@ -371,7 +372,9 @@ export const lowerOperationSchema = (
   };
   if (record.fields !== undefined) {
     const keys = Reflect.ownKeys(record.fields);
-    if (keys.some((key) => typeof key !== "string")) return { _tag: "opaque" };
+    if (keys.some((key) => typeof key !== "string")) {
+      throw new Error("operation structs with symbol keys cannot be lowered");
+    }
     return {
       _tag: "struct",
       fields: (keys as string[]).sort(compareText).map((key) => {
@@ -539,6 +542,9 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
           draft.owner._tag === "Trait" && operation.self
             ? draft.composers.map((entity) => EntityId.make({ catalog, name: entity.ns }))
             : [],
+        writes: operation.writes.map((entity) =>
+          EntityId.make({ catalog, name: entity.ns })
+        ),
         ...(operation.doc === undefined ? {} : { doc: operation.doc }),
       };
       const descriptor = yield* Effect.fromResult(
@@ -554,6 +560,7 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
           owner: draft.owner,
           localName: draft.localName,
           self: operation.self,
+          writes: operation.writes,
           input: operation.input,
           output: operation.output,
           doc: operation.doc,

@@ -70,6 +70,7 @@ const fixture = () => {
     },
   );
   const User = Entity("user", { name: string() });
+  const Audit = Entity("audit", { message: string() });
   const Issue = Entity(
     "issue",
     { title: string() },
@@ -78,10 +79,12 @@ const fixture = () => {
       operations: (Operation) => ({
         create: Operation({
           self: false,
+          writes: [Audit],
           input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
           output: Schema.Struct({ id: OperationEntityId }),
           doc: "Create an issue",
           run(op, input) {
+            op.put(Audit, { message: input.title });
             return { id: op.create({ title: input.title, slug: input.slug }) };
           },
         }),
@@ -96,8 +99,8 @@ const fixture = () => {
     },
   );
   const Doc = Entity("doc", { body: string() }, { traits: [Slugged] });
-  const App = CatalogSchema({ user: User, issue: Issue, doc: Doc });
-  return { Slugged, Taggable, User, Issue, Doc, App };
+  const App = CatalogSchema({ user: User, audit: Audit, issue: Issue, doc: Doc });
+  return { Slugged, Taggable, User, Audit, Issue, Doc, App };
 };
 
 describe("owned operation authoring", () => {
@@ -170,7 +173,7 @@ describe("owned operation authoring", () => {
 
 describe("owned operation lowering", () => {
   test("produces deterministic catalog-local identities and inert descriptors", async () => {
-    const { App, Issue } = fixture();
+    const { App, Audit, Issue } = fixture();
     const first = await Effect.runPromise(
       lowerOwnedOperations(catalog, App, artifactHash),
     );
@@ -206,6 +209,7 @@ describe("owned operation lowering", () => {
     expect(create.inputSchemaHash).toMatch(/^[0-9a-f]{64}$/);
     expect(create.outputSchemaHash).toMatch(/^[0-9a-f]{64}$/);
     expect(create.bodyHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(create.writes.map((entry) => entry.name)).toEqual(["audit"]);
     expect(JSON.stringify(first.descriptors)).not.toContain("function");
 
     const definition = first.definitions.find((entry) => entry.localName === "create")!;
@@ -213,6 +217,7 @@ describe("owned operation lowering", () => {
     expect(definition.input).toBe(Issue[OwnedOperations].create.input);
     expect(definition.output).toBe(Issue[OwnedOperations].create.output);
     expect(definition.run as unknown).toBe(Issue[OwnedOperations].create.run);
+    expect(definition.writes).toEqual([Audit]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
   });
@@ -311,6 +316,12 @@ describe("owned operation lowering", () => {
     expect(() =>
       lowerOperationSchema(catalog, Schema.suspend(() => RefSchema.self))
     ).toThrow("suspended operation schemas cannot be lowered");
+    expect(() =>
+      lowerOperationSchema(
+        catalog,
+        Schema.Struct({ [Symbol("self")]: RefSchema.self }),
+      )
+    ).toThrow("operation structs with symbol keys cannot be lowered");
   });
 
   test("fails operation lowering before fingerprinting a nested opaque ref", async () => {

@@ -13,4 +13,5 @@ export const operationMetadata = (
   outputSchemaHash: digestHex(0xa2),
   bodyHash: digestHex(0xa3),
   composers,
+  writes: [],
 });

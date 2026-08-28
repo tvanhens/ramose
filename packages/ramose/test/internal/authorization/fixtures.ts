@@ -212,6 +212,7 @@ const catalogUnitOperation = {
   outputSchemaHash: digestHex(0x92),
   bodyHash: digestHex(0x93),
   composers: [],
+  writes: [],
 } as const;
 
 const catalogUnitComposition = [

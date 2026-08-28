@@ -462,6 +462,32 @@ describe("owned operation descriptors", () => {
     );
   });
 
+  test("rejects missing and duplicate operation write dependencies", () => {
+    const operation = descriptor.operations[0]!;
+    const withWrites = (
+      writes: CatalogDescriptor["operations"][number]["writes"],
+    ): CatalogDescriptor => ({
+      ...descriptor,
+      operations: [{ ...operation, writes }],
+    });
+    expectFailure(
+      validateBoundAuthorizationResult({
+        bound: boundDocument([]),
+        descriptor: withWrites([entity("missing")]),
+      }),
+      "InvalidIR",
+      /missing operation write entity 'missing'/,
+    );
+    expectFailure(
+      validateBoundAuthorizationResult({
+        bound: boundDocument([]),
+        descriptor: withWrites([entity("issue"), entity("issue")]),
+      }),
+      "InvalidIR",
+      /duplicate operation write entity 'issue'/,
+    );
+  });
+
   test("rejects targetless operations owned by unreachable traits", () => {
     const operation = descriptor.operations[0]!;
     const patched: CatalogDescriptor = {

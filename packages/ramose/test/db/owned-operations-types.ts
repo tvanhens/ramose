@@ -265,6 +265,7 @@ const Issue = Entity(
     operations: (Operation) => ({
       create: Operation({
         self: false,
+        writes: [Membership],
         input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
         output: Schema.Struct({ id: EntityId }),
         run(op, input) {
@@ -277,6 +278,8 @@ const Issue = Entity(
             user: userId,
             role: "owner",
           });
+          // @ts-expect-error undeclared external entities are not write dependencies
+          op.put(Other, { note: input.title });
           membership.set(Membership.issue, issue);
           membership.set(Membership.role, "admin");
           // @ts-expect-error a Membership handle cannot fill its User ref slot
