@@ -308,6 +308,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
  * Better Auth roles can be comma-separated; the first one decides.
  * `owner` is a schema class, not a bypass class.
  */
+
 export const classOfRole = (role: string): "owner" | "member" | "viewer" => {
   const primary = role.split(",")[0]?.trim() ?? role;
   switch (primary) {
