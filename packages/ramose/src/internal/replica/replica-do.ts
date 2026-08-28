@@ -654,9 +654,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         return json(basis);
       }
       case "/query": {
-        // Executes the read on the replica (SPEC §8): plain datalog, pull, or a whole-entity read.
-        // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
-        // is exactly what the Worker used to build itself.
+        // Internal replica read. External one-shot query/pull/entity go through
+        // executeAuthorizedRequest on the Worker (#423). This path is not that
+        // authorization boundary.
         await this.sync();
         await this.catchUpTo(requestedMinT(url.searchParams.get("minT") ?? request.headers.get("x-ramose-min-t")));
         if (!this.root) return json({ error: "database has no root yet" }, 503);

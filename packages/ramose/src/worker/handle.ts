@@ -1,6 +1,13 @@
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import { type AnyOperations, operationNames } from "../db/Operation.ts";
 import {
+  callerFromVerified,
+  DatabaseId,
+  executeAuthorizedRead,
+  OneShotReadError,
+  type DeployedCatalogs,
+} from "../internal/authorization/index.ts";
+import {
   Histogram,
   RateMeter,
   componentLogger,
@@ -14,6 +21,11 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { authenticateRequest } from "./admit.ts";
+import {
+  acquireCurrentDb,
+  parseOneShotReadRequest,
+  queryMaxCells,
+} from "./authorized-read.ts";
 import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
@@ -32,12 +44,15 @@ import {
   type RamoseError,
   Unauthorized,
   type UpstreamError,
+  fromThrown,
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
+  /** Deployed catalog registry assembled from reachable code. Missing = deny. */
+  readonly catalogs?: DeployedCatalogs;
 }
 
 const plog = componentLogger("peer");
@@ -227,14 +242,43 @@ export const handle = (
     info.path = rest;
     info.route = routeOf(rest, request.method);
 
-    yield* authenticateRequest(request);
+    const verified = yield* authenticateRequest(request);
 
     const db = yield* Effect.fromResult(decodeDatabaseName(match[1]!));
     info.db = db;
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
     }
-    return yield* new Unauthorized({});
+    if (peer.catalogs === undefined) return yield* new Unauthorized({});
+    if (
+      !((rest === "/query" || rest === "/pull") && request.method === "POST") &&
+      !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
+    ) {
+      return yield* new Unauthorized({});
+    }
+
+    const parsed = yield* parseOneShotReadRequest(request, rest);
+    const stacks = env.RAMOSE_STAGE !== "prod";
+    const result = yield* executeAuthorizedRead(
+      {
+        authenticate: Effect.succeed(callerFromVerified(verified)),
+        catalogs: peer.catalogs,
+        routeDatabase: DatabaseId.make(db),
+        catalogKey: parsed.catalogKey,
+        unitHash: parsed.unitHash,
+        currentDb: acquireCurrentDb(env, request),
+        view: parsed.view,
+      },
+      parsed.read,
+      { maxCells: queryMaxCells(env) },
+    ).pipe(
+      Effect.mapError((error) => {
+        if (error instanceof Unauthorized) return error;
+        if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
+        return fromThrown(error, { stacks });
+      }),
+    );
+    return json({ result });
   });
 
 export const runFetch = (
