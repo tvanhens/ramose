@@ -1,6 +1,11 @@
 /** Reusable field group. Fields keep the trait namespace when composed. */
 
 import {
+  makeBindableTrait,
+  type BindableTrait,
+  type TraitBind,
+} from "./Binding.ts";
+import {
   flattenTraitFields,
   mergeComposerFields,
   walkTraits,
@@ -29,6 +34,12 @@ export type TraitOptions<
 > = {
   readonly traits?: Traits;
 };
+
+export type BindableTraitOptions<
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Bind extends TraitBind<Fields>,
+> = TraitOptions<Traits> & { readonly bind: Bind };
 
 /**
  * Stamped fields plus metadata. Address a field as `Taggable.tag`.
@@ -111,11 +122,31 @@ type TraitWithTraits<
     readonly traits: Traits;
   };
 
+type TraitResult<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Bind extends TraitBind<Fields> | undefined,
+> = Bind extends TraitBind<Fields>
+  ? BindableTrait<TraitWithTraits<Name, Fields, Traits>, Bind>
+  : TraitWithTraits<Name, Fields, Traits>;
+
 /** Group fields under one ident prefix, optionally composing other traits. */
 export function Trait<const Name extends string, Fields extends FieldMap>(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
 ): Trait<Name, Fields>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Bind extends TraitBind<Fields>,
+  const Traits extends readonly AnyTrait[] = [],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: BindableTraitOptions<Fields, Traits, Bind> &
+    ValidTraitCompose<Fields, Traits>,
+): BindableTrait<TraitWithTraits<Name, Fields, Traits>, Bind>;
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
@@ -129,11 +160,13 @@ export function Trait<
   const Name extends string,
   Fields extends FieldMap,
   const Traits extends readonly AnyTrait[],
+  const Bind extends TraitBind<Fields> | undefined = undefined,
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: TraitOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits> {
+  options?: (TraitOptions<Traits> & { readonly bind?: Bind }) &
+    ValidTraitCompose<Fields, Traits>,
+): Trait<Name, Fields> | TraitResult<Name, Fields, Traits, Bind> {
   assertTraitName(name);
   assertFieldKeys(fields);
   const direct = (options?.traits ?? []) as readonly ComposerLike[];
@@ -154,15 +187,23 @@ export function Trait<
     doc: undefined,
     valueType: "ref" as const,
     isOptional: false,
+    default: undefined,
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
-  return {
+  const trait = {
     _tag: "Trait" as const,
     ns: name,
     fields: merged,
     traits: direct,
     id: idField,
     ...merged,
-  } as Trait<Name, Fields> | TraitWithTraits<Name, Fields, Traits>;
+  } as unknown as TraitWithTraits<Name, Fields, Traits>;
+  if (options?.bind !== undefined) {
+    return makeBindableTrait(
+      trait,
+      options.bind,
+    ) as unknown as TraitResult<Name, Fields, Traits, Bind>;
+  }
+  return trait;
 }

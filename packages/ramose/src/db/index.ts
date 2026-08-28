@@ -40,9 +40,32 @@ export {
   timestamp,
   uuid,
   type AnyField,
+  type CreationDefault,
+  type CreationDefaultContext,
   type FieldOptions,
   type ValueOf,
 } from "./Field.ts";
+export {
+  type BindableTrait,
+  type BindingDefaults,
+  type BindingValues,
+  type CodeDefinition,
+  type CodeDefinitionRef,
+  type TraitBinding,
+  type TraitBindingSpec,
+} from "./Binding.ts";
+export {
+  assertNoFixedValues,
+  compositionValueMetadata,
+  resolveCreationValues,
+  BindingConflictError,
+  CreationValueError,
+} from "./creation.ts";
+export {
+  collectCodeReachability,
+  ReachabilityConflictError,
+  type CodeReachability,
+} from "./reachability.ts";
 export { Schema, type AnySchema } from "./Schema.ts";
 export { Entity, type AnyEntity } from "./Entity.ts";
 export { Trait, type AnyTrait } from "./Trait.ts";

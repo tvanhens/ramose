@@ -6,6 +6,11 @@
  */
 
 import { conflictingIdent } from "./IdentName.ts";
+import {
+  isBindableTrait,
+  traitDefinitionOf,
+  type TraitLike,
+} from "./Binding.ts";
 
 export type ComposerLike = {
   readonly ns: string;
@@ -15,7 +20,10 @@ export type ComposerLike = {
 
 /** Runtime composition list. Not on the Entity type — keeps Entity assignable. */
 export const traitsOf = (composer: unknown): readonly ComposerLike[] => {
-  if (typeof composer !== "object" || composer === null) return [];
+  if (
+    (typeof composer !== "object" && typeof composer !== "function") ||
+    composer === null
+  ) return [];
   const traits = (composer as { readonly traits?: unknown }).traits;
   return Array.isArray(traits) ? (traits as readonly ComposerLike[]) : [];
 };
@@ -42,6 +50,11 @@ export const traitCycle = (path: readonly string[]): Error =>
 export const duplicateTraitName = (ns: string): Error =>
   new Error(`ramose/schema: duplicate trait name ${JSON.stringify(ns)}`);
 
+export const unboundTrait = (ns: string): Error =>
+  new Error(
+    `ramose/schema: bindable trait ${JSON.stringify(ns)} must be called with a code definition before composition`,
+  );
+
 export const entityTraitNameClash = (ns: string): Error =>
   new Error(
     `ramose/schema: ${JSON.stringify(ns)} is both an entity and a trait`,
@@ -59,7 +72,9 @@ export const walkTraits = (
   const seen = new Set<ComposerLike>();
   const stack: ComposerLike[] = [];
 
-  const visit = (trait: ComposerLike): void => {
+  const visit = (input: ComposerLike): void => {
+    if (isBindableTrait(input)) throw unboundTrait(input.ns);
+    const trait = traitDefinitionOf(input as unknown as TraitLike) as unknown as ComposerLike;
     if (stack.includes(trait)) {
       throw traitCycle([...stack, trait].map((t) => t.ns));
     }
@@ -131,11 +146,14 @@ export const reachableTraits = (
   for (const entity of entities) {
     const { all } = walkTraits(traitsOf(entity));
     for (const trait of all) {
-      const seen = byNs.get(trait.ns);
-      if (seen !== undefined && seen !== trait) {
-        throw duplicateTraitName(trait.ns);
+      const stable = traitDefinitionOf(
+        trait as unknown as TraitLike,
+      ) as unknown as ComposerLike;
+      const seen = byNs.get(stable.ns);
+      if (seen !== undefined && seen !== stable) {
+        throw duplicateTraitName(stable.ns);
       }
-      byNs.set(trait.ns, trait);
+      byNs.set(stable.ns, stable);
     }
   }
   return byNs;

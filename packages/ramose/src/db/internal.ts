@@ -9,6 +9,9 @@
  */
 
 export * from "./Field.ts";
+export * from "./Binding.ts";
+export * from "./creation.ts";
+export * from "./reachability.ts";
 export * from "./Schema.ts";
 export * from "./composition.ts";
 export * from "./Composer.ts";

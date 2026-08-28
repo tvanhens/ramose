@@ -321,6 +321,7 @@ export function Entity<
     doc: undefined,
     valueType: "ref" as const,
     isOptional: false,
+    default: undefined,
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
@@ -331,7 +332,7 @@ export function Entity<
     traits: direct,
     id: idField,
     ...merged,
-  } as Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits>;
+  } as unknown as Entity<Name, Fields> | EntityWithTraits<Name, Fields, Traits>;
 }
 
 export type FieldOf<
