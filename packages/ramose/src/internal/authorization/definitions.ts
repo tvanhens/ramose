@@ -7,19 +7,18 @@ import {
   type CatalogDefinition,
 } from "../../Catalog.ts";
 import {
-  bindingOf,
   traitDefinitionOf,
   type TraitLike,
 } from "../../db/Binding.ts";
 import {
-  resolveCreationValues as resolveEntityCreationValues,
+  compileCreationPlan,
+  resolveCompiledCreationValues,
+  type CompiledCreationPlan,
   type CompositionValueMetadata,
 } from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import {
-  creationDefaultIdentityOf,
   type AnyField,
-  type CreationDefault,
   type CreationDefaultContext,
 } from "../../db/Field.ts";
 import {
@@ -27,7 +26,6 @@ import {
   collectDefinitionEntities,
   type ReachableCodeDefinition,
 } from "../../db/reachability.ts";
-import { OwnedOperations } from "../../db/Operation.ts";
 import { schemaTraits, type AnySchema } from "../../db/Schema.ts";
 import type { AnyTrait } from "../../db/Trait.ts";
 import { traitsOf, walkTraits, type ComposerLike } from "../../db/compose.ts";
@@ -69,8 +67,10 @@ import {
 import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { JsonValue } from "./json.ts";
 import {
-  lowerOwnedOperations,
+  lowerOwnedOperationSnapshots,
+  snapshotOwnedOperations,
   type DeployedOperationDefinition,
+  type OwnedOperationSnapshot,
 } from "./authoring/operations.ts";
 import { requireUnitHash } from "./deployed.ts";
 
@@ -79,11 +79,8 @@ export type InstalledCatalogDefinition = {
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
   readonly composition: CompositionIndex;
-  /** Trusted code retained for the authoritative operation boundary. */
+  /** Compiled codecs and frozen body source retained for #417. */
   readonly operations: readonly DeployedOperationDefinition[];
-  /** Complete same-database schema closure, including operation writes. */
-  readonly schema: AnySchema;
-  readonly definition: CatalogDefinition;
   readonly path: readonly string[];
   /** Resolve authoritative creation values from assembly's binding snapshot. */
   readonly resolveCreationValues: (
@@ -117,6 +114,20 @@ type AssemblyFailure =
   | CatalogUnitCorrupt
   | InstallFailure
   | InvalidIR;
+
+type NormalizedDefinitionSnapshot = {
+  readonly catalog: CatalogId;
+  readonly key: string;
+  readonly path: readonly string[];
+  readonly policy: CatalogDefinition["policy"];
+  readonly descriptorTables: Omit<
+    CatalogDescriptor,
+    "database" | "version" | "fingerprint"
+  >;
+  readonly creationPlans: readonly CompiledCreationPlan[];
+  readonly creationHashMaterial: JsonValue;
+  readonly operationSnapshots: readonly OwnedOperationSnapshot[];
+};
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
 
@@ -217,51 +228,6 @@ const completeSchema = (definition: CatalogDefinition): AnySchema => {
   });
 };
 
-const freezeAuthoringComposer = (
-  composer: ComposerLike,
-  seen: WeakSet<object>,
-): void => {
-  const object = composer as object;
-  if (seen.has(object)) return;
-  seen.add(object);
-  for (const trait of traitsOf(composer)) {
-    const stable = traitDefinitionOf(trait as unknown as TraitLike);
-    freezeAuthoringComposer(stable as unknown as ComposerLike, seen);
-    const runtime = bindingOf(trait);
-    if (runtime !== undefined) Object.freeze(runtime);
-    Object.freeze(trait);
-  }
-  for (const field of Object.values(composer.fields)) {
-    if (typeof field === "object" && field !== null) Object.freeze(field);
-  }
-  const operations = (composer as {
-    readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
-  })[OwnedOperations];
-  if (operations !== undefined) {
-    for (const operation of Object.values(operations)) {
-      if (typeof operation !== "object" || operation === null) continue;
-      const writes = (operation as { readonly writes?: unknown }).writes;
-      if (Array.isArray(writes)) Object.freeze(writes);
-      Object.freeze(operation);
-    }
-    Object.freeze(operations);
-  }
-  Object.freeze(composer.fields);
-  const traits = traitsOf(composer);
-  if (Array.isArray(traits)) Object.freeze(traits);
-  Object.freeze(composer);
-};
-
-/** Freeze the exact authoring graph retained after its bindings are resolved. */
-const freezeDefinitionAuthoring = (definition: CatalogDefinition): void => {
-  const seen = new WeakSet<object>();
-  for (const reachable of collectDefinitionEntities(definition)) {
-    freezeAuthoringComposer(reachable.entity as ComposerLike, seen);
-  }
-  Object.freeze(definition.schema.entities);
-  Object.freeze(definition.schema);
-};
-
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
@@ -286,69 +252,41 @@ const jsonValue = (value: unknown): JsonValue => {
   throw new Error("catalog fixed values must encode as finite stored data");
 };
 
-const defaultIdentity = (
-  get: CreationDefault<unknown>,
-  label: string,
-): JsonValue => {
-  const identity = creationDefaultIdentityOf(get);
-  if (identity === undefined) {
-    throw new Error(
-      `${label} must declare canonical captured inputs with creationDefault(inputs, get)`,
-    );
-  }
-  return {
-    source: identity.source,
-    inputs: jsonValue(identity.inputs),
-  };
-};
-
-/** Canonical executable creation metadata retained outside the inert unit. */
+/** Canonical identity derived from the same copied records as the runtime plan. */
 const creationHashMaterial = (
-  schema: AnySchema,
   artifactHash: DigestHex,
-  metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
+  plans: readonly CompiledCreationPlan[],
 ): JsonValue => ({
   artifactHash,
-  entities: Object.values(schema.entities)
-    .sort((left, right) => compareText(left.ns, right.ns))
-    .map((entity) => {
-      const metadata = metadataByEntity.get(entity.ns);
-      if (metadata === undefined) {
-        throw new Error(`missing resolved binding metadata for entity '${entity.ns}'`);
-      }
-      return {
-        name: entity.ns,
-        fieldDefaults: Object.values(entity.fields)
-          .filter((field) => typeof field.default === "function")
-          .sort((left, right) => compareText(left.ident, right.ident))
-          .map((field) => ({
-            field: field.ident,
-            default: defaultIdentity(
-              field.default!,
-              `field default '${field.ident}'`,
-            ),
-          })),
-        fixed: [...metadata.fixed.values()]
-          .sort((left, right) => compareText(left.ident, right.ident))
-          .map((entry) => ({ field: entry.ident, value: jsonValue(entry.value) })),
-        defaults: [...metadata.defaults.entries()]
-          .sort(([left], [right]) => compareText(left, right))
-          .map(([field, entries]) => ({
-            field,
-            defaults: entries.map((entry) => defaultIdentity(
-              entry.get,
-              `composition default '${field}'`,
-            )),
-          })),
-        bindings: metadata.bindings.map((use) => ({
-          trait: use.binding.trait.ns,
-          definition: use.binding.definition.key,
-          dependencies: use.binding.dependencies
-            .map((dependency) => dependency.key)
-            .sort(compareText),
+  entities: [...plans].sort((left, right) => compareText(left.entity, right.entity))
+    .map((plan) => ({
+      name: plan.entity,
+      fieldDefaults: plan.fields
+        .filter((field) => field.fieldDefault !== undefined)
+        .sort((left, right) => compareText(left.ident, right.ident))
+        .map((field) => ({
+          field: field.ident,
+          default: {
+            source: field.fieldDefault!.source,
+            inputs: jsonValue(field.fieldDefault!.inputs),
+          },
         })),
-      };
-    }),
+      fixed: plan.fields
+        .filter((field) => field.fixed !== undefined)
+        .sort((left, right) => compareText(left.ident, right.ident))
+        .map((field) => ({ field: field.ident, value: jsonValue(field.fixed) })),
+      defaults: plan.fields
+        .filter((field) => field.defaults.length > 0)
+        .sort((left, right) => compareText(left.ident, right.ident))
+        .map((field) => ({
+          field: field.ident,
+          defaults: field.defaults.map((entry) => ({
+            source: entry.source,
+            inputs: jsonValue(entry.inputs),
+          })),
+        })),
+      bindings: plan.bindings,
+    })),
 });
 
 const descriptorTables = (
@@ -395,45 +333,69 @@ const descriptorTables = (
   };
 };
 
+const normalizeDefinitionSnapshot = (
+  reachable: ReachableCodeDefinition,
+  artifactHash: DigestHex,
+  metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
+): NormalizedDefinitionSnapshot => {
+  if (!isCatalogDefinition(reachable.definition)) {
+    throw invalid(
+      `reachable key '${reachable.key}' has no runnable Catalog definition (path: ${reachable.path.join(" → ")})`,
+    );
+  }
+  const catalog = CatalogId.make(reachable.definition.key);
+  const schema = completeSchema(reachable.definition);
+  const creationPlans = Object.freeze(
+    Object.values(schema.entities)
+      .sort((left, right) => compareText(left.ns, right.ns))
+      .map((entity) => {
+        const metadata = metadataByEntity.get(entity.ns);
+        if (metadata === undefined) {
+          throw invalid(`missing resolved binding metadata for entity '${entity.ns}'`);
+        }
+        return compileCreationPlan(entity, metadata);
+      }),
+  );
+  const operationSnapshots = Result.getOrThrow(
+    snapshotOwnedOperations(catalog, [schema], artifactHash),
+  );
+  return Object.freeze({
+    catalog,
+    key: reachable.definition.key,
+    path: Object.freeze([...reachable.path]),
+    policy: reachable.definition.policy,
+    descriptorTables: Object.freeze(descriptorTables(catalog, schema, [])),
+    creationPlans,
+    creationHashMaterial: Object.freeze(
+      creationHashMaterial(artifactHash, creationPlans),
+    ),
+    operationSnapshots,
+  });
+};
+
 const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
   function* (
-    reachable: ReachableCodeDefinition,
-    artifactHash: DigestHex,
-    metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
+    snapshot: NormalizedDefinitionSnapshot,
   ): Effect.fn.Return<InstalledCatalogDefinition, AssemblyFailure> {
-    if (!isCatalogDefinition(reachable.definition)) {
-      return yield* invalid(
-        `reachable key '${reachable.key}' has no runnable Catalog definition (path: ${reachable.path.join(" → ")})`,
-      );
-    }
-    const definition = reachable.definition;
-    const catalog = CatalogId.make(definition.key);
-    const authoredPolicy = Effect.isEffect(definition.policy)
-      ? yield* definition.policy
-      : definition.policy;
+    const authoredPolicy = Effect.isEffect(snapshot.policy)
+      ? yield* snapshot.policy
+      : snapshot.policy;
     const template = yield* Effect.fromResult(
       decodePolicyTemplateResult(authoredPolicy),
     );
-    const schema = yield* fromPure(
-      `catalog '${definition.key}' schema reachability failed`,
-      () => completeSchema(definition),
-    );
-    const lowered = yield* lowerOwnedOperations(catalog, schema, artifactHash);
-    const tables = yield* fromPure(
-      `catalog '${definition.key}' descriptor lowering failed`,
-      () => descriptorTables(catalog, schema, lowered.descriptors),
-    );
+    const lowered = yield* lowerOwnedOperationSnapshots(snapshot.operationSnapshots);
+    const tables = {
+      ...snapshot.descriptorTables,
+      operations: lowered.descriptors,
+    };
     const version = CatalogVersion.make(yield* hashDomainSeparatedCanonicalJson(
       CATALOG_DEFINITION_VERSION_DOMAIN,
-      yield* fromPure(
-        `catalog '${definition.key}' creation metadata lowering failed`,
-        () => creationHashMaterial(schema, artifactHash, metadataByEntity),
-      ),
+      snapshot.creationHashMaterial,
     ));
     const descriptorWithoutFingerprint = {
       ...tables,
       // Definition-local seal target. Concrete DatabaseId binding is #459.
-      database: DatabaseId.make(`catalog-definition:${definition.key}`),
+      database: DatabaseId.make(`catalog-definition:${snapshot.key}`),
       version,
       fingerprint: SchemaFingerprint.make("pending"),
     } satisfies CatalogDescriptor;
@@ -445,7 +407,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     const policy = yield* installAuthorization({
       target: {
         database: descriptor.database,
-        catalog,
+        catalog: snapshot.catalog,
         catalogVersion: descriptor.version,
         schemaFingerprint: descriptor.fingerprint,
       },
@@ -454,29 +416,30 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     });
     const unit = yield* sealInstalledCatalogUnit(descriptor, policy);
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
+    const creationByEntity = new Map(
+      snapshot.creationPlans.map((plan) => [plan.entity, plan] as const),
+    );
+    const catalogKeyText = snapshot.key;
     const resolveCreationValues = Object.freeze((
       entityName: string,
       input: Readonly<Record<string, unknown>>,
       context: CreationDefaultContext,
     ): Readonly<Record<string, unknown>> => {
-      const entity = schema.entities[entityName];
-      const metadata = metadataByEntity.get(entityName);
-      if (entity === undefined || metadata === undefined) {
+      const plan = creationByEntity.get(entityName);
+      if (plan === undefined) {
         throw new Error(
-          `ramose/create: unknown entity ${JSON.stringify(entityName)} in catalog ${JSON.stringify(definition.key)}`,
+          `ramose/create: unknown entity ${JSON.stringify(entityName)} in catalog ${JSON.stringify(catalogKeyText)}`,
         );
       }
-      return resolveEntityCreationValues(entity, input, context, metadata);
+      return resolveCompiledCreationValues(plan, input, context);
     });
     return Object.freeze({
-      catalogKey: catalog,
+      catalogKey: snapshot.catalog,
       unitHash: unit.unitHash,
       unit,
       composition,
       operations: Object.freeze([...lowered.definitions]),
-      schema,
-      definition,
-      path: Object.freeze([...reachable.path]),
+      path: snapshot.path,
       resolveCreationValues,
     });
   },
@@ -526,29 +489,25 @@ export const assembleCatalogDefinitions = Effect.fn(
     "catalog definition reachability failed",
     () => collectCodeReachability(input.root),
   );
-  yield* fromPure(
+  const snapshots = yield* fromPure(
     "catalog definition authoring snapshot failed",
-    () => {
-      for (const reachable of reachability.definitions) {
-        if (isCatalogDefinition(reachable.definition)) {
-          freezeDefinitionAuthoring(reachable.definition);
+    () => reachability.definitions.map((reachable) => {
+      const metadataByEntity = new Map<string, CompositionValueMetadata>();
+      for (const creation of reachability.creation) {
+        if (creation.catalogKey === reachable.key) {
+          metadataByEntity.set(creation.entity, creation.metadata);
         }
       }
-    },
+      return normalizeDefinitionSnapshot(
+        reachable,
+        input.artifactHash,
+        metadataByEntity,
+      );
+    }),
   );
   const byKey = new Map<CatalogId, InstalledCatalogDefinition>();
-  for (const reachable of reachability.definitions) {
-    const metadataByEntity = new Map<string, CompositionValueMetadata>();
-    for (const creation of reachability.creation) {
-      if (creation.catalogKey === reachable.key) {
-        metadataByEntity.set(creation.entity, creation.metadata);
-      }
-    }
-    const assembled = yield* assembleOne(
-      reachable,
-      input.artifactHash,
-      metadataByEntity,
-    );
+  for (const snapshot of snapshots) {
+    const assembled = yield* assembleOne(snapshot);
     byKey.set(assembled.catalogKey, assembled);
   }
   return buildRegistry(CatalogId.make(reachability.root.key), Object.freeze(byKey));

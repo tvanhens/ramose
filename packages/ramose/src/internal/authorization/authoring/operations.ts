@@ -1,9 +1,9 @@
 /**
  * Lower public entity/trait-owned operations into catalog-local data.
  *
- * The descriptor side is inert, canonical hash material. The definition side
- * retains compiled schema codecs and the executable body for the later #417
- * authoritative boundary. Nothing is registered globally or by import order.
+ * One synchronous snapshot captures descriptor material and compiled runtime
+ * codecs before hashing yields. No caller-owned owner, schema, write entity,
+ * or operation callback survives lowering.
  */
 
 import * as Effect from "effect/Effect";
@@ -61,14 +61,15 @@ export type DeployedOperationCodec = {
 
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
-  readonly owner: OperationOwner;
+  readonly owner: OwnerRef;
   readonly localName: string;
   readonly self: boolean;
-  readonly writes: readonly AnyEntity[];
+  readonly writes: readonly EntityId[];
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly doc: string | undefined;
-  readonly run: AnyOwnedOperation["run"];
+  /** Frozen source retained for #417 compilation; never invoked by this plan. */
+  readonly bodySource: string;
 };
 
 export type LoweredOwnedOperations = {
@@ -82,6 +83,24 @@ type Draft = {
   readonly ownerRef: OwnerRef;
   readonly localName: string;
   readonly composers: readonly AnyEntity[];
+};
+
+export type OwnedOperationSnapshot = {
+  readonly id: OperationDescriptorType["id"];
+  readonly owner: OwnerRef;
+  readonly localName: string;
+  readonly self: boolean;
+  readonly writes: readonly EntityId[];
+  readonly composers: readonly EntityId[];
+  readonly inputShape: OperationInputShape;
+  readonly outputShape: OperationInputShape;
+  readonly inputSchemaMaterial: JsonValue;
+  readonly outputSchemaMaterial: JsonValue;
+  readonly inputCodec: DeployedOperationCodec;
+  readonly outputCodec: DeployedOperationCodec;
+  readonly doc: string | undefined;
+  readonly bodySource: string;
+  readonly bodyHashMaterial: JsonValue;
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -514,6 +533,17 @@ const bodySource = (run: AnyOwnedOperation["run"]): Result.Result<string, Invali
 
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 
+const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+    return value;
+  }
+  const object = value as object;
+  if (seen.has(object)) return value;
+  seen.add(object);
+  for (const child of Object.values(object)) deepFreeze(child, seen);
+  return Object.freeze(value);
+};
+
 const snapshotOperationCodec = (
   schema: Schema.Top,
 ): Result.Result<DeployedOperationCodec, InvalidIR> => {
@@ -533,24 +563,14 @@ const snapshotOperationCodec = (
   }
 };
 
-/**
- * Deterministically lower every operation reachable from one catalog's schema
- * components. Repeated reachability of the same definition is idempotent;
- * owner/local collisions between different definitions fail. `artifactHash`
- * must identify the immutable deployed bundle so captured constants and schema
- * callback closures cannot reuse a fingerprint across distinct artifacts.
- */
-export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperations")(
-  function* (
-    catalog: CatalogId,
-    input: AnySchema | readonly AnySchema[],
-    artifactHash: DigestHex,
-  ): Effect.fn.Return<LoweredOwnedOperations, InvalidIR> {
-    const schemas = Array.isArray(input) ? input : [input as AnySchema];
-    const drafts = yield* Effect.fromResult(collectDrafts(schemas));
-    const descriptors: OperationDescriptorType[] = [];
-    const definitions: DeployedOperationDefinition[] = [];
-
+export const snapshotOwnedOperations = (
+  catalog: CatalogId,
+  schemas: readonly AnySchema[],
+  artifactHash: DigestHex,
+): Result.Result<readonly OwnedOperationSnapshot[], InvalidIR> =>
+  Result.gen(function* () {
+    const drafts = yield* collectDrafts(schemas);
+    const snapshots: OwnedOperationSnapshot[] = [];
     for (const draft of drafts) {
       const operation = draft.operation;
       const id = OperationId.make({
@@ -559,52 +579,94 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
         localName: draft.localName,
         target: operation.self ? "required" : "none",
       });
-      const inputSchemaMaterial = yield* Effect.fromResult(
-        schemaHashMaterial(catalog, operation.input, artifactHash),
+      const inputSchemaMaterial = yield* schemaHashMaterial(
+        catalog,
+        operation.input,
+        artifactHash,
       );
-      const outputSchemaMaterial = yield* Effect.fromResult(
-        schemaHashMaterial(catalog, operation.output, artifactHash),
+      const outputSchemaMaterial = yield* schemaHashMaterial(
+        catalog,
+        operation.output,
+        artifactHash,
       );
       const inputShape = lowerOperationSchema(catalog, operation.input);
       const outputShape = lowerOperationSchema(catalog, operation.output);
-      const inputCodec = yield* Effect.fromResult(
-        snapshotOperationCodec(operation.input),
-      );
-      const outputCodec = yield* Effect.fromResult(
-        snapshotOperationCodec(operation.output),
-      );
-      const source = yield* Effect.fromResult(bodySource(operation.run));
-      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
-        hashOperationSchema(inputSchemaMaterial),
-        hashOperationSchema(outputSchemaMaterial),
-        hashDomainSeparatedCanonicalJson(OPERATION_BODY_HASH_DOMAIN_V1, {
-          artifactHash,
-          source,
-        }),
-      ]);
       if (
         !operation.self &&
         (shapeContainsSelf(inputShape) || shapeContainsSelf(outputShape))
       ) {
-        return yield* invalid(
+        return yield* Result.fail(invalid(
           `targetless operation '${draft.owner.ns}.${draft.localName}' cannot reference self`,
-        );
+        ));
       }
+      const capturedBodySource = yield* bodySource(operation.run);
+      snapshots.push(deepFreeze({
+        id: deepFreeze(id),
+        owner: deepFreeze({ ...draft.ownerRef }),
+        localName: draft.localName,
+        self: operation.self,
+        writes: Object.freeze(operation.writes.map((entity) =>
+          deepFreeze(EntityId.make({ catalog, name: entity.ns }))
+        )),
+        composers: Object.freeze(
+          draft.owner._tag === "Trait" && operation.self
+            ? draft.composers.map((entity) =>
+              deepFreeze(EntityId.make({ catalog, name: entity.ns }))
+            )
+            : [],
+        ),
+        inputShape: deepFreeze(inputShape),
+        outputShape: deepFreeze(outputShape),
+        inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
+        outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
+        inputCodec: yield* snapshotOperationCodec(operation.input),
+        outputCodec: yield* snapshotOperationCodec(operation.output),
+        doc: operation.doc,
+        bodySource: capturedBodySource,
+        bodyHashMaterial: deepFreeze({
+          artifactHash,
+          source: capturedBodySource,
+        }),
+      }));
+    }
+    return Object.freeze(snapshots);
+  });
+
+/**
+ * Deterministically lower every operation reachable from one catalog's schema
+ * components. Repeated reachability of the same definition is idempotent;
+ * owner/local collisions between different definitions fail. `artifactHash`
+ * must identify the immutable deployed bundle. All caller-owned values are
+ * synchronously normalized before the first hashing effect can yield.
+ */
+export const lowerOwnedOperationSnapshots = Effect.fn(
+  "Authorization.lowerOwnedOperationSnapshots",
+)(
+  function* (
+    snapshots: readonly OwnedOperationSnapshot[],
+  ): Effect.fn.Return<LoweredOwnedOperations, InvalidIR> {
+    const descriptors: OperationDescriptorType[] = [];
+    const definitions: DeployedOperationDefinition[] = [];
+
+    for (const snapshot of snapshots) {
+      const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
+        hashOperationSchema(snapshot.inputSchemaMaterial),
+        hashOperationSchema(snapshot.outputSchemaMaterial),
+        hashDomainSeparatedCanonicalJson(
+          OPERATION_BODY_HASH_DOMAIN_V1,
+          snapshot.bodyHashMaterial,
+        ),
+      ]);
       const descriptorInput = {
-        id,
-        input: inputShape,
-        output: outputShape,
+        id: snapshot.id,
+        input: snapshot.inputShape,
+        output: snapshot.outputShape,
         inputSchemaHash,
         outputSchemaHash,
         bodyHash,
-        composers:
-          draft.owner._tag === "Trait" && operation.self
-            ? draft.composers.map((entity) => EntityId.make({ catalog, name: entity.ns }))
-            : [],
-        writes: operation.writes.map((entity) =>
-          EntityId.make({ catalog, name: entity.ns })
-        ),
-        ...(operation.doc === undefined ? {} : { doc: operation.doc }),
+        composers: snapshot.composers,
+        writes: snapshot.writes,
+        ...(snapshot.doc === undefined ? {} : { doc: snapshot.doc }),
       };
       const descriptor = yield* Effect.fromResult(
         Result.mapError(
@@ -615,15 +677,15 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
       descriptors.push(freeze(descriptor) as OperationDescriptorType);
       definitions.push(
         freeze({
-          id,
-          owner: draft.owner,
-          localName: draft.localName,
-          self: operation.self,
-          writes: operation.writes,
-          input: inputCodec,
-          output: outputCodec,
-          doc: operation.doc,
-          run: operation.run,
+          id: snapshot.id,
+          owner: snapshot.owner,
+          localName: snapshot.localName,
+          self: snapshot.self,
+          writes: snapshot.writes,
+          input: snapshot.inputCodec,
+          output: snapshot.outputCodec,
+          doc: snapshot.doc,
+          bodySource: snapshot.bodySource,
         }) as DeployedOperationDefinition,
       );
     }
@@ -632,5 +694,20 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
       descriptors: Object.freeze(descriptors),
       definitions: Object.freeze(definitions),
     });
+  },
+);
+
+/** Convenience boundary for callers that do not need to stage all snapshots. */
+export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperations")(
+  function* (
+    catalog: CatalogId,
+    input: AnySchema | readonly AnySchema[],
+    artifactHash: DigestHex,
+  ): Effect.fn.Return<LoweredOwnedOperations, InvalidIR> {
+    const schemas = Array.isArray(input) ? input : [input as AnySchema];
+    const snapshots = yield* Effect.fromResult(
+      snapshotOwnedOperations(catalog, schemas, artifactHash),
+    );
+    return yield* lowerOwnedOperationSnapshots(snapshots);
   },
 );

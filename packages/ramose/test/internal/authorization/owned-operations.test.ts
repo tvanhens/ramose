@@ -173,7 +173,7 @@ describe("owned operation authoring", () => {
 
 describe("owned operation lowering", () => {
   test("produces deterministic catalog-local identities and inert descriptors", async () => {
-    const { App, Audit, Issue } = fixture();
+    const { App, Issue } = fixture();
     const first = await Effect.runPromise(
       lowerOwnedOperations(catalog, App, artifactHash),
     );
@@ -213,15 +213,17 @@ describe("owned operation lowering", () => {
     expect(JSON.stringify(first.descriptors)).not.toContain("function");
 
     const definition = first.definitions.find((entry) => entry.localName === "create")!;
-    expect(definition.owner).toBe(Issue);
+    expect(definition.owner).toEqual({ kind: "entity", name: "issue" });
     expect(definition.input).not.toBe(Issue[OwnedOperations].create.input);
     expect(definition.input.decode({ title: "T", slug: "t" })).toEqual({
       title: "T",
       slug: "t",
     });
     expect(definition.output.encode({ id: 1 })).toEqual({ id: 1 });
-    expect(definition.run as unknown).toBe(Issue[OwnedOperations].create.run);
-    expect(definition.writes).toEqual([Audit]);
+    expect(definition.bodySource).toBe(
+      Function.prototype.toString.call(Issue[OwnedOperations].create.run),
+    );
+    expect(definition.writes.map((entry) => entry.name)).toEqual(["audit"]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
   });

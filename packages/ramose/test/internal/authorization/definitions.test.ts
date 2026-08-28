@@ -11,6 +11,7 @@ import {
 import {
   Entity,
   Field,
+  OwnedOperations,
   Schema,
   Trait,
   bytes,
@@ -157,7 +158,8 @@ describe("catalog definition assembly", () => {
       "audit",
       "inspect",
     ]);
-    expect(installedRoot.operations[0]!.writes).toEqual([Audit]);
+    expect(installedRoot.operations[0]!.writes.map((entry) => entry.name))
+      .toEqual(["audit"]);
     expect(installedRoot.resolveCreationValues(
       "rootNode",
       { title: "Root" },
@@ -281,7 +283,7 @@ describe("catalog definition assembly", () => {
       });
   });
 
-  test("freezes retained entity and field authoring state", async () => {
+  test("does not retain mutable entity and field authoring state", async () => {
     const Item = Entity("item", {
       value: string({
         default: creationDefault({ value: "sealed" }, (inputs) => inputs.value),
@@ -295,13 +297,13 @@ describe("catalog definition assembly", () => {
       }))).require(CatalogId.make("frozen-authoring")),
     );
 
-    expect(Object.isFrozen(Item)).toBe(true);
-    expect(Object.isFrozen(Item.value)).toBe(true);
+    expect(Object.isFrozen(Item)).toBe(false);
+    expect(Object.isFrozen(Item.value)).toBe(false);
     expect(Reflect.set(
       Item.value,
       "default",
       creationDefault({ value: "mutated" }, (inputs) => inputs.value),
-    )).toBe(false);
+    )).toBe(true);
     expect(installed.resolveCreationValues("item", {}, { now: new Date(0) }))
       .toEqual({ value: "sealed" });
   });
@@ -334,6 +336,161 @@ describe("catalog definition assembly", () => {
       { value: 42 },
       { now: new Date(0) },
     )).toThrow(/invalid explicit value/);
+  });
+
+  test("compiled boundary ignores every original authoring mutation", async () => {
+    const fieldInputs = { value: "field-original" };
+    const bindingInputs = { value: "binding-original" };
+    const fixedDate = new Date("2025-01-02T03:04:05.000Z");
+    const fixedBytes = new Uint8Array([1, 2, 3]);
+    const fixedTags = ["one", "two"];
+    const MutableFieldSchema = EffectSchema.String.annotate({
+      identifier: "boundary-field",
+    });
+    const Input = EffectSchema.Struct({ value: EffectSchema.String });
+    const Output = EffectSchema.Struct({ ok: EffectSchema.Boolean });
+    const ChildSchema = Schema({});
+    const child = Catalog("boundary-child", {
+      schema: ChildSchema,
+      policy: await policy(ChildSchema),
+    });
+    const dependencyRefs: CodeDefinition[] = [child];
+    const bindingValues = {
+      at: fixedDate,
+      data: fixedBytes,
+      sign: -0,
+      tags: fixedTags,
+    };
+    const bindingDefaults = {
+      label: creationDefault(bindingInputs, (inputs) => inputs.value),
+    };
+    const bindingResult = {
+      values: bindingValues,
+      defaults: bindingDefaults,
+      dependencies: dependencyRefs,
+    };
+    let bindingCalls = 0;
+    const Bound = Trait("boundaryTrait", {
+      at: timestamp(),
+      data: bytes(),
+      sign: float(),
+      tags: Field.many(string()),
+      label: string(),
+    }, {
+      bind: () => {
+        bindingCalls++;
+        return bindingResult;
+      },
+    });
+    const Audit = Entity("boundaryAudit", { message: string() });
+    let bodyCapture = "body-original";
+    const Item = Entity("boundaryItem", {
+      title: string({
+        default: creationDefault(fieldInputs, (inputs) => inputs.value),
+      }),
+      createdAt: timestamp({
+        default: creationDefault({}, (_inputs, context) => context.now),
+      }),
+      checked: Field(MutableFieldSchema),
+    }, {
+      traits: [Bound(child)],
+      operations: (Operation) => ({
+        check: Operation({
+          self: false,
+          writes: [Audit],
+          input: Input,
+          output: Output,
+          doc: "original operation",
+          run: () => ({ ok: bodyCapture === "body-original" }),
+        }),
+      }),
+    });
+    const App = Schema({ boundaryItem: Item });
+    const authoredPolicy = await policy(App);
+    const definition = Catalog("boundary-root", {
+      schema: App,
+      policy: authoredPolicy,
+    });
+    const registry = await assemble(definition);
+    const installed = Result.getOrThrow(
+      registry.require(CatalogId.make("boundary-root")),
+    );
+    const sealedHash = installed.unitHash;
+    const sealedUnit = JSON.stringify(installed.unit);
+    const operation = Item[OwnedOperations].check;
+    const capturedBodySource = installed.operations[0]!.bodySource;
+
+    fieldInputs.value = "field-mutated";
+    bindingInputs.value = "binding-mutated";
+    fixedDate.setUTCFullYear(2035);
+    fixedBytes[0] = 9;
+    fixedTags[0] = "mutated";
+    bindingValues.sign = 42;
+    bindingDefaults.label = creationDefault(
+      { value: "replacement" },
+      (inputs) => inputs.value,
+    );
+    dependencyRefs.length = 0;
+    bodyCapture = "body-mutated";
+    expect(Reflect.set(bindingResult, "values", {})).toBe(true);
+    expect(Reflect.set(Item.title, "default", creationDefault(
+      { value: "replacement" },
+      (inputs) => inputs.value,
+    ))).toBe(true);
+    expect(Reflect.set(Item, "ns", "mutatedItem")).toBe(true);
+    expect(Reflect.set(Audit, "ns", "mutatedAudit")).toBe(true);
+    expect(Reflect.set(operation, "doc", "mutated operation")).toBe(true);
+    expect(Reflect.set(operation, "run", () => ({ ok: false }))).toBe(true);
+    expect(Reflect.set(MutableFieldSchema, "ast", EffectSchema.Finite.ast)).toBe(true);
+    expect(Reflect.set(
+      Input,
+      "ast",
+      EffectSchema.Struct({ value: EffectSchema.Finite }).ast,
+    )).toBe(true);
+    expect(Reflect.set(
+      Output,
+      "ast",
+      EffectSchema.Struct({ ok: EffectSchema.String }).ast,
+    )).toBe(true);
+    expect(Reflect.set(App.entities, "boundaryItem", Audit)).toBe(true);
+    expect(Object.isFrozen(authoredPolicy)).toBe(true);
+
+    expect(bindingCalls).toBe(1);
+    expect(installed.unitHash).toBe(sealedHash);
+    expect(JSON.stringify(installed.unit)).toBe(sealedUnit);
+    expect("schema" in installed).toBe(false);
+    expect("definition" in installed).toBe(false);
+    expect("run" in installed.operations[0]!).toBe(false);
+    expect(installed.operations[0]!.bodySource).toBe(capturedBodySource);
+    expect(installed.operations[0]!.owner).toEqual({
+      kind: "entity",
+      name: "boundaryItem",
+    });
+    expect(installed.operations[0]!.writes.map((entry) => entry.name))
+      .toEqual(["boundaryAudit"]);
+    expect(installed.operations[0]!.input.decode({ value: "stable" }))
+      .toEqual({ value: "stable" });
+    expect(() => installed.operations[0]!.input.decode({ value: 1 })).toThrow();
+    expect(installed.operations[0]!.output.encode({ ok: true }))
+      .toEqual({ ok: true });
+    expect(installed.resolveCreationValues(
+      "boundaryItem",
+      { checked: "still-a-string" },
+      { now: new Date(0) },
+    )).toEqual({
+      title: "field-original",
+      createdAt: new Date(0),
+      checked: "still-a-string",
+      at: new Date("2025-01-02T03:04:05.000Z"),
+      data: new Uint8Array([1, 2, 3]),
+      sign: 0,
+      tags: ["one", "two"],
+      label: "binding-original",
+    });
+    expect(registry.keys().map(String)).toEqual([
+      "boundary-child",
+      "boundary-root",
+    ]);
   });
 
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
@@ -425,6 +582,15 @@ describe("catalog definition assembly", () => {
     expect((await assembleFailure(unsafe)).message).toMatch(
       /must declare canonical captured inputs with creationDefault/,
     );
+
+    let undeclared = "initial";
+    expect(() => creationDefault(
+      { useDeclared: true, declared: "safe" },
+      (inputs) => inputs.useDeclared ? inputs.declared : undeclared,
+    )).toThrow(
+      /references undeclared identifier 'undeclared'/,
+    );
+    undeclared = "mutated";
   });
 
   test("preserves own __proto__ default inputs in evaluation and identity", async () => {
@@ -464,7 +630,7 @@ describe("catalog definition assembly", () => {
         sign: string({
           default: creationDefault(
             { value },
-            (inputs) => Object.is(inputs.value, -0) ? "negative" : "positive",
+            (inputs) => inputs.value === 0 ? "positive" : "negative",
           ),
         }),
       }),

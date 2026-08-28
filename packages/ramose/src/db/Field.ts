@@ -1,5 +1,6 @@
 /** Typed field: value Schema, cardinality, and options. */
 
+import { parse } from "acorn";
 import type * as SchemaNS from "effect/Schema";
 import * as Schema from "effect/Schema";
 import {
@@ -106,10 +107,360 @@ const snapshotInputs = (
   return Object.freeze(out);
 };
 
+type EvaluatorNode = {
+  readonly type: string;
+  readonly [key: string]: unknown;
+};
+
+const evaluatorError = (message: string): Error =>
+  new Error(`ramose/default: evaluator ${message}`);
+
+const node = (value: unknown, label: string): EvaluatorNode => {
+  if (typeof value !== "object" || value === null || !("type" in value)) {
+    throw evaluatorError(`has invalid ${label}`);
+  }
+  return value as EvaluatorNode;
+};
+
+const staticProperty = (member: EvaluatorNode): PropertyKey => {
+  const property = node(member.property, "member property");
+  if (member.computed === true) {
+    if (property.type !== "Literal") {
+      throw evaluatorError("requires statically named properties");
+    }
+    const value = property.value;
+    if (typeof value !== "string" && typeof value !== "number") {
+      throw evaluatorError("requires string or number property names");
+    }
+    return value;
+  }
+  if (property.type !== "Identifier" || typeof property.name !== "string") {
+    const value = property.value;
+    if (property.type === "Literal" &&
+      (typeof value === "string" || typeof value === "number")) {
+      return value;
+    }
+    throw evaluatorError("requires statically named properties");
+  }
+  return property.name;
+};
+
+const primitive = (value: unknown): value is null | undefined | string | number | boolean =>
+  value === null || value === undefined ||
+  typeof value === "string" || typeof value === "number" ||
+  typeof value === "boolean";
+
+const numericOperands = (
+  operator: string,
+  left: unknown,
+  right: unknown,
+): readonly [number, number] => {
+  if (typeof left !== "number" || typeof right !== "number") {
+    throw evaluatorError(`operator '${operator}' requires number operands`);
+  }
+  return [left, right];
+};
+
+const evaluateBinary = (operator: string, left: unknown, right: unknown): unknown => {
+  switch (operator) {
+    case "===": return left === right;
+    case "!==": return left !== right;
+    case "+": {
+      if (typeof left === "number" && typeof right === "number") return left + right;
+      if (typeof left === "string" && typeof right === "string") return left + right;
+      throw evaluatorError("operator '+' requires two numbers or two strings");
+    }
+    case "-": { const [l, r] = numericOperands(operator, left, right); return l - r; }
+    case "*": { const [l, r] = numericOperands(operator, left, right); return l * r; }
+    case "/": { const [l, r] = numericOperands(operator, left, right); return l / r; }
+    case "%": { const [l, r] = numericOperands(operator, left, right); return l % r; }
+    case "**": { const [l, r] = numericOperands(operator, left, right); return l ** r; }
+    case "<":
+    case "<=":
+    case ">":
+    case ">=": {
+      if (
+        !((typeof left === "number" && typeof right === "number") ||
+          (typeof left === "string" && typeof right === "string"))
+      ) {
+        throw evaluatorError(`operator '${operator}' requires matching primitives`);
+      }
+      if (operator === "<") return left < right;
+      if (operator === "<=") return left <= right;
+      if (operator === ">") return left > right;
+      return left >= right;
+    }
+    case "|": { const [l, r] = numericOperands(operator, left, right); return l | r; }
+    case "&": { const [l, r] = numericOperands(operator, left, right); return l & r; }
+    case "^": { const [l, r] = numericOperands(operator, left, right); return l ^ r; }
+    case "<<": { const [l, r] = numericOperands(operator, left, right); return l << r; }
+    case ">>": { const [l, r] = numericOperands(operator, left, right); return l >> r; }
+    case ">>>": { const [l, r] = numericOperands(operator, left, right); return l >>> r; }
+    default: throw evaluatorError(`does not support operator '${operator}'`);
+  }
+};
+
+const evaluateNode = (
+  current: EvaluatorNode,
+  bindings: Readonly<Record<string, unknown>>,
+): unknown => {
+  switch (current.type) {
+    case "Literal": {
+      if (current.regex !== undefined || current.bigint !== undefined) {
+        throw evaluatorError("supports only canonical primitive literals");
+      }
+      return current.value;
+    }
+    case "Identifier": {
+      const name = current.name;
+      if (name === "undefined") return undefined;
+      if (typeof name !== "string" || !Object.hasOwn(bindings, name)) {
+        throw evaluatorError(`references undeclared identifier '${String(name)}'`);
+      }
+      return bindings[name];
+    }
+    case "MemberExpression": {
+      if (current.optional === true) {
+        throw evaluatorError("does not support optional member access");
+      }
+      const target = evaluateNode(node(current.object, "member target"), bindings);
+      const property = staticProperty(current);
+      if ((typeof target !== "object" && typeof target !== "function") || target === null) {
+        throw evaluatorError(`cannot read '${String(property)}' from a primitive`);
+      }
+      if (!Object.hasOwn(target, property)) {
+        throw evaluatorError(`cannot read inherited or missing property '${String(property)}'`);
+      }
+      return Reflect.get(target, property);
+    }
+    case "UnaryExpression": {
+      const operator = String(current.operator);
+      const value = evaluateNode(node(current.argument, "unary argument"), bindings);
+      if (operator === "!") return !value;
+      if (operator === "typeof") return typeof value;
+      if (typeof value !== "number") {
+        throw evaluatorError(`operator '${operator}' requires a number operand`);
+      }
+      if (operator === "+") return value;
+      if (operator === "-") return -value;
+      if (operator === "~") return ~value;
+      throw evaluatorError(`does not support operator '${operator}'`);
+    }
+    case "BinaryExpression":
+      return evaluateBinary(
+        String(current.operator),
+        evaluateNode(node(current.left, "left operand"), bindings),
+        evaluateNode(node(current.right, "right operand"), bindings),
+      );
+    case "LogicalExpression": {
+      const left = evaluateNode(node(current.left, "left operand"), bindings);
+      if (current.operator === "&&") {
+        return left ? evaluateNode(node(current.right, "right operand"), bindings) : left;
+      }
+      if (current.operator === "||") {
+        return left ? left : evaluateNode(node(current.right, "right operand"), bindings);
+      }
+      if (current.operator === "??") {
+        return left ?? evaluateNode(node(current.right, "right operand"), bindings);
+      }
+      throw evaluatorError(`does not support operator '${String(current.operator)}'`);
+    }
+    case "ConditionalExpression":
+      return evaluateNode(node(current.test, "condition"), bindings)
+        ? evaluateNode(node(current.consequent, "consequent"), bindings)
+        : evaluateNode(node(current.alternate, "alternate"), bindings);
+    case "ArrayExpression":
+      return (current.elements as readonly unknown[]).map((element) => {
+        if (element === null) return undefined;
+        const item = node(element, "array element");
+        if (item.type === "SpreadElement") {
+          throw evaluatorError("does not support spread elements");
+        }
+        return evaluateNode(item, bindings);
+      });
+    case "ObjectExpression": {
+      const out = Object.create(null) as Record<PropertyKey, unknown>;
+      for (const rawProperty of current.properties as readonly unknown[]) {
+        const property = node(rawProperty, "object property");
+        if (property.type !== "Property" || property.kind !== "init" || property.method === true) {
+          throw evaluatorError("supports only ordinary object properties");
+        }
+        const key = property.computed === true
+          ? evaluateNode(node(property.key, "computed property"), bindings)
+          : staticProperty({ ...property, property: property.key });
+        if (typeof key !== "string" && typeof key !== "number") {
+          throw evaluatorError("requires string or number object keys");
+        }
+        out[key] = evaluateNode(node(property.value, "property value"), bindings);
+      }
+      return out;
+    }
+    case "TemplateLiteral": {
+      const quasis = current.quasis as readonly EvaluatorNode[];
+      const expressions = current.expressions as readonly EvaluatorNode[];
+      let out = String((quasis[0]!.value as { cooked?: string }).cooked ?? "");
+      for (let index = 0; index < expressions.length; index++) {
+        const value = evaluateNode(expressions[index]!, bindings);
+        if (!primitive(value)) {
+          throw evaluatorError("template substitutions must be primitive");
+        }
+        out += String(value);
+        out += String((quasis[index + 1]!.value as { cooked?: string }).cooked ?? "");
+      }
+      return out;
+    }
+    default:
+      throw evaluatorError(`does not support syntax '${current.type}'`);
+  }
+};
+
+const validateEvaluatorNode = (
+  current: EvaluatorNode,
+  parameters: ReadonlySet<string>,
+): void => {
+  switch (current.type) {
+    case "Literal":
+      if (current.regex !== undefined || current.bigint !== undefined) {
+        throw evaluatorError("supports only canonical primitive literals");
+      }
+      return;
+    case "Identifier": {
+      const name = String(current.name);
+      if (name !== "undefined" && !parameters.has(name)) {
+        throw evaluatorError(`references undeclared identifier '${name}'`);
+      }
+      return;
+    }
+    case "MemberExpression":
+      if (current.optional === true) {
+        throw evaluatorError("does not support optional member access");
+      }
+      staticProperty(current);
+      validateEvaluatorNode(node(current.object, "member target"), parameters);
+      return;
+    case "UnaryExpression": {
+      const operator = String(current.operator);
+      if (!["!", "typeof", "+", "-", "~"].includes(operator)) {
+        throw evaluatorError(`does not support operator '${operator}'`);
+      }
+      validateEvaluatorNode(node(current.argument, "unary argument"), parameters);
+      return;
+    }
+    case "BinaryExpression": {
+      const operator = String(current.operator);
+      if (![
+        "===", "!==", "+", "-", "*", "/", "%", "**", "<", "<=", ">", ">=",
+        "|", "&", "^", "<<", ">>", ">>>",
+      ].includes(operator)) {
+        throw evaluatorError(`does not support operator '${operator}'`);
+      }
+      validateEvaluatorNode(node(current.left, "left operand"), parameters);
+      validateEvaluatorNode(node(current.right, "right operand"), parameters);
+      return;
+    }
+    case "LogicalExpression": {
+      const operator = String(current.operator);
+      if (!["&&", "||", "??"].includes(operator)) {
+        throw evaluatorError(`does not support operator '${operator}'`);
+      }
+      validateEvaluatorNode(node(current.left, "left operand"), parameters);
+      validateEvaluatorNode(node(current.right, "right operand"), parameters);
+      return;
+    }
+    case "ConditionalExpression":
+      validateEvaluatorNode(node(current.test, "condition"), parameters);
+      validateEvaluatorNode(node(current.consequent, "consequent"), parameters);
+      validateEvaluatorNode(node(current.alternate, "alternate"), parameters);
+      return;
+    case "ArrayExpression":
+      for (const element of current.elements as readonly unknown[]) {
+        if (element === null) continue;
+        const item = node(element, "array element");
+        if (item.type === "SpreadElement") {
+          throw evaluatorError("does not support spread elements");
+        }
+        validateEvaluatorNode(item, parameters);
+      }
+      return;
+    case "ObjectExpression":
+      for (const rawProperty of current.properties as readonly unknown[]) {
+        const property = node(rawProperty, "object property");
+        if (property.type !== "Property" || property.kind !== "init" || property.method === true) {
+          throw evaluatorError("supports only ordinary object properties");
+        }
+        if (property.computed === true) {
+          validateEvaluatorNode(node(property.key, "computed property"), parameters);
+        } else {
+          staticProperty({ ...property, property: property.key });
+        }
+        validateEvaluatorNode(node(property.value, "property value"), parameters);
+      }
+      return;
+    case "TemplateLiteral":
+      for (const expression of current.expressions as readonly unknown[]) {
+        validateEvaluatorNode(node(expression, "template expression"), parameters);
+      }
+      return;
+    default:
+      throw evaluatorError(`does not support syntax '${current.type}'`);
+  }
+};
+
+const compileEvaluator = <Inputs extends CreationDefaultInputs, A>(
+  source: string,
+  snapshot: ImmutableCreationDefaultInputs<Inputs>,
+): ((context: CreationDefaultContext) => A | undefined) => {
+  let program: EvaluatorNode;
+  try {
+    program = parse(`(${source})`, { ecmaVersion: "latest" }) as unknown as EvaluatorNode;
+  } catch (cause) {
+    throw evaluatorError(
+      `must be parseable JavaScript: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  const statement = node((program.body as readonly unknown[])[0], "program body");
+  const evaluator = node(statement.expression, "expression");
+  if (
+    statement.type !== "ExpressionStatement" ||
+    (evaluator.type !== "ArrowFunctionExpression" && evaluator.type !== "FunctionExpression")
+  ) {
+    throw evaluatorError("must be an arrow or function expression");
+  }
+  const parameters = evaluator.params as readonly unknown[];
+  if (parameters.length > 2) {
+    throw evaluatorError("accepts at most inputs and context parameters");
+  }
+  const names = parameters.map((parameter) => {
+    const item = node(parameter, "parameter");
+    if (item.type !== "Identifier" || typeof item.name !== "string") {
+      throw evaluatorError("requires simple identifier parameters");
+    }
+    return item.name;
+  });
+  let expression = node(evaluator.body, "body");
+  if (expression.type === "BlockStatement") {
+    const statements = expression.body as readonly unknown[];
+    if (statements.length !== 1) {
+      throw evaluatorError("block bodies must contain exactly one return statement");
+    }
+    const returned = node(statements[0], "return statement");
+    if (returned.type !== "ReturnStatement" || returned.argument === null) {
+      throw evaluatorError("block bodies must contain exactly one return statement");
+    }
+    expression = node(returned.argument, "return value");
+  }
+  validateEvaluatorNode(expression, new Set(names));
+  return (context) => evaluateNode(expression, Object.freeze({
+    ...(names[0] === undefined ? {} : { [names[0]]: snapshot }),
+    ...(names[1] === undefined ? {} : { [names[1]]: context }),
+  })) as A | undefined;
+};
+
 /**
  * Snapshot every runtime/config input used by a default as immutable canonical
- * data. The evaluator receives that snapshot and should derive its result only
- * from the snapshot and authoritative context.
+ * data. The evaluator is parsed as a declarative expression and may read only
+ * its snapshot and authoritative context parameters. Calls, mutation, dynamic
+ * property names, and undeclared identifiers are rejected.
  */
 export const creationDefault = <
   A,
@@ -122,12 +473,12 @@ export const creationDefault = <
   ) => A | undefined,
 ): CreationDefault<A> => {
   const snapshot = snapshotInputs(inputs) as ImmutableCreationDefaultInputs<Inputs>;
-  const run = (context: CreationDefaultContext): A | undefined =>
-    get(snapshot, context);
+  const source = Function.prototype.toString.call(get);
+  const run = compileEvaluator<Inputs, A>(source, snapshot);
   Object.defineProperty(run, CREATION_DEFAULT_IDENTITY, {
     value: Object.freeze({
       inputs: snapshot,
-      source: Function.prototype.toString.call(get),
+      source,
     }),
     enumerable: false,
   });

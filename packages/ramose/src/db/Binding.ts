@@ -112,15 +112,58 @@ export interface ResolvedTraitBinding {
   readonly dependencies: readonly CodeDefinition[];
 }
 
-/** @internal Copy the mutable stored-value forms retained by bindings. */
-export const cloneBindingValue = (value: unknown): unknown => {
-  if (typeof value === "number" && Object.is(value, -0)) return 0;
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof Uint8Array) return new Uint8Array(value);
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map(cloneBindingValue));
+/** @internal Normalize supported stored-value forms without retaining input containers. */
+export const cloneBindingValue = (
+  value: unknown,
+  seen = new WeakSet<object>(),
+): unknown => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
   }
-  return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("ramose/binding: values must contain only finite numbers");
+    }
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      throw new Error("ramose/binding: values must contain only valid dates");
+    }
+    return new Date(value.getTime());
+  }
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (typeof value !== "object" || value === null) {
+    throw new Error("ramose/binding: values must contain only supported stored data");
+  }
+  if (seen.has(value)) {
+    throw new Error("ramose/binding: values must not contain cycles");
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const copy = Object.freeze(value.map((item) => cloneBindingValue(item, seen)));
+    seen.delete(value);
+    return copy;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("ramose/binding: values must contain only supported stored data");
+  }
+  const copy = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(value).sort()) {
+    const item = (value as Record<string, unknown>)[key];
+    if (item === undefined) {
+      throw new Error("ramose/binding: values must not contain undefined");
+    }
+    Object.defineProperty(copy, key, {
+      value: cloneBindingValue(item, seen),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  seen.delete(value);
+  return Object.freeze(copy);
 };
 
 export const isCodeDefinition = (value: unknown): value is CodeDefinition =>
