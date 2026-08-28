@@ -217,6 +217,11 @@ export const handleTestAdmin = async (
     const target = body.target === "replica" ? "replica" : "transactor";
     return forward(request, env, db, target, "/admin/test/abort", "{}");
   }
+  if (rest === "/reconnect") {
+    return forward(request, env, db, "replica", "/admin/reconnect", "{}", {
+      passThrough: true,
+    });
+  }
   if (rest === "/transact") {
     return forward(request, env, db, "transactor", "/transact", await request.text(), {
       passThrough: true,

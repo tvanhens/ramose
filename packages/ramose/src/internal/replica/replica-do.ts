@@ -52,6 +52,8 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
 
 const DEPLOYMENT_HEADER = "x-ramose-deployment";
 const LIVE_DEPLOYMENT_INTERVAL_MS = 4_000;
+const LIVE_UPSTREAM_WATCH_INTERVAL_MS = 1_000;
+const LIVE_UPSTREAM_STALE_MS = 3_500;
 
 type BasisWatchAttachment = {
   readonly kind: "basis-watch";
@@ -174,6 +176,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
 
   private adoptRoot(rec: RootRecord): void {
     if (this.root && rec.t <= this.root.t) return;
+    const beforeT = this.basisT;
     this.root = rec;
     this.setMeta("root", rec);
     // drop novelty absorbed by the new root
@@ -182,6 +185,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.sql.exec(`DELETE FROM novelty WHERE t <= ?`, rec.t);
     this.stats.rootFlips++;
     this.log.info("replica.root", { db: this.dbName, rootT: rec.t, noveltyBefore: before, noveltyAfter: this.entries.length });
+    if (this.basisT !== beforeT) this.notifyBasisWatches(this.basisT);
   }
 
   private async handleFrame(frame: WireFrame): Promise<void> {
@@ -278,7 +282,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.log.info("replica.connect", { db: this.dbName, from: this.basisT, reconnects: this.stats.reconnects, novelty: this.entries.length });
     ws.addEventListener("message", (ev) => this.enqueueFrame(ev));
     const drop = () => {
-      if (this.ws === ws) this.ws = undefined;
+      if (this.ws !== ws) return;
+      this.ws = undefined;
+      this.closeBasisWatches("upstream disconnected");
       // Listening sessions never call `sync()`. Retry with backoff until the
       // socket is back or every attached session is gone.
       this.scheduleReconnect();
@@ -328,17 +334,19 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       void this.tickWatch().finally(() => {
         if (this.listening()) this.armWatch();
       });
-    }, 2_000);
+    }, LIVE_UPSTREAM_WATCH_INTERVAL_MS);
   }
 
   private async tickWatch(): Promise<void> {
     if (!this.listening()) return;
     if (!this.ws || this.ws.readyState !== 1) {
+      this.closeBasisWatches("upstream unavailable");
       this.scheduleReconnect();
       return;
     }
-    if (this.lastUpstreamAt !== 0 && Date.now() - this.lastUpstreamAt > 6_000) {
+    if (this.lastUpstreamAt !== 0 && Date.now() - this.lastUpstreamAt > LIVE_UPSTREAM_STALE_MS) {
       this.log.warn("replica.upstream.stale", { db: this.dbName, basisT: this.basisT, silentMs: Date.now() - this.lastUpstreamAt });
+      this.closeBasisWatches("upstream stale");
       try {
         this.ws.close(1000, "stale");
       } catch {
@@ -351,6 +359,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     try {
       this.ws.send(JSON.stringify({ kind: "ping" }));
     } catch {
+      this.closeBasisWatches("upstream ping failed");
       this.ws = undefined;
       this.scheduleReconnect();
     }
@@ -382,12 +391,20 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       raw = JSON.parse(data);
     } catch (err) {
       console.error("replica: bad frame", err);
+      this.closeBasisWatches("invalid upstream frame");
       return;
     }
     this.lastUpstreamAt = Date.now();
     if (raw !== null && typeof raw === "object" && (raw as { kind?: unknown }).kind === "pong") {
       const t = (raw as { t?: unknown }).t;
-      if (typeof t === "number") await this.catchUpTo(t);
+      if (typeof t === "number") {
+        try {
+          await this.catchUpTo(t);
+        } catch (err) {
+          this.log.warn("replica.watch.catchup.failed", { db: this.dbName, error: String(err), basisT: this.basisT, targetT: t });
+          this.closeBasisWatches("upstream catch-up failed");
+        }
+      }
       return;
     }
     await this.enqueue(async () => {
@@ -395,6 +412,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         await this.handleFrame(raw as WireFrame);
       } catch (err) {
         console.error("replica: bad frame", err);
+        this.closeBasisWatches("upstream apply failed");
       }
     });
   }
@@ -553,23 +571,38 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     if (armed === null || armed > next) await this.ctx.storage.setAlarm(next);
   }
 
+  private notifyBasisWatches(t: number): void {
+    const body = JSON.stringify({ kind: "basis", t });
+    for (const [ws] of this.basisWatches()) {
+      try {
+        ws.send(body);
+      } catch {
+        try {
+          ws.close(1011, "basis notification failed");
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+  }
+
+  private closeBasisWatches(reason: string): void {
+    for (const [ws] of this.basisWatches()) {
+      try {
+        ws.close(1011, reason);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
   private async notifySessions(e: LogEntry): Promise<void> {
     const entry: SessionLogEntry = { t: e.t, datoms: e.datoms.map(toWireDatom) };
     const rootT = this.root?.t ?? 0;
+    this.notifyBasisWatches(e.t);
     const sockets = this.ctx.getWebSockets() as WebSocket[];
     for (const ws of sockets) {
-      if (this.basisWatchOf(ws) !== undefined) {
-        try {
-          ws.send(JSON.stringify({ kind: "basis", t: e.t }));
-        } catch {
-          try {
-            ws.close(1011, "basis notification failed");
-          } catch {
-            /* already gone */
-          }
-        }
-        continue;
-      }
+      if (this.basisWatchOf(ws) !== undefined) continue;
       const s = this.sessionOf(ws);
       try {
         await s.applyEntry(entry, rootT);
@@ -661,6 +694,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       return json({ error: "invalid deployment watch" }, 400);
     }
     await this.sync();
+    if (this.ws?.readyState !== 1) {
+      return json({ error: "replica upstream unavailable" }, 503);
+    }
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
@@ -712,6 +748,14 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     await this.init();
     const watches = this.basisWatches();
     if (watches.length === 0) return;
+    if (
+      this.ws?.readyState !== 1 ||
+      this.lastUpstreamAt === 0 ||
+      Date.now() - this.lastUpstreamAt > LIVE_UPSTREAM_STALE_MS
+    ) {
+      this.closeBasisWatches("upstream freshness lost");
+      return;
+    }
     let currentDeployment: string | undefined;
     try {
       // Every accepted origin routes this same Worker. One public probe fences
@@ -841,6 +885,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         return json({ error: "not found" }, 404);
       }
       case "/admin/reconnect": {
+        this.closeBasisWatches("upstream reconnecting");
         try {
           this.ws?.close(1000, "reconnect");
         } catch {}

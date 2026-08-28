@@ -119,7 +119,7 @@ export const AUTH_SCHEMA = [
 export const testAdmin = async (
   base: string,
   db: string,
-  rest: "/r2" | "/checkpoint" | "/abort" | "/transact" | "/query",
+  rest: "/r2" | "/checkpoint" | "/abort" | "/reconnect" | "/transact" | "/query",
   body: unknown,
   headers?: Record<string, string>,
 ): Promise<{ status: number; body: any; res: Response }> => {

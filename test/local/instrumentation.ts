@@ -143,7 +143,16 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       expect(pushed).toEqual({ kind: "basis", t: committed.body.t });
       expect(rec.frames.some((recorded) => recorded.direction === "recv" &&
         (recorded.payload as { kind?: unknown }).kind === "basis")).toBe(true);
-      socket.close(1000, "done");
+      const closed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("basis watch did not fail closed")), 5_000);
+        socket.addEventListener("close", () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
+      const reconnect = await testAdmin(urls.openUrl, db, "/reconnect", {});
+      expect(reconnect.status).toBe(200);
+      await closed;
     });
 
     test("transactor-scope checkpoint arms on the real DO isolate", async () => {
