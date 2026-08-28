@@ -17,6 +17,7 @@ import {
   type CompositionValueMetadata,
 } from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
+import { documentationOf } from "../../db/documentation.ts";
 import {
   type AnyField,
   type CreationDefaultContext,
@@ -336,16 +337,22 @@ const descriptorTables = (
   const traits = [...schemaTraits(schema).values()].sort((left, right) =>
     compareText(left.ns, right.ns)
   );
-  const entityDescriptors = entities.map((entity) => ({
-    id: EntityId.make({ catalog, name: entity.ns }),
-    traits: directTraits(catalog, entity as ComposerLike),
-    ...(entity.doc === undefined ? {} : { doc: entity.doc }),
-  }));
-  const traitDescriptors = traits.map((trait) => ({
-    id: TraitId.make({ catalog, name: trait.ns }),
-    traits: directTraits(catalog, trait as unknown as ComposerLike),
-    ...(trait.doc === undefined ? {} : { doc: trait.doc }),
-  }));
+  const entityDescriptors = entities.map((entity) => {
+    const doc = documentationOf(entity);
+    return {
+      id: EntityId.make({ catalog, name: entity.ns }),
+      traits: directTraits(catalog, entity as ComposerLike),
+      ...(doc === undefined ? {} : { doc }),
+    };
+  });
+  const traitDescriptors = traits.map((trait) => {
+    const doc = documentationOf(trait);
+    return {
+      id: TraitId.make({ catalog, name: trait.ns }),
+      traits: directTraits(catalog, trait as unknown as ComposerLike),
+      ...(doc === undefined ? {} : { doc }),
+    };
+  });
   const fields = [
     ...entities.flatMap((entity) => ownFields(catalog, "entity", entity)),
     ...traits.flatMap((trait) => ownFields(catalog, "trait", trait)),

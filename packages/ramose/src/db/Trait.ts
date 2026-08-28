@@ -19,7 +19,7 @@ import {
 } from "./Entity.ts";
 import type { AnyField } from "./Field.ts";
 import { attachAttrNav, type AttrNav, type PathCarrier } from "./shapes.ts";
-import { normalizeDoc } from "./documentation.ts";
+import { DOCUMENTATION, normalizeDoc } from "./documentation.ts";
 import {
   invalidIdentName,
   isIdentName,
@@ -66,8 +66,6 @@ export type Trait<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
-  /** Optional Markdown documentation retained in deployed discovery metadata. */
-  readonly doc: string | undefined;
   /**
    * Iteration map. Use `Taggable.tag` at call sites; this property exists
    * so schema / install can walk keys without listing them.
@@ -98,7 +96,6 @@ export type Trait<
 export type AnyTrait = {
   readonly _tag: "Trait";
   readonly ns: string;
-  readonly doc: string | undefined;
   readonly fields: {
     readonly [key: string]: AnyField & { readonly ident: string };
   };
@@ -166,7 +163,6 @@ type TraitOperationContext<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
-  readonly doc: string | undefined;
   readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
   readonly traits: Traits;
 };
@@ -179,7 +175,6 @@ type BindableTraitOperationContext<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
-  readonly doc: string | undefined;
   readonly fields: BoundFieldMap<StampedMap<Name, Fields>, Bind> &
     FlattenedTraitFields<Traits>;
   readonly traits: Traits;
@@ -371,10 +366,11 @@ export function Trait<
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
+  const doc = normalizeDoc(options?.doc);
   const trait = {
     _tag: "Trait" as const,
     ns: name,
-    doc: normalizeDoc(options?.doc),
+    [DOCUMENTATION]: doc,
     fields: merged,
     traits: direct,
     id: idField,

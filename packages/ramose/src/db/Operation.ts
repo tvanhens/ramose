@@ -232,7 +232,6 @@ const OwnedOperationAuthorToken: unique symbol = Symbol(
 type OperationOwnerShape = {
   readonly _tag: "Entity" | "Trait";
   readonly ns: string;
-  readonly doc: string | undefined;
   readonly fields: object;
 };
 
@@ -298,7 +297,7 @@ type OwnedFieldValue<
 
 type EntityIdentity<Entity extends AnyEntity> = Pick<
   Entity,
-  "_tag" | "ns" | "doc" | "fields"
+  "_tag" | "ns" | "fields"
 > &
   Pick<
     AnyEntity,

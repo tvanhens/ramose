@@ -55,7 +55,6 @@ describe("ident names", () => {
       "fields",
       "_tag",
       "traits",
-      "doc",
     ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
@@ -92,10 +91,10 @@ describe("Entity()", () => {
   test("rejects a reserved field key before it can overwrite metadata", () => {
     for (const key of RESERVED_FIELD_KEYS) {
       expect(() => Entity("post", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, _tag, traits, and doc are Entity \/ Trait metadata/,
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
       );
       expect(() => Trait("postTrait", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, _tag, traits, and doc are Entity \/ Trait metadata/,
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
       );
     }
     const Post = Entity("post", { title: string() });
@@ -103,6 +102,13 @@ describe("Entity()", () => {
     expect(Post.ns).toBe("post");
     expect(Post._tag).toBe("Entity");
     expect(Post.fields.title.ident).toBe(":post/title");
+  });
+
+  test("keeps doc available as an application field", () => {
+    const Post = Entity("postDoc", { doc: string() }, { doc: "Entity docs." });
+    const Documented = Trait("documented", { doc: string() }, { doc: "Trait docs." });
+    expect(Post.doc.ident).toBe(":postDoc/doc");
+    expect(Documented.doc.ident).toBe(":documented/doc");
   });
 
   test("rejects an invalid entity name", () => {

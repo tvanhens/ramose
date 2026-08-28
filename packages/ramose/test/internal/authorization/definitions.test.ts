@@ -25,6 +25,7 @@ import {
   type AnySchema,
   type CodeDefinition,
 } from "../../../src/db/internal.ts";
+import { DOCUMENTATION } from "../../../src/db/documentation.ts";
 import {
   CatalogId,
   CatalogMismatch,
@@ -219,6 +220,7 @@ describe("catalog definition assembly", () => {
       const Article = Entity(
         "docArticle",
         {
+          doc: string(),
           title: string(
             docs.directField === undefined ? {} : { doc: docs.directField },
           ),
@@ -628,9 +630,9 @@ describe("catalog definition assembly", () => {
       (inputs) => inputs.value,
     ))).toBe(true);
     expect(Reflect.set(Item, "ns", "mutatedItem")).toBe(true);
-    expect(Reflect.set(Item, "doc", "mutated entity")).toBe(true);
+    expect(Reflect.set(Item, DOCUMENTATION, "mutated entity")).toBe(true);
     expect(Reflect.set(Item.title, "doc", "mutated field")).toBe(true);
-    expect(Reflect.set(Bound, "doc", "mutated trait")).toBe(true);
+    expect(Reflect.set(Bound, DOCUMENTATION, "mutated trait")).toBe(true);
     expect(Reflect.set(Audit, "ns", "mutatedAudit")).toBe(true);
     expect(Reflect.set(operation, "doc", "mutated operation")).toBe(true);
     expect(Reflect.set(operation, "run", () => ({ ok: false }))).toBe(true);

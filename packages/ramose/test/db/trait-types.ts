@@ -131,7 +131,7 @@ const OtherTag = Trait("labeled", { tag: string() });
 // @ts-expect-error conflicting flattened field names
 Entity("clash", { title: string() }, { traits: [Taggable, OtherTag] });
 
-// @ts-expect-error reserved field name — id, ns, fields, _tag, traits, and doc are Entity / Trait metadata
+// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
 Trait("post", { traits: string() });
-// @ts-expect-error reserved field name — Entity / Trait metadata
-Trait("post", { doc: string() });
+const DocFieldTrait = Trait("postDoc", { doc: string() }, { doc: "Trait docs." });
+DocFieldTrait.doc.ident;
