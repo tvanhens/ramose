@@ -319,7 +319,7 @@ const patternNames = (pattern: AstNode): readonly string[] => {
   throw invalid("requires identifier, object, or array bindings");
 };
 
-const declaredNames = (body: AstNode): ReadonlySet<string> => {
+const directDeclaredNames = (body: AstNode): ReadonlySet<string> => {
   const names = new Set<string>();
   if (body.type !== "BlockStatement") return names;
   for (const raw of body.body as readonly unknown[]) {
@@ -332,6 +332,25 @@ const declaredNames = (body: AstNode): ReadonlySet<string> => {
       }
     }
   }
+  return names;
+};
+
+const declaredNames = (body: AstNode): ReadonlySet<string> => {
+  const names = new Set<string>();
+  const visit = (current: AstNode): void => {
+    for (const name of directDeclaredNames(current)) names.add(name);
+    for (const [key, raw] of Object.entries(current)) {
+      if (["start", "end", "loc", "type"].includes(key) || raw === null) continue;
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (typeof item === "object" && item !== null && "type" in item) visit(item as AstNode);
+        }
+      } else if (typeof raw === "object" && "type" in raw) {
+        visit(raw as AstNode);
+      }
+    }
+  };
+  visit(body);
   return names;
 };
 
@@ -426,9 +445,14 @@ const validate = (
         validate(ast(raw, "template expression"), locals, scope);
       }
       return;
-    case "BlockStatement":
-      for (const raw of current.body as readonly unknown[]) validate(ast(raw, "statement"), locals, scope);
+    case "BlockStatement": {
+      const blockLocals = new Set(locals);
+      for (const name of directDeclaredNames(current)) blockLocals.add(name);
+      for (const raw of current.body as readonly unknown[]) {
+        validate(ast(raw, "statement"), blockLocals, scope);
+      }
       return;
+    }
     case "ExpressionStatement":
       validate(ast(current.expression, "expression"), locals, scope);
       return;
@@ -844,10 +868,11 @@ export const compileOperationBody = (
   const params = fn.params as readonly unknown[];
   if (params.length > 2) throw invalid("accepts at most op and input parameters");
   const patterns = params.map((parameter) => ast(parameter, "parameter"));
-  const locals = new Set(patterns.flatMap(patternNames));
-  for (const name of declaredNames(ast(fn.body, "function body"))) locals.add(name);
-  const scope = catalogScope(catalog, operation, ast(fn.body, "function body"), locals);
-  validate(ast(fn.body, "function body"), locals, scope);
+  const parameterLocals = new Set(patterns.flatMap(patternNames));
+  const catalogLocals = new Set(parameterLocals);
+  for (const name of declaredNames(ast(fn.body, "function body"))) catalogLocals.add(name);
+  const scope = catalogScope(catalog, operation, ast(fn.body, "function body"), catalogLocals);
+  validate(ast(fn.body, "function body"), parameterLocals, scope);
   validateStaticMemberAccess(ast(fn.body, "function body"), patterns[1], operation.input);
 
   return Object.freeze(async (op: unknown, input: unknown): Promise<unknown> => {

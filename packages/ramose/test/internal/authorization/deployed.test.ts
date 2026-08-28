@@ -182,6 +182,44 @@ describe("assembleDeployedCatalogs", () => {
     expect(failure._tag).toBe("InvalidIR");
     expect(failure.message).toContain("does not support member 'length' on scalar input values");
   });
+
+  test("nested block locals are validated in their lexical scope", async () => {
+    const descriptor = catalogDescriptor();
+    const runtime = runtimeOperationsFor(descriptor);
+    const nested = {
+      ...runtime,
+      definitions: runtime.definitions.map((entry) => ({
+        ...entry,
+        bodySource: "() => { { const row = { id: 'nested' }; return row; } }",
+      })),
+    };
+    const installed = await installedDefinitionFor(
+      descriptor,
+      templateOf(),
+      nested,
+    );
+    const catalogs = await assemble([{ database, definition: installed }]);
+    const operation = [...Result.getOrThrow(catalogs.requireDatabase(database)).operations.values()][0]!;
+
+    expect(await operation.body({}, {})).toEqual({ id: "nested" });
+
+    const leaked = {
+      ...runtime,
+      definitions: runtime.definitions.map((entry) => ({
+        ...entry,
+        bodySource: "() => { { const row = {}; } return row; }",
+      })),
+    };
+    const leakedDefinition = await installedDefinitionFor(
+      descriptor,
+      templateOf(),
+      leaked,
+    );
+    const failure = await Effect.runPromise(Effect.flip(
+      assembleDeployedCatalogs({ units: [{ database, definition: leakedDefinition }] }),
+    ));
+    expect(failure.message).toContain("undeclared identifier 'row'");
+  });
 });
 
 describe("deployed lookup", () => {
