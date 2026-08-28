@@ -274,6 +274,16 @@ describe("diffAuthorizedResults", () => {
       "B",
       "C",
     ]);
+    const duplicateTuple = diffAuthorizedResults(["A", "A"], ["B", "B"]);
+    expect(duplicateTuple).toEqual({ added: ["B", "B"], retracted: ["A", "A"] });
+    expect(
+      applyLiveDiffs([{ added: ["A", "A"], retracted: [] }, duplicateTuple]),
+    ).toEqual(["B", "B"]);
+    const oneDuplicateRemoved = diffAuthorizedResults(["A", "A"], ["A"]);
+    expect(oneDuplicateRemoved).toEqual({ added: [], retracted: ["A"] });
+    expect(
+      applyLiveDiffs([{ added: ["A", "A"], retracted: [] }, oneDuplicateRemoved]),
+    ).toEqual(["A"]);
     expect(leakKeys(diff)).toEqual([]);
   });
 });

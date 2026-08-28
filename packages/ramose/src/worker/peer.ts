@@ -166,8 +166,10 @@ export interface BasisFetch {
 }
 
 export interface BasisFetchOptions {
-  /** Ignore request/env cache controls and fetch the authoritative replica basis. */
+  /** Ignore request/env cache controls and fetch the replica basis. */
   readonly bypassCache?: boolean;
+  /** Fence the replica read at the transactor's current committed t. */
+  readonly authoritativeFence?: boolean;
 }
 
 export const basisCacheEnabled = (
@@ -175,6 +177,33 @@ export const basisCacheEnabled = (
   env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">,
   options: BasisFetchOptions = {},
 ): boolean => options.bypassCache !== true && wantsBasisCache(request, env);
+
+/** The strongest read fence supplied by the caller and the authoritative writer. */
+export const effectiveBasisMinT = (
+  clientMinT: number | undefined,
+  transactorT: number | undefined,
+): number | undefined => {
+  if (clientMinT === undefined) return transactorT;
+  if (transactorT === undefined) return clientMinT;
+  return Math.max(clientMinT, transactorT);
+};
+
+const fetchTransactorT = async (env: RamoseEnv, db: string): Promise<number> => {
+  const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
+  const res = await stub.fetch(
+    `https://transactor/info?db=${encodeURIComponent(db)}`,
+    { headers: internalHeaders(env) },
+  );
+  if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
+  const body = (await res.json()) as { readonly t?: unknown };
+  if (!Number.isSafeInteger(body.t) || (body.t as number) < 0) {
+    throw new UpstreamError({
+      status: 502,
+      body: JSON.stringify({ error: "transactor returned an invalid basis" }),
+    });
+  }
+  return body.t as number;
+};
 
 /** Fetch a basis for `db`: isolate cache (per knobs) or the nearest replica's GET /basis. */
 export async function fetchBasisWithStats(
@@ -185,7 +214,13 @@ export async function fetchBasisWithStats(
 ): Promise<BasisFetch> {
   const useCache = basisCacheEnabled(request, env, options);
   const mode = cacheModeOf(request, env);
-  const minT = minTOf(request);
+  // Cache bypass alone is not a freshness fence: an open replica novelty
+  // socket can have missed a broadcast. Live renewals first read the writer's
+  // committed t, then require /basis to catch up through the transactor log.
+  const transactorT = options.authoritativeFence === true
+    ? await fetchTransactorT(env, db)
+    : undefined;
+  const minT = effectiveBasisMinT(minTOf(request), transactorT);
   const key = `${db}|${hintOf(request, env) ?? ""}`;
   let reason: BasisFetch["reason"] = "off";
   if (useCache) {
@@ -219,6 +254,12 @@ export async function fetchBasisWithStats(
     await new Promise((r) => setTimeout(r, MIN_T_RETRY_MS));
   }
   const behind = minT !== undefined && basis.t < minT;
+  if (options.authoritativeFence === true && behind) {
+    throw new UpstreamError({
+      status: 503,
+      body: JSON.stringify({ error: "replica behind authoritative basis" }),
+    });
+  }
   if (useCache) {
     // never overwrite a newer entry (a concurrent refetch or a min-t poll may have raced us)
     const cur = basisCache.get(key);

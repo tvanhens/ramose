@@ -51,10 +51,14 @@ export const collectLive = async (
 };
 
 export const applyLiveDiffs = (diffs: readonly LiveQueryDiff[]): unknown[] => {
-  const rows = new Map<string, unknown>();
+  const rows: unknown[] = [];
   for (const diff of diffs) {
-    for (const row of diff.retracted) rows.delete(stringifyJson(row));
-    for (const row of diff.added) rows.set(stringifyJson(row), row);
+    for (const row of diff.retracted) {
+      const key = stringifyJson(row);
+      const index = rows.findIndex((candidate) => stringifyJson(candidate) === key);
+      if (index !== -1) rows.splice(index, 1);
+    }
+    rows.push(...diff.added);
   }
-  return [...rows.values()];
+  return rows;
 };

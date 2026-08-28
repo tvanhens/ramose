@@ -10,4 +10,13 @@ describe("thin live-query consumer", () => {
       ]).sort(),
     ).toEqual(["Bug", "Other"]);
   });
+
+  test("applyLiveDiffs preserves duplicate occurrences", () => {
+    expect(
+      applyLiveDiffs([
+        { added: ["A", "A"], retracted: [] },
+        { added: ["B", "B"], retracted: ["A", "A"] },
+      ]),
+    ).toEqual(["B", "B"]);
+  });
 });

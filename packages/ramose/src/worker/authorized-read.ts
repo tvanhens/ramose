@@ -194,13 +194,17 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
 export const acquireCurrentDb = (
   env: RamoseEnv,
   request: Request,
-  options: { readonly bypassBasisCache?: boolean } = {},
+  options: {
+    readonly bypassBasisCache?: boolean;
+    readonly authoritativeBasisFence?: boolean;
+  } = {},
 ): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
   (database) =>
     Effect.tryPromise({
       try: async () => {
         const basis = await fetchBasis(env, database, request, {
           bypassCache: options.bypassBasisCache === true,
+          authoritativeFence: options.authoritativeBasisFence === true,
         });
         return dbFromBasis(segmentSource(env, database), basis);
       },

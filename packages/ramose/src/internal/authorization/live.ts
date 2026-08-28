@@ -99,33 +99,52 @@ export const isSilentLiveDiff = (diff: LiveQueryDiff): boolean =>
 
 /**
  * Additions and retractions between two authorized one-shot results.
- * Membership is by canonical JSON; hidden facts and transaction metadata
- * cannot appear because they are not in either result.
+ * Occurrences are compared by canonical JSON; hidden facts and transaction
+ * metadata cannot appear because they are not in either result.
  */
 export const diffAuthorizedResults = (previous: unknown, next: unknown): LiveQueryDiff => {
   const prevRows = liveResultRows(previous);
   const nextRows = liveResultRows(next);
-  const prevKeys = new Map<string, unknown>();
-  const nextKeys = new Map<string, unknown>();
-  for (const row of prevRows) prevKeys.set(stringifyJson(row), row);
-  for (const row of nextRows) nextKeys.set(stringifyJson(row), row);
+  const prevCounts = new Map<string, number>();
+  const nextCounts = new Map<string, number>();
+  for (const row of prevRows) {
+    const key = stringifyJson(row);
+    prevCounts.set(key, (prevCounts.get(key) ?? 0) + 1);
+  }
+  for (const row of nextRows) {
+    const key = stringifyJson(row);
+    nextCounts.set(key, (nextCounts.get(key) ?? 0) + 1);
+  }
   const added: unknown[] = [];
   const retracted: unknown[] = [];
-  for (const [key, row] of nextKeys) {
-    if (!prevKeys.has(key)) added.push(row);
+  const remainingPrev = new Map(prevCounts);
+  for (const row of nextRows) {
+    const key = stringifyJson(row);
+    const remaining = remainingPrev.get(key) ?? 0;
+    if (remaining === 0) added.push(row);
+    else remainingPrev.set(key, remaining - 1);
   }
-  for (const [key, row] of prevKeys) {
-    if (!nextKeys.has(key)) retracted.push(row);
+  const remainingNext = new Map(nextCounts);
+  for (const row of prevRows) {
+    const key = stringifyJson(row);
+    const remaining = remainingNext.get(key) ?? 0;
+    if (remaining === 0) retracted.push(row);
+    else remainingNext.set(key, remaining - 1);
   }
 
-  // A membership-only delta cannot represent a reorder or an insertion in
-  // the middle. Use the same wire shape as a full replacement when applying
-  // the minimal delta would not reproduce the exact one-shot row sequence.
-  const reconstructed = new Map(prevKeys);
-  for (const row of retracted) reconstructed.delete(stringifyJson(row));
-  for (const row of added) reconstructed.set(stringifyJson(row), row);
-  const reconstructedOrder = [...reconstructed.keys()];
-  const nextOrder = [...nextKeys.keys()];
+  // Retractions remove one matching occurrence and additions append. If that
+  // minimal bag delta cannot reproduce the exact ordered sequence, use a full
+  // replacement. Keeping arrays here is essential for tuple queries whose
+  // result contains the same value more than once.
+  const reconstructed = [...prevRows];
+  for (const row of retracted) {
+    const key = stringifyJson(row);
+    const index = reconstructed.findIndex((candidate) => stringifyJson(candidate) === key);
+    if (index !== -1) reconstructed.splice(index, 1);
+  }
+  reconstructed.push(...added);
+  const reconstructedOrder = reconstructed.map(stringifyJson);
+  const nextOrder = nextRows.map(stringifyJson);
   if (
     reconstructedOrder.length !== nextOrder.length ||
     reconstructedOrder.some((key, index) => key !== nextOrder[index])

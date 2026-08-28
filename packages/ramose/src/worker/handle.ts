@@ -272,6 +272,7 @@ export const handle = (
       unitHash: parsed.unitHash,
       currentDb: acquireCurrentDb(env, request, {
         bypassBasisCache: rest === "/live",
+        authoritativeBasisFence: rest === "/live",
       }),
       view: parsed.view,
     };
